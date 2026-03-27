@@ -71,15 +71,22 @@ Zero dependencies. Everything runs through macOS AppleScript.
 
 ## Quick commands
 
-Instant controls — no AI reasoning, just runs.
+Instant controls — no AI reasoning, no chat clutter, just runs.
 
 ```
-  /music:np                  what's playing?
-  /music:play                resume
+  /music:play                resume playback
+  /music:play Working Vibes  play a playlist (with shuffle)
+  /music:play Radiohead      search and play artist/album/song
   /music:pause               pause
   /music:skip                next track
   /music:back                previous track
   /music:stop                stop
+  /music:np                  what's playing?
+
+  /music:vol 60              set all active speakers to 60
+  /music:vol up              +10
+  /music:vol down            -10
+  /music:shuffle             toggle shuffle on/off
 
   /music:speaker list        show all speakers
   /music:speaker kitchen     switch to kitchen
@@ -90,7 +97,7 @@ Instant controls — no AI reasoning, just runs.
 
 ## Status line
 
-See what's playing at the bottom of Claude Code — always visible, no token cost.
+See what's playing at the bottom of Claude Code — track, speakers, and volume — always visible, no token cost.
 
 ```
   ┌──────────────────────────────────────────────────────────────┐
@@ -99,7 +106,7 @@ See what's playing at the bottom of Claude Code — always visible, no token cos
   │                                                              │
   │                                                              │
   ├──────────────────────────────────────────────────────────────┤
-  │  ▶ Everything In Its Right Place — Radiohead                 │
+  │  ▶ Everything In Its Right Place — Radiohead  ·  Kitchen [60]│
   └──────────────────────────────────────────────────────────────┘
 ```
 
