@@ -1,11 +1,12 @@
 ---
 name: play
-description: Resume Apple Music playback
-disable-model-invocation: true
+description: "Resume playback or play a playlist/artist/album. Usage: /music:play [query]"
+arguments:
+  - name: query
+    description: "Playlist name, artist, album, or song to play. Leave empty to resume."
+    required: false
 ---
 
-!`osascript -e 'tell application "Music"
-    play
-    delay 0.5
-    return "▶ " & name of current track & " — " & artist of current track
-end tell' 2>/dev/null || echo "Could not start playback"`
+Play music for the user. If no query is provided, resume playback. If a query is provided, search for it and play it.
+
+$ARGUMENTS

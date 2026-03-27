@@ -33,7 +33,15 @@ Control Apple Music, AirPlay speakers, and AirPods — right from your terminal.
 ## Install
 
 ```
-/install github:anthonymaley/music
+/plugin marketplace add anthonymaley/music
+/plugin install music
+/reload-plugins
+```
+
+To update:
+
+```
+/plugin update music
 ```
 
 ## What you can do

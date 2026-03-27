@@ -1,5 +1,5 @@
 ---
-name: apple-music
+name: music
 description: "Control Apple Music playback, AirPlay speakers, and AirPods/Bluetooth headphones on macOS using AppleScript. Use this skill whenever the user wants to play music, control playback (play, pause, skip, volume, shuffle), manage playlists, play an album or artist, search their music library, route audio to AirPlay speakers or AirPods, add or remove speakers from a group, adjust per-speaker volume, switch between headphones and speakers, or check what's currently playing. Trigger on any mention of: Apple Music, AirPlay, speakers, playlist, play a song, what's playing, music volume, now playing, queue, HomePod, AirPods, headphones, Bluetooth audio, album, artist, or any request to control audio playback on their Mac — even casual ones like 'put on some music', 'switch to my AirPods', 'switch to the kitchen speaker', 'add the bedroom to the group', or 'turn down the kitchen'."
 ---
 
