@@ -1,0 +1,12 @@
+{
+  "name": "apple-music",
+  "description": "Control Apple Music playback, AirPlay speakers, and AirPods on macOS via AppleScript. Play music, manage playlists, route audio to speakers and headphones, adjust per-speaker volume, and manage multi-room groups — all from the terminal.",
+  "version": "0.1.0",
+  "author": {
+    "name": "Anthony Maley"
+  },
+  "homepage": "https://github.com/anthonymaley/music",
+  "repository": "https://github.com/anthonymaley/music",
+  "license": "MIT",
+  "keywords": ["apple-music", "airplay", "speakers", "music", "macos", "audio"]
+}
