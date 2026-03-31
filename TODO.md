@@ -2,35 +2,36 @@
 
 ## Current Session
 
-- [x] Designed unified Music CLI architecture (spec + plan)
-- [x] Spec: `docs/superpowers/specs/2026-03-31-music-cli-design.md` — reviewed, 7 findings fixed
-- [x] Plan: `docs/superpowers/plans/2026-03-31-music-cli.md` — 13 tasks, 5 phases, 4 findings fixed
-- [x] Prototype: JWT token generation + catalog search works (tested with .p8 key)
-- [x] Prototype: `tools/music-catalog/` exists but is superseded by the plan's `tools/music-cli/`
-- [ ] **Execute the plan** — 13 tasks across 5 phases, using subagent-driven-development
+- [x] Built ceol CLI — unified Swift binary (18 subcommands, 1,818 lines)
+- [x] Phase 1: Swift package scaffold, AppleScript backend, playback/speaker/volume commands
+- [x] Phase 2: JWT generator, auth manager, browser-based user token flow (localhost HTTP server)
+- [x] Phase 3: REST API backend, catalog search, add-to-library, playlist CRUD
+- [x] Phase 4: Discovery commands (similar, suggest, new-releases, mix)
+- [x] Phase 5: Install script, slash commands updated to use ceol, skill rewritten
+- [x] Fixed MusicKit JS auth — file:// origin rejected, switched to localhost HTTP server
+- [x] User token obtained and verified — full auth working
+- [x] Removed old `tools/music-catalog/` prototype
+- [x] All 13 tasks from the implementation plan complete
 
 ## What's Next
 
-- **Start next session with:** `execute the music CLI plan` — use subagent-driven-development
-- Phase 1 (Tasks 1-4): Swift package scaffold + playback/speaker/volume commands
-- Phase 2 (Tasks 5-6): Auth (JWT + user token browser flow)
-- Phase 3 (Tasks 7-9): REST API backend + search/add/playlist commands
-- Phase 4 (Task 10): Discovery (similar, suggest, new-releases, mix)
-- Phase 5 (Tasks 11-13): Plugin integration (install script, slash commands, skill)
-- Clean up `tools/music-catalog/` prototype (Task 1, Step 1 handles this)
+- **Version bump** to v1.0.0 in plugin.json and marketplace.json (ceol is 1.0.0, plugin still at 0.2.1)
+- **Add `ceol` to .gitignore** — `tools/ceol/.build/` and `Package.resolved` are untracked
+- Consider adding new slash commands for ceol-only features: `/music:search`, `/music:add`, `/music:similar`
+- Consider updating `scripts/statusline.sh` to use `ceol now --json` instead of raw osascript
+- Migrate existing config from `~/.music-catalog-key.p8` to `~/.config/ceol/` (already done manually this session)
+- Consider per-speaker stop support (backlog item from earlier sessions)
 
 ## Key Context
 
-- User has Apple Developer account with MusicKit key: `AuthKey_W5H3NYJ999.p8`
-- Key copied to `~/.music-catalog-key.p8` (prototype location — plan moves to `~/.config/music-cli/`)
-- Team ID: `8NS66RKB45`, Key ID: `W5H3NYJ999`
-- Signing identity: `Apple Development: Anthony Maley (KG6T2K5H9Y)`
-- MusicKit `MusicLibrary.add()` is iOS-only — macOS must use REST API for library writes
-- MusicKit import causes CLI to hang — pure REST API + CryptoKit approach works
-- User token acquisition: MusicKit JS in browser → paste token → cached at `~/.config/music-cli/user-token`
-- AppleScript Parameter error -50: split AirPlay routing + playback into separate osascript calls
+- CLI binary name is `ceol` (Irish for music), installed at `~/.local/bin/ceol`
+- Config lives at `~/.config/ceol/` (config.json, AuthKey.p8, user-token)
+- Auth page served via Python HTTP server on localhost:8537 (MusicKit JS rejects file:// origins)
+- User has Apple Developer account: Team ID `8NS66RKB45`, Key ID `W5H3NYJ999`
+- All slash commands have osascript fallback if ceol binary not installed
+- Skill renamed from "music" to "ceol" in frontmatter
 
 ## Backlog
 
 - Consider enhancing `/music:stop` to support per-speaker stop
-- Consider adding per-speaker stop to the CLI (`music speaker stop kitchen`)
+- Consider adding per-speaker stop to the CLI (`ceol speaker stop kitchen`)
