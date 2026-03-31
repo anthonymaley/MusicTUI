@@ -95,8 +95,8 @@ Two tokens, managed independently:
 ```
 
 **Graceful degradation:**
-- No config at all → playback/speaker commands work, catalog commands print setup instructions
-- Developer token only → catalog search works, write ops print "run `music auth`"
+- No config at all → playback/speaker commands work, all catalog/library commands print setup instructions
+- Developer token only → catalog search (`/v1/catalog/...`) works. All `/v1/me/...` commands — including reads like `playlist list`, `playlist tracks`, `similar`, `suggest`, `new-releases`, and writes like `add`, `playlist create` — print "run `music auth` to enable this feature"
 - Both tokens → full functionality
 
 ## Command Surface
@@ -318,19 +318,19 @@ Updated to document the full `music` CLI surface. Claude uses `music --json` var
 
 ### Status Line
 
-The status line script consumes `--json` output and formats it for the status bar:
+The status line script consumes `--json` output and formats it using built-in shell tools (no external dependencies):
 
 ```bash
 #!/bin/bash
 JSON=$(music now --json 2>/dev/null)
 if [ -n "$JSON" ]; then
-    TRACK=$(echo "$JSON" | jq -r '.track // empty')
-    ARTIST=$(echo "$JSON" | jq -r '.artist // empty')
+    TRACK=$(echo "$JSON" | grep -o '"track":"[^"]*"' | cut -d'"' -f4)
+    ARTIST=$(echo "$JSON" | grep -o '"artist":"[^"]*"' | cut -d'"' -f4)
     [ -n "$TRACK" ] && echo "$TRACK — $ARTIST"
 fi
 ```
 
-There is no `--statusline` output mode. The CLI supports exactly two output modes: default (human-readable text) and `--json`. Any specialized formatting is the caller's responsibility.
+There is no `--statusline` output mode. The CLI supports exactly two output modes: default (human-readable text) and `--json`. Any specialized formatting is the caller's responsibility. The JSON output is simple enough to parse with `grep`/`cut`; no `jq` dependency required.
 
 ## Dependencies
 
