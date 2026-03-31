@@ -3,24 +3,22 @@
 ## Current Session
 
 - [x] Built ceol CLI — unified Swift binary (18 subcommands, 1,818 lines)
-- [x] Phase 1: Swift package scaffold, AppleScript backend, playback/speaker/volume commands
-- [x] Phase 2: JWT generator, auth manager, browser-based user token flow (localhost HTTP server)
-- [x] Phase 3: REST API backend, catalog search, add-to-library, playlist CRUD
-- [x] Phase 4: Discovery commands (similar, suggest, new-releases, mix)
-- [x] Phase 5: Install script, slash commands updated to use ceol, skill rewritten
+- [x] All 13 tasks from the implementation plan complete (Phases 1-5)
 - [x] Fixed MusicKit JS auth — file:// origin rejected, switched to localhost HTTP server
 - [x] User token obtained and verified — full auth working
+- [x] Version bumped to 1.0.0 across plugin.json and marketplace.json
+- [x] Added .gitignore for build artifacts
+- [x] Added new slash commands: /music:search, /music:add, /music:similar, /music:playlist
+- [x] README rewritten with ceol CLI docs, architecture diagram, catalog features
+- [x] Playbook updated with full architecture, auth tiers, config locations
 - [x] Removed old `tools/music-catalog/` prototype
-- [x] All 13 tasks from the implementation plan complete
 
 ## What's Next
 
-- **Version bump** to v1.0.0 in plugin.json and marketplace.json (ceol is 1.0.0, plugin still at 0.2.1)
-- **Add `ceol` to .gitignore** — `tools/ceol/.build/` and `Package.resolved` are untracked
-- Consider adding new slash commands for ceol-only features: `/music:search`, `/music:add`, `/music:similar`
 - Consider updating `scripts/statusline.sh` to use `ceol now --json` instead of raw osascript
-- Migrate existing config from `~/.music-catalog-key.p8` to `~/.config/ceol/` (already done manually this session)
-- Consider per-speaker stop support (backlog item from earlier sessions)
+- Consider per-speaker stop support (`ceol speaker stop kitchen`)
+- Publish v1.0.0 to Claude Code marketplace
+- Test all new slash commands end-to-end (/music:search, /music:add, /music:similar, /music:playlist)
 
 ## Key Context
 
@@ -29,7 +27,8 @@
 - Auth page served via Python HTTP server on localhost:8537 (MusicKit JS rejects file:// origins)
 - User has Apple Developer account: Team ID `8NS66RKB45`, Key ID `W5H3NYJ999`
 - All slash commands have osascript fallback if ceol binary not installed
-- Skill renamed from "music" to "ceol" in frontmatter
+- Skill frontmatter name is `ceol`
+- Version is 1.0.0 everywhere (plugin.json, marketplace.json x2, ceol CLI)
 
 ## Backlog
 
