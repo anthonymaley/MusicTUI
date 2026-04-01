@@ -5,7 +5,7 @@
   },
   "metadata": {
     "description": "Apple Music controller for Claude Code: playback, AirPlay, catalog search, library management, playlists, and music discovery on macOS",
-    "version": "1.0.0"
+    "version": "1.1.0"
   },
   "plugins": [
     {
@@ -15,7 +15,7 @@
         "url": "git@github.com:anthonymaley/music.git"
       },
       "description": "Control Apple Music playback, AirPlay speakers, and AirPods on macOS. Search the catalog, add to library, manage playlists, discover new music, route audio to speakers and headphones — all from the terminal.",
-      "version": "1.0.0",
+      "version": "1.1.0",
       "strict": true
     }
   ]

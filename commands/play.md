@@ -58,9 +58,9 @@ fi
 
 # --- Step 2: Set volume ---
 if [ -n "$VOL" ] && [ -n "$SPEAKER" ]; then
-    $MUSIC_CLI vol "$SPEAKER" "$VOL"
+    $MUSIC_CLI volume "$SPEAKER" "$VOL"
 elif [ -n "$VOL" ]; then
-    $MUSIC_CLI vol "$VOL"
+    $MUSIC_CLI volume "$VOL"
 fi
 
 # --- Step 3: Play content ---

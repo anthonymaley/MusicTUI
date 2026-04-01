@@ -106,29 +106,30 @@ claude plugin update music@anthonymaley-music
 # Desktop — Manage plugins → Update
 ```
 
-### Music CLI (optional — unlocks catalog features)
+### Advanced Features (optional — requires Apple Developer account)
 
-Playback, speakers, and volume work out of the box. For catalog search, library management, playlists, and music discovery, build the `music` CLI:
+Playback, speakers, and volume work out of the box with zero setup. For catalog search, library management, playlists via API, and music discovery, you need:
+
+1. An **Apple Developer account** ($99/year at [developer.apple.com](https://developer.apple.com))
+2. The **music CLI** built from source
+3. A **MusicKit key** configured via guided setup
 
 ```bash
+# Build the CLI
 cd ~/.claude/plugins/cache/music@anthonymaley-music
 scripts/install.sh
+
+# Guided auth setup — walks you through creating a MusicKit key
+music auth setup
+
+# Get your user token (opens browser, auto-saves)
+music auth
+
+# Verify
+music auth status
 ```
 
-Then set up Apple Music API auth:
-
-```bash
-music auth setup     # guided: key ID, team ID, .p8 key
-music auth           # opens browser for user token
-music auth status    # verify everything's connected
-```
-
-After updating the plugin, rebuild the CLI:
-
-```bash
-cd ~/.claude/plugins/cache/music@anthonymaley-music
-scripts/install.sh
-```
+After updating the plugin, rebuild the CLI: `scripts/install.sh`
 
 ## Commands
 
@@ -174,7 +175,17 @@ Every command runs instantly — no AI reasoning, no chat clutter.
 | `/music:speaker stop kitchen` | Same — remove kitchen from the group |
 | `/music:speaker remove kitchen add bedroom` | Chain actions in one command |
 
-### Catalog & Library (requires music CLI)
+### Playlists
+
+| Command | What it does | Setup |
+|---------|-------------|-------|
+| `/music:playlist list` | List all your playlists | none |
+| `/music:playlist tracks Working Vibes` | Show tracks in a playlist | none |
+| `/music:playlist create Friday Mix` | Create an empty playlist | advanced |
+| `/music:playlist delete Old Playlist` | Delete a playlist | advanced |
+| `/music:playlist add "Playlist" "Song" "Artist"` | Add a track to a playlist | advanced |
+
+### Catalog & Discovery (advanced)
 
 | Command | What it does |
 |---------|-------------|
@@ -182,16 +193,6 @@ Every command runs instantly — no AI reasoning, no chat clutter.
 | `/music:search Fouk` | Search by artist |
 | `/music:add Get It Done Fouk` | Add a track to your library |
 | `/music:similar` | Find tracks similar to what's playing |
-
-### Playlists (requires music CLI)
-
-| Command | What it does |
-|---------|-------------|
-| `/music:playlist list` | List all your playlists |
-| `/music:playlist tracks Working Vibes` | Show tracks in a playlist |
-| `/music:playlist create Friday Mix` | Create an empty playlist |
-| `/music:playlist delete Old Playlist` | Delete a playlist |
-| `/music:playlist add "Playlist" "Song" "Artist"` | Add a track to a playlist |
 
 ## Natural Language
 

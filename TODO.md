@@ -26,7 +26,7 @@
 - User has Apple Developer account: Team ID `8NS66RKB45`, Key ID `W5H3NYJ999`
 - All slash commands have osascript fallback if music binary not installed
 - Skill frontmatter name is `music`
-- Version is 1.0.0 everywhere (plugin.json, marketplace.json x2, music CLI)
+- Version is 1.1.0 everywhere (plugin.json, marketplace.json x2, music CLI)
 - Naming decision: one public name `music` — display name `Apple Music for Claude Code`
 - `ceol` is retired as a public name; only appears in historical session logs and naming doc
 
