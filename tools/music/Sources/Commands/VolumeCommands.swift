@@ -10,6 +10,37 @@ struct Vol: ParsableCommand {
         let backend = AppleScriptBackend()
 
         if args.isEmpty {
+            if !json && isTTY() {
+                // Interactive volume mixer
+                let result = try syncRun {
+                    try await backend.runMusic("""
+                        set deviceList to every AirPlay device
+                        set output to ""
+                        repeat with d in deviceList
+                            if selected of d then
+                                if output is not "" then set output to output & linefeed
+                                set output to output & name of d & "|" & sound volume of d
+                            end if
+                        end repeat
+                        return output
+                    """)
+                }
+                let lines = result.trimmingCharacters(in: .whitespacesAndNewlines).split(separator: "\n")
+                var speakers: [MixerSpeaker] = lines.compactMap { line in
+                    let parts = line.split(separator: "|", maxSplits: 1).map(String.init)
+                    guard parts.count >= 2, let vol = Int(parts[1]) else { return nil }
+                    return MixerSpeaker(name: parts[0], volume: vol)
+                }
+
+                runVolumeMixer(speakers: &speakers) { name, volume in
+                    _ = try? syncRun {
+                        try await backend.runMusic("set sound volume of AirPlay device \"\(name)\" to \(volume)")
+                    }
+                }
+                return
+            }
+
+            // Non-interactive: show current volumes
             let result = try syncRun {
                 try await backend.runMusic("""
                     set deviceList to every AirPlay device
