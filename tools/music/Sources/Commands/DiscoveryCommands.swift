@@ -84,6 +84,25 @@ struct Similar: ParsableCommand {
         let output = OutputFormat(mode: json ? .json : .human)
         if json {
             print(output.render(similar.prefix(limit).map { $0.toDict() }))
+        } else if isBareInvocation(command: "similar") && isTTY() {
+            var items = Array(similar.prefix(limit)).map {
+                MultiSelectItem(label: "\($0.title) — \($0.artist)", sublabel: $0.album, selected: false)
+            }
+            let songsCopy = Array(similar.prefix(limit))
+            let action = runMultiSelectList(
+                title: "Similar to: \(song.title) — \(song.artist)",
+                items: &items,
+                actions: [
+                    (key: "p", label: "play", action: { cursor, _ in .played(cursor) }),
+                    (key: "a", label: "add", action: { cursor, selected in
+                        .addedToLibrary(selected.isEmpty ? [cursor] : selected)
+                    }),
+                    (key: "c", label: "create playlist", action: { _, selected in
+                        .createPlaylist(selected)
+                    }),
+                ]
+            )
+            try handleSongAction(action, songs: songsCopy, api: api)
         } else {
             print("Similar to: \(song.title) — \(song.artist)")
             for (i, s) in similar.prefix(limit).enumerated() {
@@ -173,6 +192,25 @@ struct Suggest: ParsableCommand {
         let output = OutputFormat(mode: json ? .json : .human)
         if json {
             print(output.render(suggestions.map { $0.toDict() }))
+        } else if isBareInvocation(command: "suggest") && isTTY() {
+            var items = suggestions.map {
+                MultiSelectItem(label: "\($0.title) — \($0.artist)", sublabel: $0.album, selected: false)
+            }
+            let songsCopy = Array(suggestions)
+            let action = runMultiSelectList(
+                title: "Suggestions",
+                items: &items,
+                actions: [
+                    (key: "p", label: "play", action: { cursor, _ in .played(cursor) }),
+                    (key: "a", label: "add", action: { cursor, selected in
+                        .addedToLibrary(selected.isEmpty ? [cursor] : selected)
+                    }),
+                    (key: "c", label: "create playlist", action: { _, selected in
+                        .createPlaylist(selected)
+                    }),
+                ]
+            )
+            try handleSongAction(action, songs: songsCopy, api: api)
         } else {
             for (i, s) in suggestions.enumerated() {
                 print("\(i + 1). \(s.title) — \(s.artist) [\(s.album)]")
@@ -254,5 +292,78 @@ struct NewReleases: ParsableCommand {
                 print("\(i + 1). \(r.title) — \(r.artist) [\(r.album)]")
             }
         }
+    }
+}
+
+func handleSongAction(_ action: MultiSelectAction, songs: [CatalogSong], api: RESTAPIBackend) throws {
+    let backend = AppleScriptBackend()
+    switch action {
+    case .played(let idx):
+        let song = songs[idx]
+        let escapedTitle = song.title.replacingOccurrences(of: "\"", with: "\\\"")
+        let escapedArtist = song.artist.replacingOccurrences(of: "\"", with: "\\\"")
+        let result = try syncRun {
+            try await backend.runMusic("""
+                set results to (every track of playlist "Library" whose name is "\(escapedTitle)" and artist is "\(escapedArtist)")
+                if (count of results) = 0 then
+                    set results to (every track of playlist "Library" whose name contains "\(escapedTitle)" and artist contains "\(escapedArtist)")
+                end if
+                if (count of results) > 0 then
+                    play item 1 of results
+                    return "OK"
+                else
+                    return "NOT_FOUND"
+                end if
+            """)
+        }
+        if result.trimmingCharacters(in: .whitespacesAndNewlines) == "NOT_FOUND" {
+            try syncRun { try await api.addToLibrary(songIDs: [song.id]) }
+            try syncRun { try await Task.sleep(nanoseconds: 4_000_000_000) }
+            _ = try syncRun {
+                try await backend.runMusic("""
+                    set results to (every track of playlist "Library" whose name contains "\(escapedTitle)" and artist contains "\(escapedArtist)")
+                    if (count of results) > 0 then play item 1 of results
+                """)
+            }
+        }
+        print("Playing: \(song.title) — \(song.artist)")
+
+    case .addedToLibrary(let indices):
+        let ids = indices.map { songs[$0].id }
+        try syncRun { try await api.addToLibrary(songIDs: ids) }
+        print("Added \(ids.count) track(s) to library.")
+
+    case .createPlaylist(let indices):
+        guard !indices.isEmpty else {
+            print("No tracks selected.")
+            return
+        }
+        let name = "New Playlist \(Int(Date().timeIntervalSince1970) % 100000)"
+        let ids = indices.map { songs[$0].id }
+        try syncRun { try await api.addToLibrary(songIDs: ids) }
+        _ = try syncRun {
+            try await backend.runMusic("make new playlist with properties {name:\"\(name)\"}")
+        }
+        try syncRun { try await Task.sleep(nanoseconds: 4_000_000_000) }
+        for idx in indices {
+            let s = songs[idx]
+            let et = s.title.replacingOccurrences(of: "\"", with: "\\\"")
+            let ea = s.artist.replacingOccurrences(of: "\"", with: "\\\"")
+            _ = try? syncRun {
+                try await backend.runMusic("""
+                    set results to (every track of playlist "Library" whose name is "\(et)" and artist is "\(ea)")
+                    if (count of results) = 0 then
+                        set results to (every track of playlist "Library" whose name contains "\(et)" and artist contains "\(ea)")
+                    end if
+                    if (count of results) > 0 then
+                        duplicate item 1 of results to playlist "\(name)"
+                    end if
+                """)
+            }
+        }
+        print("Created '\(name)' with \(indices.count) tracks.")
+
+    case .confirmed, .cancelled:
+        break
     }
 }
