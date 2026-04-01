@@ -14,24 +14,35 @@ func runVolumeMixer(
     defer { terminal.exitRawMode() }
 
     var cursor = 0
-    let barWidth = 20
+    let barWidth = 30
 
     func render() {
         var out = ANSICode.cursorHome + ANSICode.clearScreen
-        out += "\(ANSICode.bold)Volume Mixer\(ANSICode.reset)\n\n"
+
+        // Header
+        out += "\n"
+        out += "  \(ANSICode.bold)\(ANSICode.cyan)♫  Volume Mixer\(ANSICode.reset)\n"
+        out += "  \(ANSICode.dim)\(String(repeating: "─", count: 20))\(ANSICode.reset)\n\n"
 
         let maxNameLen = speakers.map(\.name.count).max() ?? 0
 
         for (i, spk) in speakers.enumerated() {
-            let highlight = i == cursor ? ANSICode.inverse : ""
-            let resetH = i == cursor ? ANSICode.reset : ""
+            let isCursor = i == cursor
+            let pointer = isCursor ? "\(ANSICode.cyan)▸\(ANSICode.reset)" : " "
+            let highlight = isCursor ? ANSICode.bold : ""
+            let resetH = isCursor ? ANSICode.reset : ""
             let padded = spk.name.padding(toLength: maxNameLen, withPad: " ", startingAt: 0)
             let filled = Int(Double(spk.volume) / 100.0 * Double(barWidth))
-            let bar = String(repeating: "█", count: filled) + String(repeating: "░", count: barWidth - filled)
-            out += " \(highlight)\(padded)  [\(bar)] \(String(format: "%3d", spk.volume))%\(resetH)\n"
+            let bar = "\(ANSICode.green)\(String(repeating: "█", count: filled))\(ANSICode.reset)\(ANSICode.dim)\(String(repeating: "░", count: barWidth - filled))\(ANSICode.reset)"
+            let volStr = String(format: "%3d%%", spk.volume)
+            out += " \(pointer) \(highlight)\(padded)\(resetH)  \(bar) \(volStr)\n"
         }
 
-        out += "\n\(ANSICode.dim)↑↓ speaker  ←→ volume (±5%)  0-9 quick-set  q quit\(ANSICode.reset)"
+        // Footer
+        out += "\n  \(ANSICode.dim)╭──────────────────────────────────────────────╮\(ANSICode.reset)\n"
+        out += "  \(ANSICode.dim)│\(ANSICode.reset) ↑↓ speaker  ←→ volume ±5  0-9 quick-set  q quit \(ANSICode.dim)│\(ANSICode.reset)\n"
+        out += "  \(ANSICode.dim)╰──────────────────────────────────────────────╯\(ANSICode.reset)\n"
+
         print(out, terminator: "")
         fflush(stdout)
     }

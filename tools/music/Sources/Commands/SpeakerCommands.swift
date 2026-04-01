@@ -44,138 +44,140 @@ struct Speaker: ParsableCommand {
 }
 
 struct SpeakerSmart: ParsableCommand {
-    static let configuration = CommandConfiguration(commandName: "", abstract: "Smart speaker control.", shouldDisplay: false)
+    static let configuration = CommandConfiguration(commandName: "smart", abstract: "Smart speaker control.", shouldDisplay: false)
     @Argument(help: "Speaker name, index, volume, or keyword (stop/only/list)") var args: [String] = []
     @Flag(name: .long, help: "Output JSON") var json = false
 
-    init() {}
-    init(args: [String], json: Bool) {
-        self._args = Argument(wrappedValue: args)
-        self._json = Flag(wrappedValue: json)
-    }
-
     func run() throws {
-        let action = SpeakerParser.parse(args)
-        let backend = AppleScriptBackend()
-
-        switch action {
-        case .interactive:
-            guard isTTY() else {
-                try SpeakerList(json: json).run()
-                return
-            }
-            try runSpeakerTUI()
-
-        case .list:
-            try SpeakerList(json: json).run()
-
-        case .add(let name):
-            let resolved = try resolveSpeakerName(name, backend: backend)
-            _ = try syncRun {
-                try await backend.runMusic("set selected of AirPlay device \"\(resolved)\" to true")
-            }
-            print("Added \(resolved).")
-
-        case .addWithVolume(let name, let volume):
-            let resolved = try resolveSpeakerName(name, backend: backend)
-            _ = try syncRun {
-                try await backend.runMusic("set selected of AirPlay device \"\(resolved)\" to true")
-            }
-            _ = try syncRun {
-                try await backend.runMusic("set sound volume of AirPlay device \"\(resolved)\" to \(volume)")
-            }
-            print("Added \(resolved) [\(volume)].")
-
-        case .remove(let name):
-            let resolved = try resolveSpeakerName(name, backend: backend)
-            _ = try syncRun {
-                try await backend.runMusic("set selected of AirPlay device \"\(resolved)\" to false")
-            }
-            print("Removed \(resolved).")
-
-        case .exclusive(let name):
-            let resolved = try resolveSpeakerName(name, backend: backend)
-            _ = try syncRun {
-                try await backend.runMusic("""
-                    set allDevices to every AirPlay device
-                    repeat with d in allDevices
-                        set selected of d to false
-                    end repeat
-                """)
-            }
-            _ = try syncRun {
-                try await backend.runMusic("set selected of AirPlay device \"\(resolved)\" to true")
-            }
-            print("Switched to \(resolved) only.")
-
-        case .indices(let idxs):
-            let cache = ResultCache()
-            for idx in idxs {
-                let speaker = try cache.lookupSpeaker(index: idx)
-                _ = try syncRun {
-                    try await backend.runMusic("set selected of AirPlay device \"\(speaker.name)\" to true")
-                }
-                print("Added \(speaker.name).")
-            }
-        }
+        try runSpeakerSmart(args: args, json: json)
     }
+}
 
-    private func runSpeakerTUI() throws {
-        let devices = try fetchDevices()
-        var items = devices.map {
-            MultiSelectItem(label: $0["name"] as! String, sublabel: "vol: \($0["volume"]!)", selected: $0["selected"] as! Bool)
+// MARK: - Shared logic (callable without ArgumentParser)
+
+func runSpeakerSmart(args: [String], json: Bool) throws {
+    let action = SpeakerParser.parse(args)
+    let backend = AppleScriptBackend()
+
+    switch action {
+    case .interactive:
+        guard isTTY() else {
+            try listSpeakers(json: json)
+            return
         }
+        try runSpeakerTUI()
 
-        let result = runMultiSelectList(title: "AirPlay Speakers", items: &items)
+    case .list:
+        try listSpeakers(json: json)
 
-        let backend = AppleScriptBackend()
-        switch result {
-        case .confirmed(let indices):
-            for (i, item) in items.enumerated() {
-                let name = item.label
-                let shouldSelect = indices.contains(i)
-                _ = try syncRun {
-                    try await backend.runMusic("set selected of AirPlay device \"\(name)\" to \(shouldSelect)")
-                }
-            }
-            let cache = ResultCache()
-            let speakerResults = items.enumerated().map { (i, item) in
-                SpeakerResult(index: i + 1, name: item.label, selected: indices.contains(i), volume: 0)
-            }
-            try? cache.writeSpeakers(speakerResults)
-            let activeNames = indices.map { items[$0].label }
-            print("Active: \(activeNames.joined(separator: ", "))")
-        case .cancelled:
-            break
-        default:
-            break
+    case .add(let name):
+        let resolved = try resolveSpeakerName(name, backend: backend)
+        _ = try syncRun {
+            try await backend.runMusic("set selected of AirPlay device \"\(resolved)\" to true")
         }
-    }
+        print("Added \(resolved).")
 
-    private func fetchDevices() throws -> [[String: Any]] {
-        let backend = AppleScriptBackend()
-        let result = try syncRun {
+    case .addWithVolume(let name, let volume):
+        let resolved = try resolveSpeakerName(name, backend: backend)
+        _ = try syncRun {
+            try await backend.runMusic("set selected of AirPlay device \"\(resolved)\" to true")
+        }
+        _ = try syncRun {
+            try await backend.runMusic("set sound volume of AirPlay device \"\(resolved)\" to \(volume)")
+        }
+        print("Added \(resolved) [\(volume)].")
+
+    case .remove(let name):
+        let resolved = try resolveSpeakerName(name, backend: backend)
+        _ = try syncRun {
+            try await backend.runMusic("set selected of AirPlay device \"\(resolved)\" to false")
+        }
+        print("Removed \(resolved).")
+
+    case .exclusive(let name):
+        let resolved = try resolveSpeakerName(name, backend: backend)
+        _ = try syncRun {
             try await backend.runMusic("""
-                set deviceList to every AirPlay device
-                set output to ""
-                repeat with d in deviceList
-                    if output is not "" then set output to output & linefeed
-                    set output to output & name of d & "|" & selected of d & "|" & sound volume of d & "|" & kind of d
+                set allDevices to every AirPlay device
+                repeat with d in allDevices
+                    set selected of d to false
                 end repeat
-                return output
             """)
         }
-        let lines = result.trimmingCharacters(in: .whitespacesAndNewlines).split(separator: "\n")
-        return lines.compactMap { line in
-            let parts = line.split(separator: "|", maxSplits: 3).map(String.init)
-            guard parts.count >= 4 else { return nil }
-            return [
-                "name": parts[0],
-                "selected": parts[1] == "true",
-                "volume": Int(parts[2]) ?? 0,
-                "kind": parts[3]
-            ]
+        _ = try syncRun {
+            try await backend.runMusic("set selected of AirPlay device \"\(resolved)\" to true")
         }
+        print("Switched to \(resolved) only.")
+
+    case .indices(let idxs):
+        let cache = ResultCache()
+        for idx in idxs {
+            let speaker = try cache.lookupSpeaker(index: idx)
+            _ = try syncRun {
+                try await backend.runMusic("set selected of AirPlay device \"\(speaker.name)\" to true")
+            }
+            print("Added \(speaker.name).")
+        }
+    }
+}
+
+private func runSpeakerTUI() throws {
+    let devices = try fetchSpeakerDevices()
+    var items = devices.map {
+        MultiSelectItem(label: $0["name"] as! String, sublabel: "vol: \($0["volume"]!)", selected: $0["selected"] as! Bool)
+    }
+
+    let backend = AppleScriptBackend()
+    let result = runMultiSelectList(title: "AirPlay Speakers", items: &items, onToggle: { idx, selected in
+        let name = items[idx].label
+        _ = try? syncRun {
+            try await backend.runMusic("set selected of AirPlay device \"\(name)\" to \(selected)")
+        }
+    })
+
+    switch result {
+    case .confirmed(let indices):
+        let cache = ResultCache()
+        let speakerResults = items.enumerated().map { (i, item) in
+            SpeakerResult(index: i + 1, name: item.label, selected: indices.contains(i), volume: 0)
+        }
+        try? cache.writeSpeakers(speakerResults)
+        let activeNames = indices.map { items[$0].label }
+        print("Active: \(activeNames.joined(separator: ", "))")
+    case .cancelled:
+        let cache = ResultCache()
+        let speakerResults = items.enumerated().map { (i, item) in
+            SpeakerResult(index: i + 1, name: item.label, selected: item.selected, volume: 0)
+        }
+        try? cache.writeSpeakers(speakerResults)
+    default:
+        break
+    }
+}
+
+private func fetchSpeakerDevices() throws -> [[String: Any]] {
+    let backend = AppleScriptBackend()
+    let result = try syncRun {
+        try await backend.runMusic("""
+            set deviceList to every AirPlay device
+            set output to ""
+            repeat with d in deviceList
+                if output is not "" then set output to output & linefeed
+                set output to output & name of d & "|" & selected of d & "|" & sound volume of d & "|" & kind of d
+            end repeat
+            return output
+        """)
+    }
+    let lines = result.trimmingCharacters(in: .whitespacesAndNewlines).split(separator: "\n")
+    return lines.compactMap { line in
+        let parts = line.split(separator: "|", maxSplits: 3).map(String.init)
+        guard parts.count >= 4 else { return nil }
+        return [
+            "name": parts[0],
+            "selected": parts[1] == "true",
+            "volume": Int(parts[2]) ?? 0,
+            "kind": parts[3]
+        ]
     }
 }
 
@@ -196,60 +198,60 @@ func resolveSpeakerName(_ input: String, backend: AppleScriptBackend) throws -> 
     return input
 }
 
+func listSpeakers(json: Bool) throws {
+    let backend = AppleScriptBackend()
+    let result = try syncRun {
+        try await backend.runMusic("""
+            set deviceList to every AirPlay device
+            set output to ""
+            repeat with d in deviceList
+                if output is not "" then set output to output & linefeed
+                set output to output & name of d & "|" & selected of d & "|" & sound volume of d & "|" & kind of d
+            end repeat
+            return output
+        """)
+    }
+    let lines = result.trimmingCharacters(in: .whitespacesAndNewlines).split(separator: "\n")
+    let devices: [[String: Any]] = lines.compactMap { line in
+        let parts = line.split(separator: "|", maxSplits: 3).map(String.init)
+        guard parts.count >= 4 else { return nil }
+        return [
+            "name": parts[0],
+            "selected": parts[1] == "true",
+            "volume": Int(parts[2]) ?? 0,
+            "kind": parts[3]
+        ]
+    }
+
+    let cache = ResultCache()
+    let speakerResults = devices.enumerated().map { (i, d) in
+        SpeakerResult(
+            index: i + 1,
+            name: d["name"] as! String,
+            selected: d["selected"] as! Bool,
+            volume: d["volume"] as! Int
+        )
+    }
+    try? cache.writeSpeakers(speakerResults)
+
+    if json {
+        let output = OutputFormat(mode: .json)
+        print(output.render(["devices": devices]))
+    } else {
+        for (i, d) in devices.enumerated() {
+            let sel = (d["selected"] as? Bool == true) ? "▶" : " "
+            print("\(sel) \(i + 1). \(d["name"]!) [\(d["volume"]!)]")
+        }
+    }
+}
+
 // MARK: - Hidden subcommands (backwards compatibility)
 
 struct SpeakerList: ParsableCommand {
     static let configuration = CommandConfiguration(commandName: "list", abstract: "List AirPlay devices.", shouldDisplay: false)
     @Flag(name: .long, help: "Output JSON") var json = false
-
-    init() {}
-    init(json: Bool) { self._json = Flag(wrappedValue: json) }
-
     func run() throws {
-        let backend = AppleScriptBackend()
-        let result = try syncRun {
-            try await backend.runMusic("""
-                set deviceList to every AirPlay device
-                set output to ""
-                repeat with d in deviceList
-                    if output is not "" then set output to output & linefeed
-                    set output to output & name of d & "|" & selected of d & "|" & sound volume of d & "|" & kind of d
-                end repeat
-                return output
-            """)
-        }
-        let lines = result.trimmingCharacters(in: .whitespacesAndNewlines).split(separator: "\n")
-        let devices: [[String: Any]] = lines.compactMap { line in
-            let parts = line.split(separator: "|", maxSplits: 3).map(String.init)
-            guard parts.count >= 4 else { return nil }
-            return [
-                "name": parts[0],
-                "selected": parts[1] == "true",
-                "volume": Int(parts[2]) ?? 0,
-                "kind": parts[3]
-            ]
-        }
-
-        let cache = ResultCache()
-        let speakerResults = devices.enumerated().map { (i, d) in
-            SpeakerResult(
-                index: i + 1,
-                name: d["name"] as! String,
-                selected: d["selected"] as! Bool,
-                volume: d["volume"] as! Int
-            )
-        }
-        try? cache.writeSpeakers(speakerResults)
-
-        if json {
-            let output = OutputFormat(mode: .json)
-            print(output.render(["devices": devices]))
-        } else {
-            for (i, d) in devices.enumerated() {
-                let sel = (d["selected"] as? Bool == true) ? "▶" : " "
-                print("\(sel) \(i + 1). \(d["name"]!) [\(d["volume"]!)]")
-            }
-        }
+        try listSpeakers(json: json)
     }
 }
 
@@ -257,7 +259,7 @@ struct SpeakerSet: ParsableCommand {
     static let configuration = CommandConfiguration(commandName: "set", abstract: "Switch to a single speaker.", shouldDisplay: false)
     @Argument(help: "Speaker name") var name: String
     func run() throws {
-        try SpeakerSmart(args: [name, "only"], json: false).run()
+        try runSpeakerSmart(args: [name, "only"], json: false)
     }
 }
 
@@ -265,7 +267,7 @@ struct SpeakerAdd: ParsableCommand {
     static let configuration = CommandConfiguration(commandName: "add", abstract: "Add speaker to group.", shouldDisplay: false)
     @Argument(help: "Speaker name") var name: String
     func run() throws {
-        try SpeakerSmart(args: [name], json: false).run()
+        try runSpeakerSmart(args: [name], json: false)
     }
 }
 
@@ -273,7 +275,7 @@ struct SpeakerRemove: ParsableCommand {
     static let configuration = CommandConfiguration(commandName: "remove", abstract: "Remove speaker from group.", shouldDisplay: false)
     @Argument(help: "Speaker name") var name: String
     func run() throws {
-        try SpeakerSmart(args: [name, "stop"], json: false).run()
+        try runSpeakerSmart(args: [name, "stop"], json: false)
     }
 }
 
@@ -281,6 +283,6 @@ struct SpeakerStop: ParsableCommand {
     static let configuration = CommandConfiguration(commandName: "stop", abstract: "Remove speaker (alias).", shouldDisplay: false)
     @Argument(help: "Speaker name") var name: String
     func run() throws {
-        try SpeakerSmart(args: [name, "stop"], json: false).run()
+        try runSpeakerSmart(args: [name, "stop"], json: false)
     }
 }

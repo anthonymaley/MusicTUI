@@ -94,6 +94,9 @@ struct Similar: ParsableCommand {
                 items: &items,
                 actions: [
                     (key: "p", label: "play", action: { cursor, _ in .played(cursor) }),
+                    (key: "s", label: "shuffle", action: { cursor, selected in
+                        .shuffled(selected.isEmpty ? [cursor] : selected)
+                    }),
                     (key: "a", label: "add", action: { cursor, selected in
                         .addedToLibrary(selected.isEmpty ? [cursor] : selected)
                     }),
@@ -202,6 +205,9 @@ struct Suggest: ParsableCommand {
                 items: &items,
                 actions: [
                     (key: "p", label: "play", action: { cursor, _ in .played(cursor) }),
+                    (key: "s", label: "shuffle", action: { cursor, selected in
+                        .shuffled(selected.isEmpty ? [cursor] : selected)
+                    }),
                     (key: "a", label: "add", action: { cursor, selected in
                         .addedToLibrary(selected.isEmpty ? [cursor] : selected)
                     }),
@@ -362,6 +368,38 @@ func handleSongAction(_ action: MultiSelectAction, songs: [CatalogSong], api: RE
             }
         }
         print("Created '\(name)' with \(indices.count) tracks.")
+
+    case .shuffled(let indices):
+        guard !indices.isEmpty else {
+            print("No tracks selected.")
+            return
+        }
+        let name = "__temp__\(Int(Date().timeIntervalSince1970))"
+        let ids = indices.map { songs[$0].id }
+        try syncRun { try await api.addToLibrary(songIDs: ids) }
+        _ = try syncRun {
+            try await backend.runMusic("make new playlist with properties {name:\"\(name)\"}")
+        }
+        try syncRun { try await Task.sleep(nanoseconds: 4_000_000_000) }
+        for idx in indices {
+            let s = songs[idx]
+            let et = s.title.replacingOccurrences(of: "\"", with: "\\\"")
+            let ea = s.artist.replacingOccurrences(of: "\"", with: "\\\"")
+            _ = try? syncRun {
+                try await backend.runMusic("""
+                    set results to (every track of playlist "Library" whose name is "\(et)" and artist is "\(ea)")
+                    if (count of results) = 0 then
+                        set results to (every track of playlist "Library" whose name contains "\(et)" and artist contains "\(ea)")
+                    end if
+                    if (count of results) > 0 then
+                        duplicate item 1 of results to playlist "\(name)"
+                    end if
+                """)
+            }
+        }
+        _ = try syncRun { try await backend.runMusic("set shuffle enabled to true") }
+        _ = try syncRun { try await backend.runMusic("play playlist \"\(name)\"") }
+        print("Shuffling \(indices.count) tracks. Run `music playlist cleanup` when done.")
 
     case .confirmed, .cancelled:
         break

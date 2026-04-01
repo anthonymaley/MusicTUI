@@ -22,11 +22,11 @@ struct Playlist: ParsableCommand {
 }
 
 struct PlaylistBrowse: ParsableCommand {
-    static let configuration = CommandConfiguration(commandName: "", abstract: "Browse playlists interactively.", shouldDisplay: false)
+    static let configuration = CommandConfiguration(commandName: "browse", abstract: "Browse playlists interactively.")
 
     func run() throws {
         guard isTTY() else {
-            try PlaylistList().run()
+            try listPlaylists(json: false)
             return
         }
 
@@ -45,7 +45,7 @@ struct PlaylistBrowse: ParsableCommand {
 
         if let selected = runListPicker(title: "Playlists", items: names) {
             let playlistName = names[selected]
-            try PlaylistTracks(name: playlistName, json: false).run()
+            try showPlaylistTracks(name: playlistName, json: false)
         }
     }
 }
@@ -53,43 +53,9 @@ struct PlaylistBrowse: ParsableCommand {
 struct PlaylistList: ParsableCommand {
     static let configuration = CommandConfiguration(commandName: "list", abstract: "List playlists.")
     @Flag(name: .long, help: "Output JSON") var json = false
+
     func run() throws {
-        let auth = AuthManager()
-        if let devToken = try? auth.requireDeveloperToken(), let userToken = auth.userToken() {
-            let api = RESTAPIBackend(developerToken: devToken, userToken: userToken, storefront: auth.storefront())
-            let (data, status) = try syncRun { try await api.get("/v1/me/library/playlists?limit=100") }
-            if (200...299).contains(status) {
-                let parsed = try JSONSerialization.jsonObject(with: data) as? [String: Any]
-                let items = parsed?["data"] as? [[String: Any]] ?? []
-                let playlists: [[String: Any]] = items.map { item in
-                    let attrs = item["attributes"] as? [String: Any] ?? [:]
-                    return ["id": item["id"] as? String ?? "", "name": attrs["name"] as? String ?? ""]
-                }
-                if json {
-                    let output = OutputFormat(mode: .json)
-                    print(output.render(["playlists": playlists]))
-                } else {
-                    for pl in playlists { print(pl["name"] as? String ?? "") }
-                }
-                return
-            }
-        }
-
-        // Fallback to AppleScript
-        let backend = AppleScriptBackend()
-        let result = try syncRun {
-            try await backend.runMusic("get name of every playlist")
-        }
-        let names = result.trimmingCharacters(in: .whitespacesAndNewlines)
-            .split(separator: ",")
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-
-        if json {
-            let output = OutputFormat(mode: .json)
-            print(output.render(["playlists": names.map { ["name": $0] }]))
-        } else {
-            for name in names { print(name) }
-        }
+        try listPlaylists(json: json)
     }
 }
 
@@ -97,83 +63,124 @@ struct PlaylistTracks: ParsableCommand {
     static let configuration = CommandConfiguration(commandName: "tracks", abstract: "List tracks in a playlist.")
     @Argument(help: "Playlist name") var name: String
     @Flag(name: .long, help: "Output JSON") var json = false
-    init() {}
-    init(name: String, json: Bool) {
-        self._name = Argument(wrappedValue: name)
-        self._json = Flag(wrappedValue: json)
-    }
+
     func run() throws {
-        let auth = AuthManager()
-        if let devToken = try? auth.requireDeveloperToken(), let userToken = auth.userToken() {
-            let api = RESTAPIBackend(developerToken: devToken, userToken: userToken, storefront: auth.storefront())
-            let (listData, listStatus) = try syncRun { try await api.get("/v1/me/library/playlists?limit=100") }
-            if (200...299).contains(listStatus) {
-                let parsed = try JSONSerialization.jsonObject(with: listData) as? [String: Any]
-                let items = parsed?["data"] as? [[String: Any]] ?? []
-                if let match = items.first(where: {
-                    let attrs = $0["attributes"] as? [String: Any] ?? [:]
-                    return (attrs["name"] as? String ?? "") == name
-                }), let plId = match["id"] as? String {
-                    let (trackData, trackStatus) = try syncRun {
-                        try await api.get("/v1/me/library/playlists/\(plId)/tracks")
+        try showPlaylistTracks(name: name, json: json)
+    }
+}
+
+// MARK: - Shared logic (callable without ArgumentParser)
+
+func listPlaylists(json: Bool) throws {
+    let auth = AuthManager()
+    if let devToken = try? auth.requireDeveloperToken(), let userToken = auth.userToken() {
+        let api = RESTAPIBackend(developerToken: devToken, userToken: userToken, storefront: auth.storefront())
+        let (data, status) = try syncRun { try await api.get("/v1/me/library/playlists?limit=100") }
+        if (200...299).contains(status) {
+            let parsed = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+            let items = parsed?["data"] as? [[String: Any]] ?? []
+            let playlists: [[String: Any]] = items.map { item in
+                let attrs = item["attributes"] as? [String: Any] ?? [:]
+                return ["id": item["id"] as? String ?? "", "name": attrs["name"] as? String ?? ""]
+            }
+            if json {
+                let output = OutputFormat(mode: .json)
+                print(output.render(["playlists": playlists]))
+            } else {
+                for pl in playlists { print(pl["name"] as? String ?? "") }
+            }
+            return
+        }
+    }
+
+    // Fallback to AppleScript
+    let backend = AppleScriptBackend()
+    let result = try syncRun {
+        try await backend.runMusic("get name of every playlist")
+    }
+    let names = result.trimmingCharacters(in: .whitespacesAndNewlines)
+        .split(separator: ",")
+        .map { $0.trimmingCharacters(in: .whitespaces) }
+
+    if json {
+        let output = OutputFormat(mode: .json)
+        print(output.render(["playlists": names.map { ["name": $0] }]))
+    } else {
+        for name in names { print(name) }
+    }
+}
+
+func showPlaylistTracks(name: String, json: Bool) throws {
+    let auth = AuthManager()
+    if let devToken = try? auth.requireDeveloperToken(), let userToken = auth.userToken() {
+        let api = RESTAPIBackend(developerToken: devToken, userToken: userToken, storefront: auth.storefront())
+        let (listData, listStatus) = try syncRun { try await api.get("/v1/me/library/playlists?limit=100") }
+        if (200...299).contains(listStatus) {
+            let parsed = try JSONSerialization.jsonObject(with: listData) as? [String: Any]
+            let items = parsed?["data"] as? [[String: Any]] ?? []
+            if let match = items.first(where: {
+                let attrs = $0["attributes"] as? [String: Any] ?? [:]
+                return (attrs["name"] as? String ?? "") == name
+            }), let plId = match["id"] as? String {
+                let (trackData, trackStatus) = try syncRun {
+                    try await api.get("/v1/me/library/playlists/\(plId)/tracks")
+                }
+                if (200...299).contains(trackStatus) {
+                    let trackParsed = try JSONSerialization.jsonObject(with: trackData) as? [String: Any]
+                    let trackItems = trackParsed?["data"] as? [[String: Any]] ?? []
+                    let tracks: [[String: Any]] = trackItems.enumerated().map { (i, item) in
+                        let attrs = item["attributes"] as? [String: Any] ?? [:]
+                        return [
+                            "number": i + 1,
+                            "track": attrs["name"] as? String ?? "Unknown",
+                            "artist": attrs["artistName"] as? String ?? "Unknown",
+                            "album": attrs["albumName"] as? String ?? ""
+                        ]
                     }
-                    if (200...299).contains(trackStatus) {
-                        let trackParsed = try JSONSerialization.jsonObject(with: trackData) as? [String: Any]
-                        let trackItems = trackParsed?["data"] as? [[String: Any]] ?? []
-                        let tracks: [[String: Any]] = trackItems.enumerated().map { (i, item) in
-                            let attrs = item["attributes"] as? [String: Any] ?? [:]
-                            return [
-                                "number": i + 1,
-                                "track": attrs["name"] as? String ?? "Unknown",
-                                "artist": attrs["artistName"] as? String ?? "Unknown",
-                                "album": attrs["albumName"] as? String ?? ""
-                            ]
+                    if json {
+                        let output = OutputFormat(mode: .json)
+                        print(output.render(["playlist": name, "tracks": tracks]))
+                    } else {
+                        for t in tracks {
+                            print("\(t["number"]!). \(t["track"]!) — \(t["artist"]!) [\(t["album"]!)]")
                         }
-                        if json {
-                            let output = OutputFormat(mode: .json)
-                            print(output.render(["playlist": name, "tracks": tracks]))
-                        } else {
-                            for t in tracks {
-                                print("\(t["number"]!). \(t["track"]!) — \(t["artist"]!) [\(t["album"]!)]")
-                            }
-                        }
-                        return
                     }
+                    return
                 }
             }
         }
+    }
 
-        // Fallback to AppleScript
-        let backend = AppleScriptBackend()
-        let result = try syncRun {
-            try await backend.runMusic("""
-                set trackList to every track of playlist "\(name)"
-                set output to ""
-                set i to 1
-                repeat with t in trackList
-                    if output is not "" then set output to output & linefeed
-                    set output to output & i & "|" & name of t & "|" & artist of t & "|" & album of t
-                    set i to i + 1
-                end repeat
-                return output
-            """)
+    // Fallback to AppleScript
+    let backend = AppleScriptBackend()
+    let result = try syncRun {
+        try await backend.runMusic("""
+            set trackList to every track of playlist "\(name)"
+            set output to ""
+            set i to 1
+            repeat with t in trackList
+                if output is not "" then set output to output & linefeed
+                set output to output & i & "|" & name of t & "|" & artist of t & "|" & album of t
+                set i to i + 1
+            end repeat
+            return output
+        """)
+    }
+    let lines = result.trimmingCharacters(in: .whitespacesAndNewlines).split(separator: "\n")
+
+    if json {
+        let tracks: [[String: Any]] = lines.compactMap { line in
+            let parts = line.split(separator: "|", maxSplits: 3).map(String.init)
+            guard parts.count >= 4 else { return nil }
+            return ["number": Int(parts[0]) ?? 0, "track": parts[1], "artist": parts[2], "album": parts[3]]
         }
-        let lines = result.trimmingCharacters(in: .whitespacesAndNewlines).split(separator: "\n")
-
-        if json {
-            let tracks: [[String: Any]] = lines.compactMap { line in
-                let parts = line.split(separator: "|", maxSplits: 3).map(String.init)
-                guard parts.count >= 4 else { return nil }
-                return ["number": Int(parts[0]) ?? 0, "track": parts[1], "artist": parts[2], "album": parts[3]]
-            }
-            let output = OutputFormat(mode: .json)
-            print(output.render(["playlist": name, "tracks": tracks]))
-        } else {
-            for line in lines {
-                let parts = line.split(separator: "|", maxSplits: 3).map(String.init)
-                if parts.count >= 4 {
-                    print("\(parts[0]). \(parts[1]) — \(parts[2]) [\(parts[3])]")
-                }
+        let output = OutputFormat(mode: .json)
+        print(output.render(["playlist": name, "tracks": tracks]))
+    } else {
+        for line in lines {
+            let parts = line.split(separator: "|", maxSplits: 3).map(String.init)
+            if parts.count >= 4 {
+                print("\(parts[0]). \(parts[1]) — \(parts[2]) [\(parts[3])]")
             }
         }
     }

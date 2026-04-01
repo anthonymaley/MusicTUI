@@ -42,6 +42,7 @@ enum KeyPress {
             case 0x1B: return .escape
             case 0x71: return .char("q")
             case 0x70: return .char("p")
+            case 0x73: return .char("s")
             case 0x61: return .char("a")
             case 0x63: return .char("c")
             default:
