@@ -2,35 +2,37 @@
 
 ## Current Session
 
-- [x] Built music CLI — unified Swift binary (18 subcommands, 1,818 lines)
-- [x] All 13 tasks from the implementation plan complete (Phases 1-5)
-- [x] Fixed MusicKit JS auth — file:// origin rejected, switched to localhost HTTP server
-- [x] User token obtained and verified — full auth working
-- [x] Version bumped to 1.0.0 across plugin.json and marketplace.json
-- [x] Added .gitignore for build artifacts
-- [x] Added new slash commands: /music:search, /music:add, /music:similar, /music:playlist
-- [x] README rewritten with music CLI docs, architecture diagram, catalog features
-- [x] Playbook updated with full architecture, auth tiers, config locations
-- [x] Removed old `tools/music-catalog/` prototype
+- [x] Renamed `ceol` → `music` everywhere (CLI binary, tool dir, skill, commands, scripts, config paths, docs, vault)
+- [x] Updated statusline.sh to use `music now --json` with AppleScript fallback
+- [x] Added per-speaker stop: `/music:stop kitchen`, `/music:speaker stop kitchen`, `music speaker stop <name>`
+- [x] Rewrote README with clear `/music:` prefix, full command tables, accurate architecture
+- [x] Created `docs/guide.md` — complete plugin guide (naming, architecture, all commands, auth, gotchas)
+- [x] Created `docs/naming.md` — naming decision record (one name: `music` for everything public)
+- [x] Updated vault files (`~/eolas/vault/apple-music/`) to v1.0.0 with music naming
+- [x] Cleaned up repo: removed `docs/superpowers/`, fixed AGENTS.md, gitignored .DS_Store
+- [x] Updated memory: `ceol` naming feedback → `music` naming feedback
+- [x] Old `ceol` symlink removed, `music` binary installed at `~/.local/bin/music`
 
 ## What's Next
 
-- Consider updating `scripts/statusline.sh` to use `music now --json` instead of raw osascript
-- Consider per-speaker stop support (`music speaker stop kitchen`)
 - Publish v1.0.0 to Claude Code marketplace
-- Test all new slash commands end-to-end (/music:search, /music:add, /music:similar, /music:playlist)
+- End-to-end testing of all slash commands (especially /music:search, /music:add, /music:similar, /music:playlist)
+- Consider `np` → `now` and `vol` → `volume` command renames (per naming doc recommendation)
+- Consider adding CLI aliases for short forms (`np`, `vol`) alongside primary names (`now`, `volume`)
 
 ## Key Context
 
-- CLI binary name is `music` (Irish for music), installed at `~/.local/bin/music`
+- CLI binary is `music`, installed at `~/.local/bin/music`
 - Config lives at `~/.config/music/` (config.json, AuthKey.p8, user-token)
 - Auth page served via Python HTTP server on localhost:8537 (MusicKit JS rejects file:// origins)
 - User has Apple Developer account: Team ID `8NS66RKB45`, Key ID `W5H3NYJ999`
 - All slash commands have osascript fallback if music binary not installed
 - Skill frontmatter name is `music`
 - Version is 1.0.0 everywhere (plugin.json, marketplace.json x2, music CLI)
+- Naming decision: one public name `music` — display name `Apple Music for Claude Code`
+- `ceol` is retired as a public name; only appears in historical session logs and naming doc
 
 ## Backlog
 
-- Consider enhancing `/music:stop` to support per-speaker stop
-- Consider adding per-speaker stop to the CLI (`music speaker stop kitchen`)
+- Consider `/music:now` as primary (rename from `/music:np`), keep `np` as alias
+- Consider `/music:volume` as primary (rename from `/music:vol`), keep `vol` as alias
