@@ -2,6 +2,8 @@
 # Apple Music status line for Claude Code
 # Shows: state, track, artist, active speakers, volume
 #
+# Uses music CLI (--json) when available, falls back to AppleScript.
+#
 # Setup: Add to ~/.claude/settings.json:
 #   "statusLine": {
 #     "type": "command",
@@ -10,7 +12,27 @@
 
 cat > /dev/null  # consume stdin (Claude Code session JSON)
 
-osascript -e '
+MUSIC_CLI="${MUSIC_CLI:-music}"
+
+if command -v "$MUSIC_CLI" &>/dev/null; then
+    JSON=$($MUSIC_CLI now --json 2>/dev/null) || exit 0
+    STATE=$(echo "$JSON" | grep -o '"state":"[^"]*"' | cut -d'"' -f4)
+    [ "$STATE" = "stopped" ] && exit 0
+
+    TRACK=$(echo "$JSON" | grep -o '"track":"[^"]*"' | cut -d'"' -f4)
+    ARTIST=$(echo "$JSON" | grep -o '"artist":"[^"]*"' | cut -d'"' -f4)
+    SPEAKERS=$(echo "$JSON" | grep -o '"speakers":\[[^]]*\]' | grep -o '"name":"[^"]*"' | cut -d'"' -f4 | paste -sd', ' -)
+    VOLUMES=$(echo "$JSON" | grep -o '"speakers":\[[^]]*\]' | grep -o '"volume":[0-9]*' | cut -d: -f2 | paste -sd', ' -)
+
+    [ "$STATE" = "playing" ] && ICON="▶" || ICON="⏸"
+
+    if [ -n "$SPEAKERS" ]; then
+        echo "$ICON $TRACK — $ARTIST  ·  $SPEAKERS [$VOLUMES]"
+    else
+        echo "$ICON $TRACK — $ARTIST"
+    fi
+else
+    osascript -e '
 tell application "Music"
     set state to player state
     if state is stopped then return ""
@@ -41,3 +63,4 @@ tell application "Music"
         return icon & t & "  ·  " & spk & " [" & vol & "]"
     end if
 end tell' 2>/dev/null
+fi

@@ -1,9 +1,9 @@
 import ArgumentParser
 
 @main
-struct Ceol: ParsableCommand {
+struct Music: ParsableCommand {
     static let configuration = CommandConfiguration(
-        commandName: "ceol",
+        commandName: "music",
         abstract: "Control Apple Music from the terminal.",
         version: "1.0.0",
         subcommands: [

@@ -4,7 +4,7 @@ import Foundation
 struct Speaker: ParsableCommand {
     static let configuration = CommandConfiguration(
         abstract: "Manage AirPlay speakers.",
-        subcommands: [SpeakerList.self, SpeakerSet.self, SpeakerAdd.self, SpeakerRemove.self],
+        subcommands: [SpeakerList.self, SpeakerSet.self, SpeakerAdd.self, SpeakerRemove.self, SpeakerStop.self],
         defaultSubcommand: SpeakerList.self
     )
 }
@@ -90,5 +90,17 @@ struct SpeakerRemove: ParsableCommand {
             try await backend.runMusic("set selected of AirPlay device \"\(name)\" to false")
         }
         print("Removed \(name).")
+    }
+}
+
+struct SpeakerStop: ParsableCommand {
+    static let configuration = CommandConfiguration(commandName: "stop", abstract: "Remove a speaker from the group (alias for remove).")
+    @Argument(help: "Speaker name") var name: String
+    func run() throws {
+        let backend = AppleScriptBackend()
+        _ = try syncRun {
+            try await backend.runMusic("set selected of AirPlay device \"\(name)\" to false")
+        }
+        print("Stopped \(name).")
     }
 }

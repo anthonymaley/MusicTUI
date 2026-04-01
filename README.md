@@ -9,148 +9,106 @@
                          for Claude Code
 ```
 
-Control Apple Music, AirPlay speakers, and AirPods — right from your terminal. Just say what you want.
+Control Apple Music, AirPlay speakers, and AirPods — right from your terminal.
 
-```
-  ┌──────────────────────────────────────────────────────────────┐
-  │                                                              │
-  │   > play radiohead kid a                                     │
-  │                                                              │
-  │   Playing Kid A from the top — Everything In Its Right       │
-  │   Place. Shuffle's off so it plays in album order.           │
-  │                                                              │
-  │   > add living room speaker                                  │
-  │                                                              │
-  │   Living Room added — playing on Kitchen and Living Room.    │
-  │                                                              │
-  │   > search Bohemian Rhapsody                                 │
-  │                                                              │
-  │   1. Bohemian Rhapsody — Queen [Greatest Hits]               │
-  │   2. Bohemian Rhapsody — Queen [A Night at the Opera]        │
-  │                                                              │
-  └──────────────────────────────────────────────────────────────┘
-```
+All commands start with **`/music:`** — type `/music:` and tab to discover them.
 
 ## Install
 
 ```
-/plugin marketplace add anthonymaley/music
-/plugin install music
-/reload-plugins
+/install anthonymaley/music
 ```
 
-To update:
+## Commands
+
+Every command runs instantly — no AI reasoning, no chat clutter.
+
+### Playback
+
+| Command | What it does |
+|---------|-------------|
+| `/music:play` | Resume playback |
+| `/music:play Working Vibes` | Play a playlist (shuffled) |
+| `/music:play Radiohead` | Search and play an artist |
+| `/music:play kid a` | Search and play an album or song |
+| `/music:play Fouk kitchen 60%` | Play on a specific speaker at a volume |
+| `/music:pause` | Pause |
+| `/music:skip` | Next track |
+| `/music:back` | Previous track |
+| `/music:stop` | Stop playback |
+| `/music:stop kitchen` | Remove kitchen from the speaker group |
+| `/music:np` | Show what's currently playing |
+| `/music:shuffle` | Toggle shuffle on/off |
+
+### Volume
+
+| Command | What it does |
+|---------|-------------|
+| `/music:vol 60` | Set all active speakers to 60 |
+| `/music:vol up` | Volume +10 |
+| `/music:vol down` | Volume -10 |
+| `/music:vol kitchen 80` | Set a specific speaker to 80 |
+
+### Speakers
+
+| Command | What it does |
+|---------|-------------|
+| `/music:speaker` | List all AirPlay devices |
+| `/music:speaker list` | List all AirPlay devices |
+| `/music:speaker kitchen` | Switch to kitchen (deselects others) |
+| `/music:speaker only kitchen` | Same — switch to kitchen only |
+| `/music:speaker airpods` | Switch to AirPods |
+| `/music:speaker add bedroom` | Add bedroom to the current group |
+| `/music:speaker remove kitchen` | Remove kitchen from the group |
+| `/music:speaker stop kitchen` | Same — remove kitchen from the group |
+| `/music:speaker remove kitchen add bedroom` | Chain actions in one command |
+
+### Catalog & Library (requires music CLI)
+
+| Command | What it does |
+|---------|-------------|
+| `/music:search Bohemian Rhapsody` | Search Apple Music catalog (100M+ tracks) |
+| `/music:search Fouk` | Search by artist |
+| `/music:add Get It Done Fouk` | Add a track to your library |
+| `/music:similar` | Find tracks similar to what's playing |
+
+### Playlists (requires music CLI)
+
+| Command | What it does |
+|---------|-------------|
+| `/music:playlist list` | List all your playlists |
+| `/music:playlist tracks Working Vibes` | Show tracks in a playlist |
+| `/music:playlist create Friday Mix` | Create an empty playlist |
+| `/music:playlist delete Old Playlist` | Delete a playlist |
+| `/music:playlist add "Playlist" "Song" "Artist"` | Add a track to a playlist |
+
+## Natural Language
+
+For anything more complex, just talk to Claude. No commands to memorize.
 
 ```
-/plugin update music
+> play some Daft Punk on the kitchen speaker
+> add the living room to the group and turn it down to 40
+> play my top 25 most played and list the tracks
+> find me something like what's playing and make a playlist
+> what's new from Radiohead?
+> make me a mix from Fouk and Floating Points
 ```
 
-### Ceol CLI (optional, unlocks catalog features)
+## Status Line
 
-```bash
-cd tools/ceol && scripts/install.sh
-```
-
-This builds the `ceol` Swift CLI and symlinks it to `~/.local/bin/ceol`. Without it, all playback/speaker/volume commands still work via raw AppleScript. With it, you also get catalog search, library management, playlists via API, and music discovery.
-
-To unlock catalog and library features, set up Apple Music API auth:
-
-```bash
-ceol auth setup     # guided setup: key ID, team ID, .p8 key
-ceol auth           # opens browser to get user token
-```
-
-## What you can do
+See what's playing at the bottom of Claude Code — always visible, no token cost.
 
 ```
-  ╔══════════════════╦═══════════════════════════════════════════╗
-  ║  Playback        ║  play, pause, skip, stop, shuffle,       ║
-  ║                  ║  repeat, resume                          ║
-  ╠══════════════════╬═══════════════════════════════════════════╣
-  ║  Playlists       ║  list all, play by name, browse tracks,  ║
-  ║                  ║  create, delete, add/remove tracks       ║
-  ╠══════════════════╬═══════════════════════════════════════════╣
-  ║  Catalog Search  ║  search 100M+ tracks in Apple Music      ║
-  ║                  ║  catalog (requires ceol CLI)              ║
-  ╠══════════════════╬═══════════════════════════════════════════╣
-  ║  Library         ║  add catalog tracks to your library       ║
-  ║                  ║  (requires ceol CLI + auth)               ║
-  ╠══════════════════╬═══════════════════════════════════════════╣
-  ║  AirPlay         ║  route to any speaker, multi-room        ║
-  ║                  ║  groups, per-speaker volume               ║
-  ╠══════════════════╬═══════════════════════════════════════════╣
-  ║  AirPods         ║  switch between speakers and headphones  ║
-  ╠══════════════════╬═══════════════════════════════════════════╣
-  ║  Discovery       ║  similar tracks, suggestions, new        ║
-  ║                  ║  releases, artist mixes (requires ceol)  ║
-  ╠══════════════════╬═══════════════════════════════════════════╣
-  ║  Now Playing     ║  current track, player state, active     ║
-  ║                  ║  speakers                                 ║
-  ╚══════════════════╩═══════════════════════════════════════════╝
+┌──────────────────────────────────────────────────────────────┐
+│  claude >                                                    │
+│                                                              │
+├──────────────────────────────────────────────────────────────┤
+│  ▶ Everything In Its Right Place — Radiohead  ·  Kitchen [60]│
+└──────────────────────────────────────────────────────────────┘
 ```
 
-## Quick commands
-
-Instant controls — no AI reasoning, no chat clutter, just runs.
-
-```
-  /music:play                resume playback
-  /music:play Working Vibes  play a playlist (with shuffle)
-  /music:play Radiohead      search and play artist/album/song
-  /music:pause               pause
-  /music:skip                next track
-  /music:back                previous track
-  /music:stop                stop
-  /music:np                  what's playing?
-
-  /music:vol 60              set all active speakers to 60
-  /music:vol up              +10
-  /music:vol down            -10
-  /music:vol kitchen 80      set per-speaker volume
-  /music:shuffle             toggle shuffle on/off
-
-  /music:speaker list        show all speakers
-  /music:speaker kitchen     switch to kitchen
-  /music:speaker airpods     switch to AirPods
-  /music:speaker add bedroom add speaker to group
-  /music:speaker remove bed  remove from group
-```
-
-## Ceol CLI
-
-The `ceol` CLI is a Swift binary that extends the plugin with Apple Music REST API capabilities. Slash commands automatically delegate to ceol when installed, with AppleScript fallback when it's not.
-
-```
-  ceol now                                what's playing
-  ceol play --playlist "Working Vibes"    play a playlist
-  ceol speaker list                       AirPlay devices
-  ceol vol Kitchen 80                     per-speaker volume
-  ceol search "Fouk"                      search Apple Music catalog
-  ceol add "Get It Done" "Fouk"           add to library
-  ceol playlist list                      list playlists
-  ceol playlist create "Friday Mix"       create playlist
-  ceol similar                            tracks similar to now playing
-  ceol new-releases --artist "Fouk"       new releases
-  ceol mix --artists "Fouk,Floating Points" --count 20  build a mix
-  ceol auth status                        check auth status
-```
-
-## Status line
-
-See what's playing at the bottom of Claude Code — track, speakers, and volume — always visible, no token cost.
-
-```
-  ┌──────────────────────────────────────────────────────────────┐
-  │  claude >                                                    │
-  │                                                              │
-  │                                                              │
-  │                                                              │
-  ├──────────────────────────────────────────────────────────────┤
-  │  ▶ Everything In Its Right Place — Radiohead  ·  Kitchen [60]│
-  └──────────────────────────────────────────────────────────────┘
-```
-
-To enable, add to `~/.claude/settings.json`:
+Add to `~/.claude/settings.json`:
 
 ```json
 {
@@ -161,104 +119,60 @@ To enable, add to `~/.claude/settings.json`:
 }
 ```
 
-## Natural language
+## Music CLI (optional, unlocks catalog features)
 
-For anything more complex, just talk naturally. No commands to memorize.
+The plugin works out of the box for playback, speakers, and volume using AppleScript. For catalog search, library management, playlists via API, and music discovery, install the `music` CLI:
 
-### Play music
-
-```
-> play some Daft Punk
-> play radiohead kid a
-> put on some music
-> shuffle playlist Working Vibes
+```bash
+scripts/install.sh
 ```
 
-### Control playback
+Then set up Apple Music API auth:
 
-```
-> pause
-> volume 40
-> skip
-> stop
-```
-
-### Playlists
-
-```
-> list playlists
-> play Friday on the Deck
-> what's in the House playlist?
-> play my top 25 most played and list the tracks
+```bash
+music auth setup     # guided setup: key ID, team ID, .p8 key
+music auth           # opens browser to get user token
+music auth status    # check what's configured
 ```
 
-### AirPlay speakers
+### What needs auth?
+
+| Feature | No auth | Developer token | + User token |
+|---------|---------|----------------|-------------|
+| Play, pause, skip, stop, shuffle, repeat | Yes | Yes | Yes |
+| Speakers, volume, now playing | Yes | Yes | Yes |
+| Catalog search | — | Yes | Yes |
+| Add to library | — | — | Yes |
+| Playlist CRUD via API | — | — | Yes |
+| Similar, suggestions, new releases, mix | — | — | Yes |
+
+## How It Works
 
 ```
-> play on the kitchen speaker
-> add living room speaker
-> remove the bedroom from the group
-> turn the kitchen up to 80
-```
-
-### Catalog & discovery (requires ceol CLI)
-
-```
-> search for Bohemian Rhapsody
-> add that track to my library
-> find me something similar to what's playing
-> what's new from Radiohead?
-> make me a mix from Fouk and Floating Points
-```
-
-## How it works
-
-```
-  You: "play Kid A on the kitchen speaker"
+  /music:play kid a kitchen 60%
    │
-   ├─ ceol speaker set Kitchen
-   ├─ ceol play --song "Kid A"
+   ├─ music speaker set Kitchen
+   ├─ music vol Kitchen 60
+   ├─ music play --song "kid a"
    │
-  Claude: "Playing Kid A — Everything In Its Right Place."
+  ▶ Playing Kid A — Everything In Its Right Place
 ```
 
-The plugin uses the `ceol` CLI when installed (Swift binary wrapping AppleScript + Apple Music REST API). Without ceol, it falls back to raw AppleScript for playback and speaker control.
+The plugin routes through the `music` CLI when installed. Without it, playback and speaker commands fall back to raw AppleScript.
 
 ```
-  ┌─────────────────────────────────────────────┐
-  │            Claude Code Plugin                │
-  │                                              │
-  │  Slash Commands ──► ceol CLI ──► AppleScript │
-  │       │                  │                   │
-  │       │                  └──► REST API       │
-  │       │                                      │
-  │       └──► AppleScript (fallback)            │
-  │                                              │
-  │  Skill ──► ceol CLI (--json for structured)  │
-  │                                              │
-  │  Status Line ──► osascript (lightweight)     │
-  └─────────────────────────────────────────────┘
+  Slash Commands ──► music CLI ──► AppleScript (playback, speakers, volume)
+       │                   └──► REST API (catalog, library, playlists, discovery)
+       └──► AppleScript (fallback when music CLI not installed)
 ```
 
 ## Requirements
 
-```
-  ┌────────────────────────────────────────────────────┐
-  │  macOS           Required (AppleScript is macOS    │
-  │                  only)                             │
-  │                                                    │
-  │  Apple Music     Comes with macOS                  │
-  │                                                    │
-  │  Permissions     System Settings > Privacy &       │
-  │                  Security > Automation > enable    │
-  │                  for your terminal app             │
-  │                                                    │
-  │  Swift 5.9+      For building ceol CLI (optional)  │
-  │                                                    │
-  │  AirPods         Must be connected via Bluetooth   │
-  │                  to appear as a device             │
-  └────────────────────────────────────────────────────┘
-```
+- **macOS** — AppleScript is macOS only
+- **Apple Music** — comes with macOS
+- **Automation permission** — System Settings > Privacy & Security > Automation > enable for your terminal
+- **Swift 5.9+** — only if building the music CLI
+- **AirPods** — must be connected via Bluetooth to appear as a device
 
 ## License
 

@@ -323,7 +323,7 @@ struct PlaylistTemp: ParsableCommand {
         _ = try syncRun {
             try await backend.runMusic("play playlist \"\(name)\"")
         }
-        print("Playing temp playlist with \(items.count / 2) tracks. Run `ceol playlist cleanup` when done.")
+        print("Playing temp playlist with \(items.count / 2) tracks. Run `music playlist cleanup` when done.")
     }
 }
 

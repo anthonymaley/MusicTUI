@@ -52,10 +52,10 @@ enum AuthError: Error, LocalizedError {
     var errorDescription: String? {
         switch self {
         case .invalidKeyData: return "Invalid .p8 key data"
-        case .configNotFound: return "Config not found at ~/.config/ceol/config.json — Run: ceol auth setup"
+        case .configNotFound: return "Config not found at ~/.config/music/config.json — Run: music auth setup"
         case .developerTokenFailed: return "Failed to generate developer token"
-        case .userTokenRequired: return "This command requires Apple Music authorization. Run: ceol auth"
-        case .userTokenExpired(let status): return "User token expired or invalid (status \(status)). Run: ceol auth"
+        case .userTokenRequired: return "This command requires Apple Music authorization. Run: music auth"
+        case .userTokenExpired(let status): return "User token expired or invalid (status \(status)). Run: music auth"
         }
     }
 }

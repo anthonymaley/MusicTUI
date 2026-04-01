@@ -8,11 +8,11 @@ arguments:
 disable-model-invocation: true
 ---
 
-!`CEOL="${CEOL:-ceol}"
+!`MUSIC_CLI="${MUSIC_CLI:-music}"
 V="$ARGUMENTS"
 
-if command -v "$CEOL" &>/dev/null; then
-    $CEOL vol $V
+if command -v "$MUSIC_CLI" &>/dev/null; then
+    $MUSIC_CLI vol $V
 else
     LOWER=$(echo "$V" | tr "[:upper:]" "[:lower:]")
     LAST_WORD="${V##* }"

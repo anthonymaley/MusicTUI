@@ -4,9 +4,9 @@ description: Pause Apple Music playback
 disable-model-invocation: true
 ---
 
-!`CEOL="${CEOL:-ceol}"
-if command -v "$CEOL" &>/dev/null; then
-    $CEOL pause
+!`MUSIC_CLI="${MUSIC_CLI:-music}"
+if command -v "$MUSIC_CLI" &>/dev/null; then
+    $MUSIC_CLI pause
 else
     osascript -e 'tell application "Music"
         pause

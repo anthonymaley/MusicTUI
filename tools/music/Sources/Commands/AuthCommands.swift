@@ -62,9 +62,9 @@ struct AuthStatus: ParsableCommand {
             let output = OutputFormat(mode: .json)
             print(output.render(dict))
         } else {
-            print("Config: \(hasConfig ? "✓" : "✗ Run: ceol auth setup")")
+            print("Config: \(hasConfig ? "✓" : "✗ Run: music auth setup")")
             print("Developer token: \(devTokenWorks ? "✓" : "✗")")
-            print("User token: \(hasUserToken ? "✓" : "✗ Run: ceol auth")")
+            print("User token: \(hasUserToken ? "✓" : "✗ Run: music auth")")
         }
     }
 }
@@ -72,7 +72,7 @@ struct AuthStatus: ParsableCommand {
 struct AuthSetup: ParsableCommand {
     static let configuration = CommandConfiguration(commandName: "setup", abstract: "Guided auth setup.")
     func run() throws {
-        print("Ceol — Apple Music CLI Setup")
+        print("Apple Music CLI Setup")
         print("============================")
         print("")
         print("You need a MusicKit key from developer.apple.com")
@@ -107,7 +107,7 @@ struct AuthSetup: ParsableCommand {
         let config = AuthConfig(
             keyId: keyID,
             teamId: teamID,
-            keyPath: "~/.config/ceol/AuthKey.p8",
+            keyPath: "~/.config/music/AuthKey.p8",
             storefront: "us"
         )
         let auth = AuthManager()
@@ -117,6 +117,6 @@ struct AuthSetup: ParsableCommand {
         print("")
         print("✓ Config saved. Developer token generated.")
         print("")
-        print("Next: Run `ceol auth` to open the browser and get your user token.")
+        print("Next: Run `music auth` to open the browser and get your user token.")
     }
 }

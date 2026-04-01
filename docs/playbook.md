@@ -4,24 +4,24 @@ How to rebuild this project from scratch.
 
 ## Tech Stack
 Claude Code plugin with two layers:
-- **ceol CLI** — Swift 5.9+ binary using AppleScript (playback/speakers) + Apple Music REST API (catalog/library)
-- **Plugin shell** — slash commands, skill, status line script that delegate to ceol (with AppleScript fallback)
+- **music CLI** — Swift 5.9+ binary using AppleScript (playback/speakers) + Apple Music REST API (catalog/library)
+- **Plugin shell** — slash commands, skill, status line script that delegate to music CLI (with AppleScript fallback)
 
 ## Setup
-1. Install the plugin: `/install github:anthonymaley/music`
+1. Install the plugin: `/install anthonymaley/music`
 2. Grant automation permissions: System Settings > Privacy & Security > Automation
-3. Build ceol CLI: `cd tools/ceol && scripts/install.sh` (optional, unlocks catalog features)
-4. Set up Apple Music auth: `ceol auth setup` then `ceol auth` (optional, unlocks library/discovery)
+3. Build music CLI: `scripts/install.sh` (optional, unlocks catalog features)
+4. Set up Apple Music auth: `music auth setup` then `music auth` (optional, unlocks library/discovery)
 5. Optional: enable status line in `~/.claude/settings.json` (see README)
 
 ## Architecture
 
 ```
 apple-music/
-├── tools/ceol/                # Swift CLI binary
+├── tools/music/               # Swift CLI binary
 │   ├── Package.swift          # SPM manifest (swift-argument-parser)
 │   └── Sources/
-│       ├── Ceol.swift         # @main entry, 18 subcommands
+│       ├── Music.swift        # @main entry, 19 subcommands
 │       ├── Backends/
 │       │   ├── AppleScriptBackend.swift  # osascript wrapper
 │       │   └── RESTAPIBackend.swift      # Apple Music API (URLSession)
@@ -31,7 +31,7 @@ apple-music/
 │       │   └── AuthPage.swift        # MusicKit JS HTML for user token
 │       ├── Commands/
 │       │   ├── PlaybackCommands.swift   # play, pause, skip, back, stop, now, shuffle, repeat
-│       │   ├── SpeakerCommands.swift    # speaker list/set/add/remove
+│       │   ├── SpeakerCommands.swift    # speaker list/set/add/remove/stop
 │       │   ├── VolumeCommands.swift     # vol get/set/up/down/per-speaker
 │       │   ├── AuthCommands.swift       # auth setup/status/open/set-token
 │       │   ├── SearchCommand.swift      # catalog search
@@ -42,10 +42,10 @@ apple-music/
 │       └── Models/
 │           ├── OutputFormat.swift    # --json vs human-readable
 │           └── LibrarySync.swift     # poll-and-retry for REST→AppleScript sync
-├── commands/                  # Slash commands (delegate to ceol, osascript fallback)
-├── skills/music/SKILL.md      # Conversational skill documenting ceol CLI surface
+├── commands/                  # Slash commands (delegate to music CLI, osascript fallback)
+├── skills/music/SKILL.md      # Conversational skill documenting music CLI surface
 ├── scripts/
-│   ├── install.sh             # Build + symlink ceol to ~/.local/bin/
+│   ├── install.sh             # Build + symlink music to ~/.local/bin/
 │   └── statusline.sh          # Now playing for Claude Code status bar
 └── .claude-plugin/            # plugin.json and marketplace.json
 ```
@@ -62,9 +62,9 @@ apple-music/
 | Both tokens | Everything (add, playlist API, similar, suggest, new-releases, mix) |
 
 ### Config Location
-- `~/.config/ceol/config.json` — key ID, team ID, key path, storefront
-- `~/.config/ceol/AuthKey.p8` — Apple MusicKit private key
-- `~/.config/ceol/user-token` — Apple Music user token (~6 month expiry)
+- `~/.config/music/config.json` — key ID, team ID, key path, storefront
+- `~/.config/music/AuthKey.p8` — Apple MusicKit private key
+- `~/.config/music/user-token` — Apple Music user token (~6 month expiry)
 
 ## Integrations
 - macOS Music app (via AppleScript/osascript)
@@ -86,4 +86,4 @@ Published via Claude Code marketplace. Version bumps must update all three locat
 - AirPods names often contain apostrophes — escape in bash: `'Anthony'\''s AirPods Pro'`
 
 ## Current Status
-v1.0.0 — Full ceol CLI with 18 subcommands across playback, speakers, auth, catalog, playlists, and discovery. All slash commands delegate to ceol with AppleScript fallback. Skill rewritten for ceol CLI surface.
+v1.0.0 — Full music CLI with 19 subcommands across playback, speakers, auth, catalog, playlists, and discovery. All slash commands delegate to music CLI with AppleScript fallback.

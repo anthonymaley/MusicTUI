@@ -8,19 +8,19 @@ arguments:
 disable-model-invocation: true
 ---
 
-!`CEOL="${CEOL:-ceol}"
+!`MUSIC_CLI="${MUSIC_CLI:-music}"
 ARGS="$ARGUMENTS"
 
-if ! command -v "$CEOL" &>/dev/null; then
+if ! command -v "$MUSIC_CLI" &>/dev/null; then
     osascript -e 'tell application "Music"
         play
         return "▶ " & name of current track & " — " & artist of current track
-    end tell' 2>/dev/null || echo "ceol not installed. Run: scripts/install.sh"
+    end tell' 2>/dev/null || echo "music CLI not installed. Run: scripts/install.sh"
     exit 0
 fi
 
 if [ -z "$ARGS" ]; then
-    $CEOL play
+    $MUSIC_CLI play
     exit 0
 fi
 
@@ -42,7 +42,7 @@ while IFS= read -r dev; do
         SPEAKER="$dev"
         break
     fi
-done < <($CEOL speaker list --json 2>/dev/null | grep -o '"name":"[^"]*"' | cut -d'"' -f4)
+done < <($MUSIC_CLI speaker list --json 2>/dev/null | grep -o '"name":"[^"]*"' | cut -d'"' -f4)
 
 if [ -n "$SPEAKER" ]; then
     SP_LOWER=$(echo "$SPEAKER" | tr '[:upper:]' '[:lower:]')
@@ -53,19 +53,19 @@ Q=$(echo "$ARGS" | sed 's/^ *//;s/ *$//')
 
 # --- Step 1: Route to speaker ---
 if [ -n "$SPEAKER" ]; then
-    $CEOL speaker set "$SPEAKER"
+    $MUSIC_CLI speaker set "$SPEAKER"
 fi
 
 # --- Step 2: Set volume ---
 if [ -n "$VOL" ] && [ -n "$SPEAKER" ]; then
-    $CEOL vol "$SPEAKER" "$VOL"
+    $MUSIC_CLI vol "$SPEAKER" "$VOL"
 elif [ -n "$VOL" ]; then
-    $CEOL vol "$VOL"
+    $MUSIC_CLI vol "$VOL"
 fi
 
 # --- Step 3: Play content ---
 if [ -z "$Q" ]; then
-    $CEOL play
+    $MUSIC_CLI play
 else
-    $CEOL play --playlist "$Q" 2>/dev/null || $CEOL play --song "$Q"
+    $MUSIC_CLI play --playlist "$Q" 2>/dev/null || $MUSIC_CLI play --song "$Q"
 fi`

@@ -8,7 +8,7 @@ struct AuthConfig: Codable {
 }
 
 struct AuthManager {
-    static let configDir = NSString(string: "~/.config/ceol").expandingTildeInPath
+    static let configDir = NSString(string: "~/.config/music").expandingTildeInPath
     static let configPath = "\(configDir)/config.json"
     static let userTokenPath = "\(configDir)/user-token"
 

@@ -3,23 +3,23 @@ import Foundation
 struct AuthPage {
     /// Write the auth HTML and return the file path.
     func generate(developerToken: String) throws -> String {
-        let path = NSString(string: "~/.config/ceol/auth.html").expandingTildeInPath
+        let path = NSString(string: "~/.config/music/auth.html").expandingTildeInPath
         let html = """
         <!DOCTYPE html>
-        <html><head><title>Ceol — Apple Music Auth</title>
+        <html><head><title>Apple Music Auth</title>
         <script src="https://js-cdn.music.apple.com/musickit/v3/musickit.js"></script>
         </head><body style="font-family:system-ui;max-width:600px;margin:40px auto;text-align:center">
-        <h2>Ceol — Apple Music Authorization</h2>
+        <h2>Apple Music Authorization</h2>
         <p>Click to sign in and get your user token.</p>
         <button id="auth" style="font-size:18px;padding:12px 24px;cursor:pointer">Sign In</button>
         <div id="status" style="margin-top:20px"></div>
         <textarea id="token-output" style="display:none;width:100%;height:80px;font-size:12px;margin-top:10px" onclick="this.select()" readonly></textarea>
-        <p id="instructions" style="display:none">Copy the token above, then run:<br><code>ceol auth set-token PASTE_HERE</code></p>
+        <p id="instructions" style="display:none">Copy the token above, then run:<br><code>music auth set-token PASTE_HERE</code></p>
         <script>
         document.addEventListener('musickitloaded', async () => {
             const music = await MusicKit.configure({
                 developerToken: '\(developerToken)',
-                app: { name: 'ceol', build: '1.0' }
+                app: { name: 'music', build: '1.0' }
             });
             document.getElementById('auth').onclick = async () => {
                 const statusEl = document.getElementById('status');
@@ -74,7 +74,7 @@ struct AuthPage {
         open.waitUntilExit()
 
         print("Auth page served at http://localhost:\(port)/\(filename)")
-        print("Sign in, copy the token, then run: ceol auth set-token <TOKEN>")
+        print("Sign in, copy the token, then run: music auth set-token <TOKEN>")
         print("")
         print("Press Enter to stop the server...")
         _ = readLine()

@@ -1,5 +1,5 @@
 import XCTest
-@testable import ceol
+@testable import music
 
 final class AppleScriptBackendTests: XCTestCase {
     func testRunReturnsStringResult() async throws {

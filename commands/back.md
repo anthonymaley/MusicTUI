@@ -4,9 +4,9 @@ description: Go to previous track in Apple Music
 disable-model-invocation: true
 ---
 
-!`CEOL="${CEOL:-ceol}"
-if command -v "$CEOL" &>/dev/null; then
-    $CEOL back
+!`MUSIC_CLI="${MUSIC_CLI:-music}"
+if command -v "$MUSIC_CLI" &>/dev/null; then
+    $MUSIC_CLI back
 else
     osascript -e 'tell application "Music"
         back track

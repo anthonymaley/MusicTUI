@@ -4,13 +4,13 @@ description: "Toggle shuffle on/off"
 disable-model-invocation: true
 ---
 
-!`CEOL="${CEOL:-ceol}"
-if command -v "$CEOL" &>/dev/null; then
+!`MUSIC_CLI="${MUSIC_CLI:-music}"
+if command -v "$MUSIC_CLI" &>/dev/null; then
     CURRENT=$(osascript -e 'tell application "Music" to get shuffle enabled' 2>/dev/null)
     if [ "$CURRENT" = "true" ]; then
-        $CEOL shuffle off
+        $MUSIC_CLI shuffle off
     else
-        $CEOL shuffle on
+        $MUSIC_CLI shuffle on
     fi
 else
     osascript -e 'tell application "Music"

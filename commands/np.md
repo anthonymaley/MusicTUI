@@ -6,9 +6,9 @@ disable-model-invocation: true
 
 Now playing:
 
-!`CEOL="${CEOL:-ceol}"
-if command -v "$CEOL" &>/dev/null; then
-    $CEOL now
+!`MUSIC_CLI="${MUSIC_CLI:-music}"
+if command -v "$MUSIC_CLI" &>/dev/null; then
+    $MUSIC_CLI now
 else
     osascript -e 'tell application "Music"
         if player state is playing then

@@ -8,9 +8,9 @@ arguments:
 disable-model-invocation: true
 ---
 
-!`CEOL="${CEOL:-ceol}"
-if command -v "$CEOL" &>/dev/null; then
-    $CEOL search $ARGUMENTS
+!`MUSIC_CLI="${MUSIC_CLI:-music}"
+if command -v "$MUSIC_CLI" &>/dev/null; then
+    $MUSIC_CLI search $ARGUMENTS
 else
-    echo "Catalog search requires the ceol CLI. Run: scripts/install.sh"
+    echo "Catalog search requires the music CLI. Run: scripts/install.sh"
 fi`
