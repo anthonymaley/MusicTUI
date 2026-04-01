@@ -116,10 +116,11 @@ struct Vol: ParsableCommand {
         // Two+ args: last is volume number, rest is speaker name
         if let vol = Int(args.last!) {
             let speakerName = args.dropLast().joined(separator: " ")
+            let resolved = try resolveSpeakerName(speakerName, backend: backend)
             _ = try syncRun {
-                try await backend.runMusic("set sound volume of AirPlay device \"\(speakerName)\" to \(vol)")
+                try await backend.runMusic("set sound volume of AirPlay device \"\(resolved)\" to \(vol)")
             }
-            print("\(speakerName) [\(vol)]")
+            print("\(resolved) [\(vol)]")
         }
     }
 }
