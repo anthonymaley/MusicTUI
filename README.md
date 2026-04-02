@@ -6,10 +6,10 @@
    / __ |/ _ \/ _ \ / / -_)   / /|_/ / // (_-</ / __/
   /_/ |_/ .__/ .__/_/\__/   /_/  /_/\_,_/___/_/\__/
        /_/  /_/
-                         for Claude Code
+                    for Claude Code & CLI
 ```
 
-Control Apple Music, AirPlay speakers, and AirPods from your terminal.
+Control Apple Music, AirPlay speakers, and AirPods from Claude Code or the terminal.
 
 ```
   ┌─────────────────────────────────────────────────────────────────────┐
