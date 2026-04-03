@@ -239,7 +239,7 @@ Claude handles multi-step orchestration — searching the catalog, creating play
 
 ## Interactive TUI
 
-Run these commands directly in the terminal (`!music speaker` from Claude Code) for interactive mode:
+Run these commands in a real terminal (not inside Claude Code — TUI requires a TTY):
 
 **Speaker picker** — toggle speakers on/off with space, adjust volume with ←→:
 
