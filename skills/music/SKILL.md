@@ -30,6 +30,7 @@ music now                                     # what's playing + speakers
 music now --json                              # structured: track, artist, album, speakers, state
 music shuffle on|off
 music repeat off|one|all
+music radio                                   # start radio station from current track
 ```
 
 ## Speakers (no auth)

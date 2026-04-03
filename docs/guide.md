@@ -226,7 +226,7 @@ Every few seconds, Claude Code runs statusline.sh:
 ```
 apple-music/
 ├── .claude-plugin/
-│   ├── plugin.json              # Plugin metadata (name: "music", v1.2.0)
+│   ├── plugin.json              # Plugin metadata (name: "music", v1.3.0)
 │   └── marketplace.json         # Marketplace listing
 ├── commands/                    # 13 slash commands
 │   ├── play.md                  # /music:play [query] [speaker] [vol%]
@@ -277,7 +277,9 @@ apple-music/
 │           ├── Terminal.swift
 │           ├── MultiSelectList.swift
 │           ├── ListPicker.swift
-│           └── VolumeMixer.swift
+│           ├── VolumeMixer.swift
+│           ├── NowPlayingTUI.swift
+│           └── TUILayout.swift
 ├── docs/
 │   ├── guide.md                 # This document
 │   └── playbook.md              # How to rebuild from scratch
@@ -338,7 +340,7 @@ music auth status
 
 ## Version
 
-v1.2.0 — all three locations stay in sync:
+v1.3.0 — all three locations stay in sync:
 - `.claude-plugin/plugin.json` → `version`
 - `.claude-plugin/marketplace.json` → `metadata.version`
 - `.claude-plugin/marketplace.json` → `plugins[0].version`

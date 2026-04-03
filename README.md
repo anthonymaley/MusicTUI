@@ -122,6 +122,7 @@ Instant execution. No AI reasoning, no token cost. Type `/music:` and tab to dis
 | `/music:stop kitchen` | Remove kitchen from speaker group |
 | `/music:now` | What's playing (track, album, speakers) |
 | `/music:shuffle` | Toggle shuffle on/off |
+| `/music:radio` | Start a radio station from what's playing |
 
 ### Speakers & Volume
 
@@ -142,7 +143,7 @@ Instant execution. No AI reasoning, no token cost. Type `/music:` and tab to dis
 
 | Command | What it does |
 |---------|-------------|
-| `/music:playlist` | Interactive browser: pick → list/shuffle/play |
+| `/music:playlist` | Interactive 2-pane browser with track preview |
 | `/music:playlist list` | List all playlists |
 | `/music:playlist tracks Working Vibes` | Show tracks in a playlist |
 
@@ -239,51 +240,79 @@ Claude handles multi-step orchestration — searching the catalog, creating play
 
 ## Interactive TUI
 
-Run these commands in a real terminal (not inside Claude Code — TUI requires a TTY):
+Run these commands in a real terminal (not inside Claude Code — TUI requires a TTY). Install `chafa` (`brew install chafa`) for album art in now-playing.
 
-**Speaker picker** — toggle speakers on/off with space, adjust volume with ←→:
-
-```
-  ♫  AirPlay Speakers
-
- ▸ ●  1. Anthony's MacBook Pro
-      vol: 25
-   ●  2. Kitchen
-      vol: 40
-   ○  3. Living Room
-      vol: 40
-
-  ╭───────────────────────────────────────────────────────╮
-  │ ↑↓ navigate  ␣ select  ←→ volume  ⏎ confirm  q quit  │
-  ╰───────────────────────────────────────────────────────╯
-```
-
-**Playlist browser** — pick a playlist, then choose actions (list tracks, shuffle play, play in order):
+**Now playing** (`music now`) — album art, progress bar, queue, with playback controls:
 
 ```
-  ♫  Working Vibes
+music
 
- ▸ ○  List tracks
-   ●  Shuffle play
-   ○  Play in order
+♫ Now Playing                                    Queue
+────────────────────────────────────             ──────────────────
 
-  ╭─────────────────────────────────────────────╮
-  │ ↑↓ navigate  ␣ select  ⏎ confirm  q quit    │
-  ╰─────────────────────────────────────────────╯
+┌──────────────────────┐  Everything In Its…     ▶ 01  Everything In Its Right Place
+│                      │  Radiohead                 02  Kid A
+│     ALBUM ART        │  Kid A                     03  The National Anthem
+│     (via chafa)      │                            04  How to Disappear Completely
+│                      │  0:05 ───────●──── 4:56    05  Treefingers
+└──────────────────────┘                            06  Optimistic
+                          Output  Kitchen
+                          Volume  60
+
+Controls  ↑↓ Skip   ←→ Seek   Space Pause   s Speakers   v Volume   r Radio   q Quit
 ```
 
-**Volume mixer** — per-speaker volume bars with ←→ adjust:
+**Playlist browser** (`music playlist`) — browse playlists, preview tracks, play directly:
 
 ```
-  ♫  Volume Mixer
+music
 
-  Kitchen        [████████████░░░░░░░░] 60%
-  MacBook Pro    [███░░░░░░░░░░░░░░░░░] 15%
+♫ Playlists
+───────────
 
-  ↑↓ speaker  ←→ volume (±5%)  0-9 quick-set  q quit
+▶ Favorite Songs                    Favorite Songs
+  My Top Rated                      61 tracks
+  Recently Added                    ──────────────────
+  Recently Played
+  Working Vibes                     ▶ 01  The Break Up — Dam Swindle
+                                       02  A Clodhopper — Roscius
+                                       03  It's Alright — David Morales
+                                       04  Non-Stop — Sammy Bananas
+
+59 playlists
+↑↓ Navigate   Tab Tracks   Enter Open   p Play   s Shuffle   q Quit
 ```
 
-TUI requires a real terminal (TTY). Falls back to plain output when piped or run through slash commands.
+**Speaker picker** (`music speaker`) — toggle outputs, adjust volume:
+
+```
+music
+
+♫ AirPlay Speakers
+──────────────────
+
+▶ ● Anthony's MacBook Pro      ███████░░░░░░░░  35%
+  ● Kitchen                    ██████░░░░░░░░░  29%
+  ○ Living Room                                  44%
+
+2 selected
+↑↓ Navigate   Space Toggle   ←→ Volume   Enter Confirm   q Quit
+```
+
+**Volume mixer** (`music volume`) — per-speaker levels:
+
+```
+music
+
+♫ Volume Mixer                     Levels
+──────────────                     ──────────
+
+▶ Anthony's MacBook Pro            Anthony's MacBook Pro   █████████░░░░░░░░  45%
+  Kitchen                          Kitchen                 ██████░░░░░░░░░░░  29%
+
+2 active outputs
+↑↓ Speaker   ←→ Adjust 5%   0-9 Quick Set   q Quit
+```
 
 ## Status Line
 
@@ -341,6 +370,7 @@ Speaker lists work the same way (`~/.config/music/last-speakers.json`). Run `mus
 - **Automation permission** (System Settings > Privacy & Security > Automation > enable for your terminal)
 - **Swift 5.9+** (only if building the music CLI)
 - **AirPods** must be connected via Bluetooth to appear as a device
+- **chafa** (optional, `brew install chafa` — enables album art in now-playing TUI)
 
 ## License
 
