@@ -7,7 +7,7 @@
 # Setup: Add to ~/.claude/settings.json:
 #   "statusLine": {
 #     "type": "command",
-#     "command": "~/.claude/plugins/music/scripts/statusline.sh"
+#     "command": "~/.claude/plugins/cache/music@anthonymaley-music/scripts/statusline.sh"
 #   }
 
 cat > /dev/null  # consume stdin (Claude Code session JSON)
