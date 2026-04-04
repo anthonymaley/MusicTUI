@@ -2,18 +2,11 @@
 
 ## Current Session
 
-- [x] Updated README, SKILL.md, guide.md for v1.3.0
-- [x] Bumped version to 1.3.0 in plugin.json and marketplace.json (x2)
-- [x] Added real screenshots to README (now playing, playlist browser, speakers)
-- [x] Fixed README contract drift (playlist description, setup matrix, statusline path)
-- [x] Fixed comma in playlist names (linefeed delimiter instead of comma split)
-- [x] Raised track limit from 50 to 200
-- [x] Fixed speaker name overlap (longest match wins)
-- [x] Fixed statusline.sh path in comment header
-- [x] Updated plugin descriptions with clearer auth messaging
-- [x] Shortened now-playing footer so v Volume fits on screen
-- [x] Created GitHub release v1.3.0 with full changelog
-- [x] Posted to Claude Discord
+- [x] All v1.3.0 docs, release, and promotion done (previous session)
+- [x] Ran slainte health audit across all areas (docs, code, deps, playbook)
+- [x] Fixed 4 high severity: CLAUDE.md skill path, guide.md install command + statusline path + command count
+- [x] Fixed 3 medium severity: radio.md missing from guide, playbook stale architecture + version
+- [x] Registered all audit targets in .slainte config
 
 ## What's Next
 
