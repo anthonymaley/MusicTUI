@@ -13,6 +13,8 @@ struct NowPlayingState {
     var position: Int = 0
     var state: String = "stopped"
     var speakers: [(name: String, volume: Int)] = []
+    var shuffleEnabled: Bool = false
+    var repeatMode: String = "off"
 }
 
 struct TrackListEntry {
@@ -42,7 +44,9 @@ func pollNowPlaying() -> NowPlayingState? {
                         set spk to spk & name of dev & ":" & sound volume of dev
                     end if
                 end repeat
-                return t & "|" & a & "|" & al & "|" & (round d) & "|" & (round p) & "|" & state & "|" & spk
+                set sh to shuffle enabled
+                set rp to song repeat as text
+                return t & "|" & a & "|" & al & "|" & (round d) & "|" & (round p) & "|" & state & "|" & spk & "|" & sh & "|" & rp
             end try
             return "STOPPED"
         """)
@@ -50,7 +54,7 @@ func pollNowPlaying() -> NowPlayingState? {
 
     let trimmed = result.trimmingCharacters(in: .whitespacesAndNewlines)
     if trimmed == "STOPPED" { return nil }
-    let parts = trimmed.split(separator: "|", maxSplits: 6).map(String.init)
+    let parts = trimmed.split(separator: "|", maxSplits: 8).map(String.init)
     guard parts.count >= 7 else { return nil }
 
     let speakers = parts[6].split(separator: ",").map { pair -> (name: String, volume: Int) in
@@ -58,10 +62,14 @@ func pollNowPlaying() -> NowPlayingState? {
         return (name: String(kv[0]), volume: Int(kv.count > 1 ? String(kv[1]) : "0") ?? 0)
     }
 
+    let shuffleEnabled = parts.count > 7 && parts[7].trimmingCharacters(in: .whitespaces) == "true"
+    let repeatMode = parts.count > 8 ? parts[8].trimmingCharacters(in: .whitespaces) : "off"
+
     return NowPlayingState(
         track: parts[0], artist: parts[1], album: parts[2],
         duration: Int(parts[3]) ?? 0, position: Int(parts[4]) ?? 0,
-        state: parts[5], speakers: speakers
+        state: parts[5], speakers: speakers,
+        shuffleEnabled: shuffleEnabled, repeatMode: repeatMode
     )
 }
 
@@ -353,8 +361,9 @@ func runNowPlayingWithContext(_ context: PlaybackContext?) -> NowPlayingResult {
         }
 
         // --- Metadata ---
+        let playIcon = np.state == "playing" ? "▶" : "⏸"
         out += ANSICode.moveTo(row: metaY, col: metaX)
-        out += "\(ANSICode.bold)\(truncText(np.track, to: metaW))\(ANSICode.reset)"
+        out += "\(ANSICode.bold)\(playIcon) \(truncText(np.track, to: metaW - 2))\(ANSICode.reset)"
 
         out += ANSICode.moveTo(row: metaY + 2, col: metaX)
         out += "\(ANSICode.bold)\(truncText(np.artist, to: metaW))\(ANSICode.reset)"
@@ -401,6 +410,17 @@ func runNowPlayingWithContext(_ context: PlaybackContext?) -> NowPlayingResult {
             out += "\(ANSICode.dim)Volume\(ANSICode.reset)"
             out += ANSICode.moveTo(row: metaY + 16, col: metaX + labelW)
             out += "\(primarySpk.volume)"
+        }
+
+        // Shuffle/repeat indicators
+        var modeStr = ""
+        if np.shuffleEnabled { modeStr += "Shuffle" }
+        if np.repeatMode == "one" { modeStr += (modeStr.isEmpty ? "" : "  ") + "Repeat One" }
+        else if np.repeatMode == "all" { modeStr += (modeStr.isEmpty ? "" : "  ") + "Repeat" }
+        if !modeStr.isEmpty {
+            let modeRow = np.speakers.isEmpty ? metaY + 12 : metaY + 18
+            out += ANSICode.moveTo(row: modeRow, col: metaX)
+            out += "\(ANSICode.dim)\(modeStr)\(ANSICode.reset)"
         }
 
         // --- Queue (from context) ---
@@ -656,8 +676,9 @@ func runNowPlayingTUI() {
 
         // --- Metadata ---
         // Title
+        let playIcon = np.state == "playing" ? "▶" : "⏸"
         out += ANSICode.moveTo(row: metaY, col: metaX)
-        out += "\(ANSICode.bold)\(truncText(np.track, to: metaW))\(ANSICode.reset)"
+        out += "\(ANSICode.bold)\(playIcon) \(truncText(np.track, to: metaW - 2))\(ANSICode.reset)"
 
         // Artist
         out += ANSICode.moveTo(row: metaY + 2, col: metaX)
@@ -706,6 +727,17 @@ func runNowPlayingTUI() {
             out += "\(ANSICode.dim)Volume\(ANSICode.reset)"
             out += ANSICode.moveTo(row: metaY + 16, col: metaX + labelW)
             out += "\(primarySpk.volume)"
+        }
+
+        // Shuffle/repeat indicators
+        var modeStr = ""
+        if np.shuffleEnabled { modeStr += "Shuffle" }
+        if np.repeatMode == "one" { modeStr += (modeStr.isEmpty ? "" : "  ") + "Repeat One" }
+        else if np.repeatMode == "all" { modeStr += (modeStr.isEmpty ? "" : "  ") + "Repeat" }
+        if !modeStr.isEmpty {
+            let modeRow = np.speakers.isEmpty ? metaY + 12 : metaY + 18
+            out += ANSICode.moveTo(row: modeRow, col: metaX)
+            out += "\(ANSICode.dim)\(modeStr)\(ANSICode.reset)"
         }
 
         // --- Queue ---
