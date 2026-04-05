@@ -1,9 +1,9 @@
 ---
 name: speaker
-description: "Switch or manage AirPlay speakers. /music:speaker kitchen, /music:speaker only kitchen, /music:speaker add bedroom, /music:speaker remove kitchen, /music:speaker stop kitchen, /music:speaker remove kitchen add bedroom, /music:speaker list"
+description: "Switch or manage AirPlay speakers. /music:speaker kitchen, /music:speaker only kitchen, /music:speaker add bedroom, /music:speaker remove kitchen, /music:speaker stop kitchen, /music:speaker wake, /music:speaker remove kitchen add bedroom, /music:speaker list"
 arguments:
   - name: action
-    description: "Speaker name, 'add <name>', 'remove <name>', 'stop <name>', 'only <name>', 'airpods', 'list'. Chain actions: 'remove kitchen add bedroom'"
+    description: "Speaker name, 'add <name>', 'remove <name>', 'stop <name>', 'only <name>', 'wake [name]', 'airpods', 'list'. Chain actions: 'remove kitchen add bedroom'"
     required: false
 disable-model-invocation: true
 ---
@@ -115,6 +115,21 @@ if [ "$LOWER_INPUT" = "airpods" ]; then
         if $HAS_CLI; then $MUSIC_CLI speaker set "$MATCH"; else as_set "$MATCH"; fi
     else
         echo "No AirPods found — check Bluetooth"
+    fi
+    exit 0
+fi
+
+# Handle wake
+if [ "$LOWER_INPUT" = "wake" ] || echo "$LOWER_INPUT" | grep -q '^wake '; then
+    WAKE_TARGET=$(echo "$INPUT" | sed 's/^[Ww]ake *//')
+    if $HAS_CLI; then
+        if [ -n "$WAKE_TARGET" ]; then
+            $MUSIC_CLI speaker smart wake "$WAKE_TARGET"
+        else
+            $MUSIC_CLI speaker smart wake
+        fi
+    else
+        echo "Wake requires the music CLI. Run: scripts/install.sh"
     fi
     exit 0
 fi

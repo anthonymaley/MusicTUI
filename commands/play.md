@@ -55,9 +55,9 @@ fi
 
 Q=$(echo "$ARGS" | sed 's/^ *//;s/ *$//')
 
-# --- Step 1: Route to speaker ---
+# --- Step 1: Route to speaker (with wake cycle for AirPlay reliability) ---
 if [ -n "$SPEAKER" ]; then
-    $MUSIC_CLI speaker set "$SPEAKER"
+    $MUSIC_CLI speaker smart wake "$SPEAKER"
 fi
 
 # --- Step 2: Set volume ---
