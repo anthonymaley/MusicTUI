@@ -50,10 +50,13 @@ struct Speaker: ParsableCommand {
 
 struct SpeakerSmart: ParsableCommand {
     static let configuration = CommandConfiguration(commandName: "smart", abstract: "Smart speaker control.", shouldDisplay: false)
-    @Argument(help: "Speaker name, index, volume, or keyword (stop/only/list)") var args: [String] = []
+    @Argument(help: "Speaker name, index, volume, or keyword (stop/only/list/wake)") var args: [String] = []
     @Flag(name: .long, help: "Output JSON") var json = false
+    @Flag(name: .shortAndLong, help: "Show diagnostic output") var verbose = false
 
     func run() throws {
+        Music.verbose = verbose
+        Music.isJSON = json
         try runSpeakerSmart(args: args, json: json)
     }
 }

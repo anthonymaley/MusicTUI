@@ -9,8 +9,13 @@ struct Play: ParsableCommand {
     @Option(name: .long, help: "Song name") var song: String?
     @Option(name: .long, help: "Artist name") var artist: String?
     @Flag(name: .long, help: "Output JSON") var json = false
+    @Flag(name: .shortAndLong, help: "Show diagnostic output") var verbose = false
+    @Flag(name: .long, help: "Skip speaker wake cycle") var noWake = false
 
     func run() throws {
+        Music.verbose = verbose
+        Music.isJSON = json
+        Music.noWake = noWake
         let backend = AppleScriptBackend()
 
         // Existing flag-based behavior takes priority
