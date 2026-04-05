@@ -563,13 +563,21 @@ func runNowPlayingWithContext(_ context: PlaybackContext?) -> NowPlayingResult {
             case .char("s"):
                 // Speaker picker as modal subflow
                 terminal.exitRawMode()
-                if let devices = try? fetchSpeakerDevices() {
-                    var volumes = devices.map { $0["volume"] as! Int }
-                    var items = devices.map {
+                let speakerDevices: [[String: Any]]
+                do {
+                    speakerDevices = try fetchSpeakerDevices()
+                } catch {
+                    verbose("failed to fetch speakers: \(error.localizedDescription)")
+                    terminal.enterRawMode()
+                    continue
+                }
+                do {
+                    var volumes = speakerDevices.map { $0["volume"] as! Int }
+                    var items = speakerDevices.map {
                         MultiSelectItem(label: $0["name"] as! String, sublabel: "vol: \($0["volume"]!)", selected: $0["selected"] as! Bool)
                     }
                     _ = runMultiSelectList(title: "AirPlay Speakers", items: &items, onToggle: { idx, selected in
-                        let name = devices[idx]["name"] as! String
+                        let name = speakerDevices[idx]["name"] as! String
                         do {
                             _ = try syncRun {
                                 try await backend.runMusic("set selected of AirPlay device \"\(name)\" to \(selected)")
@@ -579,7 +587,7 @@ func runNowPlayingWithContext(_ context: PlaybackContext?) -> NowPlayingResult {
                         }
                     }, onAdjust: { idx, delta in
                         volumes[idx] = min(100, max(0, volumes[idx] + delta))
-                        let name = devices[idx]["name"] as! String
+                        let name = speakerDevices[idx]["name"] as! String
                         let vol = volumes[idx]
                         do {
                             _ = try syncRun {
@@ -595,20 +603,26 @@ func runNowPlayingWithContext(_ context: PlaybackContext?) -> NowPlayingResult {
             case .char("v"):
                 // Volume mixer as modal subflow
                 terminal.exitRawMode()
-                if let devices = try? fetchSpeakerDevices() {
-                    var speakers = devices.compactMap { d -> MixerSpeaker? in
-                        guard d["selected"] as? Bool == true else { return nil }
-                        return MixerSpeaker(name: d["name"] as! String, volume: d["volume"] as! Int)
-                    }
-                    if !speakers.isEmpty {
-                        runVolumeMixer(speakers: &speakers) { name, volume in
-                            do {
-                                _ = try syncRun {
-                                    try await backend.runMusic("set sound volume of AirPlay device \"\(name)\" to \(volume)")
-                                }
-                            } catch {
-                                verbose("speaker operation failed: \(error.localizedDescription)")
+                let volDevices: [[String: Any]]
+                do {
+                    volDevices = try fetchSpeakerDevices()
+                } catch {
+                    verbose("failed to fetch speakers: \(error.localizedDescription)")
+                    terminal.enterRawMode()
+                    continue
+                }
+                var speakers = volDevices.compactMap { d -> MixerSpeaker? in
+                    guard d["selected"] as? Bool == true else { return nil }
+                    return MixerSpeaker(name: d["name"] as! String, volume: d["volume"] as! Int)
+                }
+                if !speakers.isEmpty {
+                    runVolumeMixer(speakers: &speakers) { name, volume in
+                        do {
+                            _ = try syncRun {
+                                try await backend.runMusic("set sound volume of AirPlay device \"\(name)\" to \(volume)")
                             }
+                        } catch {
+                            verbose("speaker operation failed: \(error.localizedDescription)")
                         }
                     }
                 }
@@ -842,13 +856,21 @@ func runNowPlayingTUI() {
             case .char("s"):
                 // Speaker picker as modal subflow
                 terminal.exitRawMode()
-                if let devices = try? fetchSpeakerDevices() {
-                    var volumes = devices.map { $0["volume"] as! Int }
-                    var items = devices.map {
+                let spkDevices2: [[String: Any]]
+                do {
+                    spkDevices2 = try fetchSpeakerDevices()
+                } catch {
+                    verbose("failed to fetch speakers: \(error.localizedDescription)")
+                    terminal.enterRawMode()
+                    continue
+                }
+                do {
+                    var volumes = spkDevices2.map { $0["volume"] as! Int }
+                    var items = spkDevices2.map {
                         MultiSelectItem(label: $0["name"] as! String, sublabel: "vol: \($0["volume"]!)", selected: $0["selected"] as! Bool)
                     }
                     _ = runMultiSelectList(title: "AirPlay Speakers", items: &items, onToggle: { idx, selected in
-                        let name = devices[idx]["name"] as! String
+                        let name = spkDevices2[idx]["name"] as! String
                         do {
                             _ = try syncRun {
                                 try await backend.runMusic("set selected of AirPlay device \"\(name)\" to \(selected)")
@@ -858,7 +880,7 @@ func runNowPlayingTUI() {
                         }
                     }, onAdjust: { idx, delta in
                         volumes[idx] = min(100, max(0, volumes[idx] + delta))
-                        let name = devices[idx]["name"] as! String
+                        let name = spkDevices2[idx]["name"] as! String
                         let vol = volumes[idx]
                         do {
                             _ = try syncRun {
@@ -873,20 +895,26 @@ func runNowPlayingTUI() {
                 terminal.enterRawMode()
             case .char("v"):
                 terminal.exitRawMode()
-                if let devices = try? fetchSpeakerDevices() {
-                    var speakers = devices.compactMap { d -> MixerSpeaker? in
-                        guard d["selected"] as? Bool == true else { return nil }
-                        return MixerSpeaker(name: d["name"] as! String, volume: d["volume"] as! Int)
-                    }
-                    if !speakers.isEmpty {
-                        runVolumeMixer(speakers: &speakers) { name, volume in
-                            do {
-                                _ = try syncRun {
-                                    try await backend.runMusic("set sound volume of AirPlay device \"\(name)\" to \(volume)")
-                                }
-                            } catch {
-                                verbose("speaker operation failed: \(error.localizedDescription)")
+                let volDevices2: [[String: Any]]
+                do {
+                    volDevices2 = try fetchSpeakerDevices()
+                } catch {
+                    verbose("failed to fetch speakers: \(error.localizedDescription)")
+                    terminal.enterRawMode()
+                    continue
+                }
+                var speakers = volDevices2.compactMap { d -> MixerSpeaker? in
+                    guard d["selected"] as? Bool == true else { return nil }
+                    return MixerSpeaker(name: d["name"] as! String, volume: d["volume"] as! Int)
+                }
+                if !speakers.isEmpty {
+                    runVolumeMixer(speakers: &speakers) { name, volume in
+                        do {
+                            _ = try syncRun {
+                                try await backend.runMusic("set sound volume of AirPlay device \"\(name)\" to \(volume)")
                             }
+                        } catch {
+                            verbose("speaker operation failed: \(error.localizedDescription)")
                         }
                     }
                 }

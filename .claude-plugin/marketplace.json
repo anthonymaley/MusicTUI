@@ -5,7 +5,7 @@
   },
   "metadata": {
     "description": "Control Apple Music from Claude Code. Slash commands, a CLI, and natural-language control for playback, speakers, playlists, and discovery.",
-    "version": "1.3.0"
+    "version": "1.4.0"
   },
   "plugins": [
     {
@@ -15,7 +15,7 @@
         "url": "git@github.com:anthonymaley/music.git"
       },
       "description": "Control Apple Music from Claude Code. Slash commands, a CLI, and natural-language control for playback, speakers, playlists, and discovery. Playback, speakers, and volume work with zero setup on macOS. Apple Developer auth is only needed for catalog search, library, and discovery features.",
-      "version": "1.3.0",
+      "version": "1.4.0",
       "strict": true
     }
   ]
