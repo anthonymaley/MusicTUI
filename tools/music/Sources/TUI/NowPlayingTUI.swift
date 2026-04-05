@@ -939,42 +939,49 @@ func runNowPlayingTUI() {
             out += "\(ANSICode.dim)\(String(repeating: "\u{2500}", count: 8))\(ANSICode.reset)"
             tRow += 2
 
-            // Surrounding tracks with Played/Now/Next sections
-            var lastSection = ""
-            let maxVisible = min(12, frame.statusY - tRow - 2 - 6)
-            for (ti, entry) in trackList.prefix(maxVisible).enumerated() {
-                let currentIndex = trackList.first(where: { $0.isCurrent })?.index ?? 0
-                let section = entry.isCurrent ? "Now" : (entry.index < currentIndex ? "Played" : "Next")
-                if section != lastSection {
-                    out += ANSICode.moveTo(row: tRow, col: timelineX)
-                    switch section {
-                    case "Played": out += "\(ANSICode.dim)Played\(ANSICode.reset)"
-                    case "Now": out += "\(ANSICode.bold)Now\(ANSICode.reset)"
-                    default: out += "\(ANSICode.bold)\(ANSICode.cyan)Next\(ANSICode.reset)"
-                    }
-                    tRow += 1
-                    let ruleW = section == "Played" ? 6 : (section == "Now" ? 3 : 4)
-                    out += ANSICode.moveTo(row: tRow, col: timelineX)
-                    out += "\(ANSICode.dim)\(String(repeating: "\u{2500}", count: ruleW))\(ANSICode.reset)"
-                    tRow += 1
-                    lastSection = section
-                }
+            // Played — real session history
+            if !history.isEmpty {
                 out += ANSICode.moveTo(row: tRow, col: timelineX)
-                let idx = String(format: "%02d", entry.index)
-                let rowText = truncText("\(entry.name) \u{2014} \(entry.artist)", to: timelineW - 8)
-                let isPlaying = entry.isCurrent
-                let isCursor = (ti == timelineCursor)
-
-                if isPlaying && isCursor {
-                    out += "\(ANSICode.green)\u{25B6}\(ANSICode.reset)\(ANSICode.cyan)\u{25B8}\(ANSICode.reset)\(ANSICode.bold)\(idx)  \(rowText)\(ANSICode.reset)"
-                } else if isPlaying {
-                    out += "\(ANSICode.green)\u{25B6}\(ANSICode.reset) \(ANSICode.bold)\(idx)  \(rowText)\(ANSICode.reset)"
-                } else if isCursor {
-                    out += " \(ANSICode.cyan)\u{25B8}\(ANSICode.reset) \(idx)  \(rowText)"
-                } else {
-                    out += "\(ANSICode.dim)   \(idx)  \(rowText)\(ANSICode.reset)"
+                out += "\(ANSICode.dim)Played\(ANSICode.reset)"
+                tRow += 1
+                out += ANSICode.moveTo(row: tRow, col: timelineX)
+                out += "\(ANSICode.dim)\(String(repeating: "\u{2500}", count: 6))\(ANSICode.reset)"
+                tRow += 1
+                for h in history.prefix(3).reversed() {
+                    out += ANSICode.moveTo(row: tRow, col: timelineX)
+                    let text = truncText("\(h.track) \u{2014} \(h.artist)", to: timelineW - 4)
+                    out += "\(ANSICode.dim)  \(text)\(ANSICode.reset)"
+                    tRow += 1
                 }
                 tRow += 1
+            }
+
+            // Next tracks only (current track shown in metadata)
+            let nextTracks = trackList.drop(while: { !$0.isCurrent }).dropFirst()
+            if !nextTracks.isEmpty {
+                out += ANSICode.moveTo(row: tRow, col: timelineX)
+                out += "\(ANSICode.bold)\(ANSICode.cyan)Next\(ANSICode.reset)"
+                tRow += 1
+                out += ANSICode.moveTo(row: tRow, col: timelineX)
+                out += "\(ANSICode.dim)\(String(repeating: "\u{2500}", count: 4))\(ANSICode.reset)"
+                tRow += 1
+
+                let maxVisible = min(12, frame.statusY - tRow - 2)
+                let nextArray = Array(nextTracks)
+                if timelineCursor >= nextArray.count { timelineCursor = max(0, nextArray.count - 1) }
+                for (ti, entry) in nextArray.prefix(maxVisible).enumerated() {
+                    out += ANSICode.moveTo(row: tRow, col: timelineX)
+                    let idx = String(format: "%02d", entry.index)
+                    let rowText = truncText("\(entry.name) \u{2014} \(entry.artist)", to: timelineW - 8)
+                    let isCursor = (ti == timelineCursor)
+
+                    if isCursor {
+                        out += " \(ANSICode.cyan)\u{25B8}\(ANSICode.reset) \(idx)  \(rowText)"
+                    } else {
+                        out += "\(ANSICode.dim)   \(idx)  \(rowText)\(ANSICode.reset)"
+                    }
+                    tRow += 1
+                }
             }
         }
 
@@ -1023,41 +1030,49 @@ func runNowPlayingTUI() {
         out += "\(ANSICode.dim)\(String(repeating: "\u{2500}", count: 8))\(ANSICode.reset)"
         tRow += 2
 
-        var lastSection = ""
-        let maxVisible = min(12, frame.statusY - tRow - 2 - 6)
-        for (ti, entry) in trackList.prefix(maxVisible).enumerated() {
-            let currentIndex = trackList.first(where: { $0.isCurrent })?.index ?? 0
-            let section = entry.isCurrent ? "Now" : (entry.index < currentIndex ? "Played" : "Next")
-            if section != lastSection {
-                out += ANSICode.moveTo(row: tRow, col: timelineX)
-                switch section {
-                case "Played": out += "\(ANSICode.dim)Played\(ANSICode.reset)"
-                case "Now": out += "\(ANSICode.bold)Now\(ANSICode.reset)"
-                default: out += "\(ANSICode.bold)\(ANSICode.cyan)Next\(ANSICode.reset)"
-                }
-                tRow += 1
-                let ruleW = section == "Played" ? 6 : (section == "Now" ? 3 : 4)
-                out += ANSICode.moveTo(row: tRow, col: timelineX)
-                out += "\(ANSICode.dim)\(String(repeating: "\u{2500}", count: ruleW))\(ANSICode.reset)"
-                tRow += 1
-                lastSection = section
-            }
+        // Played — real session history
+        if !history.isEmpty {
             out += ANSICode.moveTo(row: tRow, col: timelineX)
-            let idx = String(format: "%02d", entry.index)
-            let rowText = truncText("\(entry.name) \u{2014} \(entry.artist)", to: timelineW - 8)
-            let isPlaying = entry.isCurrent
-            let isCursor = (ti == timelineCursor)
-
-            if isPlaying && isCursor {
-                out += "\(ANSICode.green)\u{25B6}\(ANSICode.reset)\(ANSICode.cyan)\u{25B8}\(ANSICode.reset)\(ANSICode.bold)\(idx)  \(rowText)\(ANSICode.reset)"
-            } else if isPlaying {
-                out += "\(ANSICode.green)\u{25B6}\(ANSICode.reset) \(ANSICode.bold)\(idx)  \(rowText)\(ANSICode.reset)"
-            } else if isCursor {
-                out += " \(ANSICode.cyan)\u{25B8}\(ANSICode.reset) \(idx)  \(rowText)"
-            } else {
-                out += "\(ANSICode.dim)   \(idx)  \(rowText)\(ANSICode.reset)"
+            out += "\(ANSICode.dim)Played\(ANSICode.reset)"
+            tRow += 1
+            out += ANSICode.moveTo(row: tRow, col: timelineX)
+            out += "\(ANSICode.dim)\(String(repeating: "\u{2500}", count: 6))\(ANSICode.reset)"
+            tRow += 1
+            for h in history.prefix(3).reversed() {
+                out += ANSICode.moveTo(row: tRow, col: timelineX)
+                let text = truncText("\(h.track) \u{2014} \(h.artist)", to: timelineW - 4)
+                out += "\(ANSICode.dim)  \(text)\(ANSICode.reset)"
+                tRow += 1
             }
             tRow += 1
+        }
+
+        // Next tracks only
+        let nextTracks = trackList.drop(while: { !$0.isCurrent }).dropFirst()
+        if !nextTracks.isEmpty {
+            out += ANSICode.moveTo(row: tRow, col: timelineX)
+            out += "\(ANSICode.bold)\(ANSICode.cyan)Next\(ANSICode.reset)"
+            tRow += 1
+            out += ANSICode.moveTo(row: tRow, col: timelineX)
+            out += "\(ANSICode.dim)\(String(repeating: "\u{2500}", count: 4))\(ANSICode.reset)"
+            tRow += 1
+
+            let maxVisible = min(12, frame.statusY - tRow - 2)
+            let nextArray = Array(nextTracks)
+            if timelineCursor >= nextArray.count { timelineCursor = max(0, nextArray.count - 1) }
+            for (ti, entry) in nextArray.prefix(maxVisible).enumerated() {
+                out += ANSICode.moveTo(row: tRow, col: timelineX)
+                let idx = String(format: "%02d", entry.index)
+                let rowText = truncText("\(entry.name) \u{2014} \(entry.artist)", to: timelineW - 8)
+                let isCursor = (ti == timelineCursor)
+
+                if isCursor {
+                    out += " \(ANSICode.cyan)\u{25B8}\(ANSICode.reset) \(idx)  \(rowText)"
+                } else {
+                    out += "\(ANSICode.dim)   \(idx)  \(rowText)\(ANSICode.reset)"
+                }
+                tRow += 1
+            }
         }
 
         print(out, terminator: "")
