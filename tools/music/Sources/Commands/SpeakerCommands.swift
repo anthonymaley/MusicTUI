@@ -198,6 +198,77 @@ func fetchSpeakerDevices() throws -> [[String: Any]] {
     }
 }
 
+// MARK: - Wake cycle
+
+struct WakeResult {
+    let name: String
+    let deselectSucceeded: Bool
+    let reselectSucceeded: Bool
+    let verifiedSelected: Bool
+}
+
+func wakeSpeakers(_ names: [String], backend: AppleScriptBackend) -> [WakeResult] {
+    var results: [WakeResult] = []
+
+    for name in names {
+        verbose("deselecting \(name)...")
+        let deselectOk: Bool
+        do {
+            _ = try syncRun {
+                try await backend.runMusic("set selected of AirPlay device \"\(name)\" to false")
+            }
+            deselectOk = true
+        } catch {
+            verbose("deselect failed for \(name): \(error.localizedDescription)")
+            deselectOk = false
+        }
+        results.append(WakeResult(name: name, deselectSucceeded: deselectOk, reselectSucceeded: false, verifiedSelected: false))
+    }
+
+    // Wait for AirPlay stack to release
+    verbose("waiting 500ms for AirPlay release...")
+    Thread.sleep(forTimeInterval: 0.5)
+
+    for i in results.indices {
+        let name = results[i].name
+        verbose("reselecting \(name)...")
+        let reselectOk: Bool
+        do {
+            _ = try syncRun {
+                try await backend.runMusic("set selected of AirPlay device \"\(name)\" to true")
+            }
+            reselectOk = true
+        } catch {
+            verbose("reselect failed for \(name): \(error.localizedDescription)")
+            reselectOk = false
+        }
+        results[i] = WakeResult(name: name, deselectSucceeded: results[i].deselectSucceeded, reselectSucceeded: reselectOk, verifiedSelected: false)
+    }
+
+    // Wait for AirPlay stack to reconnect
+    verbose("waiting 500ms for AirPlay reconnect...")
+    Thread.sleep(forTimeInterval: 0.5)
+
+    // Verify selection state
+    for i in results.indices {
+        let name = results[i].name
+        let verified: Bool
+        do {
+            let state = try syncRun {
+                try await backend.runMusic("get selected of AirPlay device \"\(name)\"")
+            }
+            verified = state.trimmingCharacters(in: .whitespacesAndNewlines) == "true"
+            verbose("\(name) verified selected: \(verified)")
+        } catch {
+            verbose("verification failed for \(name): \(error.localizedDescription)")
+            verified = false
+        }
+        results[i] = WakeResult(name: name, deselectSucceeded: results[i].deselectSucceeded, reselectSucceeded: results[i].reselectSucceeded, verifiedSelected: verified)
+    }
+
+    return results
+}
+
 // MARK: - Speaker name resolution (case-insensitive prefix match)
 
 func resolveSpeakerName(_ input: String, backend: AppleScriptBackend) throws -> String {
@@ -209,10 +280,22 @@ func resolveSpeakerName(_ input: String, backend: AppleScriptBackend) throws -> 
         .map { $0.trimmingCharacters(in: .whitespaces) }
 
     let lower = input.lowercased()
-    if let exact = names.first(where: { $0.lowercased() == lower }) { return exact }
-    if let prefix = names.first(where: { $0.lowercased().hasPrefix(lower) }) { return prefix }
-    if let contains = names.first(where: { $0.lowercased().contains(lower) }) { return contains }
-    return input
+    verbose("resolving speaker \"\(input)\" against: \(names.joined(separator: ", "))")
+    if let exact = names.first(where: { $0.lowercased() == lower }) {
+        verbose("resolved \"\(input)\" → \"\(exact)\" (exact match)")
+        return exact
+    }
+    if let prefix = names.first(where: { $0.lowercased().hasPrefix(lower) }) {
+        verbose("resolved \"\(input)\" → \"\(prefix)\" (prefix match)")
+        return prefix
+    }
+    if let contains = names.first(where: { $0.lowercased().contains(lower) }) {
+        verbose("resolved \"\(input)\" → \"\(contains)\" (contains match)")
+        return contains
+    }
+
+    let available = names.joined(separator: ", ")
+    throw AppleScriptBackend.ScriptError.speakerNotFound("\(input)\" not found. Available: \(available)")
 }
 
 func listSpeakers(json: Bool) throws {
