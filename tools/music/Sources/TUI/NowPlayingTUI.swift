@@ -317,6 +317,8 @@ func runNowPlayingWithContext(_ context: PlaybackContext?) -> NowPlayingResult {
 
     var artLines: [String] = []
     var lastTrackName = ""
+    var lastArtistName = ""
+    var history: [(track: String, artist: String)] = []
     var queueCursor = context?.startIndex ?? 0
     var queueScroll = 0
 
@@ -343,12 +345,24 @@ func runNowPlayingWithContext(_ context: PlaybackContext?) -> NowPlayingResult {
         let titleText = context != nil ? "Now Playing \u{2014} \(context!.playlistName)" : "Now Playing"
         var out = renderShell(title: titleText, status: "", footer: footerText)
 
-        // Queue header
+        // History + Queue header
         if queueW >= 24 {
-            out += ANSICode.moveTo(row: 5, col: queueX)
-            out += "\(ANSICode.bold)\(ANSICode.cyan)Queue\(ANSICode.reset)"
-            out += ANSICode.moveTo(row: 6, col: queueX)
-            out += "\(ANSICode.dim)\(String(repeating: "\u{2500}", count: 18))\(ANSICode.reset)"
+            if !history.isEmpty {
+                out += ANSICode.moveTo(row: 5, col: queueX)
+                out += "\(ANSICode.dim)History\(ANSICode.reset)"
+                let histSlice = Array(history.prefix(5).reversed())
+                let startRow = 6 + (5 - histSlice.count)
+                for (i, h) in histSlice.enumerated() {
+                    out += ANSICode.moveTo(row: startRow + i, col: queueX)
+                    let text = truncText("\(h.track) \u{2014} \(h.artist)", to: queueW - 6)
+                    out += "\(ANSICode.dim)  \u{25C1}  \(text)\(ANSICode.reset)"
+                }
+            } else {
+                out += ANSICode.moveTo(row: 5, col: queueX)
+                out += "\(ANSICode.bold)\(ANSICode.cyan)Queue\(ANSICode.reset)"
+                out += ANSICode.moveTo(row: 6, col: queueX)
+                out += "\(ANSICode.dim)\(String(repeating: "\u{2500}", count: 18))\(ANSICode.reset)"
+            }
         }
 
         // --- Cover art ---
@@ -500,6 +514,7 @@ func runNowPlayingWithContext(_ context: PlaybackContext?) -> NowPlayingResult {
     let backend = AppleScriptBackend()
     if let np = pollNowPlaying() {
         lastTrackName = np.track
+        lastArtistName = np.artist
         refreshArtwork()
         // Sync queue cursor to current track
         if let idx = findCurrentTrackIndex(np: np) {
@@ -664,7 +679,12 @@ func runNowPlayingWithContext(_ context: PlaybackContext?) -> NowPlayingResult {
         // Re-poll and render
         if let np = pollNowPlaying() {
             if np.track != lastTrackName {
+                if !lastTrackName.isEmpty {
+                    history.insert((track: lastTrackName, artist: lastArtistName), at: 0)
+                    if history.count > 5 { history.removeLast() }
+                }
                 lastTrackName = np.track
+                lastArtistName = np.artist
                 refreshArtwork()
                 // Sync queue cursor to current track if it changed
                 if let idx = findCurrentTrackIndex(np: np) {
@@ -700,6 +720,8 @@ func runNowPlayingTUI() {
     var trackList: [TrackListEntry] = []
     var artLines: [String] = []
     var lastTrackName = ""
+    var lastArtistName = ""
+    var history: [(track: String, artist: String)] = []
 
     func render(_ np: NowPlayingState) {
         let frame = ScreenFrame.current()
@@ -708,12 +730,24 @@ func runNowPlayingTUI() {
 
         var out = renderShell(title: "Now Playing", status: "", footer: footerText)
 
-        // Queue header
+        // History + Queue header
         if queueW >= 24 {
-            out += ANSICode.moveTo(row: 5, col: queueX)
-            out += "\(ANSICode.bold)\(ANSICode.cyan)Queue\(ANSICode.reset)"
-            out += ANSICode.moveTo(row: 6, col: queueX)
-            out += "\(ANSICode.dim)\(String(repeating: "─", count: 18))\(ANSICode.reset)"
+            if !history.isEmpty {
+                out += ANSICode.moveTo(row: 5, col: queueX)
+                out += "\(ANSICode.dim)History\(ANSICode.reset)"
+                let histSlice = Array(history.prefix(5).reversed())
+                let startRow = 6 + (5 - histSlice.count)
+                for (i, h) in histSlice.enumerated() {
+                    out += ANSICode.moveTo(row: startRow + i, col: queueX)
+                    let text = truncText("\(h.track) \u{2014} \(h.artist)", to: queueW - 6)
+                    out += "\(ANSICode.dim)  \u{25C1}  \(text)\(ANSICode.reset)"
+                }
+            } else {
+                out += ANSICode.moveTo(row: 5, col: queueX)
+                out += "\(ANSICode.bold)\(ANSICode.cyan)Queue\(ANSICode.reset)"
+                out += ANSICode.moveTo(row: 6, col: queueX)
+                out += "\(ANSICode.dim)\(String(repeating: "─", count: 18))\(ANSICode.reset)"
+            }
         }
 
         // --- Cover art ---
@@ -851,6 +885,7 @@ func runNowPlayingTUI() {
     let backend = AppleScriptBackend()
     if let np = pollNowPlaying() {
         lastTrackName = np.track
+        lastArtistName = np.artist
         refreshTrackContext()
         render(np)
     } else {
@@ -979,7 +1014,12 @@ func runNowPlayingTUI() {
         // Re-poll and render
         if let np = pollNowPlaying() {
             if np.track != lastTrackName {
+                if !lastTrackName.isEmpty {
+                    history.insert((track: lastTrackName, artist: lastArtistName), at: 0)
+                    if history.count > 5 { history.removeLast() }
+                }
                 lastTrackName = np.track
+                lastArtistName = np.artist
                 refreshTrackContext()
                 // Drain all input that queued during the slow refresh
                 flushStdin()
