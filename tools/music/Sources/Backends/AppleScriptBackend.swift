@@ -23,6 +23,8 @@ struct AppleScriptBackend {
 
     /// Run raw AppleScript and return stdout.
     func run(_ script: String) async throws -> String {
+        verbose("osascript: \(script.prefix(200))")
+
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
         process.arguments = ["-e", script]
@@ -40,10 +42,13 @@ struct AppleScriptBackend {
 
         if process.terminationStatus != 0 {
             let errStr = String(data: errData, encoding: .utf8) ?? "Unknown error"
+            verbose("osascript failed: \(errStr)")
             throw ScriptError.executionFailed(errStr)
         }
 
-        return String(data: outData, encoding: .utf8) ?? ""
+        let result = String(data: outData, encoding: .utf8) ?? ""
+        verbose("osascript result: \(result.prefix(200))")
+        return result
     }
 
     /// Run a script inside `tell application "Music" ... end tell`.
