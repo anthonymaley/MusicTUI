@@ -40,7 +40,8 @@ Each layer is independently shippable. Layer N depends on layer N-1.
 - Store as `Music.verbose: Bool` — set once at process start, read-only thereafter.
 - When enabled, print diagnostic lines prefixed `[verbose]` to stderr.
 - Stderr keeps verbose output out of JSON output and piped workflows.
-- Similarly expose `Music.isJSON: Bool` for `withStatus` suppression.
+- `--verbose` is always allowed, even with `--json`. JSON goes to stdout, verbose goes to stderr. They don't interfere. This follows the Unix convention: stderr is for diagnostics regardless of output format.
+- Similarly expose `Music.isJSON: Bool` for `withStatus` suppression (withStatus is suppressed in JSON mode because it's UX chrome, not diagnostics).
 
 Verbose output in this round:
 - Speaker name resolution: `[verbose] resolved "kitchen" -> "Kitchen HomePod"`
@@ -112,22 +113,39 @@ If a speaker fails verification, report with `.speakerUnavailable(name)`.
 
 ### Automatic wake on routed playback
 
-Trigger conditions — wake when ANY of these are true:
-- A speaker was explicitly passed in the play command (e.g., `music play "Playlist" kitchen 60`)
-- The play command is inheriting an active multi-output session: at least one AirPlay device (other than the local machine) has `selected = true` when checked before playback starts
+**Two entry points exist for routed playback — both must be covered:**
+
+1. **Slash command path (primary public surface):** `/music:play X kitchen 60%` is handled by `commands/play.md`, which orchestrates separate CLI calls: `music speaker set` → `music volume` → `music play`. The Swift `Play` command never sees the speaker context. Wake cycle must be integrated here.
+
+2. **Direct CLI path:** `music speaker set kitchen && music play` — used by scripts and advanced users. Wake cycle lives in the Swift `SpeakerCommands` and is available via `music speaker wake`.
+
+**Slash command integration (`commands/play.md`):**
+
+Current sequence:
+1. Resolve speaker from args
+2. `music speaker set "$SPEAKER"`
+3. `music volume "$SPEAKER" "$VOL"`
+4. `music play --playlist "$Q"` or `music play`
+
+New sequence:
+1. Resolve speaker from args
+2. **`music speaker wake "$SPEAKER"`** (replaces `music speaker set`)
+3. `music volume "$SPEAKER" "$VOL"`
+4. `music play --playlist "$Q"` or `music play`
+
+The wake command already does deselect → wait → reselect, so it subsumes `speaker set` for the routed-play case. If `--no-wake` is needed, fall back to `music speaker set` directly.
+
+For the inherited-session case (no explicit speaker, but non-local AirPlay outputs active): add a check in `play.md` before step 4 — query active speakers, and if any non-local device is selected, run `music speaker wake` (no args) before playback.
+
+**Trigger conditions** — wake when ANY of these are true:
+- A speaker was explicitly passed in the play command
+- The play command is resuming with active non-local AirPlay outputs (at least one AirPlay device other than the local machine has `selected = true`)
 
 Do NOT wake when:
-- Plain `music play` resuming on local speakers only
+- `music play` resuming with only local speakers active (no non-local AirPlay device selected)
 - `--no-wake` flag passed
 
-Conservative scope: only wake speakers you intend to use. Do not cycle forgotten speakers the user didn't mention — that would surprise users.
-
-Play command sequence with wake:
-1. Resolve speaker names (if any explicitly passed)
-2. Determine wake target set (explicit speakers, or active non-local AirPlay outputs)
-3. Run wake cycle on target set
-4. Set volumes (if specified)
-5. Start playback
+Conservative scope: only wake speakers you intend to use. Do not cycle forgotten speakers the user didn't mention.
 
 ### `music speaker wake` command
 
@@ -168,14 +186,14 @@ Replace `try?` (silent swallow) in TUI speaker operations (`s` and `v` keys) wit
 ### Files touched
 
 - `SpeakerCommands.swift` — `wakeSpeakers()`, `.wake` parser case, error message improvements, `resolveSpeakerName()` throws on no match
-- `PlaybackCommands.swift` — wake cycle integration in `Play` command
 - `AppleScriptBackend.swift` — timeout support on osascript execution (for speaker operations)
 - `NowPlayingTUI.swift` — replace `try?` with error-reporting pattern in speaker/volume modal calls
+- `Music.swift` — add `--no-wake` flag to the root command
 
-### Command update
+### Command updates
 
 - `commands/speaker.md` — add `wake` as a new action case (alongside add/remove/only/stop). Not a separate command file — `wake` is a speaker subcommand.
-- `Music.swift` — add `--no-wake` flag to the root command
+- `commands/play.md` — replace `music speaker set` with `music speaker wake` when speaker is specified. Add inherited-session detection (query active non-local AirPlay devices before playback, wake if any are selected). Respect `--no-wake` by falling back to `music speaker set`.
 
 ---
 
@@ -244,10 +262,13 @@ This work ships as v1.4.0. Update version in:
 ## Testing
 
 - Wake cycle: test with speaker that exhibits ghost state; verify deselect/reselect cycle
-- Wake targeting: verify plain `music play` does NOT trigger wake
-- `--no-wake`: verify it suppresses the cycle
-- `--verbose`: verify output goes to stderr, not stdout
+- Wake targeting (local only): `music play` with only local speakers active → NO wake triggered
+- Wake targeting (inherited session): `music play` with non-local AirPlay device selected → wake triggered
+- Wake targeting (explicit speaker): `/music:play "Playlist" kitchen 60%` → wake triggered for kitchen
+- Slash command path: verify `commands/play.md` calls `music speaker wake` instead of `music speaker set` when speaker is specified
+- `--no-wake`: verify it suppresses the cycle and falls back to `music speaker set`
+- `--verbose`: verify output goes to stderr, not stdout; verify verbose works alongside `--json`
 - Speaker not found: verify actionable error with available speaker list
 - TUI indicators: verify play/pause and shuffle/repeat update in real time
 - `withStatus` threshold: verify no flicker on fast operations
-- JSON mode: verify `withStatus` suppressed, verbose suppressed
+- JSON mode: verify `withStatus` suppressed; verify `--verbose` still works (stderr)
