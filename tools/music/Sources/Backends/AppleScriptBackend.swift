@@ -3,10 +3,20 @@ import Foundation
 struct AppleScriptBackend {
     enum ScriptError: Error, LocalizedError {
         case executionFailed(String)
+        case speakerNotFound(String)
+        case speakerUnavailable(String)
+        case timeout(String)
 
         var errorDescription: String? {
             switch self {
-            case .executionFailed(let msg): return "AppleScript error: \(msg)"
+            case .executionFailed(let msg):
+                return "AppleScript error: \(msg)"
+            case .speakerNotFound(let name):
+                return "Speaker \"\(name)\" not found."
+            case .speakerUnavailable(let name):
+                return "\(name) is not responding. Try: music speaker wake"
+            case .timeout(let operation):
+                return "Timed out: \(operation). Speaker may be offline."
             }
         }
     }
