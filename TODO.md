@@ -2,45 +2,42 @@
 
 ## Current Session
 
-- [x] TUI keybindings: z cycles shuffle/repeat, r radio, l love, d dislike, +/- volume
-- [x] Inherited-session wake detection in Play command (auto-wake non-local AirPlay speakers)
-- [x] v1.5.0 release: keybindings + inherited wake + love/dislike
-- [x] TUI rendering overhaul: 3-column layout, timeline pane, dirty-region rendering
-- [x] Timeline redesign: Played (real session history) + Next (upcoming only)
-- [x] Two-marker system: green ▶ = playing, cyan ▸ = cursor
-- [x] Cursor movement instant (no AppleScript poll, timeline-only redraw)
-- [x] Remove screen clear flicker (overwrite in place)
-- [x] Playlist browser: highlight-only on ↑↓, explicit Enter/Tab to load tracks
-- [x] Fix playlist name quoting (Bluecoats "Lucy" hang)
-- [x] Standalone TUI: cursor navigation with Enter to play
-- [x] Sync standalone TUI timeline with context-aware design
-- [x] v1.6.1 release: rendering overhaul + playlist browser + bug fixes
-- [x] Update skill with routed playback, wake, TUI controls
+- [x] AirPlay reset: replace per-speaker wake cycle with full reset (deselect all → 1.5s → reselect → restore volumes → 1.5s)
+- [x] Add AirPlay reset to playlist browser play paths (ghost connection fix from TUI)
+- [x] Loved/disliked indicators on track title (♥/↓) with safe inner try block
+- [x] Fix loved/disliked breaking pollNowPlaying (inner try for unsupported track types)
+- [x] Unified timeline: context-aware TUI renders full playlist with history overlay
+- [x] Standalone TUI: history-only timeline (no more transient album rebuilds under shuffle)
+- [x] Add <>/,. skip keybindings, remove l/d love/dislike keybindings
+- [x] Add 'b' key in playlist browser to jump to Now Playing
+- [x] User fixes: simplified play track by index, removed speaker wake from play.md
 
 ## What's Next
 
 - Clean up worktree branch `worktree-airplay-resilience`
+- Version bump (1.7.0?) — significant changes to AirPlay handling and TUI
 - Fix /kerd:tend warnings: add kivna/input/ and kivna/output/ to .gitignore, register hooks
 - End-to-end edge case testing: comma in playlist name, overlapping speakers, 200+ tracks
 - TUI: progress-only redraw on poll tick (Phase 2 dirty regions)
 - TUI: row-only redraw on cursor move (micro-optimization)
 - TUI: deferred preview in playlist browser (300-500ms idle fetch)
 - Consider: playlist browser sorting (alphabetical option)
-- Monitor community feedback on v1.6.1
+- Test AirPlay reset reliability over multiple days (1.5s timing adequate?)
 
 ## Key Context
 
 - Version is 1.6.1 everywhere (plugin.json, marketplace.json x2, CLI, Music.swift)
 - CLI binary is `music`, installed at `~/.local/bin/music`
 - **Must codesign after cp**: `codesign -f --sign - ~/.local/bin/music` — macOS kills unsigned binaries
-- **renderShell no longer clears screen** — clear only happens once at TUI startup
+- **AirPlay reset**: full deselect→1.5s→reselect→restore volumes→1.5s. Replaces old per-speaker wake cycle.
+- **resetAirPlaySpeakers()**: called on all play paths (CLI, slash commands, playlist browser). Skipped for local-only or `--no-wake`.
+- **Two timeline models**: context-aware = full playlist with history overlay; standalone = history-only (no pollSurroundingTracks)
 - **Dirty regions**: cursor ↑↓ calls refreshTimelineOnly() + continue, skips poll entirely
-- **Real history only**: Played section uses in-memory history array, not playlist index position
 - **Playlist name escaping**: double quotes in names escaped with `replacingOccurrences(of: "\"", with: "\\\"")`
-- **2-screen flow**: PlaylistBrowser ↔ NowPlaying with PlaybackContext. b/Esc returns to browser with state preserved
+- **2-screen flow**: PlaylistBrowser ↔ NowPlaying with PlaybackContext. b works both directions.
 - **Speaker matching**: longest match wins (avoids "Office" matching before "Julie office")
-- **Wake cycle**: deselect→500ms→reselect→500ms→verify. Inherited-session wake auto-detects non-local speakers.
 - **SourceKit false positives**: cross-file symbol warnings are noise. Build compiles clean.
+- **Track skip keybindings**: <> or ,. for previous/next track in both TUIs
 
 ## Backlog
 
