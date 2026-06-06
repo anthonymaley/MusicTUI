@@ -298,7 +298,7 @@ Two markers in the right pane: green `▶` = currently playing, cyan `▸` = cur
 
 **Playlist browser** (`music playlist`) — 2-pane browser. Left: playlists (instant highlight on `↑↓`, no fetch). Right: tracks (loaded on `Enter` or `Tab`). `p` plays playlist, `s` shuffles, `b` goes back.
 
-![Playlist Browser](media/playlist.jog.jpg)
+![Playlist Browser](media/playlist.jpg)
 
 **Speaker picker** (`music speaker`) — toggle AirPlay outputs on/off, adjust per-speaker volume with `←→`. Active speakers show volume bars.
 
