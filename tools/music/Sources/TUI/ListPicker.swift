@@ -60,6 +60,7 @@ func runPlaylistBrowser(
     var meta: [PlaylistMeta] = playlists.map { PlaylistMeta(name: $0) }
     var loaded: Set<Int> = []
     var fullCache: [Int: PlaylistPreview] = [:]
+    var previewLines: [Int: [String]] = [:]
     var lastLoadedPl = -1
 
     func currentState() -> BrowserState {
@@ -177,6 +178,34 @@ func runPlaylistBrowser(
         out += "\(ANSICode.lime)[Enter]\(ANSICode.reset) Browse   \(ANSICode.lime)[P]\(ANSICode.reset) Play   \(ANSICode.lime)[S]\(ANSICode.reset) Shuffle   \(ANSICode.lime)[/]\(ANSICode.reset) Filter"
     }
 
+    func renderPreview(_ z: PlaylistZones, into out: inout String) {
+        guard z.mode == .three, let rx = z.rightX else { return }
+        let frame = ScreenFrame.current()
+        var y = frame.bodyY
+        out += ANSICode.moveTo(row: y, col: rx)
+        out += "\(ANSICode.cyan)Preview\(ANSICode.reset)"
+        y += 1
+        out += ANSICode.moveTo(row: y, col: rx)
+        out += "\(ANSICode.dim)\(String(repeating: "\u{2500}", count: min(z.rightWidth, 18)))\(ANSICode.reset)"
+        y += 1
+        if let lines = previewLines[plCursor] {
+            if lines.isEmpty {
+                out += ANSICode.moveTo(row: y, col: rx)
+                out += "\(ANSICode.dim)(empty)\(ANSICode.reset)"
+            } else {
+                for (i, line) in lines.prefix(8).enumerated() {
+                    out += ANSICode.moveTo(row: y, col: rx)
+                    let idx = String(format: "%02d", i + 1)
+                    out += "\(ANSICode.dim)\(idx)\(ANSICode.reset)  \(truncText(line, to: z.rightWidth - 4))"
+                    y += 1
+                }
+            }
+        } else {
+            out += ANSICode.moveTo(row: y, col: rx)
+            out += "\(ANSICode.dim)Loading preview\u{2026}\(ANSICode.reset)"
+        }
+    }
+
     func render() {
         let frame = ScreenFrame.current()
         let z = playlistZones(width: frame.width)
@@ -193,6 +222,7 @@ func runPlaylistBrowser(
         out += clearBody(frame)
         renderRail(z, into: &out, listY: listY, maxVisible: maxVisible)
         renderHero(z, into: &out)
+        renderPreview(z, into: &out)
         print(out, terminator: "")
         fflush(stdout)
     }
@@ -224,8 +254,13 @@ func runPlaylistBrowser(
 
     while true {
         let pending = loaded.count < meta.count
-        guard let key = KeyPress.read(timeout: pending ? 0.15 : 60.0) else {
-            if pending { enrichTick(); render() }
+        let previewPending = previewLines[plCursor] == nil
+        guard let key = KeyPress.read(timeout: (pending || previewPending) ? 0.15 : 60.0) else {
+            if pending { enrichTick() }
+            if previewLines[plCursor] == nil {
+                previewLines[plCursor] = onPreview(plCursor) ?? []
+            }
+            render()
             continue
         }
 
