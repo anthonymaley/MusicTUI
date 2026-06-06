@@ -62,6 +62,20 @@ func renderShell(title: String, status: String, footer: String) -> String {
     return out
 }
 
+/// Clears the body region (rows between the title rule and the status line) so
+/// a repaint never leaves stale characters from a previous, longer frame.
+/// Uses clearLine (ESC[2K) rather than space-fill to stay friendly to
+/// transparent terminals. Call right after `renderShell`, before drawing body
+/// content.
+func clearBody(_ frame: ScreenFrame) -> String {
+    var out = ""
+    for row in frame.bodyY..<frame.statusY {
+        out += ANSICode.moveTo(row: row, col: 1)
+        out += ANSICode.clearLine
+    }
+    return out
+}
+
 // MARK: - Text Helpers
 
 /// Truncate text to a maximum width, adding ellipsis if needed.

@@ -109,6 +109,9 @@ func runPlaylistBrowser(
         }
 
         var out = renderShell(title: "Playlists", status: statusText, footer: footerText)
+        // Wipe the body before repainting so shorter rows (after scrolling, or
+        // when the right pane flips to the placeholder) don't leave stale tails.
+        out += clearBody(frame)
 
         // --- Left pane: playlist list ---
         let listY = frame.bodyY + 2
@@ -312,6 +315,7 @@ func runListPicker(
         if cursor >= scrollOffset + maxVisible { scrollOffset = cursor - maxVisible + 1 }
 
         var out = renderShell(title: title, status: statusText, footer: footerText)
+        out += clearBody(frame)
 
         let listY = frame.bodyY + 2
         let end = min(items.count, scrollOffset + maxVisible)
