@@ -84,11 +84,70 @@ struct PlaylistBrowse: ParsableCommand {
             return preview
         }
 
+        // Batched metadata fetch for a set of playlist indices.
+        // Returns: index -> (count, durationSec, isSmart, specialKind)
+        let onMeta: ([Int]) -> [Int: (Int, Int, Bool, String)] = { indices in
+            guard !indices.isEmpty else { return [:] }
+            var clauses = ""
+            for idx in indices where idx >= 0 && idx < names.count {
+                let esc = escapeAppleScriptString(names[idx])
+                clauses += """
+                set p to playlist "\(esc)"
+                set output to output & "\(idx)|" & (count of tracks of p) & "|" & (duration of p) & "|" & (smart of p) & "|" & (special kind of p as text) & linefeed
+
+                """
+            }
+            guard let result = try? syncRun({
+                try await backend.runMusic("""
+                    set output to ""
+                    \(clauses)
+                    return output
+                """)
+            }) else { return [:] }
+            var out: [Int: (Int, Int, Bool, String)] = [:]
+            for line in result.split(separator: "\n") {
+                let f = line.split(separator: "|", maxSplits: 4).map(String.init)
+                guard f.count == 5, let idx = Int(f[0]) else { continue }
+                let count = Int(f[1]) ?? 0
+                let dur = Int(Double(f[2]) ?? 0)
+                let smart = f[3].trimmingCharacters(in: .whitespaces) == "true"
+                out[idx] = (count, dur, smart, f[4].trimmingCharacters(in: .whitespaces))
+            }
+            return out
+        }
+
+        // Light preview: first 8 "Title — Artist" lines for one playlist.
+        var previewCacheLight: [Int: [String]] = [:]
+        let onPreview: (Int) -> [String]? = { idx in
+            if let c = previewCacheLight[idx] { return c }
+            guard idx >= 0, idx < names.count else { return nil }
+            let esc = escapeAppleScriptString(names[idx])
+            guard let res = try? syncRun({
+                try await backend.runMusic("""
+                    set output to ""
+                    set i to 1
+                    repeat with t in (every track of playlist "\(esc)")
+                        if i > 8 then exit repeat
+                        if output is not "" then set output to output & linefeed
+                        set output to output & name of t & " \u{2014} " & artist of t
+                        set i to i + 1
+                    end repeat
+                    return output
+                """)
+            }) else { return nil }
+            let lines = res.trimmingCharacters(in: .whitespacesAndNewlines)
+                .split(separator: "\n").map(String.init)
+            previewCacheLight[idx] = lines
+            return lines
+        }
+
         var browserState: BrowserState? = nil
 
         while true {
             let result = runPlaylistBrowser(
                 playlists: names,
+                onMeta: onMeta,
+                onPreview: onPreview,
                 onTracks: onTracks,
                 savedState: browserState
             )

@@ -37,10 +37,12 @@ enum BrowserResult {
     case quit
 }
 
-// MARK: - Playlist browser (2-pane)
+// MARK: - Playlist browser (3-zone)
 
 func runPlaylistBrowser(
     playlists: [String],
+    onMeta: @escaping ([Int]) -> [Int: (Int, Int, Bool, String)],
+    onPreview: @escaping (Int) -> [String]?,
     onTracks: @escaping (Int) -> PlaylistPreview?,
     savedState: BrowserState? = nil
 ) -> BrowserResult {
@@ -55,8 +57,9 @@ func runPlaylistBrowser(
     var trCursor = savedState?.trCursor ?? 0
     var trScroll = savedState?.trScroll ?? 0
 
-    // Cache
-    var previewCache: [Int: PlaylistPreview] = [:]
+    var meta: [PlaylistMeta] = playlists.map { PlaylistMeta(name: $0) }
+    var loaded: Set<Int> = []
+    var fullCache: [Int: PlaylistPreview] = [:]
     var lastLoadedPl = -1
 
     func currentState() -> BrowserState {
@@ -64,152 +67,95 @@ func runPlaylistBrowser(
                      trCursor: trCursor, trScroll: trScroll, focus: focus)
     }
 
-    func makeContext(trackIndex: Int) -> PlaybackContext {
-        let preview = previewCache[plCursor]
-        return PlaybackContext(
-            playlistName: playlists[plCursor],
-            tracks: preview?.tracks ?? [],
-            startIndex: trackIndex
-        )
-    }
-
-    func loadPreview() {
+    func loadFull() {
         guard plCursor != lastLoadedPl else { return }
         lastLoadedPl = plCursor
-
-        if previewCache[plCursor] == nil {
-            previewCache[plCursor] = onTracks(plCursor)
-        }
-
-        // Reset track cursor when playlist changes (unless restoring state)
+        if fullCache[plCursor] == nil { fullCache[plCursor] = onTracks(plCursor) }
         if savedState == nil || plCursor != (savedState?.plCursor ?? -1) {
-            trCursor = 0
-            trScroll = 0
+            trCursor = 0; trScroll = 0
         }
     }
 
-    let leftX = 3
-    let leftW = 38
-    let rightX = 48
+    func makeContext(trackIndex: Int) -> PlaybackContext {
+        let preview = fullCache[plCursor]
+        return PlaybackContext(playlistName: playlists[plCursor],
+                               tracks: preview?.tracks ?? [], startIndex: trackIndex)
+    }
+
+    let metaCol = 6  // reserved right column in the rail for count/badge
+
+    func badgeText(_ m: PlaylistMeta) -> (String, String)? {
+        let b = playlistBadge(name: m.name, isSmart: m.isSmart ?? false,
+                              specialKind: m.specialKind ?? "none")
+        switch b {
+        case .radio: return ("RADIO", ANSICode.amber)
+        case .smart: return ("SMART", ANSICode.amber)
+        case .recent: return ("RECENT", ANSICode.amber)
+        case .none: return nil
+        }
+    }
+
+    func renderRail(_ z: PlaylistZones, into out: inout String, listY: Int, maxVisible: Int) {
+        if plCursor < plScroll { plScroll = plCursor }
+        if plCursor >= plScroll + maxVisible { plScroll = plCursor - maxVisible + 1 }
+        let end = min(meta.count, plScroll + maxVisible)
+        let nameWidth = z.railWidth - 2 - metaCol - 1
+        for i in plScroll..<end {
+            let row = listY + (i - plScroll)
+            out += ANSICode.moveTo(row: row, col: z.railX)
+            let m = meta[i]
+            let display = m.name.hasPrefix("__radio__")
+                ? String(m.name.dropFirst("__radio__".count))
+                : m.name
+            let nm = railName(display, nameWidth: max(1, nameWidth))
+
+            let metaCell: String
+            if !m.loaded {
+                metaCell = "\(ANSICode.dim)\(String(repeating: " ", count: metaCol - 1))\u{00B7}\(ANSICode.reset)"
+            } else if let (text, color) = badgeText(m) {
+                let padded = String(repeating: " ", count: max(0, metaCol - text.count)) + text
+                metaCell = "\(color)\(padded)\(ANSICode.reset)"
+            } else {
+                let c = "\(m.trackCount ?? 0)"
+                let padded = String(repeating: " ", count: max(0, metaCol - c.count)) + c
+                metaCell = "\(ANSICode.dim)\(padded)\(ANSICode.reset)"
+            }
+
+            let padName = nm + String(repeating: " ", count: max(0, nameWidth - nm.count))
+            if i == plCursor {
+                let mark = (focus == .playlists) ? ANSICode.cyan : ANSICode.dim
+                out += "\(mark)\u{258C}\(ANSICode.reset) \(ANSICode.brightWhite)\(padName)\(ANSICode.reset) \(metaCell)"
+            } else {
+                out += "  \(padName) \(metaCell)"
+            }
+        }
+    }
+
+    func renderHero(_ z: PlaylistZones, into out: inout String) {
+        let y = ScreenFrame.current().bodyY
+        let m = meta[plCursor]
+        out += ANSICode.moveTo(row: y, col: z.heroX)
+        out += "\(ANSICode.bold)\(ANSICode.brightWhite)\(truncText(m.name, to: z.heroWidth))\(ANSICode.reset)"
+    }
 
     func render() {
         let frame = ScreenFrame.current()
-        let rightW = frame.width - rightX - 2
-        let maxPlVisible = max(1, frame.statusY - frame.bodyY - 4)
-        let preview = previewCache[plCursor]
+        let z = playlistZones(width: frame.width)
+        let listY = frame.bodyY + 2
+        let maxVisible = max(1, frame.statusY - listY - 1)
 
-        let plFocused = focus == .playlists
-        let statusText = "\(playlists.count) playlists"
-
-        let footerText: String
-        if plFocused {
-            footerText = "\(ANSICode.bold)\u{2191}\u{2193}\(ANSICode.reset) Navigate   \(ANSICode.bold)Tab\(ANSICode.reset) Tracks   \(ANSICode.bold)p\(ANSICode.reset) Play   \(ANSICode.bold)s\(ANSICode.reset) Shuffle   \(ANSICode.bold)b\(ANSICode.reset) Now Playing   \(ANSICode.bold)q\(ANSICode.reset) Quit"
-        } else {
-            footerText = "\(ANSICode.bold)\u{2191}\u{2193}\(ANSICode.reset) Navigate   \(ANSICode.bold)Enter\(ANSICode.reset) Play   \(ANSICode.bold)Tab\(ANSICode.reset) Playlists   \(ANSICode.bold)b\(ANSICode.reset) Now Playing   \(ANSICode.bold)q\(ANSICode.reset) Quit"
-        }
+        let pending = loaded.count < meta.count
+        let statusText = pending
+            ? "Loading metadata\u{2026} \(loaded.count)/\(meta.count)"
+            : "\(meta.count) playlists"
+        let footerText = "\(ANSICode.bold)\u{2191}\u{2193}\(ANSICode.reset) Browse   \(ANSICode.bold)Enter\(ANSICode.reset) Open   \(ANSICode.bold)p\(ANSICode.reset) Play   \(ANSICode.bold)s\(ANSICode.reset) Shuffle   \(ANSICode.bold)/\(ANSICode.reset) Filter   \(ANSICode.bold)b\(ANSICode.reset) Now   \(ANSICode.bold)q\(ANSICode.reset) Quit"
 
         var out = renderShell(title: "Playlists", status: statusText, footer: footerText)
-        // Wipe the body before repainting so shorter rows (after scrolling, or
-        // when the right pane flips to the placeholder) don't leave stale tails.
         out += clearBody(frame)
-
-        // --- Left pane: playlist list ---
-        let listY = frame.bodyY + 2
-
-        // Playlist scroll
-        if plCursor < plScroll { plScroll = plCursor }
-        if plCursor >= plScroll + maxPlVisible { plScroll = plCursor - maxPlVisible + 1 }
-
-        let plEnd = min(playlists.count, plScroll + maxPlVisible)
-        for i in plScroll..<plEnd {
-            let row = listY + (i - plScroll)
-            out += ANSICode.moveTo(row: row, col: leftX)
-            let name = truncText(playlists[i], to: leftW - 4)
-            if i == plCursor {
-                let color = plFocused ? ANSICode.cyan : ANSICode.dim
-                out += "\(color)\u{25B6}\(ANSICode.reset) \(ANSICode.bold)\(name)\(ANSICode.reset)"
-            } else {
-                out += "  \(name)"
-            }
-        }
-
-        // --- Right pane ---
-        guard rightW > 10 else {
-            print(out, terminator: "")
-            fflush(stdout)
-            return
-        }
-
-        var rightRow = frame.bodyY
-
-        if let preview = preview {
-            // Playlist title
-            out += ANSICode.moveTo(row: rightRow, col: rightX)
-            out += "\(ANSICode.bold)\(truncText(preview.name, to: rightW))\(ANSICode.reset)"
-            rightRow += 1
-
-            // Track count + position indicator
-            let trackStartY = rightRow + 3  // after count line, blank, and rule
-            let maxTrVisible = max(1, frame.statusY - trackStartY - 1)
-            let displayCount = preview.tracks.count
-            let totalCount = preview.trackCount
-
-            out += ANSICode.moveTo(row: rightRow, col: rightX)
-            var countStr = "\(totalCount) tracks"
-            if displayCount < totalCount {
-                let rangeEnd = min(trScroll + maxTrVisible, displayCount)
-                countStr = "\(displayCount) of \(totalCount) tracks \u{00B7} \(trScroll + 1)-\(rangeEnd)"
-            } else if displayCount > maxTrVisible {
-                let rangeEnd = min(trScroll + maxTrVisible, displayCount)
-                countStr = "\(totalCount) tracks \u{00B7} \(trScroll + 1)-\(rangeEnd)"
-            }
-            out += "\(ANSICode.dim)\(countStr)\(ANSICode.reset)"
-            rightRow += 1
-
-            // Rule
-            rightRow += 1
-            out += ANSICode.moveTo(row: rightRow, col: rightX)
-            out += "\(ANSICode.dim)\(String(repeating: "\u{2500}", count: min(rightW, 18)))\(ANSICode.reset)"
-            rightRow += 1
-
-            // Track list (scrollable)
-            if trCursor < trScroll { trScroll = trCursor }
-            if trCursor >= trScroll + maxTrVisible { trScroll = trCursor - maxTrVisible + 1 }
-
-            let trEnd = min(preview.tracks.count, trScroll + maxTrVisible)
-            let trFocused = focus == .tracks
-
-            for i in trScroll..<trEnd {
-                let row = rightRow + (i - trScroll)
-                out += ANSICode.moveTo(row: row, col: rightX)
-                let idx = String(format: "%02d", i + 1)
-                let trackText = truncText(preview.tracks[i], to: rightW - 6)
-
-                if i == trCursor && trFocused {
-                    out += "\(ANSICode.cyan)\u{25B6}\(ANSICode.reset) \(ANSICode.bold)\(idx)  \(trackText)\(ANSICode.reset)"
-                } else {
-                    out += "\(ANSICode.dim)  \(idx)\(ANSICode.reset)  \(trackText)"
-                }
-            }
-        } else {
-            // Placeholder — tracks not yet loaded for this playlist
-            out += ANSICode.moveTo(row: rightRow, col: rightX)
-            out += "\(ANSICode.bold)\(truncText(playlists[plCursor], to: rightW))\(ANSICode.reset)"
-            rightRow += 2
-            out += ANSICode.moveTo(row: rightRow, col: rightX)
-            out += "\(ANSICode.dim)Enter to browse tracks\(ANSICode.reset)"
-            rightRow += 1
-            out += ANSICode.moveTo(row: rightRow, col: rightX)
-            out += "\(ANSICode.dim)p = play \u{00B7} s = shuffle\(ANSICode.reset)"
-        }
-
+        renderRail(z, into: &out, listY: listY, maxVisible: maxVisible)
+        renderHero(z, into: &out)
         print(out, terminator: "")
         fflush(stdout)
-    }
-
-    // If restoring state, load the preview for the current playlist immediately
-    if savedState != nil {
-        loadPreview()
     }
 
     render()
@@ -218,14 +164,12 @@ func runPlaylistBrowser(
         let key = KeyPress.read(timeout: 60.0)
         guard let key = key else { continue }
 
-        let trackCount = previewCache[plCursor]?.tracks.count ?? 0
+        let trackCount = fullCache[plCursor]?.tracks.count ?? 0
 
         switch key {
         case .up:
             if focus == .playlists {
                 plCursor = max(0, plCursor - 1)
-                // Show cached preview if available, otherwise right pane shows placeholder
-                if previewCache[plCursor] != nil { loadPreview() }
             } else {
                 trCursor = max(0, trCursor - 1)
             }
@@ -233,14 +177,13 @@ func runPlaylistBrowser(
         case .down:
             if focus == .playlists {
                 plCursor = min(playlists.count - 1, plCursor + 1)
-                if previewCache[plCursor] != nil { loadPreview() }
             } else {
                 trCursor = min(trackCount - 1, trCursor + 1)
             }
 
         case .char("\t"):  // Tab — activate and switch focus
             if focus == .playlists {
-                loadPreview()
+                loadFull()
                 focus = .tracks
             } else {
                 focus = .playlists
@@ -248,7 +191,7 @@ func runPlaylistBrowser(
 
         case .enter:
             if focus == .playlists {
-                loadPreview()
+                loadFull()
                 focus = .tracks
                 trCursor = 0
                 trScroll = 0
