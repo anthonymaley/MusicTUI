@@ -132,10 +132,49 @@ func runPlaylistBrowser(
     }
 
     func renderHero(_ z: PlaylistZones, into out: inout String) {
-        let y = ScreenFrame.current().bodyY
+        let frame = ScreenFrame.current()
+        var y = frame.bodyY
         let m = meta[plCursor]
+
+        // Title
+        let title = m.name.hasPrefix("__radio__") ? String(m.name.dropFirst(9)) : m.name
         out += ANSICode.moveTo(row: y, col: z.heroX)
-        out += "\(ANSICode.bold)\(ANSICode.brightWhite)\(truncText(m.name, to: z.heroWidth))\(ANSICode.reset)"
+        out += "\(ANSICode.bold)\(ANSICode.brightWhite)\(truncText(title, to: z.heroWidth))\(ANSICode.reset)"
+        y += 1
+
+        // Subtitle (truthful: only when loaded)
+        out += ANSICode.moveTo(row: y, col: z.heroX)
+        if m.loaded, let c = m.trackCount {
+            let dur = m.durationSec.map { " \u{00B7} " + formatPlaylistDuration($0) } ?? ""
+            out += "\(ANSICode.dim)\(c) tracks\(dur)\(ANSICode.reset)"
+        }
+        y += 2
+
+        // Gradient identity block
+        let gw = min(16, z.heroWidth)
+        let block = gradientBlock(name: m.name, width: gw, height: 6)
+        var seed = 0; for b in m.name.unicodeScalars { seed = (seed &* 31 &+ Int(b.value)) & 0xffffff }
+        let r = 80 + (seed & 0x7f), g = 80 + ((seed >> 8) & 0x7f), bl = 80 + ((seed >> 16) & 0x7f)
+        let color = "\u{1B}[38;2;\(r);\(g);\(bl)m"
+        for line in block {
+            out += ANSICode.moveTo(row: y, col: z.heroX)
+            out += "\(color)\(line)\(ANSICode.reset)"
+            y += 1
+        }
+        y += 1
+
+        // Badge chip
+        if let (text, c) = badgeText(m) {
+            out += ANSICode.moveTo(row: y, col: z.heroX)
+            out += "\(c)\(text)\(ANSICode.reset)"
+            y += 2
+        } else {
+            y += 1
+        }
+
+        // Actions
+        out += ANSICode.moveTo(row: y, col: z.heroX)
+        out += "\(ANSICode.lime)[Enter]\(ANSICode.reset) Browse   \(ANSICode.lime)[P]\(ANSICode.reset) Play   \(ANSICode.lime)[S]\(ANSICode.reset) Shuffle   \(ANSICode.lime)[/]\(ANSICode.reset) Filter"
     }
 
     func render() {
