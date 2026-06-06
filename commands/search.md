@@ -15,7 +15,7 @@ if ! command -v "$MUSIC_CLI" &>/dev/null; then
     echo "  1. Build the music CLI:  scripts/install.sh"
     echo "  2. Configure auth:       music auth setup"
     echo ""
-    echo "See: https://github.com/anthonymaley/music#music-cli-optional--unlocks-catalog-features"
+    echo "See: https://github.com/anthonymaley/apple-music#music-cli-optional--unlocks-catalog-features"
     exit 1
 fi
 $MUSIC_CLI search $ARGUMENTS`

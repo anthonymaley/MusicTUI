@@ -1,6 +1,8 @@
 tools/music/.build/
 tools/music/Package.resolved
 .DS_Store
+kivna/input/
+kivna/output/
 
 # Dev-only files (kept locally, not shipped to consumers)
 CLAUDE.md

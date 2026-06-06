@@ -16,7 +16,7 @@ if ! command -v "$MUSIC_CLI" &>/dev/null; then
     echo "  2. Configure auth:       music auth setup"
     echo "  3. Get user token:       music auth"
     echo ""
-    echo "See: https://github.com/anthonymaley/music#music-cli-optional--unlocks-catalog-features"
+    echo "See: https://github.com/anthonymaley/apple-music#music-cli-optional--unlocks-catalog-features"
     exit 1
 fi
 $MUSIC_CLI add $ARGUMENTS`

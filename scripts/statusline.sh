@@ -4,10 +4,10 @@
 #
 # Uses music CLI (--json) when available, falls back to AppleScript.
 #
-# Setup: Add to ~/.claude/settings.json:
+# Setup: Add to ~/.claude/settings.json (the version segment changes on update):
 #   "statusLine": {
 #     "type": "command",
-#     "command": "~/.claude/plugins/cache/music@anthonymaley-music/scripts/statusline.sh"
+#     "command": "~/.claude/plugins/cache/apple-music-marketplace/music/1.7.0/scripts/statusline.sh"
 #   }
 
 cat > /dev/null  # consume stdin (Claude Code session JSON)

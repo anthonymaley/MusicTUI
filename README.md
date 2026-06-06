@@ -57,10 +57,10 @@ Control Apple Music, AirPlay speakers, and AirPods from Claude Code or the termi
 
 ```bash
 # Add the marketplace
-/plugin marketplace add anthonymaley/music
+/plugin marketplace add anthonymaley/apple-music
 
 # Install the plugin
-/plugin install music@anthonymaley-music
+/plugin install music@apple-music-marketplace
 ```
 
 ### Claude Desktop App (Cowork)
@@ -74,7 +74,7 @@ Control Apple Music, AirPlay speakers, and AirPods from Claude Code or the termi
 
 ```bash
 # CLI
-claude plugin update music@anthonymaley-music
+claude plugin update music@apple-music-marketplace
 
 # Desktop — Manage plugins → Update
 ```
@@ -88,8 +88,8 @@ Playback, speakers, and volume work out of the box with zero setup. For catalog 
 3. A **MusicKit key** configured via guided setup
 
 ```bash
-# Build the CLI
-cd ~/.claude/plugins/cache/music@anthonymaley-music
+# Build the CLI (the trailing version segment changes on each plugin update)
+cd ~/.claude/plugins/cache/apple-music-marketplace/music/*/
 scripts/install.sh
 
 # Guided auth setup — walks you through creating a MusicKit key
@@ -323,10 +323,12 @@ Add to `~/.claude/settings.json` (adjust the path to your plugin cache location)
 {
   "statusLine": {
     "type": "command",
-    "command": "~/.claude/plugins/cache/music@anthonymaley-music/scripts/statusline.sh"
+    "command": "~/.claude/plugins/cache/apple-music-marketplace/music/1.7.0/scripts/statusline.sh"
   }
 }
 ```
+
+> The `1.7.0` segment is the installed plugin version — it changes every time the plugin updates. After `claude plugin update`, update this path to match (`ls ~/.claude/plugins/cache/apple-music-marketplace/music/` shows the current version).
 
 ## What Needs Auth?
 

@@ -46,7 +46,7 @@ if ! command -v "$MUSIC_CLI" &>/dev/null; then
             echo ""
             echo "  Note: /music:playlist list and /music:playlist tracks work without setup."
             echo ""
-            echo "See: https://github.com/anthonymaley/music#music-cli-optional--unlocks-catalog-features"
+            echo "See: https://github.com/anthonymaley/apple-music#music-cli-optional--unlocks-catalog-features"
             exit 1
             ;;
     esac

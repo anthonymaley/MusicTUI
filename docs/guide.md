@@ -10,7 +10,7 @@ One name for everything: **`music`**.
 
 | Surface | Name | Example |
 |---------|------|---------|
-| Marketplace listing | Apple Music for Claude Code | `/plugin marketplace add anthonymaley/music` |
+| Marketplace listing | Apple Music for Claude Code | `/plugin marketplace add anthonymaley/apple-music` |
 | Slash commands | `/music:*` | `/music:play`, `/music:stop` |
 | CLI binary | `music` | `music now`, `music search "Fouk"` |
 | Skill (natural language) | `music` | just talk to Claude |
@@ -157,7 +157,7 @@ Enable in `~/.claude/settings.json`:
 {
   "statusLine": {
     "type": "command",
-    "command": "~/.claude/plugins/cache/music@anthonymaley-music/scripts/statusline.sh"
+    "command": "~/.claude/plugins/cache/apple-music-marketplace/music/1.7.0/scripts/statusline.sh"
   }
 }
 ```
@@ -188,7 +188,7 @@ music playlist list --json
 │         ▼                 ▼                    ▼              │
 │  ┌─────────────────────────────────────────────────────┐     │
 │  │                    music CLI                          │     │
-│  │           Swift binary, 19 subcommands              │     │
+│  │           Swift binary, 20 subcommands              │     │
 │  │                                                     │     │
 │  │  ┌─────────────────┐  ┌──────────────────────┐      │     │
 │  │  │  AppleScript    │  │  REST API             │      │     │
@@ -260,7 +260,7 @@ Every few seconds, Claude Code runs statusline.sh:
 ```
 apple-music/
 ├── .claude-plugin/
-│   ├── plugin.json              # Plugin metadata (name: "music", v1.3.0)
+│   ├── plugin.json              # Plugin metadata (name: "music", v1.7.0)
 │   └── marketplace.json         # Marketplace listing
 ├── commands/                    # 14 slash commands
 │   ├── play.md                  # /music:play [query] [speaker] [vol%]
@@ -375,7 +375,7 @@ music auth status
 
 ## Version
 
-v1.3.0 — all three locations stay in sync:
+v1.7.0 — all three locations stay in sync:
 - `.claude-plugin/plugin.json` → `version`
 - `.claude-plugin/marketplace.json` → `metadata.version`
 - `.claude-plugin/marketplace.json` → `plugins[0].version`
