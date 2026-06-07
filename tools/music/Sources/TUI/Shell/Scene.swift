@@ -17,6 +17,10 @@ protocol Scene: AnyObject {
     var id: SceneID { get }
     var tabTitle: String { get }
 
+    /// When true, the shell routes every key straight to `handle` without
+    /// resolving globals, Tab, or Esc — for raw text entry (filter, search).
+    var capturesAllInput: Bool { get }
+
     /// Called once per frame before render, so the scene can fold the latest
     /// snapshot into its own view state (e.g. clamp a cursor to new row counts).
     func tick(snapshot: NowPlayingSnapshot)
@@ -26,4 +30,15 @@ protocol Scene: AnyObject {
 
     /// Handle a scene-local key (globals were already resolved by the shell).
     func handle(_ key: KeyPress) -> SceneAction
+}
+
+extension Scene {
+    var capturesAllInput: Bool { false }
+}
+
+/// Pure decision: should the shell resolve global/navigation keys for the
+/// active scene, or hand everything to the scene? Globals are skipped only when
+/// the scene is capturing raw input.
+func shellShouldResolveGlobals(forSceneCapturing capturing: Bool) -> Bool {
+    !capturing
 }

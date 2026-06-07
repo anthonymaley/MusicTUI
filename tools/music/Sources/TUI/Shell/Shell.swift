@@ -53,45 +53,43 @@ func runShell() {
         // 100ms tick: redraw on timeout so the live bar advances while idle.
         guard let key = KeyPress.read(timeout: 0.1) else { continue }
 
-        // 1) Globals (work in every scene).
-        if let action = resolveGlobalKey(key) {
-            switch action {
-            case .playPause:
-                _ = try? syncRun { try await backend.runMusic("playpause") }
-            case .volumeUp:
-                _ = try? syncRun { try await backend.runMusic("set sound volume to (sound volume + 5)") }
-            case .volumeDown:
-                _ = try? syncRun { try await backend.runMusic("set sound volume to (sound volume - 5)") }
-            case .next:
-                _ = try? syncRun { try await backend.runMusic("next track") }
-            case .prev:
-                _ = try? syncRun { try await backend.runMusic("previous track") }
-            case .shuffle:
-                _ = try? syncRun { try await backend.runMusic("set shuffle enabled to (not shuffle enabled)") }
-            case .radio:
-                _ = startRadioStation()
-                router.switchTo(.nowPlaying)
-            case .switchScene(let n):
-                if n >= 1 && n <= tabs.count { router.switchTo(tabs[n - 1].id) }
-            case .quit:
-                return
+        // Raw-input scenes (filter/search) get every key, unmediated.
+        if !shellShouldResolveGlobals(forSceneCapturing: scene.capturesAllInput) {
+            switch scene.handle(key) {
+            case .none, .redraw: break
+            case .push(let id): router.push(id)
+            case .pop: router.pop()
+            case .quit: return
             }
             continue
         }
 
-        // 2) Shell navigation keys.
+        // 1) Globals (work in every non-capturing scene).
+        if let action = resolveGlobalKey(key) {
+            switch action {
+            case .playPause:  _ = try? syncRun { try await backend.runMusic("playpause") }
+            case .volumeUp:   _ = try? syncRun { try await backend.runMusic("set sound volume to (sound volume + 5)") }
+            case .volumeDown: _ = try? syncRun { try await backend.runMusic("set sound volume to (sound volume - 5)") }
+            case .next:       _ = try? syncRun { try await backend.runMusic("next track") }
+            case .prev:       _ = try? syncRun { try await backend.runMusic("previous track") }
+            case .shuffle:    _ = try? syncRun { try await backend.runMusic("set shuffle enabled to (not shuffle enabled)") }
+            case .radio:      _ = startRadioStation(); router.switchTo(.nowPlaying)
+            case .switchScene(let n): if n >= 1 && n <= tabs.count { router.switchTo(tabs[n - 1].id) }
+            case .quit:       return
+            }
+            continue
+        }
+
+        // 2) Tab cycles scenes.
         if case .char("\t") = key {
             if let idx = tabs.firstIndex(where: { $0.id == router.active }) {
                 router.switchTo(tabs[(idx + 1) % tabs.count].id)
             }
             continue
         }
-        if case .escape = key {
-            if router.stack.count > 1 { router.pop() } else { return }
-            continue
-        }
 
-        // 3) Delegate to the active scene.
+        // 3) Everything else (including Esc) goes to the scene; it decides whether
+        //    Esc means an internal back (.redraw) or leaving the scene (.pop).
         switch scene.handle(key) {
         case .none, .redraw: break
         case .push(let id): router.push(id)
