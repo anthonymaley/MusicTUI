@@ -39,26 +39,31 @@ final class NowPlayingScene: Scene {
             return out
         }
 
-        // --- Hero: art (left) + metadata (right) ---
+        // Two-pane when wide enough: left = now-playing (large art + metadata),
+        // right = Up Next list. Narrow falls back to stacked (art+meta, list below).
+        let twoPane = frame.width >= 92
+        let leftX = 3
+        let leftW = twoPane ? 40 : (frame.width - 6)
+        let listBottom = frame.bodyY + frame.bodyHeight - 1
+
+        // --- Left pane: large album art ---
         let artLines = snapshot.artLines
-        let artW = 26
-        let artRows = min(artLines.count, max(0, frame.bodyHeight - 2))
+        let artRows = min(artLines.count, max(0, frame.bodyHeight - 7))
         for i in 0..<artRows {
-            out += ANSICode.moveTo(row: frame.bodyY + i, col: 3) + "\(artLines[i])\(ANSICode.reset)"
+            out += ANSICode.moveTo(row: frame.bodyY + i, col: leftX) + "\(artLines[i])\(ANSICode.reset)"
         }
-        let hasArt = artRows > 0
-        let metaX = hasArt ? 3 + artW + 2 : 3
-        let metaW = max(10, frame.width - metaX - 2)
-        var my = frame.bodyY
+
+        // --- Left pane: metadata below the art ---
+        var my = frame.bodyY + artRows + 1
+        let metaW = leftW
         let playIcon = np.state == "playing" ? "\u{25B6}" : "\u{23F8}"
-        out += ANSICode.moveTo(row: my, col: metaX)
+        out += ANSICode.moveTo(row: my, col: leftX)
         out += "\(ANSICode.bold)\(ANSICode.brightWhite)\(playIcon) \(truncText(np.track, to: metaW - 2))\(ANSICode.reset)"
         my += 1
-        out += ANSICode.moveTo(row: my, col: metaX) + truncText(np.artist, to: metaW)
+        out += ANSICode.moveTo(row: my, col: leftX) + truncText(np.artist, to: metaW)
         my += 1
-        out += ANSICode.moveTo(row: my, col: metaX) + "\(ANSICode.dim)\(truncText(np.album, to: metaW))\(ANSICode.reset)"
+        out += ANSICode.moveTo(row: my, col: leftX) + "\(ANSICode.dim)\(truncText(np.album, to: metaW))\(ANSICode.reset)"
         my += 2
-        // Progress
         let elapsed = formatTime(np.position)
         let total = formatTime(np.duration)
         let ratio = np.duration > 0 ? Double(np.position) / Double(np.duration) : 0
@@ -66,15 +71,16 @@ final class NowPlayingScene: Scene {
         let knob = max(0, min(pbW - 1, Int(ratio * Double(pbW - 1))))
         var bar = ""
         for i in 0..<pbW { bar += i == knob ? "\(ANSICode.bold)\u{25CF}\(ANSICode.reset)" : "\(ANSICode.dim)\u{2500}\(ANSICode.reset)" }
-        out += ANSICode.moveTo(row: my, col: metaX) + "\(elapsed) \(bar) \(total)"
+        out += ANSICode.moveTo(row: my, col: leftX) + "\(elapsed) \(bar) \(total)"
         my += 2
         if !snapshot.contextName.isEmpty {
-            out += ANSICode.moveTo(row: my, col: metaX) + "\(ANSICode.dim)from \(truncText(snapshot.contextName, to: metaW - 5))\(ANSICode.reset)"
+            out += ANSICode.moveTo(row: my, col: leftX) + "\(ANSICode.dim)from \(truncText(snapshot.contextName, to: metaW - 5))\(ANSICode.reset)"
         }
 
-        // --- Up Next list, below the hero ---
-        let listY = frame.bodyY + max(artRows, 8) + 1
-        let listBottom = frame.bodyY + frame.bodyHeight - 1
+        // --- Up Next: right pane (wide) or below the metadata (narrow) ---
+        let listX = twoPane ? (leftX + leftW + 3) : leftX
+        let listY = twoPane ? frame.bodyY : (my + 2)
+        let listW = twoPane ? max(20, frame.width - listX - 2) : (frame.width - 6)
         if listY + 1 <= listBottom {
             // Adapt context entries to the timeline-row shape the shared renderer expects.
             let timeline = rows.map { e in
@@ -89,9 +95,9 @@ final class NowPlayingScene: Scene {
             out += renderTimelineRows(
                 rows: timeline,
                 header: "Up Next",
-                x: 3,
+                x: listX,
                 y: listY,
-                width: frame.width - 6,
+                width: listW,
                 visibleHeight: listBottom - listY + 1,
                 cursorIndex: cursor,
                 scrollOffset: &scroll
