@@ -32,6 +32,12 @@ final class PlaybackPoller {
     private var surrounding: [TrackListEntry] = []
     private var contextName = ""
     private var artLines: [String] = []
+    private var lastContext: ContextQueue? = nil
+    private var qEnded = false
+    private var endedPlaylist = ""
+    private var endedTrack = ""
+    private var endedArtist = ""
+    private var endedArtLines: [String] = []
 
     init(store: NowPlayingStore, backend: AppleScriptBackend, intervalMs: UInt32 = 1000) {
         self.store = store
@@ -75,30 +81,64 @@ final class PlaybackPoller {
         switch pollNowPlaying(backend: backend) {
         case .active(let np):
             stoppedPolls = 0
+            let priorPos = lastPosition          // last-seen position of the PREVIOUS track
+            let priorDur = lastDuration
             lastPosition = np.position
             lastDuration = np.duration
             if np.track != lastTrack {
-                if !lastTrack.isEmpty {
-                    if history.first.map({ $0.track != lastTrack || $0.artist != lastArtist }) ?? true {
-                        history.insert((track: lastTrack, artist: lastArtist), at: 0)
+                // Capture everything about the track we're leaving, before overwrite.
+                let prevArt = artLines           // ended track's art (not yet re-extracted)
+                let prevCtx = lastContext
+                let prevTrack = lastTrack
+                let prevArtist = lastArtist
+                let prevNatural = priorDur > 0 && priorPos >= priorDur - 8
+
+                if !prevTrack.isEmpty {
+                    if history.first.map({ $0.track != prevTrack || $0.artist != prevArtist }) ?? true {
+                        history.insert((track: prevTrack, artist: prevArtist), at: 0)
                         if history.count > 20 { history.removeLast() }
                     }
                 }
                 lastTrack = np.track
                 lastArtist = np.artist
+
                 // Prefer the real playback context (current playlist); fall back to
                 // album tracks when there's no playlist context.
                 let ctx = pollContextQueue(np: np, backend: backend)
                 if ctx.tracks.isEmpty {
                     surrounding = pollAlbumTracks(for: np, backend: backend)
                     contextName = np.album
+                    lastContext = nil
                 } else {
                     surrounding = ctx.tracks
                     contextName = ctx.name
+                    lastContext = ctx
                 }
                 artLines = currentTrackArtLines(width: 44, height: 22)
+
+                // Queue-end detection: prev playlist's last track ended naturally
+                // and we flipped to library autoplay.
+                let fired = detectQueueEnd(
+                    prevWasRealPlaylist: prevCtx.map { !isLibraryContextName($0.name) && !$0.name.isEmpty } ?? false,
+                    prevAtLastTrack: prevCtx.map { $0.total > 0 && $0.currentIndex >= $0.total } ?? false,
+                    prevNaturalEnd: prevNatural,
+                    nowIsLibraryAutoplay: isLibraryContextName(ctx.name))
+                if fired {
+                    qEnded = true
+                    endedPlaylist = prevCtx?.name ?? ""
+                    endedTrack = prevTrack
+                    endedArtist = prevArtist
+                    endedArtLines = prevArt
+                } else if !isLibraryContextName(ctx.name) {
+                    // Re-entered a real context — clear any prior end-of-queue offer.
+                    qEnded = false
+                }
             }
-            store.write(NowPlayingSnapshot(outcome: .active(np), history: history, surrounding: surrounding, contextName: contextName, artLines: artLines))
+            store.write(NowPlayingSnapshot(
+                outcome: .active(np), history: history, surrounding: surrounding,
+                contextName: contextName, artLines: artLines,
+                queueEnded: qEnded, endedPlaylist: endedPlaylist,
+                endedTrack: endedTrack, endedArtist: endedArtist, endedArtLines: endedArtLines))
 
         case .stopped:
             stoppedPolls += 1
@@ -115,7 +155,11 @@ final class PlaybackPoller {
             // Tolerate a few stopped polls before publishing a genuine stop, so a
             // brief gap between tracks doesn't flash the stopped state.
             if !lastTrack.isEmpty && stoppedPolls < 4 { return }
-            store.write(NowPlayingSnapshot(outcome: .stopped, history: history, surrounding: surrounding, contextName: contextName, artLines: artLines))
+            store.write(NowPlayingSnapshot(
+                outcome: .stopped, history: history, surrounding: surrounding,
+                contextName: contextName, artLines: artLines,
+                queueEnded: qEnded, endedPlaylist: endedPlaylist,
+                endedTrack: endedTrack, endedArtist: endedArtist, endedArtLines: endedArtLines))
 
         case .unavailable:
             // Transient read failure: keep the last published snapshot. Never blank
