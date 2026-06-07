@@ -7,7 +7,9 @@ import Foundation
 struct NowPlayingSnapshot {
     var outcome: PollOutcome
     var history: [(track: String, artist: String)]
-    var surrounding: [TrackListEntry]
+    var surrounding: [TrackListEntry]      // playback-context window (current playlist/album)
+    var contextName: String = ""           // name of the current playlist/album
+    var artLines: [String] = []            // current track album art, rendered
 }
 
 /// Thread-safe box around the latest snapshot. The poller calls `write`; the
