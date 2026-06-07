@@ -8,9 +8,26 @@ func runShell() {
     let terminal = TerminalState.shared
 
     let router = Router(root: .nowPlaying)
-    let scenes: [SceneID: Scene] = [.nowPlaying: NowPlayingScene(backend: backend)]
-    // v1 tab order; Milestone 1 ships only Now Playing.
-    let tabs: [(id: SceneID, title: String)] = [(.nowPlaying, "Now")]
+    var scenes: [SceneID: Scene] = [.nowPlaying: NowPlayingScene(backend: backend)]
+    let tabs: [(id: SceneID, title: String)] = [(.nowPlaying, "Now"), (.playlists, "Playlists")]
+
+    // Lazily build a scene the first time it's shown. Returns nil if it can't be
+    // built (e.g. no playlists), so the caller can refuse the switch.
+    func ensureScene(_ id: SceneID) -> Scene? {
+        if let s = scenes[id] { return s }
+        switch id {
+        case .playlists:
+            let names = fetchUserPlaylistNames(backend: backend)
+            guard !names.isEmpty else { return nil }
+            let scene = PlaylistsScene(backend: backend,
+                                       playlists: names,
+                                       sources: makePlaylistDataSources(backend: backend, names: names))
+            scenes[id] = scene
+            return scene
+        default:
+            return nil
+        }
+    }
 
     terminal.enterRawMode()
     print(ANSICode.cursorHome + ANSICode.clearScreen, terminator: "")
@@ -35,7 +52,7 @@ func runShell() {
         let snap = store.read()
         let (w, h) = dims()
         let frame = shellLayout(width: w, height: h)
-        guard let scene = scenes[router.active] else { continue }
+        guard let scene = ensureScene(router.active) ?? scenes[.nowPlaying] else { continue }
         scene.tick(snapshot: snap)
 
         var out = renderShellChrome(frame: frame)
@@ -45,7 +62,7 @@ func runShell() {
         // Footer hint line (skipped in Bare tier where the bar occupies the footer).
         if frame.barTier != .bare {
             out += ANSICode.moveTo(row: frame.footerY, col: 3) + ANSICode.clearLine
-            out += "\(ANSICode.dim)\u{2191}\u{2193} Album  Enter Play  Space \u{23EF}  </> Track  +/- Vol  r Radio  q Quit\(ANSICode.reset)"
+            out += "\(ANSICode.dim)1 Now  2 Playlists  Tab Switch   \u{2191}\u{2193} Move  Enter Open  p Play  s Shuffle  / Filter  q Quit\(ANSICode.reset)"
         }
         print(out, terminator: "")
         fflush(stdout)
@@ -74,7 +91,8 @@ func runShell() {
             case .prev:       _ = try? syncRun { try await backend.runMusic("previous track") }
             case .shuffle:    _ = try? syncRun { try await backend.runMusic("set shuffle enabled to (not shuffle enabled)") }
             case .radio:      _ = startRadioStation(); router.switchTo(.nowPlaying)
-            case .switchScene(let n): if n >= 1 && n <= tabs.count { router.switchTo(tabs[n - 1].id) }
+            case .switchScene(let n):
+                if n >= 1 && n <= tabs.count, ensureScene(tabs[n - 1].id) != nil { router.switchTo(tabs[n - 1].id) }
             case .quit:       return
             }
             continue
@@ -83,7 +101,8 @@ func runShell() {
         // 2) Tab cycles scenes.
         if case .char("\t") = key {
             if let idx = tabs.firstIndex(where: { $0.id == router.active }) {
-                router.switchTo(tabs[(idx + 1) % tabs.count].id)
+                let nextId = tabs[(idx + 1) % tabs.count].id
+                if ensureScene(nextId) != nil { router.switchTo(nextId) }
             }
             continue
         }
