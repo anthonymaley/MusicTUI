@@ -343,6 +343,7 @@ func formatTime(_ seconds: Int) -> String {
     return String(format: "%d:%02d", m, s)
 }
 
+/// Radio from the currently-playing track's artist (unchanged public behavior).
 func startRadioStation() -> PlaybackContext? {
     let backend = AppleScriptBackend()
     // Get current track info
@@ -351,8 +352,14 @@ func startRadioStation() -> PlaybackContext? {
     }) else { return nil }
     let parts = info.trimmingCharacters(in: .whitespacesAndNewlines).split(separator: "|", maxSplits: 1)
     guard parts.count >= 2 else { return nil }
-    let trackName = String(parts[0])
-    let artistName = String(parts[1])
+    return startRadioStation(seedTitle: String(parts[0]), seedArtist: String(parts[1]))
+}
+
+/// Build + play an artist station seeded by an explicit track/artist.
+func startRadioStation(seedTitle: String, seedArtist: String) -> PlaybackContext? {
+    let backend = AppleScriptBackend()
+    let trackName = seedTitle
+    let artistName = seedArtist
     let playlistName = "__radio__ \(artistName) — \(trackName)"
     let escapedPlaylist = escapeAppleScriptString(playlistName)
     let escapedArtist = escapeAppleScriptString(artistName)
