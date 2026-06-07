@@ -73,3 +73,17 @@ func currentTrackArtLines(width: Int, height: Int) -> [String] {
     guard let path = extractArtwork() else { return [] }
     return artworkToAscii(path: path, width: width, height: height)
 }
+
+/// True when a context name is the on-device library (where autoplay lands).
+func isLibraryContextName(_ name: String) -> Bool {
+    let n = name.trimmingCharacters(in: .whitespaces)
+    return n == "Music" || n == "Library"
+}
+
+/// Pure queue-end guard. Fires only when a real playlist's last track ended
+/// naturally and playback flipped to library autoplay — not on manual library
+/// browsing or mid-playlist changes.
+func detectQueueEnd(prevWasRealPlaylist: Bool, prevAtLastTrack: Bool,
+                    prevNaturalEnd: Bool, nowIsLibraryAutoplay: Bool) -> Bool {
+    prevWasRealPlaylist && prevAtLastTrack && prevNaturalEnd && nowIsLibraryAutoplay
+}
