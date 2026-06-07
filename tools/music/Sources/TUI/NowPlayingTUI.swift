@@ -603,17 +603,27 @@ func renderTimelineRows(
     if clampedCursor >= scrollOffset + rowHeight { scrollOffset = clampedCursor - rowHeight + 1 }
 
     let end = min(rows.count, scrollOffset + rowHeight)
+
+    // Cap the selection highlight to hug the content: widest visible row + 1,
+    // never wider than the pane. Avoids a highlight bar spanning a huge pane.
+    func rowContent(_ row: TimelineRow) -> String {
+        let indexText = row.index.map { String(format: "%02d", $0) } ?? "  "
+        let marker = row.isCurrent ? "\u{25B6} " : "  "
+        let label = truncText(row.label, to: max(1, width - 6))
+        return "\(marker)\(indexText)  \(label)"
+    }
+    var maxLen = 0
+    for rowIndex in scrollOffset..<end { maxLen = max(maxLen, rowContent(rows[rowIndex]).count) }
+    let highlightWidth = min(width, maxLen + 1)
+
     for rowIndex in scrollOffset..<end {
         let row = rows[rowIndex]
         let isCursor = rowIndex == clampedCursor
-        let indexText = row.index.map { String(format: "%02d", $0) } ?? "  "
         // Consistent geometry for every row — state is encoded as color/highlight,
         // never as indentation. A 2-col status slot (▶ for the playing track, else
         // blank), the index, then the label.
-        let marker = row.isCurrent ? "\u{25B6} " : "  "
-        let label = truncText(row.label, to: max(1, width - 6))
-        let content = "\(marker)\(indexText)  \(label)"
-        let padded = content.count < width ? content + String(repeating: " ", count: width - content.count) : content
+        let content = rowContent(row)
+        let padded = content.count < highlightWidth ? content + String(repeating: " ", count: highlightWidth - content.count) : content
 
         out += ANSICode.moveTo(row: tRow, col: x)
         if isCursor {

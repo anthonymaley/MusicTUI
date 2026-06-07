@@ -11,17 +11,21 @@ struct ContextQueue {
 /// Pure parse of the pollContextQueue result.
 /// Format: line 1 = context name, line 2 = current index, line 3 = window start,
 /// then "index|title|artist" rows.
-func parseContextQueue(_ raw: String, currentTitle: String, currentArtist: String) -> ContextQueue {
+func parseContextQueue(_ raw: String) -> ContextQueue {
     let lines = raw.components(separatedBy: "\n")
     guard lines.count >= 3 else { return ContextQueue(name: "", tracks: []) }
     let name = lines[0].trimmingCharacters(in: .whitespaces)
+    // Mark the current track by its real playlist index (line 2), not by
+    // title/artist — a library with duplicate adjacent tracks would otherwise
+    // mark more than one row as current.
+    let currentIndex = Int(lines[1].trimmingCharacters(in: .whitespaces)) ?? -1
     var tracks: [TrackListEntry] = []
     for line in lines.dropFirst(3) where !line.isEmpty {
         let f = line.split(separator: "|", maxSplits: 2).map(String.init)
         guard f.count == 3, let idx = Int(f[0]) else { continue }
         tracks.append(TrackListEntry(
             index: idx, name: f[1], artist: f[2],
-            isCurrent: f[1] == currentTitle && f[2] == currentArtist
+            isCurrent: idx == currentIndex
         ))
     }
     return ContextQueue(name: name, tracks: tracks)
@@ -56,7 +60,7 @@ func pollContextQueue(np: NowPlayingState, backend: AppleScriptBackend = AppleSc
             return ""
         """)
     }) else { return ContextQueue(name: "", tracks: []) }
-    return parseContextQueue(raw, currentTitle: np.track, currentArtist: np.artist)
+    return parseContextQueue(raw)
 }
 
 /// Extract the current track's album art and render it to ANSI lines at the
