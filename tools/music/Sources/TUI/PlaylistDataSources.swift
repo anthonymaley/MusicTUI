@@ -121,7 +121,7 @@ func makePlaylistDataSources(backend: AppleScriptBackend, names: [String]) -> Pl
             try await backend.runMusic("""
                 set total to count of tracks of playlist "\(esc)"
                 set n to total
-                if n > 8 then set n to 8
+                if n > 40 then set n to 40
                 set output to ""
                 if n > 0 then
                     set ns to name of tracks 1 thru n of playlist "\(esc)"

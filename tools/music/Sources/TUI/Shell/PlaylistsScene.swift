@@ -240,8 +240,9 @@ final class PlaylistsScene: Scene {
             out += "\(ANSICode.dim)\(c) tracks\(dur)\(ANSICode.reset)"
         }
         y += 2
-        let gw = min(16, z.heroWidth)
-        let block = gradientBlock(name: m.name, width: gw, height: 6)
+        let gw = min(28, z.heroWidth)
+        let gh = 10
+        let block = gradientBlock(name: m.name, width: gw, height: gh)
         var seed = 0; for b in m.name.unicodeScalars { seed = (seed &* 31 &+ Int(b.value)) & 0xffffff }
         let r = 80 + (seed & 0x7f), g = 80 + ((seed >> 8) & 0x7f), bl = 80 + ((seed >> 16) & 0x7f)
         let color = "\u{1B}[38;2;\(r);\(g);\(bl)m"
@@ -267,7 +268,8 @@ final class PlaylistsScene: Scene {
             if lines.isEmpty {
                 out += ANSICode.moveTo(row: y, col: rx) + "\(ANSICode.dim)(empty)\(ANSICode.reset)"
             } else {
-                for (i, line) in lines.prefix(8).enumerated() {
+                let maxLines = max(1, bodyBottom - y + 1)
+                for (i, line) in lines.prefix(maxLines).enumerated() {
                     out += ANSICode.moveTo(row: y, col: rx)
                     let idx = String(format: "%02d", i + 1)
                     out += "\(ANSICode.dim)\(idx)\(ANSICode.reset)  \(truncText(line, to: max(2, z.rightWidth - 4)))"
