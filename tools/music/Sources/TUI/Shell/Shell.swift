@@ -62,16 +62,14 @@ func runShell() {
         var out = renderShellChrome(frame: frame)
         out += renderTabStrip(active: router.active, tabs: tabs, frame: frame)
         out += scene.render(frame: frame, snapshot: snap)
-        out += renderNowPlayingBar(snapshot: snap, frame: frame)
-        // Footer hint line (skipped in Bare tier where the bar occupies the footer).
-        if frame.barTier != .bare {
-            out += ANSICode.moveTo(row: frame.footerY, col: 3) + ANSICode.clearLine
-            out += "\(ANSICode.dim)1 Now  2 Playlists  3 Speakers  Tab Switch   \u{2191}\u{2193} Move  Enter Select  q Quit\(ANSICode.reset)"
-        }
+        // No persistent now-playing bar — playback (incl. live progress) lives on
+        // the Now tab. Just the footer hint line at the bottom.
+        out += ANSICode.moveTo(row: frame.footerY, col: 3) + ANSICode.clearLine
+        out += "\(ANSICode.dim)1 Now  2 Playlists  3 Speakers  Tab Switch   \u{2191}\u{2193} Move  Enter Select  q Quit\(ANSICode.reset)"
         print(out, terminator: "")
         fflush(stdout)
 
-        // 100ms tick: redraw on timeout so the live bar advances while idle.
+        // 100ms tick: redraw on timeout so the Now tab's live progress advances.
         guard let key = KeyPress.read(timeout: 0.1) else { continue }
 
         // Raw-input scenes (filter/search) get every key, unmediated.

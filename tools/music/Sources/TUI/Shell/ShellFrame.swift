@@ -23,15 +23,17 @@ struct ShellFrame {
 }
 
 func shellLayout(width: Int, height: Int) -> ShellFrame {
+    // The persistent now-playing bar was removed (playback lives on the Now tab),
+    // so there is no bar band — the body extends down to just above the footer.
+    // Height still drives the tab style (full names vs digits vs hidden).
     let tier: BarTier
-    let barHeight: Int
     let tabStyle: TabStyle
     switch height {
-    case 24...:   tier = .full;    barHeight = 3; tabStyle = .full
-    case 19...23: tier = .compact; barHeight = 1; tabStyle = .full
-    case 15...18: tier = .minimal; barHeight = 1; tabStyle = .digits
-    default:      tier = .bare;    barHeight = 0; tabStyle = .hidden
+    case 19...:   tier = .full;    tabStyle = .full
+    case 15...18: tier = .minimal; tabStyle = .digits
+    default:      tier = .bare;    tabStyle = .hidden
     }
+    let barHeight = 0
 
     let labelY = 1
     let showTabs = tabStyle != .hidden
