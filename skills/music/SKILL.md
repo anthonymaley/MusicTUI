@@ -37,7 +37,6 @@ music now                                     # what's playing + speakers
 music now --json                              # structured: track, artist, album, speakers, state
 music shuffle on|off
 music repeat off|one|all
-music radio                                   # build shuffled radio playlist from current track
 ```
 
 ## Speakers (no auth)
@@ -129,11 +128,12 @@ music mix --artists "Fouk,Floating Points" --count 20 --name "Friday Mix"  # mix
 ## Interactive TUI (requires real terminal, not Claude Code)
 
 ```bash
-music now                                     # now playing TUI with album context
-music playlist                                # 2-pane playlist browser
+music                                         # unified shell: Now / Playlists / Speakers tabs
 ```
 
-TUI behavior: standalone `music now` shows the current album context; `music playlist` hands off to Now Playing with the full selected playlist pinned. Radio builds a temporary shuffled playlist and hands off to the same playlist-backed Now Playing view when possible. Cursor movement is local and fast.
+Bare `music` is the only interactive surface — a tabbed shell with **Now**, **Playlists**, and **Speakers** tabs. (`music now` / `music now --json` and `music playlist <subcommand>` are non-interactive CLI commands, documented above.)
+
+TUI behavior: the Now tab shows the current album context; selecting a playlist on the Playlists tab pins it on the Now tab. Cursor movement is local and fast.
 
 TUI controls: `↑↓` navigate the right pane, `Enter` play selected, `←→` seek, `Space` pause, `</>` previous/next track (full up/down through the playlist), `z`/`r` shuffle the queue, `+/-` volume, `s` speakers, `v` mixer, `q` quit. Playlist track-play requires Music's Autoplay (∞) turned OFF — it drives playback track-by-track and needs each track to stop at its end.
 

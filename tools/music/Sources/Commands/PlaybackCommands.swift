@@ -477,27 +477,6 @@ struct Repeat_: ParsableCommand {
     }
 }
 
-struct Radio: ParsableCommand {
-    static let configuration = CommandConfiguration(abstract: "Start a radio station from the current track.")
-    func run() throws {
-        let backend = AppleScriptBackend()
-        let info = try syncRun {
-            try await backend.runMusic("return name of current track & \" — \" & artist of current track")
-        }
-        let trackInfo = info.trimmingCharacters(in: .whitespacesAndNewlines)
-        print("Building radio station from: \(trackInfo) ...")
-        let context = startRadioStation()
-        guard let context else {
-            print("Could not build a radio station from: \(trackInfo)")
-            throw ExitCode.failure
-        }
-        print("Started radio station from: \(trackInfo)")
-        if isTTY() {
-            _ = runNowPlayingWithContext(context)
-        }
-    }
-}
-
 // MARK: - Sync helper for running async from sync ParsableCommand.run()
 
 func syncRun<T>(_ block: @escaping () async throws -> T) throws -> T {

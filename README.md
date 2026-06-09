@@ -128,7 +128,6 @@ Instant execution. No AI reasoning, no token cost. Type `/music:` and tab to dis
 | `/music:stop kitchen` | Remove kitchen from speaker group |
 | `/music:now` | What's playing (track, album, speakers) |
 | `/music:shuffle` | Toggle shuffle on/off |
-| `/music:radio` | Build a temporary shuffled radio playlist from what's playing |
 
 ### Speakers & Volume
 
@@ -274,9 +273,9 @@ Claude handles multi-step orchestration — searching the catalog, creating play
 
 ## Interactive TUI
 
-Run these commands in a real terminal (not inside Claude Code — TUI requires a TTY). Install `chafa` (`brew install chafa`) for album art in now-playing.
+Run bare `music` in a real terminal (not inside Claude Code — TUI requires a TTY). Install `chafa` (`brew install chafa`) for album art in now-playing.
 
-**Now playing** (`music now`) — 3-column layout: album art, playback metadata, and a right pane. Standalone `music now` shows album context for the current track. When launched from `music playlist`, Now Playing keeps the full selected playlist pinned so you can browse and replay any track while playback continues.
+**Unified shell** (`music`) — a tabbed interface with **Now**, **Playlists**, and **Speakers** tabs. The Now tab shows a 3-column layout: album art, playback metadata, and a right pane. Select a playlist on the Playlists tab to pin it on the Now tab so you can browse and replay any track while playback continues.
 
 > **Turn off Music's Autoplay (∞).** Playlist track-selection and up/down navigation drive playback track-by-track and rely on a track *stopping* at its end. With Autoplay on, Music bleeds into the library between tracks. Disable it once in Music's Up Next panel (the ∞ button).
 
@@ -298,11 +297,11 @@ Two markers in the right pane: green `▶` = currently playing, cyan `▸` = cur
 
 ![Now Playing](media/nowplaying.png)
 
-**Playlist browser** (`music playlist`) — 2-pane browser. Left: playlists (instant highlight on `↑↓`, no fetch). Right: tracks (loaded on `Enter` or `Tab`). `p` plays playlist, `s` shuffles, `b` goes back.
+**Playlists tab** — left: playlists (instant highlight on `↑↓`, no fetch). Right: tracks (loaded on `Enter` or `Tab`). `p` plays playlist, `s` shuffles, `b` goes back.
 
 ![Playlist Browser](media/playlist.jpg)
 
-**Speaker picker** (`music speaker`) — toggle AirPlay outputs on/off, adjust per-speaker volume with `←→`. Active speakers show volume bars.
+**Speakers tab** — toggle AirPlay outputs on/off, adjust per-speaker volume with `←→`. Active speakers show volume bars. (The `music speaker` slash command and CLI still drive speakers non-interactively.)
 
 ![Speaker Picker](media/speakers.png)
 

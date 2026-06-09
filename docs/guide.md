@@ -35,7 +35,7 @@ There are five interaction layers, from quickest to most flexible:
 
 ### 1. Slash Commands (`/music:*`)
 
-Fast, instant, no AI reasoning. Type `/music:` and tab to discover all 14 commands.
+Fast, instant, no AI reasoning. Type `/music:` and tab to discover all 13 commands.
 
 Every slash command has `disable-model-invocation: true` — they execute immediately as shell scripts, with zero token cost. The output appears directly in the chat.
 
@@ -53,7 +53,6 @@ Every slash command has `disable-model-invocation: true` — they execute immedi
 /music:stop kitchen              Remove kitchen from the speaker group
 /music:now                       What's currently playing
 /music:shuffle                   Toggle shuffle on/off
-/music:radio                     Build shuffled radio playlist from current track
 ```
 
 **Speakers**
@@ -106,21 +105,19 @@ music remove                     Remove current song from current playlist
 
 ### 2. Interactive TUI
 
-Use a real terminal for TUI surfaces.
+Run bare `music` in a real terminal for the unified interactive shell — a tabbed interface with **Now**, **Playlists**, and **Speakers** tabs.
 
 ```
-music playlist                  Full playlist browser, then Now Playing with the playlist pinned
-music now                       Now Playing with current album context
+music                           Unified shell: Now / Playlists / Speakers tabs
 ```
 
 Current TUI contract:
 
-- `music playlist` does not fetch tracks on every playlist highlight; it loads tracks on selection.
-- Playlist-origin Now Playing shows the full selected playlist and keeps `↑↓` navigation local.
-- Standalone `music now` shows the current album context, not a real Apple Music queue.
-- Radio builds a temporary shuffled playlist and opens a playlist-backed Now Playing view when possible.
+- The Playlists tab does not fetch tracks on every playlist highlight; it loads tracks on selection.
+- Selecting a playlist pins it on the Now tab, which shows the full playlist and keeps `↑↓` navigation local.
+- The Now tab shows the current album context, not a real Apple Music queue.
 - `Enter` plays the highlighted row.
-- `z` toggles shuffle in playlist-origin Now Playing.
+- `z` toggles shuffle in the pinned-playlist Now tab.
 - Speaker wake is explicit via `music speaker wake`; normal playback does not auto-reset AirPlay outputs.
 
 ### 3. Natural Language (Skill)
@@ -181,7 +178,7 @@ music playlist list --json
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────────┐   │
 │  │ Slash Commands│  │   Skill      │  │   Status Line    │   │
 │  │ /music:*     │  │   (music)     │  │   statusline.sh  │   │
-│  │ 14 commands  │  │   natural    │  │   now playing    │   │
+│  │ 13 commands  │  │   natural    │  │   now playing    │   │
 │  │ instant exec │  │   language   │  │   zero tokens    │   │
 │  └──────┬───────┘  └──────┬───────┘  └────────┬─────────┘   │
 │         │                 │                    │              │
@@ -262,7 +259,7 @@ apple-music/
 ├── .claude-plugin/
 │   ├── plugin.json              # Plugin metadata (name: "music", v1.7.0)
 │   └── marketplace.json         # Marketplace listing
-├── commands/                    # 14 slash commands
+├── commands/                    # 13 slash commands
 │   ├── play.md                  # /music:play [query] [speaker] [vol%]
 │   ├── pause.md                 # /music:pause
 │   ├── skip.md                  # /music:skip
@@ -275,7 +272,6 @@ apple-music/
 │   ├── search.md                # /music:search <query>
 │   ├── add.md                   # /music:add <title> <artist>
 │   ├── similar.md               # /music:similar
-│   ├── radio.md                 # /music:radio
 │   └── playlist.md              # /music:playlist <action> [args]
 ├── skills/music/
 │   └── SKILL.md                 # Conversational skill (music CLI reference)

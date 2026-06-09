@@ -5,7 +5,6 @@ struct Playlist: ParsableCommand {
     static let configuration = CommandConfiguration(
         abstract: "Manage playlists.",
         subcommands: [
-            PlaylistBrowse.self,
             PlaylistList.self,
             PlaylistTracks.self,
             PlaylistCreate.self,
@@ -17,81 +16,8 @@ struct Playlist: ParsableCommand {
             PlaylistCreateFrom.self,
             PlaylistCleanup.self,
         ],
-        defaultSubcommand: PlaylistBrowse.self
+        defaultSubcommand: PlaylistList.self
     )
-}
-
-struct PlaylistBrowse: ParsableCommand {
-    static let configuration = CommandConfiguration(commandName: "browse", abstract: "Browse playlists interactively.")
-
-    func run() throws {
-        guard isTTY() else {
-            try listPlaylists(json: false)
-            return
-        }
-
-        let backend = AppleScriptBackend()
-        let names = fetchUserPlaylistNames(backend: backend)
-
-        guard !names.isEmpty else {
-            print("No playlists found.")
-            return
-        }
-
-        let sources = makePlaylistDataSources(backend: backend, names: names)
-        let onMeta = sources.onMeta
-        let onPreview = sources.onPreview
-        let onTracks = sources.onTracks
-
-        var browserState: BrowserState? = nil
-
-        while true {
-            let result = runPlaylistBrowser(
-                playlists: names,
-                onMeta: onMeta,
-                onPreview: onPreview,
-                onTracks: onTracks,
-                savedState: browserState
-            )
-
-            switch result {
-            case .playTrack(let plIdx, let trIdx, let ctx, let state):
-                browserState = state
-                let plName = names[plIdx]
-                let escapedPlName2 = plName.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
-                _ = try syncRun {
-                    try await backend.runMusic("play track \(trIdx + 1) of playlist \"\(escapedPlName2)\"")
-                }
-                let npResult = runNowPlayingWithContext(ctx)
-                if case .quit = npResult { return }
-                // .back -> loop continues, browser restores state
-
-            case .playPlaylist(let idx, let ctx, let state):
-                browserState = state
-                let plName = names[idx].replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
-                _ = try syncRun { try await backend.runMusic("set shuffle enabled to false") }
-                _ = try syncRun { try await backend.runMusic("play playlist \"\(plName)\"") }
-                let npResult = runNowPlayingWithContext(ctx)
-                if case .quit = npResult { return }
-
-            case .shufflePlaylist(let idx, let ctx, let state):
-                browserState = state
-                let plName = names[idx].replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
-                _ = try syncRun { try await backend.runMusic("set shuffle enabled to true") }
-                _ = try syncRun { try await backend.runMusic("play playlist \"\(plName)\"") }
-                let npResult = runNowPlayingWithContext(ctx)
-                if case .quit = npResult { return }
-
-            case .nowPlaying(let ctx, let state):
-                browserState = state
-                let npResult = runNowPlayingWithContext(ctx)
-                if case .quit = npResult { return }
-
-            case .quit:
-                return
-            }
-        }
-    }
 }
 
 struct PlaylistList: ParsableCommand {
