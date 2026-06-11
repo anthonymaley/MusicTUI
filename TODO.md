@@ -2,15 +2,19 @@
 
 Current high-priority follow-ups before a broad public push.
 
-## Current Session (2026-06-11 — 2.0.0 transport-only trim + release + vault tidy) — DONE
+## Current Session (2026-06-11 — segment 2: 3.0.0 skill-only surface) — DONE
 
-**Done.** Shipped **2.0.0** (breaking): slash-command surface trimmed to transport-only, GitHub release published, vault tidied, skill description routes composition, user's statusline fixed properly.
+**Done.** Shipped **3.0.0** (breaking): ALL slash commands removed — `/music` (the skill) is the single entry point; transport belongs to the Mac's media keys. CLI gained one-command multi-room play.
 
-- [x] **2.0.0 trim:** removed `/music:search`, `/music:add`, `/music:similar`, `/music:playlist` (14 → 10 commands). Rationale: slash = instant transport with osascript fallback (the zero-setup tier — lane boundary turned out to equal the auth boundary); composition = skill/TUI/CLI. CLI untouched (24 subcommands, ResultCache chaining intact). Major bump for public-surface removal. Suite 112 green, CLI rebuilt. Commit `d6f9fca`.
-- [x] **Docs/skill:** SKILL.md description now states it's the composition layer + adds the trigger phrases the removed commands caught ("search for…", "add that track to my library", "make a playlist from those results"); README lane note + Kid A multi-room example. Commit `1c0005b` (folded into 2.0.0 before tagging — no extra bump).
-- [x] **GitHub release v2.0.0** published, verified Latest, clean body (`--notes-file`, no heredoc gotcha). Notes lead with the breaking change + migration table, roll up untagged 1.17.0.
-- [x] **Vault tidy (kivna save):** Status.md rewritten into Where-We-Are/What's-Open/What's-Next shape (release stack compressed to playbook pointer); MOC Quick Commands → transport + CLI composition table, **fixed stale install identifiers** (`music@anthonymaley-music` → `music@apple-music-marketplace`, repo `anthonymaley/music` → `anthonymaley/apple-music`); Weekly.md created (week of 2026-06-08).
-- [x] **User statusline (user machine, not repo):** my prior advice was wrong — settings.json pointed at a personal ctx-free wrapper, not the plugin cache. Wrapper now composes now-playing (via repo path `~/apple-music/scripts/statusline.sh`, immune to version churn) + ctx-free. Verified live. Shame point persisted: `read-the-state-before-prescribing`.
+- [x] **Decision archaeology:** user saw the 10-command menu and expected "most gone". Transcript (raw jsonl — episodic-memory plugin is broken on this machine, Node module mismatch) showed his original 2.0.0 ask was skill-only; my "keep transport" recommendation shipped via an ambiguous "lets do it" against a fork question. His media-keys argument (⏯ ⏭ ⏮ beat any typed command) then killed the transport lane entirely.
+- [x] **PlayParser** (TDD, 13 tests): multi-speaker token-span matching (kills the "kitchenette"→Kitchen substring bug), filler-word cascade ("in the kitchen and living room at 60"), %-volume, trailing shuffle. **PlayResolution** (5 tests): whole-query playlist/album/song lookup BEFORE the two-arg song+artist split — live verification caught `kid a` playing "Sinister Kid" (Black Keys) via `artist contains "a"`.
+- [x] **Exclusive routing:** naming speakers in `music play` = play exactly there (select-first, per-device try — same shape as `speaker X only`). Semantics change from additive; release-noted.
+- [x] **Live-verified** multi-room on Kitchen + Living Room (Kid A, exclusive group, per-device vol). User's playback state captured first and fully restored after (track, position, outputs, volumes).
+- [x] 10 command files deleted; SKILL.md = sole entry (play fast-path forwards words verbatim to `music play`; CLI-missing branch → install.sh); README/guide rewritten around media keys → /music → TUI → CLI; "zero setup" claim removed (false since the osascript fallback tier went with the commands).
+- [x] Versions 3.0.0 ×4, suite 112 → 130 green, CLI rebuilt + installed. Commit `694e2af`, tag v3.0.0, release published + verified Latest (`gh release list`).
+- [x] Switch-out hygiene: playbook Current Status + gotchas + tree updated; playbook's stale install identifiers fixed (same wrong names the vault MOC carried — second copy found); CLAUDE.md structure block updated.
+
+**For the user:** `claude plugin update music@apple-music-marketplace` + session restart to see the one-entry menu. Local CLI already at 3.0.0; statusline unaffected (repo path).
 
 **Open question (blocks the tend fixes, carried):** the `.gitignore` "Dev-only files" block lists CLAUDE.md, TODO.md, .slainte, kivna/, docs/playbook.md — all TRACKED, so the entries are no-ops; the `kivna/` entry actively blocks `git add` of new session logs (needs `-f`). Recommendation: delete the dead entries. Also pending: delete 15 on-disk `.DS_Store` files.
 
@@ -35,7 +39,8 @@ Current high-priority follow-ups before a broad public push.
 - Sleep timer: evaluated and rejected (needs a detached process; the skill can schedule a pause instead).
 
 ### Context
-- **Decisions locked this session (2026-06-11):** slash commands are transport-only — the lane split (slash = instant transport, skill = composition, TUI = interactive) is now the documented product shape; removing public commands = major bump. Statusline for the plugin author points at the repo copy, not the versioned cache path.
+- **Decisions locked 2026-06-11 (segment 2, SUPERSEDES the morning's lane split):** the plugin ships NO slash commands — `/music` (skill) is the single entry point; transport = media keys; determinism lives in the CLI's PlayParser, not the menu. Named speakers in `music play` = exclusive routing. Resolution order: whole-query before song+artist split. Removing public commands = major bump (now twice).
+- **Earlier 06-11 decision (still holds):** statusline for the plugin author points at the repo copy, not the versioned cache path.
 - **Earlier decisions (still hold):** quick pickers (bare `music speaker`/`volume`/`similar`/`suggest`) are blessed one-shots; playlist adds are playlist-only (no library side effect); fast-publish consumers must tolerate stale secondary fields.
 - Worked directly on `main` (project convention). `docs/playlist-browser-ui.md` intentionally untracked.
 

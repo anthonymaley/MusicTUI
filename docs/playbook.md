@@ -5,12 +5,12 @@ How to rebuild this project from scratch.
 ## Tech Stack
 Claude Code plugin with two layers:
 - **music CLI** — Swift 5.9+ binary using AppleScript (playback/speakers) + Apple Music REST API (catalog/library)
-- **Plugin shell** — slash commands, skill, status line script that delegate to music CLI (with AppleScript fallback)
+- **Plugin shell** — the `/music` skill (single entry point) + status line script, both delegating to the music CLI; transport is the Mac's media keys, not a plugin surface
 
 ## Setup
-1. Install the plugin: `/plugin marketplace add anthonymaley/music` then `/plugin install music@anthonymaley-music`
+1. Install the plugin: `/plugin marketplace add anthonymaley/apple-music` then `/plugin install music@apple-music-marketplace`
 2. Grant automation permissions: System Settings > Privacy & Security > Automation
-3. Build music CLI: `scripts/install.sh` (optional, unlocks catalog features)
+3. Build music CLI: `scripts/install.sh` (required for plugin features since 3.0.0; no Apple account needed)
 4. Set up Apple Music auth: `music auth setup` then `music auth` (optional, unlocks library/discovery)
 5. Optional: enable status line in `~/.claude/settings.json` (see README)
 
@@ -31,6 +31,8 @@ apple-music/
 │       │   └── AuthPage.swift        # MusicKit JS HTML for user token
 │       ├── Commands/
 │       │   ├── PlaybackCommands.swift   # play, pause, skip, back, stop, now, seek, shuffle, repeat
+│       │   ├── PlayParser.swift         # play args → query/speakers/volume/shuffle (pure, tested)
+│       │   ├── PlayResolution.swift     # play query strategy order (pure, tested)
 │       │   ├── LoveCommands.swift       # love/unlove (macOS 26: property is `favorited`)
 │       │   ├── HistoryCommands.swift    # recent (played history), rotation (heavy rotation)
 │       │   ├── SpeakerCommands.swift    # speaker list/set/add/remove/stop/wake
@@ -59,8 +61,7 @@ apple-music/
 │               ├── NowPlayingStore / PlaybackPoller / PlaybackContext
 │               ├── AppQueue.swift    # app-owned playlist queue
 │               └── ShellActions / ShellChrome / ShellFrame
-├── commands/                  # Slash commands (delegate to music CLI, osascript fallback)
-├── skills/music/SKILL.md      # Conversational skill documenting music CLI surface
+├── skills/music/SKILL.md      # The /music skill — single plugin entry point (full CLI reference)
 ├── scripts/
 │   ├── install.sh             # Build + symlink music to ~/.local/bin/
 │   └── statusline.sh          # Now playing for Claude Code status bar
@@ -93,6 +94,8 @@ apple-music/
 Published via Claude Code marketplace. Version bumps must update all four locations (see CLAUDE.md) and rebuild via `scripts/install.sh`. Tag releases (`git tag vX.Y.Z`) and publish a GitHub release (`gh release create`) — releases had silently stopped at v1.6.1 while ten versions shipped untagged.
 
 ## Gotchas
+- **The two-arg song+artist split false-positives wildly** — `title contains "kid" and artist contains "a"` matched "Sinister Kid" (The Black Keys) for the query `kid a`. `artist contains` with a short fragment matches almost any library. PlayResolution therefore runs the whole-query playlist/album/song lookup FIRST and the song+artist split only as fallback. Only live verification caught this — the parse was unit-green.
+- **`music now`'s bracket field is the ALBUM, not the playlist** — "DIP TEK — INVT [8 AM Swim]" means album "8 AM Swim". Restoring playback context from `music now` output via `playlist "8 AM Swim"` errors (-1728); look the track up in `playlist "Library"` by name + artist instead.
 - **Apple-curated playlists are class `subscription playlist`, not `user playlist`** — `every user playlist` silently omits them (verified live: 49 user + 9 subscription + 1 library = 59). Resolve by bare name (`playlist "Loops"`) and they work like any playlist for reads/playback; they're read-only for writes. Their `smart` property errors with -1700 on coercion — always try-wrap it.
 - **`gh release create --notes` via a quoted heredoc (`<<'EOF'`) keeps backslash escapes literal** — `\\`` shows up verbatim in the published body. Backticks need no escaping inside a quoted heredoc. Read the body back (`gh release view --json body`) before calling it done.
 - **Parameter error (-50)** — Split AirPlay routing and playback into separate osascript calls
@@ -119,6 +122,8 @@ Published via Claude Code marketplace. Version bumps must update all four locati
 - **Concatenated AppleScript batches fail all-or-nothing under concurrent load** — `onMeta` builds one script for N playlists; at startup the poller + preview fetches hammer Music in parallel, so a batch can transiently error and (with `try? syncRun`) silently return `[:]` — blanking exactly `chunkSize` rows (the giveaway: 8 missing = one failed batch of 8). Each individual playlist works when retried alone. Fixes: (a) wrap each playlist's clause in its own `try` so one bad entry can't abort the batch and partial results survive; (b) the background refresh retries any index that didn't come back, with backoff, until all resolve. Playlist rail metadata is cached to `~/.config/music/playlist-meta.json` (keyed by name) and seeded on launch for an instant paint; the off-thread refresh rewrites it.
 
 ## Current Status
+**3.0.0 — skill-only surface; all slash commands removed.** The `/music` skill is the plugin's single entry point; transport (play/pause/next/previous) belongs to the Mac's media keys — the strongest transport surface was the platform itself, outside the 2.0.0 lane analysis's frame. The 2.0.0 "keep transport" cut shipped from an ambiguous "lets do it" against a fork question; transcript archaeology showed the user's original ask was skill-only. CLI gains one-command multi-room play: `music play kid a in the kitchen and living room at 60` — new `PlayParser` (token-span speaker matching, no substring false positives; filler-word cascade; %-volume; 13 tests) + `PlayResolution` (whole-query playlist/album/song lookup BEFORE the two-arg song+artist split; 5 tests — live verification caught `kid a` playing "Sinister Kid" by The Black Keys via `artist contains "a"`). Naming speakers now routes playback to EXACTLY those speakers (select-first exclusive group — semantics change from additive, release-noted). The zero-setup osascript fallback tier retired with the commands; SKILL.md gained a CLI-missing branch (points at install.sh) and a play fast-path (forward words verbatim to `music play`). Suite 130. Live-verified multi-room on Kitchen + Living Room.
+
 **2.0.0 — slash-command surface trimmed to transport (14 → 10).** Removed `/music:search`, `/music:add`, `/music:similar`, `/music:playlist` — composition belongs to the skill (natural language), the TUI (Playlists tab), and the CLI; slash commands are now deliberately transport-only (play/pause/skip/back/stop/now/shuffle/repeat/volume/speaker — the zero-setup osascript-fallback set). The CLI itself is unchanged (all 24 subcommands intact; `music search/add/similar/playlist` still work, ResultCache index chaining included). Major bump because removing public commands is a breaking surface change. README/guide rewritten to state the lane split explicitly.
 
 **1.17.0 — Apple-curated playlists in the TUI rail.** Curated playlists added to the library are class `subscription playlist`, not `user playlist` — the rail's `every user playlist` omitted all 9 of the user's (Loops, Replay 20xx, Microhouse/Nu Cumbia Essentials, Gliding); only manual duplicates ever showed. `fetchUserPlaylistNames` now enumerates both classes in one call (`U`/`S` + unit-separator lines; pure `parseRailPlaylistNames` tested), `PlaylistsScene` badges them APPLE (radio > recent > apple > smart). Downstream untouched — everything resolves `playlist "name"` generically (bulk reads verified live on "Loops"). Writes fail honestly via toast (Apple-side read-only). Suite 112. Live-verified: rail + track browse in tmux; playing one NOT yet verified (user's music was playing).

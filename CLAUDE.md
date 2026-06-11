@@ -17,9 +17,10 @@ Use semver in all four locations (keep in sync):
 ## Project Structure
 
 ```
-skills/music/SKILL.md          # conversational skill (complex requests)
-commands/                      # slash commands (14 quick controls)
+skills/music/SKILL.md          # the /music skill — single plugin entry point
 scripts/statusline.sh          # status line script (now playing)
 .claude-plugin/                # plugin.json and marketplace.json
 tools/music/                   # Swift CLI source
 ```
+
+There are no slash commands (removed in 3.0.0) — transport is the Mac's media keys; everything else goes through the skill, TUI, or CLI.
