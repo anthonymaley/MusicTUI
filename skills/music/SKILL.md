@@ -1,11 +1,31 @@
 ---
 name: music
-description: "Apple Music in your terminal. Play tracks, route to AirPlay speakers and AirPods, search 100 million songs, build playlists, discover new music, favorite tracks, seek within a song, browse your listening history. Works on macOS with zero setup for playback and speakers. This is the composition layer — slash commands cover transport only, so ALL search, library, playlist, and discovery requests come here. Trigger on anything music-related: playing a song, switching speakers, adjusting volume, seeking or skipping around in a track, searching the catalog, adding tracks to the library, building or managing playlists, finding similar music, checking what's playing, favoriting or loving a song, recalling recently played music. Covers casual requests too: 'put on some house music', 'find me something like this', 'switch to my AirPods', 'add the bedroom to the group', 'turn down the kitchen', 'search for Gypsy Woman', 'add that track to my library', 'make a playlist from those results', 'add this to my workout playlist', 'play Kid A in the kitchen and living room at 60%', 'love this track', 'skip ahead 30 seconds', 'what was that song I played earlier'. Handles Apple Music, AirPlay, HomePod, AirPods, Bluetooth audio, albums, artists, playlists, recommendations, new releases, listening history, heavy rotation, and any audio routing on macOS."
+description: "Apple Music in your terminal. Play tracks, route to AirPlay speakers and AirPods, search 100 million songs, build playlists, discover new music, favorite tracks, seek within a song, browse your listening history. This is the plugin's only entry point — there are no separate slash commands, so EVERY music request comes here: transport, playback routing, search, library, playlists, discovery. Trigger on anything music-related: playing a song, pausing, skipping, switching speakers, adjusting volume, seeking within a track, searching the catalog, adding tracks to the library, building or managing playlists, finding similar music, checking what's playing, favoriting a song, recalling recently played music. Covers casual requests too: 'put on some house music', 'pause the music', 'next track', 'find me something like this', 'switch to my AirPods', 'add the bedroom to the group', 'turn down the kitchen', 'search for Gypsy Woman', 'add that track to my library', 'make a playlist from those results', 'add this to my workout playlist', 'play Kid A in the kitchen and living room at 60%', 'love this track', 'skip ahead 30 seconds', 'what was that song I played earlier'. Handles Apple Music, AirPlay, HomePod, AirPods, Bluetooth audio, albums, artists, playlists, recommendations, new releases, listening history, heavy rotation, and any audio routing on macOS."
 ---
 
 # Apple Music Controller
 
 Control Apple Music from the terminal via the `music` CLI. All commands run as bash — use `music` for structured operations, with `--json` for machine-readable output.
+
+## If the CLI is not installed
+
+If `command -v music` fails, do NOT improvise AppleScript fallbacks. Tell the user the CLI needs a one-time build and point them at the install script, then retry after they run it:
+
+```bash
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/install.sh"   # from the plugin
+# or, in the repo: scripts/install.sh
+```
+
+## Fast path: play requests
+
+For any request shaped like "play X [on/in speakers] [at volume%] [shuffle]", forward the user's words to `music play` in ONE bash call — strip only the leading "play" and any % sign. The CLI's parser deterministically extracts speaker names (including several at once), volume, filler words ("in", "the", "and", "at", "on"), and a trailing "shuffle":
+
+```bash
+music play kid a in the kitchen and living room at 60
+music play jazz for cooking kitchen 40 shuffle
+```
+
+Naming speakers routes playback to exactly those speakers (it deselects the rest). Don't pre-chain `music speaker` + `music volume` for simple play requests — `music play` does all three. If the query itself contains a speaker-like word, use the explicit flags (`--song`, `--album`, `--playlist`) instead.
 
 ## Architecture
 
@@ -20,8 +40,10 @@ music play                                    # resume (shows now playing + spea
 music play "Working Vibes"                    # play a playlist by name
 music play "Working Vibes" shuffle            # play with shuffle
 music play 3                                  # play result #3 from last search
-music play "Working Vibes" kitchen 20         # play on Kitchen speaker at vol 20
+music play "Working Vibes" kitchen 20         # play on Kitchen speaker (only) at vol 20
 music play "Working Vibes" kitchen 20 shuffle # routed + shuffled
+music play kid a in the kitchen and living room at 60  # multi-room: filler words OK, group volume
+music play deck and pool                      # resume on Deck + Pool (exactly those)
 music play "Gypsy Woman" "Tom Misch"          # song + artist; catalog fallback if authenticated
 music play "https://music.apple.com/...?...i=1581424482" # catalog song URL; quote it in zsh
 music play --playlist "Working Vibes"         # explicit playlist flag
@@ -175,11 +197,11 @@ music auth set-token <TOKEN>                  # save user token from browser
 
 **Minimize tool calls.** Chain independent commands with `&&` in a SINGLE bash call where possible.
 
-For multi-step requests like "play Fouk on the kitchen speaker at 60%":
+"Play X on speaker Y at volume Z" is NOT a multi-step request — `music play` handles routing and volume natively (see Fast path above):
 
 ```bash
-# ONE bash call — chain with &&
-music speaker kitchen 60 && music play "Working Vibes" shuffle
+# ONE command, not a chain
+music play Working Vibes in the kitchen at 60 shuffle
 ```
 
 For "find house tracks and make a playlist":
@@ -208,7 +230,7 @@ music playlist create-from "Losing It" "FISHER" "Coconuts" "Fouk" "Stay With Me"
 **Rules:**
 - Use result indices (`music playlist create "Name" 1 3 5`) when building from search results
 - Use `create-from` when you have title/artist pairs from other sources
-- Chain speaker + volume + play into a single `&&` bash call
+- Never chain `music speaker` + `music volume` + `music play` for a play request — one `music play` call does all three
 - Use `--json` on search to get structured results for parsing
 - Both `create-from` and index-based create handle errors gracefully
 

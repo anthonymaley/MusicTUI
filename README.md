@@ -42,14 +42,16 @@ Control Apple Music, AirPlay speakers, and AirPods from Claude Code or the termi
   └─────────────────────────────────────────────────────────────────────┘
 ```
 
-## Three Ways to Use It
+## Four Ways to Use It
 
 | Layer | How | Setup | Token cost |
 |-------|-----|-------|-----------|
-| **Slash commands** (`/music:play`) | Transport: play, skip, speakers, volume — type and run, instant | None | None |
-| **CLI** (`music now`, `music speaker`) | Terminal commands, TUI, scriptable | Build from source | None |
+| **Media keys** (⏯ ⏭ ⏮) | Transport: play/pause, next, previous — your keyboard already does this | None | None |
+| **Natural language** (`/music play Kid A in the kitchen and living room at 60%`) | Everything in words: playback with routing, search, playlists, discovery | Build CLI from source | Normal |
+| **CLI + TUI** (`music`, `music now`, `music speaker`) | Terminal commands, interactive shell, scriptable | Build from source | None |
 | **CLI + API** (`music search`, `music playlist create`) | Catalog, library, discovery | + Apple Developer account | None |
-| **Natural language** ("play house on the kitchen") | Claude orchestrates CLI calls | Depends on features used | Normal |
+
+There are no per-action slash commands — `/music` (the skill) is the single entry point, and bare transport belongs to the keys your Mac already has.
 
 ## Install
 
@@ -70,6 +72,18 @@ Control Apple Music, AirPlay speakers, and AirPods from Claude Code or the termi
 3. Choose **Add plugin**
 4. Browse and select **Apple Music**
 
+### Build the CLI (one command, no account needed)
+
+The plugin drives the `music` CLI, so build it once after installing (Swift 5.9+, ships with Xcode):
+
+```bash
+# The trailing version segment changes on each plugin update
+cd ~/.claude/plugins/cache/apple-music-marketplace/music/*/
+scripts/install.sh
+```
+
+That unlocks playback, multi-room AirPlay routing, volume, the TUI, and the status line — no Apple Developer account required.
+
 ### Update
 
 ```bash
@@ -79,19 +93,16 @@ claude plugin update music@apple-music-marketplace
 # Desktop — Manage plugins → Update
 ```
 
+After updating the plugin, rebuild the CLI: `scripts/install.sh`
+
 ### Advanced Features (optional, requires Apple Developer account)
 
-Playback, speakers, and volume work out of the box with zero setup. For catalog search, library management, playlists via API, and music discovery, you need:
+For catalog search, library management, playlists via API, and music discovery, you also need:
 
 1. An **Apple Developer account** ($99/year at [developer.apple.com](https://developer.apple.com))
-2. The **music CLI** built from source
-3. A **MusicKit key** configured via guided setup
+2. A **MusicKit key** configured via guided setup
 
 ```bash
-# Build the CLI (the trailing version segment changes on each plugin update)
-cd ~/.claude/plugins/cache/apple-music-marketplace/music/*/
-scripts/install.sh
-
 # Guided auth setup — walks you through creating a MusicKit key
 music auth setup
 
@@ -102,54 +113,45 @@ music auth
 music auth status
 ```
 
-After updating the plugin, rebuild the CLI: `scripts/install.sh`
+## Playback, Speakers & Volume (CLI — zero auth)
 
-## Slash Commands
-
-Instant execution. No AI reasoning, no token cost. Type `/music:` and tab to discover.
+> **Transport tip:** play/pause, next, and previous are on your keyboard (⏯ ⏭ ⏮ media keys) — they control Apple Music natively, from any app, with nothing installed. The commands below are for everything the keys can't say: *what* to play, *where*, and *how loud*.
 
 ### Playback
 
 | Command | What it does |
 |---------|-------------|
-| `/music:play` | Resume playback |
-| `/music:play Working Vibes` | Play a playlist |
-| `/music:play Working Vibes kitchen 60` | Play on a speaker at volume |
-| `/music:play Working Vibes shuffle` | Shuffle a playlist |
-| `/music:play 3` | Play result #3 from last search/playlist |
+| `music play` | Resume playback |
+| `music play Working Vibes` | Play a playlist |
+| `music play kid a in the kitchen and living room at 60` | Multi-room: route to several speakers at a volume, filler words welcome |
+| `music play Working Vibes kitchen 60 shuffle` | Speaker + volume + shuffle in one shot |
+| `music play 3` | Play result #3 from last search/playlist |
 | `music play "Gypsy Woman" "Tom Misch"` | Play a song by title + artist; falls back to catalog add if authenticated |
 | `music play "https://music.apple.com/...?...i=1581424482"` | Add/play a catalog song URL when authenticated |
-| `music play "Gypsy Woman (Quarantine Sessions)"` | Play a matching local Library album/song by name |
-| `music play --album "Kid A" --artist "Radiohead"` | Play a local Library album with artist filter |
-| `/music:pause` | Pause |
-| `/music:skip` | Next track |
-| `/music:back` | Previous track |
-| `/music:stop` | Stop playback |
-| `/music:stop kitchen` | Remove kitchen from speaker group |
-| `/music:now` | What's playing (track, album, speakers) |
-| `/music:shuffle` | Toggle shuffle on/off |
-| `/music:repeat` | Set repeat mode (off/one/all) |
+| `music play --album "Kid A" --artist "Radiohead"` | Explicit flags when the name could collide with a speaker |
+| `music pause` / `music skip` / `music back` / `music stop` | Transport from the terminal |
+| `music now` | What's playing (track, album, speakers) |
+| `music shuffle` / `music repeat off\|one\|all` | Shuffle and repeat modes |
 | `music seek +30` / `music seek 1:30` | Seek within the current track (relative or absolute) |
 | `music love` / `music unlove` | Favorite / unfavorite the current track |
+
+Naming speakers in `music play` routes playback to **exactly those speakers** — it selects the ones you name and deselects the rest. Routing never forces a wake/reset cycle during normal playback; if a speaker shows connected but stays silent, run `music speaker wake [name]`.
 
 ### Speakers & Volume
 
 | Command | What it does |
 |---------|-------------|
-| `/music:speaker` | Interactive picker with ←→ volume control |
-| `/music:speaker kitchen` | Add kitchen to active speakers |
-| `/music:speaker kitchen 40` | Add kitchen at volume 40 |
-| `/music:speaker kitchen stop` | Remove kitchen from group |
-| `/music:speaker airpods only` | Switch to AirPods only |
-| `/music:speaker wake` | Wake all active speakers (fix ghost connections) |
-| `/music:speaker wake kitchen` | Wake a specific speaker |
-| `/music:speaker 1 2 5` | Add speakers by number from last list |
-| `/music:volume` | Interactive per-speaker volume mixer |
-| `/music:volume 60` | Set all active speakers to 60 |
-| `/music:volume up` / `down` | Volume ±10 |
-| `/music:volume kitchen 80` | Set a specific speaker to 80 |
-
-Slash commands are deliberately transport-only: playback, speakers, volume — instant controls you reach for mid-session. Catalog search, library adds, similar tracks, and playlist management are composition: ask in natural language (the skill composes the CLI calls), use the TUI's Playlists tab, or call the CLI directly (`music search`, `music add`, `music similar`, `music playlist`).
+| `music speaker` | Interactive picker with ←→ volume control |
+| `music speaker kitchen` | Add kitchen to active speakers |
+| `music speaker kitchen 40` | Add kitchen at volume 40 |
+| `music speaker kitchen stop` | Remove kitchen from group |
+| `music speaker airpods only` | Switch to AirPods only |
+| `music speaker wake [kitchen]` | Wake all (or one) active speakers — fixes ghost connections |
+| `music speaker 1 2 5` | Add speakers by number from last list |
+| `music volume` | Interactive per-speaker volume mixer |
+| `music volume 60` | Set all active speakers to 60 |
+| `music volume up` / `down` | Volume ±10 |
+| `music volume kitchen 80` | Set a specific speaker to 80 |
 
 ## CLI Commands
 
@@ -194,23 +196,6 @@ Slash commands are deliberately transport-only: playback, speakers, volume — i
 | `music mix --artists "Fouk,Floating Points" --name "Friday Mix"` | Mixed playlist |
 | `music recent` | Recently played tracks (numbered, so `music play 3` works) |
 | `music rotation` | Your heavy-rotation music |
-
-### Routed Playback
-
-Play music on a specific speaker in one command. The CLI parses the speaker name from your args using longest-match against live AirPlay devices.
-
-```bash
-music play "Working Vibes" kitchen 20          # play on Kitchen at volume 20
-music play "Working Vibes" kitchen 20 shuffle  # with shuffle
-music play "Working Vibes" "sonos arc" 60      # multi-word speaker names
-```
-
-Speaker routing does not force an automatic wake/reset cycle during normal playback. That keeps playlist changes from cutting out active AirPlay groups. If a speaker shows as connected but produces no sound, run an explicit wake cycle:
-
-```bash
-music speaker wake              # wake all active speakers
-music speaker wake kitchen      # wake a specific speaker
-```
 
 ### Diagnostics
 
@@ -304,7 +289,7 @@ Two markers in the track pane: green `▶` = currently playing, inverse video = 
 
 ![Playlist Browser](media/playlist.jpg)
 
-**Speakers tab** — `↑↓` select, `Enter` toggles AirPlay outputs on/off, `←→` adjusts per-speaker volume. Active speakers show volume bars. (The `music speaker` slash command and CLI still drive speakers non-interactively.)
+**Speakers tab** — `↑↓` select, `Enter` toggles AirPlay outputs on/off, `←→` adjusts per-speaker volume. Active speakers show volume bars. (The `music speaker` CLI drives speakers non-interactively.)
 
 ![Speaker Picker](media/speakers.png)
 
@@ -327,7 +312,7 @@ Add to `~/.claude/settings.json` (adjust the path to your plugin cache location)
 {
   "statusLine": {
     "type": "command",
-    "command": "~/.claude/plugins/cache/apple-music-marketplace/music/2.0.0/scripts/statusline.sh"
+    "command": "~/.claude/plugins/cache/apple-music-marketplace/music/3.0.0/scripts/statusline.sh"
   }
 }
 ```
@@ -348,12 +333,12 @@ Add to `~/.claude/settings.json` (adjust the path to your plugin cache location)
 
 ## How It Works
 
-The plugin routes through the `music` CLI when installed. Without it, playback and speaker commands fall back to raw AppleScript.
+Everything routes through the `music` CLI. The `/music` skill turns natural language into CLI calls; the TUI and terminal use the CLI directly; transport keys talk to Music.app natively.
 
 ```
-  Slash Commands ──► music CLI ──► AppleScript (playback, speakers, volume)
-       │                   └──► REST API (catalog, library, playlists, discovery)
-       └──► AppleScript (fallback when music CLI not installed)
+  Media keys ─────────────────────► Music.app (play/pause, next, previous)
+  /music skill ──► music CLI ──► AppleScript (playback, speakers, volume)
+  TUI / terminal ─┘          └──► REST API (catalog, library, playlists, discovery)
 ```
 
 Search results are cached locally (`~/.config/music/last-songs.json`). When you run `music search`, `music similar`, or view playlist tracks, the numbered results persist so you can reference them by index in follow-up commands like `music play 3` or `music add 3 --to "House"`. Play commands show full now-playing info (track, album, speakers) after starting playback.

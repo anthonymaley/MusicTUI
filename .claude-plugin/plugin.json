@@ -1,7 +1,7 @@
 {
   "name": "music",
-  "description": "Control Apple Music from Claude Code. Slash commands, a CLI, and natural-language control for playback, speakers, playlists, and discovery. Playback, speakers, and volume work with zero setup on macOS. Apple Developer auth is only needed for catalog search, library, and discovery features.",
-  "version": "2.0.0",
+  "description": "Control Apple Music from Claude Code. Natural-language control (the /music skill), a CLI, and an interactive TUI for playback, AirPlay speakers, playlists, and discovery; transport stays on your media keys. One-command CLI build; Apple Developer auth is only needed for catalog search, library, and discovery features.",
+  "version": "3.0.0",
   "author": {
     "name": "Anthony Maley"
   },

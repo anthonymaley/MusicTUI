@@ -122,119 +122,103 @@ struct Play: ParsableCommand {
                 return
             }
 
-            // Check for trailing "shuffle" keyword
-            let hasShuffle = args.last?.lowercased() == "shuffle"
-            var remaining = hasShuffle ? Array(args.dropLast()) : args
-
-            // Extract volume (last arg if it's a number 0-100)
-            var speakerVolume: Int? = nil
-            if remaining.count >= 2, let vol = Int(remaining.last!), (0...100).contains(vol) {
-                speakerVolume = vol
-                remaining = Array(remaining.dropLast())
+            // Parse query / speakers / volume / shuffle (see PlayParser).
+            let deviceNames = (try? fetchSpeakerDevices())?.compactMap { $0["name"] as? String } ?? []
+            let parsed = PlayParser.parse(args, deviceNames: deviceNames)
+            let playlistName = parsed.queryArgs.joined(separator: " ")
+            if !parsed.speakers.isEmpty {
+                verbose("matched speakers \(parsed.speakers.joined(separator: ", ")) from args")
             }
 
-            // Try to match a speaker name from the args (longest match wins)
-            var matchedSpeaker: String? = nil
-            var playlistName: String
-            let joinedLower = remaining.joined(separator: " ").lowercased()
-
-            if let devices = try? fetchSpeakerDevices() {
-                let deviceNames = devices.map { $0["name"] as! String }
-                var bestLen = 0
-                for devName in deviceNames {
-                    let devLower = devName.lowercased()
-                    if joinedLower.contains(devLower) && devLower.count > bestLen {
-                        matchedSpeaker = devName
-                        bestLen = devLower.count
-                    }
-                }
-                if let speaker = matchedSpeaker {
-                    verbose("matched speaker \"\(speaker)\" from args")
-                    // Remove speaker name from the joined string to get playlist name
-                    let cleaned = joinedLower.replacingOccurrences(of: speaker.lowercased(), with: "")
-                        .trimmingCharacters(in: .whitespaces)
-                    playlistName = cleaned.isEmpty ? "" : cleaned
-                    // Restore original case from args for the playlist name
-                    if !cleaned.isEmpty {
-                        // Re-join args without the speaker words
-                        let speakerWords = Set(speaker.lowercased().split(separator: " ").map(String.init))
-                        let playlistArgs = remaining.filter { !speakerWords.contains($0.lowercased()) }
-                        playlistName = playlistArgs.joined(separator: " ")
-                    }
-                } else {
-                    playlistName = remaining.joined(separator: " ")
-                }
-            } else {
-                playlistName = remaining.joined(separator: " ")
-            }
-
-            // Route to speaker without forcing a full AirPlay reset.
-            if let speaker = matchedSpeaker {
-                let escSpeaker = escapeAppleScriptString(speaker)
-                _ = try syncRun {
-                    try await backend.runMusic("set selected of AirPlay device \"\(escSpeaker)\" to true")
-                }
-                // Set volume if specified
-                if let vol = speakerVolume {
+            // Naming speakers means "play exactly there": select the targets
+            // first, then prune the rest (same select-first, per-device-try
+            // shape as the speaker command's exclusive mode — a teardown-first
+            // order could leave no outputs, and one unreachable device must
+            // not abort the rest). Routing and playback stay separate calls.
+            if !parsed.speakers.isEmpty {
+                for speaker in parsed.speakers {
+                    let escSpeaker = escapeAppleScriptString(speaker)
                     _ = try syncRun {
-                        try await backend.runMusic("set sound volume of AirPlay device \"\(escSpeaker)\" to \(vol)")
+                        try await backend.runMusic("set selected of AirPlay device \"\(escSpeaker)\" to true")
                     }
-                    print("\(speaker) [\(vol)]")
+                }
+                let nameList = parsed.speakers
+                    .map { "\"\(escapeAppleScriptString($0))\"" }
+                    .joined(separator: ", ")
+                _ = try syncRun {
+                    try await backend.runMusic("""
+                        repeat with d in (every AirPlay device)
+                            try
+                                if selected of d and (name of d is not in {\(nameList)}) then
+                                    set selected of d to false
+                                end if
+                            end try
+                        end repeat
+                    """)
+                }
+                if let vol = parsed.volume {
+                    for speaker in parsed.speakers {
+                        let escSpeaker = escapeAppleScriptString(speaker)
+                        _ = try syncRun {
+                            try await backend.runMusic("set sound volume of AirPlay device \"\(escSpeaker)\" to \(vol)")
+                        }
+                    }
+                    print(parsed.speakers.map { "\($0) [\(vol)]" }.joined(separator: ", "))
                 }
             }
 
-            if hasShuffle {
+            if parsed.shuffle {
                 _ = try syncRun {
                     try await backend.runMusic("set shuffle enabled to true")
                 }
             }
 
-            if remaining.count == 2,
-               try playSongArtist(title: remaining[0], artist: remaining[1]) {
-                if hasShuffle {
-                    _ = try syncRun {
-                        try await backend.runMusic("set shuffle enabled to true")
-                    }
-                }
-                showNowPlaying(json: json, waitForPlay: true)
-                return
-            }
-
-            if !playlistName.isEmpty {
-                let escapedQuery = escapeAppleScriptString(playlistName)
-                let result = try syncRun {
-                    try await backend.runMusic("""
-                        try
-                            play playlist "\(escapedQuery)"
-                            return "PLAYLIST"
-                        on error
-                            set albumMatches to (every track of playlist "Library" whose album contains "\(escapedQuery)")
-                            if (count of albumMatches) > 0 then
-                                play item 1 of albumMatches
-                                return "ALBUM"
-                            end if
-                            set songMatches to (every track of playlist "Library" whose name contains "\(escapedQuery)")
-                            if (count of songMatches) > 0 then
-                                play item 1 of songMatches
-                                return "SONG"
-                            end if
-                            return "NOT_FOUND"
-                        end try
-                    """)
-                }
-                if result.trimmingCharacters(in: .whitespacesAndNewlines) == "NOT_FOUND" {
-                    print("No playlist, album, or song found matching '\(playlistName)'")
-                    throw ExitCode.failure
-                }
-            } else if matchedSpeaker != nil {
-                // Speaker routed but no playlist specified — just resume
+            let strategies = PlayResolution.plan(queryArgs: parsed.queryArgs)
+            if strategies.isEmpty {
+                // Speakers routed (or no args survived parsing) — just resume.
                 _ = try syncRun {
                     try await backend.runMusic("play")
                 }
             } else {
-                // No speaker, no playlist — shouldn't happen but resume
-                _ = try syncRun {
-                    try await backend.runMusic("play")
+                var played = false
+                for strategy in strategies {
+                    switch strategy {
+                    case .playlistAlbumSong(let query):
+                        let escapedQuery = escapeAppleScriptString(query)
+                        let result = try syncRun {
+                            try await backend.runMusic("""
+                                try
+                                    play playlist "\(escapedQuery)"
+                                    return "PLAYLIST"
+                                on error
+                                    set albumMatches to (every track of playlist "Library" whose album contains "\(escapedQuery)")
+                                    if (count of albumMatches) > 0 then
+                                        play item 1 of albumMatches
+                                        return "ALBUM"
+                                    end if
+                                    set songMatches to (every track of playlist "Library" whose name contains "\(escapedQuery)")
+                                    if (count of songMatches) > 0 then
+                                        play item 1 of songMatches
+                                        return "SONG"
+                                    end if
+                                    return "NOT_FOUND"
+                                end try
+                            """)
+                        }
+                        played = result.trimmingCharacters(in: .whitespacesAndNewlines) != "NOT_FOUND"
+                    case .songArtist(let title, let artist):
+                        played = try playSongArtist(title: title, artist: artist)
+                    }
+                    if played { break }
+                }
+                guard played else {
+                    print("No playlist, album, or song found matching '\(playlistName)'")
+                    throw ExitCode.failure
+                }
+                if parsed.shuffle {
+                    _ = try syncRun {
+                        try await backend.runMusic("set shuffle enabled to true")
+                    }
                 }
             }
             showNowPlaying(json: json, waitForPlay: true)

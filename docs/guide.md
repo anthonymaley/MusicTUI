@@ -11,11 +11,10 @@ One name for everything: **`music`**.
 | Surface | Name | Example |
 |---------|------|---------|
 | Marketplace listing | Apple Music for Claude Code | `/plugin marketplace add anthonymaley/apple-music` |
-| Slash commands | `/music:*` | `/music:play`, `/music:stop` |
+| Skill (natural language) | `/music` | `/music play kid a in the kitchen at 60`, or just talk to Claude |
 | CLI binary | `music` | `music now`, `music search "Fouk"` |
-| Skill (natural language) | `music` | just talk to Claude |
 
-The `name` field in `plugin.json` is `music` — this controls the slash command prefix. "Apple Music" appears in descriptions and docs for discoverability.
+The `name` field in `plugin.json` is `music` — this is what makes the skill appear as `/music` in the menu. "Apple Music" appears in descriptions and docs for discoverability. There are no per-action slash commands: the skill is the plugin's single entry point.
 
 ## Command Vocabulary
 
@@ -33,58 +32,28 @@ This keeps the command palette, README, and marketplace copy searchable while st
 
 There are five interaction layers, from quickest to most flexible:
 
-### 1. Slash Commands (`/music:*`)
+### 1. Media Keys (transport)
 
-Fast, instant, no AI reasoning. Type `/music:` and tab to discover all 10 commands. Slash commands cover transport: playback, speakers, volume — the things you reach for mid-session. Composition (search, library, playlists, discovery) lives in the skill, the TUI, and the CLI.
+Play/pause, next, and previous live on your keyboard (⏯ ⏭ ⏮). They control Apple Music natively through macOS — from any app, with zero setup, zero tokens, and no plugin surface at all. The plugin deliberately ships no slash commands for transport: a hardware key beats any typed command.
 
-Every slash command has `disable-model-invocation: true` — they execute immediately as shell scripts, with zero token cost. The output appears directly in the chat.
+### 2. Natural Language (Skill — `/music`)
 
-**Playback**
-
-```
-/music:play                      Resume playback
-/music:play Working Vibes        Play a playlist
-/music:play Working Vibes shuffle  Play with shuffle
-/music:play 3                    Play result #3 from last search
-/music:pause                     Pause
-/music:skip                      Next track
-/music:back                      Previous track
-/music:stop                      Stop all playback
-/music:stop kitchen              Remove kitchen from the speaker group
-/music:now                       What's currently playing
-/music:shuffle                   Toggle shuffle on/off
-/music:repeat                    Set repeat mode (off/one/all)
-music seek +30                   Seek within the current track (CLI)
-music love                       Favorite the current track (CLI; music unlove reverses)
-```
-
-**Speakers**
+The plugin's single entry point in Claude Code. Say what you want — playback with routing, search, library, playlists, discovery — and Claude composes the right `music` CLI calls.
 
 ```
-/music:speaker                   Interactive picker (TUI) — toggle + ←→ volume
-/music:speaker list              List all AirPlay devices
-/music:speaker kitchen           Add kitchen to active speakers
-/music:speaker kitchen 40        Add kitchen and set volume to 40
-/music:speaker kitchen stop      Remove kitchen from the group
-/music:speaker airpods only      Switch to AirPods only
-/music:speaker 1 2 5             Add speakers by index from last list
-/music:speaker wake              Wake all active speakers
-/music:speaker wake kitchen      Wake a specific speaker
+> /music play kid a in the kitchen and living room at 60%
+> play some Daft Punk on the kitchen speaker
+> add the living room to the group and turn it down to 40
+> find me something like what's playing and make a playlist
+> what's new from Radiohead?
+> make me a mix from Fouk and Floating Points
 ```
 
-**Volume**
+Play-shaped requests are a fast path: the skill forwards your words to `music play`, whose parser deterministically extracts the query, speaker names (several at once), filler words, and volume. Naming speakers plays on exactly those speakers. Everything else is genuine composition — multiple CLI calls chained by Claude.
 
-```
-/music:volume                       Interactive mixer (TUI)
-/music:volume 60                    Set all active speakers to 60
-/music:volume up                    Volume +10
-/music:volume down                  Volume -10
-/music:volume kitchen 80            Set a specific speaker to 80
-```
+The skill triggers automatically when Claude detects music-related intent; `/music` invokes it explicitly. Requires the CLI to be built (one command: `scripts/install.sh`) — if it's missing, the skill says so and points at the script.
 
-Catalog search, library adds, similar tracks, and playlist management are deliberately **not** slash commands — they're composition, handled by the skill (natural language), the TUI (Playlists tab), and the CLI directly (`music search`, `music add`, `music similar`, `music playlist`).
-
-### 2. Interactive TUI
+### 3. Interactive TUI
 
 Run bare `music` in a real terminal for the unified interactive shell — a tabbed interface with **Now**, **Playlists**, and **Speakers** tabs.
 
@@ -102,21 +71,6 @@ Current TUI contract:
 - Keys: `1/2/3` jump to a tab, `Tab`/`Shift-Tab` cycle, `↑↓` + `PgUp/PgDn/Home/End` navigate, `Space` play/pause, `</>` previous/next, `←→` seek (Now) or per-speaker volume (Speakers), `z`/`r` shuffle, `l` favorite, `+/-` master volume, `n` next-up options, `Esc` back, `q` quit.
 - Speaker wake is explicit via `music speaker wake`; normal playback does not auto-reset AirPlay outputs.
 - Music's Autoplay (∞) must stay OFF — playlist track-selection drives playback track-by-track and relies on each track stopping at its end.
-
-### 3. Natural Language (Skill)
-
-For complex, multi-step requests — just talk normally. Claude uses the `music` skill to understand what you want and composes the right CLI calls.
-
-```
-> play some Daft Punk on the kitchen speaker
-> add the living room to the group and turn it down to 40
-> play my top 25 most played and list the tracks
-> find me something like what's playing and make a playlist
-> what's new from Radiohead?
-> make me a mix from Fouk and Floating Points
-```
-
-The skill triggers automatically when Claude detects music-related intent. No special invocation needed.
 
 ### 4. Status Line
 
@@ -137,7 +91,7 @@ Enable in `~/.claude/settings.json`:
 {
   "statusLine": {
     "type": "command",
-    "command": "~/.claude/plugins/cache/apple-music-marketplace/music/2.0.0/scripts/statusline.sh"
+    "command": "~/.claude/plugins/cache/apple-music-marketplace/music/3.0.0/scripts/statusline.sh"
   }
 }
 ```
@@ -160,14 +114,14 @@ music playlist list --json
 ┌─────────────────────────────────────────────────────────────┐
 │                    Claude Code Plugin                         │
 │                                                              │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────────┐   │
-│  │ Slash Commands│  │   Skill      │  │   Status Line    │   │
-│  │ /music:*     │  │   (music)     │  │   statusline.sh  │   │
-│  │ 10 commands  │  │   natural    │  │   now playing    │   │
-│  │ instant exec │  │   language   │  │   zero tokens    │   │
-│  └──────┬───────┘  └──────┬───────┘  └────────┬─────────┘   │
-│         │                 │                    │              │
-│         ▼                 ▼                    ▼              │
+│        ┌──────────────┐        ┌──────────────────┐          │
+│        │   Skill      │        │   Status Line    │          │
+│        │   (/music)    │        │   statusline.sh  │          │
+│        │   natural    │        │   now playing    │          │
+│        │   language   │        │   zero tokens    │          │
+│        └──────┬───────┘        └────────┬─────────┘          │
+│               │                          │                    │
+│               ▼                          ▼                    │
 │  ┌─────────────────────────────────────────────────────┐     │
 │  │                    music CLI                          │     │
 │  │           Swift binary, 24 subcommands              │     │
@@ -188,30 +142,25 @@ music playlist list --json
 │  │  └─────────────────┘  └──────────────────────┘      │     │
 │  └─────────────────────────────────────────────────────┘     │
 │                                                              │
-│  ┌─────────────────────────────────────────────────────┐     │
-│  │              AppleScript Fallback                    │     │
-│  │  When music is not installed, slash commands          │     │
-│  │  fall back to raw osascript for basic playback,     │     │
-│  │  speakers, and volume control.                      │     │
-│  └─────────────────────────────────────────────────────┘     │
 └─────────────────────────────────────────────────────────────┘
+
+  Media keys (⏯ ⏭ ⏮) ──► Music.app directly (no plugin involved)
 ```
 
-### How a slash command executes
+### How a play request executes
 
 ```
-User types:  /music:play Fouk kitchen 60%
+User says:  /music play Fouk in the kitchen and living room at 60%
 
-1. Claude Code runs commands/play.md as a shell script
-2. Script checks: is music installed?
-   ├─ YES → parses args, extracts speaker + volume + query
-   │        music speaker kitchen 60
-   │        music play "Fouk"
-   └─ NO  → osascript -e 'tell application "Music" to play'
-3. Output printed directly to chat
+1. Claude detects music intent → loads music skill
+2. Fast path: forwards the words to the CLI in ONE call
+   music play Fouk in the kitchen and living room at 60
+3. The CLI's PlayParser (deterministic, unit-tested) extracts:
+   query "Fouk" · speakers Kitchen, Living Room · volume 60
+4. Routes to exactly those speakers, sets volume, plays
 ```
 
-### How the skill works
+### How a composition request executes
 
 ```
 User says:  "find me something like what's playing and make a playlist"
@@ -245,17 +194,6 @@ apple-music/
 ├── .claude-plugin/
 │   ├── plugin.json              # Plugin metadata (name: "music")
 │   └── marketplace.json         # Marketplace listing
-├── commands/                    # 10 slash commands (transport: playback, speakers, volume)
-│   ├── play.md                  # /music:play [query] [speaker] [vol%]
-│   ├── pause.md                 # /music:pause
-│   ├── skip.md                  # /music:skip
-│   ├── back.md                  # /music:back
-│   ├── stop.md                  # /music:stop [speaker]
-│   ├── now.md                    # /music:now
-│   ├── shuffle.md               # /music:shuffle
-│   ├── repeat.md                # /music:repeat [off|one|all]
-│   ├── volume.md                   # /music:volume <level> | <speaker> <level>
-│   └── speaker.md               # /music:speaker <action> [name]
 ├── skills/music/
 │   └── SKILL.md                 # Conversational skill (music CLI reference)
 ├── scripts/
@@ -277,6 +215,8 @@ apple-music/
 │       │   └── AuthPage.swift
 │       ├── Commands/
 │       │   ├── PlaybackCommands.swift     # play/pause/skip/back/stop/now/seek/shuffle/repeat
+│       │   ├── PlayParser.swift           # play arg parser: query/speakers/volume/shuffle
+│       │   ├── PlayResolution.swift       # play query resolution order
 │       │   ├── LoveCommands.swift         # love/unlove
 │       │   ├── HistoryCommands.swift      # recent/rotation
 │       │   ├── SpeakerCommands.swift
@@ -367,7 +307,7 @@ music auth status
 
 ## Version
 
-v2.0.0 — all four locations stay in sync:
+v3.0.0 — all four locations stay in sync:
 - `.claude-plugin/plugin.json` → `version`
 - `.claude-plugin/marketplace.json` → `metadata.version`
 - `.claude-plugin/marketplace.json` → `plugins[0].version`
