@@ -9,7 +9,7 @@
                     for Claude Code & CLI
 ```
 
-Control Apple Music, AirPlay speakers, and AirPods from Claude Code or the terminal.
+Control Apple Music, AirPlay speakers, and AirPods from Claude Code or the terminal — a Claude Code skill, CLI, and interactive Apple Music TUI for macOS.
 
 ```
   ┌─────────────────────────────────────────────────────────────────────┐
