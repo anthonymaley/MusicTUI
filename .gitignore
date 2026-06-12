@@ -1,14 +1,14 @@
 tools/music/.build/
 tools/music/Package.resolved
 .DS_Store
-kivna/input/
-kivna/output/
 
-# Dev-only files (kept locally, not shipped to consumers)
+# Dev-process files — live in the private vault (~/eolas/vault/apple-music/repo/),
+# symlinked into this tree per machine via the vault's link.sh
 CLAUDE.md
 AGENTS.md
 TODO.md
 .slainte
-kivna/
+kivna
 docs/naming.md
 docs/playbook.md
+docs/playlist-browser-ui.md
