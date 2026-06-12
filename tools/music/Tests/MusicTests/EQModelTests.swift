@@ -44,4 +44,24 @@ final class EQModelTests: XCTestCase {
     func testResolverNone() {
         XCTAssertEqual(EQNameResolver.resolve("xyzzy", in: presets), .none)
     }
+
+    func testParseEQSnapshot() {
+        let rs = "\u{1E}", us = "\u{1F}"
+        let raw = "true\(rs)Nightclub\(rs)Manual\(us)Acoustic\(us)Nightclub"
+        XCTAssertEqual(parseEQSnapshot(raw),
+                       EQSnapshot(enabled: true, current: "Nightclub",
+                                  presets: ["Manual", "Acoustic", "Nightclub"]))
+    }
+
+    func testParseEQSnapshotNoCurrent() {
+        let rs = "\u{1E}", us = "\u{1F}"
+        let raw = "false\(rs)\(rs)Manual\(us)Acoustic"
+        let snap = parseEQSnapshot(raw)
+        XCTAssertEqual(snap, EQSnapshot(enabled: false, current: nil,
+                                        presets: ["Manual", "Acoustic"]))
+    }
+
+    func testParseEQSnapshotGarbage() {
+        XCTAssertNil(parseEQSnapshot("not a snapshot"))
+    }
 }
