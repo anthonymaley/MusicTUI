@@ -1,6 +1,7 @@
-// Music.app equalizer access. Reads combine into one script; every write is
-// its own osascript call (parameter-error-50 rule). Free-function style
-// mirrors fetchSpeakerDevices() in SpeakerCommands.swift.
+// Music.app equalizer access. Reads combine into one script; unrelated
+// mutations are never combined in one call (parameter-error-50 rule) —
+// creating a preset and initialising its own bands is one transaction.
+// Free-function style mirrors fetchSpeakerDevices() in SpeakerCommands.swift.
 import Foundation
 
 struct EQSnapshot: Equatable {
@@ -44,7 +45,8 @@ func fetchEQSnapshot(_ backend: AppleScriptBackend) throws -> EQSnapshot {
     return snap
 }
 
-/// Bands + preamp of a named preset (for the status sparkline).
+/// Ten band gains (32 Hz–16 kHz) of a named preset, for the status
+/// sparkline. Preamp is not included.
 func fetchEQBands(_ backend: AppleScriptBackend, name: String) throws -> [Double] {
     let esc = escapeAppleScriptString(name)
     let raw = try syncRun {
