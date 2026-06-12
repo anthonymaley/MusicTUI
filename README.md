@@ -9,6 +9,11 @@
                     for Claude Code & CLI
 ```
 
+![Building since March 2026](https://img.shields.io/badge/building_since-March_2026-blue)
+![Commits](https://img.shields.io/github/commit-activity/t/anthonymaley/apple-music)
+![Release](https://img.shields.io/github/v/release/anthonymaley/apple-music)
+![Platform](https://img.shields.io/badge/platform-macOS-lightgrey)
+
 Control Apple Music, AirPlay speakers, and AirPods from Claude Code or the terminal — a Claude Code skill, CLI, and interactive Apple Music TUI for macOS.
 
 ```
