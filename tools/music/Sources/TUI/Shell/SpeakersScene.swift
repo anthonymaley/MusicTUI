@@ -19,10 +19,12 @@ func speakerRows(from devices: [[String: Any]]) -> [SpeakerRow] {
     }
 }
 
-/// What the Speakers scene displays, in order: speakers, the EQ row, and —
+/// What the Speakers scene displays, in order: speakers, the EQ power row
+/// (Enter toggles on/off), the preset row (Enter expands the picker), and —
 /// when the picker is expanded — one row per preset.
 enum SpeakersDisplayRow: Equatable {
     case speaker(Int)        // index into the SpeakerRow array
+    case eqPower
     case eq
     case preset(String)
 }
@@ -30,6 +32,7 @@ enum SpeakersDisplayRow: Equatable {
 func speakersDisplayRows(speakerCount: Int, expanded: Bool,
                          presetNames: [String]) -> [SpeakersDisplayRow] {
     var rows: [SpeakersDisplayRow] = (0..<speakerCount).map { .speaker($0) }
+    rows.append(.eqPower)
     rows.append(.eq)
     if expanded { rows += presetNames.map { .preset($0) } }
     return rows
@@ -172,26 +175,43 @@ final class SpeakersScene: Scene {
                 out += "\(marker) \(dot) \(nameStr) \(bar) \(vol)"
                 y += 1
 
-            case .eq:
-                // Optional blank line before EQ row when space allows.
+            case .eqPower:
+                // Blank line before the EQ block when space allows.
                 if y + 1 <= bottom {
                     y += 1
                 }
                 guard y <= bottom else { break }
                 out += ANSICode.moveTo(row: y, col: 3)
-                let dot = (eqState?.enabled == true)
+                let on = eqState?.enabled == true
+                let dot = on
                     ? "\(ANSICode.lime)\u{25CF}\(ANSICode.reset)"
                     : "\(ANSICode.dim)\u{25CB}\(ANSICode.reset)"
-                let presetName = truncText(eqState?.current ?? "none", to: nameW - 4)
-                let label = "EQ  \(presetName)"
+                let label = "EQ  \(on ? "on" : "off")"
                 let padLabel = label + String(repeating: " ", count: max(0, nameW - label.count))
+                let labelStr: String
+                if isCursor {
+                    labelStr = "\(ANSICode.inverse)\(padLabel)\(ANSICode.reset)"
+                } else if on {
+                    labelStr = "\(ANSICode.brightWhite)\(padLabel)\(ANSICode.reset)"
+                } else {
+                    labelStr = padLabel
+                }
+                out += "  \(dot) \(labelStr)"
+                y += 1
+
+            case .eq:
+                guard y <= bottom else { break }
+                out += ANSICode.moveTo(row: y, col: 3)
+                let presetName = truncText(eqState?.current ?? "none", to: nameW - 4)
+                let label = "Preset  \(presetName)"
+                let padLabel = label + String(repeating: " ", count: max(0, nameW + 4 - label.count))
                 let labelStr: String
                 if isCursor {
                     labelStr = "\(ANSICode.inverse)\(padLabel)\(ANSICode.reset)"
                 } else {
                     labelStr = padLabel
                 }
-                out += "  \(dot) \(labelStr)"
+                out += "    \(labelStr)"
                 y += 1
 
             case .preset(let name):
@@ -245,16 +265,7 @@ final class SpeakersScene: Scene {
 
         switch key {
         case .char("e"), .char("E"):
-            // EQ on/off from anywhere in the scene. eqSetEnabled is a
-            // check-then-click, so rapid toggles stay cheap and idempotent.
-            let on = !(eqState?.enabled ?? false)
-            if eqState == nil { eqState = EQSnapshot(enabled: on, current: nil, presets: []) }
-            else { eqState?.enabled = on }
-            lastMutation = Date()
-            actions.run("EQ") {
-                try require((try? eqSetEnabled(self.backend, on)) != nil,
-                            "Couldn't turn EQ \(on ? "on" : "off").")
-            }
+            toggleEQ()
             return .redraw
         case .up:
             cursor = max(0, cursor - 1); return .redraw
@@ -275,6 +286,9 @@ final class SpeakersScene: Scene {
                 rows[i].active.toggle()
                 lastMutation = Date()
                 setSelected(rows[i])
+                return .redraw
+            case .eqPower:
+                toggleEQ()
                 return .redraw
             case .eq:
                 eqExpanded.toggle()
@@ -356,6 +370,19 @@ final class SpeakersScene: Scene {
                         "Couldn't set '\(name)' volume.")
         }
     }
+    /// EQ on/off — shared by the power row (Enter) and the 'e' shortcut.
+    /// eqSetEnabled is a check-then-click, so rapid toggles stay idempotent.
+    private func toggleEQ() {
+        let on = !(eqState?.enabled ?? false)
+        if eqState == nil { eqState = EQSnapshot(enabled: on, current: nil, presets: []) }
+        else { eqState?.enabled = on }
+        lastMutation = Date()
+        actions.run("EQ") {
+            try require((try? eqSetEnabled(self.backend, on)) != nil,
+                        "Couldn't turn EQ \(on ? "on" : "off").")
+        }
+    }
+
     private func selectEQPreset(_ name: String) {
         if eqState == nil { eqState = EQSnapshot(enabled: true, current: name, presets: []) }
         eqState?.current = name

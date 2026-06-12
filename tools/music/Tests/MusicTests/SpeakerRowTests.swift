@@ -29,12 +29,13 @@ final class SpeakerRowTests: XCTestCase {
     func testDisplayRowsCollapsed() {
         let rows = speakersDisplayRows(speakerCount: 2, expanded: false,
                                        presetNames: ["Nightclub", "Manual"])
-        XCTAssertEqual(rows, [.speaker(0), .speaker(1), .eq])
+        XCTAssertEqual(rows, [.speaker(0), .speaker(1), .eqPower, .eq])
     }
 
     func testDisplayRowsExpanded() {
         let rows = speakersDisplayRows(speakerCount: 1, expanded: true,
                                        presetNames: ["Nightclub", "Manual"])
-        XCTAssertEqual(rows, [.speaker(0), .eq, .preset("Nightclub"), .preset("Manual")])
+        XCTAssertEqual(rows, [.speaker(0), .eqPower, .eq,
+                              .preset("Nightclub"), .preset("Manual")])
     }
 }

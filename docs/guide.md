@@ -70,7 +70,7 @@ Current TUI contract:
 - `Enter` plays the highlighted row.
 - Keys: `1/2/3` jump to a tab, `Tab`/`Shift-Tab` cycle, `↑↓` + `PgUp/PgDn/Home/End` navigate, `Space` play/pause, `</>` previous/next, `←→` seek (Now) or per-speaker volume (Speakers), `z`/`r` shuffle, `l` favorite, `+/-` master volume, `n` next-up options, `Esc` back, `q` quit.
 - Speaker wake is explicit via `music speaker wake`; normal playback does not auto-reset AirPlay outputs.
-- The Speakers scene has an **EQ row**: navigate to it with `↑↓`, press `Enter` to expand an inline preset picker (venue pack first, then Music's built-in presets), `↑↓` to navigate the picker, `Enter` to select and auto-enable EQ, `Escape` to collapse without changing the preset. With the EQ row highlighted but the picker collapsed, `←`/`→` quick-cycles presets one at a time. `e` toggles EQ on/off from anywhere in the scene.
+- The Speakers scene has an **EQ block**: an `EQ on/off` power row (`Enter` toggles it; `e` does the same from anywhere in the scene) and a `Preset` row beneath it — `Enter` expands an inline preset picker (venue pack first, then Music's built-in presets), `↑↓` to navigate, `Enter` to select and auto-enable EQ, `Escape` to collapse without changing the preset. With the Preset row highlighted but the picker collapsed, `←`/`→` quick-cycles presets one at a time.
 - Music's Autoplay (∞) must stay OFF — playlist track-selection drives playback track-by-track and relies on each track stopping at its end.
 
 ### 4. Status Line
