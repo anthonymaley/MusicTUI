@@ -1,4 +1,4 @@
-# Apple Music for Claude Code
+# Apple Music TUI and Claude Code SKill 
 
 ```
      ___              __        __  ___         _
@@ -6,7 +6,7 @@
    / __ |/ _ \/ _ \ / / -_)   / /|_/ / // (_-</ / __/
   /_/ |_/ .__/ .__/_/\__/   /_/  /_/\_,_/___/_/\__/
        /_/  /_/
-                    for Claude Code & CLI
+                    TUI, Claude Skill and Apple Developer CLI
 ```
 
 ![Building since March 2026](https://img.shields.io/badge/building_since-March_2026-blue)
