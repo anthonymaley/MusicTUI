@@ -102,6 +102,19 @@ claude plugin update music@apple-music-marketplace
 
 After updating the plugin, rebuild the CLI: `scripts/install.sh`
 
+### Uninstall
+
+```bash
+# Remove the plugin
+claude plugin uninstall music@apple-music-marketplace
+
+# Remove the CLI binary and all config (auth keys + tokens)
+rm -f ~/.local/bin/music
+rm -rf ~/.config/music
+```
+
+Desktop: **Manage plugins** → remove **Apple Music**. The venue EQ presets the plugin created in Music (Nightclub, Dungeon, …) live in Music's own Equalizer — delete them there if you want them gone.
+
 ### Advanced Features (optional, requires Apple Developer account)
 
 For catalog search, library management, playlists via API, and music discovery, you also need:
