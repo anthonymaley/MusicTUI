@@ -14,6 +14,8 @@
 ![Release](https://img.shields.io/github/v/release/anthonymaley/apple-music)
 ![Platform](https://img.shields.io/badge/platform-macOS-lightgrey)
 
+![Apple Music TUI demo](media/demo.gif)
+
 Control Apple Music, AirPlay speakers, and AirPods from Claude Code or the terminal — a Claude Code skill, CLI, and interactive Apple Music TUI for macOS. Multi-room playback, playlists, a real equalizer with venue presets, the on-screen visualizer, and shuffle/repeat/Genius controls.
 
 ```
