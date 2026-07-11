@@ -61,4 +61,12 @@ final class SpeakerParserTests: XCTestCase {
         let result = SpeakerParser.parse(["wake", "macbook", "pro"])
         XCTAssertEqual(result, .wake(name: "macbook pro"))
     }
+
+    func testVerifyKeywordParsesBare() {
+        XCTAssertEqual(SpeakerParser.parse(["verify"]), .verify(name: nil))
+    }
+
+    func testVerifyKeywordParsesWithName() {
+        XCTAssertEqual(SpeakerParser.parse(["verify", "Living", "Room"]), .verify(name: "Living Room"))
+    }
 }

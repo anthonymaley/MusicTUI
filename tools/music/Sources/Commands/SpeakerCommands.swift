@@ -12,6 +12,7 @@ enum SpeakerAction: Equatable {
     case exclusive(name: String)
     case indices([Int])
     case wake(name: String?)
+    case verify(name: String?)
 }
 
 struct SpeakerParser {
@@ -21,6 +22,10 @@ struct SpeakerParser {
         if args.count >= 1 && args[0].lowercased() == "wake" {
             let name = args.count > 1 ? args.dropFirst().joined(separator: " ") : nil
             return .wake(name: name)
+        }
+        if args.count >= 1 && args[0].lowercased() == "verify" {
+            let name = args.count > 1 ? args.dropFirst().joined(separator: " ") : nil
+            return .verify(name: name)
         }
         let ints = args.compactMap { Int($0) }
         if ints.count == args.count { return .indices(ints) }
@@ -50,7 +55,7 @@ struct Speaker: ParsableCommand {
 
 struct SpeakerSmart: ParsableCommand {
     static let configuration = CommandConfiguration(commandName: "smart", abstract: "Smart speaker control.", shouldDisplay: false)
-    @Argument(help: "Speaker name, index, volume, or keyword (stop/only/list/wake)") var args: [String] = []
+    @Argument(help: "Speaker name, index, volume, or keyword (stop/only/list/wake/verify)") var args: [String] = []
     @Flag(name: .long, help: "Output JSON") var json = false
     @Flag(name: .shortAndLong, help: "Show diagnostic output") var verbose = false
 
@@ -160,6 +165,56 @@ func runSpeakerSmart(args: [String], json: Bool) throws {
                     : "Lost \(s.name) — could not reselect after reset. Try: music speaker \(s.name)")
             }
         }
+
+    case .verify(let name):
+        try runSpeakerVerify(name: name, backend: backend, json: json)
+    }
+}
+
+/// Read-only network-truth verdict for a routed speaker. No name = verify
+/// every device the scripting layer claims is selected (advisory claims are
+/// printed alongside — they can lie; the network verdict is the answer).
+func runSpeakerVerify(name: String?, backend: AppleScriptBackend, json: Bool) throws {
+    let devices = try fetchSpeakerDevices()
+    let targets: [String]
+    if let name = name {
+        targets = [try resolveSpeakerName(name, backend: backend)]
+    } else {
+        targets = devices
+            .filter { ($0["selected"] as? Bool == true) && ($0["kind"] as? String != "computer") }
+            .compactMap { $0["name"] as? String }
+        guard !targets.isEmpty else {
+            print("No non-local speakers are selected. Nothing to verify.")
+            return
+        }
+    }
+
+    let verifier = RouteVerifier()
+    var results: [[String: Any]] = []
+    for target in targets {
+        let claimed = devices.first { ($0["name"] as? String) == target }?["selected"] as? Bool ?? false
+        guard let ip = verifier.resolver.resolveIP(forSpeaker: target) else {
+            results.append(["name": target, "verified": false, "ip": "",
+                            "evidence": "could not resolve IP via Bonjour — cannot verify",
+                            "claimedSelected": claimed])
+            continue
+        }
+        let verdict = try verifier.steadyState(ip: ip)
+        var row: [String: Any] = ["name": target, "verified": verdict.verified, "ip": ip,
+                                  "evidence": verdict.evidence, "claimedSelected": claimed]
+        if let advisory = verdict.advisory { row["advisory"] = advisory }
+        results.append(row)
+    }
+
+    if json {
+        let output = OutputFormat(mode: .json)
+        print(output.render(["results": results]))
+        return
+    }
+    for r in results {
+        let mark = (r["verified"] as? Bool == true) ? "✓" : "✗"
+        print("\(mark) \(r["name"]!) — \(r["evidence"]!) (scripting claims selected: \(r["claimedSelected"]!))")
+        if let advisory = r["advisory"] { print("  \(advisory)") }
     }
 }
 
