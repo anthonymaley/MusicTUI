@@ -85,20 +85,22 @@ func runSpeakerSmart(args: [String], json: Bool) throws {
 
     case .add(let name):
         let resolved = try resolveSpeakerName(name, backend: backend)
-        let verifier = RouteVerifier()
-        let ip = verifier.resolver.resolveIP(forSpeaker: resolved)
-        let baseline = ip.flatMap { try? verifier.snapshot(ip: $0) }
+        let playing = playerIsPlaying(backend: backend)
+        let capture = playing ? captureRouteBaseline(for: resolved) : (ip: nil, baseline: nil)
         _ = try syncRun {
             try await backend.runMusic("set selected of AirPlay device \"\(escapeAppleScriptString(resolved))\" to true")
         }
         print("Added \(resolved).")
-        verifyRouteOrDefer(speaker: resolved, backend: backend, baseline: baseline, ip: ip)
+        if playing {
+            verifyRoute(speaker: resolved, backend: backend, baseline: capture.baseline, ip: capture.ip)
+        } else {
+            print("Route set; will verify on next play.")
+        }
 
     case .addWithVolume(let name, let volume):
         let resolved = try resolveSpeakerName(name, backend: backend)
-        let verifier = RouteVerifier()
-        let ip = verifier.resolver.resolveIP(forSpeaker: resolved)
-        let baseline = ip.flatMap { try? verifier.snapshot(ip: $0) }
+        let playing = playerIsPlaying(backend: backend)
+        let capture = playing ? captureRouteBaseline(for: resolved) : (ip: nil, baseline: nil)
         _ = try syncRun {
             try await backend.runMusic("set selected of AirPlay device \"\(escapeAppleScriptString(resolved))\" to true")
         }
@@ -106,7 +108,11 @@ func runSpeakerSmart(args: [String], json: Bool) throws {
             try await backend.runMusic("set sound volume of AirPlay device \"\(escapeAppleScriptString(resolved))\" to \(volume)")
         }
         print("Added \(resolved) [\(volume)].")
-        verifyRouteOrDefer(speaker: resolved, backend: backend, baseline: baseline, ip: ip)
+        if playing {
+            verifyRoute(speaker: resolved, backend: backend, baseline: capture.baseline, ip: capture.ip)
+        } else {
+            print("Route set; will verify on next play.")
+        }
 
     case .remove(let name):
         let resolved = try resolveSpeakerName(name, backend: backend)
@@ -117,9 +123,8 @@ func runSpeakerSmart(args: [String], json: Bool) throws {
 
     case .exclusive(let name):
         let resolved = try resolveSpeakerName(name, backend: backend)
-        let verifier = RouteVerifier()
-        let ip = verifier.resolver.resolveIP(forSpeaker: resolved)
-        let baseline = ip.flatMap { try? verifier.snapshot(ip: $0) }
+        let playing = playerIsPlaying(backend: backend)
+        let capture = playing ? captureRouteBaseline(for: resolved) : (ip: nil, baseline: nil)
         // Select the target FIRST: the old deselect-all-then-select could end
         // with NO outputs at all if the target failed after the teardown. Also
         // per-device try — one unreachable device must not abort the rest (an
@@ -139,7 +144,11 @@ func runSpeakerSmart(args: [String], json: Bool) throws {
             """)
         }
         print("Switched to \(resolved) only.")
-        verifyRouteOrDefer(speaker: resolved, backend: backend, baseline: baseline, ip: ip)
+        if playing {
+            verifyRoute(speaker: resolved, backend: backend, baseline: capture.baseline, ip: capture.ip)
+        } else {
+            print("Route set; will verify on next play.")
+        }
 
     case .indices(let idxs):
         let cache = ResultCache()
@@ -183,18 +192,26 @@ func runSpeakerSmart(args: [String], json: Bool) throws {
     }
 }
 
-/// Post-route verification for speaker commands. Playing → full verify-and-
-/// heal. Paused → honest deferral (paused routing can't be network-verified
-/// and is the spike-observed corruption trigger; the play path re-verifies).
-func verifyRouteOrDefer(speaker: String, backend: AppleScriptBackend,
-                        baseline: Set<TCPConnection>?, ip: String?) {
-    let state = ((try? syncRun {
+/// Cheap shared player-state read for the routing cases.
+func playerIsPlaying(backend: AppleScriptBackend) -> Bool {
+    (((try? syncRun {
         try await backend.runMusic("player state as text")
-    }) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-    guard state == "playing" else {
-        print("Route set; will verify on next play.")
-        return
-    }
+    }) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)) == "playing"
+}
+
+/// Pre-route capture — only worth paying for while playing (the Bonjour
+/// resolve can cost seconds; a paused add defers verification anyway).
+func captureRouteBaseline(for speaker: String) -> (ip: String?, baseline: Set<TCPConnection>?) {
+    let verifier = RouteVerifier()
+    let ip = verifier.resolver.resolveIP(forSpeaker: speaker)
+    return (ip, ip.flatMap { try? verifier.snapshot(ip: $0) })
+}
+
+/// Post-route verification for speaker commands, mid-play only (paused
+/// routing can't be network-verified and is the spike-observed corruption
+/// trigger; the play path re-verifies).
+func verifyRoute(speaker: String, backend: AppleScriptBackend,
+                 baseline: Set<TCPConnection>?, ip: String?) {
     guard let ip = ip, let baseline = baseline else {
         print("· \(speaker): could not resolve IP via Bonjour — routed but unverified.")
         return
