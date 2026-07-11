@@ -37,16 +37,29 @@ struct BonjourSpeakerResolver: SpeakerIPResolving {
         return out
     }
 
-    static func resolveHostname(_ host: String) -> String? {
-        var hints = addrinfo(ai_flags: 0, ai_family: AF_INET, ai_socktype: SOCK_STREAM,
-                             ai_protocol: 0, ai_addrlen: 0, ai_canonname: nil, ai_addr: nil, ai_next: nil)
-        var result: UnsafeMutablePointer<addrinfo>?
-        guard getaddrinfo(host, nil, &hints, &result) == 0, let info = result else { return nil }
-        defer { freeaddrinfo(result) }
-        var buffer = [CChar](repeating: 0, count: Int(NI_MAXHOST))
-        guard getnameinfo(info.pointee.ai_addr, info.pointee.ai_addrlen,
-                          &buffer, socklen_t(buffer.count), nil, 0, NI_NUMERICHOST) == 0 else { return nil }
-        return String(cString: buffer)
+    /// getaddrinfo has no cancellation API — run it on a background queue and
+    /// bound the wait, matching the browse path's timeout discipline. On
+    /// timeout the worker thread is abandoned (it finishes and exits on its
+    /// own); real LAN resolutions answer in well under a second.
+    static func resolveHostname(_ host: String, timeout: TimeInterval = 2.0) -> String? {
+        let box = LockedBox<String?>(nil)
+        let sema = DispatchSemaphore(value: 0)
+        DispatchQueue.global(qos: .utility).async {
+            // IPv4-only by design: all spike evidence is IPv4; IPv6-only devices fall through to the browse path.
+            var hints = addrinfo(ai_flags: 0, ai_family: AF_INET, ai_socktype: SOCK_STREAM,
+                                 ai_protocol: 0, ai_addrlen: 0, ai_canonname: nil, ai_addr: nil, ai_next: nil)
+            var result: UnsafeMutablePointer<addrinfo>?
+            guard getaddrinfo(host, nil, &hints, &result) == 0, let info = result else { sema.signal(); return }
+            defer { freeaddrinfo(result) }
+            var buffer = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+            if getnameinfo(info.pointee.ai_addr, info.pointee.ai_addrlen,
+                           &buffer, socklen_t(buffer.count), nil, 0, NI_NUMERICHOST) == 0 {
+                box.set(String(cString: buffer))
+            }
+            sema.signal()
+        }
+        _ = sema.wait(timeout: .now() + timeout)
+        return box.get()
     }
 
     /// Browse _airplay._tcp for an instance whose name matches the speaker,
@@ -62,6 +75,7 @@ struct BonjourSpeakerResolver: SpeakerIPResolving {
                 if case let .service(sname, _, _, _) = r.endpoint,
                    sname.caseInsensitiveCompare(name) == .orderedSame {
                     found.set(r.endpoint)
+                    // May signal more than once if results keep changing before cancel lands — harmless, nothing waits twice.
                     sema.signal()
                     return
                 }
@@ -75,10 +89,10 @@ struct BonjourSpeakerResolver: SpeakerIPResolving {
         let conn = NWConnection(to: endpoint, using: .tcp)
         let ip = LockedBox<String?>(nil)
         let rsema = DispatchSemaphore(value: 0)
-        conn.stateUpdateHandler = { state in
+        conn.stateUpdateHandler = { [weak conn] state in
             switch state {
             case .ready:
-                if let ep = conn.currentPath?.remoteEndpoint, case let .hostPort(host, _) = ep {
+                if let ep = conn?.currentPath?.remoteEndpoint, case let .hostPort(host, _) = ep {
                     switch host {
                     case .ipv4(let a): ip.set("\(a)")
                     case .ipv6(let a): ip.set("\(a)")
