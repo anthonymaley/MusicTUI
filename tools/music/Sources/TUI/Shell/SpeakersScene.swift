@@ -399,8 +399,25 @@ final class SpeakersScene: Scene {
         let name = row.name
         let active = row.active
         actions.run("Speaker") {
+            // Verify additions only while playing — and pay the Bonjour
+            // resolver cost only then (paused toggles defer to the play
+            // path, same ordering as the speaker commands). Baseline BEFORE
+            // the write so establishment shows as churn.
+            let playing = active && playerIsPlaying(backend: self.backend)
+            let verifier = RouteVerifier()
+            let ip = playing ? verifier.resolver.resolveIP(forSpeaker: name) : nil
+            let baseline = ip.flatMap { try? verifier.snapshot(ip: $0) }
             try require((try? syncRun { try await self.backend.runMusic("set selected of AirPlay device \"\(esc)\" to \(active)") }) != nil,
                         "Couldn't \(active ? "add" : "remove") '\(name)'.")
+            // Short timeout — this runs on the serial action queue and must
+            // not stall the shell. No heal here: the toast points at the
+            // existing recovery paths instead (a 2×1.5s heal dance would
+            // freeze the action queue).
+            if playing, let ip = ip, let baseline = baseline {
+                let verdict = try? verifier.verifyEstablishment(ip: ip, baseline: baseline, timeout: 3.0)
+                try require(verdict?.verified ?? true,
+                            "'\(name)' selected but route NOT verified — try r (reset) or: music speaker verify")
+            }
         }
     }
     private func setVolume(_ row: SpeakerRow) {
