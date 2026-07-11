@@ -42,4 +42,13 @@ final class RouteVerifierTests: XCTestCase {
         XCTAssertEqual(parseNetstatTCP("").count, 0)
         XCTAssertEqual(parseNetstatTCP("not netstat output\nat all").count, 0)
     }
+
+    // MARK: - hostname candidates (pure)
+
+    func testHostnameCandidates() {
+        XCTAssertEqual(BonjourSpeakerResolver.hostnameCandidates(for: "Kitchen"),
+                       ["kitchen.local"])
+        XCTAssertEqual(BonjourSpeakerResolver.hostnameCandidates(for: "Living Room"),
+                       ["living-room.local", "livingroom.local"])
+    }
 }
