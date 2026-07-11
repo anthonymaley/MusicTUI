@@ -51,4 +51,60 @@ final class RouteVerifierTests: XCTestCase {
         XCTAssertEqual(BonjourSpeakerResolver.hostnameCandidates(for: "Living Room"),
                        ["living-room.local", "livingroom.local"])
     }
+
+    // MARK: - verdicts (injectable connection source)
+
+    /// Sequence-driven fake: each call to the source returns the next snapshot.
+    private func verifier(snapshots: [[TCPConnection]]) -> RouteVerifier {
+        let box = LockedBox<[[TCPConnection]]>(snapshots)
+        return RouteVerifier(
+            resolver: FixedResolver(),
+            connectionSource: {
+                var all = box.get()
+                let next = all.count > 1 ? all.removeFirst() : all[0]
+                box.set(all)
+                return next
+            },
+            pollInterval: 0  // no sleeping in tests
+        )
+    }
+
+    private struct FixedResolver: SpeakerIPResolving {
+        func resolveIP(forSpeaker name: String) -> String? { "192.168.1.112" }
+    }
+
+    private let standing = TCPConnection(localPort: 53948, remoteIP: "192.168.1.112", remotePort: 7000)
+    private let newControl = TCPConnection(localPort: 54361, remoteIP: "192.168.1.112", remotePort: 7000)
+    private let newData1 = TCPConnection(localPort: 54364, remoteIP: "192.168.1.112", remotePort: 61540)
+    private let newData2 = TCPConnection(localPort: 54366, remoteIP: "192.168.1.112", remotePort: 61542)
+
+    func testEstablishmentVerifiedWhenTwoNewConnectionsAppear() throws {
+        let v = verifier(snapshots: [[standing], [standing, newControl, newData1, newData2]])
+        let baseline = try v.snapshot(ip: "192.168.1.112")
+        let verdict = try v.verifyEstablishment(ip: "192.168.1.112", baseline: baseline, timeout: 1)
+        XCTAssertTrue(verdict.verified)
+        XCTAssertTrue(verdict.evidence.contains("3 new connection"), verdict.evidence)
+    }
+
+    func testEstablishmentFailsWhenNothingAppears() throws {
+        let v = verifier(snapshots: [[standing]])
+        let baseline = try v.snapshot(ip: "192.168.1.112")
+        let verdict = try v.verifyEstablishment(ip: "192.168.1.112", baseline: baseline, timeout: 0.05)
+        XCTAssertFalse(verdict.verified)
+        XCTAssertTrue(verdict.evidence.contains("no new"), verdict.evidence)
+    }
+
+    func testSteadyStateVerifiedOnDoubleControlConnection() throws {
+        let v = verifier(snapshots: [[standing, newControl, newData1]])
+        let verdict = try v.steadyState(ip: "192.168.1.112")
+        XCTAssertTrue(verdict.verified)
+    }
+
+    func testSteadyStateNotVerifiedOnLingeringConnectionsOnly() throws {
+        // Spike: a just-derouted device keeps ONE :7000 conn + stale data conns.
+        let v = verifier(snapshots: [[standing, newData1, newData2]])
+        let verdict = try v.steadyState(ip: "192.168.1.112")
+        XCTAssertFalse(verdict.verified)
+        XCTAssertNotNil(verdict.advisory)
+    }
 }
