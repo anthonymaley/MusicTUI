@@ -39,3 +39,19 @@ func splitAddressPort(_ addr: String) -> (ip: String, port: Int)? {
           let port = Int(addr[addr.index(after: lastDot)...]) else { return nil }
     return (String(addr[..<lastDot]), port)
 }
+
+/// All ESTABLISHED TCP connections, system-wide. netstat shows every
+/// socket without root — the AirPlay session is held by a system daemon,
+/// not the Music process (spike: Music holds zero TCP sockets).
+func readEstablishedTCPConnections() throws -> [TCPConnection] {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/usr/sbin/netstat")
+    process.arguments = ["-an", "-p", "tcp"]
+    let stdout = Pipe()
+    process.standardOutput = stdout
+    process.standardError = Pipe()
+    try process.run()
+    let data = stdout.fileHandleForReading.readDataToEndOfFile()
+    process.waitUntilExit()
+    return parseNetstatTCP(String(data: data, encoding: .utf8) ?? "")
+}
