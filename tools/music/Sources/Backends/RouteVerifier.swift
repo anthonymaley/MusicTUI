@@ -40,6 +40,13 @@ func splitAddressPort(_ addr: String) -> (ip: String, port: Int)? {
     return (String(addr[..<lastDot]), port)
 }
 
+/// netstat failing must throw — silently returning an empty table would read
+/// as "no connections to the device", a false broken-route verdict.
+struct NetstatError: Error, LocalizedError {
+    let status: Int32
+    var errorDescription: String? { "netstat exited with status \(status) — cannot read the connection table" }
+}
+
 /// All ESTABLISHED TCP connections, system-wide. netstat shows every
 /// socket without root — the AirPlay session is held by a system daemon,
 /// not the Music process (spike: Music holds zero TCP sockets).
@@ -49,9 +56,12 @@ func readEstablishedTCPConnections() throws -> [TCPConnection] {
     process.arguments = ["-an", "-p", "tcp"]
     let stdout = Pipe()
     process.standardOutput = stdout
-    process.standardError = Pipe()
+    process.standardError = FileHandle.nullDevice
     try process.run()
     let data = stdout.fileHandleForReading.readDataToEndOfFile()
     process.waitUntilExit()
+    if process.terminationStatus != 0 {
+        throw NetstatError(status: process.terminationStatus)
+    }
     return parseNetstatTCP(String(data: data, encoding: .utf8) ?? "")
 }
