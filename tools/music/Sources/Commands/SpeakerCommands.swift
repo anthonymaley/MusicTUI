@@ -85,13 +85,20 @@ func runSpeakerSmart(args: [String], json: Bool) throws {
 
     case .add(let name):
         let resolved = try resolveSpeakerName(name, backend: backend)
+        let verifier = RouteVerifier()
+        let ip = verifier.resolver.resolveIP(forSpeaker: resolved)
+        let baseline = ip.flatMap { try? verifier.snapshot(ip: $0) }
         _ = try syncRun {
             try await backend.runMusic("set selected of AirPlay device \"\(escapeAppleScriptString(resolved))\" to true")
         }
         print("Added \(resolved).")
+        verifyRouteOrDefer(speaker: resolved, backend: backend, baseline: baseline, ip: ip)
 
     case .addWithVolume(let name, let volume):
         let resolved = try resolveSpeakerName(name, backend: backend)
+        let verifier = RouteVerifier()
+        let ip = verifier.resolver.resolveIP(forSpeaker: resolved)
+        let baseline = ip.flatMap { try? verifier.snapshot(ip: $0) }
         _ = try syncRun {
             try await backend.runMusic("set selected of AirPlay device \"\(escapeAppleScriptString(resolved))\" to true")
         }
@@ -99,6 +106,7 @@ func runSpeakerSmart(args: [String], json: Bool) throws {
             try await backend.runMusic("set sound volume of AirPlay device \"\(escapeAppleScriptString(resolved))\" to \(volume)")
         }
         print("Added \(resolved) [\(volume)].")
+        verifyRouteOrDefer(speaker: resolved, backend: backend, baseline: baseline, ip: ip)
 
     case .remove(let name):
         let resolved = try resolveSpeakerName(name, backend: backend)
@@ -109,6 +117,9 @@ func runSpeakerSmart(args: [String], json: Bool) throws {
 
     case .exclusive(let name):
         let resolved = try resolveSpeakerName(name, backend: backend)
+        let verifier = RouteVerifier()
+        let ip = verifier.resolver.resolveIP(forSpeaker: resolved)
+        let baseline = ip.flatMap { try? verifier.snapshot(ip: $0) }
         // Select the target FIRST: the old deselect-all-then-select could end
         // with NO outputs at all if the target failed after the teardown. Also
         // per-device try — one unreachable device must not abort the rest (an
@@ -128,6 +139,7 @@ func runSpeakerSmart(args: [String], json: Bool) throws {
             """)
         }
         print("Switched to \(resolved) only.")
+        verifyRouteOrDefer(speaker: resolved, backend: backend, baseline: baseline, ip: ip)
 
     case .indices(let idxs):
         let cache = ResultCache()
@@ -168,6 +180,28 @@ func runSpeakerSmart(args: [String], json: Bool) throws {
 
     case .verify(let name):
         try runSpeakerVerify(name: name, backend: backend, json: json)
+    }
+}
+
+/// Post-route verification for speaker commands. Playing → full verify-and-
+/// heal. Paused → honest deferral (paused routing can't be network-verified
+/// and is the spike-observed corruption trigger; the play path re-verifies).
+func verifyRouteOrDefer(speaker: String, backend: AppleScriptBackend,
+                        baseline: Set<TCPConnection>?, ip: String?) {
+    let state = ((try? syncRun {
+        try await backend.runMusic("player state as text")
+    }) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    guard state == "playing" else {
+        print("Route set; will verify on next play.")
+        return
+    }
+    guard let ip = ip, let baseline = baseline else {
+        print("· \(speaker): could not resolve IP via Bonjour — routed but unverified.")
+        return
+    }
+    for line in verifyAndHealRoutes(speakers: [speaker], backend: backend,
+                                    baselines: [speaker: baseline], ips: [speaker: ip]) {
+        print(line)
     }
 }
 
