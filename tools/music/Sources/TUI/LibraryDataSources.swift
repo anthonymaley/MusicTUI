@@ -8,6 +8,8 @@ struct LibraryDataSources {
     let onAlbums: () -> [LibraryAlbum]
     let onAlbumTracks: (_ albumTitle: String, _ artist: String) -> [String]
     let onSongs: () -> [LibrarySong]
+    let onArtists: () -> [LibraryArtist]
+    let onArtistAlbums: (_ artistID: String) -> [LibraryAlbum]
 }
 
 /// Build the Library closures. `onAlbums` hits the REST library endpoint;
@@ -28,6 +30,8 @@ func makeLibraryDataSources(api: RESTAPIBackend, backend: AppleScriptBackend) ->
             let raw = (try? syncRun { try await backend.runMusic(script, timeout: 30) }) ?? ""
             return raw.split(separator: "\n").map(String.init)
         },
-        onSongs: { (try? syncRun { try await api.librarySongs() }) ?? [] }
+        onSongs: { (try? syncRun { try await api.librarySongs() }) ?? [] },
+        onArtists: { (try? syncRun { try await api.libraryArtists() }) ?? [] },
+        onArtistAlbums: { id in (try? syncRun { try await api.artistAlbums(artistID: id) }) ?? [] }
     )
 }

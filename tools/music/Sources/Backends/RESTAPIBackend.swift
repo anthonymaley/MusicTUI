@@ -99,6 +99,26 @@ struct RESTAPIBackend {
         return parseLibrarySongs(from: data)
     }
 
+    func libraryArtists(limit: Int = 100, offset: Int = 0) async throws -> [LibraryArtist] {
+        guard userToken != nil else { throw AuthError.userTokenRequired }
+        let (data, status) = try await get(libraryArtistsPath(limit: limit, offset: offset))
+        guard (200...299).contains(status) else {
+            if status == 401 || status == 403 { throw AuthError.userTokenExpired(status) }
+            throw APIError.requestFailed(status)
+        }
+        return parseLibraryArtists(from: data)
+    }
+
+    func artistAlbums(artistID: String) async throws -> [LibraryAlbum] {
+        guard userToken != nil else { throw AuthError.userTokenRequired }
+        let (data, status) = try await get(artistAlbumsPath(artistID: artistID))
+        guard (200...299).contains(status) else {
+            if status == 401 || status == 403 { throw AuthError.userTokenExpired(status) }
+            throw APIError.requestFailed(status)
+        }
+        return parseLibraryAlbums(from: data)   // the relationship returns album objects
+    }
+
     // MARK: - Library Operations (require user token)
 
     func addToLibrary(songIDs: [String]) async throws {
@@ -348,6 +368,22 @@ func parseLibrarySongs(from data: Data) -> [LibrarySong] {
                            title: a["name"] as? String ?? "Unknown",
                            artist: a["artistName"] as? String ?? "Unknown",
                            album: a["albumName"] as? String ?? "")
+    }
+}
+
+struct LibraryArtist { let id: String; let name: String
+    func toDict() -> [String: Any] { ["id": id, "name": name] } }
+
+func libraryArtistsPath(limit: Int, offset: Int) -> String {
+    "/v1/me/library/artists?limit=\(limit)&offset=\(offset)"
+}
+func artistAlbumsPath(artistID: String) -> String {
+    "/v1/me/library/artists/\(artistID)/albums?limit=100"
+}
+func parseLibraryArtists(from data: Data) -> [LibraryArtist] {
+    parseLibraryDataArray(from: data).map { obj in
+        let a = obj["attributes"] as? [String: Any] ?? [:]
+        return LibraryArtist(id: obj["id"] as? String ?? "", name: a["name"] as? String ?? "Unknown")
     }
 }
 

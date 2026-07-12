@@ -1,7 +1,7 @@
 // tools/music/Sources/TUI/Shell/LibraryScene.swift
-// The Library tab. Albums (three-zone: rail + hero + track preview) and Songs
-// (flat filterable list) are wired end to end; Artists renders an honest
-// "coming soon" placeholder until a later task.
+// The Library tab. Albums (three-zone: rail + hero + track preview), Songs (flat
+// filterable list), and Artists (flat list → drill into the artist's albums,
+// which reuse the album three-zone render) are all wired end to end.
 // All navigation is delegated to the pure `libraryReduce`; the scene owns only
 // view state (scroll, filter) and executes the emitted LibraryAction off-thread.
 import Foundation
@@ -34,6 +34,14 @@ final class LibraryScene: Scene {
     private var songs: [LibrarySong] = []
     private var songsLoaded = false
     private var songsFetchStarted = false
+    // Artists load lazily the first time the Artists sub-view is shown (same
+    // one-shot pattern as Songs). artistAlbums is the drilled-in album list for
+    // one artist, refetched each time an artist is opened.
+    private var artists: [LibraryArtist] = []
+    private var artistsLoaded = false
+    private var artistsFetchStarted = false
+    private var artistAlbums: [LibraryAlbum] = []
+    private var artistAlbumsLoaded = false
     private var filter = ""
     private var capturing = false
     private var railScroll = 0
@@ -53,6 +61,8 @@ final class LibraryScene: Scene {
     private let inboxLock = NSLock()
     private var albumsInbox: [LibraryAlbum]? = nil
     private var songsInbox: [LibrarySong]? = nil
+    private var artistsInbox: [LibraryArtist]? = nil
+    private var artistAlbumsInbox: [LibraryAlbum]? = nil
     private var previewInbox: [(id: String, tracks: [String])] = []
 
     init(backend: AppleScriptBackend, sources: LibraryDataSources,
@@ -93,6 +103,37 @@ final class LibraryScene: Scene {
         }
     }
 
+    /// Off-thread artist-list fetch, posted to artistsInbox and drained in tick.
+    /// Kicked once (guarded by artistsFetchStarted) when the Artists sub-view
+    /// first becomes active — same one-shot pattern as loadSongs.
+    private func loadArtists() {
+        artistsFetchStarted = true
+        let sources = self.sources
+        Thread.detachNewThread { [weak self] in
+            let fetched = sources.onArtists()
+            guard let self else { return }
+            self.inboxLock.lock()
+            self.artistsInbox = fetched
+            self.inboxLock.unlock()
+        }
+    }
+
+    /// Off-thread fetch of one artist's albums, posted to artistAlbumsInbox and
+    /// drained in tick. Unlike loadArtists this refetches every time an artist is
+    /// opened, so it clears the prior list first (render shows "Loading albums…").
+    private func loadArtistAlbums(artistID: String) {
+        artistAlbums = []
+        artistAlbumsLoaded = false
+        let sources = self.sources
+        Thread.detachNewThread { [weak self] in
+            let fetched = sources.onArtistAlbums(artistID)
+            guard let self else { return }
+            self.inboxLock.lock()
+            self.artistAlbumsInbox = fetched
+            self.inboxLock.unlock()
+        }
+    }
+
     /// Kick a serial background fetch of one album's tracks, unless it's already
     /// cached or in flight. Serial so a fast scroll can't pile concurrent
     /// full-library predicate scans onto Music. Called only from the main thread.
@@ -117,6 +158,8 @@ final class LibraryScene: Scene {
         inboxLock.lock()
         let freshAlbums = albumsInbox; albumsInbox = nil
         let freshSongs = songsInbox; songsInbox = nil
+        let freshArtists = artistsInbox; artistsInbox = nil
+        let freshArtistAlbums = artistAlbumsInbox; artistAlbumsInbox = nil
         let landedPreviews = previewInbox; previewInbox = []
         inboxLock.unlock()
 
@@ -138,8 +181,27 @@ final class LibraryScene: Scene {
             }
             changed = true
         }
-        // Lazily load songs the first time the Songs sub-view is shown.
+        if let freshArtists {
+            artists = freshArtists
+            artistsLoaded = true
+            if isArtistList {
+                let count = visibleArtistIndices().count
+                if nav.cursor >= count { nav.cursor = max(0, count - 1) }
+            }
+            changed = true
+        }
+        if let freshArtistAlbums {
+            artistAlbums = freshArtistAlbums
+            artistAlbumsLoaded = true
+            if case .artistAlbums = nav.current {
+                let count = visibleAlbumIndices().count
+                if nav.cursor >= count { nav.cursor = max(0, count - 1) }
+            }
+            changed = true
+        }
+        // Lazily load songs / artists the first time their sub-view is shown.
         if nav.subView == .songs && !songsFetchStarted { loadSongs() }
+        if nav.subView == .artists && !artistsFetchStarted { loadArtists() }
         for item in landedPreviews {
             trackCache[item.id] = item.tracks
             previewInFlight.remove(item.id)
@@ -152,7 +214,8 @@ final class LibraryScene: Scene {
 
         // Lazily fetch the focused album's preview when the right pane is visible
         // (three-zone layout) — mirrors PlaylistsScene's preview kick in tick.
-        if nav.subView == .albums, isAlbumList,
+        // Covers both the Albums rail and an artist's albums rail (same layout).
+        if isAlbumRail,
            playlistZones(width: ScreenFrame.current().width).mode == .three,
            let a = focusedAlbum(), trackCache[a.id] == nil, !previewInFlight.contains(a.id) {
             kickTrackFetch(albumID: a.id, title: a.name, artist: a.artist)
@@ -169,8 +232,13 @@ final class LibraryScene: Scene {
         let bodyTop = frame.bodyY
         let bodyBottom = frame.bodyY + frame.bodyHeight - 1
 
-        // Sub-view header: Albums · Artists · Songs (active = cyan/bold).
+        // Sub-view header: Albums · Artists · Songs (active = cyan/bold). When
+        // drilled into an artist, a breadcrumb (▸ <artistName>) trails the active
+        // Artists tab, reading left-to-right as "Artists ▸ <name>".
         out += ANSICode.moveTo(row: bodyTop, col: z.railX) + subViewHeader()
+        if let artistName = breadcrumbArtistName() {
+            out += "  \(ANSICode.dim)\u{25B8}\(ANSICode.reset) \(ANSICode.brightWhite)\(artistName)\(ANSICode.reset)"
+        }
 
         let contentTop = bodyTop + 2
         guard contentTop <= bodyBottom else { return out }
@@ -184,10 +252,17 @@ final class LibraryScene: Scene {
             // Flat filterable list — rail zone only, no hero/preview pane.
             renderSongList(z, into: &out, contentTop: contentTop, bodyBottom: bodyBottom)
         case .artists:
-            // Not wired yet — visible but empty.
-            out += ANSICode.moveTo(row: contentTop, col: z.railX)
-            out += "\(ANSICode.dim)\(subViewName(nav.subView)) — coming soon\(ANSICode.reset)"
-            return out
+            if case .artistList = nav.current {
+                // Flat filterable artist list — rail zone only, like Songs.
+                renderArtistList(z, into: &out, contentTop: contentTop, bodyBottom: bodyBottom)
+            } else {
+                // Drilled into an artist: .artistAlbums (and .tracks below it) are
+                // album lists, so reuse the album three-zone render sourced from
+                // this artist's albums (currentAlbums switches on nav.subView).
+                renderRail(z, into: &out, contentTop: contentTop, bodyBottom: bodyBottom)
+                renderHero(z, into: &out, contentTop: contentTop)
+                renderRightPane(z, into: &out, contentTop: contentTop, bodyBottom: bodyBottom)
+            }
         }
 
         if capturing || !filter.isEmpty {
@@ -224,7 +299,9 @@ final class LibraryScene: Scene {
         case .char("p"), .char("P"): libKey = .play
         case .char("s"), .char("S"): libKey = .shuffle
         case .char("/"):
-            if isAlbumList || isSongList { capturing = true; return .redraw }
+            // Filterable at every list level (albums, an artist's albums, artists,
+            // songs); a no-op only at the tracks level.
+            if isAlbumRail || isSongList || isArtistList { capturing = true; return .redraw }
             return .none
         default:
             return .none
@@ -255,6 +332,8 @@ final class LibraryScene: Scene {
 
     private func execute(_ action: LibraryAction) {
         switch action {
+        case .fetchArtistAlbums(let artistID, _):
+            loadArtistAlbums(artistID: artistID)
         case .fetchAlbumTracks(let albumID, let title, let artist):
             // Reuse the shared cache: if the preview already loaded it, this is a
             // no-op and the tracks level paints instantly; otherwise it kicks the
@@ -268,8 +347,12 @@ final class LibraryScene: Scene {
             playSong(title: title, artist: artist, shuffle: false)
         case .shuffle(.song(_, let title, let artist)):
             playSong(title: title, artist: artist, shuffle: true)
-        default:
-            break   // artist actions wired in later tasks
+        case .play(.artist(_, let name)):
+            playArtist(name: name, shuffle: false)
+        case .shuffle(.artist(_, let name)):
+            playArtist(name: name, shuffle: true)
+        case .none:
+            break
         }
     }
 
@@ -307,28 +390,72 @@ final class LibraryScene: Scene {
         }
     }
 
+    /// Play every library track by one artist via Music's native queue (matched
+    /// by artist in the whole-library "Library" playlist). Mirrors playAlbum:
+    /// relinquish the app-owned queue, two separate AppleScript calls (never
+    /// batched, per -50), failures toast.
+    private func playArtist(name: String, shuffle: Bool) {
+        appQueue.clear()
+        let escName = escapeAppleScriptString(name)
+        let backend = self.backend
+        actions.run("Play") {
+            try require((try? syncRun { try await backend.runMusic("set shuffle enabled to \(shuffle)") }) != nil,
+                        "Couldn't set shuffle for '\(name)'.")
+            try require((try? syncRun { try await backend.runMusic("play (every track of playlist \"Library\" whose artist is \"\(escName)\")") }) != nil,
+                        "Couldn't play '\(name)'.")
+        }
+    }
+
     // MARK: level helpers
 
     private var isAlbumList: Bool { if case .albumList = nav.current { return true }; return false }
     private var isSongList: Bool { if case .songList = nav.current { return true }; return false }
+    private var isArtistList: Bool { if case .artistList = nav.current { return true }; return false }
     private var isTracksLevel: Bool { if case .tracks = nav.current { return true }; return false }
+    /// True at either album-rail level: the Albums root or an artist's albums.
+    /// Both drive the same three-zone rail·hero·preview render + preview kick.
+    private var isAlbumRail: Bool {
+        switch nav.current { case .albumList, .artistAlbums: return true; default: return false }
+    }
+
+    /// The album collection backing the rail/hero/preview at the current level.
+    /// In the Artists sub-view (both .artistAlbums and the .tracks below it) that's
+    /// the drilled artist's albums; otherwise the whole-library albums.
+    private var currentAlbums: [LibraryAlbum] {
+        nav.subView == .artists ? artistAlbums : albums
+    }
+
+    /// The drilled artist's name, if we're anywhere inside an artist (.artistAlbums
+    /// or the .tracks under it). Read from the stack so it survives the drill into
+    /// tracks. nil at .artistList / in other sub-views → no breadcrumb.
+    private func breadcrumbArtistName() -> String? {
+        for level in nav.stack {
+            if case .artistAlbums(_, let name) = level { return name }
+        }
+        return nil
+    }
 
     private func currentRowCount() -> Int {
         switch nav.current {
-        case .albumList: return visibleAlbumIndices().count
+        case .albumList, .artistAlbums: return visibleAlbumIndices().count
         case .songList: return visibleSongIndices().count
+        case .artistList: return visibleArtistIndices().count
         case .tracks(let id, _, _): return trackCache[id]?.count ?? 0
-        default: return 0   // artists later
         }
     }
 
     private func selectionUnderCursor() -> LibrarySelection? {
         switch nav.current {
-        case .albumList:
+        case .albumList, .artistAlbums:
             let vis = visibleAlbumIndices()
             guard nav.cursor >= 0, nav.cursor < vis.count else { return nil }
-            let a = albums[vis[nav.cursor]]
+            let a = currentAlbums[vis[nav.cursor]]
             return LibrarySelection(id: a.id, primary: a.name, secondary: a.artist)
+        case .artistList:
+            let vis = visibleArtistIndices()
+            guard nav.cursor >= 0, nav.cursor < vis.count else { return nil }
+            let ar = artists[vis[nav.cursor]]
+            return LibrarySelection(id: ar.id, primary: ar.name, secondary: "")
         case .songList:
             let vis = visibleSongIndices()
             guard nav.cursor >= 0, nav.cursor < vis.count else { return nil }
@@ -339,17 +466,22 @@ final class LibraryScene: Scene {
             // ignores the selection's contents at this level, but its Enter path
             // still guards on selection != nil — so hand back the album identity.
             return LibrarySelection(id: albumID, primary: albumTitle, secondary: artist)
-        default:
-            return nil   // artists later
         }
     }
 
     private func visibleAlbumIndices() -> [Int] {
-        guard !filter.isEmpty else { return Array(0..<albums.count) }
+        let src = currentAlbums
+        guard !filter.isEmpty else { return Array(0..<src.count) }
         let q = filter.lowercased()
-        return (0..<albums.count).filter {
-            "\(albums[$0].name) \(albums[$0].artist)".lowercased().contains(q)
+        return (0..<src.count).filter {
+            "\(src[$0].name) \(src[$0].artist)".lowercased().contains(q)
         }
+    }
+
+    private func visibleArtistIndices() -> [Int] {
+        guard !filter.isEmpty else { return Array(0..<artists.count) }
+        let q = filter.lowercased()
+        return (0..<artists.count).filter { artists[$0].name.lowercased().contains(q) }
     }
 
     private func visibleSongIndices() -> [Int] {
@@ -369,13 +501,14 @@ final class LibraryScene: Scene {
     }
 
     private func focusedAlbum() -> LibraryAlbum? {
+        let src = currentAlbums
         switch nav.current {
-        case .albumList:
+        case .albumList, .artistAlbums:
             let vis = visibleAlbumIndices()
             guard nav.cursor >= 0, nav.cursor < vis.count else { return nil }
-            return albums[vis[nav.cursor]]
+            return src[vis[nav.cursor]]
         case .tracks(let albumID, let albumTitle, let artist):
-            return albums.first { $0.id == albumID } ?? LibraryAlbum(id: albumID, name: albumTitle, artist: artist)
+            return src.first { $0.id == albumID } ?? LibraryAlbum(id: albumID, name: albumTitle, artist: artist)
         default:
             return nil
         }
@@ -406,7 +539,8 @@ final class LibraryScene: Scene {
         let vis = visibleAlbumIndices()
         if vis.isEmpty {
             out += ANSICode.moveTo(row: listY, col: z.railX)
-            let msg = albumsLoaded ? (filter.isEmpty ? "(no albums)" : "(no matches)") : "Loading albums\u{2026}"
+            let loaded = (nav.subView == .artists) ? artistAlbumsLoaded : albumsLoaded
+            let msg = loaded ? (filter.isEmpty ? "(no albums)" : "(no matches)") : "Loading albums\u{2026}"
             out += "\(ANSICode.dim)\(msg)\(ANSICode.reset)"
             return
         }
@@ -427,7 +561,7 @@ final class LibraryScene: Scene {
             let i = vis[p]
             let row = listY + (p - railScroll)
             out += ANSICode.moveTo(row: row, col: z.railX)
-            let a = albums[i]
+            let a = currentAlbums[i]
             let label = "\(a.name) \u{2014} \(a.artist)"
             let nm = railName(label, nameWidth: nameWidth)
             let padName = nm + String(repeating: " ", count: max(0, nameWidth - nm.count))
@@ -445,7 +579,8 @@ final class LibraryScene: Scene {
 
     private func drilledAlbumPos(in vis: [Int]) -> Int? {
         guard case .tracks(let albumID, _, _) = nav.current else { return nil }
-        return vis.firstIndex { albums[$0].id == albumID }
+        let src = currentAlbums
+        return vis.firstIndex { src[$0].id == albumID }
     }
 
     /// Songs sub-view: a flat, filterable "<title> — <artist>" list in the rail
@@ -472,6 +607,38 @@ final class LibraryScene: Scene {
             let s = songs[i]
             let label = "\(s.title) \u{2014} \(s.artist)"
             let nm = railName(label, nameWidth: nameWidth)
+            let padName = nm + String(repeating: " ", count: max(0, nameWidth - nm.count))
+            if p == cursorPos {
+                out += "\u{258C} \(ANSICode.inverse)\(padName)\(ANSICode.reset)"
+            } else {
+                out += "  \(ANSICode.dim)\(padName)\(ANSICode.reset)"
+            }
+        }
+    }
+
+    /// Artists sub-view root: a flat, filterable artist-name list in the rail zone
+    /// only (no hero/preview). Cursor + scroll mirror renderSongList.
+    private func renderArtistList(_ z: PlaylistZones, into out: inout String, contentTop: Int, bodyBottom: Int) {
+        let listY = contentTop
+        let maxVisible = max(1, bodyBottom - listY + 1)
+        let vis = visibleArtistIndices()
+        if vis.isEmpty {
+            out += ANSICode.moveTo(row: listY, col: z.railX)
+            let msg = artistsLoaded ? (filter.isEmpty ? "(no artists)" : "(no matches)") : "Loading artists\u{2026}"
+            out += "\(ANSICode.dim)\(msg)\(ANSICode.reset)"
+            return
+        }
+        let cursorPos = min(max(0, nav.cursor), vis.count - 1)
+        if cursorPos < railScroll { railScroll = cursorPos }
+        if cursorPos >= railScroll + maxVisible { railScroll = cursorPos - maxVisible + 1 }
+        let end = min(vis.count, railScroll + maxVisible)
+        let nameWidth = max(1, z.railWidth - 2)
+        for p in railScroll..<end {
+            let i = vis[p]
+            let row = listY + (p - railScroll)
+            out += ANSICode.moveTo(row: row, col: z.railX)
+            let ar = artists[i]
+            let nm = railName(ar.name, nameWidth: nameWidth)
             let padName = nm + String(repeating: " ", count: max(0, nameWidth - nm.count))
             if p == cursorPos {
                 out += "\u{258C} \(ANSICode.inverse)\(padName)\(ANSICode.reset)"
