@@ -418,8 +418,17 @@ final class SpeakersScene: Scene {
             // existing recovery paths instead (a 2×1.5s heal dance would
             // freeze the action queue).
             if playing, let ip = ip, let baseline = baseline {
-                let verdict = try? verifier.verifyEstablishment(ip: ip, baseline: baseline, timeout: 3.0)
-                try require(verdict?.verified ?? true,
+                // A netstat read error is NOT evidence the route is fine — the
+                // old `?? true` silently passed on it, while the CLI path treats
+                // the same error as not-verified. Post an honest "couldn't check"
+                // instead of a false all-clear.
+                let verdict: RouteVerdict
+                do {
+                    verdict = try verifier.verifyEstablishment(ip: ip, baseline: baseline, timeout: 3.0)
+                } catch {
+                    throw ActionError(message: "Couldn't verify '\(name)' route (network read failed).")
+                }
+                try require(verdict.verified,
                             "'\(name)' selected but route NOT verified — try: music speaker wake")
             }
         }

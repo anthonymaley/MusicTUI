@@ -104,6 +104,48 @@ struct ResultCache {
         return speaker
     }
 
+    // MARK: - Speaker IP memoization
+
+    struct CachedSpeakerIP: Codable, Equatable {
+        let name: String
+        let ip: String
+        let resolvedAt: Date
+    }
+
+    private var speakerIPsPath: String { "\(directory)/speaker-ips.json" }
+
+    /// Cached IP for a speaker name if it was resolved within `ttl`. Keyed
+    /// case-insensitively (the AirPlay name is the key and varies only in
+    /// display case). Returns nil on miss or expiry — the caller resolves live.
+    func cachedSpeakerIP(forName name: String, ttl: TimeInterval = 3600) -> String? {
+        let key = name.lowercased()
+        guard let hit = readSpeakerIPs().first(where: { $0.name.lowercased() == key }) else { return nil }
+        guard Date().timeIntervalSince(hit.resolvedAt) < ttl else { return nil }
+        return hit.ip
+    }
+
+    /// Remember (or refresh) a name→IP mapping. Best-effort: a write failure
+    /// silently degrades to a cache miss next time, never blocks a play.
+    func rememberSpeakerIP(name: String, ip: String) {
+        var entries = readSpeakerIPs().filter { $0.name.lowercased() != name.lowercased() }
+        entries.append(CachedSpeakerIP(name: name, ip: ip, resolvedAt: Date()))
+        writeSpeakerIPs(entries)
+    }
+
+    private func readSpeakerIPs() -> [CachedSpeakerIP] {
+        guard FileManager.default.fileExists(atPath: speakerIPsPath),
+              let data = try? Data(contentsOf: URL(fileURLWithPath: speakerIPsPath)),
+              let entries = try? JSONDecoder().decode([CachedSpeakerIP].self, from: data)
+        else { return [] }
+        return entries
+    }
+
+    private func writeSpeakerIPs(_ entries: [CachedSpeakerIP]) {
+        guard let data = try? JSONEncoder().encode(entries) else { return }
+        try? ensureDirectory()
+        try? data.write(to: URL(fileURLWithPath: speakerIPsPath))
+    }
+
     private func ensureDirectory() throws {
         try FileManager.default.createDirectory(
             atPath: directory,

@@ -152,12 +152,20 @@ func runSpeakerSmart(args: [String], json: Bool) throws {
 
     case .indices(let idxs):
         let cache = ResultCache()
+        // Quick-picker adds are verified while playing, same as every other add
+        // path — this used to select silently. verifyRoute skips the computer
+        // row (local output) on its own.
+        let playing = playerIsPlaying(backend: backend)
         for idx in idxs {
             let speaker = try cache.lookupSpeaker(index: idx)
+            let capture = playing ? captureRouteBaseline(for: speaker.name) : (ip: nil, baseline: nil)
             _ = try syncRun {
                 try await backend.runMusic("set selected of AirPlay device \"\(escapeAppleScriptString(speaker.name))\" to true")
             }
             print("Added \(speaker.name).")
+            if playing {
+                verifyRoute(speaker: speaker.name, backend: backend, baseline: capture.baseline, ip: capture.ip)
+            }
         }
 
     case .wake(let name):
@@ -197,18 +205,34 @@ func runSpeakerSmart(args: [String], json: Bool) throws {
             print("All routed speakers verified. Nothing to reset.")
             return
         }
-        let reset = withStatus("Resetting AirPlay speakers...") {
-            resetAirPlaySpeakers(backend: backend, only: broken.isEmpty ? nil : broken)
-        }
-        if reset.isEmpty {
-            print("No active AirPlay speakers to reset.")
-        } else {
-            for s in reset {
-                print(s.reselected
-                    ? "Reset \(s.name) [\(s.volume)]."
-                    : "Lost \(s.name) — could not reselect after reset. Try: music speaker \(s.name)")
+        // Mid-play, heal via the proven ladder — the away-and-back list-write is
+        // the only write shown to move a live session, whereas wake's old
+        // deselect/reselect is the weaker `set selected` re-issue the heal spec
+        // dropped. Paused, the ladder can't run (it's mid-play only), so fall
+        // back to the reset. Speakers the ladder can't target also fall back.
+        if playerIsPlaying(backend: backend) && !broken.isEmpty {
+            let computerName = ((try? fetchSpeakerDevices()) ?? [])
+                .first { ($0["kind"] as? String) == "computer" }?["name"] as? String
+            let healer = RouteHealer(backend: backend, verifier: verifier)
+            var fallback: Set<String> = []
+            for speaker in broken {
+                guard let computerName, let ip = verifier.resolver.resolveIP(forSpeaker: speaker) else {
+                    fallback.insert(speaker); continue
+                }
+                let outcome = withStatus("Healing \(speaker) route...") {
+                    healer.heal(target: speaker, ip: ip, groupNames: routed,
+                                computerName: computerName,
+                                scriptingClaims: readScriptingClaims(for: speaker, backend: backend))
+                }
+                print(outcome.healed
+                    ? "✓ \(speaker) verified after heal (tier \(outcome.tierUsed))."
+                    : (outcome.failure ?? "✗ \(speaker) NOT verified."))
             }
+            guard !fallback.isEmpty else { return }
+            resetBroken(fallback, backend: backend)
+            return
         }
+        resetBroken(broken.isEmpty ? nil : broken, backend: backend)
 
     case .verify(let name):
         try runSpeakerVerify(name: name, backend: backend, json: json)
@@ -267,6 +291,15 @@ func runSpeakerVerify(name: String?, backend: AppleScriptBackend, json: Bool) th
     var results: [[String: Any]] = []
     for target in targets {
         let claimed = devices.first { ($0["name"] as? String) == target }?["selected"] as? Bool ?? false
+        // The Mac's own output self-resolves via Bonjour and steadyState reports
+        // it ✗ — there is no AirPlay session. An explicitly-named computer target
+        // gets an honest "nothing to verify" instead (the no-name path already
+        // filters it out).
+        if devices.first(where: { ($0["name"] as? String) == target })?["kind"] as? String == "computer" {
+            results.append(["name": target, "verified": true, "local": true, "ip": "",
+                            "evidence": "local output — nothing to verify", "claimedSelected": claimed])
+            continue
+        }
         guard let ip = verifier.resolver.resolveIP(forSpeaker: target) else {
             results.append(["name": target, "verified": false, "ip": "",
                             "evidence": "could not resolve IP via Bonjour — cannot verify",
@@ -295,7 +328,7 @@ func runSpeakerVerify(name: String?, backend: AppleScriptBackend, json: Bool) th
         return
     }
     for r in results {
-        let mark = (r["verified"] as? Bool == true) ? "✓" : "✗"
+        let mark = (r["local"] as? Bool == true) ? "·" : ((r["verified"] as? Bool == true) ? "✓" : "✗")
         print("\(mark) \(r["name"]!) — \(r["evidence"]!) (scripting claims selected: \(r["claimedSelected"]!))")
         if let advisory = r["advisory"] { print("  \(advisory)") }
     }
@@ -506,6 +539,24 @@ func resetAirPlaySpeakers(backend: AppleScriptBackend, only: Set<String>? = nil)
     }
     verbose("reset complete: \(outcomes.map { "\($0.name)\($0.reselected ? "" : " (LOST)")" }.joined(separator: ", "))")
     return outcomes
+}
+
+/// Deselect→reselect fallback for `wake` when the heal ladder can't run (paused,
+/// or a broken speaker with no resolvable IP / no computer device to bounce
+/// off). `only == nil` resets every routed speaker.
+func resetBroken(_ only: Set<String>?, backend: AppleScriptBackend) {
+    let reset = withStatus("Resetting AirPlay speakers...") {
+        resetAirPlaySpeakers(backend: backend, only: only)
+    }
+    if reset.isEmpty {
+        print("No active AirPlay speakers to reset.")
+    } else {
+        for s in reset {
+            print(s.reselected
+                ? "Reset \(s.name) [\(s.volume)]."
+                : "Lost \(s.name) — could not reselect after reset. Try: music speaker \(s.name)")
+        }
+    }
 }
 
 // MARK: - Speaker name resolution (case-insensitive exact > prefix > contains)

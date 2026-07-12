@@ -82,7 +82,7 @@ struct RouteVerdict {
 
 /// Serial use per call site — one instance must not be shared across concurrent callers (connectionSource is not @Sendable).
 struct RouteVerifier {
-    var resolver: SpeakerIPResolving = BonjourSpeakerResolver()
+    var resolver: SpeakerIPResolving = CachingSpeakerResolver()
     var connectionSource: () throws -> [TCPConnection] = readEstablishedTCPConnections
     /// Seconds between polls in verifyEstablishment. 0 is for tests only — with the live netstat source it would busy-spin.
     var pollInterval: TimeInterval = 0.5

@@ -50,14 +50,23 @@ struct RESTAPIBackend {
     // MARK: - Catalog Search
 
     func searchSongs(query: String, limit: Int = 10) async throws -> [CatalogSong] {
-        var allowed = CharacterSet.urlQueryAllowed
-        allowed.remove(charactersIn: "&+=")
-        let encoded = query.addingPercentEncoding(withAllowedCharacters: allowed) ?? query
-        let (data, status) = try await get("/v1/catalog/\(storefront)/search?term=\(encoded)&types=songs&limit=\(limit)")
+        try await search(term: query, types: [.songs], limit: limit).songs
+    }
+
+    /// Multi-type search across the catalog or the user's library. Library
+    /// search needs a user token and uses the `library-*` type names against
+    /// the `/v1/me/library/search` endpoint.
+    func search(term: String, types: [SearchType], limit: Int = 10,
+                library: Bool = false) async throws -> SearchResults {
+        if library { guard userToken != nil else { throw AuthError.userTokenRequired } }
+        let path = searchPath(storefront: storefront, term: term, types: types,
+                              limit: limit, library: library)
+        let (data, status) = try await get(path)
         guard (200...299).contains(status) else {
+            if library && (status == 401 || status == 403) { throw AuthError.userTokenExpired(status) }
             throw APIError.requestFailed(status)
         }
-        return try parseSongs(from: data)
+        return parseSearchResults(from: data, types: types, library: library)
     }
 
     func song(id: String) async throws -> CatalogSong {
@@ -148,15 +157,6 @@ struct RESTAPIBackend {
 
     // MARK: - Parsing
 
-    private func parseSongs(from data: Data) throws -> [CatalogSong] {
-        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
-        let results = json?["results"] as? [String: Any]
-        let songs = results?["songs"] as? [String: Any]
-        let songData = songs?["data"] as? [[String: Any]] ?? []
-
-        return songData.map(parseCatalogSongObject)
-    }
-
     private func parseCatalogSong(from data: Data) throws -> CatalogSong {
         let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
         let songData = json?["data"] as? [[String: Any]] ?? []
@@ -164,16 +164,6 @@ struct RESTAPIBackend {
             throw APIError.noData
         }
         return parseCatalogSongObject(song)
-    }
-
-    private func parseCatalogSongObject(_ song: [String: Any]) -> CatalogSong {
-        let attrs = song["attributes"] as? [String: Any] ?? [:]
-        return CatalogSong(
-            id: song["id"] as? String ?? "",
-            title: attrs["name"] as? String ?? "Unknown",
-            artist: attrs["artistName"] as? String ?? "Unknown",
-            album: attrs["albumName"] as? String ?? ""
-        )
     }
 }
 
@@ -192,6 +182,109 @@ func playlistCreationRequestBody(name: String, songIDs: [String]) -> [String: An
         body["relationships"] = ["tracks": playlistTracksRequestBody(songIDs: songIDs)]
     }
     return body
+}
+
+// MARK: - Multi-type search (pure helpers, testable without the network)
+
+struct CatalogAlbum {
+    let id: String; let name: String; let artist: String
+    func toDict() -> [String: Any] { ["id": id, "name": name, "artist": artist] }
+}
+struct CatalogArtist {
+    let id: String; let name: String
+    func toDict() -> [String: Any] { ["id": id, "name": name] }
+}
+struct CatalogPlaylist {
+    let id: String; let name: String; let curator: String
+    func toDict() -> [String: Any] { ["id": id, "name": name, "curator": curator] }
+}
+
+/// The entity types `music search` can request. Library search uses the
+/// `library-` prefixed type names and results keys (Apple Music API convention).
+enum SearchType: String, CaseIterable {
+    case songs, albums, artists, playlists
+    func apiKey(library: Bool) -> String { library ? "library-\(rawValue)" : rawValue }
+}
+
+struct SearchResults {
+    var songs: [CatalogSong] = []
+    var albums: [CatalogAlbum] = []
+    var artists: [CatalogArtist] = []
+    var playlists: [CatalogPlaylist] = []
+    var isEmpty: Bool { songs.isEmpty && albums.isEmpty && artists.isEmpty && playlists.isEmpty }
+}
+
+/// Parse a comma/space-separated list into known types, dropping unknowns and
+/// de-duping while preserving order. Empty/all-unknown falls back to songs.
+func parseSearchTypes(_ raw: String) -> [SearchType] {
+    let parsed = raw.lowercased()
+        .split(whereSeparator: { $0 == "," || $0 == " " })
+        .compactMap { SearchType(rawValue: String($0)) }
+    var seen = Set<SearchType>(), out: [SearchType] = []
+    for t in parsed where seen.insert(t).inserted { out.append(t) }
+    return out.isEmpty ? [.songs] : out
+}
+
+/// Build the search request path. Catalog → `/v1/catalog/{sf}/search`; library →
+/// `/v1/me/library/search` with `library-` type names.
+func searchPath(storefront: String, term: String, types: [SearchType],
+                limit: Int, library: Bool) -> String {
+    var allowed = CharacterSet.urlQueryAllowed
+    allowed.remove(charactersIn: "&+=")
+    let encoded = term.addingPercentEncoding(withAllowedCharacters: allowed) ?? term
+    let typeList = types.map { $0.apiKey(library: library) }.joined(separator: ",")
+    let base = library ? "/v1/me/library/search" : "/v1/catalog/\(storefront)/search"
+    return "\(base)?term=\(encoded)&types=\(typeList)&limit=\(limit)"
+}
+
+/// Parse an Apple Music search response into typed results. Catalog and library
+/// share the shape `results[<key>].data[].attributes`; only the keys differ.
+func parseSearchResults(from data: Data, types: [SearchType], library: Bool) -> SearchResults {
+    let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+    let results = json?["results"] as? [String: Any] ?? [:]
+    var out = SearchResults()
+    for type in types {
+        let items = (results[type.apiKey(library: library)] as? [String: Any])?["data"] as? [[String: Any]] ?? []
+        switch type {
+        case .songs: out.songs = items.map(parseCatalogSongObject)
+        case .albums: out.albums = items.map(parseCatalogAlbumObject)
+        case .artists: out.artists = items.map(parseCatalogArtistObject)
+        case .playlists: out.playlists = items.map(parseCatalogPlaylistObject)
+        }
+    }
+    return out
+}
+
+func parseCatalogSongObject(_ song: [String: Any]) -> CatalogSong {
+    let attrs = song["attributes"] as? [String: Any] ?? [:]
+    return CatalogSong(
+        id: song["id"] as? String ?? "",
+        title: attrs["name"] as? String ?? "Unknown",
+        artist: attrs["artistName"] as? String ?? "Unknown",
+        album: attrs["albumName"] as? String ?? "")
+}
+
+func parseCatalogAlbumObject(_ album: [String: Any]) -> CatalogAlbum {
+    let attrs = album["attributes"] as? [String: Any] ?? [:]
+    return CatalogAlbum(
+        id: album["id"] as? String ?? "",
+        name: attrs["name"] as? String ?? "Unknown",
+        artist: attrs["artistName"] as? String ?? "Unknown")
+}
+
+func parseCatalogArtistObject(_ artist: [String: Any]) -> CatalogArtist {
+    let attrs = artist["attributes"] as? [String: Any] ?? [:]
+    return CatalogArtist(
+        id: artist["id"] as? String ?? "",
+        name: attrs["name"] as? String ?? "Unknown")
+}
+
+func parseCatalogPlaylistObject(_ playlist: [String: Any]) -> CatalogPlaylist {
+    let attrs = playlist["attributes"] as? [String: Any] ?? [:]
+    return CatalogPlaylist(
+        id: playlist["id"] as? String ?? "",
+        name: attrs["name"] as? String ?? "Unknown",
+        curator: attrs["curatorName"] as? String ?? "")
 }
 
 enum APIError: Error, LocalizedError {

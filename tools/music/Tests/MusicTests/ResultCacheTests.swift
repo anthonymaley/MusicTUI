@@ -92,4 +92,41 @@ final class ResultCacheTests: XCTestCase {
         XCTAssertTrue(resolved.isEmpty)
         XCTAssertEqual(dropped, [1, 2])
     }
+
+    // MARK: - speaker IP memoization
+
+    func testSpeakerIPRoundTrip() {
+        let cache = ResultCache(directory: testDir.path)
+        cache.rememberSpeakerIP(name: "Kitchen", ip: "192.168.1.112")
+        XCTAssertEqual(cache.cachedSpeakerIP(forName: "Kitchen"), "192.168.1.112")
+    }
+
+    func testSpeakerIPCaseInsensitiveLookup() {
+        let cache = ResultCache(directory: testDir.path)
+        cache.rememberSpeakerIP(name: "Living Room", ip: "192.168.1.81")
+        XCTAssertEqual(cache.cachedSpeakerIP(forName: "living room"), "192.168.1.81")
+    }
+
+    func testSpeakerIPMissReturnsNil() {
+        let cache = ResultCache(directory: testDir.path)
+        XCTAssertNil(cache.cachedSpeakerIP(forName: "Nonexistent"))
+    }
+
+    func testSpeakerIPExpiresWithZeroTTL() {
+        let cache = ResultCache(directory: testDir.path)
+        cache.rememberSpeakerIP(name: "Kitchen", ip: "192.168.1.112")
+        // ttl 0 → the just-written entry is already considered stale.
+        XCTAssertNil(cache.cachedSpeakerIP(forName: "Kitchen", ttl: 0))
+    }
+
+    func testSpeakerIPRefreshReplacesPriorEntry() {
+        let cache = ResultCache(directory: testDir.path)
+        cache.rememberSpeakerIP(name: "Kitchen", ip: "192.168.1.112")
+        cache.rememberSpeakerIP(name: "Kitchen", ip: "192.168.1.200")
+        XCTAssertEqual(cache.cachedSpeakerIP(forName: "Kitchen"), "192.168.1.200")
+        // No duplicate entries left behind.
+        cache.rememberSpeakerIP(name: "Bedroom", ip: "192.168.1.90")
+        XCTAssertEqual(cache.cachedSpeakerIP(forName: "Kitchen"), "192.168.1.200")
+        XCTAssertEqual(cache.cachedSpeakerIP(forName: "Bedroom"), "192.168.1.90")
+    }
 }

@@ -124,15 +124,20 @@ visuals). Same UI-scripting + Accessibility requirement as the equalizer.
 GUI-only: the visuals render in the Music window on the Mac's display (not on
 AirPlay outputs), and turning it on brings Music to the front.
 
-## Catalog Search (developer token only)
+## Search (catalog: developer token · library: + user token)
 
 ```bash
 music search "Bohemian Rhapsody Queen"        # search songs (writes to cache)
 music search "Fouk" --limit 20               # control result count
-music search --artist "Radiohead"             # filter by artist
-music search --album "OK Computer"            # filter by album
+music search "house" --types songs,albums,artists,playlists  # multi-type catalog search
+music search "The Smiths" --library          # search YOUR library (needs user token)
+music search "kid a" --library --types playlists             # library, specific types
+music search --artist "Radiohead"             # narrow the query text by artist
+music search --album "OK Computer"            # narrow the query text by album
 music search "query" --json                   # structured results with catalog IDs
 ```
+
+`--types` accepts any of `songs,albums,artists,playlists` (default `songs`). Only songs are numbered/cached for index-based `add`/quick-pick; albums, artists, and playlists print with their catalog/library ids.
 
 ## Add to Library (requires user token)
 
