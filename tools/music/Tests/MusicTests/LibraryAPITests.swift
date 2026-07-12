@@ -89,4 +89,22 @@ final class LibraryAPITests: XCTestCase {
         XCTAssertEqual(calls, 3)                  // 0→100→200 (200<250), then 300 ≥ 250 stops
         XCTAssertEqual(out.count, 300)
     }
+
+    // MARK: - parseLibraryTrackPositions (AppQueue source rows for album/artist play)
+
+    func testParseLibraryTrackPositions() {
+        let fs = String(asFieldSep)
+        let raw = "26\(fs)La Femme D'Argent\(fs)Air\n28\(fs)Sexy Boy\(fs)Air\n29\(fs)All I Need\(fs)Air"
+        let rows = parseLibraryTrackPositions(raw)
+        XCTAssertEqual(rows.map(\.index), [26, 28, 29])   // Library positions preserved
+        XCTAssertEqual(rows[1].name, "Sexy Boy")
+        XCTAssertEqual(rows[2].artist, "Air")
+        XCTAssertFalse(rows[0].isCurrent)
+    }
+
+    func testParseLibraryTrackPositionsSkipsMalformed() {
+        let fs = String(asFieldSep)
+        let raw = "bad\(fs)X\(fs)Y\n\n30\(fs)Kelly\(fs)Air"   // non-numeric index + blank line dropped
+        XCTAssertEqual(parseLibraryTrackPositions(raw).map(\.index), [30])
+    }
 }

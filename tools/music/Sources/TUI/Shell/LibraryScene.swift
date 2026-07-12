@@ -354,7 +354,10 @@ final class LibraryScene: Scene {
             // same serial fetch and the pane shows "loading…" until it lands.
             kickTrackFetch(albumID: albumID, title: title, artist: artist)
         case .play(.album(_, let title, let artist)):
-            playAlbum(title: title, artist: artist, shuffle: false)
+            // Enter on a row in the album tracklist starts the queue AT that track
+            // (nav.cursor is the track index there); elsewhere it's whole-album.
+            playAlbum(title: title, artist: artist, shuffle: false,
+                      startAt: isTracksLevel ? nav.cursor + 1 : 1)
         case .shuffle(.album(_, let title, let artist)):
             playAlbum(title: title, artist: artist, shuffle: true)
         case .play(.song(_, let title, let artist)):
@@ -370,52 +373,64 @@ final class LibraryScene: Scene {
         }
     }
 
-    /// Whole-album play via Music's native (gapless) queue — relinquish the
-    /// app-owned queue so the poller reads Music's context again. Two separate
-    /// AppleScript calls (never batched, per the -50 rule); failures toast.
-    private func playAlbum(title: String, artist: String, shuffle: Bool) {
-        appQueue.clear()
+    /// Whole-album (or from-a-track) play via the app-owned queue. macOS 26.x
+    /// roots ANY scripted play in the whole library (probed live 2026-07-12), so
+    /// native `play <tracks>` gives an all-library Up Next that wanders past the
+    /// album. Instead we build an AppQueue of just the album's tracks (sourced
+    /// from "Library" by position) and let the poller drive it: scoped Up Next,
+    /// navigable, stops at the album's end. Autoplay (∞) must be OFF. Track-by-
+    /// track, so not gapless — the accepted trade-off. On the action queue; the
+    /// bulk fetch never freezes the UI and failures toast.
+    private func playAlbum(title: String, artist: String, shuffle: Bool, startAt: Int = 1) {
         let escTitle = escapeAppleScriptString(title)
         let escArtist = escapeAppleScriptString(artist)
         let backend = self.backend
+        let store = self.appQueue
         actions.run("Play") {
-            try require((try? syncRun { try await backend.runMusic("set shuffle enabled to \(shuffle)") }) != nil,
-                        "Couldn't set shuffle for '\(title)'.")
-            try require((try? syncRun { try await backend.runMusic("play (every track of playlist \"Library\" whose album is \"\(escTitle)\" and artist is \"\(escArtist)\")") }) != nil,
+            let tracks = fetchLibraryTracksWithPositions(
+                backend: backend, whereClause: "album is \"\(escTitle)\" and artist is \"\(escArtist)\"")
+            try require(!tracks.isEmpty, "Couldn't load '\(title)'.")
+            let ordered = shuffle ? tracks.shuffled() : tracks
+            let idx = shuffle ? 1 : min(max(1, startAt), ordered.count)
+            store.set(AppQueue(playlistName: "Library", tracks: ordered, currentIndex: idx, displayName: title))
+            try require(playQueueTrack(backend: backend, playlist: "Library", position: ordered[idx - 1].index),
                         "Couldn't play '\(title)'.")
         }
     }
 
-    /// Play one library song via Music's native queue (matched by name+artist in
-    /// the whole-library "Library" playlist). Mirrors playAlbum: relinquish the
-    /// app-owned queue, two separate AppleScript calls (never batched, per -50),
-    /// failures toast. `set shuffle` runs even on a plain play so a prior shuffle
-    /// state is reset.
+    /// Play one library song as a 1-track app-owned queue — plays it and stops,
+    /// instead of the old native `play some track` that dropped into the whole
+    /// library and bled into Autoplay. Autoplay (∞) must be OFF. Shuffle is a
+    /// no-op for a single track (the param stays for a uniform call site).
     private func playSong(title: String, artist: String, shuffle: Bool) {
-        appQueue.clear()
         let escTitle = escapeAppleScriptString(title)
         let escArtist = escapeAppleScriptString(artist)
         let backend = self.backend
+        let store = self.appQueue
         actions.run("Play") {
-            try require((try? syncRun { try await backend.runMusic("set shuffle enabled to \(shuffle)") }) != nil,
-                        "Couldn't set shuffle for '\(title)'.")
-            try require((try? syncRun { try await backend.runMusic("play (some track of playlist \"Library\" whose name is \"\(escTitle)\" and artist is \"\(escArtist)\")") }) != nil,
+            let tracks = fetchLibraryTracksWithPositions(
+                backend: backend, whereClause: "name is \"\(escTitle)\" and artist is \"\(escArtist)\"")
+            try require(!tracks.isEmpty, "Couldn't play '\(title)'.")
+            let one = Array(tracks.prefix(1))
+            store.set(AppQueue(playlistName: "Library", tracks: one, currentIndex: 1, displayName: title))
+            try require(playQueueTrack(backend: backend, playlist: "Library", position: one[0].index),
                         "Couldn't play '\(title)'.")
         }
     }
 
-    /// Play every library track by one artist via Music's native queue (matched
-    /// by artist in the whole-library "Library" playlist). Mirrors playAlbum:
-    /// relinquish the app-owned queue, two separate AppleScript calls (never
-    /// batched, per -50), failures toast.
+    /// Play every library track by one artist as an app-owned queue (scoped,
+    /// navigable, stops at the end — same rationale as playAlbum). Autoplay OFF.
     private func playArtist(name: String, shuffle: Bool) {
-        appQueue.clear()
         let escName = escapeAppleScriptString(name)
         let backend = self.backend
+        let store = self.appQueue
         actions.run("Play") {
-            try require((try? syncRun { try await backend.runMusic("set shuffle enabled to \(shuffle)") }) != nil,
-                        "Couldn't set shuffle for '\(name)'.")
-            try require((try? syncRun { try await backend.runMusic("play (every track of playlist \"Library\" whose artist is \"\(escName)\")") }) != nil,
+            let tracks = fetchLibraryTracksWithPositions(
+                backend: backend, whereClause: "artist is \"\(escName)\"")
+            try require(!tracks.isEmpty, "Couldn't load '\(name)'.")
+            let ordered = shuffle ? tracks.shuffled() : tracks
+            store.set(AppQueue(playlistName: "Library", tracks: ordered, currentIndex: 1, displayName: name))
+            try require(playQueueTrack(backend: backend, playlist: "Library", position: ordered[0].index),
                         "Couldn't play '\(name)'.")
         }
     }
