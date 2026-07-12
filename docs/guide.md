@@ -55,10 +55,10 @@ The skill triggers automatically when Claude detects music-related intent; `/mus
 
 ### 3. Interactive TUI
 
-Run bare `music` in a real terminal for the unified interactive shell — a tabbed interface with **Now**, **Playlists**, and **Speakers** tabs.
+Run bare `music` in a real terminal for the unified interactive shell — a tabbed interface with **Now**, **Playlists**, **Speakers**, and **Library** tabs.
 
 ```
-music                           Unified shell: Now / Playlists / Speakers tabs
+music                           Unified shell: Now / Playlists / Speakers / Library tabs
 ```
 
 Current TUI contract:
@@ -67,8 +67,9 @@ Current TUI contract:
 - Apple-curated playlists added to the library (AppleScript class `subscription playlist`) appear in the rail with an `APPLE` badge. They're read-only on Apple's side — edits fail with a toast, by design.
 - Selecting a playlist pins it on the Now tab, which shows the full playlist and keeps `↑↓` navigation local.
 - The Now tab shows the current album context, not a real Apple Music queue.
+- The Library tab (requires the Apple Music user token) browses your library via the REST library API in three sub-views — Albums, Artists, Songs — switched with `[`/`]`. Enter opens an album's tracks or drills Artist → their albums → tracks; `p` plays and `s` shuffles the focused item (albums/artists play as native Music queues). Without a user token the tab refuses with a toast.
 - `Enter` plays the highlighted row.
-- Keys: `1/2/3` jump to a tab, `Tab`/`Shift-Tab` cycle, `↑↓` + `PgUp/PgDn/Home/End` navigate, `Space` play/pause, `</>` previous/next, `[ ]` seek (Now) / `←→` per-speaker volume (Speakers), `z` shuffle-play, `l` favorite, `+/-` master volume, `n` next-up options, `Esc` back, `q` quit.
+- Keys: `1/2/3/4` jump to a tab, `Tab`/`Shift-Tab` cycle, `[`/`]` switch Library sub-view, `↑↓` + `PgUp/PgDn/Home/End` navigate, `Space` play/pause, `</>` previous/next, `[ ]` seek (Now) / `←→` per-speaker volume (Speakers), `z` shuffle-play, `l` favorite, `+/-` master volume, `n` next-up options, `Esc` back, `q` quit.
 - The Now tab has a **playback-control grid** (Shuffle / Order / Repeat / Genius) under the track progress, showing each value live with the active one lit. Press `←` to focus the grid and `→` to return to the Up Next list; `↑↓` move between control rows and `Enter` cycles the focused row's value (Shuffle on/off, Order Songs→Albums→Groupings, Repeat Off→All→One, Genius triggers). The `s`/`m`/`r`/`g` keys do the same from anywhere. Shuffle/order/repeat write Music's state directly (no extra permission); Genius rebuilds the queue from the current song and is UI-scripted (needs the same Accessibility permission as the equalizer). Distinct from the global `z`, which shuffle-*plays* the current context.
 - Named-speaker `music play`, and `music speaker` add/`set`/`only`, verify the route automatically while playing (network-truth — established TCP connections to the speaker, not the AppleScript `selected` claim, which can lie) and print `✓ <speaker> verified (…)`; while paused, routing prints `Route set; will verify on next play.` instead, since a paused route can't be network-verified. An unestablished route triggers an automatic heal — an away-and-back reroute, then a transport-cycle reset — before an honest failure names the manual fix. `music speaker wake` also verifies first now and resets only the routes that are actually broken (`✓ X verified — leaving it alone.` for the rest). Routing to the Mac's own output is never "verified" — local output has no AirPlay session.
 - Toggling a speaker on in the Speakers scene while playing verifies the route the same way and toasts if it couldn't be verified; toggling off, or toggling while paused, skips verification.

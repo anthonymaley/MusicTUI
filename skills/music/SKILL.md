@@ -193,14 +193,14 @@ music mix --artists "Fouk,Floating Points" --count 20 --name "Friday Mix"  # mix
 ## Interactive TUI (requires real terminal, not Claude Code)
 
 ```bash
-music                                         # unified shell: Now / Playlists / Speakers tabs
+music                                         # unified shell: Now / Playlists / Speakers / Library tabs
 ```
 
-Bare `music` is the main interactive surface — a tabbed shell with **Now**, **Playlists**, and **Speakers** tabs. (`music now` / `music now --json` and `music playlist <subcommand>` are non-interactive CLI commands, documented above.) Four one-shot quick pickers also exist for terminal/slash-command use: bare `music speaker` (AirPlay picker), bare `music volume` (mixer), and the `music similar` / `music suggest` result pickers.
+Bare `music` is the main interactive surface — a tabbed shell with **Now**, **Playlists**, **Speakers**, and **Library** tabs. (`music now` / `music now --json` and `music playlist <subcommand>` are non-interactive CLI commands, documented above.) Four one-shot quick pickers also exist for terminal/slash-command use: bare `music speaker` (AirPlay picker), bare `music volume` (mixer), and the `music similar` / `music suggest` result pickers.
 
-TUI behavior: the Now tab shows the current album context; selecting a playlist on the Playlists tab pins it on the Now tab. Cursor movement is local and fast. On the Speakers tab, toggling a speaker on while playing verifies the route and toasts if it couldn't be verified.
+TUI behavior: the Now tab shows the current album context; selecting a playlist on the Playlists tab pins it on the Now tab. Cursor movement is local and fast. On the Speakers tab, toggling a speaker on while playing verifies the route and toasts if it couldn't be verified. The Library tab (needs the Apple Music user token) browses your library in three sub-views — Albums, Artists, Songs — switched with `[`/`]`; Enter opens an album's tracks (or drills Artist → their albums → tracks), `p` plays and `s` shuffles the item in focus.
 
-TUI controls: `1/2/3` switch tabs (Now / Playlists / Speakers), `Tab`/`Shift-Tab` cycle tabs, `↑↓` navigate (`PgUp/PgDn/Home/End` for long lists), `Enter` play/open selected, `←→` seek (Now) or volume (Speakers), `Space` pause, `</>` previous/next track (full up/down through the playlist), `z`/`r` shuffle, `l` favorite, `+/-` volume, `n` next-up options (Now), `/` filter playlists (arrows navigate while typing), `Esc` back, `q` quit. Playlist track-play requires Music's Autoplay (∞) turned OFF — it drives playback track-by-track and needs each track to stop at its end.
+TUI controls: `1/2/3/4` switch tabs (Now / Playlists / Speakers / Library), `Tab`/`Shift-Tab` cycle tabs, `[`/`]` switch Library sub-view, `↑↓` navigate (`PgUp/PgDn/Home/End` for long lists), `Enter` play/open selected, `←→` seek (Now) or volume (Speakers), `Space` pause, `</>` previous/next track (full up/down through the playlist), `z`/`r` shuffle, `l` favorite, `+/-` volume, `n` next-up options (Now), `/` filter playlists (arrows navigate while typing), `Esc` back, `q` quit. Playlist track-play requires Music's Autoplay (∞) turned OFF — it drives playback track-by-track and needs each track to stop at its end.
 
 ## Result Cache
 
