@@ -146,6 +146,37 @@ struct ResultCache {
         try? data.write(to: URL(fileURLWithPath: speakerIPsPath))
     }
 
+    // MARK: - Artist-tier filter memoization (Library tab `a` filter)
+
+    struct CachedArtistTiers: Codable, Equatable {
+        let ep: [String]       // normalized artist names with a 2–5 track album (12"/EP)
+        let albums: [String]   // normalized artist names with a 6+ track album
+        let cachedAt: Date
+    }
+
+    private var artistTiersPath: String { "\(directory)/artist-tiers.json" }
+
+    /// Cached (12"/EP, Albums) artist-name sets if written within `ttl` — lets the
+    /// Library `a` tier filter paint instantly on its first activation of a session
+    /// while a fresh album walk revalidates in the background. nil on miss/expiry.
+    func cachedArtistTiers(ttl: TimeInterval = 604_800) -> (ep: Set<String>, albums: Set<String>)? {
+        guard FileManager.default.fileExists(atPath: artistTiersPath),
+              let data = try? Data(contentsOf: URL(fileURLWithPath: artistTiersPath)),
+              let entry = try? JSONDecoder().decode(CachedArtistTiers.self, from: data),
+              Date().timeIntervalSince(entry.cachedAt) < ttl
+        else { return nil }
+        return (Set(entry.ep), Set(entry.albums))
+    }
+
+    /// Persist the tier sets. Best-effort: a write failure silently degrades to a
+    /// cache miss next session, never blocks the UI.
+    func rememberArtistTiers(ep: Set<String>, albums: Set<String>) {
+        let entry = CachedArtistTiers(ep: Array(ep), albums: Array(albums), cachedAt: Date())
+        guard let data = try? JSONEncoder().encode(entry) else { return }
+        try? ensureDirectory()
+        try? data.write(to: URL(fileURLWithPath: artistTiersPath))
+    }
+
     private func ensureDirectory() throws {
         try FileManager.default.createDirectory(
             atPath: directory,

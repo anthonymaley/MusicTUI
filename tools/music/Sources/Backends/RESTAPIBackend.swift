@@ -331,8 +331,8 @@ func parseCatalogPlaylistObject(_ playlist: [String: Any]) -> CatalogPlaylist {
 
 // MARK: - Library browse (pure helpers)
 
-struct LibraryAlbum { let id: String; let name: String; let artist: String
-    func toDict() -> [String: Any] { ["id": id, "name": name, "artist": artist] } }
+struct LibraryAlbum { let id: String; let name: String; let artist: String; let trackCount: Int
+    func toDict() -> [String: Any] { ["id": id, "name": name, "artist": artist, "trackCount": trackCount] } }
 
 func libraryAlbumsPath(limit: Int, offset: Int) -> String {
     "/v1/me/library/albums?limit=\(limit)&offset=\(offset)"
@@ -350,7 +350,11 @@ func parseLibraryAlbums(from data: Data) -> [LibraryAlbum] {
         let a = obj["attributes"] as? [String: Any] ?? [:]
         return LibraryAlbum(id: obj["id"] as? String ?? "",
                             name: a["name"] as? String ?? "Unknown",
-                            artist: a["artistName"] as? String ?? "Unknown")
+                            artist: a["artistName"] as? String ?? "Unknown",
+                            // Library-albums trackCount = tracks of this album IN the
+                            // library; a loose playlist-song stub reads as 1, which the
+                            // album-artists filter uses to exclude it. Missing → 0.
+                            trackCount: a["trackCount"] as? Int ?? 0)
     }
 }
 

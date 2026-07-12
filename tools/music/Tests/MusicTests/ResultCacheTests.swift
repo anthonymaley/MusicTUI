@@ -129,4 +129,34 @@ final class ResultCacheTests: XCTestCase {
         XCTAssertEqual(cache.cachedSpeakerIP(forName: "Kitchen"), "192.168.1.200")
         XCTAssertEqual(cache.cachedSpeakerIP(forName: "Bedroom"), "192.168.1.90")
     }
+
+    // MARK: - Artist-tier filter cache
+
+    func testArtistTiersRoundTrip() {
+        let cache = ResultCache(directory: testDir.path)
+        cache.rememberArtistTiers(ep: ["burial", "actress"], albums: ["radiohead", "air"])
+        let hit = cache.cachedArtistTiers()
+        XCTAssertEqual(hit?.ep, ["burial", "actress"])
+        XCTAssertEqual(hit?.albums, ["radiohead", "air"])
+    }
+
+    func testArtistTiersMissReturnsNil() {
+        let cache = ResultCache(directory: testDir.path)
+        XCTAssertNil(cache.cachedArtistTiers())
+    }
+
+    func testArtistTiersExpiresWithZeroTTL() {
+        let cache = ResultCache(directory: testDir.path)
+        cache.rememberArtistTiers(ep: ["burial"], albums: ["radiohead"])
+        XCTAssertNil(cache.cachedArtistTiers(ttl: 0))   // just-written entry is already stale
+    }
+
+    func testArtistTiersRefreshReplacesPrior() {
+        let cache = ResultCache(directory: testDir.path)
+        cache.rememberArtistTiers(ep: ["burial"], albums: ["radiohead"])
+        cache.rememberArtistTiers(ep: ["actress"], albums: ["air", "boards of canada"])
+        let hit = cache.cachedArtistTiers()
+        XCTAssertEqual(hit?.ep, ["actress"])
+        XCTAssertEqual(hit?.albums, ["air", "boards of canada"])
+    }
 }

@@ -6,6 +6,92 @@
 // view state (scroll, filter) and executes the emitted LibraryAction off-thread.
 import Foundation
 
+/// Normalize an artist name for cross-list matching (album.artist ↔ artist.name).
+/// Lowercase + trim only — a deliberately shallow heuristic; compilation credits
+/// ("Various Artists") and "feat." strings can still miss, which is why the
+/// album-artists filter is opt-in and defaults off.
+func normalizeArtist(_ s: String) -> String {
+    s.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+}
+
+/// Which track-count tier the Artists list is filtered to. `a` cycles All → 12"/EP
+/// → Albums. Tiers are by an album's IN-LIBRARY track count: a lone playlist track
+/// is a 1-track stub (in neither tier); 2–5 tracks reads as a 12"/EP; 6+ as a full
+/// album. An artist qualifies for a tier by having ≥1 album in it, so an artist
+/// with both a 12" and an LP appears in both filtered views.
+enum ArtistFilterMode: Equatable {
+    case all, epOr12, albums
+    var next: ArtistFilterMode {
+        switch self {
+        case .all: return .epOr12
+        case .epOr12: return .albums
+        case .albums: return .all
+        }
+    }
+    var label: String {
+        switch self {
+        case .all: return "All"
+        case .epOr12: return "12\"/EP"
+        case .albums: return "Albums"
+        }
+    }
+    /// The album track-count range this tier scopes the drilled album list to
+    /// (nil = All → no scoping). Same boundaries as the artist-list membership,
+    /// so drilling into an artist shows only the albums that put them in the tier.
+    var trackRange: ClosedRange<Int>? {
+        switch self {
+        case .all: return nil
+        case .epOr12: return 2...5
+        case .albums: return 6...Int.max
+        }
+    }
+}
+
+/// The visible artist rows for the Artists list, as indices into `artists`. The `/`
+/// text filter always applies; when `albumArtistNames` is non-nil the artist must
+/// also be in that set (the active tier's artists) — nil is the All tier (no album
+/// filter). `albumArtistNames` is expected already-normalized (the scene builds it
+/// via `normalizeArtist`). Pure, so it's unit-tested without standing up a scene.
+func filteredArtistIndices(artists: [LibraryArtist], albumArtistNames: Set<String>?,
+                           filter: String) -> [Int] {
+    let q = filter.lowercased()
+    return (0..<artists.count).filter { i in
+        let name = artists[i].name
+        if let set = albumArtistNames, !set.contains(normalizeArtist(name)) { return false }
+        if !q.isEmpty, !name.lowercased().contains(q) { return false }
+        return true
+    }
+}
+
+/// The set of artists with a library album whose in-library track count is in
+/// `minTracks...maxTracks`. Apple makes a 1-track "album" stub for a loose playlist
+/// song, so `minTracks: 2` drops those stubs; a `maxTracks` bound splits 12"/EPs
+/// (2–5) from full albums (6+). `LibraryAlbum.trackCount` is the library count (a
+/// stub reads as 1). Names normalized to match the artist list. Pure → unit-tested.
+func albumArtistSet(from albums: [LibraryAlbum], minTracks: Int = 2,
+                    maxTracks: Int = .max) -> Set<String> {
+    var set = Set<String>()
+    for al in albums where al.trackCount >= minTracks && al.trackCount <= maxTracks {
+        set.insert(normalizeArtist(al.artist))
+    }
+    return set
+}
+
+/// Visible album rows as indices into `albums`. `trackRange` (non-nil only in the
+/// Artists-drill tier views) scopes to albums whose track count is in range so a
+/// drill matches the tier it came from; the `/` text filter (name + artist
+/// substring) always applies. Pure → unit-tested.
+func filteredAlbumIndices(albums: [LibraryAlbum], trackRange: ClosedRange<Int>?,
+                          filter: String) -> [Int] {
+    let q = filter.lowercased()
+    return (0..<albums.count).filter { i in
+        let a = albums[i]
+        if let r = trackRange, !r.contains(a.trackCount) { return false }
+        if !q.isEmpty, !"\(a.name) \(a.artist)".lowercased().contains(q) { return false }
+        return true
+    }
+}
+
 final class LibraryScene: Scene {
     let id: SceneID = .library
     let tabTitle = "Library"
@@ -16,6 +102,10 @@ final class LibraryScene: Scene {
         if isTracksLevel { return "[ ] View  Enter Play  \u{2190} Back  p Play  s Shuffle" }
         // Enter plays a song directly (no drill-in), unlike album/artist "Open".
         if isSongList { return "[ ] View  Enter Play  / Filter  p Play  s Shuffle" }
+        // The Artists list carries the tier filter; show the active tier.
+        if isArtistList {
+            return "[ ] View  Enter Open  / Filter  a View: \(artistFilter.label)  p Play  s Shuffle"
+        }
         return "[ ] View  Enter Open  / Filter  p Play  s Shuffle"
     }
 
@@ -43,6 +133,13 @@ final class LibraryScene: Scene {
     private var artistsFetchStarted = false
     private var artistAlbums: [LibraryAlbum] = []
     private var artistAlbumsLoaded = false
+    // Album-artists tier filter (`a` on the Artists list cycles All → 12"/EP →
+    // Albums). The two sets are the normalized artist names in each tier, built in
+    // tick as album pages stream in (so the filter refines live while albums load)
+    // and seeded from the SWR cache on first activation. Session-local.
+    private var artistFilter: ArtistFilterMode = .all
+    private var epArtists: Set<String> = []      // artists with a 2–5 track album (12"/EP)
+    private var albumArtists: Set<String> = []   // artists with a 6+ track album
     private var filter = ""
     private var capturing = false
     private var railScroll = 0
@@ -60,9 +157,18 @@ final class LibraryScene: Scene {
     private let previewQueue = DispatchQueue(label: "music.library.preview")
 
     private let inboxLock = NSLock()
-    private var albumsInbox: [LibraryAlbum]? = nil
-    private var songsInbox: [LibrarySong]? = nil
-    private var artistsInbox: [LibraryArtist]? = nil
+    // The three paginated lists stream page-by-page for progressive render: the
+    // background walk appends each page to `*Pending` under inboxLock; tick drains
+    // and appends to the main list, and `*Done` flips `*Loaded` once the walk
+    // finishes (so an empty library shows "(no …)" instead of a stuck "Loading …").
+    // A single-optional inbox — like artistAlbums/preview below — can't express
+    // "first page here, more coming", which is exactly what progressive render needs.
+    private var albumsPending: [LibraryAlbum] = []
+    private var albumsDone = false
+    private var songsPending: [LibrarySong] = []
+    private var songsDone = false
+    private var artistsPending: [LibraryArtist] = []
+    private var artistsDone = false
     // Tagged with the requested artistID so a slow fetch for a since-abandoned
     // artist can be dropped in tick (last-writer-wins guard, like trackCache).
     private var artistAlbumsInbox: (artistID: String, albums: [LibraryAlbum])? = nil
@@ -83,44 +189,68 @@ final class LibraryScene: Scene {
 
     // MARK: background loads
 
+    /// Off-thread streaming album fetch: each page is appended to albumsPending
+    /// under inboxLock and drained in tick, so the rail fills in as pages land
+    /// rather than after the whole (paginated) walk. The onPage closure returns
+    /// false if the scene has deallocated, which aborts the walk. albumsDone is set
+    /// once the walk finishes so tick can flip albumsLoaded. Kicked once (guarded
+    /// by albumsFetchStarted) when the Albums sub-view first becomes active.
     private func loadAlbums() {
         albumsFetchStarted = true
         let sources = self.sources
         Thread.detachNewThread { [weak self] in
-            let fetched = sources.onAlbums()
+            sources.onAlbums { page in
+                guard let self else { return false }   // scene gone → stop the walk
+                self.inboxLock.lock()
+                self.albumsPending.append(contentsOf: page)
+                self.inboxLock.unlock()
+                return true
+            }
             guard let self else { return }
             self.inboxLock.lock()
-            self.albumsInbox = fetched
+            self.albumsDone = true
             self.inboxLock.unlock()
         }
     }
 
-    /// Off-thread song fetch, posted to songsInbox and drained in tick — same
-    /// inbox+NSLock discipline as loadAlbums. Kicked once (guarded by
-    /// songsFetchStarted) when the Songs sub-view first becomes active.
+    /// Off-thread streaming song fetch — same page-by-page discipline as loadAlbums.
+    /// Kicked once (guarded by songsFetchStarted) when the Songs sub-view first
+    /// becomes active.
     private func loadSongs() {
         songsFetchStarted = true
         let sources = self.sources
         Thread.detachNewThread { [weak self] in
-            let fetched = sources.onSongs()
+            sources.onSongs { page in
+                guard let self else { return false }
+                self.inboxLock.lock()
+                self.songsPending.append(contentsOf: page)
+                self.inboxLock.unlock()
+                return true
+            }
             guard let self else { return }
             self.inboxLock.lock()
-            self.songsInbox = fetched
+            self.songsDone = true
             self.inboxLock.unlock()
         }
     }
 
-    /// Off-thread artist-list fetch, posted to artistsInbox and drained in tick.
-    /// Kicked once (guarded by artistsFetchStarted) when the Artists sub-view
-    /// first becomes active — same one-shot pattern as loadSongs.
+    /// Off-thread streaming artist-list fetch — same page-by-page discipline as
+    /// loadSongs. Kicked once (guarded by artistsFetchStarted) when the Artists
+    /// sub-view first becomes active.
     private func loadArtists() {
         artistsFetchStarted = true
         let sources = self.sources
         Thread.detachNewThread { [weak self] in
-            let fetched = sources.onArtists()
+            sources.onArtists { page in
+                guard let self else { return false }
+                self.inboxLock.lock()
+                self.artistsPending.append(contentsOf: page)
+                self.inboxLock.unlock()
+                return true
+            }
             guard let self else { return }
             self.inboxLock.lock()
-            self.artistsInbox = fetched
+            self.artistsDone = true
             self.inboxLock.unlock()
         }
     }
@@ -163,40 +293,43 @@ final class LibraryScene: Scene {
     func tick(snapshot: NowPlayingSnapshot) -> Bool {
         var changed = false
         inboxLock.lock()
-        let freshAlbums = albumsInbox; albumsInbox = nil
-        let freshSongs = songsInbox; songsInbox = nil
-        let freshArtists = artistsInbox; artistsInbox = nil
+        let newAlbums = albumsPending; albumsPending = []
+        let albumsWalkDone = albumsDone
+        let newSongs = songsPending; songsPending = []
+        let songsWalkDone = songsDone
+        let newArtists = artistsPending; artistsPending = []
+        let artistsWalkDone = artistsDone
         let freshArtistAlbums = artistAlbumsInbox; artistAlbumsInbox = nil
         let landedPreviews = previewInbox; previewInbox = []
         inboxLock.unlock()
 
-        if let freshAlbums {
-            albums = freshAlbums
+        // Streaming lists only grow (append), so a landed page can't push the cursor
+        // out of range (the count only rises) — no clamp needed here, unlike the old
+        // whole-list replace. `*Loaded` flips only when the walk reports done, so a
+        // genuinely empty library reads as "(no …)" instead of a stuck "Loading …".
+        if !newAlbums.isEmpty {
+            albums.append(contentsOf: newAlbums)
+            // Feed the tier filter as pages stream in. 1-track stubs (loose playlist
+            // songs) fall in neither tier; 2–5 tracks → 12"/EP, 6+ → full album.
+            epArtists.formUnion(albumArtistSet(from: newAlbums, minTracks: 2, maxTracks: 5))
+            albumArtists.formUnion(albumArtistSet(from: newAlbums, minTracks: 6))
+            changed = true
+        }
+        if albumsWalkDone && !albumsLoaded {
             albumsLoaded = true
-            if isAlbumList {
-                let count = visibleAlbumIndices().count
-                if nav.cursor >= count { nav.cursor = max(0, count - 1) }
-            }
+            // Walk finished: rebuild the tier sets authoritatively from the full
+            // album list (drops any stale cache-seeded names that no longer qualify)
+            // and refresh the SWR cache off the main thread (best-effort).
+            epArtists = albumArtistSet(from: albums, minTracks: 2, maxTracks: 5)
+            albumArtists = albumArtistSet(from: albums, minTracks: 6)
+            let (ep, alb) = (epArtists, albumArtists)
+            Thread.detachNewThread { ResultCache().rememberArtistTiers(ep: ep, albums: alb) }
             changed = true
         }
-        if let freshSongs {
-            songs = freshSongs
-            songsLoaded = true
-            if isSongList {
-                let count = visibleSongIndices().count
-                if nav.cursor >= count { nav.cursor = max(0, count - 1) }
-            }
-            changed = true
-        }
-        if let freshArtists {
-            artists = freshArtists
-            artistsLoaded = true
-            if isArtistList {
-                let count = visibleArtistIndices().count
-                if nav.cursor >= count { nav.cursor = max(0, count - 1) }
-            }
-            changed = true
-        }
+        if !newSongs.isEmpty { songs.append(contentsOf: newSongs); changed = true }
+        if songsWalkDone && !songsLoaded { songsLoaded = true; changed = true }
+        if !newArtists.isEmpty { artists.append(contentsOf: newArtists); changed = true }
+        if artistsWalkDone && !artistsLoaded { artistsLoaded = true; changed = true }
         // Apply an artist-albums fetch only if it's still for the current artist
         // (id in the stack's .artistAlbums level); a stale one for an abandoned
         // artist is dropped so it can't overwrite the current one under its
@@ -315,6 +448,24 @@ final class LibraryScene: Scene {
             // songs); a no-op only at the tracks level.
             if isAlbumRail || isSongList || isArtistList { capturing = true; return .redraw }
             return .none
+        case .char("a"), .char("A"):
+            // Tier filter — Artists list only. `a` cycles All → 12"/EP → Albums.
+            // Entering a filtered tier seeds the sets from the SWR cache (instant
+            // first paint) and kicks the album walk if it hasn't started (the tiers
+            // need album track counts, which otherwise load only when Albums is
+            // opened); albums stream, so the walk corrects the seeded sets in the
+            // background. Clamp the cursor — the row count can drop when a tier engages.
+            guard isArtistList else { return .none }
+            artistFilter = artistFilter.next
+            if artistFilter != .all {
+                if epArtists.isEmpty, albumArtists.isEmpty,
+                   let cached = ResultCache().cachedArtistTiers() {
+                    epArtists = cached.ep; albumArtists = cached.albums
+                }
+                if !albumsFetchStarted { loadAlbums() }
+            }
+            clampFilterCursor()
+            return .redraw
         default:
             return .none
         }
@@ -387,8 +538,14 @@ final class LibraryScene: Scene {
         let backend = self.backend
         let store = self.appQueue
         actions.run("Play") {
+            // Match on album artist too, not just track artist: remix/compilation
+            // albums credit each track to the remixer, so `artist is Y` alone finds
+            // nothing (the album shows 0 tracks and won't play). `album is X` scopes
+            // to the album; the artist/album-artist clause disambiguates same-named
+            // albums by different artists.
             let tracks = fetchLibraryTracksWithPositions(
-                backend: backend, whereClause: "album is \"\(escTitle)\" and artist is \"\(escArtist)\"")
+                backend: backend,
+                whereClause: "album is \"\(escTitle)\" and (artist is \"\(escArtist)\" or album artist is \"\(escArtist)\")")
             try require(!tracks.isEmpty, "Couldn't load '\(title)'.")
             let ordered = shuffle ? tracks.shuffled() : tracks
             let idx = shuffle ? 1 : min(max(1, startAt), ordered.count)
@@ -508,18 +665,22 @@ final class LibraryScene: Scene {
     }
 
     private func visibleAlbumIndices() -> [Int] {
-        let src = currentAlbums
-        guard !filter.isEmpty else { return Array(0..<src.count) }
-        let q = filter.lowercased()
-        return (0..<src.count).filter {
-            "\(src[$0].name) \(src[$0].artist)".lowercased().contains(q)
-        }
+        // Tier-scope the drilled album list to match the tier you came from (Albums
+        // view → 6+ albums, 12"/EP → 2–5), so an artist's albums don't mix tiers on
+        // drill-in. Only in the Artists sub-view and only when a tier is active; the
+        // Albums root sub-view has no tier.
+        let range = (nav.subView == .artists) ? artistFilter.trackRange : nil
+        return filteredAlbumIndices(albums: currentAlbums, trackRange: range, filter: filter)
     }
 
     private func visibleArtistIndices() -> [Int] {
-        guard !filter.isEmpty else { return Array(0..<artists.count) }
-        let q = filter.lowercased()
-        return (0..<artists.count).filter { artists[$0].name.lowercased().contains(q) }
+        let tierSet: Set<String>?
+        switch artistFilter {
+        case .all: tierSet = nil
+        case .epOr12: tierSet = epArtists
+        case .albums: tierSet = albumArtists
+        }
+        return filteredArtistIndices(artists: artists, albumArtistNames: tierSet, filter: filter)
     }
 
     private func visibleSongIndices() -> [Int] {
@@ -546,7 +707,7 @@ final class LibraryScene: Scene {
             guard nav.cursor >= 0, nav.cursor < vis.count else { return nil }
             return src[vis[nav.cursor]]
         case .tracks(let albumID, let albumTitle, let artist):
-            return src.first { $0.id == albumID } ?? LibraryAlbum(id: albumID, name: albumTitle, artist: artist)
+            return src.first { $0.id == albumID } ?? LibraryAlbum(id: albumID, name: albumTitle, artist: artist, trackCount: 0)
         default:
             return nil
         }
@@ -667,7 +828,20 @@ final class LibraryScene: Scene {
         let vis = visibleArtistIndices()
         if vis.isEmpty {
             out += ANSICode.moveTo(row: listY, col: z.railX)
-            let msg = artistsLoaded ? (filter.isEmpty ? "(no artists)" : "(no matches)") : "Loading artists\u{2026}"
+            // With the album-artists toggle on, an empty list can mean "albums still
+            // loading" (the set isn't populated yet) vs "loaded, none owned" — name
+            // those honestly instead of a blanket "(no artists)".
+            let msg: String
+            if !artistsLoaded { msg = "Loading artists\u{2026}" }
+            else if artistFilter != .all && !albumsLoaded { msg = "Loading albums\u{2026}" }
+            else if !filter.isEmpty { msg = "(no matches)" }
+            else {
+                switch artistFilter {
+                case .all: msg = "(no artists)"
+                case .epOr12: msg = "(no 12\" / EP artists)"
+                case .albums: msg = "(no album artists)"
+                }
+            }
             out += "\(ANSICode.dim)\(msg)\(ANSICode.reset)"
             return
         }

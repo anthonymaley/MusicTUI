@@ -302,7 +302,7 @@ Claude handles multi-step orchestration — searching the catalog, creating play
 
 Run bare `music` in a real terminal (not inside Claude Code — TUI requires a TTY). Install `chafa` (`brew install chafa`) for album art in now-playing.
 
-**Unified shell** (`music`) — a tabbed interface with **Now**, **Playlists**, and **Speakers** tabs. The Now tab shows a 3-column layout: album art, playback metadata, and a right pane. Select a playlist on the Playlists tab to pin it on the Now tab so you can browse and replay any track while playback continues.
+**Unified shell** (`music`) — a tabbed interface with **Now**, **Playlists**, **Speakers**, and **Library** tabs. The Now tab shows a 3-column layout: album art, playback metadata, and a right pane. Select a playlist on the Playlists tab to pin it on the Now tab so you can browse and replay any track while playback continues.
 
 > **Turn off Music's Autoplay (∞).** Playlist track-selection and up/down navigation drive playback track-by-track and rely on a track *stopping* at its end. With Autoplay on, Music bleeds into the library between tracks. Disable it once in Music's Up Next panel (the ∞ button).
 
@@ -310,7 +310,7 @@ Run bare `music` in a real terminal (not inside Claude Code — TUI requires a T
 
 | Key | Action |
 |-----|--------|
-| `1`/`2`/`3` | Jump to Now / Playlists / Speakers tab |
+| `1`/`2`/`3`/`4` | Jump to Now / Playlists / Speakers / Library tab |
 | `Tab` / `Shift-Tab` | Cycle tabs forward / backward |
 | `Space` | Play/pause |
 | `<` / `>` | Previous / next track (full up/down through the playlist) |
@@ -344,6 +344,8 @@ Under the track progress is a **control grid** (Shuffle / Order / Repeat / Geniu
 **Speakers tab** — `↑↓` select, `Enter` toggles AirPlay outputs on/off, `←→` adjusts per-speaker volume. Active speakers show volume bars. Toggling a speaker on while playing verifies the route and toasts (e.g. `'X' selected but route NOT verified — try: music speaker wake`) if it couldn't be verified. Below the outputs: an **EQ block** (power row + preset picker — `Enter` toggles/expands, `e` toggles from anywhere) and a **Visualizer** row (`Enter` or `v` toggles Music's on-screen visuals). (The `music speaker`, `music eq`, and `music visualizer` CLIs drive these non-interactively.)
 
 ![Speaker Picker](media/speakers.png)
+
+**Library tab** (needs the Apple Music user token) — browse your library in three sub-views, **Artists · Albums · Songs** (opens on Artists), switched with `[`/`]`. `Enter` opens an album's tracks or drills Artist → their albums → tracks; `p` plays and `s` shuffles the focused item (albums/artists play as an app-owned queue — a scoped, navigable Up Next that stops at the album's end; needs Autoplay ∞ off). `/` filters as you type. On the Artists list, `a` cycles a track-count filter — **All → 12″/EP → Albums** — which cuts the bloat Apple's library-artists list carries (every artist with any library track, even one dragged in by a single playlist song) and separates 12″s/EPs from full-album deep cuts; drilling into an artist shows only that tier's albums. The first activation each session paints instantly from a cache, revalidated in the background.
 
 ## Status Line
 

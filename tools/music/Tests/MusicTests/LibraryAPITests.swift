@@ -90,6 +90,47 @@ final class LibraryAPITests: XCTestCase {
         XCTAssertEqual(out.count, 300)
     }
 
+    // MARK: - fetchPagesStreaming (progressive-render page walk)
+
+    /// Each page is handed to onPage as it lands, in order; the concatenation is the
+    /// whole list and the page fetcher is asked for the same offsets as fetchAllPages.
+    /// This is the incremental-render primitive: rows show after page 1, not the walk.
+    func testFetchPagesStreamingDeliversPagesInOrder() {
+        let source = Array(0..<250)
+        var offsets: [Int] = []
+        var pages: [[Int]] = []
+        fetchPagesStreaming(pageSize: 100, page: { limit, offset in
+            offsets.append(offset)
+            let end = min(offset + limit, source.count)
+            return offset >= source.count ? [] : Array(source[offset..<end])
+        }, onPage: { batch in pages.append(batch); return true })
+        XCTAssertEqual(offsets, [0, 100, 200])            // short 50-item page stops it
+        XCTAssertEqual(pages.map(\.count), [100, 100, 50]) // delivered page-by-page
+        XCTAssertEqual(pages.flatMap { $0 }, source)       // in order, whole list
+    }
+
+    /// Returning false from onPage aborts the walk immediately — no further pages are
+    /// fetched. This is how the scene stops a walk when it has deallocated mid-load.
+    func testFetchPagesStreamingAbortsWhenOnPageReturnsFalse() {
+        var calls = 0
+        var delivered = 0
+        fetchPagesStreaming(pageSize: 100, page: { _, _ in calls += 1; return Array(0..<100) },
+                            onPage: { _ in delivered += 1; return false })
+        XCTAssertEqual(calls, 1)      // aborted after fetching page 1
+        XCTAssertEqual(delivered, 1)  // onPage saw exactly one page
+    }
+
+    /// An empty source never calls onPage (nothing to render) and stops after one
+    /// fetch — the caller flips "loaded" from the walk finishing, showing "(no …)".
+    func testFetchPagesStreamingEmptySourceNeverDelivers() {
+        var calls = 0
+        var delivered = 0
+        fetchPagesStreaming(pageSize: 100, page: { _, _ in calls += 1; return [] as [Int] },
+                            onPage: { _ in delivered += 1; return true })
+        XCTAssertEqual(calls, 1)
+        XCTAssertEqual(delivered, 0)
+    }
+
     // MARK: - parseLibraryTrackPositions (AppQueue source rows for album/artist play)
 
     func testParseLibraryTrackPositions() {
