@@ -5,7 +5,7 @@
   },
   "metadata": {
     "description": "Control Apple Music from Claude Code. Natural-language control, a CLI, and an interactive TUI for playback, multi-room AirPlay, playlists, discovery, a real equalizer with venue presets, the visualizer, and shuffle/repeat/Genius controls.",
-    "version": "3.3.0"
+    "version": "3.4.0"
   },
   "plugins": [
     {
@@ -15,7 +15,7 @@
         "url": "git@github.com:anthonymaley/apple-music.git"
       },
       "description": "Control Apple Music from Claude Code. Natural-language control (the /music skill), a CLI, and an interactive TUI for playback, multi-room AirPlay, playlists, discovery, a real equalizer with venue presets, the on-screen visualizer, and shuffle/repeat/Genius controls; transport stays on your media keys. One-command CLI build; Apple Developer auth is only needed for catalog search, library, and discovery features.",
-      "version": "3.3.0",
+      "version": "3.4.0",
       "strict": true
     }
   ]
