@@ -16,7 +16,7 @@
 
 ![Apple Music TUI demo](media/demo.gif)
 
-Control Apple Music, AirPlay speakers, and AirPods from Claude Code or the terminal — a Claude Code skill, CLI, and interactive Apple Music TUI for macOS. Multi-room playback, playlists, a real equalizer with venue presets, the on-screen visualizer, and shuffle/repeat/Genius controls.
+Control Apple Music, AirPlay speakers, and AirPods from Claude Code or the terminal — a Claude Code skill, CLI, and interactive Apple Music TUI for macOS. Verified multi-room playback, library browsing (artists, albums, songs), catalog + library search, playlists, a real equalizer with venue presets, the on-screen visualizer, and shuffle/repeat/Genius controls.
 
 ```
   ┌─────────────────────────────────────────────────────────────────────┐
@@ -209,6 +209,16 @@ Toggles Music's built-in visualizer — the animated graphics that render **in t
   └─────────────────────────────────────────────────────────────┘
 ```
 
+### Search
+
+| Command | What it does |
+|---------|-------------|
+| `music search "gypsy woman"` | Catalog search — songs by default, numbered so `music play 3` works |
+| `music search "kid a" --types songs,albums,artists,playlists` | Multi-type catalog search (any subset) |
+| `music search "radiohead" --library` | Search your library instead of the catalog |
+| `music search "gypsy woman" --artist "crystal waters"` | Refine by `--artist` / `--album` |
+| `music search "fouk" --limit 20 --json` | More results, structured output |
+
 ### Playlist Management
 
 | Command | What it does |
@@ -380,6 +390,7 @@ After running `scripts/install.sh`, add to `~/.claude/settings.json`:
 | Play, pause, skip, stop, seek, shuffle, repeat | Yes | Yes | Yes |
 | Speakers, volume, now playing, love/unlove | Yes | Yes | Yes |
 | Catalog search | — | Yes | Yes |
+| Library search (`--library`) + Library tab | — | — | Yes |
 | Add to library | — | — | Yes |
 | Playlist CRUD via API | — | — | Yes |
 | Similar, suggestions, new releases, mix | — | — | Yes |
