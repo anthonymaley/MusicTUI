@@ -43,6 +43,50 @@ final class RouteVerifierTests: XCTestCase {
         XCTAssertEqual(parseNetstatTCP("not netstat output\nat all").count, 0)
     }
 
+    func testSplitAddressPortStripsZoneSuffix() {
+        let split = splitAddressPort("fe80::1%lo0.7000")
+        XCTAssertEqual(split?.ip, "fe80::1")
+        XCTAssertEqual(split?.port, 7000)
+    }
+
+    // MARK: - truncated-address matching
+
+    // Real `netstat -an -p tcp` output captured live 2026-07-13: a routed,
+    // audibly-playing Sonos arc whose session runs over link-local IPv6.
+    // netstat truncates the address to its column width — the device's full
+    // resolved IP is fe80::3a42:bff:fed4:da1e.
+    static let sonosFixture = """
+    Proto Recv-Q Send-Q  Local Address          Foreign Address        (state)
+    tcp6       0      0  fe80::42f:55f3:7.61521 fe80::3a42:bff:f.7000  ESTABLISHED
+    tcp6       0      0  fe80::42f:55f3:7.61518 fe80::3a42:bff:f.7000  ESTABLISHED
+    tcp6       0      0  fe80::42f:55f3:7.61524 fe80::3a42:bff:f.7102  ESTABLISHED
+    tcp6       0      0  fe80::42f:55f3:7.61519 fe80::3a42:bff:f.7127  ESTABLISHED
+    tcp4       0      0  192.168.1.154.65447    192.168.1.112.7000     ESTABLISHED
+    """
+
+    func testRemoteIPMatchesExactAndTruncated() {
+        // Exact IPv4 — the pre-existing behavior.
+        XCTAssertTrue(remoteIPMatches("192.168.1.112", resolved: "192.168.1.112"))
+        XCTAssertFalse(remoteIPMatches("192.168.1.113", resolved: "192.168.1.112"))
+        // Truncated IPv6 row vs full resolved address.
+        XCTAssertTrue(remoteIPMatches("fe80::3a42:bff:f", resolved: "fe80::3a42:bff:fed4:da1e"))
+        // A complete-but-different shorter IPv6 must not ride the prefix rule.
+        XCTAssertFalse(remoteIPMatches("fe80::1", resolved: "fe80::1a2b:3c4d:5e6f:7081"))
+        // IPv4 never truncates — prefix matching must not apply.
+        XCTAssertFalse(remoteIPMatches("192.168.1.1", resolved: "192.168.1.112"))
+        // Row longer than the resolved address can't be a truncation of it.
+        XCTAssertFalse(remoteIPMatches("fe80::3a42:bff:fed4:da1e", resolved: "fe80::3a42:bff:f"))
+    }
+
+    func testSteadyStateVerifiesTruncatedIPv6Fingerprint() throws {
+        // End-to-end for the 2026-07-13 Sonos false-heal: 2 control + 2 data
+        // connections exist but under truncated addresses; steadyState asked
+        // about the full resolved IP must still see them.
+        let v = verifier(snapshots: [parseNetstatTCP(Self.sonosFixture)])
+        let verdict = try v.steadyState(ip: "fe80::3a42:bff:fed4:da1e")
+        XCTAssertTrue(verdict.verified, verdict.evidence)
+    }
+
     // MARK: - hostname candidates (pure)
 
     func testHostnameCandidates() {
