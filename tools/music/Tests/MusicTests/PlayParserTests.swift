@@ -86,4 +86,20 @@ final class PlayParserTests: XCTestCase {
         XCTAssertEqual(r.speakers, ["Living Room", "Kitchen"])
         XCTAssertEqual(r.queryArgs, [])
     }
+
+    func testAlbumArtistFilterNilReturnsEmptyString() {
+        XCTAssertEqual(albumArtistFilter(artist: nil), "")
+    }
+
+    func testAlbumArtistFilterPlainValue() {
+        XCTAssertEqual(
+            albumArtistFilter(artist: "Air"),
+            " and (artist contains \"Air\" or album artist contains \"Air\")")
+    }
+
+    func testAlbumArtistFilterEscapesQuotes() {
+        XCTAssertEqual(
+            albumArtistFilter(artist: "Air\""),
+            " and (artist contains \"Air\\\"\" or album artist contains \"Air\\\"\")")
+    }
 }

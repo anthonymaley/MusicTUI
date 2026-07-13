@@ -31,7 +31,8 @@ struct Play: ParsableCommand {
         }
 
         if let album = album {
-            let artistFilter = artist.map { " and artist contains \"\(escapeAppleScriptString($0))\"" } ?? ""
+            // Remix/compilation albums credit each track to the remixer, so also match album artist.
+            let artistFilter = albumArtistFilter(artist: artist)
             let escAlbum = escapeAppleScriptString(album)
             let result = try syncRun {
                 try await backend.runMusic("""

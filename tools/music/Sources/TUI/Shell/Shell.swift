@@ -140,7 +140,7 @@ func runShell() {
                 let color = t.isError ? ANSICode.red : ANSICode.amber
                 out += "\(color)\(truncText(t.text, to: max(1, frame.width - 4)))\(ANSICode.reset)"
             } else {
-                let globals = "Space \u{23EF}  < > Skip  z Shuffle  +/\u{2212} Vol"
+                let globals = "Space \u{23EF}  < > Skip  z Reshuffle  +/\u{2212} Vol"
                 out += "\(ANSICode.dim)1/2/3/4 Tabs   \(scene.footerHint)   \(globals)  q Quit\(ANSICode.reset)"
             }
             // Synchronized output (terminals that don't support it ignore the

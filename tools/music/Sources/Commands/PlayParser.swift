@@ -89,3 +89,12 @@ enum PlayParser {
         return result
     }
 }
+
+/// AppleScript `whose`-clause fragment matching an artist by track artist OR
+/// album artist: remix/compilation albums credit each track to the remixer,
+/// so `artist contains Y` alone can match 0 tracks for the album artist.
+func albumArtistFilter(artist: String?) -> String {
+    guard let artist = artist else { return "" }
+    let esc = escapeAppleScriptString(artist)
+    return " and (artist contains \"\(esc)\" or album artist contains \"\(esc)\")"
+}
