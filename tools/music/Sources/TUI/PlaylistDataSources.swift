@@ -6,6 +6,12 @@ struct PlaylistDataSources {
     let onMeta: ([Int]) -> [Int: (Int, Int, Bool, String)]
     let onPreview: (Int) -> [String]?
     let onTracks: (Int) -> PlaylistPreview?
+    /// One-shot REST map of lowercased-trimmed playlist name → (REST id, artwork
+    /// URL), for real hero covers. nil when the user isn't signed in / no dev
+    /// token — the scene keeps gradients, exactly today's token-less behavior.
+    /// Name matching is heuristic (same class as albumArtistSet); built-in smart
+    /// playlists aren't API-visible and simply never match.
+    let onArtworkMap: (() -> [String: (id: String, url: String)])?
 }
 
 /// One playlist's rail metadata, persisted between launches so the browser paints
@@ -132,7 +138,7 @@ func fetchUserPlaylistNames(backend: AppleScriptBackend) -> (names: [String], su
 /// Build the three data-source closures over a fixed `names` list. Each closure
 /// owns its own cache. Bulk `tracks 1 thru n` fetches (never per-element) per the
 /// performance lesson in docs/playbook.md.
-func makePlaylistDataSources(backend: AppleScriptBackend, names: [String]) -> PlaylistDataSources {
+func makePlaylistDataSources(backend: AppleScriptBackend, names: [String], artworkAPI: RESTAPIBackend? = nil) -> PlaylistDataSources {
     var trackCache: [Int: PlaylistPreview] = [:]
     var previewCacheLight: [Int: [String]] = [:]
 
@@ -239,5 +245,18 @@ func makePlaylistDataSources(backend: AppleScriptBackend, names: [String]) -> Pl
         return lines
     }
 
-    return PlaylistDataSources(onMeta: onMeta, onPreview: onPreview, onTracks: onTracks)
+    return PlaylistDataSources(
+        onMeta: onMeta, onPreview: onPreview, onTracks: onTracks,
+        onArtworkMap: artworkAPI.map { api in
+            {
+                let playlists = (try? syncRun { try await api.libraryPlaylists() }) ?? []
+                var map: [String: (id: String, url: String)] = [:]
+                for p in playlists {
+                    guard let u = p.artworkURL else { continue }
+                    map[p.name.lowercased().trimmingCharacters(in: .whitespaces)] = (p.id, u)
+                }
+                return map
+            }
+        }
+    )
 }

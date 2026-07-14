@@ -27,10 +27,17 @@ func runShell() {
                 status.post("No playlists found.", error: true)
                 return nil
             }
+            let auth = AuthManager()
+            var artworkAPI: RESTAPIBackend? = nil
+            if let devToken = try? auth.requireDeveloperToken(), auth.userToken() != nil {
+                artworkAPI = RESTAPIBackend(developerToken: devToken,
+                                            userToken: auth.userToken(),
+                                            storefront: auth.storefront())
+            }
             let scene = PlaylistsScene(backend: backend,
                                        playlists: names,
                                        subscriptionNames: fetched.subscription,
-                                       sources: makePlaylistDataSources(backend: backend, names: names),
+                                       sources: makePlaylistDataSources(backend: backend, names: names, artworkAPI: artworkAPI),
                                        appQueue: appQueue,
                                        status: status,
                                        actions: actions)

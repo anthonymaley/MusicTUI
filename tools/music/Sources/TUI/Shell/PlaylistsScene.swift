@@ -51,6 +51,16 @@ final class PlaylistsScene: Scene {
     private var fullInbox: [Int: PlaylistPreview] = [:]   // guarded by previewInboxLock
     private var fullInFlight: Set<Int> = []               // tick()/handle()-thread only
 
+    // Real hero covers. artMap lands once from a background REST walk (inbox
+    // discipline: posted under inboxLock, drained in tick); ArtworkStore then
+    // owns per-cover fetch/cache/render. No token → onArtworkMap is nil and
+    // gradients stay.
+    private let artwork = ArtworkStore()
+    private var artMap: [String: (id: String, url: String)] = [:]
+    private var artMapInbox: [String: (id: String, url: String)]? = nil
+    private var artMapStarted = false
+    private var artDirty = false
+
     private let metaCol = 6
 
     init(backend: AppleScriptBackend, playlists: [String], subscriptionNames: Set<String> = [],
@@ -177,9 +187,21 @@ final class PlaylistsScene: Scene {
     @discardableResult
     func tick(snapshot: NowPlayingSnapshot) -> Bool {
         var changed = false
+        if !artMapStarted, let load = sources.onArtworkMap {
+            artMapStarted = true
+            Thread.detachNewThread { [weak self] in
+                let map = load()
+                guard let self else { return }
+                self.inboxLock.lock(); self.artMapInbox = map; self.inboxLock.unlock()
+            }
+        }
         // Apply metadata the background refresh thread has fetched (off-main), so
         // the slow AppleScript never blocks a render frame.
         let fresh = drainMeta()
+        inboxLock.lock()
+        let landedMap = artMapInbox; artMapInbox = nil
+        let artLanded = artDirty; artDirty = false
+        inboxLock.unlock()
         for (idx, v) in fresh where idx >= 0 && idx < meta.count {
             meta[idx].trackCount = v.0
             meta[idx].durationSec = v.1
@@ -189,6 +211,8 @@ final class PlaylistsScene: Scene {
             loaded.insert(idx)
             changed = true
         }
+        if let m = landedMap { artMap = m; changed = true }
+        if artLanded { changed = true }
         // Landed preview and full-track fetches.
         previewInboxLock.lock()
         let freshPreviews = previewInbox; previewInbox = [:]
@@ -419,13 +443,31 @@ final class PlaylistsScene: Scene {
         y += 2
         let gw = min(28, z.heroWidth)
         let gh = 10
-        let block = gradientBlock(name: m.name, width: gw, height: gh)
-        var seed = 0; for b in m.name.unicodeScalars { seed = (seed &* 31 &+ Int(b.value)) & 0xffffff }
-        let r = 80 + (seed & 0x7f), g = 80 + ((seed >> 8) & 0x7f), bl = 80 + ((seed >> 16) & 0x7f)
-        let color = "\u{1B}[38;2;\(r);\(g);\(bl)m"
-        for line in block {
-            out += ANSICode.moveTo(row: y, col: z.heroX) + "\(color)\(line)\(ANSICode.reset)"
-            y += 1
+        var artLines: [String]? = nil
+        if let entry = artMap[title.lowercased().trimmingCharacters(in: .whitespaces)] {
+            artLines = artwork.lines(key: entry.id,
+                                     url: ArtworkStore.resolveURL(entry.url, width: 300, height: 300),
+                                     width: gw, height: gh) { [weak self] in
+                guard let self else { return }
+                self.inboxLock.lock(); self.artDirty = true; self.inboxLock.unlock()
+            }
+        }
+        if let art = artLines {
+            let blank = String(repeating: " ", count: gw)
+            let rows = art.prefix(gh) + Array(repeating: blank, count: max(0, gh - art.count))
+            for line in rows {
+                out += ANSICode.moveTo(row: y, col: z.heroX) + line + ANSICode.reset
+                y += 1
+            }
+        } else {
+            let block = gradientBlock(name: m.name, width: gw, height: gh)
+            var seed = 0; for b in m.name.unicodeScalars { seed = (seed &* 31 &+ Int(b.value)) & 0xffffff }
+            let r = 80 + (seed & 0x7f), g = 80 + ((seed >> 8) & 0x7f), bl = 80 + ((seed >> 16) & 0x7f)
+            let color = "\u{1B}[38;2;\(r);\(g);\(bl)m"
+            for line in block {
+                out += ANSICode.moveTo(row: y, col: z.heroX) + "\(color)\(line)\(ANSICode.reset)"
+                y += 1
+            }
         }
         y += 1
         if let (text, c) = badgeText(m) {
