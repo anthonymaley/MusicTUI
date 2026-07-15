@@ -449,12 +449,12 @@ final class RadioScene: Scene {
         }
         y += 2
 
-        // Match the Now tab's art size (44×22), clamped to the hero column and
-        // to the rows available so the key hints below always fit. Radio has
-        // no track-count line (stations aren't albums), so only 2 rows are
-        // reserved after the art (blank + hint), vs LibraryScene's 4.
-        let gw = min(44, z.heroWidth)
-        let gh = max(0, min(22, bodyBottom - y - 2))
+        // Fill the hero pane, square: the full hero width and every row left
+        // after the art (2 reserved below — blank + hint; Radio has no
+        // track-count line, unlike LibraryScene's 4). kittySquareRect derives
+        // the actual square placement from whichever of gw/gh binds tighter.
+        let gw = z.heroWidth
+        let gh = max(0, bodyBottom - y - 2)
         var artBlock: ArtBlock? = nil
         if let template = s.artworkURL {
             artBlock = artwork.block(key: s.id,

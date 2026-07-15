@@ -927,11 +927,13 @@ final class LibraryScene: Scene {
         out += "\(ANSICode.dim)\(truncText(a.artist, to: z.heroWidth))\(ANSICode.reset)"
         y += 2
 
-        // Match the Now tab's art size (44×22), clamped to the hero column and to
-        // the rows available so the track count + key hints below always fit
-        // (same row-reservation discipline as NowPlayingScene's left pane).
-        let gw = min(44, z.heroWidth)
-        let gh = max(0, min(22, bodyBottom - y - 4))
+        // Fill the hero pane, square: the full hero width and every row left
+        // after the art (4 reserved below — blank, track count, blank, hint).
+        // kittySquareRect derives the actual square placement from whichever
+        // of gw/gh binds tighter, so this is no longer capped to the Now
+        // tab's old 44x22.
+        let gw = z.heroWidth
+        let gh = max(0, bodyBottom - y - 4)
         var artBlock: ArtBlock? = nil
         if let template = a.artworkURL {
             artBlock = artwork.block(key: a.id,

@@ -184,6 +184,19 @@ final class KittyGraphicsTests: XCTestCase {
         XCTAssertEqual(rect.rows, 22)
     }
 
+    // The hero panes (Radio/Library/Playlists) no longer cap maxCols at 44 —
+    // they feed the real available hero width, which is wider than the rows
+    // available can fill square. At the user's real terminal (14x34 cells)
+    // with, say, 80 cols and 22 rows on offer, the square rect is derived
+    // from the scarcer dimension (height): pc=80 -> pr=round(80*14/34)=33,
+    // which exceeds maxRows(22), so it re-derives from height: pr=22 ->
+    // pc=round(22*34/14)=53.
+    func testWideHeroBudgetClampsToAvailableRowsAtMeasuredCellSize() {
+        let rect = kittySquareRect(maxCols: 80, maxRows: 22, cellW: 14, cellH: 34)
+        XCTAssertEqual(rect.cols, 53)
+        XCTAssertEqual(rect.rows, 22)
+    }
+
     func testHeightConstrainedBoxClampsByAvailableRowsNotCols() {
         // maxRows is scarce relative to maxCols here (10 vs. 44) at a normal
         // ~1:2 cell aspect: pc=44 -> pr = round(44*10/20) = 22, which exceeds
