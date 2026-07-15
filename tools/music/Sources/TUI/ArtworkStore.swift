@@ -149,3 +149,73 @@ final class ArtworkStore {
         return nil
     }
 }
+
+/// One scene's kitty placement-dedup state: the last placement it emitted, so
+/// an unchanged frame emits nothing (the placement persists on screen across
+/// text repaints) and a changed one deletes the old placement before drawing
+/// the new one. Each art-rendering scene keeps exactly one, reset to nil in
+/// `artPlacementsInvalidated()`.
+typealias ArtPlacement = (id: UInt32, row: Int, col: Int, cols: Int, rows: Int)
+
+/// Render one hero art block — kitty placement, chafa/mono lines, or the
+/// gradient identicon fallback — into `out` at column `x` starting at row
+/// `startY`. Shared by every hero pane (LibraryScene, PlaylistsScene, and now
+/// RadioScene each need this exact ladder) so the kitty aspect-clamp lives in
+/// one place instead of being copy-pasted per scene: kitty placement
+/// STRETCHES to the cell rect while chafa letterboxes, so the rect is clamped
+/// to square-equivalent (cols = 2×rows at ~1:2 cell aspect) or a narrow hero
+/// stretches art tall (docs/playbook.md Gotchas).
+///
+/// `lastPlaced` is the caller's own placement-dedup state; this returns the
+/// row past the rendered art plus the new placement value for the caller to
+/// store. `gradientSeedText` seeds the deterministic gradient fallback and
+/// its tint. Nothing here ever throws or errors at the user — art is
+/// decoration, and `.none` always degrades to the gradient block.
+func renderArtHero(artBlock: ArtBlock?, gradientSeedText: String,
+                   gw: Int, gh: Int, x: Int, y startY: Int,
+                   lastPlaced: ArtPlacement?,
+                   into out: inout String) -> (y: Int, lastPlaced: ArtPlacement?) {
+    var y = startY
+    var placed = lastPlaced
+    switch artBlock {
+    case .lines(let art):
+        if let last = placed { out += kittyDeleteEscape(id: last.id); placed = nil }
+        // Pad/cap to exactly gh rows so the hero's height never shifts and
+        // stale gradient rows are overwritten (chafa may emit fewer rows).
+        let blank = String(repeating: " ", count: gw)
+        let rows = art.prefix(gh) + Array(repeating: blank, count: max(0, gh - art.count))
+        for line in rows {
+            out += ANSICode.moveTo(row: y, col: x) + line + ANSICode.reset
+            y += 1
+        }
+    case .kitty(let id, let transmit):
+        let pr = min(gh, gw / 2)
+        let pc = min(gw, pr * 2)
+        let current: ArtPlacement = (id: id, row: y, col: x, cols: pc, rows: pr)
+        if let last = placed, last == current {
+            // Unchanged: the placement from a prior frame is still on
+            // screen — emit nothing (spaces would flicker under the image).
+        } else {
+            if let last = placed { out += kittyDeleteEscape(id: last.id) }
+            let blank = String(repeating: " ", count: gw)
+            for i in 0..<gh {
+                out += ANSICode.moveTo(row: y + i, col: x) + blank
+            }
+            out += transmit ?? ""
+            out += ANSICode.moveTo(row: y, col: x) + kittyPlaceEscape(id: id, cols: pc, rows: pr)
+            placed = current
+        }
+        y += gh
+    case .none:
+        if let last = placed { out += kittyDeleteEscape(id: last.id); placed = nil }
+        let gradient = gradientBlock(name: gradientSeedText, width: gw, height: gh)
+        var seed = 0; for b in gradientSeedText.unicodeScalars { seed = (seed &* 31 &+ Int(b.value)) & 0xffffff }
+        let r = 80 + (seed & 0x7f), g = 80 + ((seed >> 8) & 0x7f), bl = 80 + ((seed >> 16) & 0x7f)
+        let color = "\u{1B}[38;2;\(r);\(g);\(bl)m"
+        for line in gradient {
+            out += ANSICode.moveTo(row: y, col: x) + "\(color)\(line)\(ANSICode.reset)"
+            y += 1
+        }
+    }
+    return (y, placed)
+}

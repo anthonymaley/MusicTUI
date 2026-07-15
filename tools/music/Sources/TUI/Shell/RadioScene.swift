@@ -51,11 +51,31 @@ final class RadioScene: Scene {
     // commitAdd's search path.
     private var searchInbox: (term: String, hits: [Station], failed: Bool)? = nil
 
-    init(store: StationStore, catalog: RadioCatalog?, opener: Opener = SystemOpener()) {
+    // Real hero covers: store owns fetch/cache/render; onReady sets artDirty
+    // under inboxLock (same discipline as the streaming inboxes above) and
+    // tick drains it into `changed` so the swap paints on the next frame.
+    // Mirrors LibraryScene/PlaylistsScene exactly.
+    private let artwork = ArtworkStore()
+    private var artDirty = false
+    private let kittyEnabled: Bool
+    // Placement-dedup (render-thread-only): the last kitty placement this
+    // scene emitted. Reset in artPlacementsInvalidated() on every tab switch.
+    private var lastPlaced: ArtPlacement? = nil
+    // Rail scroll offset. Self-corrects each render against nav.cursor (same
+    // clamp idiom as LibraryScene's renderArtistList/renderSongList) — no
+    // explicit reset needed on sub-view switch since nav.cursor resets to 0
+    // there and 0 is always < any positive railScroll.
+    private var railScroll = 0
+
+    init(store: StationStore, catalog: RadioCatalog?, opener: Opener = SystemOpener(),
+         kittyEnabled: Bool = false) {
         self.store = store
         self.catalog = catalog
         self.opener = opener
+        self.kittyEnabled = kittyEnabled
     }
+
+    func artPlacementsInvalidated() { lastPlaced = nil }
 
     var capturesAllInput: Bool { capturing || adding }
 
@@ -258,6 +278,7 @@ final class RadioScene: Scene {
         let freshPersonal = personalInbox; personalInbox = nil
         let freshResolve = resolveInbox; resolveInbox = nil
         let freshSearch = searchInbox; searchInbox = nil
+        let artLanded = artDirty; artDirty = false
         inboxLock.unlock()
 
         if let freshLive { live = freshLive; liveLoaded = true; changed = true }
@@ -277,6 +298,7 @@ final class RadioScene: Scene {
                     : "Search \u{201C}\(freshSearch.term)\u{201D} — \(freshSearch.hits.count) result(s) \u{00B7} f favorite \u{00B7} Esc clear"
             changed = true
         }
+        if artLanded { changed = true }
         return changed
     }
 
@@ -294,35 +316,161 @@ final class RadioScene: Scene {
         }
     }
 
-    func render(frame: ShellFrame, snapshot: NowPlayingSnapshot) -> String {
-        renderRadioBody(frame: frame, subView: nav.subView, rows: rows,
-                        cursor: nav.cursor, filter: filter,
-                        adding: adding, addText: addText, message: message,
-                        loading: loading)
-    }
-}
+    // MARK: render
 
-// TEMPORARY — replaced in the next task by the rail+hero renderer.
-// A plain list is enough to prove keys, reducer, and tab wiring work.
-func renderRadioBody(frame: ShellFrame, subView: RadioSubView, rows: [Station],
-                     cursor: Int, filter: String, adding: Bool, addText: String,
-                     message: String?, loading: Bool) -> String {
-    var out = ""
-    var y = frame.bodyY
-    let put: (String) -> Void = { line in
-        out += "\u{1B}[\(y);1H\u{1B}[K" + String(line.prefix(frame.width))
+    func render(frame: ShellFrame, snapshot: NowPlayingSnapshot) -> String {
+        var out = ""
+        for r in frame.bodyY..<(frame.bodyY + frame.bodyHeight) {
+            out += ANSICode.moveTo(row: r, col: 1) + ANSICode.clearLine
+        }
+        let z = playlistZones(width: frame.width)
+        let bodyTop = frame.bodyY
+        let bodyBottom = frame.bodyY + frame.bodyHeight - 1
+
+        // Row bodyTop: Favorites · Live · Personal (active = cyan/bold), same
+        // idiom as LibraryScene's subViewHeader — swapped for "Search Results"
+        // while a search is active (searchHits non-empty), since `rows` then
+        // reads from searchHits instead of the sub-view lists below.
+        out += ANSICode.moveTo(row: bodyTop, col: z.railX) + radioSubViewHeader()
+
+        // Row bodyTop+1: raw text capture — `/` filter or `a` add/search.
+        // Mutually exclusive (capturesAllInput routes every key to whichever
+        // is active), mirrors LibraryScene's single reserved filter row.
+        if adding {
+            out += ANSICode.moveTo(row: bodyTop + 1, col: z.railX)
+            out += "\(ANSICode.cyan)add\u{203A}\(ANSICode.reset) \(ANSICode.brightWhite)\(addText)\(ANSICode.reset)\u{2588}"
+        } else if capturing || !filter.isEmpty {
+            out += ANSICode.moveTo(row: bodyTop + 1, col: z.railX)
+            out += "\(ANSICode.cyan)/\(ANSICode.reset) \(ANSICode.brightWhite)\(filter)\(ANSICode.reset)\(capturing ? "\u{2588}" : "")"
+        }
+
+        // Row bodyTop+2: the scene's own status line — search-result counts,
+        // add confirmations, favorite errors. Distinct from the shell's global
+        // toast (footer); this is Radio's own transient message state.
+        if let m = message {
+            out += ANSICode.moveTo(row: bodyTop + 2, col: z.railX)
+            out += "\(ANSICode.dim)\(truncText(m, to: max(1, frame.width - z.railX)))\(ANSICode.reset)"
+        }
+
+        let contentTop = bodyTop + 3
+        guard contentTop <= bodyBottom else { return out }
+
+        renderRail(z, into: &out, contentTop: contentTop, bodyBottom: bodyBottom)
+        renderHero(z, into: &out, contentTop: contentTop, bodyBottom: bodyBottom)
+        return out
+    }
+
+    private func radioSubViewName(_ sv: RadioSubView) -> String {
+        switch sv {
+        case .favorites: return "Favorites"
+        case .live: return "Live"
+        case .personal: return "Personal"
+        }
+    }
+
+    private func radioSubViewHeader() -> String {
+        guard searchHits.isEmpty else {
+            return "\(ANSICode.bold)\(ANSICode.cyan)Search Results\(ANSICode.reset)  \(ANSICode.dim)f favorite \u{00B7} Esc clear\(ANSICode.reset)"
+        }
+        return RadioSubView.allCases.map { sv -> String in
+            let name = radioSubViewName(sv)
+            return sv == nav.subView
+                ? "\(ANSICode.bold)\(ANSICode.cyan)\(name)\(ANSICode.reset)"
+                : "\(ANSICode.dim)\(name)\(ANSICode.reset)"
+        }.joined(separator: "\(ANSICode.dim)  \u{00B7}  \(ANSICode.reset)")
+    }
+
+    /// Flat, filterable station list in the rail zone — same cursor/scroll
+    /// idiom as LibraryScene's renderArtistList/renderSongList (Radio never
+    /// drills into a station, so there's no album-rail-style highlight split).
+    /// `[LIVE]` and `★` (already-favorited) are plain-text suffixes on the
+    /// label, appended AFTER truncation so a long name never eats the marker —
+    /// kept uncolored, like every other rail label, so the row's single
+    /// dim/inverse wrap isn't broken by an embedded reset mid-string.
+    private func renderRail(_ z: PlaylistZones, into out: inout String, contentTop: Int, bodyBottom: Int) {
+        let listY = contentTop
+        let maxVisible = max(1, bodyBottom - listY + 1)
+        let vis = rows
+        if vis.isEmpty {
+            out += ANSICode.moveTo(row: listY, col: z.railX)
+            let msg: String
+            if loading { msg = "Loading\u{2026}" }
+            else if !filter.isEmpty { msg = "(no matches)" }
+            else {
+                switch nav.subView {
+                case .favorites: msg = "(no favorites — press a to add)"
+                case .live: msg = "(no live stations)"
+                case .personal: msg = "(no personal stations)"
+                }
+            }
+            out += "\(ANSICode.dim)\(msg)\(ANSICode.reset)"
+            return
+        }
+        let cursorPos = min(max(0, nav.cursor), vis.count - 1)
+        if cursorPos < railScroll { railScroll = cursorPos }
+        if cursorPos >= railScroll + maxVisible { railScroll = cursorPos - maxVisible + 1 }
+        let end = min(vis.count, railScroll + maxVisible)
+        let nameWidth = max(1, z.railWidth - 2)
+        for p in railScroll..<end {
+            let row = listY + (p - railScroll)
+            out += ANSICode.moveTo(row: row, col: z.railX)
+            let s = vis[p]
+            let markers = (s.isLive == true ? " [LIVE]" : "") + (store.isFavorite(id: s.id) ? " \u{2605}" : "")
+            let availWidth = max(1, nameWidth - markers.count)
+            let nm = railName(s.name, nameWidth: availWidth) + markers
+            let padName = nm + String(repeating: " ", count: max(0, nameWidth - nm.count))
+            if p == cursorPos {
+                out += "\u{258C} \(ANSICode.inverse)\(padName)\(ANSICode.reset)"
+            } else {
+                out += "  \(ANSICode.dim)\(padName)\(ANSICode.reset)"
+            }
+        }
+    }
+
+    /// Station hero: name, a LIVE badge (never a progress bar — live stations
+    /// carry no duration/position, hard design rule) or a favorited hint, then
+    /// artwork via the shared renderArtHero ladder (kitty → chafa → gradient
+    /// identicon, same as LibraryScene/PlaylistsScene), then key hints.
+    private func renderHero(_ z: PlaylistZones, into out: inout String, contentTop: Int, bodyBottom: Int) {
+        guard let s = selection else { return }
+        var y = contentTop
+        out += ANSICode.moveTo(row: y, col: z.heroX)
+        out += "\(ANSICode.bold)\(ANSICode.brightWhite)\(truncText(s.name, to: z.heroWidth))\(ANSICode.reset)"
         y += 1
+
+        out += ANSICode.moveTo(row: y, col: z.heroX)
+        if s.isLive == true {
+            out += "\(ANSICode.red)\(ANSICode.inverse)\(ANSICode.bold) LIVE \(ANSICode.reset)"
+        } else if store.isFavorite(id: s.id) {
+            out += "\(ANSICode.dim)\u{2605} Favorite\(ANSICode.reset)"
+        }
+        y += 2
+
+        // Match the Now tab's art size (44×22), clamped to the hero column and
+        // to the rows available so the key hints below always fit. Radio has
+        // no track-count line (stations aren't albums), so only 2 rows are
+        // reserved after the art (blank + hint), vs LibraryScene's 4.
+        let gw = min(44, z.heroWidth)
+        let gh = max(0, min(22, bodyBottom - y - 2))
+        var artBlock: ArtBlock? = nil
+        if let template = s.artworkURL {
+            artBlock = artwork.block(key: s.id,
+                                     url: ArtworkStore.resolveURL(template, width: 300, height: 300),
+                                     // Degenerate geometry skips the kitty path — see
+                                     // LibraryScene's identical guard.
+                                     width: gw, height: gh, kitty: kittyEnabled && gw > 0 && gh > 0) { [weak self] in
+                guard let self else { return }
+                self.inboxLock.lock(); self.artDirty = true; self.inboxLock.unlock()
+            }
+        }
+        let (afterArtY, placed) = renderArtHero(artBlock: artBlock, gradientSeedText: s.name + s.id,
+                                                gw: gw, gh: gh, x: z.heroX, y: y,
+                                                lastPlaced: lastPlaced, into: &out)
+        y = afterArtY
+        lastPlaced = placed
+        y += 1
+
+        out += ANSICode.moveTo(row: y, col: z.heroX)
+        out += "\(ANSICode.lime)[Enter]\(ANSICode.reset) Play   \(ANSICode.lime)[f]\(ANSICode.reset) Favorite   \(ANSICode.lime)[/]\(ANSICode.reset) Filter"
     }
-    put("  \(RadioSubView.allCases.map { $0 == subView ? "[\($0)]" : "\($0)" }.joined(separator: "  "))")
-    if adding { put("  add> \(addText)") }
-    else if !filter.isEmpty { put("  /\(filter)") }
-    if let m = message { put("  \(m)") }
-    for (i, s) in rows.enumerated() where y < frame.bodyY + frame.bodyHeight {
-        put("\(i == cursor ? " ▸ " : "   ")\(s.name)\(s.isLive == true ? "  [LIVE]" : "")")
-    }
-    // An empty Live/Personal list reads as "no stations" unless the in-flight
-    // fetch is called out honestly — the fetch is backgrounded now, so this can
-    // paint on the very first frame after entering the tab or switching view.
-    if rows.isEmpty { put(loading ? "   Loading\u{2026}" : "   (empty)") }
-    return out
 }

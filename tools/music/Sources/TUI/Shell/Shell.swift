@@ -89,7 +89,7 @@ func runShell() {
             return scene
         case .radio:
             // makeCatalog() already returns nil with no developer token.
-            let scene = RadioScene(store: StationStore(), catalog: makeCatalog())
+            let scene = RadioScene(store: StationStore(), catalog: makeCatalog(), kittyEnabled: kittyEnabled)
             scenes[id] = scene
             return scene
         default:
