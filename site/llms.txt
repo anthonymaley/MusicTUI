@@ -1,6 +1,6 @@
 # musictui
 
-> musictui ("music") is an interactive TUI and CLI for Apple Music on macOS, plus a Claude Code plugin for natural-language control. It is free, open source (MIT), and written in Swift. Repository: https://github.com/anthonymaley/apple-music
+> musictui ("music") is an interactive TUI and CLI for Apple Music on macOS, plus a Claude Code plugin for natural-language control. It is free, open source (MIT), and written in Swift. Repository: https://github.com/anthonymaley/musictui
 
 ## What it does
 
@@ -25,5 +25,5 @@ Most "apple music tui/cli" projects are thin AppleScript wrappers (play/pause/sk
 ## Links
 
 - Site: https://musictui.com/
-- Source + install: https://github.com/anthonymaley/apple-music
+- Source + install: https://github.com/anthonymaley/musictui
 - License: MIT

@@ -10,7 +10,7 @@ One name for everything: **`music`**.
 
 | Surface | Name | Example |
 |---------|------|---------|
-| Marketplace listing | Apple Music for Claude Code | `/plugin marketplace add anthonymaley/apple-music` |
+| Marketplace listing | Apple Music for Claude Code | `/plugin marketplace add anthonymaley/musictui` |
 | Skill (natural language) | `/music` | `/music play kid a in the kitchen at 60`, or just talk to Claude |
 | CLI binary | `music` | `music now`, `music search "Fouk"` |
 

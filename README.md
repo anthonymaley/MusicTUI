@@ -12,8 +12,8 @@
 ```
 
 ![Building since March 2026](https://img.shields.io/badge/building_since-March_2026-blue)
-![Commits](https://img.shields.io/github/commit-activity/t/anthonymaley/apple-music)
-![Release](https://img.shields.io/github/v/release/anthonymaley/apple-music)
+![Commits](https://img.shields.io/github/commit-activity/t/anthonymaley/musictui)
+![Release](https://img.shields.io/github/v/release/anthonymaley/musictui)
 ![Platform](https://img.shields.io/badge/platform-macOS-lightgrey)
 
 ![Apple Music TUI demo](media/demo.gif)
@@ -68,10 +68,10 @@ There are no per-action slash commands — `/music` (the skill) is the single en
 
 ```bash
 # Add the marketplace
-/plugin marketplace add anthonymaley/apple-music
+/plugin marketplace add anthonymaley/musictui
 
 # Install the plugin
-/plugin install music@apple-music-marketplace
+/plugin install music@musictui
 ```
 
 ### Claude Desktop App (Cowork)
@@ -87,7 +87,7 @@ The plugin drives the `music` CLI, so build it once after installing (Swift 5.9+
 
 ```bash
 # The trailing version segment changes on each plugin update
-cd ~/.claude/plugins/cache/apple-music-marketplace/music/*/
+cd ~/.claude/plugins/cache/musictui/music/*/
 scripts/install.sh
 ```
 
@@ -97,7 +97,7 @@ That unlocks playback, multi-room AirPlay routing, volume, the TUI, and the stat
 
 ```bash
 # CLI
-claude plugin update music@apple-music-marketplace
+claude plugin update music@musictui
 
 # Desktop — Manage plugins → Update
 ```
@@ -108,7 +108,7 @@ After updating the plugin, rebuild the CLI: `scripts/install.sh`
 
 ```bash
 # Remove the plugin
-claude plugin uninstall music@apple-music-marketplace
+claude plugin uninstall music@musictui
 
 # Remove the CLI binary and all config (auth keys + tokens)
 rm -f ~/.local/bin/music

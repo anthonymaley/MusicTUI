@@ -5,8 +5,8 @@
   "author": {
     "name": "Anthony Maley"
   },
-  "homepage": "https://github.com/anthonymaley/apple-music",
-  "repository": "https://github.com/anthonymaley/apple-music",
+  "homepage": "https://github.com/anthonymaley/musictui",
+  "repository": "https://github.com/anthonymaley/musictui",
   "license": "MIT",
   "keywords": ["apple-music", "airplay", "speakers", "music", "macos", "audio"]
 }
