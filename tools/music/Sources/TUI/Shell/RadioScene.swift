@@ -16,7 +16,8 @@ final class RadioScene: Scene {
     private var live: [Station] = []
     private var personal: [Station] = []
     private var searchHits: [Station] = []
-    private var loadAttempted = false
+    private var liveLoaded = false
+    private var personalLoaded = false
 
     // Raw text entry. `capturing` mirrors LibraryScene's filter capture; `adding`
     // is the `a` flow (URL or search term).
@@ -25,6 +26,30 @@ final class RadioScene: Scene {
     private var adding = false
     private var addText = ""
     private var message: String?
+    private var searchInFlight = false
+
+    // Off-thread catalog fetches — mirrors LibraryScene's `Thread.detachNewThread`
+    // + inbox-under-lock + tick()-drain discipline. RadioCatalog blocks up to 20s
+    // per call on its injected fetch's DispatchSemaphore; calling it synchronously
+    // on the main thread (as tick()/commitAdd() used to) freezes the whole shell
+    // loop — no repaint, no input, `q` doesn't quit — because Shell.swift only
+    // calls KeyPress.read() AFTER scene.tick() returns. Every field below that a
+    // background thread touches is written only under `inboxLock`; every field
+    // tick()/handle()/commitAdd() write directly (live, personal, message,
+    // searchHits, *Loaded, searchInFlight) is main-thread-only, matching
+    // LibraryScene's split between inbox state and scene state.
+    private let inboxLock = NSLock()
+    private var liveFetchStarted = false
+    private var liveInbox: [Station]? = nil
+    private var personalFetchStarted = false
+    private var personalInbox: [Station]? = nil
+    // commitAdd's URL-add path: the favorite is added synchronously from the
+    // slug (no network, so it's never lost), then resolve() enriches it in the
+    // background. store.add() replaces-by-id, so a landed enrichment can only
+    // upgrade the existing favorite in place, never duplicate it.
+    private var resolveInbox: Station? = nil
+    // commitAdd's search path.
+    private var searchInbox: (term: String, hits: [Station], failed: Bool)? = nil
 
     init(store: StationStore, catalog: RadioCatalog?, opener: Opener = SystemOpener()) {
         self.store = store
@@ -122,6 +147,12 @@ final class RadioScene: Scene {
     /// One affordance, two inputs. URL detection is by SCHEME PREFIX only — not
     /// a heuristic. A bare "music.apple.com/..." is treated as a search term and
     /// simply finds nothing; that's predictable. Do not try to be clever here.
+    ///
+    /// Both branches used to call the catalog SYNCHRONOUSLY here, which runs on
+    /// the main thread inside handle() — the same freeze as tick()'s old
+    /// liveStations()/personalStation() calls, just triggered by Enter instead
+    /// of tab entry. Both are now backgrounded; results land via the inbox
+    /// fields above and are applied in tick().
     private func commitAdd() {
         let input = addText.trimmingCharacters(in: .whitespaces)
         guard !input.isEmpty else { return }
@@ -132,42 +163,117 @@ final class RadioScene: Scene {
                 message = "✗ Not an Apple Music station URL"
                 return
             }
-            // Enrich if the API knows it; fall back to the slug if not. The API
-            // is an optimization — BBC Radio 1 is unresolvable and must still work.
-            let resolved = try? catalog?.resolve(id: p.id)
-            let station = (resolved ?? nil) ?? Station(
+            // Add immediately from the slug — no network involved, so the
+            // favorite is never lost even when resolve() is slow or the API
+            // can't find it at all (BBC Radio 1 is unresolvable by design; the
+            // API is an enrichment, never a dependency). resolve() then runs in
+            // the background and upgrades the name/artwork in place if it lands.
+            let fallback = Station(
                 id: p.id, name: displayNameFromSlug(p.slug), url: input,
                 isLive: nil, artworkURL: nil)
-            do { try store.add(station); message = "★ \(station.name)" }
-            catch { message = "✗ Couldn't save favorite" }
+            do {
+                try store.add(fallback)
+                message = "★ \(fallback.name)"
+            } catch {
+                message = "✗ Couldn't save favorite"
+                return
+            }
+            if let catalog {
+                let id = p.id
+                Thread.detachNewThread { [weak self] in
+                    guard let resolved = (try? catalog.resolve(id: id)) ?? nil else { return }
+                    guard let self else { return }
+                    self.inboxLock.lock(); self.resolveInbox = resolved; self.inboxLock.unlock()
+                }
+            }
         } else {
             guard let catalog else { message = "✗ Search needs auth (music auth setup)"; return }
-            do {
-                searchHits = try catalog.search(term: input)
-                message = searchHits.isEmpty
-                    ? "No stations for \u{201C}\(input)\u{201D} — try pasting the station URL"
-                    : "\(searchHits.count) result(s) — f to favorite"
-            } catch {
-                message = "✗ Search failed"
+            searchInFlight = true
+            message = "Searching \u{201C}\(input)\u{201D}\u{2026}"
+            let term = input
+            Thread.detachNewThread { [weak self] in
+                var hits: [Station] = []
+                var failed = false
+                do { hits = try catalog.search(term: term) } catch { failed = true }
+                guard let self else { return }
+                self.inboxLock.lock(); self.searchInbox = (term, hits, failed); self.inboxLock.unlock()
             }
         }
     }
 
     @discardableResult
     func tick(snapshot: NowPlayingSnapshot) -> Bool {
-        // Live/Personal are fetched once, lazily, off the first tick after the
-        // tab is entered. Favorites need no fetch — they're already on disk.
-        guard let catalog, !loadAttempted else { return false }
-        loadAttempted = true
-        live = (try? catalog.liveStations()) ?? []
-        personal = (try? catalog.personalStation()) ?? []
-        return !(live.isEmpty && personal.isEmpty)
+        var changed = false
+
+        // Live/Personal are fetched once, off-thread, kicked on the first tick
+        // after the tab is entered — same one-shot pattern as LibraryScene's
+        // loadAlbums/loadSongs/loadArtists. Favorites need no fetch — they're
+        // already on disk, so this whole block is skipped with no catalog/token.
+        if let catalog {
+            if !liveFetchStarted {
+                liveFetchStarted = true
+                Thread.detachNewThread { [weak self] in
+                    let fetched = (try? catalog.liveStations()) ?? []
+                    guard let self else { return }
+                    self.inboxLock.lock(); self.liveInbox = fetched; self.inboxLock.unlock()
+                }
+            }
+            if !personalFetchStarted {
+                personalFetchStarted = true
+                Thread.detachNewThread { [weak self] in
+                    let fetched = (try? catalog.personalStation()) ?? []
+                    guard let self else { return }
+                    self.inboxLock.lock(); self.personalInbox = fetched; self.inboxLock.unlock()
+                }
+            }
+        }
+
+        inboxLock.lock()
+        let freshLive = liveInbox; liveInbox = nil
+        let freshPersonal = personalInbox; personalInbox = nil
+        let freshResolve = resolveInbox; resolveInbox = nil
+        let freshSearch = searchInbox; searchInbox = nil
+        inboxLock.unlock()
+
+        if let freshLive { live = freshLive; liveLoaded = true; changed = true }
+        if let freshPersonal { personal = freshPersonal; personalLoaded = true; changed = true }
+        if let freshResolve {
+            try? store.add(freshResolve)
+            message = "★ \(freshResolve.name)"
+            changed = true
+        }
+        if let freshSearch {
+            searchInFlight = false
+            searchHits = freshSearch.hits
+            message = freshSearch.failed
+                ? "✗ Search failed"
+                : freshSearch.hits.isEmpty
+                    ? "No stations for \u{201C}\(freshSearch.term)\u{201D} — try pasting the station URL"
+                    : "\(freshSearch.hits.count) result(s) — f to favorite"
+            changed = true
+        }
+        return changed
+    }
+
+    /// True when the active sub-view's list hasn't landed yet, so the render
+    /// side can show an honest "Loading…" instead of a bare empty list. With no
+    /// catalog/token nothing will ever load, so this reads false forever rather
+    /// than spinning — Favorites (the only sub-view this applies to: false) must
+    /// always work with no network and no token.
+    private var loading: Bool {
+        guard catalog != nil else { return false }
+        switch nav.subView {
+        case .favorites: return false
+        case .live: return !liveLoaded
+        case .personal: return !personalLoaded
+        }
     }
 
     func render(frame: ShellFrame, snapshot: NowPlayingSnapshot) -> String {
         renderRadioBody(frame: frame, subView: nav.subView, rows: rows,
                         cursor: nav.cursor, filter: filter,
-                        adding: adding, addText: addText, message: message)
+                        adding: adding, addText: addText, message: message,
+                        loading: loading)
     }
 }
 
@@ -175,7 +281,7 @@ final class RadioScene: Scene {
 // A plain list is enough to prove keys, reducer, and tab wiring work.
 func renderRadioBody(frame: ShellFrame, subView: RadioSubView, rows: [Station],
                      cursor: Int, filter: String, adding: Bool, addText: String,
-                     message: String?) -> String {
+                     message: String?, loading: Bool) -> String {
     var out = ""
     var y = frame.bodyY
     let put: (String) -> Void = { line in
@@ -189,6 +295,9 @@ func renderRadioBody(frame: ShellFrame, subView: RadioSubView, rows: [Station],
     for (i, s) in rows.enumerated() where y < frame.bodyY + frame.bodyHeight {
         put("\(i == cursor ? " ▸ " : "   ")\(s.name)\(s.isLive == true ? "  [LIVE]" : "")")
     }
-    if rows.isEmpty { put("   (empty)") }
+    // An empty Live/Personal list reads as "no stations" unless the in-flight
+    // fetch is called out honestly — the fetch is backgrounded now, so this can
+    // paint on the very first frame after entering the tab or switching view.
+    if rows.isEmpty { put(loading ? "   Loading\u{2026}" : "   (empty)") }
     return out
 }
