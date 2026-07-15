@@ -257,7 +257,7 @@ final class PlaylistsScene: Scene {
         let bodyBottom = frame.bodyY + frame.bodyHeight - 1
 
         renderRail(z, into: &out, bodyTop: bodyTop, bodyBottom: bodyBottom)
-        renderHero(z, into: &out, bodyTop: bodyTop)
+        renderHero(z, into: &out, bodyTop: bodyTop, bodyBottom: bodyBottom)
         if focus == .tracks {
             renderTrackList(z, into: &out, bodyTop: bodyTop, bodyBottom: bodyBottom)
         } else {
@@ -428,7 +428,7 @@ final class PlaylistsScene: Scene {
         }
     }
 
-    private func renderHero(_ z: PlaylistZones, into out: inout String, bodyTop: Int) {
+    private func renderHero(_ z: PlaylistZones, into out: inout String, bodyTop: Int, bodyBottom: Int) {
         var y = bodyTop
         let m = meta[plCursor]
         let title = m.name.hasPrefix("__radio__") ? String(m.name.dropFirst("__radio__".count)) : m.name
@@ -441,8 +441,11 @@ final class PlaylistsScene: Scene {
             out += "\(ANSICode.dim)\(c) tracks\(dur)\(ANSICode.reset)"
         }
         y += 2
-        let gw = min(28, z.heroWidth)
-        let gh = 10
+        // Match the Now tab's art size (44×22), clamped to the hero column and to
+        // the rows available so the badge + key hints below always fit (same
+        // row-reservation discipline as NowPlayingScene's left pane).
+        let gw = min(44, z.heroWidth)
+        let gh = max(0, min(22, bodyBottom - y - 4))
         var artLines: [String]? = nil
         if let entry = artMap[title.lowercased().trimmingCharacters(in: .whitespaces)] {
             artLines = artwork.lines(key: entry.id,

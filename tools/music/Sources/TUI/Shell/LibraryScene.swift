@@ -399,7 +399,7 @@ final class LibraryScene: Scene {
         switch nav.subView {
         case .albums:
             renderRail(z, into: &out, contentTop: contentTop, bodyBottom: bodyBottom)
-            renderHero(z, into: &out, contentTop: contentTop)
+            renderHero(z, into: &out, contentTop: contentTop, bodyBottom: bodyBottom)
             renderRightPane(z, into: &out, contentTop: contentTop, bodyBottom: bodyBottom)
         case .songs:
             // Flat filterable list — rail zone only, no hero/preview pane.
@@ -413,7 +413,7 @@ final class LibraryScene: Scene {
                 // album lists, so reuse the album three-zone render sourced from
                 // this artist's albums (currentAlbums switches on nav.subView).
                 renderRail(z, into: &out, contentTop: contentTop, bodyBottom: bodyBottom)
-                renderHero(z, into: &out, contentTop: contentTop)
+                renderHero(z, into: &out, contentTop: contentTop, bodyBottom: bodyBottom)
                 renderRightPane(z, into: &out, contentTop: contentTop, bodyBottom: bodyBottom)
             }
         }
@@ -873,7 +873,7 @@ final class LibraryScene: Scene {
         }
     }
 
-    private func renderHero(_ z: PlaylistZones, into out: inout String, contentTop: Int) {
+    private func renderHero(_ z: PlaylistZones, into out: inout String, contentTop: Int, bodyBottom: Int) {
         guard let a = focusedAlbum() else { return }
         var y = contentTop
         out += ANSICode.moveTo(row: y, col: z.heroX)
@@ -883,8 +883,11 @@ final class LibraryScene: Scene {
         out += "\(ANSICode.dim)\(truncText(a.artist, to: z.heroWidth))\(ANSICode.reset)"
         y += 2
 
-        let gw = min(28, z.heroWidth)
-        let gh = 10
+        // Match the Now tab's art size (44×22), clamped to the hero column and to
+        // the rows available so the track count + key hints below always fit
+        // (same row-reservation discipline as NowPlayingScene's left pane).
+        let gw = min(44, z.heroWidth)
+        let gh = max(0, min(22, bodyBottom - y - 4))
         var artLines: [String]? = nil
         if let template = a.artworkURL {
             artLines = artwork.lines(key: a.id,
