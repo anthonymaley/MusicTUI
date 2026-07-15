@@ -221,7 +221,7 @@ Toggles Music's built-in visualizer — the animated graphics that render **in t
 | `music radio add <url>` | Favorite a station by URL |
 | `music radio search <term>` | Search catalog stations (needs a developer token) |
 
-A station plays via its Apple Music share URL with the scheme swapped from `https://` to `music://` — no MusicKit, no extra permissions, and your AirPlay route survives. Favorites are stored locally at `~/.config/music/stations.json` and don't sync to other devices.
+A station plays via its Apple Music share URL with the scheme swapped from `https://` to `music://`. No MusicKit, no extra permissions. Your AirPlay route survives the switch. Favorites are stored locally at `~/.config/music/stations.json` and don't sync to other devices.
 
 Apple's station search is shallow (5-7 results, no pagination) and misses real stations outright — it can't find BBC Radio 1 by name or even by its own catalog id, though the station plays fine once you have its URL. Pasting a URL always works; search sometimes doesn't. Get one from music.apple.com or the Music app's share menu.
 
