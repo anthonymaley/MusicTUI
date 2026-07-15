@@ -2,7 +2,7 @@
 
 ## What Is This?
 
-A Claude Code plugin that gives you full control over Apple Music from the terminal. Play music, manage AirPlay speakers, search the catalog, build playlists, discover new tracks — without leaving your coding session.
+A Claude Code plugin that gives you full control over Apple Music from the terminal. Play music, manage AirPlay speakers, search the catalog, build playlists, play radio stations, discover new tracks — without leaving your coding session.
 
 ## Naming
 
@@ -55,10 +55,10 @@ The skill triggers automatically when Claude detects music-related intent; `/mus
 
 ### 3. Interactive TUI
 
-Run bare `music` in a real terminal for the unified interactive shell — a tabbed interface with **Now**, **Playlists**, **Speakers**, and **Library** tabs.
+Run bare `music` in a real terminal for the unified interactive shell — a tabbed interface with **Now**, **Playlists**, **Speakers**, **Library**, and **Radio** tabs.
 
 ```
-music                           Unified shell: Now / Playlists / Speakers / Library tabs
+music                           Unified shell: Now / Playlists / Speakers / Library / Radio tabs
 ```
 
 Current TUI contract:
@@ -68,8 +68,9 @@ Current TUI contract:
 - Selecting a playlist pins it on the Now tab, which shows the full playlist and keeps `↑↓` navigation local.
 - The Now tab shows the current album context, not a real Apple Music queue.
 - The Library tab (requires the Apple Music user token) browses your library via the REST library API in three sub-views — Artists, Albums, Songs (opens on Artists) — switched with `[`/`]`. Enter opens an album's tracks or drills Artist → their albums → tracks; `p` plays and `s` shuffles the focused item (albums/artists play as app-owned queues — a scoped, navigable Up Next that stops at the album's end; needs Music's Autoplay ∞ off). On the Artists list, `a` cycles a track-count filter: All → 12″/EP (artists with a 2–5 track release) → Albums (artists with a 6+ track album). It separates 12″s/EPs — which dominate house/electronic libraries — from full-album deep cuts, and the one-track "album" Apple creates for a loose playlist song falls in neither tier (otherwise the filter would keep the very playlist artists it's meant to drop). Drilling into an artist while a tier is active shows only that tier's albums (their 6+ LPs under Albums, their 2–5 releases under 12″/EP). Apple's library-artists list otherwise includes every artist with any library track, so it bloats fast. The first activation each session paints instantly from a cache (`~/.config/music/artist-tiers.json`, revalidated in the background); the match is a lowercase artist name (compilations / "feat." credits may miss). Without a user token the tab refuses with a toast. The focused album's hero shows its real cover (downloaded once to `~/.config/music/art-cache/`, gradient placeholder while it loads); on kitty-protocol terminals (iTerm2 3.5+, Kitty, WezTerm, Ghostty) covers render as true pixels, elsewhere as chafa half-blocks. Vim keys work everywhere: j/k/h/l, g/G, ctrl-d/ctrl-u (l and g/G keep their love/Genius meanings on the Now tab).
+- The Radio tab browses stations in three sub-views — Favorites, Live, Personal (opens on Favorites) — switched with `[`/`]`; Favorites needs no token at all (it reads and plays straight from disk), Live and Personal need a developer token to load. `Enter` (or `→`) plays the selected station, `f` favorites/unfavorites it, `/` filters the current list. `a` opens a combined add-or-search field: paste a station's share URL to favorite it directly (added from the URL immediately, so it's never lost even when the catalog can't resolve it — resolving just upgrades the name/art in place later), or type a search term to query Apple's catalog — hits land in the list where `f` favorites one and `Esc` clears back to the sub-view. Live stations show a `LIVE` badge instead of a progress bar (a livestream carries no duration). Favorites persist locally at `~/.config/music/stations.json` and do not sync across devices. Apple's station search is shallow (5-7 results, no pagination) and misses real stations outright — it cannot find BBC Radio 1 by name or even by its own catalog id, though the station plays perfectly once you have its URL; an unresolved station's name falls back to a title-cased slug from the URL (e.g. "Bbc Radio 1"). Of the vim aliases, only `j`/`k` (down/up) and `l` (→, which plays) do anything here — `h`, `g`/`G`, and ctrl-d/ctrl-u are inert on this tab.
 - `Enter` plays the highlighted row.
-- Keys: `1/2/3/4` jump to a tab, `Tab`/`Shift-Tab` cycle, `[`/`]` switch Library sub-view, `a` cycle Library Artists tier (All / 12″/EP / Albums), `↑↓` + `PgUp/PgDn/Home/End` navigate, `Space` play/pause, `</>` previous/next, `[ ]` seek (Now) / `←→` per-speaker volume (Speakers), `z` shuffle-play, `l` favorite, `+/-` master volume, `n` next-up options, `Esc` back, `q` quit.
+- Keys: `1/2/3/4/5` jump to a tab, `Tab`/`Shift-Tab` cycle, `[`/`]` switch Library sub-view or Radio Favorites/Live/Personal, `a` cycle Library Artists tier (All / 12″/EP / Albums) or open Radio's add-or-search field, `↑↓` + `PgUp/PgDn/Home/End` navigate (Radio has no page/home/end jumps), `Space` play/pause, `</>` previous/next, `[ ]` seek (Now) / `←→` per-speaker volume (Speakers), `z` shuffle-play, `l` favorite (Now) / `f` favorite (Radio), `+/-` master volume, `n` next-up options, `Esc` back, `q` quit.
 - The Now tab has a **playback-control grid** (Shuffle / Order / Repeat / Genius) under the track progress, showing each value live with the active one lit. Press `←` to focus the grid and `→` to return to the Up Next list; `↑↓` move between control rows and `Enter` cycles the focused row's value (Shuffle on/off, Order Songs→Albums→Groupings, Repeat Off→All→One, Genius triggers). The `s`/`m`/`r`/`g` keys do the same from anywhere. Shuffle/order/repeat write Music's state directly (no extra permission); Genius rebuilds the queue from the current song and is UI-scripted (needs the same Accessibility permission as the equalizer). Distinct from the global `z` (footer: *Reshuffle*), which shuffle-plays the current context.
 - Named-speaker `music play`, and `music speaker` add/`set`/`only`, verify the route automatically while playing (network-truth — established TCP connections to the speaker, not the AppleScript `selected` claim, which can lie) and print `✓ <speaker> verified (…)`; while paused, routing prints `Route set; will verify on next play.` instead, since a paused route can't be network-verified. An unestablished route triggers an automatic heal — an away-and-back reroute, then a transport-cycle reset — before an honest failure names the manual fix. `music speaker wake` also verifies first now and resets only the routes that are actually broken (`✓ X verified — leaving it alone.` for the rest). Routing to the Mac's own output is never "verified" — local output has no AirPlay session.
 - Toggling a speaker on in the Speakers scene while playing verifies the route the same way and toasts if it couldn't be verified; toggling off, or toggling while paused, skips verification.
@@ -112,6 +113,8 @@ music add --to "House"             # add current song to a playlist
 music remove                       # remove current song from current playlist
 music speaker verify --json        # network-truth verdict for selected speakers
 music playlist list --json
+music radio list                   # favorite stations
+music radio play "bbc radio 1"     # play a favorite, or paste a station URL
 ```
 
 Errors go to **stderr** (and `--json` mode emits an error object rather than corrupting the stream), so stdout stays clean for piping; previously-silent failures — a failed AirPlay route, a malformed config, dropped playlist indices — now print a `✗`/`⚠` line.
@@ -132,7 +135,7 @@ Errors go to **stderr** (and `--json` mode emits an error object rather than cor
 │               ▼                          ▼                    │
 │  ┌─────────────────────────────────────────────────────┐     │
 │  │                    music CLI                          │     │
-│  │           Swift binary, 24 subcommands              │     │
+│  │           Swift binary, 27 subcommands              │     │
 │  │                                                     │     │
 │  │  ┌─────────────────┐  ┌──────────────────────┐      │     │
 │  │  │  AppleScript    │  │  REST API             │      │     │
@@ -185,6 +188,27 @@ User says:  "find me something like what's playing and make a playlist"
 5. Claude summarizes results in natural language
 ```
 
+### How a radio play executes
+
+```
+User says:  put on BBC Radio 1
+
+1. Claude detects music intent → loads music skill
+2. Skill resolves to: music radio play "bbc radio 1"
+3. RadioPlay checks favorites first (no network) — if it's not
+   there, and the argument looks like a music.apple.com station
+   URL, plays it directly
+4. Otherwise falls back to catalog search (needs a developer
+   token); the first hit plays
+5. Playback is a URL scheme swap — the station's share URL with
+   https:// rewritten to music:// — handed to `open`. No
+   AppleScript, no MusicKit; the current AirPlay route survives
+6. If search finds nothing (Apple's station search is shallow and
+   misses real stations, e.g. BBC Radio 1), Claude asks for the
+   station's music.apple.com URL instead of claiming it doesn't
+   exist
+```
+
 ### How the status line works
 
 ```
@@ -212,7 +236,7 @@ apple-music/
 ├── tools/music/                  # Swift CLI source
 │   ├── Package.swift            # SPM manifest
 │   └── Sources/
-│       ├── Music.swift           # @main, all 24 subcommands registered
+│       ├── Music.swift           # @main, all 27 subcommands registered
 │       ├── StatusReporter.swift  # --verbose diagnostics on stderr
 │       ├── Backends/
 │       │   ├── AppleScriptBackend.swift   # osascript wrapper + watchdog timeout
@@ -236,6 +260,7 @@ apple-music/
 │       │   ├── AddCommand.swift
 │       │   ├── RemoveCommand.swift
 │       │   ├── PlaylistCommands.swift
+│       │   ├── RadioCommands.swift        # radio list/play/add/search
 │       │   ├── DiscoveryCommands.swift
 │       │   └── MixCommand.swift
 │       ├── Models/
@@ -250,10 +275,15 @@ apple-music/
 │           ├── PlaylistBrowserModel.swift
 │           ├── PlaylistDataSources.swift
 │           ├── TUILayout.swift
+│           ├── RadioCatalog.swift       # catalog station search/resolve (REST)
+│           ├── RadioNav.swift           # Radio tab navigation reducer
+│           ├── StationStore.swift       # local favorites (stations.json)
+│           ├── StationPlayback.swift    # https:// → music:// URL rewrite
 │           └── Shell/               # unified tabbed shell (bare `music`)
 │               ├── Shell.swift, Router.swift, Scene.swift
 │               ├── GlobalKeymap.swift, ShellActions.swift
 │               ├── NowPlayingScene.swift, PlaylistsScene.swift, SpeakersScene.swift
+│               ├── RadioScene.swift     # Radio tab
 │               ├── NowPlayingStore.swift, PlaybackPoller.swift, PlaybackContext.swift
 │               ├── AppQueue.swift       # app-owned playlist queue
 │               └── ShellChrome.swift, ShellFrame.swift
@@ -274,8 +304,8 @@ The plugin works at three levels depending on what's configured:
 
 | Level | What you need | What you get |
 |-------|--------------|-------------|
-| **No auth** | Just install the plugin | Playback, speakers, volume, now playing, shuffle, repeat |
-| **Developer token** | Apple Developer account + MusicKit key | Above + catalog search (100M+ tracks) |
+| **No auth** | Just install the plugin | Playback, speakers, volume, now playing, shuffle, repeat, radio favorites (list/play/add by URL) |
+| **Developer token** | Apple Developer account + MusicKit key | Above + catalog search (100M+ tracks), radio catalog search |
 | **Full auth** | Above + user token from browser | Above + add to library, playlist CRUD, similar tracks, suggestions, new releases, mixes |
 
 ### Setting up auth
@@ -315,6 +345,7 @@ music auth status
 | Play shows "Nothing playing" | AppleScript `current track` unavailable during cold start | Retry loop waits up to 3s for track to load |
 | ArgumentParser crash on bare invocation | Property wrappers crash when read on directly-constructed structs | Shared logic extracted to standalone functions |
 | Speaker shows selected but stays silent (ghost) | Music's `selected`/`active` scripting read-backs can lie about the real session | Run `music speaker verify --json` before touching anything — keep the output as evidence |
+| Radio search misses real stations (BBC Radio 1 unresolvable even by id) | Apple's station search/lookup API is shallow and incomplete | Paste the station's share URL — `music radio play <url>` / `music radio add <url>` always works |
 
 ## Version
 

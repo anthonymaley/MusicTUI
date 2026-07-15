@@ -1,6 +1,6 @@
 ---
 name: music
-description: "Apple Music in your terminal. Play tracks, route to AirPlay speakers and AirPods, search 100 million songs, build playlists, discover new music, favorite tracks, seek within a song, browse your listening history, browse your library by artist, album, or track. This is the plugin's only entry point — there are no separate slash commands, so EVERY music request comes here: transport, playback routing, search, library, playlists, discovery, eq, equalizer, bass, treble, 'sound like'. Trigger on anything music-related: playing a song, pausing, skipping, switching speakers, adjusting volume, seeking within a track, searching the catalog, adding tracks to the library, building or managing playlists, finding similar music, checking what's playing, favoriting a song, recalling recently played music, browsing your library by artist or album, adjusting the equalizer. Covers casual requests too: 'put on some house music', 'pause the music', 'next track', 'find me something like this', 'switch to my AirPods', 'add the bedroom to the group', 'turn down the kitchen', 'search for Gypsy Woman', 'add that track to my library', 'make a playlist from those results', 'add this to my workout playlist', 'play Kid A in the kitchen and living room at 60%', 'love this track', 'skip ahead 30 seconds', 'what was that song I played earlier', 'more bass', 'make it sound like a nightclub', 'turn off the EQ'. Handles Apple Music, AirPlay, HomePod, AirPods, Bluetooth audio, albums, artists, playlists, recommendations, new releases, listening history, heavy rotation, equalizer presets, and any audio routing on macOS."
+description: "Apple Music in your terminal. Play tracks, route to AirPlay speakers and AirPods, search 100 million songs, build playlists, play radio stations, discover new music, favorite tracks, seek within a song, browse your listening history, browse your library by artist, album, or track. This is the plugin's only entry point — there are no separate slash commands, so EVERY music request comes here: transport, playback routing, search, library, playlists, radio, discovery, eq, equalizer, bass, treble, 'sound like'. Trigger on anything music-related: playing a song, pausing, skipping, switching speakers, adjusting volume, seeking within a track, searching the catalog, adding tracks to the library, building or managing playlists, finding similar music, checking what's playing, favoriting a song, recalling recently played music, browsing your library by artist or album, adjusting the equalizer, playing or favoriting a radio station. Covers casual requests too: 'put on some house music', 'pause the music', 'next track', 'find me something like this', 'switch to my AirPods', 'add the bedroom to the group', 'turn down the kitchen', 'search for Gypsy Woman', 'add that track to my library', 'make a playlist from those results', 'add this to my workout playlist', 'play Kid A in the kitchen and living room at 60%', 'love this track', 'skip ahead 30 seconds', 'what was that song I played earlier', 'more bass', 'make it sound like a nightclub', 'turn off the EQ', 'put on BBC Radio 1', 'play Apple Music 1', 'what radio stations do I have', 'favorite this station', 'add this radio station'. Handles Apple Music, AirPlay, HomePod, AirPods, Bluetooth audio, albums, artists, playlists, radio stations, recommendations, new releases, listening history, heavy rotation, equalizer presets, and any audio routing on macOS."
 ---
 
 # Apple Music Controller
@@ -124,6 +124,39 @@ visuals). Same UI-scripting + Accessibility requirement as the equalizer.
 GUI-only: the visuals render in the Music window on the Mac's display (not on
 AirPlay outputs), and turning it on brings Music to the front.
 
+## Radio (favorites/URL: no auth · search: developer token)
+
+```bash
+music radio list                              # your favorite stations
+music radio play "bbc radio 1"                # play a favorite by name (fuzzy match)
+music radio play "https://music.apple.com/us/station/apple-music-1/ra.978194965"  # play a URL directly
+music radio add "https://music.apple.com/us/station/apple-music-1/ra.978194965"   # favorite a station by URL
+music radio search "deep house"               # search catalog stations
+```
+
+`music radio play <name|url>` is the entry point for casual requests — "put on
+BBC Radio 1", "play Apple Music 1", "put on some radio". It checks favorites
+first (no network), then treats the argument as a URL if it looks like one,
+then falls back to catalog search — which needs a developer token. A station
+plays via its share URL with the scheme swapped from `https://` to `music://`;
+no AppleScript, no MusicKit, and the current AirPlay route survives.
+
+**Apple's station search is shallow and unreliable** — roughly 5-7 results, no
+pagination, and it misses real stations outright. It can't find BBC Radio 1 at
+all, not even by its own catalog id, though the station plays fine once you
+have its URL. When `music radio search` or `music radio play <term>` comes
+back empty, do NOT tell the user the station doesn't exist — ask them for the
+station's share URL from music.apple.com (or the Music app's share menu) and
+play or favorite that instead:
+
+```bash
+music radio play "https://music.apple.com/us/station/<slug>/<id>"
+music radio add "https://music.apple.com/us/station/<slug>/<id>"
+```
+
+Favorites are stored locally at `~/.config/music/stations.json` and don't sync
+to other devices.
+
 ## Search (catalog: developer token · library: + user token)
 
 ```bash
@@ -193,14 +226,14 @@ music mix --artists "Fouk,Floating Points" --count 20 --name "Friday Mix"  # mix
 ## Interactive TUI (requires real terminal, not Claude Code)
 
 ```bash
-music                                         # unified shell: Now / Playlists / Speakers / Library tabs
+music                                         # unified shell: Now / Playlists / Speakers / Library / Radio tabs
 ```
 
-Bare `music` is the main interactive surface — a tabbed shell with **Now**, **Playlists**, **Speakers**, and **Library** tabs. (`music now` / `music now --json` and `music playlist <subcommand>` are non-interactive CLI commands, documented above.) Four one-shot quick pickers also exist for terminal/slash-command use: bare `music speaker` (AirPlay picker), bare `music volume` (mixer), and the `music similar` / `music suggest` result pickers.
+Bare `music` is the main interactive surface — a tabbed shell with **Now**, **Playlists**, **Speakers**, **Library**, and **Radio** tabs. (`music now` / `music now --json` and `music playlist <subcommand>` are non-interactive CLI commands, documented above.) Four one-shot quick pickers also exist for terminal/slash-command use: bare `music speaker` (AirPlay picker), bare `music volume` (mixer), and the `music similar` / `music suggest` result pickers.
 
-TUI behavior: the Now tab shows the current album context; selecting a playlist on the Playlists tab pins it on the Now tab. Cursor movement is local and fast. On the Speakers tab, toggling a speaker on while playing verifies the route and toasts if it couldn't be verified. The Library tab (needs the Apple Music user token) browses your library in three sub-views — Artists, Albums, Songs (opens on Artists) — switched with `[`/`]`; Enter opens an album's tracks (or drills Artist → their albums → tracks), `p` plays and `s` shuffles the item in focus. On the Artists list, `a` cycles a track-count filter — All → 12″/EP (artists with a 2–5 track release) → Albums (artists with a 6+ track album) — separating 12″s/EPs from full-album deep cuts; the raw list otherwise includes every artist with any library track (even one pulled in by a single playlist song). Library and Playlists heroes show real cover art (fetched once, disk-cached; gradient placeholder while loading or signed out).
+TUI behavior: the Now tab shows the current album context; selecting a playlist on the Playlists tab pins it on the Now tab. Cursor movement is local and fast. On the Speakers tab, toggling a speaker on while playing verifies the route and toasts if it couldn't be verified. The Library tab (needs the Apple Music user token) browses your library in three sub-views — Artists, Albums, Songs (opens on Artists) — switched with `[`/`]`; Enter opens an album's tracks (or drills Artist → their albums → tracks), `p` plays and `s` shuffles the item in focus. On the Artists list, `a` cycles a track-count filter — All → 12″/EP (artists with a 2–5 track release) → Albums (artists with a 6+ track album) — separating 12″s/EPs from full-album deep cuts; the raw list otherwise includes every artist with any library track (even one pulled in by a single playlist song). Library and Playlists heroes show real cover art (fetched once, disk-cached; gradient placeholder while loading or signed out). The Radio tab browses **Favorites · Live · Personal** stations, switched with `[`/`]` (Favorites needs no token; Live and Personal need a developer token). `Enter`/`→` plays, `f` favorites/unfavorites, `a` opens an add-or-search field (URL favorites directly, anything else searches the catalog), `/` filters. Only `↑↓`/`j`/`k` and `Enter`/`→`/`l` are wired — no page/home/end jumps.
 
-TUI controls: `1/2/3/4` switch tabs (Now / Playlists / Speakers / Library), `Tab`/`Shift-Tab` cycle tabs, `[`/`]` switch Library sub-view, `↑↓` navigate (`PgUp/PgDn/Home/End` for long lists), `Enter` play/open selected, `←→` seek (Now) or volume (Speakers), `Space` pause, `</>` previous/next track (full up/down through the playlist), `z`/`r` shuffle, `l` favorite, `+/-` volume, `n` next-up options (Now), `/` filter playlists (arrows navigate while typing), `Esc` back, `q` quit. Playlist track-play requires Music's Autoplay (∞) turned OFF — it drives playback track-by-track and needs each track to stop at its end.
+TUI controls: `1/2/3/4/5` switch tabs (Now / Playlists / Speakers / Library / Radio), `Tab`/`Shift-Tab` cycle tabs, `[`/`]` switch Library sub-view or Radio Favorites/Live/Personal, `↑↓` navigate (`PgUp/PgDn/Home/End` for long lists, Now/Playlists/Speakers/Library only), `Enter` play/open selected, `←→` seek (Now) or volume (Speakers), `Space` pause, `</>` previous/next track (full up/down through the playlist), `z`/`r` shuffle, `l` favorite (Now), `f` favorite (Radio), `+/-` volume, `n` next-up options (Now), `/` filter playlists or radio stations (arrows navigate while typing), `Esc` back, `q` quit. Playlist track-play requires Music's Autoplay (∞) turned OFF — it drives playback track-by-track and needs each track to stop at its end.
 
 ## Result Cache
 
@@ -227,8 +260,8 @@ music auth set-token <TOKEN>                  # save user token from browser
 
 | Tier | What works | What doesn't |
 |------|-----------|--------------|
-| No auth | play, pause, skip, back, stop, now, shuffle, repeat, speaker, volume | search, add, playlist (API), similar, suggest, new-releases, mix |
-| Developer token only | Above + search | add, playlist (API), similar, suggest, new-releases, mix |
+| No auth | play, pause, skip, back, stop, now, shuffle, repeat, speaker, volume, radio list/play/add | search, add, playlist (API), similar, suggest, new-releases, mix, radio search |
+| Developer token only | Above + search, radio search | add, playlist (API), similar, suggest, new-releases, mix |
 | Both tokens | Everything | — |
 
 ## Workflow: Complex Requests
@@ -285,4 +318,5 @@ Always use `--json` when you need to parse the output programmatically.
 - **"User token required"** — Run `music auth`
 - **"API request failed with status 401/403"** — Token expired, run `music auth` again
 - **"No tracks found"** — Try a broader search query
+- **"No station found for..."** — Radio search is shallow; ask the user for the station's share URL from music.apple.com and use `music radio play <url>` / `music radio add <url>` instead
 - **Speaker commands fail** — Check exact speaker name with `music speaker list`

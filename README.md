@@ -18,7 +18,7 @@
 
 ![Apple Music TUI demo](media/demo.gif)
 
-Control Apple Music, AirPlay speakers, and AirPods from Claude Code or the terminal — a Claude Code skill, CLI, and interactive Apple Music TUI for macOS. Verified multi-room playback, library browsing (artists, albums, songs), catalog + library search, playlists, a real equalizer with venue presets, the on-screen visualizer, and shuffle/repeat/Genius controls.
+Control Apple Music, AirPlay speakers, and AirPods from Claude Code or the terminal — a Claude Code skill, CLI, and interactive Apple Music TUI for macOS. Verified multi-room playback, library browsing (artists, albums, songs), catalog + library search, playlists, radio stations, a real equalizer with venue presets, the on-screen visualizer, and shuffle/repeat/Genius controls.
 
 ```
   ┌─────────────────────────────────────────────────────────────────────┐
@@ -56,7 +56,7 @@ Control Apple Music, AirPlay speakers, and AirPods from Claude Code or the termi
 | Layer | How | Setup | Token cost |
 |-------|-----|-------|-----------|
 | **Media keys** (⏯ ⏭ ⏮) | Transport: play/pause, next, previous — your keyboard already does this | None | None |
-| **Natural language** (`/music play Kid A in the kitchen and living room at 60%`) | Everything in words: playback with routing, search, playlists, discovery | Build CLI from source | Normal |
+| **Natural language** (`/music play Kid A in the kitchen and living room at 60%`) | Everything in words: playback with routing, search, playlists, radio, discovery | Build CLI from source | Normal |
 | **CLI + TUI** (`music`, `music now`, `music speaker`) | Terminal commands, interactive shell, scriptable | Build from source | None |
 | **CLI + API** (`music search`, `music playlist create`) | Catalog, library, discovery | + Apple Developer account | None |
 
@@ -212,6 +212,19 @@ Venue pack (Nightclub, Dungeon, Open Air, Concert Hall, Jazz Club, Stadium, Cath
 
 Toggles Music's built-in visualizer — the animated graphics that render **in the Music app window on your Mac's display** (not on AirPlay outputs). Turning it on brings Music to the front. Same Accessibility permission as the equalizer; in the TUI, the Speakers scene has a Visualizer row (`Enter` or `v` toggles).
 
+### Radio
+
+| Command | What it does |
+|---------|-------------|
+| `music radio list` | Your favorite stations |
+| `music radio play <name\|url>` | Play a favorite by name, or a station URL directly; falls back to catalog search if authenticated |
+| `music radio add <url>` | Favorite a station by URL |
+| `music radio search <term>` | Search catalog stations (needs a developer token) |
+
+A station plays via its Apple Music share URL with the scheme swapped from `https://` to `music://` — no MusicKit, no extra permissions, and your AirPlay route survives. Favorites are stored locally at `~/.config/music/stations.json` and don't sync to other devices.
+
+Apple's station search is shallow (5-7 results, no pagination) and misses real stations outright — it can't find BBC Radio 1 by name or even by its own catalog id, though the station plays fine once you have its URL. Pasting a URL always works; search sometimes doesn't. Get one from music.apple.com or the Music app's share menu.
+
 ## CLI Commands
 
 ```
@@ -324,7 +337,7 @@ Claude handles multi-step orchestration — searching the catalog, creating play
 
 Run bare `music` in a real terminal (not inside Claude Code — TUI requires a TTY). Install `chafa` (`brew install chafa`) for album art in now-playing.
 
-**Unified shell** (`music`) — a tabbed interface with **Now**, **Playlists**, **Speakers**, and **Library** tabs. The Now tab shows a 3-column layout: album art, playback metadata, and a right pane. Select a playlist on the Playlists tab to pin it on the Now tab so you can browse and replay any track while playback continues.
+**Unified shell** (`music`) — a tabbed interface with **Now**, **Playlists**, **Speakers**, **Library**, and **Radio** tabs. The Now tab shows a 3-column layout: album art, playback metadata, and a right pane. Select a playlist on the Playlists tab to pin it on the Now tab so you can browse and replay any track while playback continues.
 
 > **Turn off Music's Autoplay (∞).** Playlist track-selection and up/down navigation drive playback track-by-track and rely on a track *stopping* at its end. With Autoplay on, Music bleeds into the library between tracks. Disable it once in Music's Up Next panel (the ∞ button).
 
@@ -332,7 +345,7 @@ Run bare `music` in a real terminal (not inside Claude Code — TUI requires a T
 
 | Key | Action |
 |-----|--------|
-| `1`/`2`/`3`/`4` | Jump to Now / Playlists / Speakers / Library tab |
+| `1`/`2`/`3`/`4`/`5` | Jump to Now / Playlists / Speakers / Library / Radio tab |
 | `j`/`k`/`h`/`l` | Vim aliases for ↓ ↑ ← → (`l`/`g`/`G` stay love/Genius on Now) |
 | `g`/`G`, `ctrl-d`/`ctrl-u` | Top / bottom, half-page jumps in list tabs |
 | `Tab` / `Shift-Tab` | Cycle tabs forward / backward |
@@ -371,6 +384,8 @@ Under the track progress is a **control grid** (Shuffle / Order / Repeat / Geniu
 
 **Library tab** (needs the Apple Music user token) — browse your library in three sub-views, **Artists · Albums · Songs** (opens on Artists), switched with `[`/`]`. `Enter` opens an album's tracks or drills Artist → their albums → tracks; `p` plays and `s` shuffles the focused item (albums/artists play as an app-owned queue — a scoped, navigable Up Next that stops at the album's end; needs Autoplay ∞ off). `/` filters as you type. On the Artists list, `a` cycles a track-count filter — **All → 12″/EP → Albums** — which cuts the bloat Apple's library-artists list carries (every artist with any library track, even one dragged in by a single playlist song) and separates 12″s/EPs from full-album deep cuts; drilling into an artist shows only that tier's albums. The first activation each session paints instantly from a cache, revalidated in the background. The focused album shows its real cover art — true pixels on kitty-protocol terminals (iTerm2 3.5+, Kitty, WezTerm, Ghostty), chafa half-blocks elsewhere; fetched once, cached on disk.
 
+**Radio tab** — **Favorites · Live · Personal**, switched with `[`/`]` (opens on Favorites, which needs no token — it plays straight from disk; Live and Personal need a developer token to load). `j`/`k` or arrows navigate, `Enter` (or `→`) plays, `f` favorites/unfavorites the selected station, `/` filters the current list. `a` adds a station: paste a share URL from music.apple.com (or the Music app's share menu) to favorite it directly, or type anything else to search the catalog — hits land in the list, `f` favorites one, `Esc` clears back to your sub-view. Live stations show a `LIVE` badge instead of a progress bar — a livestream has no duration. Favorites are stored locally at `~/.config/music/stations.json` and don't sync to other devices. Apple's station search is shallow (5-7 results, no pagination) and misses real stations outright — it can't find BBC Radio 1 by name or even by its own catalog id, though the station plays perfectly by URL. Pasting a URL always works; search sometimes doesn't.
+
 ## Status Line
 
 See what's playing at the bottom of Claude Code. Always visible, no token cost.
@@ -403,7 +418,9 @@ After running `scripts/install.sh`, add to `~/.claude/settings.json`:
 |---------|---------|----------------|-------------|
 | Play, pause, skip, stop, seek, shuffle, repeat | Yes | Yes | Yes |
 | Speakers, volume, now playing, love/unlove | Yes | Yes | Yes |
+| Radio: list, play favorite/URL, add by URL | Yes | Yes | Yes |
 | Catalog search | — | Yes | Yes |
+| Radio catalog search | — | Yes | Yes |
 | Library search (`--library`) + Library tab | — | — | Yes |
 | Add to library | — | — | Yes |
 | Playlist CRUD via API | — | — | Yes |
