@@ -446,6 +446,7 @@ final class LibraryScene: Scene {
             case .char(let c) where c == "\u{7F}" || c == "\u{8}":
                 if !filter.isEmpty { filter.removeLast() }; clampFilterCursor()
             case .char(let c): filter.append(c); clampFilterCursor()
+            case .space: filter.append(" "); clampFilterCursor()
             default: break
             }
             return .redraw

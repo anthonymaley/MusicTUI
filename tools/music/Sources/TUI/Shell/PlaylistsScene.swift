@@ -294,6 +294,7 @@ final class PlaylistsScene: Scene {
                 if !filterText.isEmpty { filterText.removeLast() }
                 clampCursorToFilter()
             case .char(let c): filterText.append(c); clampCursorToFilter()
+            case .space: filterText.append(" "); clampCursorToFilter()
             default: break
             }
             return .redraw

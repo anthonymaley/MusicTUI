@@ -116,6 +116,7 @@ final class RadioScene: Scene {
             case .char(let c) where c == "\u{7F}" || c == "\u{8}":
                 if !addText.isEmpty { addText.removeLast() }
             case .char(let c): addText.append(c)
+            case .space: addText.append(" ")
             default: break
             }
             return .redraw
@@ -130,6 +131,7 @@ final class RadioScene: Scene {
             case .char(let c) where c == "\u{7F}" || c == "\u{8}":
                 if !filter.isEmpty { filter.removeLast() }; nav.cursor = 0
             case .char(let c): filter.append(c); nav.cursor = 0
+            case .space: filter.append(" "); nav.cursor = 0
             default: break
             }
             return .redraw
