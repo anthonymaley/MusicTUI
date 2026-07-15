@@ -471,6 +471,13 @@ final class LibraryScene: Scene {
         case .up: libKey = .up
         case .down: libKey = .down
         case .enter: libKey = .enter
+        case .right:
+            // → drills in like Enter (vim `l` arrives here as .right),
+            // symmetric with ← back — but only at levels where Enter means
+            // open/drill (album rails, artist list). At the Songs list and
+            // the tracks level Enter means play, so → stays a no-op.
+            guard isAlbumRail || isArtistList else { return .none }
+            libKey = .enter
         case .left, .escape: libKey = .back
         case .char("["): libKey = .switchPrev
         case .char("]"): libKey = .switchNext

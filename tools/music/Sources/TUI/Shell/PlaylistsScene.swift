@@ -332,6 +332,13 @@ final class PlaylistsScene: Scene {
                 playTrack(trCursor)
                 return .push(.nowPlaying)
             }
+        case .right:
+            // → drills in like Enter on the rail (vim `l` arrives here as
+            // .right), symmetric with ← back. At tracks focus Enter means
+            // play, so → is a no-op — there's nothing deeper to drill into.
+            guard focus == .playlists else { return .none }
+            loadFull(); focus = .tracks; trCursor = 0; trScroll = 0
+            return .redraw
         case .left:
             if focus == .tracks { focus = .playlists; return .redraw }
             return .pop
