@@ -6,6 +6,8 @@
    / __ |/ _ \/ _ \ / / -_)   / /|_/ / // (_-</ / __/
   /_/ |_/ .__/ .__/_/\__/   /_/  /_/\_,_/___/_/\__/
        /_/  /_/
+
+**Site: [musictui.com](https://musictui.com/)** — demo video, feature tour, install guide.
                     TUI, Claude Skill and Apple Developer CLI
 ```
 

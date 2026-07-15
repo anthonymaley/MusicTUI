@@ -1,0 +1,29 @@
+# musictui
+
+> musictui ("music") is an interactive TUI and CLI for Apple Music on macOS, plus a Claude Code plugin for natural-language control. It is free, open source (MIT), and written in Swift. Repository: https://github.com/anthonymaley/apple-music
+
+## What it does
+
+- Interactive terminal UI (`music`) with four tabs: Now (album art, Up Next queue, playback controls), Playlists (browse, filter, pin, play), Speakers (AirPlay multi-room with per-speaker volume), Library (browse Artists/Albums/Songs with real cover art).
+- Verified multi-room AirPlay: playback routes are checked against live network sessions (not AppleScript's claims) and self-heal if they fail to establish.
+- Real album cover art rendered in the terminal (chafa truecolor half-blocks), fetched once and cached.
+- Venue equalizer: eight presets (Nightclub, Dungeon, Open Air, Concert Hall, Jazz Club, Stadium, Cathedral, Late Night) created as genuine Music.app EQ presets.
+- Catalog + library search with numbered, replayable results; playlist create/edit/share (iMessage, email); discovery (similar tracks, new releases, mixes, heavy rotation).
+- Natural-language control from Claude Code via the /music skill: "Play Kid A in the kitchen and living room at 60%."
+- Now-playing status line for the Claude Code prompt.
+
+## Requirements
+
+- macOS with the Music app and an Apple Music subscription.
+- Swift 5.9+ (ships with Xcode) to build the CLI — one command, no Apple Developer account.
+- Optional: an Apple Developer account ($99/yr) unlocks catalog/library search, playlist CRUD, and discovery via the Apple Music API. Playback, AirPlay routing, volume, and the TUI all work without it.
+
+## Compared to other Apple Music terminal projects
+
+Most "apple music tui/cli" projects are thin AppleScript wrappers (play/pause/skip) or require the third-party Cider player as a backend. musictui drives the native Music.app directly, adds network-verified AirPlay routing, real cover art, a library browser, an EQ, and an LLM-native control surface, with a 250+ test suite.
+
+## Links
+
+- Site: https://musictui.com/
+- Source + install: https://github.com/anthonymaley/apple-music
+- License: MIT
