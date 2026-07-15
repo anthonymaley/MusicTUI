@@ -452,7 +452,21 @@ func showNowPlaying(json: Bool = false, waitForPlay: Bool = false) {
                     set al to album of current track
                     set d to duration of current track
                     set p to player position
-                    set info to t & "|" & a & "|" & al & "|" & (round d) & "|" & (round p) & "|" & state
+                    set lv to "0"
+                    if (class of current track is URL track) and (d is missing value) then set lv to "1"
+                    if d is missing value then
+                        set dTxt to "-"
+                    else
+                        set dTxt to ((round d) as text)
+                    end if
+                    if p is missing value then
+                        set pTxt to "-"
+                    else
+                        set pTxt to ((round p) as text)
+                    end if
+                    if a is missing value then set a to ""
+                    if al is missing value then set al to ""
+                    set info to t & "|" & a & "|" & al & "|" & dTxt & "|" & pTxt & "|" & state & "|" & lv
                     exit repeat
                 end try
                 delay 0.3
@@ -479,31 +493,37 @@ func showNowPlaying(json: Bool = false, waitForPlay: Bool = false) {
         return
     }
 
-    let trimmed = result.trimmingCharacters(in: .whitespacesAndNewlines)
-    if trimmed == "STOPPED" {
+    switch parseNowOutput(result) {
+    case .stopped:
         print(json ? "{\"state\":\"stopped\"}" : "Nothing playing.")
-        return
-    }
-    let parts = trimmed.split(separator: "|", maxSplits: 6).map(String.init)
-    guard parts.count >= 7 else { print("Unexpected output"); return }
-
-    let speakers = parts[6].split(separator: ",").map { pair -> [String: Any] in
-        let kv = pair.split(separator: ":", maxSplits: 1)
-        return ["name": String(kv[0]), "volume": Int(kv.count > 1 ? String(kv[1]) : "0") ?? 0]
-    }
-
-    if json {
-        let dict: [String: Any] = [
-            "track": parts[0], "artist": parts[1], "album": parts[2],
-            "duration": Int(parts[3]) ?? 0, "position": Int(parts[4]) ?? 0,
-            "state": parts[5], "speakers": speakers
-        ]
-        let output = OutputFormat(mode: .json)
-        print(output.render(dict))
-    } else {
-        let spkStr = speakers.map { "\($0["name"]!) (vol: \($0["volume"]!))" }.joined(separator: " | ")
-        print("\(parts[0]) — \(parts[1]) [\(parts[2])]")
-        if !spkStr.isEmpty { print(spkStr) }
+    case .loading, .none:
+        if json {
+            print(#"{"error": "could not read now playing"}"#)
+        } else {
+            errorOut("✗ Couldn't read now playing.")
+        }
+    case .info(let i):
+        let speakers = i.speakers.map { ["name": $0.name, "volume": $0.volume] as [String: Any] }
+        if json {
+            var dict: [String: Any] = ["track": i.track, "artist": i.artist, "album": i.album,
+                                       "state": i.state, "speakers": speakers]
+            if i.isLive {
+                dict["live"] = true          // duration/position deliberately ABSENT
+            } else {
+                dict["duration"] = i.duration ?? 0
+                dict["position"] = i.position ?? 0
+            }
+            print(OutputFormat(mode: .json).render(dict))
+        } else {
+            let spkStr = i.speakers.map { "\($0.name) (vol: \($0.volume))" }.joined(separator: " | ")
+            if i.isLive {
+                let who = i.artist.isEmpty ? i.track : "\(i.track) — \(i.artist)"
+                print("\(who) [LIVE]")
+            } else {
+                print("\(i.track) — \(i.artist) [\(i.album)]")
+            }
+            if !spkStr.isEmpty { print(spkStr) }
+        }
     }
 }
 
