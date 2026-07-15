@@ -79,9 +79,9 @@ func currentTrackArtLines(width: Int, height: Int) -> (lines: [String], path: St
 }
 
 /// Strip internal temp-playlist prefixes so the UI shows the real source name
-/// ("__queue__ House" -> "House", "__radio__ Foo — Bar" -> "Foo — Bar").
+/// ("__queue__ House" -> "House").
 func cleanContextName(_ name: String) -> String {
-    for p in ["__queue__ ", "__radio__ "] {
+    for p in ["__queue__ "] {
         if name.hasPrefix(p) { return String(name.dropFirst(p.count)) }
     }
     return name

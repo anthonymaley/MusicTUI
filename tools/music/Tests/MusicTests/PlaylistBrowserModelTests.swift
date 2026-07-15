@@ -3,9 +3,6 @@ import XCTest
 
 final class PlaylistBrowserModelTests: XCTestCase {
     // badge derivation
-    func testRadioBadgeFromNamePrefix() {
-        XCTAssertEqual(playlistBadge(name: "__radio__Tom Misch", isSmart: false, specialKind: "none"), .radio)
-    }
     func testRecentBadgeFromKnownName() {
         XCTAssertEqual(playlistBadge(name: "Recently Played", isSmart: true, specialKind: "Music"), .recent)
         XCTAssertEqual(playlistBadge(name: "Top 25 Most Played", isSmart: true, specialKind: "Music"), .recent)
@@ -15,9 +12,6 @@ final class PlaylistBrowserModelTests: XCTestCase {
     }
     func testNoneBadgeForPlainUserPlaylist() {
         XCTAssertEqual(playlistBadge(name: "Bluecoats 2024", isSmart: false, specialKind: "none"), .none)
-    }
-    func testRadioWinsOverSmart() {
-        XCTAssertEqual(playlistBadge(name: "__radio__BORN FREE", isSmart: true, specialKind: "none"), .radio)
     }
     func testAppleBadgeForSubscriptionPlaylist() {
         XCTAssertEqual(playlistBadge(name: "Loops", isSmart: false, specialKind: "none", isSubscription: true), .apple)

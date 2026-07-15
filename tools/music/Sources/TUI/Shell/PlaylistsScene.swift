@@ -184,7 +184,6 @@ final class PlaylistsScene: Scene {
     private func badgeText(_ m: PlaylistMeta) -> (String, String)? {
         switch playlistBadge(name: m.name, isSmart: m.isSmart ?? false, specialKind: m.specialKind ?? "none",
                              isSubscription: subscriptionNames.contains(m.name)) {
-        case .radio: return ("RADIO", ANSICode.amber)
         case .smart: return ("SMART", ANSICode.amber)
         case .recent: return ("RECENT", ANSICode.amber)
         case .apple: return ("APPLE", ANSICode.amber)
@@ -422,7 +421,7 @@ final class PlaylistsScene: Scene {
             let row = listY + (p - plScroll)
             out += ANSICode.moveTo(row: row, col: z.railX)
             let m = meta[i]
-            let display = m.name.hasPrefix("__radio__") ? String(m.name.dropFirst("__radio__".count)) : m.name
+            let display = m.name
             let nm = railName(display, nameWidth: max(1, nameWidth))
             let metaCell: String
             if !m.loaded {
@@ -453,7 +452,7 @@ final class PlaylistsScene: Scene {
     private func renderHero(_ z: PlaylistZones, into out: inout String, bodyTop: Int, bodyBottom: Int) {
         var y = bodyTop
         let m = meta[plCursor]
-        let title = m.name.hasPrefix("__radio__") ? String(m.name.dropFirst("__radio__".count)) : m.name
+        let title = m.name
         out += ANSICode.moveTo(row: y, col: z.heroX)
         out += "\(ANSICode.bold)\(ANSICode.brightWhite)\(truncText(title, to: z.heroWidth))\(ANSICode.reset)"
         y += 1
