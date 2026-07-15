@@ -65,7 +65,7 @@ final class PlaylistsScene: Scene {
     // last kitty placement this scene emitted, so an unchanged frame emits
     // nothing (the placement persists on screen across text repaints) and a
     // changed one deletes the old placement before drawing the new one.
-    private var lastPlaced: (id: UInt32, row: Int, col: Int)? = nil
+    private var lastPlaced: (id: UInt32, row: Int, col: Int, cols: Int, rows: Int)? = nil
 
     private let metaCol = 6
 
@@ -492,7 +492,7 @@ final class PlaylistsScene: Scene {
                 y += 1
             }
         case .kitty(let id, let transmit):
-            let current = (id: id, row: y, col: z.heroX)
+            let current = (id: id, row: y, col: z.heroX, cols: gw, rows: gh)
             if let last = lastPlaced, last == current {
                 // Unchanged: the placement from a prior frame is still on
                 // screen — emit nothing (spaces would flicker under the image).

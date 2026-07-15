@@ -75,7 +75,7 @@ final class NowPlayingScene: Scene {
     // last kitty placement this scene emitted, so an unchanged frame emits
     // nothing (the placement persists on screen across text repaints) and a
     // changed one deletes the old placement before drawing the new one.
-    private var lastPlaced: (id: UInt32, row: Int, col: Int)? = nil
+    private var lastPlaced: (id: UInt32, row: Int, col: Int, cols: Int, rows: Int)? = nil
     // Scene-local, render-thread-only: id -> transmit escape, resolved on
     // first sight of an id (file read + PNG conversion) and reused on every
     // later sighting of the same id. A resolved failure caches `nil` so a
@@ -237,7 +237,7 @@ final class NowPlayingScene: Scene {
             }
         }
         if let id = kittyID {
-            let current = (id: id, row: frame.bodyY, col: leftX)
+            let current = (id: id, row: frame.bodyY, col: leftX, cols: gw, rows: artRows)
             if let last = lastPlaced, last == current {
                 // Unchanged: the placement from a prior frame is still on
                 // screen — emit nothing (spaces would flicker under the image).
