@@ -956,7 +956,12 @@ final class LibraryScene: Scene {
                 y += 1
             }
         case .kitty(let id, let transmit):
-            let current = (id: id, row: y, col: z.heroX, cols: gw, rows: gh)
+            // Covers are square; cells are ~1:2, so square needs cols = 2*rows.
+            // Kitty placement STRETCHES to the rect (chafa letterboxes), so
+            // clamp to square-equivalent or a narrow hero stretches art tall.
+            let pr = min(gh, gw / 2)
+            let pc = min(gw, pr * 2)
+            let current = (id: id, row: y, col: z.heroX, cols: pc, rows: pr)
             if let last = lastPlaced, last == current {
                 // Unchanged: the placement from a prior frame is still on
                 // screen — emit nothing (spaces would flicker under the image).
@@ -967,7 +972,7 @@ final class LibraryScene: Scene {
                     out += ANSICode.moveTo(row: y + i, col: z.heroX) + blank
                 }
                 out += transmit ?? ""
-                out += ANSICode.moveTo(row: y, col: z.heroX) + kittyPlaceEscape(id: id, cols: gw, rows: gh)
+                out += ANSICode.moveTo(row: y, col: z.heroX) + kittyPlaceEscape(id: id, cols: pc, rows: pr)
                 lastPlaced = current
             }
             y += gh

@@ -237,7 +237,10 @@ final class NowPlayingScene: Scene {
             }
         }
         if let id = kittyID {
-            let current = (id: id, row: frame.bodyY, col: leftX, cols: gw, rows: artRows)
+            // Square-equivalent rect (no-op at 44x22): kitty stretches, chafa fits.
+            let pr = min(artRows, gw / 2)
+            let pc = min(gw, pr * 2)
+            let current = (id: id, row: frame.bodyY, col: leftX, cols: pc, rows: pr)
             if let last = lastPlaced, last == current {
                 // Unchanged: the placement from a prior frame is still on
                 // screen — emit nothing (spaces would flicker under the image).
@@ -248,7 +251,7 @@ final class NowPlayingScene: Scene {
                     out += ANSICode.moveTo(row: frame.bodyY + i, col: leftX) + blank
                 }
                 out += kittyTransmit ?? ""
-                out += ANSICode.moveTo(row: frame.bodyY, col: leftX) + kittyPlaceEscape(id: id, cols: gw, rows: artRows)
+                out += ANSICode.moveTo(row: frame.bodyY, col: leftX) + kittyPlaceEscape(id: id, cols: pc, rows: pr)
                 lastPlaced = current
             }
         } else {
