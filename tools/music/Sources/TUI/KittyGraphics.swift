@@ -96,12 +96,42 @@ func kittyTransmitEscape(id: UInt32, png: Data) -> String {
     return result
 }
 
-/// Place image id at the cursor, scaled to cols x rows cells — the terminal
-/// fits the image to that cell rect (preserving aspect ratio), so callers get
-/// pixel art in exactly the geometry the half-block fallback already occupies
-/// (design doc sharp edge #6). `q=2` per sharp edge #1.
+/// Place image id at the cursor, scaled to cols x rows cells. Measured
+/// against a real terminal: the terminal STRETCHES the image to fill that
+/// cell rect — it does NOT preserve aspect ratio (unlike the chafa/mono
+/// fallback, which letterboxes). Callers must pick cols/rows that are already
+/// square-equivalent for the terminal's measured cell size — see
+/// `kittySquareRect` below — rather than assuming a fixed cell aspect.
+/// `q=2` per sharp edge #1.
 func kittyPlaceEscape(id: UInt32, cols: Int, rows: Int) -> String {
     "\u{1B}_Ga=p,i=\(id),c=\(cols),r=\(rows),q=2\u{1B}\\"
+}
+
+/// A placement rect (cols x rows), never larger than `maxCols` x `maxRows`,
+/// that renders SQUARE in pixels for the given measured terminal cell size.
+/// `kittyPlaceEscape` stretches an image to whatever cell rect it's given, so
+/// a square cover needs cols/rows whose pixel dimensions (cols*cellW vs.
+/// rows*cellH) actually come out square — not a fixed cols=2*rows guess
+/// (measured wrong on a real terminal: 14x34px cells, ratio 1:2.429, not
+/// 1:2 — docs/playbook.md).
+///
+/// Widens to `maxCols` first (matches the shape of the old cols=2*rows
+/// behavior when cellW:cellH is close to 1:2), then falls back to
+/// constraining by `maxRows` when that would be too tall for the space
+/// available. Degrades to (0, 0) on invalid input — callers already gate on
+/// gw/gh > 0 before reaching the kitty path, so this is a defensive floor,
+/// not the primary guard. Pure, so it's unit-testable without a terminal.
+func kittySquareRect(maxCols: Int, maxRows: Int, cellW: Double, cellH: Double) -> (cols: Int, rows: Int) {
+    guard maxCols > 0, maxRows > 0, cellW > 0, cellH > 0 else { return (0, 0) }
+    var pc = maxCols
+    var pr = Int((Double(pc) * cellW / cellH).rounded())
+    if pr > maxRows {
+        pr = maxRows
+        pc = Int((Double(pr) * cellH / cellW).rounded())
+    }
+    pc = max(1, min(maxCols, pc))
+    pr = max(1, min(maxRows, pr))
+    return (pc, pr)
 }
 
 /// Delete all placements of one image id, keeping the stored image data

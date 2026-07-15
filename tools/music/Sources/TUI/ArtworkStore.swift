@@ -173,8 +173,9 @@ typealias ArtPlacement = (id: UInt32, row: Int, col: Int, cols: Int, rows: Int)
 /// RadioScene each need this exact ladder) so the kitty aspect-clamp lives in
 /// one place instead of being copy-pasted per scene: kitty placement
 /// STRETCHES to the cell rect while chafa letterboxes, so the rect is clamped
-/// to square-equivalent (cols = 2×rows at ~1:2 cell aspect) or a narrow hero
-/// stretches art tall (docs/playbook.md Gotchas).
+/// to square-equivalent IN PIXELS for the caller's measured `cellW`/`cellH`
+/// (see `kittySquareRect` in KittyGraphics.swift) — assuming a fixed 1:2 cell
+/// aspect measured wrong on a real terminal (docs/playbook.md Gotchas).
 ///
 /// `lastPlaced` is the caller's own placement-dedup state; this returns the
 /// row past the rendered art plus the new placement value for the caller to
@@ -183,6 +184,7 @@ typealias ArtPlacement = (id: UInt32, row: Int, col: Int, cols: Int, rows: Int)
 /// decoration, and `.none` always degrades to the gradient block.
 func renderArtHero(artBlock: ArtBlock?, gradientSeedText: String,
                    gw: Int, gh: Int, x: Int, y startY: Int,
+                   cellW: Double, cellH: Double,
                    lastPlaced: ArtPlacement?,
                    into out: inout String) -> (y: Int, lastPlaced: ArtPlacement?) {
     var y = startY
@@ -199,8 +201,7 @@ func renderArtHero(artBlock: ArtBlock?, gradientSeedText: String,
             y += 1
         }
     case .kitty(let id, let transmit):
-        let pr = min(gh, gw / 2)
-        let pc = min(gw, pr * 2)
+        let (pc, pr) = kittySquareRect(maxCols: gw, maxRows: gh, cellW: cellW, cellH: cellH)
         let current: ArtPlacement = (id: id, row: y, col: x, cols: pc, rows: pr)
         if let last = placed, last == current {
             // Unchanged: the placement from a prior frame is still on

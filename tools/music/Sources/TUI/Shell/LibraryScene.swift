@@ -409,7 +409,7 @@ final class LibraryScene: Scene {
         switch nav.subView {
         case .albums:
             renderRail(z, into: &out, contentTop: contentTop, bodyBottom: bodyBottom)
-            renderHero(z, into: &out, contentTop: contentTop, bodyBottom: bodyBottom)
+            renderHero(z, into: &out, contentTop: contentTop, bodyBottom: bodyBottom, cellW: frame.cellW, cellH: frame.cellH)
             renderRightPane(z, into: &out, contentTop: contentTop, bodyBottom: bodyBottom)
         case .songs:
             // Flat filterable list — rail zone only, no hero/preview pane.
@@ -423,7 +423,7 @@ final class LibraryScene: Scene {
                 // album lists, so reuse the album three-zone render sourced from
                 // this artist's albums (currentAlbums switches on nav.subView).
                 renderRail(z, into: &out, contentTop: contentTop, bodyBottom: bodyBottom)
-                renderHero(z, into: &out, contentTop: contentTop, bodyBottom: bodyBottom)
+                renderHero(z, into: &out, contentTop: contentTop, bodyBottom: bodyBottom, cellW: frame.cellW, cellH: frame.cellH)
                 renderRightPane(z, into: &out, contentTop: contentTop, bodyBottom: bodyBottom)
             }
         }
@@ -916,7 +916,8 @@ final class LibraryScene: Scene {
         }
     }
 
-    private func renderHero(_ z: PlaylistZones, into out: inout String, contentTop: Int, bodyBottom: Int) {
+    private func renderHero(_ z: PlaylistZones, into out: inout String, contentTop: Int, bodyBottom: Int,
+                            cellW: Double, cellH: Double) {
         guard let a = focusedAlbum() else { return }
         var y = contentTop
         out += ANSICode.moveTo(row: y, col: z.heroX)
@@ -957,11 +958,10 @@ final class LibraryScene: Scene {
                 y += 1
             }
         case .kitty(let id, let transmit):
-            // Covers are square; cells are ~1:2, so square needs cols = 2*rows.
-            // Kitty placement STRETCHES to the rect (chafa letterboxes), so
-            // clamp to square-equivalent or a narrow hero stretches art tall.
-            let pr = min(gh, gw / 2)
-            let pc = min(gw, pr * 2)
+            // Covers are square. Kitty placement STRETCHES to the rect (chafa
+            // letterboxes), so clamp to square-equivalent IN PIXELS for the
+            // measured cell size, or a narrow hero stretches art tall.
+            let (pc, pr) = kittySquareRect(maxCols: gw, maxRows: gh, cellW: cellW, cellH: cellH)
             let current = (id: id, row: y, col: z.heroX, cols: pc, rows: pr)
             if let last = lastPlaced, last == current {
                 // Unchanged: the placement from a prior frame is still on

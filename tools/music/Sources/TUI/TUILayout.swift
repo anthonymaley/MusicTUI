@@ -11,6 +11,12 @@ struct ScreenFrame {
     let bodyY: Int
     let statusY: Int
     let footerY: Int
+    /// Measured terminal cell size in pixels — see `terminalCellSize` below.
+    /// Feeds `kittySquareRect` so a kitty placement rect is square in PIXELS
+    /// instead of assuming cells are exactly 1:2 (measured wrong: a real
+    /// iTerm2 cell was 14x34px, 1:2.429, not 1:2 — docs/playbook.md).
+    let cellW: Double
+    let cellH: Double
 
     static func current() -> ScreenFrame {
         var ws = winsize()
@@ -20,8 +26,21 @@ struct ScreenFrame {
         let footerY = h - 1
         let statusY = footerY - 1
         let bodyY = 7
-        return ScreenFrame(width: w, height: h, bodyY: bodyY, statusY: statusY, footerY: footerY)
+        let (cellW, cellH) = terminalCellSize(cols: w, rows: h, xpixel: Int(ws.ws_xpixel), ypixel: Int(ws.ws_ypixel))
+        return ScreenFrame(width: w, height: h, bodyY: bodyY, statusY: statusY, footerY: footerY, cellW: cellW, cellH: cellH)
     }
+}
+
+/// Terminal cell size in pixels: TIOCGWINSZ's reported pixel dimensions
+/// divided by its cell (col/row) dimensions. Many terminals report 0 for
+/// `ws_xpixel`/`ws_ypixel` (no pixel geometry available) — that, or any
+/// non-positive input, degrades to the historical 1:2 (width:height)
+/// assumption rather than dividing by zero or producing a nonsensical cell
+/// size. Art is decoration; this must never error at the user. Pure so it's
+/// testable without a real terminal.
+func terminalCellSize(cols: Int, rows: Int, xpixel: Int, ypixel: Int) -> (w: Double, h: Double) {
+    guard cols > 0, rows > 0, xpixel > 0, ypixel > 0 else { return (1.0, 2.0) }
+    return (Double(xpixel) / Double(cols), Double(ypixel) / Double(rows))
 }
 
 // MARK: - Shared Shell Chrome

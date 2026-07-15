@@ -154,6 +154,66 @@ final class KittyGraphicsTests: XCTestCase {
         XCTAssertTrue(frame.controls.contains("q=2"))
     }
 
+    // MARK: - kittySquareRect
+
+    // The bug this whole session exists to fix: the user's real terminal
+    // measures 14x34px cells (1:2.429), not the assumed 1:2. A 44x22 placement
+    // at that cell size rendered 616x748px — 21.4% taller than wide. The
+    // correct rect for a 44x22 max box at 14x34 cells is 44x18 (616x612px,
+    // 0.7% off square).
+    func testMeasuredCellSizeProducesFortyFourByEighteen() {
+        let rect = kittySquareRect(maxCols: 44, maxRows: 22, cellW: 14, cellH: 34)
+        XCTAssertEqual(rect.cols, 44)
+        XCTAssertEqual(rect.rows, 18)
+    }
+
+    // The historical fallback (cells assumed exactly 1:2) must reproduce
+    // today's behavior exactly: cols = 2 * rows, i.e. 44x22 unchanged.
+    func testOneToTwoFallbackReproducesTodaysFortyFourByTwentyTwo() {
+        let rect = kittySquareRect(maxCols: 44, maxRows: 22, cellW: 1, cellH: 2)
+        XCTAssertEqual(rect.cols, 44)
+        XCTAssertEqual(rect.rows, 22)
+    }
+
+    func testSquareCellsClampByHeightWhenWidthWouldOverflow() {
+        // Square cells (1:1): a 44-col-wide rect wants 44 rows to stay square,
+        // but only 22 rows are available, so the height clamp kicks in and
+        // both dimensions shrink to the smaller bound (22x22).
+        let rect = kittySquareRect(maxCols: 44, maxRows: 22, cellW: 10, cellH: 10)
+        XCTAssertEqual(rect.cols, 22)
+        XCTAssertEqual(rect.rows, 22)
+    }
+
+    func testHeightConstrainedBoxClampsByAvailableRowsNotCols() {
+        // maxRows is scarce relative to maxCols here (10 vs. 44) at a normal
+        // ~1:2 cell aspect: pc=44 -> pr = round(44*10/20) = 22, which exceeds
+        // maxRows(10), so the height clamp fires: pr=10 -> pc = round(10*20/10) = 20.
+        let rect = kittySquareRect(maxCols: 44, maxRows: 10, cellW: 10, cellH: 20)
+        XCTAssertEqual(rect.rows, 10)
+        XCTAssertEqual(rect.cols, 20)
+        XCTAssertLessThanOrEqual(rect.cols, 44)
+    }
+
+    func testResultNeverExceedsMaxBoxInEitherDimension() {
+        // Sweep a range of cell aspects and confirm the result always fits.
+        let cellSizes: [(Double, Double)] = [(1, 1), (1, 2), (2, 1), (14, 34), (34, 14), (7, 3), (3, 7)]
+        for (cw, ch) in cellSizes {
+            let rect = kittySquareRect(maxCols: 44, maxRows: 22, cellW: cw, cellH: ch)
+            XCTAssertLessThanOrEqual(rect.cols, 44, "cw=\(cw) ch=\(ch)")
+            XCTAssertLessThanOrEqual(rect.rows, 22, "cw=\(cw) ch=\(ch)")
+            XCTAssertGreaterThanOrEqual(rect.cols, 0, "cw=\(cw) ch=\(ch)")
+            XCTAssertGreaterThanOrEqual(rect.rows, 0, "cw=\(cw) ch=\(ch)")
+        }
+    }
+
+    func testZeroOrNegativeInputsDegradeToZeroRect() {
+        XCTAssertEqual(kittySquareRect(maxCols: 0, maxRows: 22, cellW: 14, cellH: 34).cols, 0)
+        XCTAssertEqual(kittySquareRect(maxCols: 44, maxRows: 0, cellW: 14, cellH: 34).rows, 0)
+        XCTAssertEqual(kittySquareRect(maxCols: 44, maxRows: 22, cellW: 0, cellH: 34).cols, 0)
+        XCTAssertEqual(kittySquareRect(maxCols: 44, maxRows: 22, cellW: 14, cellH: 0).cols, 0)
+        XCTAssertEqual(kittySquareRect(maxCols: -5, maxRows: 22, cellW: 14, cellH: 34).cols, 0)
+    }
+
     // MARK: - kittyDeleteEscape / kittyDeleteAllEscape
 
     func testDeleteEscapeDeletesOnlyOneImagesPlacementsWithoutFreeingData() {

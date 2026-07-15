@@ -20,9 +20,11 @@ struct ShellFrame {
     let barY: Int          // first row of the bar band (== footerY when barHeight 0)
     let barHeight: Int
     let footerY: Int       // last row
+    let cellW: Double      // measured terminal cell size in pixels (ScreenFrame.terminalCellSize);
+    let cellH: Double      // defaults mirror the 1:2 fallback when a terminal reports no pixel size
 }
 
-func shellLayout(width: Int, height: Int) -> ShellFrame {
+func shellLayout(width: Int, height: Int, cellW: Double = 1.0, cellH: Double = 2.0) -> ShellFrame {
     // The persistent now-playing bar was removed (playback lives on the Now tab),
     // so there is no bar band — the body extends down to just above the footer.
     // Height still drives the tab style (full names vs digits vs hidden).
@@ -49,6 +51,7 @@ func shellLayout(width: Int, height: Int) -> ShellFrame {
         barTier: tier, tabStyle: tabStyle,
         labelY: labelY, tabsY: tabsY, ruleY: ruleY,
         bodyY: bodyY, bodyHeight: bodyHeight,
-        barY: barY, barHeight: barHeight, footerY: footerY
+        barY: barY, barHeight: barHeight, footerY: footerY,
+        cellW: cellW, cellH: cellH
     )
 }

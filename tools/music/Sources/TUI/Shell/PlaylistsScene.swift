@@ -266,7 +266,7 @@ final class PlaylistsScene: Scene {
         let bodyBottom = frame.bodyY + frame.bodyHeight - 1
 
         renderRail(z, into: &out, bodyTop: bodyTop, bodyBottom: bodyBottom)
-        renderHero(z, into: &out, bodyTop: bodyTop, bodyBottom: bodyBottom)
+        renderHero(z, into: &out, bodyTop: bodyTop, bodyBottom: bodyBottom, cellW: frame.cellW, cellH: frame.cellH)
         if focus == .tracks {
             renderTrackList(z, into: &out, bodyTop: bodyTop, bodyBottom: bodyBottom)
         } else {
@@ -450,7 +450,8 @@ final class PlaylistsScene: Scene {
         }
     }
 
-    private func renderHero(_ z: PlaylistZones, into out: inout String, bodyTop: Int, bodyBottom: Int) {
+    private func renderHero(_ z: PlaylistZones, into out: inout String, bodyTop: Int, bodyBottom: Int,
+                            cellW: Double, cellH: Double) {
         var y = bodyTop
         let m = meta[plCursor]
         let title = m.name
@@ -492,9 +493,9 @@ final class PlaylistsScene: Scene {
                 y += 1
             }
         case .kitty(let id, let transmit):
-            // Square-equivalent rect: see LibraryScene — kitty stretches, chafa fits.
-            let pr = min(gh, gw / 2)
-            let pc = min(gw, pr * 2)
+            // Square-equivalent rect, in pixels for the measured cell size:
+            // see LibraryScene — kitty stretches, chafa fits.
+            let (pc, pr) = kittySquareRect(maxCols: gw, maxRows: gh, cellW: cellW, cellH: cellH)
             let current = (id: id, row: y, col: z.heroX, cols: pc, rows: pr)
             if let last = lastPlaced, last == current {
                 // Unchanged: the placement from a prior frame is still on

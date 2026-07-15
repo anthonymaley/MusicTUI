@@ -121,9 +121,8 @@ func runShell() {
         terminal.exitRawMode()
     }
 
-    func dims() -> (Int, Int) {
-        let f = ScreenFrame.current()
-        return (f.width, f.height)
+    func dims() -> ScreenFrame {
+        ScreenFrame.current()
     }
 
     // Render only when something can have changed: a new poller snapshot (the
@@ -153,8 +152,8 @@ func runShell() {
             lastToast = toast
             needsRender = true
         }
-        let (w, h) = dims()
-        let frame = shellLayout(width: w, height: h)
+        let screen = dims()
+        let frame = shellLayout(width: screen.width, height: screen.height, cellW: screen.cellW, cellH: screen.cellH)
         guard let scene = ensureScene(router.active) ?? scenes[.nowPlaying] else { continue }
         // tick runs every iteration (it drains inboxes and kicks off background
         // fetches) even when the frame isn't repainted.

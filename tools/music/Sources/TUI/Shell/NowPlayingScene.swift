@@ -237,9 +237,9 @@ final class NowPlayingScene: Scene {
             }
         }
         if let id = kittyID {
-            // Square-equivalent rect (no-op at 44x22): kitty stretches, chafa fits.
-            let pr = min(artRows, gw / 2)
-            let pc = min(gw, pr * 2)
+            // Square-equivalent rect (in pixels, for the measured cell size):
+            // kitty stretches, chafa fits. See kittySquareRect.
+            let (pc, pr) = kittySquareRect(maxCols: gw, maxRows: artRows, cellW: frame.cellW, cellH: frame.cellH)
             let current = (id: id, row: frame.bodyY, col: leftX, cols: pc, rows: pr)
             if let last = lastPlaced, last == current {
                 // Unchanged: the placement from a prior frame is still on

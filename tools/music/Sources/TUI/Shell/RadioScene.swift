@@ -358,7 +358,7 @@ final class RadioScene: Scene {
         guard contentTop <= bodyBottom else { return out }
 
         renderRail(z, into: &out, contentTop: contentTop, bodyBottom: bodyBottom)
-        renderHero(z, into: &out, contentTop: contentTop, bodyBottom: bodyBottom)
+        renderHero(z, into: &out, contentTop: contentTop, bodyBottom: bodyBottom, cellW: frame.cellW, cellH: frame.cellH)
         return out
     }
 
@@ -433,7 +433,8 @@ final class RadioScene: Scene {
     /// carry no duration/position, hard design rule) or a favorited hint, then
     /// artwork via the shared renderArtHero ladder (kitty → chafa → gradient
     /// identicon, same as LibraryScene/PlaylistsScene), then key hints.
-    private func renderHero(_ z: PlaylistZones, into out: inout String, contentTop: Int, bodyBottom: Int) {
+    private func renderHero(_ z: PlaylistZones, into out: inout String, contentTop: Int, bodyBottom: Int,
+                            cellW: Double, cellH: Double) {
         guard let s = selection else { return }
         var y = contentTop
         out += ANSICode.moveTo(row: y, col: z.heroX)
@@ -467,6 +468,7 @@ final class RadioScene: Scene {
         }
         let (afterArtY, placed) = renderArtHero(artBlock: artBlock, gradientSeedText: s.name + s.id,
                                                 gw: gw, gh: gh, x: z.heroX, y: y,
+                                                cellW: cellW, cellH: cellH,
                                                 lastPlaced: lastPlaced, into: &out)
         y = afterArtY
         lastPlaced = placed
