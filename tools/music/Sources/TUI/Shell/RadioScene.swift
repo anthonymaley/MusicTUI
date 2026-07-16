@@ -19,10 +19,12 @@ final class RadioScene: Scene {
     private var liveLoaded = false
     private var personalLoaded = false
 
-    // Raw text entry. `capturing` mirrors LibraryScene's filter capture; `adding`
-    // is the `a` flow (URL or search term).
-    private var capturing = false
-    private var filter = ""
+    // Raw text entry. `searching` is the `/` catalog-search flow — a network
+    // call fired on Enter (never live per-keystroke; there is no local list to
+    // filter). `adding` is the `a` flow — add a station by URL only; a
+    // non-URL input redirects the user to `/` instead of silently searching.
+    private var searching = false
+    private var searchText = ""
     private var adding = false
     private var addText = ""
     private var message: String?
@@ -31,24 +33,25 @@ final class RadioScene: Scene {
     // Off-thread catalog fetches — mirrors LibraryScene's `Thread.detachNewThread`
     // + inbox-under-lock + tick()-drain discipline. RadioCatalog blocks up to 20s
     // per call on its injected fetch's DispatchSemaphore; calling it synchronously
-    // on the main thread (as tick()/commitAdd() used to) freezes the whole shell
-    // loop — no repaint, no input, `q` doesn't quit — because Shell.swift only
-    // calls KeyPress.read() AFTER scene.tick() returns. Every field below that a
-    // background thread touches is written only under `inboxLock`; every field
-    // tick()/handle()/commitAdd() write directly (live, personal, message,
-    // searchHits, *Loaded, searchInFlight) is main-thread-only, matching
-    // LibraryScene's split between inbox state and scene state.
+    // on the main thread (as tick()/commitAddURL()/commitSearch() used to) freezes
+    // the whole shell loop — no repaint, no input, `q` doesn't quit — because
+    // Shell.swift only calls KeyPress.read() AFTER scene.tick() returns. Every
+    // field below that a background thread touches is written only under
+    // `inboxLock`; every field tick()/handle()/commitAddURL()/commitSearch()
+    // write directly (live, personal, message, searchHits, *Loaded,
+    // searchInFlight) is main-thread-only, matching LibraryScene's split
+    // between inbox state and scene state.
     private let inboxLock = NSLock()
     private var liveFetchStarted = false
     private var liveInbox: [Station]? = nil
     private var personalFetchStarted = false
     private var personalInbox: [Station]? = nil
-    // commitAdd's URL-add path: the favorite is added synchronously from the
+    // commitAddURL's add path: the favorite is added synchronously from the
     // slug (no network, so it's never lost), then resolve() enriches it in the
     // background. store.add() replaces-by-id, so a landed enrichment can only
     // upgrade the existing favorite in place, never duplicate it.
     private var resolveInbox: Station? = nil
-    // commitAdd's search path.
+    // commitSearch's search path.
     private var searchInbox: (term: String, hits: [Station], failed: Bool)? = nil
 
     // Real hero covers: store owns fetch/cache/render; onReady sets artDirty
@@ -77,27 +80,21 @@ final class RadioScene: Scene {
 
     func artPlacementsInvalidated() { lastPlaced = nil }
 
-    var capturesAllInput: Bool { capturing || adding }
+    var capturesAllInput: Bool { searching || adding }
 
     var footerHint: String {
-        if adding { return "Enter Save/Search  Esc Cancel" }
-        if capturing { return "type to filter  Enter Apply  Esc Clear" }
-        return "[ ] View  Enter Play  f Favorite  a Add/Search  / Filter"
+        if adding { return "Paste a station URL  Enter Add  Esc Cancel" }
+        if searching { return "Enter Search  Esc Cancel" }
+        return "[ ] View  Enter Play  f Favorite  / Search  a Add URL"
     }
 
     private var rows: [Station] {
-        let base: [Station]
-        if !searchHits.isEmpty {
-            base = searchHits
-        } else {
-            switch nav.subView {
-            case .favorites: base = store.favorites()
-            case .live:      base = live
-            case .personal:  base = personal
-            }
+        if !searchHits.isEmpty { return searchHits }
+        switch nav.subView {
+        case .favorites: return store.favorites()
+        case .live:      return live
+        case .personal:  return personal
         }
-        guard !filter.isEmpty else { return base }
-        return base.filter { $0.name.localizedCaseInsensitiveContains(filter) }
     }
 
     private var selection: Station? {
@@ -111,7 +108,7 @@ final class RadioScene: Scene {
         // navigation (the 3.6.0 gotcha; see docs/playbook.md).
         if adding {
             switch key {
-            case .enter:  commitAdd(); adding = false; addText = ""
+            case .enter:  commitAddURL(); adding = false; addText = ""
             case .escape: adding = false; addText = ""; message = nil
             case .char(let c) where c == "\u{7F}" || c == "\u{8}":
                 if !addText.isEmpty { addText.removeLast() }
@@ -122,16 +119,14 @@ final class RadioScene: Scene {
             return .redraw
         }
 
-        if capturing {
+        if searching {
             switch key {
-            case .enter:  capturing = false
-            case .escape: capturing = false; filter = ""; nav.cursor = 0
-            case .up:     nav.cursor = max(0, nav.cursor - 1)
-            case .down:   nav.cursor = min(max(0, rows.count - 1), nav.cursor + 1)
+            case .enter:  commitSearch(); searching = false; searchText = ""
+            case .escape: searching = false; searchText = ""; message = nil
             case .char(let c) where c == "\u{7F}" || c == "\u{8}":
-                if !filter.isEmpty { filter.removeLast() }; nav.cursor = 0
-            case .char(let c): filter.append(c); nav.cursor = 0
-            case .space: filter.append(" "); nav.cursor = 0
+                if !searchText.isEmpty { searchText.removeLast() }
+            case .char(let c): searchText.append(c)
+            case .space: searchText.append(" ")
             default: break
             }
             return .redraw
@@ -139,7 +134,7 @@ final class RadioScene: Scene {
 
         let key = vimAlias(key, listScene: true)
 
-        // Esc here (NOT the `capturing`/`adding` branches above, which handle
+        // Esc here (NOT the `searching`/`adding` branches above, which handle
         // their own Esc) clears an active search back to the current sub-view.
         // With no search active there's nothing to clear, so it's a no-op —
         // this must NOT eat Esc for anything else.
@@ -168,7 +163,7 @@ final class RadioScene: Scene {
             searchHits = []; message = nil
             rKey = .switchNext
         case .char("f"): rKey = .toggleFav
-        case .char("/"): capturing = true; return .redraw
+        case .char("/"): searching = true; searchText = ""; message = nil; return .redraw
         case .char("a"): adding = true; addText = ""; message = nil; return .redraw
         default: return .none
         }
@@ -191,60 +186,71 @@ final class RadioScene: Scene {
         }
     }
 
-    /// One affordance, two inputs. URL detection is by SCHEME PREFIX only — not
-    /// a heuristic. A bare "music.apple.com/..." is treated as a search term and
-    /// simply finds nothing; that's predictable. Do not try to be clever here.
+    /// `a` add-by-URL. URL detection is by SCHEME PREFIX only — not a
+    /// heuristic. Anything without an http/https/music:// prefix is not a
+    /// station URL, full stop; it redirects the user to `/` rather than being
+    /// guessed at as a search term (search lives on `/` now).
     ///
-    /// Both branches used to call the catalog SYNCHRONOUSLY here, which runs on
-    /// the main thread inside handle() — the same freeze as tick()'s old
+    /// Used to call the catalog SYNCHRONOUSLY here, which runs on the main
+    /// thread inside handle() — the same freeze as tick()'s old
     /// liveStations()/personalStation() calls, just triggered by Enter instead
-    /// of tab entry. Both are now backgrounded; results land via the inbox
-    /// fields above and are applied in tick().
-    private func commitAdd() {
+    /// of tab entry. resolve() is now backgrounded; results land via
+    /// `resolveInbox` and are applied in tick().
+    private func commitAddURL() {
         let input = addText.trimmingCharacters(in: .whitespaces)
         guard !input.isEmpty else { return }
 
         let isURL = ["http://", "https://", "music://"].contains { input.hasPrefix($0) }
-        if isURL {
-            guard stationPlayURL(input) != nil, let p = parseStationURL(input) else {
-                message = "✗ Not an Apple Music station URL"
-                return
-            }
-            // Add immediately from the slug — no network involved, so the
-            // favorite is never lost even when resolve() is slow or the API
-            // can't find it at all (BBC Radio 1 is unresolvable by design; the
-            // API is an enrichment, never a dependency). resolve() then runs in
-            // the background and upgrades the name/artwork in place if it lands.
-            let fallback = Station(
-                id: p.id, name: displayNameFromSlug(p.slug), url: input,
-                isLive: nil, artworkURL: nil)
-            do {
-                try store.add(fallback)
-                message = "★ \(fallback.name)"
-            } catch {
-                message = "✗ Couldn't save favorite"
-                return
-            }
-            if let catalog {
-                let id = p.id
-                Thread.detachNewThread { [weak self] in
-                    guard let resolved = (try? catalog.resolve(id: id)) ?? nil else { return }
-                    guard let self else { return }
-                    self.inboxLock.lock(); self.resolveInbox = resolved; self.inboxLock.unlock()
-                }
-            }
-        } else {
-            guard let catalog else { message = "✗ Search needs auth (music auth setup)"; return }
-            searchInFlight = true
-            message = "Searching \u{201C}\(input)\u{201D}\u{2026}"
-            let term = input
+        guard isURL else {
+            message = "✗ Not a station URL — press / to search"
+            return
+        }
+        guard stationPlayURL(input) != nil, let p = parseStationURL(input) else {
+            message = "✗ Not an Apple Music station URL"
+            return
+        }
+        // Add immediately from the slug — no network involved, so the
+        // favorite is never lost even when resolve() is slow or the API
+        // can't find it at all (BBC Radio 1 is unresolvable by design; the
+        // API is an enrichment, never a dependency). resolve() then runs in
+        // the background and upgrades the name/artwork in place if it lands.
+        let fallback = Station(
+            id: p.id, name: displayNameFromSlug(p.slug), url: input,
+            isLive: nil, artworkURL: nil)
+        do {
+            try store.add(fallback)
+            message = "★ \(fallback.name)"
+        } catch {
+            message = "✗ Couldn't save favorite"
+            return
+        }
+        if let catalog {
+            let id = p.id
             Thread.detachNewThread { [weak self] in
-                var hits: [Station] = []
-                var failed = false
-                do { hits = try catalog.search(term: term) } catch { failed = true }
+                guard let resolved = (try? catalog.resolve(id: id)) ?? nil else { return }
                 guard let self else { return }
-                self.inboxLock.lock(); self.searchInbox = (term, hits, failed); self.inboxLock.unlock()
+                self.inboxLock.lock(); self.resolveInbox = resolved; self.inboxLock.unlock()
             }
+        }
+    }
+
+    /// `/` catalog search. Backgrounded — calling the catalog synchronously
+    /// here would run on the main thread inside handle() and freeze the whole
+    /// shell loop (same hazard as commitAddURL's resolve() above). Results
+    /// land via `searchInbox` and are applied in tick().
+    private func commitSearch() {
+        let input = searchText.trimmingCharacters(in: .whitespaces)
+        guard !input.isEmpty else { return }
+        guard let catalog else { message = "✗ Search needs auth (music auth setup)"; return }
+        searchInFlight = true
+        message = "Searching \u{201C}\(input)\u{201D}\u{2026}"
+        let term = input
+        Thread.detachNewThread { [weak self] in
+            var hits: [Station] = []
+            var failed = false
+            do { hits = try catalog.search(term: term) } catch { failed = true }
+            guard let self else { return }
+            self.inboxLock.lock(); self.searchInbox = (term, hits, failed); self.inboxLock.unlock()
         }
     }
 
@@ -335,15 +341,15 @@ final class RadioScene: Scene {
         // reads from searchHits instead of the sub-view lists below.
         out += ANSICode.moveTo(row: bodyTop, col: z.railX) + radioSubViewHeader()
 
-        // Row bodyTop+1: raw text capture — `/` filter or `a` add/search.
+        // Row bodyTop+1: raw text capture — `/` search or `a` add-by-URL.
         // Mutually exclusive (capturesAllInput routes every key to whichever
         // is active), mirrors LibraryScene's single reserved filter row.
         if adding {
             out += ANSICode.moveTo(row: bodyTop + 1, col: z.railX)
             out += "\(ANSICode.cyan)add\u{203A}\(ANSICode.reset) \(ANSICode.brightWhite)\(addText)\(ANSICode.reset)\u{2588}"
-        } else if capturing || !filter.isEmpty {
+        } else if searching {
             out += ANSICode.moveTo(row: bodyTop + 1, col: z.railX)
-            out += "\(ANSICode.cyan)/\(ANSICode.reset) \(ANSICode.brightWhite)\(filter)\(ANSICode.reset)\(capturing ? "\u{2588}" : "")"
+            out += "\(ANSICode.cyan)/\(ANSICode.reset) \(ANSICode.brightWhite)\(searchText)\(ANSICode.reset)\u{2588}"
         }
 
         // Row bodyTop+2: the scene's own status line — search-result counts,
@@ -382,9 +388,9 @@ final class RadioScene: Scene {
         }.joined(separator: "\(ANSICode.dim)  \u{00B7}  \(ANSICode.reset)")
     }
 
-    /// Flat, filterable station list in the rail zone — same cursor/scroll
-    /// idiom as LibraryScene's renderArtistList/renderSongList (Radio never
-    /// drills into a station, so there's no album-rail-style highlight split).
+    /// Flat station list in the rail zone — same cursor/scroll idiom as
+    /// LibraryScene's renderArtistList/renderSongList (Radio never drills into
+    /// a station, so there's no album-rail-style highlight split).
     /// `[LIVE]` and `★` (already-favorited) are plain-text suffixes on the
     /// label, appended AFTER truncation so a long name never eats the marker —
     /// kept uncolored, like every other rail label, so the row's single
@@ -397,7 +403,6 @@ final class RadioScene: Scene {
             out += ANSICode.moveTo(row: listY, col: z.railX)
             let msg: String
             if loading { msg = "Loading\u{2026}" }
-            else if !filter.isEmpty { msg = "(no matches)" }
             else {
                 switch nav.subView {
                 case .favorites: msg = "(no favorites — press a to add)"
@@ -475,6 +480,6 @@ final class RadioScene: Scene {
         y += 1
 
         out += ANSICode.moveTo(row: y, col: z.heroX)
-        out += "\(ANSICode.lime)[Enter]\(ANSICode.reset) Play   \(ANSICode.lime)[f]\(ANSICode.reset) Favorite   \(ANSICode.lime)[/]\(ANSICode.reset) Filter"
+        out += "\(ANSICode.lime)[Enter]\(ANSICode.reset) Play   \(ANSICode.lime)[f]\(ANSICode.reset) Favorite   \(ANSICode.lime)[/]\(ANSICode.reset) Search"
     }
 }

@@ -20,36 +20,36 @@ final class SpaceInTextCaptureTests: XCTestCase {
         for c in s { _ = handle(.char(c)) }
     }
 
-    // MARK: RadioScene — `a` add/search box
+    // MARK: RadioScene — `a` add-by-URL box
 
     func testRadioAddCaptureSpace() {
         let tmpPath = NSTemporaryDirectory() + "music-test-stations-\(UUID().uuidString).json"
         let store = StationStore(path: tmpPath)
         let scene = RadioScene(store: store, catalog: nil)
 
-        _ = scene.handle(.char("a"))               // enter add/search mode
+        _ = scene.handle(.char("a"))               // enter add-by-URL mode
         type("radio", into: scene.handle)
         _ = scene.handle(.space)
         type("4", into: scene.handle)
 
         let out = scene.render(frame: frame, snapshot: snapshot)
-        XCTAssertTrue(out.contains("radio 4"), "expected add/search box to contain a literal space, got: \(out)")
+        XCTAssertTrue(out.contains("radio 4"), "expected add box to contain a literal space, got: \(out)")
     }
 
-    // MARK: RadioScene — `/` filter box
+    // MARK: RadioScene — `/` search box
 
-    func testRadioFilterCaptureSpace() {
+    func testRadioSearchCaptureSpace() {
         let tmpPath = NSTemporaryDirectory() + "music-test-stations-\(UUID().uuidString).json"
         let store = StationStore(path: tmpPath)
         let scene = RadioScene(store: store, catalog: nil)
 
-        _ = scene.handle(.char("/"))                // enter filter mode
+        _ = scene.handle(.char("/"))                // enter search mode
         type("deep", into: scene.handle)
         _ = scene.handle(.space)
         type("house", into: scene.handle)
 
         let out = scene.render(frame: frame, snapshot: snapshot)
-        XCTAssertTrue(out.contains("deep house"), "expected filter box to contain a literal space, got: \(out)")
+        XCTAssertTrue(out.contains("deep house"), "expected search box to contain a literal space, got: \(out)")
     }
 
     // MARK: LibraryScene — `/` filter box
