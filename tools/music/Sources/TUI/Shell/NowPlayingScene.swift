@@ -23,6 +23,21 @@ func continuationAction(for key: KeyPress) -> ContinuationAction? {
     }
 }
 
+/// Width of the Now tab's two-pane left column (art + metadata + control
+/// grid), in columns. Floors at 44 — the pre-existing width at the twoPane
+/// threshold (frameWidth 92), so a narrow-but-two-pane terminal doesn't lose
+/// any Up Next room it had before — and scales up to 54, the hero tabs' width
+/// (Library/Playlists/Radio, since the 3.6.0 hero-size fix), by frameWidth
+/// 180. Wide terminals (e.g. the user's 214) land at the cap, so Now's art
+/// matches every other tab's exactly. Pure; one-pane mode (frameWidth < 92)
+/// doesn't call this — it keeps `frame.width - 6`.
+func nowPlayingLeftWidth(frameWidth: Int) -> Int {
+    let minWidth = 92.0, maxWidth = 180.0
+    let floorW = 44.0, capW = 54.0
+    let t = min(1.0, max(0.0, (Double(frameWidth) - minWidth) / (maxWidth - minWidth)))
+    return Int((floorW + (capW - floorW) * t).rounded())
+}
+
 final class NowPlayingScene: Scene {
     let id: SceneID = .nowPlaying
     let tabTitle = "Now"
@@ -217,19 +232,38 @@ final class NowPlayingScene: Scene {
         // right = Up Next list. Narrow falls back to stacked (art+meta, list below).
         let twoPane = frame.width >= 92
         let leftX = 3
-        let leftW = twoPane ? 44 : (frame.width - 6)
+        let leftW = twoPane ? nowPlayingLeftWidth(frameWidth: frame.width) : (frame.width - 6)
         let listBottom = frame.bodyY + frame.bodyHeight - 1
 
         // --- Left pane: large album art ---
-        // The art is rendered at a fixed 44 columns; below ~50 columns the
-        // chafa lines wrap and corrupt the whole frame — skip art entirely.
-        let artLines = frame.width >= 52 ? snapshot.artLines : []
-        // Reserve room below the art for metadata (~7 rows) + the control grid (~6).
-        let artRows = min(artLines.count, max(0, frame.bodyHeight - 13))
-        let gw = 44   // same cell rect the lines path uses (extraction is fixed at 44x22)
+        // Art is skipped entirely below ~50 columns: the chafa/mono fallback
+        // is extracted upstream (PlaybackPoller) at a fixed 44 columns (see
+        // the `gw` comment below), and drawing those lines on a narrower
+        // frame would wrap into the next row and corrupt the whole screen.
+        let showArt = frame.width >= 52
+        let artLines = showArt ? snapshot.artLines : []
+        // Reserved vertical space for art: metadata (~7 rows) + the control
+        // grid (~6) need the rest of bodyHeight. Deliberately NOT derived from
+        // artLines.count — that was the void bug: a no-art track has
+        // artLines == [], which collapsed this to 0 and skipped both the art
+        // AND its layout reservation, instead of falling to the same gradient
+        // placeholder every other tab shows. The reservation now holds
+        // regardless of content so the layout below never jumps depending on
+        // whether the current track happens to have artwork.
+        let artRows = showArt ? max(0, frame.bodyHeight - 13) : 0
+        // Kitty's bound: matches the (now width-adaptive) left column in
+        // two-pane mode, same as the hero panes (gw == the pane's own width).
+        // One-pane keeps the original fixed rect. The chafa/mono lines path
+        // can't follow this — PlaybackPoller extracts it upstream at a
+        // hardcoded 44x22 (currentTrackArtLines(width: 44, height: 22)), on a
+        // background poller thread that doesn't know the render width. That's
+        // fine: kitty places a PNG and stretches to whatever rect it's given;
+        // the lines path below prints pre-rendered text at however wide it
+        // was extracted, unaffected by gw.
+        let gw = twoPane ? leftW : 44
         var kittyID: UInt32? = nil
         var kittyTransmit: String? = nil
-        if kittyEnabled, frame.width >= 52, artRows > 0, let path = snapshot.artPath {
+        if kittyEnabled, showArt, artRows > 0, let path = snapshot.artPath {
             let id = kittyImageID(forKey: path + np.track)
             if let escape = kittyTransmitFor(id: id, path: path) {
                 kittyID = id
@@ -254,11 +288,28 @@ final class NowPlayingScene: Scene {
                 out += ANSICode.moveTo(row: frame.bodyY, col: leftX) + kittyPlaceEscape(id: id, cols: pc, rows: pr)
                 lastPlaced = current
             }
-        } else {
+        } else if !artLines.isEmpty {
             if let last = lastPlaced { out += kittyDeleteEscape(id: last.id); lastPlaced = nil }
-            for i in 0..<artRows {
+            // Never draw more than reserved — chafa may return fewer rows
+            // than requested (letterboxed), never more. Anything left over
+            // stays blank: render() clears the whole body up front.
+            let linesRows = min(artLines.count, artRows)
+            for i in 0..<linesRows {
                 out += ANSICode.moveTo(row: frame.bodyY + i, col: leftX) + "\(artLines[i])\(ANSICode.reset)"
             }
+        } else if showArt {
+            // No usable art for this track (e.g. zero `artworks`, like "Push
+            // It Along") — the same gradient placeholder the heroes show,
+            // squared to the exact rect real art would occupy so the layout
+            // doesn't jump between a track with art and one without.
+            if let last = lastPlaced { out += kittyDeleteEscape(id: last.id); lastPlaced = nil }
+            let (pc, pr) = kittySquareRect(maxCols: gw, maxRows: artRows, cellW: frame.cellW, cellH: frame.cellH)
+            let gradient = gradientBlock(name: np.track + np.artist, width: pc, height: pr)
+            for (i, line) in gradient.enumerated() {
+                out += ANSICode.moveTo(row: frame.bodyY + i, col: leftX) + line
+            }
+        } else {
+            if let last = lastPlaced { out += kittyDeleteEscape(id: last.id); lastPlaced = nil }
         }
 
         // --- Left pane: metadata below the art ---
