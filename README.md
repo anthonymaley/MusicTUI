@@ -384,7 +384,11 @@ Under the track progress is a **control grid** (Shuffle / Order / Repeat / Geniu
 
 **Library tab** (needs the Apple Music user token) — browse your library in three sub-views, **Artists · Albums · Songs** (opens on Artists), switched with `[`/`]`. `Enter` opens an album's tracks or drills Artist → their albums → tracks; `p` plays and `s` shuffles the focused item (albums/artists play as an app-owned queue — a scoped, navigable Up Next that stops at the album's end; needs Autoplay ∞ off). `/` filters as you type. On the Artists list, `a` cycles a track-count filter — **All → 12″/EP → Albums** — which cuts the bloat Apple's library-artists list carries (every artist with any library track, even one dragged in by a single playlist song) and separates 12″s/EPs from full-album deep cuts; drilling into an artist shows only that tier's albums. The first activation each session paints instantly from a cache, revalidated in the background. The focused album shows its real cover art — true pixels on kitty-protocol terminals (iTerm2 3.5+, Kitty, WezTerm, Ghostty), chafa half-blocks elsewhere; fetched once, cached on disk.
 
+![Library](media/library.png)
+
 **Radio tab** — **Favorites · Live · Personal**, switched with `[`/`]` (opens on Favorites, which needs no token — it plays straight from disk; Live and Personal need a developer token to load). `j`/`k` or arrows navigate, `Enter` (or `→`) plays, `f` favorites/unfavorites the selected station. `/` searches the catalog — hits land in the list, `f` favorites one, `Esc` clears back to your sub-view. `a` adds a station by URL: paste a share URL from music.apple.com (or the Music app's share menu) to favorite it directly; anything that isn't a URL gets redirected to `/` instead of being guessed at. Live stations show a `LIVE` badge instead of a progress bar — a livestream has no duration. Favorites are stored locally at `~/.config/music/stations.json` and don't sync to other devices. Apple's station search is shallow (5-7 results, no pagination) and misses real stations outright — it can't find BBC Radio 1 by name or even by its own catalog id, though the station plays perfectly by URL. Pasting a URL always works; search sometimes doesn't.
+
+![Radio](media/radio.png)
 
 ## Status Line
 

@@ -4,10 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>MusicTUI: an Apple Music TUI for macOS</title>
-<meta name="description" content="Free, open-source Apple Music TUI + CLI for macOS: multi-room AirPlay with route verification, library browsing with real cover art, a venue equalizer, and natural-language control from Claude Code.">
+<meta name="description" content="Free, open-source Apple Music TUI + CLI for macOS: multi-room AirPlay with route verification, library browsing with real cover art, radio stations, a venue equalizer, and natural-language control from Claude Code.">
 <link rel="canonical" href="https://musictui.com/">
 <meta property="og:title" content="MusicTUI: an Apple Music TUI for macOS">
-<meta property="og:description" content="Free, open-source Apple Music TUI + CLI for macOS: multi-room AirPlay with route verification, library browsing with real cover art, a venue equalizer, and natural-language control from Claude Code.">
+<meta property="og:description" content="Free, open-source Apple Music TUI + CLI for macOS: multi-room AirPlay with route verification, library browsing with real cover art, radio stations, a venue equalizer, and natural-language control from Claude Code.">
 <script type="application/ld+json">
 {
   "@context": "https://schema.org",
@@ -138,7 +138,7 @@ a:hover{color:var(--accent);}
         Claude Skill · CLI · TUI · macOS
       </div>
       <h1 class="hero" style="margin:0;font-size:56px;line-height:1.05;font-weight:800;letter-spacing:-.02em;color:#fff;max-width:820px;">Your whole music library, in a <span style="color:var(--accent);">real terminal.</span></h1>
-      <p style="margin:24px auto 0;font-size:17.5px;line-height:1.6;color:var(--muted);max-width:600px;">An interactive TUI for Apple Music on macOS: Now, Playlists, Speakers, Library. Verified multi-room playback, a venue equalizer, live now-playing. Prefer words? Drive every bit of it from Claude Code.</p>
+      <p style="margin:24px auto 0;font-size:17.5px;line-height:1.6;color:var(--muted);max-width:600px;">An interactive TUI for Apple Music on macOS: Now, Library, Playlists, Radio, Speakers. Verified multi-room playback, radio stations, a venue equalizer, live now-playing. Prefer words? Drive every bit of it from Claude Code.</p>
       <div style="display:flex;flex-wrap:wrap;align-items:center;justify-content:center;gap:14px;margin-top:32px;">
         <a class="btn" href="https://github.com/anthonymaley/musictui">View on GitHub <span>↗</span></a>
         <div style="display:inline-flex;align-items:center;gap:12px;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px 16px;font-size:14px;">
@@ -155,7 +155,7 @@ a:hover{color:var(--accent);}
         <span class="d3" style="width:10px;height:10px;border-radius:50%;display:inline-block;"></span>
         <span style="margin-left:8px;color:var(--dim);font-size:12px;">music — the interactive TUI</span>
       </div>
-      <video autoplay loop muted playsinline preload="metadata" poster="assets/poster.webp" style="display:block;width:100%;height:auto;" aria-label="Demo of the music TUI: browsing playlists, mixing speakers, filtering the library, and playing an album">
+      <video autoplay loop muted playsinline preload="metadata" poster="assets/poster.webp" style="display:block;width:100%;height:auto;" aria-label="Demo of the music TUI: album art on the Now tab, browsing the library and playlists, favoriting radio stations, and mixing AirPlay speakers with venue EQ presets">
         <source src="assets/demo.mp4" type="video/mp4">
       </video>
     </div>
@@ -210,12 +210,16 @@ a:hover{color:var(--accent);}
         <figcaption><div class="ft">Library</div><div class="fd">Browse Artists, Albums, and Songs. Drill into an artist, filter 12″s from LPs, and play an album as its own queue that stops when the record ends.</div></figcaption>
       </figure>
       <figure>
-        <img src="assets/tab-speakers.webp" alt="Speakers tab: AirPlay outputs with per-speaker volume bars" loading="lazy">
-        <figcaption><div class="ft">Speakers</div><div class="fd">Toggle AirPlay outputs, mix per-speaker volume with ←→, and see routes verified against network truth.</div></figcaption>
-      </figure>
-      <figure>
         <img src="assets/tab-playlists.webp" alt="Playlists tab: playlist browser with live preview" loading="lazy">
         <figcaption><div class="ft">Playlists</div><div class="fd">Instant-highlight browsing, type-to-filter, and pin any playlist to Now to replay tracks while playback continues.</div></figcaption>
+      </figure>
+      <figure>
+        <img src="assets/tab-radio.webp" alt="Radio tab: favorite stations plus the live Apple Music and BBC lineup" loading="lazy">
+        <figcaption><div class="ft">Radio</div><div class="fd">Favorite stations, the live Apple Music lineup, and your personal station. Search the catalog, or paste any station's URL when search comes up short.</div></figcaption>
+      </figure>
+      <figure style="grid-column:1/-1;">
+        <img src="assets/tab-speakers.webp" alt="Speakers tab: AirPlay outputs with per-speaker volume bars and venue EQ presets" loading="lazy">
+        <figcaption><div class="ft">Speakers</div><div class="fd">Toggle AirPlay outputs, mix per-speaker volume with ←→, pick a venue EQ preset, and see routes verified against network truth.</div></figcaption>
       </figure>
     </div>
   </section>
@@ -259,7 +263,7 @@ a:hover{color:var(--accent);}
           <div style="font-size:15px;color:#fff;font-weight:600;">CLI + TUI</div>
           <div style="font-size:13px;color:var(--accent);">$ music now</div>
         </div>
-        <div style="color:var(--muted);font-size:13.5px;line-height:1.6;min-height:60px;">Terminal commands and an interactive tabbed shell: Now, Playlists, Speakers, Library. Scriptable and fast, no tokens.</div>
+        <div style="color:var(--muted);font-size:13.5px;line-height:1.6;min-height:60px;">Terminal commands and an interactive tabbed shell: Now, Library, Playlists, Radio, Speakers. Scriptable and fast, no tokens.</div>
         <div style="display:flex;gap:8px;margin-top:16px;"><span class="tag">setup: build CLI</span><span class="tag good">tokens: none</span></div>
       </div>
       <div class="waycard">
