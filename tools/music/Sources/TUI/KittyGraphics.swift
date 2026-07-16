@@ -35,10 +35,25 @@ private func iTermVersionAtLeast(_ version: String, major: Int, minor: Int) -> B
 
 /// Stable nonzero image id for an artwork cache key. FNV-1a 32-bit over the
 /// UTF-8 bytes; the protocol reserves id 0, so a 0 result is bumped to 1
-/// (design doc sharp edge #3).
+/// (design doc sharp edge #3). Appropriate when `key` already uniquely and
+/// stably identifies the image content (e.g. ArtworkStore's on-disk cache
+/// keys, which are never overwritten with different content) — see
+/// `kittyImageID(forBytes:)` for the case where the caller can't guarantee
+/// that and needs the id to reflect the actual bytes instead.
 func kittyImageID(forKey key: String) -> UInt32 {
+    kittyImageID(forBytes: Data(key.utf8))
+}
+
+/// Stable nonzero image id for raw image bytes — same FNV-1a algorithm as
+/// `kittyImageID(forKey:)`, over the content directly rather than a
+/// caller-supplied label. Use this whenever the label (a path, a track name)
+/// could go stale relative to what's actually in the file; the id then
+/// reflects reality instead of trusting the label (see
+/// NowPlayingScene.kittyIdentity(forPath:) for the bug this fixed — a poller
+/// temp path whose bytes could change without the label changing).
+func kittyImageID(forBytes data: Data) -> UInt32 {
     var hash: UInt32 = 0x811c_9dc5          // FNV offset basis
-    for byte in key.utf8 {
+    for byte in data {
         hash ^= UInt32(byte)
         hash = hash &* 0x0100_0193          // FNV prime
     }

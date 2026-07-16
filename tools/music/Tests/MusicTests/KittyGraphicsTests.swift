@@ -65,6 +65,42 @@ final class KittyGraphicsTests: XCTestCase {
         XCTAssertNotEqual(kittyImageID(forKey: "l_abc123"), kittyImageID(forKey: "p_xyz"))
     }
 
+    // MARK: - kittyImageID(forBytes:) — the content-derived id (Now tab bug fix)
+
+    /// forKey is now just forBytes over the UTF-8 encoding — same algorithm,
+    /// so a string key and its own bytes must agree.
+    func testImageIDForBytesAgreesWithForKeyOverUTF8() {
+        let key = "l_abc123"
+        XCTAssertEqual(kittyImageID(forBytes: Data(key.utf8)), kittyImageID(forKey: key))
+    }
+
+    func testImageIDForBytesIsDeterministic() {
+        let data = Data([0x89, 0x50, 0x4E, 0x47, 0x01, 0x02, 0x03])
+        XCTAssertEqual(kittyImageID(forBytes: data), kittyImageID(forBytes: data))
+    }
+
+    func testImageIDForBytesDiffersWhenBytesDiffer() {
+        let a = Data([1, 2, 3, 4])
+        let b = Data([1, 2, 3, 5])
+        XCTAssertNotEqual(kittyImageID(forBytes: a), kittyImageID(forBytes: b))
+    }
+
+    /// The specific invariant the Now tab's wrong-album bug depended on: the
+    /// id must track the BYTES, not a caller-supplied label. Two different
+    /// "files" (simulated as byte blobs) at what would be the same path/label
+    /// must still produce different ids if their content differs — this is
+    /// what makes a stale read self-correcting instead of a permanent
+    /// mismatch once cached.
+    func testImageIDForBytesReflectsContentNotALabel() {
+        let albumA = Data("fake-bytes-for-low-end-theory".utf8)
+        let albumB = Data("fake-bytes-for-peoples-instinctive-travels".utf8)
+        XCTAssertNotEqual(kittyImageID(forBytes: albumA), kittyImageID(forBytes: albumB))
+    }
+
+    func testImageIDForBytesIsNonzeroForEmptyData() {
+        XCTAssertNotEqual(kittyImageID(forBytes: Data()), 0)
+    }
+
     // MARK: - imageDataToPNG
 
     func testImageDataToPNGConvertsJPEGFixture() {

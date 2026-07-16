@@ -47,6 +47,37 @@ final class PlaybackPoller {
     // the extract+chafa round-trip entirely; empty results are cached too so an
     // artless album isn't re-extracted on every track change.
     private var artCache: [String: [String]] = [:]
+    // Raw-bytes temp path per album|artist, parallel to artCache — a lines
+    // cache HIT must still resolve to the CORRECT album's raw file for the
+    // kitty path, not whatever a single shared filename last happened to
+    // hold (that was the wrong-album-pinned-forever bug: revisiting an
+    // already-cached album skipped extraction entirely, so the kitty path
+    // read stale bytes left over from a totally different album). Absent key
+    // means "no artwork for this album" (extraction returned nil), same
+    // meaning as an empty artCache entry.
+    private var artPathCache: [String: String] = [:]
+
+    /// Deterministic per-album temp path so two different albums never share
+    /// (and one can never silently overwrite the other's) raw art bytes.
+    /// Hex-hashed rather than sanitized-verbatim to avoid collisions between
+    /// album/artist pairs that differ only in punctuation. Internal (not
+    /// `private`) so it's directly unit-testable — pure, no I/O.
+    func tempArtPath(for artKey: String) -> String {
+        "/tmp/music-now-art-\(String(format: "%08x", kittyImageID(forKey: artKey))).dat"
+    }
+
+    /// Delete every per-album art temp file this poller has written this
+    /// session. Called on graceful TUI exit (see Shell.swift) so /tmp doesn't
+    /// accumulate one file per distinct album played over a long session —
+    /// and also whenever the 64-entry cache flushes below, so a very long
+    /// session doesn't leak files for albums that have already been evicted
+    /// from artPathCache. Safe to call from the main thread once the poller
+    /// thread is confirmed stopped (stop() has returned).
+    func cleanupArtFiles() {
+        for path in artPathCache.values {
+            try? FileManager.default.removeItem(atPath: path)
+        }
+    }
 
     init(store: NowPlayingStore, backend: AppleScriptBackend, appQueue: AppQueueStore, intervalMs: UInt32 = 1000) {
         self.store = store
@@ -128,11 +159,15 @@ final class PlaybackPoller {
                 let artKey = "\(np.album)\u{0}\(np.artist)"
                 let cachedArt = artCache[artKey]
                 artLines = cachedArt ?? []
-                // A cache hit trusts the existing artPath (no fresh extraction
-                // runs below, so the temp file is unchanged); a miss clears it
-                // so the kitty path doesn't show stale bytes while the
-                // extraction below is still in flight.
-                artPath = cachedArt != nil ? artPath : nil
+                // Look up THIS album's own temp path — never the leftover
+                // value from whatever album was extracted most recently. A
+                // cache hit means extraction won't run below, so artPathCache
+                // must already hold the right answer (set the one time this
+                // album was actually extracted, at a path unique to it); a
+                // genuine miss (first sight of this album) clears it so the
+                // kitty path doesn't show anything while extraction below is
+                // still in flight.
+                artPath = cachedArt != nil ? artPathCache[artKey] : nil
                 store.write(snapshot(outcome: .active(np)))
 
                 // When the app owns the queue (a playlist track was picked), the
@@ -157,11 +192,16 @@ final class PlaybackPoller {
                     }
                 }
                 if cachedArt == nil {
-                    let extracted = currentTrackArtLines(width: 44, height: 22)
+                    let extracted = currentTrackArtLines(width: 44, height: 22, path: tempArtPath(for: artKey))
                     artLines = extracted.lines
                     artPath = extracted.path
-                    if artCache.count > 64 { artCache.removeAll() }
+                    if artCache.count > 64 {
+                        cleanupArtFiles()
+                        artCache.removeAll()
+                        artPathCache.removeAll()
+                    }
                     artCache[artKey] = artLines
+                    artPathCache[artKey] = extracted.path
                 }
 
                 // Queue-end detection: prev playlist's last track ended naturally

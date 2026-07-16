@@ -189,25 +189,50 @@ func renderArtHero(artBlock: ArtBlock?, gradientSeedText: String,
                    into out: inout String) -> (y: Int, lastPlaced: ArtPlacement?) {
     var y = startY
     var placed = lastPlaced
+    // The square-equivalent rect every branch below must agree on: kitty
+    // stretches to it, the placeholder is drawn at exactly it, and chafa
+    // (below) is now capped/padded to it too. Sharing one computation across
+    // all three branches is what guarantees `y` lands in the same place
+    // regardless of which art path actually rendered (the ONLY reason `gh`
+    // used to be the advance amount — see the historical note below).
+    let (pc, pr) = kittySquareRect(maxCols: gw, maxRows: gh, cellW: cellW, cellH: cellH)
     switch artBlock {
     case .lines(let art):
         if let last = placed { out += kittyDeleteEscape(id: last.id); placed = nil }
-        // Pad/cap to exactly gh rows so the hero's height never shifts and
-        // stale gradient rows are overwritten (chafa may emit fewer rows).
+        // Pad/cap to exactly `pr` rows — the SAME square-equivalent height
+        // kitty/the placeholder use, not the full reserved `gh` box. Chafa
+        // was asked to fill gw x gh and, using its own (uncorrected, ~1:2)
+        // font-ratio guess, typically returns MORE real rows than `pr` (a
+        // real square cover at gw=54/gh=34 on this terminal's measured
+        // 14x34 cells comes back ~27-28 rows, not 22) — so this genuinely
+        // crops the bottom of the image rather than just trimming blank
+        // padding. That's a deliberate trade: capping to `pr` keeps the
+        // loading-placeholder -> loaded-art transition jump-free (both draw
+        // exactly `pr` rows) and keeps every art path's footprint the same
+        // shape, at the cost of a modest crop on non-kitty terminals. Was:
+        // padded/capped to `gh`, which never left a gap for THIS branch on
+        // its own (a full gh box was always drawn, real content or blank)
+        // but only stayed gap-free by coincidence, before the .kitty/.none
+        // branches below started under-drawing gh's reserved height.
         let blank = String(repeating: " ", count: gw)
-        let rows = art.prefix(gh) + Array(repeating: blank, count: max(0, gh - art.count))
+        let rows = art.prefix(pr) + Array(repeating: blank, count: max(0, pr - art.count))
         for line in rows {
             out += ANSICode.moveTo(row: y, col: x) + line + ANSICode.reset
             y += 1
         }
     case .kitty(let id, let transmit):
-        let (pc, pr) = kittySquareRect(maxCols: gw, maxRows: gh, cellW: cellW, cellH: cellH)
         let current: ArtPlacement = (id: id, row: y, col: x, cols: pc, rows: pr)
         if let last = placed, last == current {
             // Unchanged: the placement from a prior frame is still on
             // screen — emit nothing (spaces would flicker under the image).
         } else {
             if let last = placed { out += kittyDeleteEscape(id: last.id) }
+            // Erase the FULL reserved box (gh), not just the pr rows the
+            // image actually occupies — erasing more than is drawn is safe
+            // (the caller's next draw, right after `y` advances by `pr`
+            // below, reuses rows pr..<gh for whatever comes next); erasing
+            // less than gh would risk leaving a stale placement-era row
+            // behind if a resize ever shrinks pr between frames.
             let blank = String(repeating: " ", count: gw)
             for i in 0..<gh {
                 out += ANSICode.moveTo(row: y + i, col: x) + blank
@@ -216,21 +241,23 @@ func renderArtHero(artBlock: ArtBlock?, gradientSeedText: String,
             out += ANSICode.moveTo(row: y, col: x) + kittyPlaceEscape(id: id, cols: pc, rows: pr)
             placed = current
         }
-        y += gh
+        // Advance by what was actually drawn (pr), not the full reserved
+        // box (gh) — advancing by gh here left a dead gap between the cover
+        // and everything below it once gh (the hero's now-unclamped height)
+        // grew past pr (the art's true square-clamped height).
+        y += pr
     case .none:
         if let last = placed { out += kittyDeleteEscape(id: last.id); placed = nil }
         // Same square rect a real kitty cover would occupy — a real cover and
         // the placeholder must be pixel-for-pixel the same shape (see the
-        // `.kitty` case above). y still advances the full `gh` reserved by
-        // the caller's layout, matching the `.kitty`/`.lines` cases, so the
-        // metadata drawn below the art doesn't shift depending on which of
-        // the three art paths rendered.
-        let (pc, pr) = kittySquareRect(maxCols: gw, maxRows: gh, cellW: cellW, cellH: cellH)
+        // `.kitty` case above). `y` now advances by `pr`, same as `.kitty`
+        // and `.lines`, so the metadata drawn below the art doesn't shift
+        // depending on which of the three art paths rendered.
         let gradient = gradientBlock(name: gradientSeedText, width: pc, height: pr)
         for (i, line) in gradient.enumerated() {
             out += ANSICode.moveTo(row: y + i, col: x) + line
         }
-        y += gh
+        y += pr
     }
     return (y, placed)
 }

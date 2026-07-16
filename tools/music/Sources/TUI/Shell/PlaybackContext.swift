@@ -69,13 +69,14 @@ func pollContextQueue(np: NowPlayingState, backend: AppleScriptBackend = AppleSc
 
 /// Extract the current track's album art and render it to ANSI lines at the
 /// given size (chafa true-color if available, CoreGraphics block fallback).
-/// Empty lines + nil path when no artwork is available. The path is the temp
-/// file `extractArtwork()` wrote to — handed back alongside the lines (one
-/// AppleScript round-trip, not two) so the Now tab can also transmit the raw
-/// bytes via the kitty graphics protocol.
-func currentTrackArtLines(width: Int, height: Int) -> (lines: [String], path: String?) {
-    guard let path = extractArtwork() else { return ([], nil) }
-    return (artworkToAscii(path: path, width: width, height: height), path)
+/// Empty lines + nil path when no artwork is available. `path` is the
+/// caller-chosen (per-album, per PlaybackPoller) temp file `extractArtwork`
+/// writes to — handed back alongside the lines (one AppleScript round-trip,
+/// not two) so the Now tab can also transmit the raw bytes via the kitty
+/// graphics protocol.
+func currentTrackArtLines(width: Int, height: Int, path: String) -> (lines: [String], path: String?) {
+    guard let written = extractArtwork(to: path) else { return ([], nil) }
+    return (artworkToAscii(path: written, width: width, height: height), written)
 }
 
 /// Strip internal temp-playlist prefixes so the UI shows the real source name

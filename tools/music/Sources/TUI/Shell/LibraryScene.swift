@@ -948,13 +948,20 @@ final class LibraryScene: Scene {
                 self.inboxLock.lock(); self.artDirty = true; self.inboxLock.unlock()
             }
         }
+        // Square-equivalent rect every branch below must agree on — see
+        // ArtworkStore.renderArtHero's identical computation (this hero is a
+        // separate copy of that ladder, not a call to the shared function).
+        let (pc, pr) = kittySquareRect(maxCols: gw, maxRows: gh, cellW: cellW, cellH: cellH)
         switch artBlock {
         case .lines(let art):
             if let last = lastPlaced { out += kittyDeleteEscape(id: last.id); lastPlaced = nil }
-            // Pad/cap to exactly gh rows so the hero's height never shifts and
-            // stale gradient rows are overwritten (chafa may emit fewer rows).
+            // Pad/cap to exactly `pr` rows (the square-equivalent height
+            // kitty/the placeholder use), not the full reserved `gh` box —
+            // see ArtworkStore.renderArtHero's `.lines` case for why this
+            // crops real chafa content on non-kitty terminals rather than
+            // just trimming blank padding, and why that trade is worth it.
             let blank = String(repeating: " ", count: gw)
-            let rows = art.prefix(gh) + Array(repeating: blank, count: max(0, gh - art.count))
+            let rows = art.prefix(pr) + Array(repeating: blank, count: max(0, pr - art.count))
             for line in rows {
                 out += ANSICode.moveTo(row: y, col: z.heroX) + line + ANSICode.reset
                 y += 1
@@ -963,13 +970,15 @@ final class LibraryScene: Scene {
             // Covers are square. Kitty placement STRETCHES to the rect (chafa
             // letterboxes), so clamp to square-equivalent IN PIXELS for the
             // measured cell size, or a narrow hero stretches art tall.
-            let (pc, pr) = kittySquareRect(maxCols: gw, maxRows: gh, cellW: cellW, cellH: cellH)
             let current = (id: id, row: y, col: z.heroX, cols: pc, rows: pr)
             if let last = lastPlaced, last == current {
                 // Unchanged: the placement from a prior frame is still on
                 // screen — emit nothing (spaces would flicker under the image).
             } else {
                 if let last = lastPlaced { out += kittyDeleteEscape(id: last.id) }
+                // Erase the full reserved box (gh) — safe even though only
+                // `pr` rows are actually placed; erasing less than gh would
+                // risk a stale row if a resize shrinks pr between frames.
                 let blank = String(repeating: " ", count: gw)
                 for i in 0..<gh {
                     out += ANSICode.moveTo(row: y + i, col: z.heroX) + blank
@@ -978,19 +987,21 @@ final class LibraryScene: Scene {
                 out += ANSICode.moveTo(row: y, col: z.heroX) + kittyPlaceEscape(id: id, cols: pc, rows: pr)
                 lastPlaced = current
             }
-            y += gh
+            // Advance by what was actually drawn (pr), not the reserved box
+            // (gh) — advancing by gh left a dead gap once gh (the hero's
+            // now-unclamped height) grew past pr.
+            y += pr
         case .none:
             if let last = lastPlaced { out += kittyDeleteEscape(id: last.id); lastPlaced = nil }
             // Same square rect a real kitty cover would occupy — see the
-            // `.kitty` case above. y still advances by the full `gh` so the
-            // track-count/hint lines below don't shift depending on which
-            // art path rendered.
-            let (pc, pr) = kittySquareRect(maxCols: gw, maxRows: gh, cellW: cellW, cellH: cellH)
+            // `.kitty` case above. y now advances by `pr`, same as `.kitty`
+            // and `.lines`, so the track-count/hint lines below don't shift
+            // depending on which art path rendered.
             let gradient = gradientBlock(name: a.name + a.artist, width: pc, height: pr)
             for (i, line) in gradient.enumerated() {
                 out += ANSICode.moveTo(row: y + i, col: z.heroX) + line
             }
-            y += gh
+            y += pr
         }
         y += 1
 

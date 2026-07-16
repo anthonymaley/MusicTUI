@@ -213,9 +213,83 @@ final class ArtworkStoreTests: XCTestCase {
         XCTAssertEqual(out.components(separatedBy: ANSICode.reset).count - 1, pr,
                        "expected exactly \(pr) rendered gradient rows (one reset each), not gh (34)")
 
-        // y still advances by the FULL gh (34), matching the .kitty/.lines
-        // paths, so the hero's metadata below the art doesn't shift depending
-        // on which art path rendered.
-        XCTAssertEqual(result.y, 1 + 34)
+        // y advances by pr (22), NOT the full reserved gh (34) — that was the
+        // dead-gap bug: gh grew to 34 when the hero panes were unclamped to
+        // fill the pane, but the placeholder (and a real kitty cover) only
+        // ever occupy pr rows, so advancing by gh left 12 dead rows between
+        // the art and everything below it.
+        XCTAssertEqual(result.y, 1 + pr)
+    }
+
+    // MARK: - renderArtHero: all three art paths advance y by the same amount
+    // (pr), so the metadata below never jumps depending on which art path
+    // rendered — the dead-gap bug and its fix, for .kitty and .lines too.
+
+    func testKittyAdvancesYByPrNotGh() {
+        var out = ""
+        let (_, pr) = kittySquareRect(maxCols: 54, maxRows: 34, cellW: 14, cellH: 34)
+        XCTAssertEqual(pr, 22, "sanity")
+        let result = renderArtHero(artBlock: .kitty(id: 42, transmit: "ESCAPE"),
+                                   gradientSeedText: "Test",
+                                   gw: 54, gh: 34, x: 1, y: 1,
+                                   cellW: 14, cellH: 34,
+                                   lastPlaced: nil, into: &out)
+        XCTAssertEqual(result.y, 1 + pr, "kitty must advance by pr (22), not gh (34)")
+    }
+
+    func testLinesAdvancesYByPrNotGhAndCropsToIt() {
+        var out = ""
+        let (_, pr) = kittySquareRect(maxCols: 54, maxRows: 34, cellW: 14, cellH: 34)
+        // More real rows than pr (mirrors chafa's own font-ratio guess
+        // typically overshooting the terminal's true measured aspect) —
+        // confirms the .lines branch caps to pr like .kitty/.none, not gh.
+        let art = (1...30).map { "row\($0)" }
+        let result = renderArtHero(artBlock: .lines(art), gradientSeedText: "Test",
+                                   gw: 54, gh: 34, x: 1, y: 1,
+                                   cellW: 14, cellH: 34,
+                                   lastPlaced: nil, into: &out)
+        XCTAssertEqual(result.y, 1 + pr, "lines must advance by pr (22), not gh (34) or art.count (30)")
+        XCTAssertTrue(out.contains("row22"), "the pr'th real row should still be drawn")
+        XCTAssertFalse(out.contains("row23"), "rows beyond pr must be cropped, not drawn")
+    }
+
+    func testLinesPadsWithBlanksWhenShorterThanPr() {
+        var out = ""
+        let (_, pr) = kittySquareRect(maxCols: 54, maxRows: 34, cellW: 14, cellH: 34)
+        // Fewer real rows than pr (chafa genuinely letterboxed short) — the
+        // shortfall must still be blank-padded up to pr, not left as a gap,
+        // and y must still land at the same pr-based place.
+        let art = ["only one row"]
+        let result = renderArtHero(artBlock: .lines(art), gradientSeedText: "Test",
+                                   gw: 54, gh: 34, x: 1, y: 1,
+                                   cellW: 14, cellH: 34,
+                                   lastPlaced: nil, into: &out)
+        XCTAssertEqual(result.y, 1 + pr)
+        // Every row from 1 through pr got a moveTo (real content or blank
+        // padding) — nothing left undrawn inside the reserved rect.
+        for row in 1...pr {
+            XCTAssertTrue(out.contains(ANSICode.moveTo(row: row, col: 1)), "missing row \(row)")
+        }
+    }
+
+    func testAllThreeArtPathsAdvanceYIdentically() {
+        let (_, pr) = kittySquareRect(maxCols: 54, maxRows: 34, cellW: 14, cellH: 34)
+        var outNone = ""
+        let yNone = renderArtHero(artBlock: nil, gradientSeedText: "Test",
+                                  gw: 54, gh: 34, x: 1, y: 1, cellW: 14, cellH: 34,
+                                  lastPlaced: nil, into: &outNone).y
+        var outKitty = ""
+        let yKitty = renderArtHero(artBlock: .kitty(id: 7, transmit: "X"), gradientSeedText: "Test",
+                                   gw: 54, gh: 34, x: 1, y: 1, cellW: 14, cellH: 34,
+                                   lastPlaced: nil, into: &outKitty).y
+        var outLines = ""
+        let yLines = renderArtHero(artBlock: .lines(["a", "b"]), gradientSeedText: "Test",
+                                   gw: 54, gh: 34, x: 1, y: 1, cellW: 14, cellH: 34,
+                                   lastPlaced: nil, into: &outLines).y
+        XCTAssertEqual(yNone, 1 + pr)
+        XCTAssertEqual(yKitty, 1 + pr)
+        XCTAssertEqual(yLines, 1 + pr)
+        XCTAssertEqual(yNone, yKitty)
+        XCTAssertEqual(yKitty, yLines)
     }
 }

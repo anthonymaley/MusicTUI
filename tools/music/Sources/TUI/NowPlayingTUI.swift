@@ -188,8 +188,13 @@ func pollAlbumTracks(for np: NowPlayingState, backend: AppleScriptBackend = Appl
     }
 }
 
-func extractArtwork() -> String? {
-    let artPath = "/tmp/music-now-art.dat"
+/// Extract the current track's artwork bytes to `artPath` (caller-supplied —
+/// see PlaybackPoller's per-album temp paths: writing every album to the SAME
+/// fixed path let a revisited album's raw bytes go stale relative to
+/// whatever album was extracted most recently, since a lines-cache hit skips
+/// re-extraction; a stable per-album path makes that staleness impossible
+/// instead of just less likely).
+func extractArtwork(to artPath: String) -> String? {
     let backend = AppleScriptBackend()
     guard let result = try? syncRun({
         try await backend.runMusic("""

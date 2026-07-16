@@ -112,6 +112,10 @@ func runShell() {
     DispatchQueue.global().async { sweepQueuePlaylists(backend: backend) }
     defer {
         poller.stop()
+        // Delete this session's per-album art temp files (/tmp/music-now-art-*.dat)
+        // now that the poller thread is confirmed stopped — a graceful exit
+        // shouldn't leak one file per distinct album played.
+        poller.cleanupArtFiles()
         // Free every transmitted image, alongside the terminal restore below,
         // so no image ghosts survive into scrollback (design doc sharp edge #4).
         if kittyEnabled {

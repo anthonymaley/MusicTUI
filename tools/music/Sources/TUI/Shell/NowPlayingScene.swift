@@ -95,9 +95,13 @@ final class NowPlayingScene: Scene {
     // first sight of an id (file read + PNG conversion) and reused on every
     // later sighting of the same id. A resolved failure caches `nil` so a
     // broken file isn't re-read every frame; `transmitCache[id]` absent means
-    // "never attempted" (see kittyTransmitFor's `if let` unwrap of the outer
+    // "never attempted" (see kittyIdentity's `if let` unwrap of the outer
     // Optional for how this collapses cleanly to a single `String?`).
     private var transmitCache: [UInt32: String?] = [:]
+    // path -> content-hash id, resolved once per path and reused thereafter
+    // (see kittyIdentity(forPath:) for why the id must come from the file's
+    // BYTES, not a caller-supplied label like the track name).
+    private var idCache: [String: UInt32] = [:]
 
     init(backend: AppleScriptBackend, appQueue: AppQueueStore, status: StatusStore, actions: ActionRunner,
          kittyEnabled: Bool = false) {
@@ -110,20 +114,39 @@ final class NowPlayingScene: Scene {
 
     func artPlacementsInvalidated() { lastPlaced = nil }
 
-    /// Resolve (and cache) the transmit escape for `id`, reading `path` and
-    /// converting to PNG only the first time this id is ever seen. nil means
-    /// "no kitty art for this id" (missing/unreadable file, or PNG conversion
-    /// failure) — cached so a broken file isn't re-read every frame.
-    private func kittyTransmitFor(id: UInt32, path: String) -> String? {
-        if let cached = transmitCache[id] { return cached }
-        guard let data = FileManager.default.contents(atPath: path),
-              let png = imageDataToPNG(data) else {
+    /// Resolve (and cache) the content-derived id + transmit escape for the
+    /// artwork at `path`. The id is a hash of the file's BYTES
+    /// (`kittyImageID(forBytes:)`), not the path or track name — the prior
+    /// scheme (`kittyImageID(forKey: path + trackName)`) let a NEW track's id
+    /// get permanently associated with STALE bytes: `path` was a single
+    /// fixed poller temp file, and a track whose album was already cached
+    /// (lines-only) skipped re-extraction entirely, so a revisit read
+    /// whatever album's raw bytes the file last happened to hold and pinned
+    /// that under the new (correct-looking) id forever. PlaybackPoller now
+    /// writes each album to its own stable temp path (never overwritten by a
+    /// different album for the life of the process), so in practice this id
+    /// only needs to be computed once per distinct path — but hashing the
+    /// actual bytes rather than trusting the path is the belt-and-suspenders
+    /// invariant: if a path's content were ever wrong, the id would reflect
+    /// that content honestly instead of silently mismatching it.
+    ///
+    /// Both the id (one file read) and the PNG conversion (the expensive
+    /// part) are resolved once per path and reused on every later call for
+    /// the same path — this does NOT re-read the file every frame.
+    private func kittyIdentity(forPath path: String) -> (id: UInt32, transmit: String?)? {
+        if let id = idCache[path], let cached = transmitCache[id] {
+            return (id, cached)
+        }
+        guard let data = FileManager.default.contents(atPath: path) else { return nil }
+        let id = kittyImageID(forBytes: data)
+        idCache[path] = id
+        guard let png = imageDataToPNG(data) else {
             transmitCache.updateValue(nil, forKey: id)   // cache the failure (not a dictionary removal)
-            return nil
+            return (id, nil)
         }
         let escape = kittyTransmitEscape(id: id, png: png)
         transmitCache[id] = escape
-        return escape
+        return (id, escape)
     }
 
     // Once the user acts on an auto-detected queue-end, remember which one (by its
@@ -261,39 +284,46 @@ final class NowPlayingScene: Scene {
         // the lines path below prints pre-rendered text at however wide it
         // was extracted, unaffected by gw.
         let gw = twoPane ? leftW : 44
+        // Square-equivalent rect every branch below must agree on — same
+        // computation as the hero panes' `pc`/`pr`, computed once here since
+        // all four branches (kitty/lines/gradient/none) need to agree on how
+        // far `my` (the metadata start row) advances afterward.
+        let (artPC, artPR) = kittySquareRect(maxCols: gw, maxRows: artRows, cellW: frame.cellW, cellH: frame.cellH)
         var kittyID: UInt32? = nil
         var kittyTransmit: String? = nil
         if kittyEnabled, showArt, artRows > 0, let path = snapshot.artPath {
-            let id = kittyImageID(forKey: path + np.track)
-            if let escape = kittyTransmitFor(id: id, path: path) {
+            if let (id, escape) = kittyIdentity(forPath: path) {
                 kittyID = id
                 kittyTransmit = escape
             }
         }
         if let id = kittyID {
-            // Square-equivalent rect (in pixels, for the measured cell size):
-            // kitty stretches, chafa fits. See kittySquareRect.
-            let (pc, pr) = kittySquareRect(maxCols: gw, maxRows: artRows, cellW: frame.cellW, cellH: frame.cellH)
-            let current = (id: id, row: frame.bodyY, col: leftX, cols: pc, rows: pr)
+            let current = (id: id, row: frame.bodyY, col: leftX, cols: artPC, rows: artPR)
             if let last = lastPlaced, last == current {
                 // Unchanged: the placement from a prior frame is still on
                 // screen — emit nothing (spaces would flicker under the image).
             } else {
                 if let last = lastPlaced { out += kittyDeleteEscape(id: last.id) }
+                // Erase the full reserved box (artRows) — safe even though
+                // only artPR rows are actually placed; erasing less would
+                // risk a stale row if a resize shrinks artPR between frames.
                 let blank = String(repeating: " ", count: gw)
                 for i in 0..<artRows {
                     out += ANSICode.moveTo(row: frame.bodyY + i, col: leftX) + blank
                 }
                 out += kittyTransmit ?? ""
-                out += ANSICode.moveTo(row: frame.bodyY, col: leftX) + kittyPlaceEscape(id: id, cols: pc, rows: pr)
+                out += ANSICode.moveTo(row: frame.bodyY, col: leftX) + kittyPlaceEscape(id: id, cols: artPC, rows: artPR)
                 lastPlaced = current
             }
         } else if !artLines.isEmpty {
             if let last = lastPlaced { out += kittyDeleteEscape(id: last.id); lastPlaced = nil }
-            // Never draw more than reserved — chafa may return fewer rows
-            // than requested (letterboxed), never more. Anything left over
-            // stays blank: render() clears the whole body up front.
-            let linesRows = min(artLines.count, artRows)
+            // Cap to artPR (the square-equivalent height), not the full
+            // reserved artRows box — advancing `my` below by artRows while
+            // only drawing up to artPR left a dead gap before the track
+            // title. Chafa is extracted upstream at a fixed 44x22, already
+            // at/under artPR (22) on the user's terminal, so this cap is
+            // normally a no-op; it only bites on narrower terminals.
+            let linesRows = min(artLines.count, artPR)
             for i in 0..<linesRows {
                 out += ANSICode.moveTo(row: frame.bodyY + i, col: leftX) + "\(artLines[i])\(ANSICode.reset)"
             }
@@ -303,8 +333,7 @@ final class NowPlayingScene: Scene {
             // squared to the exact rect real art would occupy so the layout
             // doesn't jump between a track with art and one without.
             if let last = lastPlaced { out += kittyDeleteEscape(id: last.id); lastPlaced = nil }
-            let (pc, pr) = kittySquareRect(maxCols: gw, maxRows: artRows, cellW: frame.cellW, cellH: frame.cellH)
-            let gradient = gradientBlock(name: np.track + np.artist, width: pc, height: pr)
+            let gradient = gradientBlock(name: np.track + np.artist, width: artPC, height: artPR)
             for (i, line) in gradient.enumerated() {
                 out += ANSICode.moveTo(row: frame.bodyY + i, col: leftX) + line
             }
@@ -313,7 +342,11 @@ final class NowPlayingScene: Scene {
         }
 
         // --- Left pane: metadata below the art ---
-        var my = frame.bodyY + artRows + 1
+        // Advances by artPR (what was actually drawn), not artRows (the full
+        // reserved box) — advancing by artRows left a 9-row dead gap before
+        // the track title once artRows (the Now tab's now-unclamped height)
+        // grew past artPR (the art's true square-clamped height).
+        var my = frame.bodyY + artPR + 1
         let metaW = leftW
         let playIcon = np.state == "playing" ? "\u{25B6}" : "\u{23F8}"
         out += ANSICode.moveTo(row: my, col: leftX)
