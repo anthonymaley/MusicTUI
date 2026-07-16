@@ -337,7 +337,7 @@ Claude handles multi-step orchestration — searching the catalog, creating play
 
 Run bare `music` in a real terminal (not inside Claude Code — TUI requires a TTY). Install `chafa` (`brew install chafa`) for album art in now-playing.
 
-**Unified shell** (`music`) — a tabbed interface with **Now**, **Playlists**, **Speakers**, **Library**, and **Radio** tabs. The Now tab shows a 3-column layout: album art, playback metadata, and a right pane. Select a playlist on the Playlists tab to pin it on the Now tab so you can browse and replay any track while playback continues.
+**Unified shell** (`music`) — a tabbed interface with **Now**, **Library**, **Playlists**, **Radio**, and **Speakers** tabs. The Now tab shows a 3-column layout: album art, playback metadata, and a right pane. Select a playlist on the Playlists tab to pin it on the Now tab so you can browse and replay any track while playback continues.
 
 > **Turn off Music's Autoplay (∞).** Playlist track-selection and up/down navigation drive playback track-by-track and rely on a track *stopping* at its end. With Autoplay on, Music bleeds into the library between tracks. Disable it once in Music's Up Next panel (the ∞ button).
 
@@ -345,7 +345,7 @@ Run bare `music` in a real terminal (not inside Claude Code — TUI requires a T
 
 | Key | Action |
 |-----|--------|
-| `1`/`2`/`3`/`4`/`5` | Jump to Now / Playlists / Speakers / Library / Radio tab |
+| `1`/`2`/`3`/`4`/`5` | Jump to Now / Library / Playlists / Radio / Speakers tab |
 | `j`/`k`/`h`/`l` | Vim aliases for ↓ ↑ ← → (`l`/`g`/`G` stay love/Genius on Now) |
 | `g`/`G`, `ctrl-d`/`ctrl-u` | Top / bottom, half-page jumps in list tabs |
 | `Tab` / `Shift-Tab` | Cycle tabs forward / backward |

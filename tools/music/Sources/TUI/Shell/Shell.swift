@@ -16,7 +16,10 @@ func runShell() {
 
     let router = Router(root: .nowPlaying)
     var scenes: [SceneID: Scene] = [.nowPlaying: NowPlayingScene(backend: backend, appQueue: appQueue, status: status, actions: actions, kittyEnabled: kittyEnabled)]
-    let tabs: [(id: SceneID, title: String)] = [(.nowPlaying, "Now"), (.playlists, "Playlists"), (.speakers, "Speakers"), (.library, "Library"), (.radio, "Radio")]
+    // Declaration order IS the tab strip order and the 1-5 digit shortcuts.
+    // Ordered by how often the user reaches for them: Now, then the browse
+    // surfaces, then Speakers last (set once, rarely touched mid-session).
+    let tabs: [(id: SceneID, title: String)] = [(.nowPlaying, "Now"), (.library, "Library"), (.playlists, "Playlists"), (.radio, "Radio"), (.speakers, "Speakers")]
 
     // Scene switches must delete every kitty placement (data stays
     // transmitted, d=a) and let each built scene reset its own placement-

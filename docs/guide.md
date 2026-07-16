@@ -55,10 +55,10 @@ The skill triggers automatically when Claude detects music-related intent; `/mus
 
 ### 3. Interactive TUI
 
-Run bare `music` in a real terminal for the unified interactive shell — a tabbed interface with **Now**, **Playlists**, **Speakers**, **Library**, and **Radio** tabs.
+Run bare `music` in a real terminal for the unified interactive shell — a tabbed interface with **Now**, **Library**, **Playlists**, **Radio**, and **Speakers** tabs.
 
 ```
-music                           Unified shell: Now / Playlists / Speakers / Library / Radio tabs
+music                           Unified shell: Now / Library / Playlists / Radio / Speakers tabs
 ```
 
 Current TUI contract:
