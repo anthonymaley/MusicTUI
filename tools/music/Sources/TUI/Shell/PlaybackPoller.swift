@@ -134,7 +134,7 @@ final class PlaybackPoller {
             endedTrack: endedTrack, endedArtist: endedArtist, endedArtLines: endedArtLines)
     }
 
-    /// Queue-resume SAVE, the one choke point (docs/plans/2026-07-16-queue-resume-design.md):
+    /// Queue-resume SAVE, the one choke point:
     /// every mutation to the app-owned queue — this poller's own auto-advance
     /// below AND next/prev/jump/select from the main loop, which the poller
     /// only ever observes via `appQueue.read()` on its next tick — flows

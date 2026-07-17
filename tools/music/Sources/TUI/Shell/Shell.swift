@@ -123,7 +123,7 @@ func runShell() {
     terminal.enterRawMode()
     print(ANSICode.cursorHome + ANSICode.clearScreen, terminator: "")
     // Queue resume: adopt the last session's app-owned queue if it still
-    // matches what's actually playing (docs/plans/2026-07-16-queue-resume-design.md).
+    // matches what's actually playing.
     // Must run before poller.start() — after this line only the poller
     // touches queueStore, so there's no concurrent access and no lock needed.
     restoreQueueOnLaunch(queueStore: queueStore, appQueue: appQueue, backend: backend)

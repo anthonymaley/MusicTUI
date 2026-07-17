@@ -1,6 +1,6 @@
 // tools/music/Tests/MusicTests/QueueResumeTests.swift
 //
-// Pure foundation for queue resume-across-restart (docs/plans/2026-07-16-queue-resume-design.md).
+// Pure foundation for queue resume-across-restart.
 // NOTHING here is wired into the app yet — Codable conformance, an on-disk store,
 // and a pure staleness-guard function, all exercised in isolation. No live component.
 import XCTest

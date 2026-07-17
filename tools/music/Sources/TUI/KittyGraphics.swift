@@ -2,8 +2,7 @@
 // Pure encoder for the kitty graphics protocol (spec:
 // https://sw.kovidgoyal.net/kitty/graphics-protocol/). No terminal I/O here —
 // these functions build escape strings and convert bytes; callers write the
-// result to stdout. See docs/plans/2026-07-14-vim-keys-and-kitty-art-design.md
-// Feature 2 "Sharp edges" for the constraints this file must honor.
+// result to stdout.
 import Foundation
 import CoreGraphics
 import ImageIO

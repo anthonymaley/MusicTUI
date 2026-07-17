@@ -1,7 +1,6 @@
 // tools/music/Sources/TUI/Shell/QueueResume.swift
 //
-// Queue resume-across-restart. See docs/plans/2026-07-16-queue-resume-design.md
-// for the full design. SAVE is wired into PlaybackPoller.syncQueuePersistence
+// Queue resume-across-restart. SAVE is wired into PlaybackPoller.syncQueuePersistence
 // (the one choke point that sees every queue mutation); RESTORE is wired into
 // Shell.runShell() via restoreQueueOnLaunch, called once before poller.start().
 import Foundation

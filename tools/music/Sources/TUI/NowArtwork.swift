@@ -6,7 +6,7 @@
 // two tabs stop disagreeing about the same album.
 //
 // Route (all three alternatives were probed live 2026-07-15 before this one
-// was chosen — see docs/deferred.md):
+// was chosen):
 //   1. library SEARCH by album name — REJECTED. It matches the album NAME
 //      only (never artistName, so appending the artist misses EVERY album:
 //      "Midnight Marauders" hits, "Midnight Marauders A Tribe Called Quest"
