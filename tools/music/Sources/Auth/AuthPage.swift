@@ -90,8 +90,14 @@ struct AuthPage {
                     token = params.get('token', [''])[0]
                     if token:
                         os.makedirs(os.path.dirname(token_path), exist_ok=True)
-                        with open(token_path, 'w') as f:
+                        try:
+                            os.chmod(os.path.dirname(token_path), 0o700)
+                        except OSError:
+                            pass
+                        fd = os.open(token_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                        with os.fdopen(fd, 'w') as f:
                             f.write(token)
+                        os.chmod(token_path, 0o600)
                         self.send_response(200)
                         self.send_header('Content-Type', 'text/plain')
                         self.send_header('Access-Control-Allow-Origin', '*')

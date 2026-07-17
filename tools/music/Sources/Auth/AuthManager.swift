@@ -33,10 +33,24 @@ struct AuthManager {
         }
     }
 
-    func saveConfig(_ config: AuthConfig) throws {
-        try FileManager.default.createDirectory(atPath: Self.configDir, withIntermediateDirectories: true)
+    /// Write `data` to `path` with owner-only permissions (file 0600, dir
+    /// 0700). These are credentials — the MusicKit signing key, the user
+    /// token — so nobody else on the machine should read them, and they
+    /// shouldn't land in backups in the clear with group/other bits set.
+    /// The dir is tightened even if it already exists, since
+    /// `createDirectory` only sets the mode when it creates.
+    static func writeSecure(_ data: Data, to path: String) throws {
+        let fm = FileManager.default
+        let dir = (path as NSString).deletingLastPathComponent
+        try fm.createDirectory(atPath: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        try? fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: dir)
+        try data.write(to: URL(fileURLWithPath: path), options: .atomic)
+        try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path)
+    }
+
+    func saveConfig(_ config: AuthConfig, to path: String = AuthManager.configPath) throws {
         let data = try JSONEncoder().encode(config)
-        try data.write(to: URL(fileURLWithPath: Self.configPath))
+        try AuthManager.writeSecure(data, to: path)
     }
 
     func developerToken() throws -> String {
@@ -53,9 +67,9 @@ struct AuthManager {
         return trimmed.isEmpty ? nil : trimmed
     }
 
-    func saveUserToken(_ token: String) throws {
-        try FileManager.default.createDirectory(atPath: Self.configDir, withIntermediateDirectories: true)
-        try token.write(toFile: Self.userTokenPath, atomically: true, encoding: .utf8)
+    func saveUserToken(_ token: String, to path: String = AuthManager.userTokenPath) throws {
+        guard let data = token.data(using: .utf8) else { return }
+        try AuthManager.writeSecure(data, to: path)
     }
 
     func requireDeveloperToken() throws -> String {

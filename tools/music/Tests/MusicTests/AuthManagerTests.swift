@@ -37,4 +37,25 @@ final class AuthManagerTests: XCTestCase {
         XCTAssertEqual(config?.keyId, "K")
         XCTAssertEqual(config?.storefront, "us")
     }
+
+    // Credentials must be written owner-only (file 0600 inside a 0700 dir).
+    // Anything looser leaks the MusicKit key to other local users and into
+    // backups in the clear.
+    func testSaveConfigWritesOwnerOnlyPerms() throws {
+        let path = dir.appendingPathComponent("sub/config.json").path
+        let config = AuthConfig(keyId: "K", teamId: "T", keyPath: "~/k.p8", storefront: "us")
+        try AuthManager().saveConfig(config, to: path)
+        let fileMode = try FileManager.default.attributesOfItem(atPath: path)[.posixPermissions] as? Int
+        let dirMode = try FileManager.default.attributesOfItem(atPath: (path as NSString).deletingLastPathComponent)[.posixPermissions] as? Int
+        XCTAssertEqual(fileMode, 0o600)
+        XCTAssertEqual(dirMode, 0o700)
+    }
+
+    func testSaveUserTokenWritesOwnerOnlyPerms() throws {
+        let path = dir.appendingPathComponent("sub/user-token").path
+        try AuthManager().saveUserToken("tok", to: path)
+        let fileMode = try FileManager.default.attributesOfItem(atPath: path)[.posixPermissions] as? Int
+        XCTAssertEqual(fileMode, 0o600)
+        XCTAssertEqual(try String(contentsOfFile: path, encoding: .utf8), "tok")
+    }
 }

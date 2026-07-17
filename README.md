@@ -145,6 +145,21 @@ music auth
 music auth status
 ```
 
+### Where credentials live
+
+Auth lives in `~/.config/music/`, as plain files (not the macOS Keychain, same convention as `aws` and `gh`):
+
+- `config.json` — your MusicKit key id, team id, and the path to your `.p8`
+- `AuthKey.p8` — a copy of your MusicKit signing key, made by `music auth setup`
+- `user-token` — your Apple Music user token
+
+They are written owner-only: files `0600`, the directory `0700`, so no other account on the machine can read them and they don't land in backups with group/other bits set. If you set auth up before this was enforced, tighten an existing install with:
+
+```bash
+chmod 700 ~/.config/music
+chmod 600 ~/.config/music/config.json ~/.config/music/user-token ~/.config/music/AuthKey.p8
+```
+
 ## Playback, Speakers & Volume (CLI — zero auth)
 
 > **Transport tip:** play/pause, next, and previous are on your keyboard (⏯ ⏭ ⏮ media keys) — they control Apple Music natively, from any app, with nothing installed. The commands below are for everything the keys can't say: *what* to play, *where*, and *how loud*.

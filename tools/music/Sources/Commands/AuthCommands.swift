@@ -112,6 +112,8 @@ struct AuthSetup: ParsableCommand {
             try FileManager.default.removeItem(atPath: destPath)
         }
         try FileManager.default.copyItem(atPath: expandedPath, toPath: destPath)
+        // Lock the copied signing key to this account (owner read/write only).
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: destPath)
 
         let config = AuthConfig(
             keyId: keyID,
@@ -125,6 +127,7 @@ struct AuthSetup: ParsableCommand {
         let _ = try auth.developerToken()
         print("")
         print("✓ Config saved. Developer token generated.")
+        print("  Key copied to ~/.config/music/AuthKey.p8 and locked (chmod 600). You can delete the original download.")
         print("")
         print("Next: Run `music auth` to open the browser and get your user token.")
     }
