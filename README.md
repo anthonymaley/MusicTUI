@@ -471,8 +471,8 @@ Speaker lists work the same way (`~/.config/music/last-speakers.json`). Run `mus
 ## Credits
 
 - **[swift-argument-parser](https://github.com/apple/swift-argument-parser)** (Apache 2.0) — the CLI's argument parsing. The only bundled dependency.
-- **[chafa](https://github.com/hpjansson/chafa)** by Hans Petter Jansson — renders album art as terminal half-blocks where the Kitty graphics protocol isn't available. Optional (`brew install chafa`).
-- Cover art on Kitty, WezTerm, Ghostty, and iTerm2 3.5+ uses the [Kitty terminal graphics protocol](https://sw.kovidgoyal.net/kitty/graphics-protocol/), implemented from its public spec.
+- **[Kitty terminal graphics protocol](https://sw.kovidgoyal.net/kitty/graphics-protocol/)** — cover art renders as true pixels on Kitty, WezTerm, Ghostty, and iTerm2 3.5+. Implemented from its public spec.
+- **[chafa](https://github.com/hpjansson/chafa)** by Hans Petter Jansson — the cover-art fallback (terminal half-blocks) where the Kitty protocol isn't available. Optional (`brew install chafa`).
 
 Everything else is Apple's own frameworks (Foundation, CryptoKit, CoreGraphics, ImageIO, Network) plus the Apple Music AppleScript interface and the Apple Music API.
 
