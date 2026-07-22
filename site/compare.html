@@ -4,13 +4,18 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Apple Music terminal apps compared: MusicTUI vs the field</title>
-<meta name="description" content="An honest comparison of Apple Music TUI and CLI projects for the terminal: MusicTUI, Apple-Music-CLI-Player, apple-music-tui (Rust and npm), lazyAppleMusic, and applemusic-cli.">
+<meta name="description" content="A comparison of Apple Music TUI and CLI projects: MusicTUI, Apple-Music-CLI-Player, apple-music-tui (Rust and npm), lazyAppleMusic, and applemusic-cli.">
 <link rel="canonical" href="https://musictui.com/compare.html">
 <meta property="og:title" content="Apple Music terminal apps compared: MusicTUI vs the field">
-<meta property="og:description" content="An honest comparison of Apple Music TUI and CLI projects for the terminal, feature by feature.">
+<meta property="og:description" content="A comparison of Apple Music TUI and CLI projects for the terminal, feature by feature.">
 <meta property="og:type" content="article">
 <meta property="og:url" content="https://musictui.com/compare.html">
 <meta property="og:image" content="https://musictui.com/assets/og.png">
+<meta property="og:site_name" content="MusicTUI">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Apple Music terminal apps compared: MusicTUI vs the field">
+<meta name="twitter:description" content="A comparison of Apple Music TUI and CLI projects for the terminal, feature by feature.">
+<meta name="twitter:image" content="https://musictui.com/assets/og.png">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='20' fill='%230a0d12'/%3E%3Ctext x='50' y='68' font-family='monospace' font-size='56' fill='%233fe07a' text-anchor='middle'%3E%E2%99%AB%3C/text%3E%3C/svg%3E">
 <style>
 @font-face{
@@ -90,7 +95,7 @@ footer{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-betw
         <tr><td>Backend</td><td>Native Music.app (AppleScript + Apple Music API)</td><td>Native Music.app (AppleScript)</td><td>Native Music.app (JXA)</td><td class="part">Requires Cider running as backend player</td><td>Native Music.app</td><td>Native Music.app (AppleScript)</td></tr>
         <tr><td>Playback / transport</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td></tr>
         <tr><td>Multi-room AirPlay with per-speaker volume</td><td class="yes">✓ verified against live network sessions, self-healing</td><td class="part">toggle snippet for one output</td><td class="no">—</td><td class="no">—</td><td class="no">—</td><td class="no">—</td></tr>
-        <tr><td>Album art in terminal</td><td class="yes">✓ Now, Library, and Playlists panes (chafa half-blocks)</td><td class="yes">✓ widget (Viu)</td><td class="yes">✓ (iTerm2/Kitty/WezTerm graphics)</td><td class="no">not stated</td><td class="no">—</td><td class="no">—</td></tr>
+        <tr><td>Album art in terminal</td><td class="yes">✓ Now, Library, and Playlists panes (true pixels on Kitty/WezTerm/Ghostty/iTerm2; chafa fallback)</td><td class="yes">✓ widget (Viu)</td><td class="yes">✓ (iTerm2/Kitty/WezTerm graphics)</td><td class="no">not stated</td><td class="no">—</td><td class="no">—</td></tr>
         <tr><td>Library browsing (artists / albums / songs)</td><td class="yes">✓ with 12″/EP-vs-album filter and album-scoped queues</td><td class="part">list by artist/album/playlist/genre</td><td class="no">—</td><td class="no">—</td><td class="part">playlists only</td><td class="part">local tracks only</td></tr>
         <tr><td>Catalog search (full Apple Music)</td><td class="yes">✓ catalog + your library, numbered replayable results</td><td class="no">local library</td><td class="yes">✓</td><td class="yes">✓</td><td class="no">—</td><td class="no">local only</td></tr>
         <tr><td>Playlist create / edit / share</td><td class="yes">✓ incl. iMessage &amp; email share, temp playlists</td><td class="no">play only</td><td class="no">—</td><td class="part">search/play</td><td class="part">browse/play</td><td class="part">browse/play</td></tr>
@@ -113,8 +118,8 @@ footer{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-betw
       <p>The most established project here (~170+ stars) and the lightest: a shell script you can read in one sitting, with a charming now-playing widget and fzf-driven fuzzy playback. If you want zero build steps and transport with taste, it's a fine choice. It doesn't try to be a client: no catalog search, no playlist management, one-output AirPlay via an optional snippet.</p>
     </div>
     <div class="profile">
-      <h3><a href="https://github.com/ori0o0p/apple-music-tui" data-umami-event="competitor-rust-tui">apple-music-tui (Rust)</a>: the prettiest renderer</h3>
-      <p>A Rust remote controller with vim keys. Its artwork rendering uses the iTerm2/Kitty/WezTerm graphics protocols, which draw sharper images than MusicTUI's half-block characters on terminals that support them. Scope is playback, volume, progress, and search. Early days (no stars yet when I checked), and worth watching.</p>
+      <h3><a href="https://github.com/ori0o0p/apple-music-tui" data-umami-event="competitor-rust-tui">apple-music-tui (Rust)</a>: the vim-keys remote</h3>
+      <p>A Rust remote controller with vim keys. Its artwork renders through the iTerm2/Kitty/WezTerm graphics protocols, same as MusicTUI since 3.6.0. Scope is playback, volume, progress, and search. Early days (no stars yet when I checked), and worth watching.</p>
     </div>
     <div class="profile">
       <h3><a href="https://github.com/Mabylife/apple-music-tui" data-umami-event="competitor-npm-tui">apple-music-tui (npm)</a>: the Cider route</h3>
@@ -128,7 +133,7 @@ footer{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-betw
 
   <section class="wrap" style="padding-bottom:30px;">
     <div class="rule" style="margin-bottom:16px;"><h2>♫ Where MusicTUI is behind</h2><div class="ln"></div></div>
-    <p>MusicTUI is macOS-only by design (it drives the real Music.app, which is the point, but the Cider-based TUI can reach further). Its artwork uses chafa half-blocks, not the Kitty/iTerm2 graphics protocols, so the Rust project draws sharper images on terminals that support them. And catalog search, playlist CRUD via API, and discovery need an Apple Developer account ($99/yr), because Apple gates its API that way; playback, the TUI, AirPlay routing, and library browsing all work without it.</p>
+    <p>MusicTUI is macOS-only by design (it drives the real Music.app, which is the point, but the Cider-based TUI can reach further). And catalog search, playlist CRUD via API, and discovery need an Apple Developer account ($99/yr), because Apple gates its API that way; playback, the TUI, AirPlay routing, and library browsing all work without it.</p>
   </section>
 
   <section class="wrap" style="padding-bottom:40px;">
