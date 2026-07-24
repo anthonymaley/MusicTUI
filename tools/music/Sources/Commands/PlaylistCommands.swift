@@ -92,22 +92,27 @@ func showPlaylistTracks(name: String, json: Bool) throws {
                 let attrs = $0["attributes"] as? [String: Any] ?? [:]
                 return (attrs["name"] as? String ?? "") == name
             }), let plId = match["id"] as? String {
-                let (trackData, trackStatus) = try syncRun {
-                    try await api.get("/v1/me/library/playlists/\(plId)/tracks")
+                // Apple caps this endpoint at 100 tracks per page; walk every page
+                // via offset (reusing the tested pagination helper) so a long
+                // playlist returns in full instead of being silently truncated at 100.
+                let trackItems: [[String: Any]] = fetchAllPages(pageSize: 100) { limit, offset in
+                    guard let (d, s) = try? syncRun({
+                        try await api.get("/v1/me/library/playlists/\(plId)/tracks?limit=\(limit)&offset=\(offset)")
+                    }), (200...299).contains(s),
+                          let parsed = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
+                          let items = parsed["data"] as? [[String: Any]] else { return [] }
+                    return items
                 }
-                if (200...299).contains(trackStatus) {
-                    let trackParsed = try JSONSerialization.jsonObject(with: trackData) as? [String: Any]
-                    let trackItems = trackParsed?["data"] as? [[String: Any]] ?? []
+                if !trackItems.isEmpty {
                     let tracks: [[String: Any]] = trackItems.enumerated().map { (i, item) in
                         let attrs = item["attributes"] as? [String: Any] ?? [:]
+                        let catalogId = (attrs["playParams"] as? [String: Any])?["catalogId"] as? String ?? ""
                         return [
                             "number": i + 1,
                             "track": attrs["name"] as? String ?? "Unknown",
                             "artist": attrs["artistName"] as? String ?? "Unknown",
                             "album": attrs["albumName"] as? String ?? "",
-                            "catalogId": (item["attributes"] as? [String: Any])?["playParams"] as? [String: Any] != nil
-                                ? ((item["attributes"] as? [String: Any])?["playParams"] as? [String: Any])?["catalogId"] as? String ?? ""
-                                : ""
+                            "catalogId": catalogId
                         ]
                     }
                     let cache = ResultCache()

@@ -149,9 +149,7 @@ func makePlaylistDataSources(backend: AppleScriptBackend, names: [String], artwo
         let escapedPlName = escapeAppleScriptString(plName)
         guard let trackResult = try? syncRun({
             try await backend.runMusic("""
-                set total to count of tracks of playlist "\(escapedPlName)"
-                set n to total
-                if n > 200 then set n to 200
+                set n to count of tracks of playlist "\(escapedPlName)"
                 set output to ""
                 if n > 0 then
                     set ns to name of tracks 1 thru n of playlist "\(escapedPlName)"
@@ -161,7 +159,7 @@ func makePlaylistDataSources(backend: AppleScriptBackend, names: [String], artwo
                         set output to output & (item i of ns) & " — " & (item i of ars)
                     end repeat
                 end if
-                return (total as text) & "|" & output
+                return (n as text) & "|" & output
             """)
         }) else { return nil }
         let parsed = parsePlaylistTracksResult(trackResult)
