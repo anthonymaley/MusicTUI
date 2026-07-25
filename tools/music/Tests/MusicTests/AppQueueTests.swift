@@ -197,4 +197,99 @@ final class AppQueueTests: XCTestCase {
         XCTAssertNil(parseSeekTarget("1:75"))
         XCTAssertNil(parseSeekTarget(""))
     }
+
+    // MARK: Artist-list playback (the same credit drift 3.8.1 fixed for albums)
+
+    func testPrimaryCreditComponentSplitsOnBothSeparators() {
+        // The pre-filter token for the fallback fetch. Both punctuation styles of
+        // the same credit must yield the same leading artist, or the `contains`
+        // clause misses the very rows the fallback exists to find.
+        XCTAssertEqual(primaryCreditComponent("Floating Points, San Francisco Ballet Orchestra"), "Floating Points")
+        XCTAssertEqual(primaryCreditComponent("Floating Points & San Francisco Ballet Orchestra"), "Floating Points")
+        XCTAssertEqual(primaryCreditComponent("Floating Points, Cordula Merks & Victor Avdienko"), "Floating Points")
+        XCTAssertEqual(primaryCreditComponent("Radiohead"), "Radiohead")
+        XCTAssertEqual(primaryCreditComponent("  Aphex Twin  "), "Aphex Twin")
+        XCTAssertEqual(primaryCreditComponent(""), "")
+    }
+
+    func testSelectArtistTracksMatchesViaAlbumArtistWhenTrackArtistsDiffer() {
+        // The live repro: every movement credits a different soloist, so no track
+        // `artist` equals the requested credit, but `album artist` is uniform and
+        // does (once punctuation is folded). All four must play.
+        let aa = "Floating Points & San Francisco Ballet Orchestra"
+        let rows = [
+            LibraryAlbumRow(index: 1, name: "M1", artist: "Floating Points & Cordula Merks", albumArtist: aa, cloudStatus: "subscription"),
+            LibraryAlbumRow(index: 2, name: "M2", artist: "Floating Points & Miriam Adefris", albumArtist: aa, cloudStatus: "subscription"),
+            LibraryAlbumRow(index: 3, name: "M3", artist: aa, albumArtist: aa, cloudStatus: "subscription"),
+            LibraryAlbumRow(index: 4, name: "M4", artist: "Floating Points, Cordula Merks & Victor Avdienko", albumArtist: aa, cloudStatus: "subscription"),
+        ]
+        let picked = selectArtistTracks(rows, requestedArtist: "Floating Points, San Francisco Ballet Orchestra")
+        XCTAssertEqual(picked.map(\.index), [1, 2, 3, 4])
+    }
+
+    func testSelectArtistTracksMatchesViaTrackArtist() {
+        // A compilation: the album artist is "Various Artists" but the track artist
+        // is the requested one. That track belongs to the artist; the others don't.
+        let rows = [
+            LibraryAlbumRow(index: 1, name: "a", artist: "Kerri Chandler", albumArtist: "Various Artists", cloudStatus: "subscription"),
+            LibraryAlbumRow(index: 2, name: "b", artist: "Moodymann", albumArtist: "Various Artists", cloudStatus: "subscription"),
+        ]
+        XCTAssertEqual(selectArtistTracks(rows, requestedArtist: "Kerri Chandler").map(\.index), [1])
+    }
+
+    func testSelectArtistTracksDoesNotOverMatchOnSharedPrimaryCredit() {
+        // The `contains` pre-filter is deliberately loose, so the Swift filter has to
+        // be strict: a solo artist and a collaboration sharing a leading name are
+        // separate entries in the Artists list and must not bleed into each other.
+        let rows = [
+            LibraryAlbumRow(index: 1, name: "solo", artist: "Floating Points", albumArtist: "Floating Points", cloudStatus: "subscription"),
+            LibraryAlbumRow(index: 2, name: "collab", artist: "Floating Points & Pharoah Sanders", albumArtist: "Floating Points & Pharoah Sanders", cloudStatus: "subscription"),
+        ]
+        XCTAssertEqual(selectArtistTracks(rows, requestedArtist: "Floating Points").map(\.index), [1])
+        XCTAssertEqual(selectArtistTracks(rows, requestedArtist: "Floating Points, Pharoah Sanders").map(\.index), [2])
+    }
+
+    func testSelectArtistTracksEmptyWhenNothingMatches() {
+        let rows = [
+            LibraryAlbumRow(index: 1, name: "a", artist: "Queen", albumArtist: "Queen", cloudStatus: "subscription"),
+        ]
+        XCTAssertTrue(selectArtistTracks(rows, requestedArtist: "TLC").isEmpty)
+    }
+
+    func testSelectSongTrackFoldsCreditDrift() {
+        // Song play has a title to scope by, so this mirrors the album fallback:
+        // match the title, then resolve the artist punctuation-tolerantly.
+        let rows = [
+            LibraryAlbumRow(index: 7, name: "Movement 10", artist: "Floating Points, Cordula Merks & Victor Avdienko",
+                            albumArtist: "Floating Points & San Francisco Ballet Orchestra", cloudStatus: "subscription"),
+        ]
+        XCTAssertEqual(selectSongTrack(rows, requestedArtist: "Floating Points & San Francisco Ballet Orchestra")?.index, 7)
+        XCTAssertNil(selectSongTrack(rows, requestedArtist: "Aphex Twin"))
+    }
+
+    func testSelectSongTrackRefusesRatherThanGuessOnUnfoldableDrift() {
+        // Deliberate: a lone title match is NOT enough. If the credit drifts in a way
+        // normalizeCredit can't fold, refuse and let the caller error, rather than
+        // play a same-titled song by someone else. Same "refuse to guess" rule as
+        // selectAlbumTracks. This is still strictly better than the old behaviour,
+        // where `name is T and artist is A` failed on punctuation drift too.
+        let rows = [
+            LibraryAlbumRow(index: 3, name: "Idioteque", artist: "Radiohead", albumArtist: "Radiohead", cloudStatus: "subscription"),
+        ]
+        XCTAssertEqual(selectSongTrack(rows, requestedArtist: "Radiohead")?.index, 3)
+        XCTAssertNil(selectSongTrack(rows, requestedArtist: "Thom Yorke"))
+    }
+
+    func testArtistResolutionDropsUnplayableCloudStatuses() {
+        // The second layer of the 3.8.1 bug applies here too: a pre-release track
+        // silently no-ops on `play track`, so it must never enter an artist queue.
+        let aa = "Floating Points & San Francisco Ballet Orchestra"
+        let rows = [
+            LibraryAlbumRow(index: 1, name: "M1", artist: aa, albumArtist: aa, cloudStatus: "prerelease"),
+            LibraryAlbumRow(index: 2, name: "M2", artist: aa, albumArtist: aa, cloudStatus: "subscription"),
+            LibraryAlbumRow(index: 3, name: "M3", artist: aa, albumArtist: aa, cloudStatus: "unknown"),
+        ]
+        let picked = selectArtistTracks(rows, requestedArtist: aa).filter { isPlayableCloudStatus($0.cloudStatus) }
+        XCTAssertEqual(picked.map(\.index), [2, 3], "local files report 'unknown' and must stay playable")
+    }
 }

@@ -618,15 +618,19 @@ final class LibraryScene: Scene {
     /// library and bled into Autoplay. Autoplay (∞) must be OFF. Shuffle is a
     /// no-op for a single track (the param stays for a uniform call site).
     private func playSong(title: String, artist: String, shuffle: Bool) {
-        let escTitle = escapeAppleScriptString(title)
-        let escArtist = escapeAppleScriptString(artist)
         let backend = self.backend
         let store = self.appQueue
         actions.run("Play") {
-            let tracks = fetchLibraryTracksWithPositions(
-                backend: backend, whereClause: "name is \"\(escTitle)\" and artist is \"\(escArtist)\"")
-            try require(!tracks.isEmpty, "Couldn't play '\(title)'.")
-            let one = Array(tracks.prefix(1))
+            // Same credit drift as playAlbum: the song row's artist comes from REST
+            // and can differ from the stored credit (comma vs ampersand, per-track
+            // soloists), so the strict name+artist clause matches nothing. Falls back
+            // to a title-only fetch resolved in Swift, and refuses rather than guesses
+            // when nothing folds.
+            let res = resolveSongPlaybackTrack(backend: backend, title: title, artist: artist)
+            try require(!res.tracks.isEmpty, res.matched > 0
+                ? "'\(title)' isn't available to play yet."
+                : "Couldn't play '\(title)'.")
+            let one = Array(res.tracks.prefix(1))
             store.set(AppQueue(playlistName: "Library", tracks: one, currentIndex: 1, displayName: title))
             try require(playQueueTrack(backend: backend, playlist: "Library", position: one[0].index),
                         "Couldn't play '\(title)'.")
@@ -636,17 +640,29 @@ final class LibraryScene: Scene {
     /// Play every library track by one artist as an app-owned queue (scoped,
     /// navigable, stops at the end — same rationale as playAlbum). Autoplay OFF.
     private func playArtist(name: String, shuffle: Bool) {
-        let escName = escapeAppleScriptString(name)
         let backend = self.backend
         let store = self.appQueue
+        let status = self.status
         actions.run("Play") {
-            let tracks = fetchLibraryTracksWithPositions(
-                backend: backend, whereClause: "artist is \"\(escName)\"")
-            try require(!tracks.isEmpty, "Couldn't load '\(name)'.")
-            let ordered = shuffle ? tracks.shuffled() : tracks
+            // The Artists list is REST-sourced, so `name` is Apple Music's display
+            // credit and can differ from every stored track credit — on the live
+            // repro ("Floating Points, San Francisco Ballet Orchestra") the four
+            // movements each credit a different soloist while the album artist is
+            // uniform, so the strict `artist is` clause matched nothing. The resolver
+            // keeps that strict clause as the fast path, then falls back to a loose
+            // fetch on the primary credit narrowed in Swift, and drops tracks Music
+            // silently refuses to play.
+            let res = resolveArtistPlaybackTracks(backend: backend, artist: name)
+            try require(!res.tracks.isEmpty, res.matched > 0
+                ? "'\(name)': no tracks available to play yet."
+                : "Couldn't load '\(name)'.")
+            let ordered = shuffle ? res.tracks.shuffled() : res.tracks
             store.set(AppQueue(playlistName: "Library", tracks: ordered, currentIndex: 1, displayName: name))
             try require(playQueueTrack(backend: backend, playlist: "Library", position: ordered[0].index),
                         "Couldn't play '\(name)'.")
+            if res.matched > ordered.count {
+                status.post("Playing \(ordered.count) of \(res.matched) — the rest aren't available yet.")
+            }
         }
     }
 

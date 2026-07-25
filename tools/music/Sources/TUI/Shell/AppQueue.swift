@@ -199,6 +199,79 @@ func selectAlbumTracks(_ rows: [LibraryAlbumRow], requestedArtist: String) -> [L
     return rows.filter { $0.albumArtist == hit }
 }
 
+/// The leading artist in a credit string, used only to build a loose `contains`
+/// pre-filter for the artist fallback fetch. "A, B & C" and "A & B" both yield "A",
+/// which is what lets one AppleScript clause reach every punctuation variant of a
+/// credit. Pure → unit-tested.
+func primaryCreditComponent(_ credit: String) -> String {
+    let first = credit.split(whereSeparator: { $0 == "," || $0 == "&" }).first.map(String.init) ?? ""
+    return first.trimmingCharacters(in: .whitespacesAndNewlines)
+}
+
+/// Keep the rows belonging to one artist as the REST-sourced Artists list names them.
+/// A track belongs if either its own credit or its album artist folds to the requested
+/// one: the first catches compilations (album artist "Various Artists"), the second
+/// catches classical and collaborative albums where every track credits a different
+/// soloist but the album artist is uniform — the live "Mere Mortals" case, where four
+/// distinct track artists share one album artist. Exact after folding on purpose: the
+/// `contains` pre-filter is loose, so this is what stops "Floating Points" swallowing
+/// every collaboration it leads. Pure → unit-tested.
+func selectArtistTracks(_ rows: [LibraryAlbumRow], requestedArtist: String) -> [LibraryAlbumRow] {
+    let want = normalizeCredit(requestedArtist)
+    return rows.filter { normalizeCredit($0.artist) == want || normalizeCredit($0.albumArtist) == want }
+}
+
+/// Pick one song from a title-scoped fetch, resolving the artist punctuation-tolerantly.
+/// Refuses rather than guesses when nothing folds — same rule as selectAlbumTracks, so
+/// a same-titled song by someone else never plays in place of the one asked for.
+/// Pure → unit-tested.
+func selectSongTrack(_ rows: [LibraryAlbumRow], requestedArtist: String) -> LibraryAlbumRow? {
+    let want = normalizeCredit(requestedArtist)
+    return rows.first { normalizeCredit($0.artist) == want || normalizeCredit($0.albumArtist) == want }
+}
+
+/// Resolve every library track for one artist, tolerating the drift between the
+/// Artists list's REST display credit and the library's stored credits. Strict
+/// `artist is` first (unchanged fast path, so nothing that plays today can regress),
+/// then a loose `contains` fetch on the primary credit component narrowed in Swift.
+/// Drops tracks Music silently refuses to play — the pre-release layer of the same
+/// bug, which bites here exactly as it did for albums.
+func resolveArtistPlaybackTracks(backend: AppleScriptBackend, artist: String) -> AlbumResolution {
+    let escArtist = escapeAppleScriptString(artist)
+    let strict = fetchLibraryAlbumRows(backend: backend, whereClause: "artist is \"\(escArtist)\"")
+    var matched = strict
+    if matched.isEmpty {
+        let primary = primaryCreditComponent(artist)
+        if !primary.isEmpty {
+            let escPrimary = escapeAppleScriptString(primary)
+            let loose = fetchLibraryAlbumRows(
+                backend: backend,
+                whereClause: "artist contains \"\(escPrimary)\" or album artist contains \"\(escPrimary)\"")
+            matched = selectArtistTracks(loose, requestedArtist: artist)
+        }
+    }
+    let playable = matched.filter { isPlayableCloudStatus($0.cloudStatus) }
+        .map { TrackListEntry(index: $0.index, name: $0.name, artist: $0.artist, isCurrent: false) }
+    return AlbumResolution(tracks: playable, matched: matched.count)
+}
+
+/// Resolve a single library song the same way: strict title+artist first, then a
+/// title-only fetch disambiguated in Swift.
+func resolveSongPlaybackTrack(backend: AppleScriptBackend, title: String, artist: String) -> AlbumResolution {
+    let escTitle = escapeAppleScriptString(title)
+    let escArtist = escapeAppleScriptString(artist)
+    let strict = fetchLibraryAlbumRows(
+        backend: backend, whereClause: "name is \"\(escTitle)\" and artist is \"\(escArtist)\"")
+    let row = strict.first
+        ?? selectSongTrack(fetchLibraryAlbumRows(backend: backend, whereClause: "name is \"\(escTitle)\""),
+                           requestedArtist: artist)
+    guard let hit = row else { return AlbumResolution(tracks: [], matched: 0) }
+    let playable = isPlayableCloudStatus(hit.cloudStatus)
+        ? [TrackListEntry(index: hit.index, name: hit.name, artist: hit.artist, isCurrent: false)]
+        : []
+    return AlbumResolution(tracks: playable, matched: 1)
+}
+
 /// Fetch library tracks matching a `whose` clause, WITH each track's play-order
 /// position, album artist, and cloud status — the richer read the album resolver
 /// needs to disambiguate a drifted artist credit and drop tracks Music can't play.
