@@ -1,4 +1,4 @@
-# Apple Music TUI, CLI and Claude Code Skill
+# Apple Music TUI and CLI for macOS
 
 ```
      ___              __        __  ___         _
@@ -7,11 +7,12 @@
   /_/ |_/ .__/ .__/_/\__/   /_/  /_/\_,_/___/_/\__/
        /_/  /_/
 
-              TUI, Claude Skill and Apple Developer CLI
+          Terminal UI and CLI for Apple Music on macOS
 ```
 
 **Site: [musictui.com](https://musictui.com/)** — demo video, feature tour, install guide.
 
+[![CI](https://github.com/anthonymaley/musictui/actions/workflows/ci.yml/badge.svg)](https://github.com/anthonymaley/musictui/actions/workflows/ci.yml)
 ![Building since March 2026](https://img.shields.io/badge/building_since-March_2026-blue)
 ![Commits](https://img.shields.io/github/commit-activity/t/anthonymaley/musictui)
 ![Release](https://img.shields.io/github/v/release/anthonymaley/musictui)
@@ -19,38 +20,17 @@
 
 ![Apple Music TUI demo](media/demo.gif)
 
-Control Apple Music, AirPlay speakers, and AirPods from Claude Code or the terminal: an Apple Music TUI, CLI, and Claude Code skill for macOS. Multi-room playback with verified routing, library browsing (artists, albums, songs), catalog and library search, playlists, radio stations, a venue equalizer, and the on-screen visualizer.
+Control Apple Music, AirPlay speakers, and AirPods from the terminal. Multi-room playback with verified routing, library browsing (artists, albums, songs), catalog and library search, playlists, radio stations, a venue equalizer, and the on-screen visualizer. Cover art renders as true pixels on Kitty, WezTerm, Ghostty, and iTerm2.
 
+```bash
+music                              # the TUI
+music play --album "Kid A"         # play an album
+music speaker kitchen 60           # route to a speaker, set its volume
+music search "deep house 2026"     # search the full catalog
+music eq Nightclub                 # venue EQ preset
 ```
-  ┌─────────────────────────────────────────────────────────────────────┐
-  │                                                                     │
-  │  you:  Go find the latest deep house tracks, put them in a          │
-  │        playlist, shuffle it on the kitchen at 60%, and list         │
-  │        the tracks here for me.                                      │
-  │                                                                     │
-  │  ┌ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┐  │
-  │    music search "deep house 2026" --limit 15                       │
-  │  │ music playlist create "Deep House Finds" 1 3 5 7 9           │  │
-  │    music speaker kitchen 60                                        │
-  │  │ music shuffle on                                              │  │
-  │    music play "Deep House Finds"                                   │
-  │  └ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┘  │
-  │                                                                     │
-  │  claude:  Playing Deep House Finds on Kitchen [60]                  │
-  │                                                                     │
-  │    1. Silhouette — Kerri Chandler                                   │
-  │    2. Night Ride — Fouk                                             │
-  │    3. Body Movement — DJ Seinfeld                                   │
-  │    4. Midnight Sun — Jimpster                                       │
-  │    5. Inner City Blues — Moodymann                                   │
-  │                                                                     │
-  │  you:  It's great. Share it with Julie on iMessage.                 │
-  │  claude:  Shared "Deep House Finds" with Julie via iMessage.        │
-  │                                                                     │
-  ├─────────────────────────────────────────────────────────────────────┤
-  │  ▶ Silhouette — Kerri Chandler  ·  Kitchen [60]                    │
-  └─────────────────────────────────────────────────────────────────────┘
-```
+
+Everything is scriptable and there is no daemon. An optional [Claude Code plugin](#natural-language-skill) adds natural-language control on top of the same CLI.
 
 ## Three Ways to Use It
 
@@ -64,7 +44,17 @@ There are no per-action slash commands — `/music` (the skill) is the single en
 
 ## Install
 
-### Claude Code (CLI)
+### Homebrew
+
+```bash
+brew install anthonymaley/musictui/musictui
+```
+
+That installs the `music` binary: the TUI, playback, AirPlay routing, volume, and the equalizer. A prebuilt binary, so no language runtime and no toolchain.
+
+### Claude Code plugin (optional)
+
+Adds natural-language control on top of the same CLI. Everything below works without it.
 
 ```bash
 # Add the marketplace
@@ -80,16 +70,6 @@ There are no per-action slash commands — `/music` (the skill) is the single en
 2. Select **Plugins**
 3. Choose **Add plugin**
 4. Browse and select **Apple Music**
-
-### Homebrew (CLI + TUI only)
-
-Just want the terminal client, no Claude Code plugin?
-
-```bash
-brew install anthonymaley/musictui/musictui
-```
-
-That installs the `music` binary: the TUI, playback, AirPlay routing, and volume. Add the plugin later for natural-language control.
 
 ### Build the CLI (one command, no account needed)
 
@@ -348,6 +328,37 @@ For anything multi-step, just talk. Claude composes the right sequence of CLI ca
 
 Claude handles multi-step orchestration — searching the catalog, creating playlists, routing to speakers, setting volume, sharing — all from one sentence.
 
+```
+  ┌─────────────────────────────────────────────────────────────────────┐
+  │                                                                     │
+  │  you:  Go find the latest deep house tracks, put them in a          │
+  │        playlist, shuffle it on the kitchen at 60%, and list         │
+  │        the tracks here for me.                                      │
+  │                                                                     │
+  │  ┌ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┐  │
+  │    music search "deep house 2026" --limit 15                       │
+  │  │ music playlist create "Deep House Finds" 1 3 5 7 9           │  │
+  │    music speaker kitchen 60                                        │
+  │  │ music shuffle on                                              │  │
+  │    music play "Deep House Finds"                                   │
+  │  └ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┘  │
+  │                                                                     │
+  │  claude:  Playing Deep House Finds on Kitchen [60]                  │
+  │                                                                     │
+  │    1. Silhouette — Kerri Chandler                                   │
+  │    2. Night Ride — Fouk                                             │
+  │    3. Body Movement — DJ Seinfeld                                   │
+  │    4. Midnight Sun — Jimpster                                       │
+  │    5. Inner City Blues — Moodymann                                  │
+  │                                                                     │
+  │  you:  It's great. Share it with Julie on iMessage.                 │
+  │  claude:  Shared "Deep House Finds" with Julie via iMessage.        │
+  │                                                                     │
+  ├─────────────────────────────────────────────────────────────────────┤
+  │  ▶ Silhouette — Kerri Chandler  ·  Kitchen [60]                    │
+  └─────────────────────────────────────────────────────────────────────┘
+```
+
 ## Apple Music TUI
 
 Run bare `music` in a real terminal (not inside Claude Code — TUI requires a TTY). Install `chafa` (`brew install chafa`) for album art in now-playing.
@@ -459,6 +470,14 @@ Everything routes through the `music` CLI. The `/music` skill turns natural lang
 Search results are cached locally (`~/.config/music/last-songs.json`). When you run `music search`, `music similar`, or view playlist tracks, the numbered results persist so you can reference them by index in follow-up commands like `music play 3` or `music add 3 --to "House"`. Play commands show full now-playing info (track, album, speakers) after starting playback.
 
 Speaker lists work the same way (`~/.config/music/last-speakers.json`). Run `music speaker list`, then `music speaker 1 2 5` to add speakers by their numbers.
+
+### For developers
+
+- **[ARCHITECTURE.md](ARCHITECTURE.md)** — the two-transport design, the TUI scene model, the alternatives that were rejected and why, and an honest list of the rough edges.
+- **[docs/platform-notes.md](docs/platform-notes.md)** — what scripting Apple Music on macOS actually does: measured Apple Event costs, the `-1728` breakage on non-library tracks, pre-release tracks that silently refuse to play, and why AppleScript has no concept of a radio station. Dated observations from a real system, useful whether or not you care about this project.
+- **[CONTRIBUTING.md](CONTRIBUTING.md)** — build, test, and the one rule: a green suite is not a working playback change.
+
+473 unit tests run in CI on every push. They need no Apple Developer account and no running Music.app.
 
 ## Requirements
 
