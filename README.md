@@ -10,7 +10,7 @@
           Terminal UI and CLI for Apple Music on macOS
 ```
 
-**Site: [musictui.com](https://musictui.com/)** — demo video, feature tour, install guide.
+**Site: [musictui.com](https://musictui.com/).** Demo video, feature tour, install guide.
 
 [![CI](https://github.com/anthonymaley/musictui/actions/workflows/ci.yml/badge.svg)](https://github.com/anthonymaley/musictui/actions/workflows/ci.yml)
 ![Building since March 2026](https://img.shields.io/badge/building_since-March_2026-blue)
@@ -40,7 +40,7 @@ Everything is scriptable and there is no daemon. An optional [Claude Code plugin
 | **CLI + API** (`music search`, `music playlist create`) | Catalog, library, discovery | + Apple Developer account | None |
 | **Natural language** (`/music play Kid A in the kitchen and living room at 60%`) | Everything in words: playback with routing, search, playlists, radio, discovery | Build CLI from source | Normal |
 
-There are no per-action slash commands — `/music` (the skill) is the single entry point, and bare transport belongs to the keys your Mac already has.
+There are no per-action slash commands. `/music` (the skill) is the single entry point, and bare transport belongs to the keys your Mac already has.
 
 ## Install
 
@@ -81,7 +81,7 @@ cd ~/.claude/plugins/cache/musictui/music/*/
 scripts/install.sh
 ```
 
-That unlocks playback, multi-room AirPlay routing, volume, the TUI, and the status line — no Apple Developer account required.
+That unlocks playback, multi-room AirPlay routing, volume, the TUI, and the status line. No Apple Developer account required.
 
 ### Update
 
@@ -89,7 +89,7 @@ That unlocks playback, multi-room AirPlay routing, volume, the TUI, and the stat
 # CLI
 claude plugin update music@musictui
 
-# Desktop — Manage plugins → Update
+# Desktop: Manage plugins → Update
 ```
 
 After updating the plugin, rebuild the CLI: `scripts/install.sh`
@@ -105,7 +105,7 @@ rm -f ~/.local/bin/music
 rm -rf ~/.config/music
 ```
 
-Desktop: **Manage plugins** → remove **Apple Music**. The venue EQ presets the plugin created in Music (Nightclub, Dungeon, …) live in Music's own Equalizer — delete them there if you want them gone.
+Desktop: **Manage plugins** → remove **Apple Music**. The venue EQ presets the plugin created in Music (Nightclub, Dungeon, …) live in Music's own Equalizer; delete them there if you want them gone.
 
 ### Advanced Features (optional, requires Apple Developer account)
 
@@ -115,7 +115,7 @@ For catalog search, library management, playlists via API, and music discovery, 
 2. A **MusicKit key** configured via guided setup
 
 ```bash
-# Guided auth setup — walks you through creating a MusicKit key
+# Guided auth setup: walks you through creating a MusicKit key
 music auth setup
 
 # Get your user token (opens browser, auto-saves)
@@ -129,9 +129,9 @@ music auth status
 
 Auth lives in `~/.config/music/`, as plain files (not the macOS Keychain, same convention as `aws` and `gh`):
 
-- `config.json` — your MusicKit key id, team id, and the path to your `.p8`
-- `AuthKey.p8` — a copy of your MusicKit signing key, made by `music auth setup`
-- `user-token` — your Apple Music user token
+- `config.json`: your MusicKit key id, team id, and the path to your `.p8`
+- `AuthKey.p8`: a copy of your MusicKit signing key, made by `music auth setup`
+- `user-token`: your Apple Music user token
 
 They are written owner-only: files `0600`, the directory `0700`, so no other account on the machine can read them and they don't land in backups with group/other bits set. If you set auth up before this was enforced, tighten an existing install with:
 
@@ -140,9 +140,9 @@ chmod 700 ~/.config/music
 chmod 600 ~/.config/music/config.json ~/.config/music/user-token ~/.config/music/AuthKey.p8
 ```
 
-## Playback, Speakers & Volume (CLI — zero auth)
+## Playback, Speakers & Volume (CLI, zero auth)
 
-> **Transport tip:** play/pause, next, and previous are on your keyboard (⏯ ⏭ ⏮ media keys) — they control Apple Music natively, from any app, with nothing installed. The commands below are for everything the keys can't say: *what* to play, *where*, and *how loud*.
+> **Transport tip:** play/pause, next, and previous are on your keyboard (⏯ ⏭ ⏮ media keys). They control Apple Music natively, from any app, with nothing installed. The commands below are for everything the keys can't say: *what* to play, *where*, and *how loud*.
 
 ### Playback
 
@@ -162,7 +162,7 @@ chmod 600 ~/.config/music/config.json ~/.config/music/user-token ~/.config/music
 | `music seek +30` / `music seek 1:30` | Seek within the current track (relative or absolute) |
 | `music love` / `music unlove` | Favorite / unfavorite the current track |
 
-Naming speakers in `music play` routes playback to **exactly those speakers** — it selects the ones you name and deselects the rest, then verifies each route is actually carrying a session (network-truth, not the AppleScript `selected` claim, which can lie) and prints `✓ <speaker> verified (…)`. If a route doesn't establish, an automatic heal runs — an away-and-back reroute, then a transport-cycle reset — before an honest failure message names the manual fix. Routing to the Mac's own output is never "verified" — local output has no AirPlay session to check.
+Naming speakers in `music play` routes playback to **exactly those speakers**: it selects the ones you name and deselects the rest, then verifies each route is actually carrying a session (network-truth, not the AppleScript `selected` claim, which can lie) and prints `✓ <speaker> verified (…)`. If a route doesn't establish, an automatic heal runs (an away-and-back reroute, then a transport-cycle reset) before an honest failure message names the manual fix. Routing to the Mac's own output is never "verified": local output has no AirPlay session to check.
 
 ### Speakers & Volume
 
@@ -181,7 +181,7 @@ Naming speakers in `music play` routes playback to **exactly those speakers** �
 | `music volume up` / `down` | Volume ±10 |
 | `music volume kitchen 80` | Set a specific speaker to 80 |
 
-Adding a speaker, `music speaker set`, or `music speaker only` verify the route automatically while playing and heal it if needed; while paused they print `Route set; will verify on next play.` — paused routes can't be verified over the network, so the next play re-checks them.
+Adding a speaker, `music speaker set`, or `music speaker only` verify the route automatically while playing and heal it if needed; while paused they print `Route set; will verify on next play.` Paused routes can't be verified over the network, so the next play re-checks them.
 
 ### Equalizer
 
@@ -194,9 +194,9 @@ Adding a speaker, `music speaker set`, or `music speaker only` verify the route 
 | `music eq on` / `music eq off` | Enable or disable EQ |
 | `music eq remove-pack` | Delete the venue preset pack |
 
-Venue pack (Nightclub, Dungeon, Open Air, Concert Hall, Jazz Club, Stadium, Cathedral, Late Night) — each is created as a Music.app preset on first selection and visible in Music's own EQ window. Selecting any preset auto-enables EQ. Unknown names print near-matches.
+Venue pack (Nightclub, Dungeon, Open Air, Concert Hall, Jazz Club, Stadium, Cathedral, Late Night): each is created as a Music.app preset on first selection and visible in Music's own EQ window. Selecting any preset auto-enables EQ. Unknown names print near-matches.
 
-> **Equalizer requires Accessibility permission.** Music's scripting interface for live EQ state is broken in current macOS builds, so `music eq` drives the real Equalizer window instead (which it opens and leaves open). Grant your terminal app access under System Settings → Privacy & Security → Accessibility — the command tells you if it's missing. Preset creation and deletion need no extra permission.
+> **Equalizer requires Accessibility permission.** Music's scripting interface for live EQ state is broken in current macOS builds, so `music eq` drives the real Equalizer window instead (which it opens and leaves open). Grant your terminal app access under System Settings → Privacy & Security → Accessibility. The command tells you if it's missing. Preset creation and deletion need no extra permission.
 
 ### Visualizer
 
@@ -205,7 +205,7 @@ Venue pack (Nightclub, Dungeon, Open Air, Concert Hall, Jazz Club, Stadium, Cath
 | `music visualizer` | Show visualizer on/off status |
 | `music visualizer on` / `off` | Toggle Music's on-screen visualizer (the Cmd-T visuals) |
 
-Toggles Music's built-in visualizer — the animated graphics that render **in the Music app window on your Mac's display** (not on AirPlay outputs). Turning it on brings Music to the front. Same Accessibility permission as the equalizer; in the TUI, the Speakers scene has a Visualizer row (`Enter` or `v` toggles).
+Toggles Music's built-in visualizer: the animated graphics that render **in the Music app window on your Mac's display** (not on AirPlay outputs). Turning it on brings Music to the front. Same Accessibility permission as the equalizer; in the TUI, the Speakers scene has a Visualizer row (`Enter` or `v` toggles).
 
 ### Radio
 
@@ -218,7 +218,7 @@ Toggles Music's built-in visualizer — the animated graphics that render **in t
 
 A station plays via its Apple Music share URL with the scheme swapped from `https://` to `music://`. No MusicKit, no extra permissions. Your AirPlay route survives the switch. Favorites are stored locally at `~/.config/music/stations.json` and don't sync to other devices.
 
-Apple's station search is shallow (5-7 results, no pagination) and misses real stations outright — it can't find BBC Radio 1 by name or even by its own catalog id, though the station plays fine once you have its URL. Pasting a URL always works; search sometimes doesn't. Get one from music.apple.com or the Music app's share menu.
+Apple's station search is shallow (5-7 results, no pagination) and misses real stations outright: it can't find BBC Radio 1 by name or even by its own catalog id, though the station plays fine once you have its URL. Pasting a URL always works; search sometimes doesn't. Get one from music.apple.com or the Music app's share menu.
 
 ## CLI Commands
 
@@ -233,7 +233,7 @@ Apple's station search is shallow (5-7 results, no pagination) and misses real s
 
 | Command | What it does |
 |---------|-------------|
-| `music search "gypsy woman"` | Catalog search — songs by default, numbered so `music play 3` works |
+| `music search "gypsy woman"` | Catalog search: songs by default, numbered so `music play 3` works |
 | `music search "kid a" --types songs,albums,artists,playlists` | Multi-type catalog search (any subset) |
 | `music search "radiohead" --library` | Search your library instead of the catalog |
 | `music search "gypsy woman" --artist "crystal waters"` | Refine by `--artist` / `--album` |
@@ -284,7 +284,7 @@ music play --playlist "Working Vibes" -v     # see AppleScript calls
 music speaker smart --verbose list --json    # verbose on stderr, JSON on stdout
 ```
 
-Failures surface on **stderr** by default — a failed AirPlay route, a now-playing read error, or a malformed config prints a `✗`/`⚠` line, and `--json` mode emits an error object rather than corrupting the stream — so stdout stays clean for piping.
+Failures surface on **stderr** by default, so stdout stays clean for piping: a failed AirPlay route, a now-playing read error, or a malformed config prints a `✗`/`⚠` line, and `--json` mode emits an error object rather than corrupting the stream.
 
 ### JSON Output
 
@@ -326,7 +326,7 @@ For anything multi-step, just talk. Claude composes the right sequence of CLI ca
 > What's new from Radiohead? Make a playlist of the best ones.
 ```
 
-Claude handles multi-step orchestration — searching the catalog, creating playlists, routing to speakers, setting volume, sharing — all from one sentence.
+Claude handles the multi-step orchestration (searching the catalog, creating playlists, routing to speakers, setting volume, sharing) from one sentence.
 
 ```
   ┌─────────────────────────────────────────────────────────────────────┐
@@ -361,9 +361,9 @@ Claude handles multi-step orchestration — searching the catalog, creating play
 
 ## Apple Music TUI
 
-Run bare `music` in a real terminal (not inside Claude Code — TUI requires a TTY). Install `chafa` (`brew install chafa`) for album art in now-playing.
+Run bare `music` in a real terminal (not inside Claude Code; the TUI requires a TTY). Install `chafa` (`brew install chafa`) for album art in now-playing.
 
-**Unified shell** (`music`) — a tabbed interface with **Now**, **Library**, **Playlists**, **Radio**, and **Speakers** tabs. The Now tab shows a 3-column layout: album art, playback metadata, and a right pane. Select a playlist on the Playlists tab to pin it on the Now tab so you can browse and replay any track while playback continues.
+**Unified shell** (`music`): a tabbed interface with **Now**, **Library**, **Playlists**, **Radio**, and **Speakers** tabs. The Now tab shows a 3-column layout: album art, playback metadata, and a right pane. Select a playlist on the Playlists tab to pin it on the Now tab so you can browse and replay any track while playback continues.
 
 > **Turn off Music's Autoplay (∞).** Playlist track-selection and up/down navigation drive playback track-by-track and rely on a track *stopping* at its end. With Autoplay on, Music bleeds into the library between tracks. Disable it once in Music's Up Next panel (the ∞ button).
 
@@ -396,23 +396,23 @@ Run bare `music` in a real terminal (not inside Claude Code — TUI requires a T
 | `n` | Next-up options (shuffle / playlist / quiet) |
 | `Esc` | Back / dismiss menu |
 
-Under the track progress is a **control grid** (Shuffle / Order / Repeat / Genius) showing each value live with the active one lit — press `←` to focus it, `↑↓` to move rows, `Enter` to cycle. Two markers in the track pane: green `▶` = currently playing, inverse video = cursor position. Genius Shuffle's queue isn't readable via Apple's scripting, so while it's active the Up Next reads "Genius Shuffle Active" rather than a (wrong) track list.
+Under the track progress is a **control grid** (Shuffle / Order / Repeat / Genius) showing each value live with the active one lit: press `←` to focus it, `↑↓` to move rows, `Enter` to cycle. Two markers in the track pane: green `▶` = currently playing, inverse video = cursor position. Genius Shuffle's queue isn't readable via Apple's scripting, so while it's active the Up Next reads "Genius Shuffle Active" rather than a (wrong) track list.
 
 ![Now Playing](media/nowplaying.png)
 
-**Playlists tab** — left: playlists (instant highlight on `↑↓`, no fetch; `/` filters as you type, arrows still navigate). Right: tracks (loaded on `Enter`, which also pins the playlist on the Now tab). `p` plays playlist, `s` shuffles, `b`/`Esc` goes back. Apple-curated playlists you've added to your library (Replay, Essentials, etc.) appear with an `APPLE` badge — no need to duplicate them, so they keep receiving Apple's weekly/monthly updates. The focused playlist shows its real cover art when signed in (built-in smart playlists keep a generated placeholder).
+**Playlists tab.** Left: playlists (instant highlight on `↑↓`, no fetch; `/` filters as you type, arrows still navigate). Right: tracks (loaded on `Enter`, which also pins the playlist on the Now tab). `p` plays playlist, `s` shuffles, `b`/`Esc` goes back. Apple-curated playlists you've added to your library (Replay, Essentials, etc.) appear with an `APPLE` badge; no need to duplicate them, so they keep receiving Apple's weekly/monthly updates. The focused playlist shows its real cover art when signed in (built-in smart playlists keep a generated placeholder).
 
 ![Playlist Browser](media/playlist.jpg)
 
-**Speakers tab** — `↑↓` select, `Enter` toggles AirPlay outputs on/off, `←→` adjusts per-speaker volume. Active speakers show volume bars. Toggling a speaker on while playing verifies the route and toasts (e.g. `'X' selected but route NOT verified — try: music speaker wake`) if it couldn't be verified. Below the outputs: an **EQ block** (power row + preset picker — `Enter` toggles/expands, `e` toggles from anywhere) and a **Visualizer** row (`Enter` or `v` toggles Music's on-screen visuals). (The `music speaker`, `music eq`, and `music visualizer` CLIs drive these non-interactively.)
+**Speakers tab.** `↑↓` select, `Enter` toggles AirPlay outputs on/off, `←→` adjusts per-speaker volume. Active speakers show volume bars. Toggling a speaker on while playing verifies the route and toasts (e.g. `'X' selected but route NOT verified — try: music speaker wake`) if it couldn't be verified. Below the outputs: an **EQ block** (power row + preset picker; `Enter` toggles/expands, `e` toggles from anywhere) and a **Visualizer** row (`Enter` or `v` toggles Music's on-screen visuals). (The `music speaker`, `music eq`, and `music visualizer` CLIs drive these non-interactively.)
 
 ![Speaker Picker](media/speakers.png)
 
-**Library tab** (needs the Apple Music user token) — browse your library in three sub-views, **Artists · Albums · Songs** (opens on Artists), switched with `[`/`]`. `Enter` opens an album's tracks or drills Artist → their albums → tracks; `p` plays and `s` shuffles the focused item (albums/artists play as an app-owned queue — a scoped, navigable Up Next that stops at the album's end; needs Autoplay ∞ off). `/` filters as you type. On the Artists list, `a` cycles a track-count filter — **All → 12″/EP → Albums** — which cuts the bloat Apple's library-artists list carries (every artist with any library track, even one dragged in by a single playlist song) and separates 12″s/EPs from full-album deep cuts; drilling into an artist shows only that tier's albums. The first activation each session paints instantly from a cache, revalidated in the background. The focused album shows its real cover art — true pixels on kitty-protocol terminals (iTerm2 3.5+, Kitty, WezTerm, Ghostty), chafa half-blocks elsewhere; fetched once, cached on disk.
+**Library tab** (needs the Apple Music user token). Browse your library in three sub-views, **Artists · Albums · Songs** (opens on Artists), switched with `[`/`]`. `Enter` opens an album's tracks or drills Artist → their albums → tracks; `p` plays and `s` shuffles the focused item (albums/artists play as an app-owned queue: a scoped, navigable Up Next that stops at the album's end; needs Autoplay ∞ off). `/` filters as you type. On the Artists list, `a` cycles a track-count filter (**All → 12″/EP → Albums**) that cuts the bloat Apple's library-artists list carries (every artist with any library track, even one dragged in by a single playlist song) and separates 12″s/EPs from full-album deep cuts; drilling into an artist shows only that tier's albums. The first activation each session paints instantly from a cache, revalidated in the background. The focused album shows its real cover art: true pixels on kitty-protocol terminals (iTerm2 3.5+, Kitty, WezTerm, Ghostty), chafa half-blocks elsewhere; fetched once, cached on disk.
 
 ![Library](media/library.png)
 
-**Radio tab** — **Favorites · Live · Personal**, switched with `[`/`]` (opens on Favorites, which needs no token — it plays straight from disk; Live and Personal need a developer token to load). `j`/`k` or arrows navigate, `Enter` (or `→`) plays, `f` favorites/unfavorites the selected station. `/` searches the catalog — hits land in the list, `f` favorites one, `Esc` clears back to your sub-view. `a` adds a station by URL: paste a share URL from music.apple.com (or the Music app's share menu) to favorite it directly; anything that isn't a URL gets redirected to `/` instead of being guessed at. Live stations show a `LIVE` badge instead of a progress bar — a livestream has no duration. Favorites are stored locally at `~/.config/music/stations.json` and don't sync to other devices. Apple's station search is shallow (5-7 results, no pagination) and misses real stations outright — it can't find BBC Radio 1 by name or even by its own catalog id, though the station plays perfectly by URL. Pasting a URL always works; search sometimes doesn't.
+**Radio tab.** **Favorites · Live · Personal**, switched with `[`/`]` (opens on Favorites, which needs no token; it plays straight from disk; Live and Personal need a developer token to load). `j`/`k` or arrows navigate, `Enter` (or `→`) plays, `f` favorites/unfavorites the selected station. `/` searches the catalog: hits land in the list, `f` favorites one, `Esc` clears back to your sub-view. `a` adds a station by URL: paste a share URL from music.apple.com (or the Music app's share menu) to favorite it directly; anything that isn't a URL gets redirected to `/` instead of being guessed at. Live stations show a `LIVE` badge instead of a progress bar: a livestream has no duration. Favorites are stored locally at `~/.config/music/stations.json` and don't sync to other devices. Apple's station search is shallow (5-7 results, no pagination) and misses real stations outright: it can't find BBC Radio 1 by name or even by its own catalog id, though the station plays perfectly by URL. Pasting a URL always works; search sometimes doesn't.
 
 ![Radio](media/radio.png)
 
@@ -440,7 +440,7 @@ After running `scripts/install.sh`, add to `~/.claude/settings.json`:
 }
 ```
 
-> `install.sh` copies the status line script to `~/.local/bin/music-statusline` — a stable path that survives `claude plugin update` (the plugin cache directory is versioned and changes on every update, so don't point at it directly). Configure this once.
+> `install.sh` copies the status line script to `~/.local/bin/music-statusline`, a stable path that survives `claude plugin update` (the plugin cache directory is versioned and changes on every update, so don't point at it directly). Configure this once.
 
 ## What Needs Auth?
 
@@ -473,11 +473,11 @@ Speaker lists work the same way (`~/.config/music/last-speakers.json`). Run `mus
 
 ### For developers
 
-- **[ARCHITECTURE.md](ARCHITECTURE.md)** — the two-transport design, the TUI scene model, the alternatives that were rejected and why, and an honest list of the rough edges.
-- **[docs/platform-notes.md](docs/platform-notes.md)** — what scripting Apple Music on macOS actually does: measured Apple Event costs, the `-1728` breakage on non-library tracks, pre-release tracks that silently refuse to play, and why AppleScript has no concept of a radio station. Dated observations from a real system, useful whether or not you care about this project.
-- **[CONTRIBUTING.md](CONTRIBUTING.md)** — build, test, and the one rule: a green suite is not a working playback change.
+- **[ARCHITECTURE.md](ARCHITECTURE.md)**: the two-transport design, the TUI scene model, the alternatives that were rejected and why, and an honest list of the rough edges.
+- **[docs/platform-notes.md](docs/platform-notes.md)**: what scripting Apple Music on macOS actually does. Measured Apple Event costs, the `-1728` breakage on non-library tracks, pre-release tracks that silently refuse to play, and why AppleScript has no concept of a radio station. Dated observations from a real system, useful whether or not you care about this project.
+- **[CONTRIBUTING.md](CONTRIBUTING.md)**: build, test, and the one rule. A green suite is not a working playback change.
 
-473 unit tests run in CI on every push. They need no Apple Developer account and no running Music.app.
+485 unit tests run in CI on every push. They need no Apple Developer account and no running Music.app.
 
 ## Requirements
 
@@ -486,13 +486,13 @@ Speaker lists work the same way (`~/.config/music/last-speakers.json`). Run `mus
 - **Automation permission** (System Settings > Privacy & Security > Automation > enable for your terminal)
 - **Swift 5.9+** (only if building the music CLI)
 - **AirPods** must be connected via Bluetooth to appear as a device
-- **chafa** (optional, `brew install chafa` — enables album art in now-playing TUI)
+- **chafa** (optional, `brew install chafa`; enables album art in now-playing TUI)
 
 ## Credits
 
-- **[swift-argument-parser](https://github.com/apple/swift-argument-parser)** (Apache 2.0) — the CLI's argument parsing. The only bundled dependency.
-- **[Kitty terminal graphics protocol](https://sw.kovidgoyal.net/kitty/graphics-protocol/)** — cover art renders as true pixels on Kitty, WezTerm, Ghostty, and iTerm2 3.5+. Implemented from its public spec.
-- **[chafa](https://github.com/hpjansson/chafa)** by Hans Petter Jansson — the cover-art fallback (terminal half-blocks) where the Kitty protocol isn't available. Optional (`brew install chafa`).
+- **[swift-argument-parser](https://github.com/apple/swift-argument-parser)** (Apache 2.0): the CLI's argument parsing. The only bundled dependency.
+- **[Kitty terminal graphics protocol](https://sw.kovidgoyal.net/kitty/graphics-protocol/)**: cover art renders as true pixels on Kitty, WezTerm, Ghostty, and iTerm2 3.5+. Implemented from its public spec.
+- **[chafa](https://github.com/hpjansson/chafa)** by Hans Petter Jansson: the cover-art fallback (terminal half-blocks) where the Kitty protocol isn't available. Optional (`brew install chafa`).
 
 Everything else is Apple's own frameworks (Foundation, CryptoKit, CoreGraphics, ImageIO, Network) plus the Apple Music AppleScript interface and the Apple Music API.
 
