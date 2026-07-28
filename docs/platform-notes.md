@@ -111,6 +111,22 @@ titles.
 
 Found 2026-07-24, fixed in MusicTUI 3.8.1.
 
+## A `whose` fetch returns tracks in Library position order, not album order
+
+`every track of playlist "Library" whose album is X` yields tracks in ascending
+Library `index` order, which need not match the album's track order. Observed
+2026-07-27 on a 14-movement album: the fetch arrived with Movement 2 first and
+Movement 1 third. A player that queues the fetch result as it arrives can start an
+album mid-way.
+
+**Workaround:** read `disc number` and `track number` per track and sort in your own
+code. Every track tested returned a positive integer for both; guard the reads
+anyway, since other per-track reads (`cloud status`) can throw on local files.
+MusicTUI treats 0 or a failed read as no number, sorting those tracks last in
+fetched order.
+
+Found 2026-07-27, fixed in MusicTUI 3.8.2.
+
 ## AppleScript has no concept of a radio station
 
 Verified 2026-07-25: the string `station` does not appear **anywhere** in Music.app's

@@ -135,28 +135,60 @@ func fetchLibraryTracksWithPositions(backend: AppleScriptBackend, whereClause: S
 }
 
 /// A library track row carrying the album artist (to disambiguate a same-titled
-/// album once the strict `whose` clause has missed) and the cloud status (to drop
-/// tracks Music can't play yet). Parsed from the 5-field album fetch below.
+/// album once the strict `whose` clause has missed), the cloud status (to drop
+/// tracks Music can't play yet), and the disc/track numbers (to play in album
+/// order — the `whose` fetch yields Library position order, which can start an
+/// album mid-way). Parsed from the 7-field album fetch below. 0 for disc/track
+/// means Music has no number set.
 struct LibraryAlbumRow: Equatable {
     let index: Int
     let name: String
     let artist: String
     let albumArtist: String
     let cloudStatus: String
+    let disc: Int
+    let track: Int
+
+    init(index: Int, name: String, artist: String, albumArtist: String, cloudStatus: String,
+         disc: Int = 0, track: Int = 0) {
+        self.index = index
+        self.name = name
+        self.artist = artist
+        self.albumArtist = albumArtist
+        self.cloudStatus = cloudStatus
+        self.disc = disc
+        self.track = track
+    }
 }
 
-/// Parse "index<FS>name<FS>artist<FS>albumArtist<FS>cloudStatus" lines (the album
-/// fetch output) into rows. Empty fields are preserved (a track with no album artist
-/// keeps its column) so the five fields stay aligned; malformed lines (non-numeric
-/// index or wrong field count) are dropped. Pure → unit-tested.
+/// Parse "index<FS>name<FS>artist<FS>albumArtist<FS>cloudStatus<FS>disc<FS>track"
+/// lines (the album fetch output) into rows. Empty fields are preserved (a track
+/// with no album artist keeps its column) so the seven fields stay aligned;
+/// malformed lines (non-numeric index/disc/track or wrong field count) are
+/// dropped. Pure → unit-tested.
 func parseLibraryAlbumRows(_ raw: String) -> [LibraryAlbumRow] {
     var out: [LibraryAlbumRow] = []
     for line in raw.components(separatedBy: "\n") where !line.isEmpty {
-        let f = line.split(separator: asFieldSep, maxSplits: 4, omittingEmptySubsequences: false).map(String.init)
-        guard f.count == 5, let idx = Int(f[0]) else { continue }
-        out.append(LibraryAlbumRow(index: idx, name: f[1], artist: f[2], albumArtist: f[3], cloudStatus: f[4]))
+        let f = line.split(separator: asFieldSep, maxSplits: 6, omittingEmptySubsequences: false).map(String.init)
+        guard f.count == 7, let idx = Int(f[0]), let disc = Int(f[5]), let track = Int(f[6]) else { continue }
+        out.append(LibraryAlbumRow(index: idx, name: f[1], artist: f[2], albumArtist: f[3], cloudStatus: f[4],
+                                   disc: disc, track: track))
     }
     return out
+}
+
+/// Album play order for resolved rows: disc, then track number, with the fetch
+/// order breaking ties only. A disc of 0 counts as disc 1 (an unset disc is the
+/// only/first disc, not one before it); a track of 0 can't be placed, so those
+/// rows follow the numbered ones in fetched order. Sorted over enumerated
+/// offsets because Swift's sort is not documented stable.
+func sortRowsByAlbumOrder(_ rows: [LibraryAlbumRow]) -> [LibraryAlbumRow] {
+    func key(_ r: LibraryAlbumRow, _ offset: Int) -> (Int, Int, Int) {
+        (r.disc <= 0 ? 1 : r.disc, r.track <= 0 ? Int.max : r.track, offset)
+    }
+    return rows.enumerated()
+        .sorted { key($0.element, $0.offset) < key($1.element, $1.offset) }
+        .map(\.element)
 }
 
 /// Whether Music can actually play a track with this cloud status. A denylist, NOT
@@ -273,11 +305,13 @@ func resolveSongPlaybackTrack(backend: AppleScriptBackend, title: String, artist
 }
 
 /// Fetch library tracks matching a `whose` clause, WITH each track's play-order
-/// position, album artist, and cloud status — the richer read the album resolver
-/// needs to disambiguate a drifted artist credit and drop tracks Music can't play.
-/// `cloud status` is guarded per track (it can throw on some local files); an
-/// unreadable status defaults to "unknown", which stays playable. Same per-element
-/// read shape as fetchLibraryTracksWithPositions (album track counts are small).
+/// position, album artist, cloud status, and disc/track numbers — the richer read
+/// the album resolver needs to disambiguate a drifted artist credit, drop tracks
+/// Music can't play, and queue in album order. `cloud status` is guarded per
+/// track (it can throw on some local files); an unreadable status defaults to
+/// "unknown", which stays playable. Disc/track reads are guarded the same way and
+/// default to 0 = no number set. Same per-element read shape as
+/// fetchLibraryTracksWithPositions (album track counts are small).
 func fetchLibraryAlbumRows(backend: AppleScriptBackend, whereClause: String) -> [LibraryAlbumRow] {
     let raw = (try? syncRun {
         try await backend.runMusic("""
@@ -288,7 +322,15 @@ func fetchLibraryAlbumRows(backend: AppleScriptBackend, whereClause: String) -> 
                 try
                     set cs to (cloud status of t as text)
                 end try
-                set out to out & (index of t) & fs & (name of t) & fs & (artist of t) & fs & (album artist of t) & fs & cs & linefeed
+                set dn to 0
+                try
+                    set dn to (disc number of t)
+                end try
+                set tn to 0
+                try
+                    set tn to (track number of t)
+                end try
+                set out to out & (index of t) & fs & (name of t) & fs & (artist of t) & fs & (album artist of t) & fs & cs & fs & dn & fs & tn & linefeed
             end repeat
             return out
         """, timeout: 30)
@@ -325,7 +367,15 @@ func resolveAlbumPlaybackTracks(backend: AppleScriptBackend, title: String, arti
         ? selectAlbumTracks(fetchLibraryAlbumRows(backend: backend, whereClause: "album is \"\(escTitle)\""),
                             requestedArtist: artist)
         : strict
-    let playable = matched.filter { isPlayableCloudStatus($0.cloudStatus) }
+    return orderedPlayableAlbumTracks(matched)
+}
+
+/// The album resolver's single exit, shared by the strict and fallback paths:
+/// sort into album order FIRST (the `whose` fetch yields Library position order,
+/// which can start an album mid-way), then drop tracks Music can't play yet.
+/// `matched` keeps the pre-filter count so "Playing N of M" is unaffected.
+func orderedPlayableAlbumTracks(_ matched: [LibraryAlbumRow]) -> AlbumResolution {
+    let playable = sortRowsByAlbumOrder(matched).filter { isPlayableCloudStatus($0.cloudStatus) }
         .map { TrackListEntry(index: $0.index, name: $0.name, artist: $0.artist, isCurrent: false) }
     return AlbumResolution(tracks: playable, matched: matched.count)
 }

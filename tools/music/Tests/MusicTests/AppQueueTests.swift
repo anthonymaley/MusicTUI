@@ -101,21 +101,78 @@ final class AppQueueTests: XCTestCase {
 
     func testParseLibraryAlbumRowsReadsAlbumArtistAndCloudStatus() {
         let fs = String(asFieldSep)
-        let raw = "3\(fs)Movement 1 - Fire\(fs)Floating Points & SF Ballet\(fs)Floating Points & San Francisco Ballet Orchestra\(fs)prerelease\n"
-                + "4\(fs)Movement 5 - Pandora’s Creation\(fs)FP\(fs)Floating Points & San Francisco Ballet Orchestra\(fs)subscription"
+        let raw = "3\(fs)Movement 1 - Fire\(fs)Floating Points & SF Ballet\(fs)Floating Points & San Francisco Ballet Orchestra\(fs)prerelease\(fs)1\(fs)2\n"
+                + "4\(fs)Movement 5 - Pandora’s Creation\(fs)FP\(fs)Floating Points & San Francisco Ballet Orchestra\(fs)subscription\(fs)1\(fs)6"
         let rows = parseLibraryAlbumRows(raw)
         XCTAssertEqual(rows.map(\.index), [3, 4])
         XCTAssertEqual(rows[1].name, "Movement 5 - Pandora’s Creation")
         XCTAssertEqual(rows[0].albumArtist, "Floating Points & San Francisco Ballet Orchestra")
         XCTAssertEqual(rows[0].cloudStatus, "prerelease")
         XCTAssertEqual(rows[1].cloudStatus, "subscription")
+        XCTAssertEqual(rows.map(\.disc), [1, 1])
+        XCTAssertEqual(rows.map(\.track), [2, 6])
     }
 
     func testParseLibraryAlbumRowsSkipsMalformed() {
         let fs = String(asFieldSep)
-        // non-numeric index, blank line, and a 4-field line (missing cloud status) all dropped
-        let raw = "x\(fs)a\(fs)b\(fs)c\(fs)d\n\n7\(fs)only\(fs)four\(fs)fields\n9\(fs)Fire\(fs)FP\(fs)FP & SFBO\(fs)subscription"
+        // non-numeric index, blank line, a 5-field line (the pre-3.8.2 shape with
+        // no disc/track), and non-numeric disc/track are all dropped
+        let raw = "x\(fs)a\(fs)b\(fs)c\(fs)d\(fs)1\(fs)1\n\n7\(fs)five\(fs)field\(fs)line\(fs)subscription\n"
+                + "8\(fs)a\(fs)b\(fs)c\(fs)subscription\(fs)one\(fs)two\n"
+                + "9\(fs)Fire\(fs)FP\(fs)FP & SFBO\(fs)subscription\(fs)1\(fs)3"
         XCTAssertEqual(parseLibraryAlbumRows(raw).map(\.index), [9])
+    }
+
+    func testSortRowsByAlbumOrderSortsByTrackNumberNotLibraryOrder() {
+        // The reported bug: the `whose` fetch yields tracks in Library position
+        // order ("Mere Mortals" arrives Movement 2 first), so Play started
+        // mid-album. Album order is the track number, not the fetch order.
+        let rows = [
+            LibraryAlbumRow(index: 40, name: "M2", artist: "FP", albumArtist: "FP", cloudStatus: "subscription", disc: 1, track: 2),
+            LibraryAlbumRow(index: 41, name: "M1", artist: "FP", albumArtist: "FP", cloudStatus: "subscription", disc: 1, track: 1),
+            LibraryAlbumRow(index: 39, name: "M3", artist: "FP", albumArtist: "FP", cloudStatus: "subscription", disc: 1, track: 3),
+        ]
+        XCTAssertEqual(sortRowsByAlbumOrder(rows).map(\.name), ["M1", "M2", "M3"])
+    }
+
+    func testSortRowsByAlbumOrderSortsDiscBeforeTrackAndTreatsUnsetDiscAsOne() {
+        // Multi-disc albums play disc 1 end to end before disc 2. A disc number
+        // of 0 (Music's value when none is set) means the only/first disc, so it
+        // interleaves with disc 1 by track — not a phantom disc before it.
+        let rows = [
+            LibraryAlbumRow(index: 1, name: "d2t1", artist: "X", albumArtist: "X", cloudStatus: "subscription", disc: 2, track: 1),
+            LibraryAlbumRow(index: 2, name: "d0t2", artist: "X", albumArtist: "X", cloudStatus: "subscription", disc: 0, track: 2),
+            LibraryAlbumRow(index: 3, name: "d1t1", artist: "X", albumArtist: "X", cloudStatus: "subscription", disc: 1, track: 1),
+        ]
+        XCTAssertEqual(sortRowsByAlbumOrder(rows).map(\.name), ["d1t1", "d0t2", "d2t1"])
+    }
+
+    func testSortRowsByAlbumOrderPutsUnknownTrackNumbersLastInFetchedOrder() {
+        // A track number of 0 means Music has no number for the track; those
+        // can't be placed in album order, so they follow the numbered tracks in
+        // the order the fetch returned them rather than jumping to the front.
+        let rows = [
+            LibraryAlbumRow(index: 1, name: "unknownA", artist: "X", albumArtist: "X", cloudStatus: "subscription", disc: 1, track: 0),
+            LibraryAlbumRow(index: 2, name: "t2", artist: "X", albumArtist: "X", cloudStatus: "subscription", disc: 1, track: 2),
+            LibraryAlbumRow(index: 3, name: "unknownB", artist: "X", albumArtist: "X", cloudStatus: "subscription", disc: 1, track: 0),
+            LibraryAlbumRow(index: 4, name: "t1", artist: "X", albumArtist: "X", cloudStatus: "subscription", disc: 1, track: 1),
+        ]
+        XCTAssertEqual(sortRowsByAlbumOrder(rows).map(\.name), ["t1", "t2", "unknownA", "unknownB"])
+    }
+
+    func testOrderedPlayableAlbumTracksSortsThenFiltersKeepingMatchedCount() {
+        // The resolver's single exit: sort into album order FIRST, then drop
+        // unplayable tracks — and `matched` stays the pre-filter count so the
+        // "Playing N of M" toast is unaffected by ordering.
+        let rows = [
+            LibraryAlbumRow(index: 5, name: "M2", artist: "FP", albumArtist: "FP", cloudStatus: "prerelease", disc: 1, track: 2),
+            LibraryAlbumRow(index: 6, name: "M1", artist: "FP", albumArtist: "FP", cloudStatus: "subscription", disc: 1, track: 1),
+            LibraryAlbumRow(index: 4, name: "M3", artist: "FP", albumArtist: "FP", cloudStatus: "subscription", disc: 1, track: 3),
+        ]
+        let res = orderedPlayableAlbumTracks(rows)
+        XCTAssertEqual(res.tracks.map(\.name), ["M1", "M3"])
+        XCTAssertEqual(res.tracks.map(\.index), [6, 4])
+        XCTAssertEqual(res.matched, 3)
     }
 
     func testSelectAlbumTracksReturnsAllWhenOneAlbumArtist() {
