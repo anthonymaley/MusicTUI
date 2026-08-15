@@ -49,6 +49,15 @@ final class SpeakerDeviceTests: XCTestCase {
         XCTAssertNil(matchSpeakerName("garage", in: names))
     }
 
+    /// The bug: hasPrefix("") is true for EVERY string, so an empty name
+    /// (bare `music speaker stop` / `only`, or a script's unset $NAME)
+    /// resolved to an arbitrary device and acted on it.
+    func testEmptyInputMatchesNothing() {
+        let names = ["Kitchen", "Office"]
+        XCTAssertNil(matchSpeakerName("", in: names))
+        XCTAssertNil(matchSpeakerName("   ", in: names))
+    }
+
     // MARK: - AppleScript error name extraction
 
     func testExtractsDeviceNameFromError() {

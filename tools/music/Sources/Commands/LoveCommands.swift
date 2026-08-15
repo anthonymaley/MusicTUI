@@ -38,8 +38,15 @@ private func setFavorited(_ value: Bool, json: Bool) throws {
     let parts = trimmed.split(separator: asFieldSep).map(String.init)
     let title = parts.first ?? "current track"
     if json {
-        print("{\"ok\":true,\"favorited\":\(value),\"track\":\"\(title.replacingOccurrences(of: "\"", with: "\\\""))\"}")
+        print(loveResultJSON(favorited: value, track: title))
     } else {
         print(value ? "\u{2665} Favorited '\(title)'." : "Unfavorited '\(title)'.")
     }
+}
+
+/// JSON body for love/unlove --json, via JSONSerialization (OutputFormat) —
+/// the old hand-rolled string escaped only double quotes, so a backslash or
+/// control character in a title emitted invalid JSON per RFC 8259.
+func loveResultJSON(favorited: Bool, track: String) -> String {
+    OutputFormat(mode: .json).render(["ok": true, "favorited": favorited, "track": track])
 }

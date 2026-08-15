@@ -561,9 +561,13 @@ func resetBroken(_ only: Set<String>?, backend: AppleScriptBackend) {
 
 // MARK: - Speaker name resolution (case-insensitive exact > prefix > contains)
 
-/// Pure match against a name list.
+/// Pure match against a name list. An empty (or whitespace-only) input matches
+/// nothing: hasPrefix("") is true for EVERY string, so a bare `speaker stop` /
+/// `speaker only` (or a script's unset $NAME) used to resolve to an arbitrary
+/// device and deselect real speakers.
 func matchSpeakerName(_ input: String, in names: [String]) -> String? {
-    let lower = input.lowercased()
+    let lower = input.lowercased().trimmingCharacters(in: .whitespaces)
+    guard !lower.isEmpty else { return nil }
     if let exact = names.first(where: { $0.lowercased() == lower }) { return exact }
     if let prefix = names.first(where: { $0.lowercased().hasPrefix(lower) }) { return prefix }
     return names.first { $0.lowercased().contains(lower) }
