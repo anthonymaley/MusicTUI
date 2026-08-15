@@ -32,33 +32,27 @@ struct Play: ParsableCommand {
 
         if let album = album {
             // Remix/compilation albums credit each track to the remixer, so also match album artist.
+            // Rows are fetched and the start track decided in Swift so the CLI shares
+            // the TUI resolver's disc-aware order (190f663) and playability filter —
+            // the old inline min-track-number scan could start a multi-disc album on
+            // disc 2 and `play` silently no-ops on prerelease/removed tracks.
             let artistFilter = albumArtistFilter(artist: artist)
             let escAlbum = escapeAppleScriptString(album)
-            let result = try syncRun {
-                try await backend.runMusic("""
-                    set results to (every track of playlist "Library" whose album contains "\(escAlbum)"\(artistFilter))
-                    if (count of results) > 0 then
-                        set firstTrack to item 1 of results
-                        set firstNumber to 9999
-                        repeat with t in results
-                            try
-                                set n to track number of t
-                                if n > 0 and n < firstNumber then
-                                    set firstNumber to n
-                                    set firstTrack to t
-                                end if
-                            end try
-                        end repeat
-                        play firstTrack
-                        return "OK"
-                    else
-                        return "NOT_FOUND"
-                    end if
-                """)
-            }
-            if result.trimmingCharacters(in: .whitespacesAndNewlines) == "NOT_FOUND" {
+            let rows = fetchLibraryAlbumRows(
+                backend: backend,
+                whereClause: "album contains \"\(escAlbum)\"\(artistFilter)")
+            switch decideAlbumPlay(rows) {
+            case .notFound:
                 print("No albums found matching '\(album)'")
                 throw ExitCode.failure
+            case .nonePlayable(let matched):
+                print("Found \(matched) track(s) matching '\(album)', but none are playable yet (pre-release or removed).")
+                throw ExitCode.failure
+            case .play(let position, _, _):
+                guard playQueueTrack(backend: backend, playlist: "Library", position: position) else {
+                    print("Couldn't start playback for '\(album)'")
+                    throw ExitCode.failure
+                }
             }
             showNowPlaying(json: json, waitForPlay: true)
             return
@@ -275,18 +269,36 @@ func playLocalSong(backend: AppleScriptBackend, title: String, artist: String?) 
     let artistFilter = artist.map {
         " and artist contains \"\(escapeAppleScriptString($0))\""
     } ?? ""
-    let result = try syncRun {
-        try await backend.runMusic("""
-            set results to (every track of playlist "Library" whose name contains "\(escapedTitle)"\(artistFilter))
-            if (count of results) > 0 then
-                play item 1 of results
-                return "OK"
-            else
-                return "NOT_FOUND"
-            end if
-        """)
-    }
-    return result.trimmingCharacters(in: .whitespacesAndNewlines) != "NOT_FOUND"
+    // Fetch rows (with cloud status) and pick in Swift: `play` silently no-ops
+    // on prerelease/removed tracks, so "item 1 of results" could do nothing
+    // while the CLI reported the still-playing old track as success.
+    let rows = fetchLibraryAlbumRows(
+        backend: backend,
+        whereClause: "name contains \"\(escapedTitle)\"\(artistFilter)")
+    guard let position = firstPlayablePosition(rows) else { return false }
+    return playQueueTrack(backend: backend, playlist: "Library", position: position)
+}
+
+/// The CLI `play --album` outcome, decided in Swift over fetched rows so the
+/// disc-aware order and the playability filter (both live in
+/// `orderedPlayableAlbumTracks`, the TUI's resolver exit) apply to the CLI too.
+enum AlbumPlayDecision: Equatable {
+    case play(position: Int, playable: Int, matched: Int)
+    case notFound
+    case nonePlayable(matched: Int)
+}
+
+func decideAlbumPlay(_ rows: [LibraryAlbumRow]) -> AlbumPlayDecision {
+    guard !rows.isEmpty else { return .notFound }
+    let res = orderedPlayableAlbumTracks(rows)
+    guard let first = res.tracks.first else { return .nonePlayable(matched: res.matched) }
+    return .play(position: first.index, playable: res.tracks.count, matched: res.matched)
+}
+
+/// First track (source-playlist position) that Music can actually play, in
+/// fetch order — song matches span albums, so album order would be meaningless.
+func firstPlayablePosition(_ rows: [LibraryAlbumRow]) -> Int? {
+    rows.first(where: { isPlayableCloudStatus($0.cloudStatus) })?.index
 }
 
 func addCatalogSongAndPlay(
