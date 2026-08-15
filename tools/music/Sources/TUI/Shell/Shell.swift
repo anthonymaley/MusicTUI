@@ -241,15 +241,30 @@ func runShell() {
                 }
             // next/prev drive the app-owned queue when one is active (the poller
             // can't rely on Music's queue post-26.x); otherwise Music's own controls.
+            // step() commits the index before the play attempt, so a failed play
+            // rolls the step back — otherwise the Up Next highlight desyncs from
+            // the audio and every later next/prev walks from the wrong baseline.
+            // (playQueueTrack is false only on an osascript ERROR, i.e. transient;
+            // rolling back keeps the position honest and the next press retries.)
             case .next:
                 if let (pl, pos) = appQueue.step(1) {
-                    actions.run("Play") { try require(playQueueTrack(backend: backend, playlist: pl, position: pos), "Couldn't play that track.") }
+                    actions.run("Play") {
+                        guard playQueueTrack(backend: backend, playlist: pl, position: pos) else {
+                            _ = appQueue.step(-1)
+                            throw ActionError(message: "Couldn't play that track.")
+                        }
+                    }
                 } else {
                     actions.run("Skip") { _ = try syncRun { try await backend.runMusic("next track") } }
                 }
             case .prev:
                 if let (pl, pos) = appQueue.step(-1) {
-                    actions.run("Play") { try require(playQueueTrack(backend: backend, playlist: pl, position: pos), "Couldn't play that track.") }
+                    actions.run("Play") {
+                        guard playQueueTrack(backend: backend, playlist: pl, position: pos) else {
+                            _ = appQueue.step(1)
+                            throw ActionError(message: "Couldn't play that track.")
+                        }
+                    }
                 } else {
                     actions.run("Back") { _ = try syncRun { try await backend.runMusic("previous track") } }
                 }

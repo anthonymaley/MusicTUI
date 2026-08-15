@@ -40,6 +40,7 @@ final class PlaybackPoller {
     private var lastPosition = 0
     private var lastDuration = 0
     private var stoppedPolls = 0
+    private var advanceGate = AdvanceRetryGate()
     private var history: [(track: String, artist: String)] = []
     private var surrounding: [TrackListEntry] = []
     private var contextName = ""
@@ -395,9 +396,19 @@ final class PlaybackPoller {
             // where we clear the queue and let playback stay stopped.
             if naturalEnd, appQueue.isActive {
                 if let (pl, pos) = appQueue.step(1) {
-                    playQueueTrack(backend: backend, playlist: pl, position: pos)
+                    // step(1) commits the index BEFORE the play attempt. If the
+                    // play errors and the result is dropped, naturalEnd stays true
+                    // next tick and the loop walks the whole remaining queue
+                    // silently. Bounded recovery instead: roll the step back and
+                    // retry this track up to the gate's cap, then keep the step
+                    // (skip past it) so a permanent failure can't spin forever.
+                    if playQueueTrack(backend: backend, playlist: pl, position: pos) {
+                        advanceGate.playSucceeded()
+                    } else if advanceGate.playFailed() == .retry {
+                        _ = appQueue.step(-1)
+                    }
                     stoppedPolls = 0
-                    return // next tick will observe the new track
+                    return // next tick will observe the new track (or retry)
                 }
                 // Reached the end of the app-owned queue — surface the continuation menu.
                 if !qEnded {

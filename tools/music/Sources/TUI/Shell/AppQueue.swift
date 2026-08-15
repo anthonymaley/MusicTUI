@@ -25,6 +25,31 @@ struct AppQueue: Codable, Equatable {
     var contextLabel: String { displayName ?? playlistName }
 }
 
+/// What auto-advance does after a play attempt errors. `step(1)` has already
+/// committed the index by the time the play runs, so an unhandled failure used
+/// to walk the whole remaining queue (naturalEnd stayed true every tick). The
+/// gate bounds that: retry the same track (caller rolls the step back) up to
+/// maxRetries, then skip past it so a permanently erroring play can't spin
+/// forever. Pure → unit-tested.
+enum AdvanceAction: Equatable {
+    case retry
+    case skip
+}
+
+struct AdvanceRetryGate {
+    private(set) var failures = 0
+    let maxRetries: Int
+    init(maxRetries: Int = 3) { self.maxRetries = maxRetries }
+
+    mutating func playSucceeded() { failures = 0 }
+
+    mutating func playFailed() -> AdvanceAction {
+        failures += 1
+        if failures >= maxRetries { failures = 0; return .skip }
+        return .retry
+    }
+}
+
 /// Thread-safe holder shared between the main loop (selection, next/prev) and the
 /// poller thread (auto-advance). Nil when no app-owned queue is active — playback
 /// is then album/library/native and the poller falls back to Music's context.
