@@ -144,24 +144,19 @@ func showPlaylistTracks(name: String, json: Bool) throws {
     let backend = AppleScriptBackend()
     let result = try syncRun {
         try await backend.runMusic("""
+            set fs to (ASCII character 31)
             set trackList to every track of playlist "\(escapeAppleScriptString(name))"
             set output to ""
             set i to 1
             repeat with t in trackList
                 if output is not "" then set output to output & linefeed
-                set output to output & i & "|" & name of t & "|" & artist of t & "|" & album of t
+                set output to output & i & fs & name of t & fs & artist of t & fs & album of t
                 set i to i + 1
             end repeat
             return output
         """)
     }
-    let lines = result.trimmingCharacters(in: .whitespacesAndNewlines).split(separator: "\n")
-
-    let parsedTracks: [(num: Int, title: String, artist: String, album: String)] = lines.compactMap { line in
-        let parts = line.split(separator: "|", maxSplits: 3).map(String.init)
-        guard parts.count >= 4 else { return nil }
-        return (num: Int(parts[0]) ?? 0, title: parts[1], artist: parts[2], album: parts[3])
-    }
+    let parsedTracks = parsePlaylistTrackLines(result)
 
     let cache = ResultCache()
     let songResults = parsedTracks.map { t in
@@ -497,4 +492,18 @@ struct PlaylistCleanup: ParsableCommand {
         let count = result.trimmingCharacters(in: .whitespacesAndNewlines)
         print("Cleaned up \(count) temp playlist(s).")
     }
+}
+
+/// Pure parse of the playlist-tracks AppleScript payload: one track per line,
+/// fields joined by asFieldSep (ASCII 31 — titles can legally contain "|",
+/// the old delimiter, which shifted artist/album and poisoned the play cache).
+/// Malformed lines (wrong field count, non-numeric index) are skipped.
+func parsePlaylistTrackLines(_ raw: String) -> [(num: Int, title: String, artist: String, album: String)] {
+    raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        .split(separator: "\n")
+        .compactMap { line in
+            let parts = line.split(separator: asFieldSep, maxSplits: 3, omittingEmptySubsequences: false).map(String.init)
+            guard parts.count == 4, let num = Int(parts[0]) else { return nil }
+            return (num: num, title: parts[1], artist: parts[2], album: parts[3])
+        }
 }

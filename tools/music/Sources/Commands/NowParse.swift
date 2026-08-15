@@ -26,7 +26,8 @@ enum NowParse: Equatable {
     case info(NowInfo)
 }
 
-/// Payload: track|artist|album|duration|position|state|live|speakers
+/// Payload: track/artist/album/duration/position/state/live/speakers joined by
+/// asFieldSep (ASCII 31 — titles can legally contain "|", the old delimiter).
 /// duration/position are "-" when absent; live is "1"/"0"; speakers is
 /// "Name:Vol,Name:Vol" (possibly empty). Returns nil on anything unparseable.
 func parseNowOutput(_ raw: String) -> NowParse? {
@@ -34,8 +35,7 @@ func parseNowOutput(_ raw: String) -> NowParse? {
     if trimmed == "STOPPED" { return .stopped }
     if trimmed == "LOADING" { return .loading }
 
-    // maxSplits: 7 → at most 8 fields; the 8th absorbs any "|" in speaker names.
-    let parts = trimmed.split(separator: "|", maxSplits: 7, omittingEmptySubsequences: false).map(String.init)
+    let parts = trimmed.split(separator: asFieldSep, maxSplits: 7, omittingEmptySubsequences: false).map(String.init)
     guard parts.count == 8 else { return nil }
 
     let optInt: (String) -> Int? = { $0 == "-" ? nil : Int($0) }

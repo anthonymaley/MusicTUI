@@ -2,6 +2,11 @@ import XCTest
 @testable import music
 
 final class NowParseTests: XCTestCase {
+    /// Payloads are asFieldSep-joined, mirroring what the AppleScript emits.
+    private func payload(_ fields: [String]) -> String {
+        fields.joined(separator: String(asFieldSep))
+    }
+
     func testStopped() {
         XCTAssertEqual(parseNowOutput("STOPPED"), .stopped)
     }
@@ -11,7 +16,7 @@ final class NowParseTests: XCTestCase {
     }
 
     func testNormalTrack() {
-        let raw = "Andromeda|Gorillaz|Humanz|198|12|playing|0|Kitchen:56,Office:40"
+        let raw = payload(["Andromeda", "Gorillaz", "Humanz", "198", "12", "playing", "0", "Kitchen:56,Office:40"])
         guard case .info(let i)? = parseNowOutput(raw) else { return XCTFail("expected .info") }
         XCTAssertEqual(i.track, "Andromeda")
         XCTAssertEqual(i.artist, "Gorillaz")
@@ -26,7 +31,7 @@ final class NowParseTests: XCTestCase {
 
     /// The bug that started this: live stations have no duration. "-" means absent.
     func testLiveStationHasNoDurationOrPosition() {
-        let raw = "Okayyy (feat. Doja Cat)|Latto|Big Mama|-|-|playing|1|Kitchen:56"
+        let raw = payload(["Okayyy (feat. Doja Cat)", "Latto", "Big Mama", "-", "-", "playing", "1", "Kitchen:56"])
         guard case .info(let i)? = parseNowOutput(raw) else { return XCTFail("expected .info") }
         XCTAssertEqual(i.track, "Okayyy (feat. Doja Cat)")
         XCTAssertTrue(i.isLive)
@@ -36,7 +41,7 @@ final class NowParseTests: XCTestCase {
 
     /// BBC Radio 1 reports the station name and an EMPTY artist.
     func testLiveStationWithEmptyArtist() {
-        let raw = "BBC Radio 1|||-|-|playing|1|Kitchen:56"
+        let raw = payload(["BBC Radio 1", "", "", "-", "-", "playing", "1", "Kitchen:56"])
         guard case .info(let i)? = parseNowOutput(raw) else { return XCTFail("expected .info") }
         XCTAssertEqual(i.track, "BBC Radio 1")
         XCTAssertEqual(i.artist, "")
@@ -45,15 +50,24 @@ final class NowParseTests: XCTestCase {
     }
 
     func testNoSpeakers() {
-        let raw = "Andromeda|Gorillaz|Humanz|198|12|playing|0|"
+        let raw = payload(["Andromeda", "Gorillaz", "Humanz", "198", "12", "playing", "0", ""])
         guard case .info(let i)? = parseNowOutput(raw) else { return XCTFail("expected .info") }
         XCTAssertEqual(i.speakers, [])
     }
 
-    /// Track titles may contain "|" — only the first 7 separators are structural.
-    func testPipeInTrackTitleDoesNotBreakSpeakers() {
-        let raw = "A|B|C|10|1|playing|0|Kitchen:56"
+    /// Track titles may legally contain "|" ("Intro | Outro"). The payload is
+    /// delimited by asFieldSep (ASCII 31), which cannot appear in real names,
+    /// so a pipe anywhere in a field must not shift the fields after it.
+    func testPipeInsideFieldsDoesNotShiftFields() {
+        let fs = String(asFieldSep)
+        let raw = ["Intro | Outro", "AC|DC", "Back in Black", "198", "12", "playing", "0", "Kitchen:56"]
+            .joined(separator: fs)
         guard case .info(let i)? = parseNowOutput(raw) else { return XCTFail("expected .info") }
+        XCTAssertEqual(i.track, "Intro | Outro")
+        XCTAssertEqual(i.artist, "AC|DC")
+        XCTAssertEqual(i.album, "Back in Black")
+        XCTAssertEqual(i.duration, 198)
+        XCTAssertEqual(i.state, "playing")
         XCTAssertEqual(i.speakers, [NowSpeaker(name: "Kitchen", volume: 56)])
     }
 

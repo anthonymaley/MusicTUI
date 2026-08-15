@@ -123,11 +123,10 @@ struct Suggest: ParsableCommand {
         } else {
             let backend = AppleScriptBackend()
             let result = try syncRun {
-                try await backend.runMusic("return name of current track & \"|\" & artist of current track")
+                try await backend.runMusic("return name of current track & (ASCII character 31) & artist of current track")
             }
-            let parts = result.trimmingCharacters(in: .whitespacesAndNewlines).split(separator: "|")
-            if parts.count >= 2 {
-                let found = try syncRun { try await api.searchSongs(query: "\(parts[0]) \(parts[1])", limit: 1) }
+            if let seed = parseSeedTrack(result) {
+                let found = try syncRun { try await api.searchSongs(query: "\(seed.name) \(seed.artist)", limit: 1) }
                 if let s = found.first { seedSongIDs.append(s.id) }
             }
         }
@@ -332,4 +331,15 @@ func handleSongAction(_ action: MultiSelectAction, songs: [CatalogSong], api: RE
     case .confirmed, .cancelled:
         break
     }
+}
+
+/// Pure parse of the discover seed payload: "name<asFieldSep>artist". The old
+/// "|" delimiter split titles like "Intro | Outro" at the wrong place, so the
+/// seed search ran on garbage terms. Returns nil when the separator is absent.
+func parseSeedTrack(_ raw: String) -> (name: String, artist: String)? {
+    let parts = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        .split(separator: asFieldSep, maxSplits: 1, omittingEmptySubsequences: false)
+        .map(String.init)
+    guard parts.count == 2 else { return nil }
+    return (name: parts[0], artist: parts[1])
 }

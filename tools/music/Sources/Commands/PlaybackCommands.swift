@@ -442,6 +442,7 @@ func showNowPlaying(json: Bool = false, waitForPlay: Bool = false) {
     do {
         result = try syncRun({
         try await backend.runMusic("""
+            set fs to (ASCII character 31)
             set info to ""
             repeat 10 times
                 try
@@ -466,7 +467,7 @@ func showNowPlaying(json: Bool = false, waitForPlay: Bool = false) {
                     end if
                     if a is missing value then set a to ""
                     if al is missing value then set al to ""
-                    set info to t & "|" & a & "|" & al & "|" & dTxt & "|" & pTxt & "|" & state & "|" & lv
+                    set info to t & fs & a & fs & al & fs & dTxt & fs & pTxt & fs & state & fs & lv
                     exit repeat
                 end try
                 delay 0.3
@@ -481,7 +482,7 @@ func showNowPlaying(json: Bool = false, waitForPlay: Bool = false) {
                     set spk to spk & (item i of selNames) & ":" & (item i of selVols)
                 end repeat
             end try
-            return info & "|" & spk
+            return info & fs & spk
         """)
         })
     } catch {
