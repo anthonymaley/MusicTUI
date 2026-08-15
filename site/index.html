@@ -114,6 +114,8 @@ a:hover{color:var(--accent);}
 .facts .fv b{color:var(--text);font-weight:400;}
 #copyinstall:hover{border-color:rgba(92,214,224,.5);}
 #copyinstall:active{transform:scale(.97);}
+#copyhint{color:var(--dim);transition:opacity .15s ease,color .15s ease;}
+#copyhint.copied{color:var(--accent);}
 
 .js-reveal .reveal{opacity:0;transform:translateY(18px);transition:opacity .45s cubic-bezier(.23,1,.32,1),transform .45s cubic-bezier(.23,1,.32,1);}
 .js-reveal .reveal.in{opacity:1;transform:none;}
@@ -139,6 +141,8 @@ a:hover{color:var(--accent);}
 @media (prefers-reduced-motion: reduce){
   html{scroll-behavior:auto;}
   .btn:hover,.waycard:hover{transform:none;}
+  .btn:active,.ghbtn:active,#copyinstall:active{transform:none;}
+  #copyhint{transition:none;}
 }
 </style>
 <script defer src="https://cloud.umami.is/script.js" data-website-id="5303dfa0-cc8b-47bf-b04a-12fc2222462b"></script>
@@ -176,7 +180,7 @@ a:hover{color:var(--accent);}
         <a class="btn" href="https://github.com/anthonymaley/musictui" data-umami-event="github-hero">View on GitHub <span>↗</span></a>
         <button type="button" id="copyinstall" data-umami-event="install-copy" title="Copy the install command" style="display:inline-flex;align-items:center;gap:10px;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px 16px;font-size:14px;font-family:inherit;color:var(--text);cursor:pointer;transition:border-color .15s,transform .12s;">
           <span style="color:var(--accent);">$</span><span>brew install anthonymaley/musictui/musictui</span>
-          <span id="copyhint" style="color:var(--dim);font-size:12px;margin-left:2px;">copy</span>
+          <span id="copyhint" style="font-size:12px;margin-left:2px;">copy</span>
         </button>
       </div>
     </div>
@@ -484,9 +488,23 @@ a:hover{color:var(--accent);}
 <script>
 (function(){
   var ci = document.getElementById('copyinstall');
+  var hintTimers = [];
+  var reduceMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   if (ci) ci.addEventListener('click', function(){
     var cmd = 'brew install anthonymaley/musictui/musictui';
-    var done = function(){ var h = document.getElementById('copyhint'); if (h){ h.textContent = 'copied'; setTimeout(function(){ h.textContent = 'copy'; }, 1600); } };
+    // Text swaps can't be transitioned, so the fade is staged: out, swap, in.
+    // Timers are cleared on re-click so repeat presses don't stack.
+    var done = function(){
+      var h = document.getElementById('copyhint');
+      if (!h) return;
+      while (hintTimers.length){ clearTimeout(hintTimers.pop()); }
+      var set = function(txt, on){ h.textContent = txt; h.classList.toggle('copied', on); };
+      if (reduceMotion){ set('copied', true); hintTimers.push(setTimeout(function(){ set('copy', false); }, 1600)); return; }
+      h.style.opacity = '0';
+      hintTimers.push(setTimeout(function(){ set('copied', true); h.style.opacity = '1'; }, 150));
+      hintTimers.push(setTimeout(function(){ h.style.opacity = '0'; }, 1600));
+      hintTimers.push(setTimeout(function(){ set('copy', false); h.style.opacity = '1'; }, 1750));
+    };
     if (navigator.clipboard && navigator.clipboard.writeText){ navigator.clipboard.writeText(cmd).then(done, function(){}); }
   });
 
