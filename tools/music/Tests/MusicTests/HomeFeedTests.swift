@@ -48,11 +48,28 @@ final class HomeFeedTests: XCTestCase {
     ]}
     """
 
+    /// Verbatim shape from the live probe (2026-08-25): both albums and
+    /// playlists expose tracks under `relationships.tracks`, on the developer
+    /// token alone.
+    private let tracksJSON = """
+    {"data":[{"id":"6776025177","type":"albums","attributes":{"name":"Arrêt Infini - EP"},
+      "relationships":{"tracks":{"data":[
+        {"id":"6776025431","type":"songs","attributes":{
+          "name":"Arrêt Infini: , Pt. 1","artistName":"Fred Everything & Teuteu"}},
+        {"id":"6776025436","type":"songs","attributes":{
+          "name":"Arrêt Infini: , Pt. 2","artistName":"Fred Everything & Teuteu"}}
+      ]}}}]}
+    """
+
     private func feed(_ body: String, capture: ((String) -> Void)? = nil) -> HomeFeed {
-        HomeFeed(token: { "tok" }, fetch: { url in
+        HomeFeed(storefront: "us", token: { "tok" }, fetch: { url in
             capture?(url)
             return body.data(using: .utf8)
         })
+    }
+
+    private func item(_ kind: HomeItemKind, id: String = "6776025177") -> HomeItem {
+        HomeItem(id: id, kind: kind, name: "X", subtitle: nil, url: nil, artworkURL: nil)
     }
 
     // MARK: - Rails
@@ -140,8 +157,39 @@ final class HomeFeedTests: XCTestCase {
         XCTAssertEqual(try feed(json).rails().count, 0)
     }
 
+    // MARK: - Drill-in
+
+    func testDrillsIntoAnAlbumsTracks() throws {
+        var seen = ""
+        let tracks = try feed(tracksJSON, capture: { seen = $0 }).tracks(for: item(.album))
+        XCTAssertTrue(seen.contains("/v1/catalog/us/albums/6776025177"), seen)
+        XCTAssertTrue(seen.contains("include=tracks"), seen)
+        XCTAssertEqual(tracks.map(\.name), ["Arrêt Infini: , Pt. 1", "Arrêt Infini: , Pt. 2"])
+        XCTAssertEqual(tracks.first?.kind, .song)
+        XCTAssertEqual(tracks.first?.subtitle, "Fred Everything & Teuteu")
+    }
+
+    func testDrillsIntoAPlaylistsTracks() throws {
+        var seen = ""
+        _ = try feed(tracksJSON, capture: { seen = $0 }).tracks(for: item(.playlist, id: "pl.pm-1"))
+        XCTAssertTrue(seen.contains("/v1/catalog/us/playlists/pl.pm-1"), seen)
+    }
+
+    /// A station has no tracks relationship at all (the live API 400s with
+    /// "No relationship found matching 'tracks'"), so don't spend a request on
+    /// it. Stations are played, not browsed.
+    func testDoesNotFetchTracksForAStation() throws {
+        var fetched = false
+        let f = HomeFeed(storefront: "us", token: { "tok" }, fetch: { _ in
+            fetched = true
+            return self.tracksJSON.data(using: .utf8)
+        })
+        XCTAssertEqual(try f.tracks(for: item(.station)).count, 0)
+        XCTAssertFalse(fetched, "a station drill-in should not hit the network")
+    }
+
     func testThrowsWithoutAUserToken() {
-        let f = HomeFeed(token: { nil }, fetch: { _ in Data() })
+        let f = HomeFeed(storefront: "us", token: { nil }, fetch: { _ in Data() })
         XCTAssertThrowsError(try f.rails())
     }
 

@@ -40,7 +40,7 @@ func runShell() {
     // Declaration order IS the tab strip order and the 1-5 digit shortcuts.
     // Ordered by how often the user reaches for them: Now, then the browse
     // surfaces, then Speakers last (set once, rarely touched mid-session).
-    let tabs: [(id: SceneID, title: String)] = [(.nowPlaying, "Now"), (.library, "Library"), (.playlists, "Playlists"), (.radio, "Radio"), (.speakers, "Speakers")]
+    let tabs: [(id: SceneID, title: String)] = [(.nowPlaying, "Now"), (.home, "Home"), (.library, "Library"), (.playlists, "Playlists"), (.radio, "Radio"), (.speakers, "Speakers")]
 
     // Scene switches must delete every kitty placement (data stays
     // transmitted, d=a) and let each built scene reset its own placement-
@@ -102,6 +102,16 @@ func runShell() {
                                      status: status,
                                      actions: actions,
                                      kittyEnabled: kittyEnabled)
+            scenes[id] = scene
+            return scene
+        case .home:
+            // Home needs a user token (both its endpoints are /v1/me/). Refuse
+            // with a toast rather than an empty tab when there isn't one.
+            guard AuthManager().userToken() != nil else {
+                status.post("Sign in to see your Home feed (music auth setup).", error: true)
+                return nil
+            }
+            let scene = HomeScene(feed: makeHomeFeed(), status: status)
             scenes[id] = scene
             return scene
         case .radio:

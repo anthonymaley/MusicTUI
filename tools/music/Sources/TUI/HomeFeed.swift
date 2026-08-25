@@ -66,12 +66,48 @@ struct HomeRail: Equatable {
     let isRecentlyPlayed: Bool
 }
 
+// MARK: - Display model (pure, so the scene's layout is testable without a network)
+
+/// A flattened Home row. Rails become headers; only items are selectable.
+enum HomeDisplayRow: Equatable {
+    case header(String)
+    case item(HomeItem)
+}
+
+/// Music.app's Home leads with Top Picks and then Recently Played. Top Picks is
+/// not fetchable at all, so the closest honest thing is to lead with the row the
+/// user actually recognizes rather than leaving it wherever the feed put it.
+/// Stable otherwise: relative order is preserved on both sides of the split.
+func orderedHomeRails(_ rails: [HomeRail]) -> [HomeRail] {
+    rails.filter(\.isRecentlyPlayed) + rails.filter { !$0.isRecentlyPlayed }
+}
+
+func homeDisplayRows(rails: [HomeRail], perRail: Int) -> [HomeDisplayRow] {
+    rails.flatMap { rail -> [HomeDisplayRow] in
+        let items = rail.items.prefix(max(1, perRail))
+        // An empty rail is a bare heading with nothing under it, which reads as
+        // a bug rather than as an empty state.
+        guard !items.isEmpty else { return [] }
+        return [.header(rail.title)] + items.map { HomeDisplayRow.item($0) }
+    }
+}
+
+/// Indices of the rows a cursor may land on. Headers are not selectable.
+func selectableHomeIndices(_ rows: [HomeDisplayRow]) -> [Int] {
+    rows.enumerated().compactMap { i, row in
+        if case .item = row { return i }
+        return nil
+    }
+}
+
 final class HomeFeed {
+    private let storefront: String
     private let token: () -> String?
     private let fetch: (String) -> Data?
     private let base = "https://api.music.apple.com"
 
-    init(token: @escaping () -> String?, fetch: @escaping (String) -> Data?) {
+    init(storefront: String, token: @escaping () -> String?, fetch: @escaping (String) -> Data?) {
+        self.storefront = storefront
         self.token = token
         self.fetch = fetch
     }
@@ -101,6 +137,28 @@ final class HomeFeed {
     func recentlyPlayed(limit: Int = 20) throws -> [HomeItem] {
         let root = try json(at: "/v1/me/recent/played?limit=\(limit)")
         return decodeItems(root["data"] as? [[String: Any]] ?? [])
+    }
+
+    /// The tracks on an album or playlist, for a read-only drill-in. Both live
+    /// under `relationships.tracks` and both answer to the developer token
+    /// alone (verified 2026-08-25).
+    ///
+    /// Returns empty for a station without spending a request: stations have no
+    /// tracks relationship (the API 400s with "No relationship found matching
+    /// 'tracks'"). Their nearest equivalent is the next-tracks feed, which is a
+    /// POST that advances the station, so it does not belong behind a browse key.
+    func tracks(for item: HomeItem) throws -> [HomeItem] {
+        let collection: String
+        switch item.kind {
+        case .album: collection = "albums"
+        case .playlist: collection = "playlists"
+        case .station, .song: return []
+        }
+        let root = try json(at: "/v1/catalog/\(storefront)/\(collection)/\(item.id)?include=tracks")
+        let rows = root["data"] as? [[String: Any]] ?? []
+        let tracks = ((rows.first?["relationships"] as? [String: Any])?["tracks"]
+                      as? [String: Any])?["data"] as? [[String: Any]] ?? []
+        return decodeItems(tracks)
     }
 
     // MARK: - Parsing
@@ -140,6 +198,7 @@ func makeHomeFeed() -> HomeFeed? {
     let auth = AuthManager()
     guard (try? auth.requireDeveloperToken()) != nil, auth.userToken() != nil else { return nil }
     return HomeFeed(
+        storefront: auth.storefront(),
         token: { AuthManager().userToken() },
         fetch: { urlString in
             let auth = AuthManager()

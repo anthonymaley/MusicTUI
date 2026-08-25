@@ -365,7 +365,7 @@ Claude handles the multi-step orchestration (searching the catalog, creating pla
 
 Run bare `music` in a real terminal (not inside Claude Code; the TUI requires a TTY). Install `chafa` (`brew install chafa`) for album art in now-playing.
 
-**Unified shell** (`music`): a tabbed interface with **Now**, **Library**, **Playlists**, **Radio**, and **Speakers** tabs. The Now tab shows a 3-column layout: album art, playback metadata, and a right pane. Select a playlist on the Playlists tab to pin it on the Now tab so you can browse and replay any track while playback continues.
+**Unified shell** (`music`): a tabbed interface with **Now**, **Home**, **Library**, **Playlists**, **Radio**, and **Speakers** tabs. The Now tab shows a 3-column layout: album art, playback metadata, and a right pane. Select a playlist on the Playlists tab to pin it on the Now tab so you can browse and replay any track while playback continues.
 
 > **Turn off Music's Autoplay (∞).** Playlist track-selection and up/down navigation drive playback track-by-track and rely on a track *stopping* at its end. With Autoplay on, Music bleeds into the library between tracks. Disable it once in Music's Up Next panel (the ∞ button).
 
@@ -373,7 +373,7 @@ Run bare `music` in a real terminal (not inside Claude Code; the TUI requires a 
 
 | Key | Action |
 |-----|--------|
-| `1`/`2`/`3`/`4`/`5` | Jump to Now / Library / Playlists / Radio / Speakers tab |
+| `1`/`2`/`3`/`4`/`5`/`6` | Jump to Now / Home / Library / Playlists / Radio / Speakers tab |
 | `j`/`k`/`h`/`l` | Vim aliases for ↓ ↑ ← → (`l`/`g`/`G` stay love/Genius on Now) |
 | `g`/`G`, `ctrl-d`/`ctrl-u` | Top / bottom, half-page jumps in list tabs |
 | `Tab` / `Shift-Tab` | Cycle tabs forward / backward |
@@ -413,6 +413,8 @@ Under the track progress is a **control grid** (Shuffle / Order / Repeat / Geniu
 **Library tab** (needs the Apple Music user token). Browse your library in three sub-views, **Artists · Albums · Songs** (opens on Artists), switched with `[`/`]`. `Enter` opens an album's tracks or drills Artist → their albums → tracks; `p` plays and `s` shuffles the focused item (albums/artists play as an app-owned queue: a scoped, navigable Up Next that stops at the album's end; needs Autoplay ∞ off). `/` filters as you type. On the Artists list, `a` cycles a track-count filter (**All → 12″/EP → Albums**) that cuts the bloat Apple's library-artists list carries (every artist with any library track, even one dragged in by a single playlist song) and separates 12″s/EPs from full-album deep cuts; drilling into an artist shows only that tier's albums. The first activation each session paints instantly from a cache, revalidated in the background. The focused album shows its real cover art: true pixels on kitty-protocol terminals (iTerm2 3.5+, Kitty, WezTerm, Ghostty), chafa half-blocks elsewhere; fetched once, cached on disk.
 
 ![Library](media/library.png)
+
+**Home tab.** Apple's own For You feed: the recommendation rails from your Apple Music account, with **Recently Played** hoisted to the top. `↑↓` navigate, `r` refreshes, `Enter` acts on the selected row. What Enter does depends on the row, and the asymmetry is a platform limit rather than a choice: a **station** plays immediately, while an **album** or **playlist** opens a read-only track list (`←` goes back). Catalog albums cannot be played without first copying them into your library, and Home deliberately never writes to your library, so it browses them instead of quietly adding them. Needs the Apple Music user token. The rails come straight from Apple and rotate on Apple's own schedule; "Top Picks for You" is composed inside Music.app and is not available to any client, so it is absent here.
 
 **Radio tab.** **Favorites · Live · Personal**, switched with `[`/`]` (opens on Favorites, which needs no token; it plays straight from disk; Live and Personal need a developer token to load). `j`/`k` or arrows navigate, `Enter` (or `→`) plays, `f` favorites/unfavorites the selected station. `/` searches the catalog: hits land in the list, `f` favorites one, `Esc` clears back to your sub-view. `a` adds a station by URL: paste a share URL from music.apple.com (or the Music app's share menu) to favorite it directly; anything that isn't a URL gets redirected to `/` instead of being guessed at. Live stations show a `LIVE` badge instead of a progress bar: a livestream has no duration. Favorites are stored locally at `~/.config/music/stations.json` and don't sync to other devices. Apple's station search is shallow (5-7 results, no pagination) and misses real stations outright: it can't find BBC Radio 1 by name or even by its own catalog id, though the station plays perfectly by URL. Pasting a URL always works; search sometimes doesn't.
 
