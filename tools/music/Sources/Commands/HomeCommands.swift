@@ -32,7 +32,10 @@ struct Home: ParsableCommand {
             return
         }
 
-        let rails = try feed.rails().prefix(max(1, limit))
+        // Same ordering the TUI uses. CLI/TUI drift on shared data is this
+        // repo's most-repeated bug (3.8.3 spent four commits on it), so the
+        // order lives in one pure function both callers go through.
+        let rails = orderedHomeRails(try feed.rails()).prefix(max(1, limit))
         if json {
             let payload = rails.map { rail -> [String: Any] in
                 ["title": rail.title,
