@@ -214,6 +214,9 @@ music playlist cleanup                        # delete all __temp__ playlists
 ```bash
 music similar                                 # similar to now playing
 music similar Hotel California                # similar to a specific track (--artist to narrow)
+music home                                    # your Home feed: For You rails + recently played
+music home --recent                           # just the recently played row (mixed types)
+music home --json --limit 5                   # rails as JSON
 music recent                                  # recently played tracks (cached for `play N`)
 music rotation                                # your heavy-rotation music
 music suggest                                 # suggest tracks from now playing

@@ -144,7 +144,7 @@ plain stream URL. They are unrelated to Apple Music stations.
 A station URL sitting in your library as a `URL track` is an inert bookmark. Calling
 `play` on it stops the player silently: no error, no stream, no audio.
 
-**What does work** (observed 2026-07-15, not re-verified since): take the station's
+**What does work** (observed 2026-07-15, re-verified 2026-08-25): take the station's
 REST `url` and rewrite the scheme from `https://` to `music://`, then `open` it.
 
 ```
@@ -153,8 +153,26 @@ open "music://music.apple.com/us/station/apple-music-1/ra.978194965"
 
 Music.app comes forward, `player state` becomes `playing`, audio starts, and an
 existing AirPlay route survives. The same URL with `https://` opens Safari instead,
-so the scheme rewrite is the entire trick. Tested only with a live station
-(`isLive=true`); track-based and personal stations are untried.
+so the scheme rewrite is the entire trick.
+
+Verified 2026-08-25 for a personal station too (`ra.u-…`, the "Made for You" station,
+`format: tracks`, `hasDrm: false`), not just the live ones: opening its URL switched
+playback away from an unrelated playing track and started station audio.
+
+### The scheme is a station play verb, not a general play verb
+
+Measured 2026-08-25, three ways, all negative:
+
+```
+open "music://music.apple.com/us/album/glory-single/6795095658"          → no playback
+open "music://music.apple.com/us/album/glory/6795095658?i=6795095659"    → no playback
+osascript -e 'tell application "Music" to open location "music://…?i=…"' → no playback
+```
+
+Music.app did not come forward and `player state` did not change in any of the three.
+The control in the same session, a station URL, played immediately. A station URL is an
+action, so it autoplays; an album or song URL is a location, and Music.app treats it as
+one. There is no known way to make a catalog album play from a URL.
 
 A playing station has no track model. It surfaces as a `URL track` whose `name`,
 `artist`, and `album` update per song, but `duration` is `missing value`,
@@ -170,6 +188,80 @@ Station `playParams` contain `{format: stream, hasDrm: true, kind: radioStation,
 stationHash: …}`. The DRM'd handle is why no AppleScript path exists.
 
 Observed 2026-07-15, not re-verified.
+
+## Personal and artist stations have a track feed, live stations do not
+
+Undocumented, found 2026-08-25 by probing. A `GET` returns `405 Method Not Allowed`
+rather than `404`, which is what gives the route away:
+
+```
+GET  /v1/me/stations/next-tracks/{stationId}  → 405 Method Not Allowed
+POST /v1/me/stations/next-tracks/{stationId}  → 200, two catalog songs
+```
+
+Five successive POSTs to a personal station returned ten distinct songs with no repeat,
+so it behaves as a rolling feed rather than a fixed list. It requires a Music User Token
+(`403` without one) and it returns full catalog song objects, ids included.
+
+The DRM boundary holds exactly where `playParams` says it does. A live station
+(`format: stream`, `hasDrm: true`, for example Apple Music 1) returns `{"data": []}`.
+Only `format: tracks` stations, which is what personal, Discovery, and
+"& Similar Artists" stations are, produce songs.
+
+Not established: whether draining this feed advances the station's real playback state
+for the listener.
+
+## The library API is add only
+
+Verified 2026-08-25 against a Music User Token. Adding works, removing does not:
+
+```
+POST   /v1/me/library?ids[songs]=…       → 202 Accepted
+DELETE /v1/me/library/songs/{id}         → 401
+DELETE /v1/me/library/playlists/{id}     → 401
+```
+
+Every deletion has to go through AppleScript (`delete` on the track or playlist), which
+succeeds without an error and without raising a confirmation dialog. The practical
+consequence is that nothing can clean up a library write unless Music.app is running and
+scriptable, so there is no such thing as a headless cleanup pass.
+
+Timing note for the add: the response is `202`, not `200`, and materialization is
+asynchronous. One song appeared in `/v1/me/library/songs` after about 2 seconds, four
+songs after about 6 seconds. Any fixed sleep after an add is a race.
+
+## Adding a catalog song to a playlist also adds it to your library
+
+Measured 2026-08-25. Creating a library playlist with catalog song ids in
+`relationships.tracks` does not just populate the playlist:
+
+```
+POST /v1/me/library/playlists  with 4 catalog song ids
+→ playlists 52 → 53,  songs 14167 → 14171,  albums 2958 → 2959
+```
+
+Deleting the playlist afterwards leaves the songs and the album behind. A playlist is
+therefore not a lighter-touch container for catalog content than the library itself.
+This happens server side through the API, so Music.app's own "add to library" preference
+does not govern it.
+
+## Deleting a library track collapses the queue that pointed at it
+
+Measured 2026-08-25, and the two halves are different:
+
+Deleting the **currently playing** track does not stop it. A track removed from the
+library mid-play kept playing normally, well past the point of removal.
+
+Deleting the **rest of the queue** destroys it. After adding a four track album, playing
+it, and then removing all four tracks from the library, `next track` became a silent
+no-op: the position simply advanced on the one track still sounding. Music.app's play
+queue holds references to library rows rather than copies, so the playing track survives
+on already buffered audio while everything behind it becomes unreachable.
+
+Deleting the **playlist** the queue came from is safe. With the same album played from a
+temporary playlist, deleting that playlist mid-play left the queue intact and
+`next track` continued to advance through the remaining tracks. The queue depends on the
+library rows, not on the container that seeded it.
 
 ## The EQ scripting interface reports state that disagrees with the UI
 

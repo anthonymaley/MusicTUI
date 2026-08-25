@@ -33,6 +33,7 @@ struct Music: ParsableCommand {
             Playlist.self,
             Radio.self,
             // Discovery
+            Home.self,
             Similar.self,
             Suggest.self,
             NewReleases.self,

@@ -1,7 +1,13 @@
 // Apple Music stations play by rewriting the station's REST share URL from
 // https:// to music:// and handing it to `open` — probed and audio-verified
-// 2026-07-15. The https:// form opens Safari; the scheme IS the mechanism.
-// No AppleScript, no Accessibility, no MusicKit; the AirPlay route survives.
+// 2026-07-15, re-verified 2026-08-25. The https:// form opens Safari; the
+// scheme IS the mechanism. No AppleScript, no Accessibility, no MusicKit; the
+// AirPlay route survives.
+//
+// 2026-08-25: also verified for a personal "Made for You" station (ra.u-…,
+// format: tracks, hasDrm: false), not just the live ones. Those same personal
+// and artist stations expose a track feed at POST /v1/me/stations/next-tracks/
+// {id}; live DRM'd stations return an empty array. See docs/platform-notes.md.
 import Foundation
 
 struct Station: Codable, Equatable {
@@ -33,7 +39,13 @@ struct SystemOpener: Opener {
 
 /// https://music.apple.com/{sf}/station/{slug}/{id} -> music://…
 /// nil unless the host is music.apple.com AND the path is a /station/ path.
-/// Both checks matter: music:// on an album URL would silently play an album.
+///
+/// Both checks matter, but NOT for the reason this comment used to give. It claimed
+/// music:// on an album URL "would silently play an album". Measured 2026-08-25 and
+/// false: an album URL, a song deep link (?i=), and `open location` all do nothing at
+/// all. The scheme is a station play verb, not a general play verb. The /station/
+/// check earns its keep by returning nil so callers can say "not a station URL",
+/// instead of handing `open` a URL that silently no-ops with no error to report.
 func stationPlayURL(_ shareURL: String) -> String? {
     guard let comps = URLComponents(string: shareURL.trimmingCharacters(in: .whitespaces)),
           let host = comps.host, host == "music.apple.com",

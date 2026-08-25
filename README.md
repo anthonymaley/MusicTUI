@@ -271,6 +271,8 @@ Apple's station search is shallow (5-7 results, no pagination) and misses real s
 | `music suggest 10 --from "Working Vibes"` | Suggest tracks from playlist vibe |
 | `music new-releases --like-current` | New releases from current artist |
 | `music mix --artists "Fouk,Floating Points" --name "Friday Mix"` | Mixed playlist |
+| `music home` | Your Home feed: Apple's For You rails plus recently played |
+| `music home --recent` | Just the recently played row (stations, albums, playlists) |
 | `music recent` | Recently played tracks (numbered, so `music play 3` works) |
 | `music rotation` | Your heavy-rotation music |
 
