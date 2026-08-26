@@ -8,6 +8,7 @@ final class HomeFeedTests: XCTestCase {
     {"data":[
       {"id":"6-27s5hU6azhJY","type":"personal-recommendation",
        "attributes":{"isGroupRecommendation":false,"kind":"music-recommendations",
+         "resourceTypes":["playlists"],
          "title":{"stringForDisplay":"Playlists Made for You"}},
        "relationships":{"contents":{"data":[
          {"id":"pl.pm-1","type":"playlists","attributes":{
@@ -17,6 +18,7 @@ final class HomeFeedTests: XCTestCase {
        ]}}},
       {"id":"7-2Tqlz47h9yro","type":"personal-recommendation",
        "attributes":{"isGroupRecommendation":false,"kind":"recently-played",
+         "resourceTypes":["albums","playlists","stations"],
          "title":{"stringForDisplay":"Recently Played"}},
        "relationships":{"contents":{"data":[
          {"id":"ra.u-01e4","type":"stations","attributes":{
@@ -69,7 +71,14 @@ final class HomeFeedTests: XCTestCase {
     }
 
     private func item(_ kind: HomeItemKind, id: String = "6776025177") -> HomeItem {
-        HomeItem(id: id, kind: kind, name: "X", subtitle: nil, url: nil, artworkURL: nil)
+        let detail: HomeItemDetail
+        switch kind {
+        case .station:  detail = .station(isLive: false)
+        case .album:    detail = .album(trackCount: nil, year: nil, genre: nil)
+        case .playlist: detail = .playlist(description: nil)
+        case .song:     detail = .song
+        }
+        return HomeItem(id: id, name: "X", subtitle: nil, url: nil, artworkURL: nil, detail: detail)
     }
 
     // MARK: - Rails
@@ -195,5 +204,98 @@ final class HomeFeedTests: XCTestCase {
 
     func testThrowsOnUnparseableBody() {
         XCTAssertThrowsError(try feed("not json").rails())
+    }
+
+    // MARK: - Typed item metadata
+
+    /// Albums carry trackCount, releaseDate and genreNames inline in the
+    /// recommendations payload (probed live 2026-08-25), so the panel costs no
+    /// extra request. Verify all three survive decoding.
+    func testDecodesAlbumMetadata() throws {
+        let json = """
+        {"data":[{"id":"r1","type":"personal-recommendation",
+          "attributes":{"kind":"music-recommendations","resourceTypes":["albums"],
+            "title":{"stringForDisplay":"New Releases for You"}},
+          "relationships":{"contents":{"data":[
+            {"id":"1","type":"albums","attributes":{"name":"Give It Up",
+              "artistName":"The Good Men","trackCount":5,
+              "releaseDate":"1992-07-02","genreNames":["House","Dance"]}}
+          ]}}}]}
+        """
+        let feed = HomeFeed(storefront: "us", token: { "t" },
+                            fetch: { _ in Data(json.utf8) })
+        let item = try XCTUnwrap(feed.rails().first?.items.first)
+        XCTAssertEqual(item.detail, .album(trackCount: 5, year: 1992, genre: "House"))
+        XCTAssertEqual(item.kind, .album)
+    }
+
+    /// Playlists carry NO trackCount (measured live). They carry description
+    /// instead, and user-authored playlists carry neither. Both must decode
+    /// without inventing a value.
+    func testDecodesPlaylistDescriptionAndToleratesItsAbsence() throws {
+        let json = """
+        {"data":[{"id":"r1","type":"personal-recommendation",
+          "attributes":{"kind":"music-recommendations","resourceTypes":["playlists"],
+            "title":{"stringForDisplay":"Playlists Made for You"}},
+          "relationships":{"contents":{"data":[
+            {"id":"p1","type":"playlists","attributes":{"name":"Your Essentials",
+              "curatorName":"Apple Music","description":{"standard":"The ones you play."}}},
+            {"id":"p2","type":"playlists","attributes":{"name":"House",
+              "curatorName":"Anthony Maley"}}
+          ]}}}]}
+        """
+        let feed = HomeFeed(storefront: "us", token: { "t" },
+                            fetch: { _ in Data(json.utf8) })
+        let items = try XCTUnwrap(feed.rails().first?.items)
+        XCTAssertEqual(items[0].detail, .playlist(description: "The ones you play."))
+        XCTAssertEqual(items[1].detail, .playlist(description: nil))
+    }
+
+    /// isLive is the only station metadata available without a second fetch.
+    /// The ra.u- id prefix is an observed hint, not a documented contract, so it
+    /// is deliberately NOT decoded into a "personal" flag.
+    func testDecodesStationLiveFlagDefaultingToFalse() throws {
+        let json = """
+        {"data":[{"id":"r1","type":"personal-recommendation",
+          "attributes":{"kind":"music-recommendations","resourceTypes":["stations"],
+            "title":{"stringForDisplay":"Stations for You"}},
+          "relationships":{"contents":{"data":[
+            {"id":"ra.1","type":"stations","attributes":{"name":"Apple Music 1","isLive":true}},
+            {"id":"ra.u-2","type":"stations","attributes":{"name":"My Station"}}
+          ]}}}]}
+        """
+        let feed = HomeFeed(storefront: "us", token: { "t" },
+                            fetch: { _ in Data(json.utf8) })
+        let items = try XCTUnwrap(feed.rails().first?.items)
+        XCTAssertEqual(items[0].detail, .station(isLive: true))
+        XCTAssertEqual(items[1].detail, .station(isLive: false))
+    }
+
+    /// A malformed or missing releaseDate must yield nil, not a crash and not a
+    /// zero that would then read as year 0 in the panel.
+    func testToleratesUnparseableReleaseDate() throws {
+        let json = """
+        {"data":[{"id":"r1","type":"personal-recommendation",
+          "attributes":{"kind":"music-recommendations","resourceTypes":["albums"],
+            "title":{"stringForDisplay":"X"}},
+          "relationships":{"contents":{"data":[
+            {"id":"1","type":"albums","attributes":{"name":"A","releaseDate":"nope"}},
+            {"id":"2","type":"albums","attributes":{"name":"B"}}
+          ]}}}]}
+        """
+        let feed = HomeFeed(storefront: "us", token: { "t" },
+                            fetch: { _ in Data(json.utf8) })
+        let items = try XCTUnwrap(feed.rails().first?.items)
+        XCTAssertEqual(items[0].detail, .album(trackCount: nil, year: nil, genre: nil))
+        XCTAssertEqual(items[1].detail, .album(trackCount: nil, year: nil, genre: nil))
+    }
+
+    /// resourceTypes is the flag that partitions rails by content type. It is
+    /// the whole basis of rail selection, so it must survive decoding.
+    func testDecodesRailResourceTypes() throws {
+        let feed = HomeFeed(storefront: "us", token: { "t" },
+                            fetch: { _ in Data(self.recommendationsJSON.utf8) })
+        let rails = try feed.rails()
+        XCTAssertEqual(rails.first?.resourceTypes, ["playlists"])
     }
 }

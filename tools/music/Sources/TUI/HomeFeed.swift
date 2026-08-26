@@ -30,21 +30,57 @@ enum HomeFeedError: Error {
 /// stations, albums and playlists side by side, and each plays differently.
 enum HomeItemKind: Equatable {
     case station, album, playlist, song
+}
 
-    init?(apiType: String) {
+/// Kind-specific metadata, all of it present inline in the recommendations
+/// payload (probed live 2026-08-25) so the detail panel costs no extra request.
+/// Modelled as an enum rather than a widening set of optionals so an album
+/// cannot carry isLive and a station cannot carry a track count.
+enum HomeItemDetail: Equatable {
+    case station(isLive: Bool)
+    case album(trackCount: Int?, year: Int?, genre: String?)
+    case playlist(description: String?)
+    case song
+
+    var kind: HomeItemKind {
+        switch self {
+        case .station:  return .station
+        case .album:    return .album
+        case .playlist: return .playlist
+        case .song:     return .song
+        }
+    }
+
+    /// nil for a type Apple added that we do not model yet: skip the row rather
+    /// than throwing, matching the old HomeItemKind(apiType:) behaviour.
+    init?(apiType: String, attributes a: [String: Any]) {
         switch apiType {
-        case "stations": self = .station
-        case "albums": self = .album
-        case "playlists": self = .playlist
-        case "songs": self = .song
-        default: return nil   // Apple can add a type at any time; skip, don't throw
+        case "stations":
+            self = .station(isLive: a["isLive"] as? Bool ?? false)
+        case "albums":
+            self = .album(trackCount: a["trackCount"] as? Int,
+                          year: homeReleaseYear(a["releaseDate"] as? String),
+                          genre: (a["genreNames"] as? [String])?.first)
+        case "playlists":
+            self = .playlist(
+                description: (a["description"] as? [String: Any])?["standard"] as? String)
+        case "songs":
+            self = .song
+        default:
+            return nil   // Apple can add a type at any time; skip, don't throw
         }
     }
 }
 
+/// Apple's releaseDate is "YYYY-MM-DD". Anything else yields nil rather than a
+/// zero, which would render as year 0 in the panel.
+private func homeReleaseYear(_ raw: String?) -> Int? {
+    guard let raw, raw.count >= 4 else { return nil }
+    return Int(raw.prefix(4))
+}
+
 struct HomeItem: Equatable {
     let id: String
-    let kind: HomeItemKind
     let name: String
     /// artistName for albums and songs, curatorName for playlists, nil for
     /// stations (which carry neither).
@@ -55,6 +91,9 @@ struct HomeItem: Equatable {
     /// those, measured 2026-08-25.
     let url: String?
     let artworkURL: String?
+    let detail: HomeItemDetail
+
+    var kind: HomeItemKind { detail.kind }
 }
 
 struct HomeRail: Equatable {
@@ -64,6 +103,9 @@ struct HomeRail: Equatable {
     /// True for the feed's own recently-played rail. Keyed off the API's `kind`
     /// rather than the display title, which is localized.
     let isRecentlyPlayed: Bool
+    /// The API's own content-type flag, e.g. ["albums"]. This is what rail
+    /// selection runs on: titles are localized and rotate, flags do not.
+    let resourceTypes: [String]
 }
 
 // MARK: - Display model (pure, so the scene's layout is testable without a network)
@@ -128,7 +170,8 @@ final class HomeFeed {
                 id: id,
                 title: (a["title"] as? [String: Any])?["stringForDisplay"] as? String ?? "",
                 items: items,
-                isRecentlyPlayed: (a["kind"] as? String) == "recently-played")
+                isRecentlyPlayed: (a["kind"] as? String) == "recently-played",
+                resourceTypes: (a["resourceTypes"] as? [String]) ?? [])
         }
     }
 
@@ -167,17 +210,17 @@ final class HomeFeed {
         rows.compactMap { row in
             guard let id = row["id"] as? String,
                   let type = row["type"] as? String,
-                  let kind = HomeItemKind(apiType: type),
                   let a = row["attributes"] as? [String: Any],
-                  let name = a["name"] as? String
+                  let name = a["name"] as? String,
+                  let detail = HomeItemDetail(apiType: type, attributes: a)
             else { return nil }
             return HomeItem(
                 id: id,
-                kind: kind,
                 name: name,
                 subtitle: (a["artistName"] as? String) ?? (a["curatorName"] as? String),
                 url: a["url"] as? String,
-                artworkURL: (a["artwork"] as? [String: Any])?["url"] as? String)
+                artworkURL: (a["artwork"] as? [String: Any])?["url"] as? String,
+                detail: detail)
         }
     }
 

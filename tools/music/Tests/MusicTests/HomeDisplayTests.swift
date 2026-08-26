@@ -3,12 +3,20 @@ import XCTest
 
 final class HomeDisplayTests: XCTestCase {
     private func item(_ kind: HomeItemKind, _ name: String) -> HomeItem {
-        HomeItem(id: name, kind: kind, name: name, subtitle: nil, url: nil, artworkURL: nil)
+        let detail: HomeItemDetail
+        switch kind {
+        case .station:  detail = .station(isLive: false)
+        case .album:    detail = .album(trackCount: nil, year: nil, genre: nil)
+        case .playlist: detail = .playlist(description: nil)
+        case .song:     detail = .song
+        }
+        return HomeItem(id: name, name: name, subtitle: nil,
+                        url: nil, artworkURL: nil, detail: detail)
     }
 
     private func rail(_ title: String, recent: Bool = false, _ names: [String]) -> HomeRail {
         HomeRail(id: title, title: title, items: names.map { item(.album, $0) },
-                 isRecentlyPlayed: recent)
+                 isRecentlyPlayed: recent, resourceTypes: ["albums"])
     }
 
     // MARK: - Ordering
