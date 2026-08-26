@@ -19,30 +19,35 @@ final class HomeScene: Scene {
     let id: SceneID = .home
     let tabTitle = "Home"
 
-    var footerHint: String {
-        switch level {
-        case .rails: return "\u{2191}\u{2193} Move  Enter Play/Open  r Refresh"
-        case .tracks: return "\u{2191}\u{2193} Move  \u{2190} Back"
-        }
-    }
-
-    private enum Level: Equatable {
-        case rails
-        case tracks(HomeItem)
-    }
-
     private let feed: HomeFeed?
     private let status: StatusStore
     private let opener: Opener
 
-    private var level: Level = .rails
+    private var stack: [HomeFrameState] = [HomeFrameState(level: .home, cursor: HomeCursor())]
     private var rails: [HomeRail] = []
-    private var cursor = 0            // index into selectableHomeIndices(rows)
-    private var scroll = 0
     private var trackRows: [HomeItem] = []
-    private var trackCursor = 0
     private var loaded = false
     private var failed = false
+    private var lastBodyHeight = 1
+
+    /// The active level. Writable so cursorIndex and scroll do not each have to
+    /// index the stack's top element themselves — one place owns that arithmetic.
+    /// The stack is never empty: it is seeded in init and popLevel refuses to
+    /// drop the last frame, so this subscript cannot trap.
+    private var current: HomeFrameState {
+        get { stack[stack.count - 1] }
+        set { stack[stack.count - 1] = newValue }
+    }
+
+    private var cursorIndex: Int {
+        get { current.cursor.index }
+        set { current.cursor.index = newValue }
+    }
+
+    private var scroll: Int {
+        get { current.cursor.scroll }
+        set { current.cursor.scroll = newValue }
+    }
 
     // Background fetch, inbox-under-lock, drained in tick() — the same
     // discipline RadioScene uses, because HomeFeed blocks up to 20s per call and
@@ -62,44 +67,54 @@ final class HomeScene: Scene {
 
     // MARK: - Rows
 
+    /// Home shows five curated rails at four items each. The rail level shows
+    /// one rail in full, in Apple's own item order.
     private var rows: [HomeDisplayRow] {
-        homeDisplayRows(rails: orderedHomeRails(rails), perRail: 8)
+        switch current.level {
+        case .home:
+            return homeDisplayRows(rails: selectHomeRails(orderedHomeRails(rails),
+                                                          currentYear: homeCurrentYear()),
+                                   perRail: 4)
+        case .rail(let rail):
+            return homeDisplayRows(rails: [rail], perRail: rail.items.count)
+        case .tracks:
+            return trackRows.map { HomeDisplayRow.item($0) }
+        }
     }
 
-    private var selectable: [Int] { selectableHomeIndices(rows) }
+    private var selection: HomeSelection? { homeSelection(rows: rows, cursor: cursorIndex) }
 
-    private var selection: HomeItem? {
-        guard cursor < selectable.count else { return nil }
-        if case .item(let item) = rows[selectable[cursor]] { return item }
-        return nil
-    }
+    private var canGoBack: Bool { stack.count > 1 }
+
+    var footerHint: String { homeFooterHint(selection, canGoBack: canGoBack) }
 
     // MARK: - Input
 
     func handle(_ key: KeyPress) -> SceneAction {
         let k = vimAlias(key, listScene: true)
-
-        if case .tracks = level {
-            switch k {
-            case .up: trackCursor = max(0, trackCursor - 1); return .redraw
-            case .down: trackCursor = min(max(0, trackRows.count - 1), trackCursor + 1); return .redraw
-            case .left, .escape:
-                level = .rails
-                trackRows = []
-                trackCursor = 0
-                return .redraw
-            default: return .none
-            }
-        }
+        let count = selectableHomeIndices(rows).count
 
         switch k {
-        case .up: cursor = max(0, cursor - 1); return .redraw
-        case .down: cursor = min(max(0, selectable.count - 1), cursor + 1); return .redraw
-        case .home: cursor = 0; return .redraw
-        case .end: cursor = max(0, selectable.count - 1); return .redraw
-        case .char("r"):
-            refresh()
+        case .up:
+            cursorIndex = max(0, cursorIndex - 1); clampScroll(); return .redraw
+        case .down:
+            cursorIndex = min(max(0, count - 1), cursorIndex + 1); clampScroll(); return .redraw
+        case .home:
+            cursorIndex = 0; clampScroll(); return .redraw
+        case .end:
+            cursorIndex = max(0, count - 1); clampScroll(); return .redraw
+        case .left, .escape:
+            guard canGoBack else { return .none }
+            // Leaving the track list drops its rows. drillIn resets them before
+            // every fetch, so this is memory hygiene rather than correctness —
+            // but gating it on landing at .home meant it only fired on the
+            // second pop and left the array alive in between.
+            if case .tracks = current.level { trackRows = [] }
+            stack = popLevel(stack)
             return .redraw
+        case .char("r"):
+            guard case .home = current.level else { return .none }
+            refresh(); return .redraw
         case .enter, .right:
             return activate()
         default:
@@ -107,29 +122,49 @@ final class HomeScene: Scene {
         }
     }
 
+    /// Every level shares one viewport. The track level previously had none,
+    /// so a selection past the terminal height became invisible.
+    ///
+    /// NOTE the index conversion: `cursorIndex` is an ordinal among SELECTABLE
+    /// rows, while the viewport scrolls the FULL row array (headers included).
+    /// Passing the ordinal straight through would drift the window by one row
+    /// per header above the cursor.
+    private func clampScroll() {
+        let all = rows
+        let selectable = selectableHomeIndices(all)
+        let cursorRow = cursorIndex < selectable.count ? selectable[cursorIndex] : 0
+        scroll = scrollToShow(row: cursorRow, scroll: scroll,
+                              visibleHeight: max(1, lastBodyHeight), count: all.count)
+    }
+
     private func activate() -> SceneAction {
-        guard let item = selection else { return .none }
-        switch item.kind {
-        case .station:
-            guard let url = item.url else {
-                status.post("That station has no play URL.", error: true)
+        guard let selection else { return .none }
+        switch selection {
+        case .viewAll(let rail):
+            stack = pushLevel(stack, .rail(rail))
+            return .redraw
+        case .item(let item):
+            switch item.detail {
+            case .station:
+                guard let url = item.url else {
+                    status.post("That station has no play URL.", error: true)
+                    return .redraw
+                }
+                do {
+                    try playStation(Station(id: item.id, name: item.name, url: url,
+                                            isLive: nil, artworkURL: item.artworkURL),
+                                    via: opener)
+                    status.post("Playing \(item.name)")
+                } catch {
+                    status.post("Could not play \(item.name).", error: true)
+                }
                 return .redraw
+            case .album, .playlist:
+                drillIn(item)
+                return .redraw
+            case .song:
+                return .none
             }
-            do {
-                try playStation(Station(id: item.id, name: item.name, url: url,
-                                        isLive: nil, artworkURL: item.artworkURL),
-                                via: opener)
-                status.post("Playing \(item.name)")
-            } catch {
-                status.post("Could not play \(item.name).", error: true)
-            }
-            return .redraw
-        case .album, .playlist:
-            drillIn(item)
-            return .redraw
-        case .song:
-            // Songs only appear inside a drill-in, which has its own handler.
-            return .none
         }
     }
 
@@ -139,16 +174,15 @@ final class HomeScene: Scene {
         loaded = false
         failed = false
         fetchStarted = false
-        cursor = 0
+        stack = [HomeFrameState(level: .home, cursor: HomeCursor())]
         status.post("Refreshing Home\u{2026}")
     }
 
     private func drillIn(_ item: HomeItem) {
         guard let feed else { return }
         guard !tracksInFlight else { return }
-        level = .tracks(item)
+        stack = pushLevel(stack, .tracks(item))
         trackRows = []
-        trackCursor = 0
         tracksInFlight = true
         DispatchQueue.global().async { [weak self] in
             let fetched = (try? feed.tracks(for: item)) ?? []
@@ -186,7 +220,7 @@ final class HomeScene: Scene {
             rails = incomingRails
             loaded = true
             failed = incomingFailed || incomingRails.isEmpty
-            cursor = min(cursor, max(0, selectable.count - 1))
+            cursorIndex = min(cursorIndex, max(0, selectableHomeIndices(rows).count - 1))
             changed = true
         }
         if let incomingTracks {
@@ -199,12 +233,24 @@ final class HomeScene: Scene {
 
     // MARK: - Render
 
+    // NOTE: renderRails/renderTracks below are the pre-stack renderers, adapted
+    // just enough to compile against the new state (stack/cursorIndex/scroll
+    // instead of level/cursor/trackCursor). They are not the two-pane layout —
+    // that is a separate renderer that replaces this method wholesale.
     func render(frame: ShellFrame, snapshot: NowPlayingSnapshot) -> String {
         var out = ""
         for r in frame.bodyY..<(frame.bodyY + frame.bodyHeight) {
             out += ANSICode.moveTo(row: r, col: 1) + ANSICode.clearLine
         }
-        if case .tracks(let item) = level {
+        // Re-derive the viewport every frame, not only on keypress. The scroll
+        // clamp used to live inline in renderRails and therefore ran on every
+        // paint, so a resize was reflected on the next frame. Moving it into
+        // clampScroll() for uniformity across levels lost that: lastBodyHeight
+        // updates here, but nothing recomputed scroll from it until the next
+        // arrow key, leaving a resized terminal showing a stale window.
+        lastBodyHeight = max(1, frame.bodyHeight - 2)
+        clampScroll()
+        if case .tracks(let item) = current.level {
             return out + renderTracks(frame: frame, parent: item)
         }
         return out + renderRails(frame: frame)
@@ -236,12 +282,8 @@ final class HomeScene: Scene {
         }
 
         let all = rows
-        let visibleHeight = max(1, bottom - y + 1)
-        // Keep the cursor on screen by scrolling the flattened row list.
-        let cursorRow = cursor < selectable.count ? selectable[cursor] : 0
-        if cursorRow < scroll { scroll = cursorRow }
-        if cursorRow >= scroll + visibleHeight { scroll = cursorRow - visibleHeight + 1 }
-        scroll = max(0, min(scroll, max(0, all.count - visibleHeight)))
+        let selectable = selectableHomeIndices(all)
+        let cursorRow = cursorIndex < selectable.count ? selectable[cursorIndex] : 0
 
         for idx in scroll..<all.count {
             guard y <= bottom else { break }
@@ -252,13 +294,10 @@ final class HomeScene: Scene {
             case .item(let item):
                 out += renderItemLine(item, selected: idx == cursorRow, width: frame.width)
             case .viewAll(let rail):
-                // Temporary. Task 6 gives this row a real activation (it opens
-                // the rail as its own level) and Task 7 replaces this renderer
-                // wholesale for the two-pane layout. It exists now only so that
-                // widening HomeDisplayRow does not break the build for the two
-                // commits between here and there — Swift's exhaustive switching
-                // makes the enum change and its consumers a single atomic unit,
-                // which this plan sequenced apart.
+                // This row has a real activation (Enter opens the rail as its
+                // own level), but it renders inertly here — no selection
+                // marker — because this renderer is a placeholder: the
+                // two-pane renderer replaces this method wholesale.
                 out += "\(ANSICode.dim)    View all \(rail.items.count)\(ANSICode.reset)"
             }
             y += 1
@@ -305,7 +344,7 @@ final class HomeScene: Scene {
             let nameW = max(12, min(44, frame.width - 26))
             let name = truncText(track.name, to: nameW)
             let padded = name + String(repeating: " ", count: max(0, nameW - name.count))
-            let nameStr = i == trackCursor ? "\(ANSICode.inverse)\(padded)\(ANSICode.reset)" : padded
+            let nameStr = i == cursorIndex ? "\(ANSICode.inverse)\(padded)\(ANSICode.reset)" : padded
             let artist = track.subtitle.map { " \(ANSICode.dim)\u{2014} \($0)\(ANSICode.reset)" } ?? ""
             out += "\(ANSICode.dim)\(num)\(ANSICode.reset) \(nameStr)\(artist)"
             y += 1

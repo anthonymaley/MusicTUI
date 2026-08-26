@@ -151,10 +151,18 @@ func homeDisplayRows(rails: [HomeRail], perRail: Int) -> [HomeDisplayRow] {
 }
 
 /// Indices of the rows a cursor may land on. Headers are not selectable.
+///
+/// Deliberately an exhaustive switch rather than "anything that is not a
+/// header": a new row case must be an explicit decision here, at the point
+/// selectability is decided, not only in homeSelection where it is projected.
+/// Those two must agree, and a deny-list lets them drift silently.
 func selectableHomeIndices(_ rows: [HomeDisplayRow]) -> [Int] {
     rows.enumerated().compactMap { i, row in
-        if case .header = row { return nil }
-        return i
+        switch row {
+        case .header:  return nil
+        case .item:    return i
+        case .viewAll: return i
+        }
     }
 }
 
