@@ -111,7 +111,7 @@ func runShell() {
                 status.post("Sign in to see your Home feed (music auth setup).", error: true)
                 return nil
             }
-            let scene = HomeScene(feed: makeHomeFeed(), status: status)
+            let scene = HomeScene(feed: makeHomeFeed(), status: status, kittyEnabled: kittyEnabled)
             scenes[id] = scene
             return scene
         case .radio:

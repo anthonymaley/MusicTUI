@@ -84,11 +84,40 @@ final class HomeScene: Scene {
     private var tracksInbox: [HomeItem]?     // guarded by inboxLock
     private var tracksInFlight = false       // tick()/handle() thread only
 
-    init(feed: HomeFeed?, status: StatusStore, opener: Opener = SystemOpener()) {
+    // Real hero cover for the detail panel: store owns fetch/cache/render;
+    // onReady sets artDirty under inboxLock (same discipline as the streaming
+    // inboxes above) and tick() drains it into `changed` so the swap paints
+    // on the next frame. Mirrors RadioScene/LibraryScene/PlaylistsScene exactly.
+    private let art = ArtworkStore()
+    private let kittyEnabled: Bool
+    private var artDirty = false          // guarded by inboxLock
+    // Placement-dedup (render-thread-only): the last kitty placement this
+    // scene emitted. Reset in artPlacementsInvalidated() on every tab switch
+    // (mirrors RadioScene/LibraryScene/PlaylistsScene), and explicitly on
+    // every render() path that stops drawing the panel at all (narrow
+    // resize, or `selection == nil` while a refresh is in flight) —
+    // render()'s `if twoPane, let selection { ... }` has no implicit else,
+    // so that cleanup has to be explicit or a cover from the last frame
+    // keeps floating over content that no longer describes it. A resize that
+    // keeps two-pane mode needs no explicit reset: renderArtHero's dedup
+    // already compares the FULL placement (id/row/col/cols/rows), so a
+    // geometry change alone is enough to force a delete+redraw.
+    private var lastPlaced: ArtPlacement? = nil
+
+    init(feed: HomeFeed?, status: StatusStore, opener: Opener = SystemOpener(),
+         kittyEnabled: Bool = false) {
         self.feed = feed
         self.status = status
         self.opener = opener
+        self.kittyEnabled = kittyEnabled
     }
+
+    /// The shell calls this right after it clears every kitty placement on a
+    /// scene switch (kittyDeletePlacementsEscape, d=a — placements only, data
+    /// stays transmitted). Dropping the memo forces a fresh placement on the
+    /// next render rather than assuming a placement the shell just deleted is
+    /// still on screen.
+    func artPlacementsInvalidated() { lastPlaced = nil }
 
     // MARK: - Rows
 
@@ -269,6 +298,8 @@ final class HomeScene: Scene {
         railsInbox = nil
         let incomingTracks = tracksInbox
         tracksInbox = nil
+        let artLanded = artDirty
+        artDirty = false
         inboxLock.unlock()
 
         if let incomingRails {
@@ -285,6 +316,7 @@ final class HomeScene: Scene {
             tracksInFlight = false
             changed = true
         }
+        if artLanded { changed = true }
         return changed
     }
 
@@ -307,7 +339,19 @@ final class HomeScene: Scene {
         let twoPane = homeIsTwoPane(width: frame.width)
         let leftW = twoPane ? homeLeftWidth(frameWidth: frame.width) : (frame.width - 6)
         out += renderLeft(frame: frame, width: leftW)
-        if twoPane, let selection { out += renderPanel(frame: frame, x: leftW + 4, selection: selection) }
+        if twoPane, let selection {
+            out += renderPanel(frame: frame, x: leftW + 4, selection: selection)
+        } else if let last = lastPlaced {
+            // The panel isn't drawing this frame — a narrow resize dropped to
+            // one pane, or `selection` is nil while a refresh is in flight
+            // (reliably reachable: `r` on an art-bearing row is a routine
+            // repro, not an edge case). Delete the stale placement rather
+            // than leaving last frame's cover floating over content that no
+            // longer describes it — the same cleanup NowPlayingScene's menu/
+            // empty-state branches do.
+            out += kittyDeleteEscape(id: last.id)
+            lastPlaced = nil
+        }
         return out
     }
 
@@ -392,6 +436,49 @@ final class HomeScene: Scene {
         var y = frame.bodyY + 2
         let bottom = frame.bodyY + frame.bodyHeight - 1
         let w = max(10, frame.width - x - 1)
+
+        // Reuses the shared hero ladder: kitty pixels -> chafa half-blocks ->
+        // mono blocks -> gradient identicon. ArtworkStore fetches on its own
+        // serial queue and signals via onReady; nothing here blocks.
+        //
+        // Two rules carried over from the 3.6.0 transmit-once bug: never gate
+        // the transmit escape to once per id (ArtworkStore.block already
+        // doesn't — revisiting a cover then renders nothing at all), and
+        // ALWAYS call renderArtHero below, even when this selection has no
+        // artwork URL or the geometry is degenerate. Skipping the call
+        // entirely on a nil URL would leave the PREVIOUS selection's
+        // placement floating over this item's text — the same class of bug
+        // as render()'s twoPane/selection branch above. The `.none` case
+        // inside renderArtHero is what deletes that stale placement.
+        let artKey: String
+        let artTemplate: String?
+        switch selection {
+        case .item(let item):    artKey = item.id; artTemplate = item.artworkURL
+        case .viewAll(let rail): artKey = rail.id; artTemplate = rail.items.first?.artworkURL
+        }
+        let gw = min(24, max(0, w))
+        let gh = min(12, max(0, bottom - y - 8))
+        var artBlock: ArtBlock? = nil
+        if let artTemplate {
+            artBlock = art.block(key: artKey,
+                                 url: ArtworkStore.resolveURL(artTemplate, width: 300, height: 300),
+                                 // Degenerate geometry skips the kitty path — same guard
+                                 // LibraryScene/RadioScene use: PNG conversion doesn't
+                                 // depend on gw/gh, so without this it would still return
+                                 // .kitty and place a zero-row image.
+                                 width: gw, height: gh,
+                                 kitty: kittyEnabled && gw > 0 && gh > 0) { [weak self] in
+                guard let self else { return }
+                self.inboxLock.lock(); self.artDirty = true; self.inboxLock.unlock()
+            }
+        }
+        let (afterArtY, placed) = renderArtHero(artBlock: artBlock,
+                                                gradientSeedText: artKey,
+                                                gw: gw, gh: gh, x: x, y: y,
+                                                cellW: frame.cellW, cellH: frame.cellH,
+                                                lastPlaced: lastPlaced, into: &out)
+        y = afterArtY + 1
+        lastPlaced = placed
 
         func line(_ s: String) {
             guard y <= bottom else { return }
