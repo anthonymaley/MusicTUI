@@ -135,4 +135,28 @@ final class HomeRailSelectionTests: XCTestCase {
         XCTAssertEqual(selectHomeRails([x, y], currentYear: 2026).map(\.title), ["X", "Y"])
         XCTAssertEqual(selectHomeRails([y, x], currentYear: 2026).map(\.title), ["Y", "X"])
     }
+
+    /// CLI/TUI drift on shared data is this repo's most-repeated bug: 1c06027
+    /// fixed exactly this for rail ORDER. Rail SELECTION must be shared the same
+    /// way, so both surfaces resolve one feed to one set of rails.
+    func testCliAndTuiResolveTheSameRailsFromOneFeed() {
+        let feed = [
+            albumRail("Boom Bap", [1995]),
+            typedRail("Playlists", "playlists"),
+            HomeRail(id: "rp", title: "Recently Played", items: [album("x", 2001)],
+                     isRecentlyPlayed: true, resourceTypes: ["albums"]),
+            albumRail("New Releases", [2026, 2026]),
+            typedRail("Stations", "stations"),
+            // Older than "Boom Bap" (1995) on purpose: slot 5 picks the
+            // freshest remaining rail by median year, so "Extra" must be the
+            // least fresh of what's left in order to be the one that misses
+            // the cut — this pins that exclusion, not an arbitrary one.
+            albumRail("Extra", [1980]),
+        ]
+        let tui = selectHomeRails(orderedHomeRails(feed), currentYear: 2026)
+        let cli = selectHomeRails(orderedHomeRails(feed), currentYear: 2026)
+        XCTAssertEqual(tui.map(\.id), cli.map(\.id))
+        XCTAssertEqual(tui.count, 5)
+        XCTAssertFalse(tui.map(\.title).contains("Extra"), "the sixth rail is not on the dashboard")
+    }
 }

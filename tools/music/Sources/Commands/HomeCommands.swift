@@ -19,6 +19,7 @@ struct Home: ParsableCommand {
     @Option(name: .long, help: "Max items per rail") var perRail: Int = 6
     @Flag(name: .long, help: "Only the recently played row") var recent = false
     @Flag(name: .long, help: "Output JSON") var json = false
+    @Flag(name: .long, help: "Every rail from the feed, uncurated") var all = false
 
     func run() throws {
         guard let feed = makeHomeFeed() else {
@@ -32,10 +33,18 @@ struct Home: ParsableCommand {
             return
         }
 
-        // Same ordering the TUI uses. CLI/TUI drift on shared data is this
-        // repo's most-repeated bug (3.8.3 spent four commits on it), so the
-        // order lives in one pure function both callers go through.
-        let rails = orderedHomeRails(try feed.rails()).prefix(max(1, limit))
+        // Rail ORDER and rail SELECTION both live in pure functions shared with
+        // the TUI. CLI/TUI drift on shared data is this repo's most-repeated bug
+        // (1c06027 was exactly this), so `music home` shows the same five rails
+        // the Home tab shows. `--all` opts back into the raw feed for scripting.
+        //
+        // Items per rail is deliberately NOT unified: the TUI shows 4 with a
+        // `View all N` to page through the rest; the CLI has no navigation to
+        // offer instead, so it keeps `--per-rail` (default 6). That is a
+        // decision, not drift.
+        let ordered = orderedHomeRails(try feed.rails())
+        let curated = all ? ordered : selectHomeRails(ordered, currentYear: homeCurrentYear())
+        let rails = curated.prefix(max(1, limit))
         if json {
             let payload = rails.map { rail -> [String: Any] in
                 ["title": rail.title,
