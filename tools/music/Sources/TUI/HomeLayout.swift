@@ -51,6 +51,22 @@ func homeFooterHint(_ selection: HomeSelection?, canGoBack: Bool, canRefresh: Bo
     }
 }
 
+/// Whether `→` should act on this selection. → drills in and never plays: the
+/// convention LibraryScene and PlaylistsScene both document. A station's Enter
+/// means Listen, so → must not fire it, or an arrow key would start playback
+/// and pull Music.app to the front.
+func homeRightArrowActivates(_ selection: HomeSelection?) -> Bool {
+    switch selection {
+    case .item(let item):
+        switch item.detail {
+        case .album, .playlist: return true
+        case .station, .song:   return false
+        }
+    case .viewAll:  return true
+    case nil:       return false
+    }
+}
+
 /// The panel's metadata line. nil means render nothing rather than a blank block.
 func homePanelMeta(_ detail: HomeItemDetail) -> String? {
     switch detail {

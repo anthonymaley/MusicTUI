@@ -197,4 +197,25 @@ final class HomeLayoutTests: XCTestCase {
         XCTAssertEqual(cols.subW, 4)
         XCTAssertEqual(cols.nameW, 12)
     }
+
+    // MARK: - Right arrow
+
+    /// → drills in like Enter, but never plays: the convention LibraryScene
+    /// and PlaylistsScene both document (LibraryScene.swift:485,
+    /// PlaylistsScene.swift:345). A station's Enter means Listen, so → must
+    /// stay a no-op there — otherwise an arrow key starts playback and pulls
+    /// Music.app to the front, which is the bug this guards against.
+    func testRightArrowDrillsInButNeverPlays() {
+        XCTAssertTrue(homeRightArrowActivates(.item(item(.album(trackCount: nil, year: nil, genre: nil)))),
+                      "album: → drills in")
+        XCTAssertTrue(homeRightArrowActivates(.item(item(.playlist(description: nil)))),
+                      "playlist: → drills in")
+        XCTAssertTrue(homeRightArrowActivates(.viewAll(rail(9))),
+                      "View all: → drills in")
+        XCTAssertFalse(homeRightArrowActivates(.item(item(.station(isLive: false)))),
+                       "station: Enter means Listen, so → must not fire it")
+        XCTAssertFalse(homeRightArrowActivates(.item(item(.song))),
+                       "song: already a no-op on Enter")
+        XCTAssertFalse(homeRightArrowActivates(nil))
+    }
 }

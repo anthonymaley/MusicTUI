@@ -202,7 +202,16 @@ final class HomeScene: Scene {
         case .char("r"):
             guard case .home = current.level else { return .none }
             refresh(); return .redraw
-        case .enter, .right:
+        case .enter:
+            return activate()
+        case .right:
+            // → drills in like Enter (vim `l` arrives here as .right),
+            // symmetric with ← back — but it never plays. LibraryScene and
+            // PlaylistsScene both hold this line: at levels where Enter means
+            // play, → stays a no-op. A station's Enter means Listen, so firing
+            // it from → would start playback and pull Music.app to the front,
+            // which is not what an arrow key should do.
+            guard homeRightArrowActivates(selection) else { return .none }
             return activate()
         default:
             return .none
