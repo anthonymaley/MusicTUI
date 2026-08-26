@@ -22,22 +22,32 @@ func homeLeftWidth(frameWidth: Int) -> Int {
 /// The footer names the action the current row can actually perform. "Play/Open"
 /// was ambiguous exactly where the tab needs to be honest: a station listens, an
 /// album only opens a read-only track list.
-func homeFooterHint(_ selection: HomeSelection?, canGoBack: Bool) -> String {
+///
+/// `canGoBack` and `canRefresh` are separate flags, not one "depth" concept,
+/// because they are governed by different rules: back is available at any
+/// level below Home, while refresh is guarded to the top level ONLY (see
+/// HomeScene.handle) because refresh() resets the whole navigation stack —
+/// offering it inside a rail or track list would silently teleport the user
+/// back to Home. The footer must advertise only what the current level will
+/// actually do with the key, so `r Refresh` is appended solely when
+/// `canRefresh` is true.
+func homeFooterHint(_ selection: HomeSelection?, canGoBack: Bool, canRefresh: Bool) -> String {
     let back = canGoBack ? "  \u{2190} Back" : ""
+    let refresh = canRefresh ? "  r Refresh" : ""
     switch selection {
     case .item(let item):
         switch item.detail {
         case .station:
-            return "\u{2191}\u{2193} Move  Enter Listen  r Refresh" + back
+            return "\u{2191}\u{2193} Move  Enter Listen" + refresh + back
         case .album, .playlist:
-            return "\u{2191}\u{2193} Move  Enter Browse  r Refresh" + back
+            return "\u{2191}\u{2193} Move  Enter Browse" + refresh + back
         case .song:
             return "\u{2191}\u{2193} Move" + back
         }
     case .viewAll:
-        return "\u{2191}\u{2193} Move  Enter View all  r Refresh" + back
+        return "\u{2191}\u{2193} Move  Enter View all" + refresh + back
     case nil:
-        return "\u{2191}\u{2193} Move  r Refresh" + back
+        return "\u{2191}\u{2193} Move" + refresh + back
     }
 }
 

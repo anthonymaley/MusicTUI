@@ -5,10 +5,15 @@
 // Probed live 2026-08-25, full write-up in docs/platform-notes.md. What the
 // probes settled, so nobody re-derives it:
 //
-//  - /v1/me/recommendations returned 17 rails, ids stable across calls, and
-//    `cache-control: private, max-age=600`. Ten minutes is Apple's own hint to
-//    its clients, so refresh-on-load with a 10 minute cache tracks the real
-//    rotation rather than guessing at one. Caching is the caller's job.
+//  - /v1/me/recommendations returned 17 rails on first probe; a same-day
+//    re-probe with the same limit and account returned 10. Rail count is NOT
+//    a stable fact — it varies call to call, which is part of why Home
+//    resolves down to a fixed five-slot selection (see selectHomeRails)
+//    rather than assuming a fixed shape from the feed. Ids were stable across
+//    calls, and the response carried `cache-control: private, max-age=600`.
+//    Ten minutes is Apple's own hint to its clients, so refresh-on-load with a
+//    10 minute cache tracks the real rotation rather than guessing at one.
+//    Caching is the caller's job.
 //  - "Top Picks for You", the first rail in Music.app's Home, is NOT in that
 //    list. It is composed client side. Its ingredients are here (its station
 //    cards live in "Stations for You", its new release in "New Releases for

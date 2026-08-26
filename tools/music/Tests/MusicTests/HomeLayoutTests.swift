@@ -67,22 +67,39 @@ final class HomeLayoutTests: XCTestCase {
     /// Enter Play/Open was ambiguous exactly where the tab needs honesty: a
     /// station listens, an album only opens a read-only track list.
     func testFooterNamesTheRealActionPerSelection() {
-        XCTAssertTrue(homeFooterHint(.item(item(.station(isLive: false))), canGoBack: false)
+        XCTAssertTrue(homeFooterHint(.item(item(.station(isLive: false))), canGoBack: false, canRefresh: true)
             .contains("Enter Listen"))
         XCTAssertTrue(homeFooterHint(.item(item(.album(trackCount: 5, year: 1992, genre: "House"))),
-                                     canGoBack: false).contains("Enter Browse"))
-        XCTAssertTrue(homeFooterHint(.item(item(.playlist(description: nil))), canGoBack: false)
+                                     canGoBack: false, canRefresh: true).contains("Enter Browse"))
+        XCTAssertTrue(homeFooterHint(.item(item(.playlist(description: nil))), canGoBack: false, canRefresh: true)
             .contains("Enter Browse"))
-        XCTAssertTrue(homeFooterHint(.viewAll(rail(9)), canGoBack: false).contains("Enter View all"))
+        XCTAssertTrue(homeFooterHint(.viewAll(rail(9)), canGoBack: false, canRefresh: true).contains("Enter View all"))
     }
 
     func testFooterShowsBackOnlyBelowTheTopLevel() {
-        XCTAssertFalse(homeFooterHint(.item(item(.song)), canGoBack: false).contains("Back"))
-        XCTAssertTrue(homeFooterHint(.item(item(.song)), canGoBack: true).contains("Back"))
+        XCTAssertFalse(homeFooterHint(.item(item(.song)), canGoBack: false, canRefresh: true).contains("Back"))
+        XCTAssertTrue(homeFooterHint(.item(item(.song)), canGoBack: true, canRefresh: true).contains("Back"))
     }
 
     func testFooterIsSafeWithNothingSelected() {
-        XCTAssertFalse(homeFooterHint(nil, canGoBack: false).isEmpty)
+        XCTAssertFalse(homeFooterHint(nil, canGoBack: false, canRefresh: true).isEmpty)
+    }
+
+    /// `r` is guarded to the Home level in HomeScene.handle() because refresh()
+    /// resets the whole navigation stack — advertising it inside a rail or
+    /// track list would promise an action the app silently ignores (worse: if
+    /// it WERE allowed there, it would teleport the user back to Home without
+    /// warning). The footer must show `r Refresh` exactly when the level
+    /// actually accepts it, regardless of what is selected.
+    func testFooterShowsRefreshOnlyWhenCanRefreshIsTrue() {
+        XCTAssertTrue(homeFooterHint(.item(item(.station(isLive: false))), canGoBack: false, canRefresh: true)
+            .contains("r Refresh"))
+        XCTAssertFalse(homeFooterHint(.item(item(.station(isLive: false))), canGoBack: false, canRefresh: false)
+            .contains("r Refresh"))
+        XCTAssertTrue(homeFooterHint(.viewAll(rail(9)), canGoBack: true, canRefresh: true).contains("r Refresh"))
+        XCTAssertFalse(homeFooterHint(.viewAll(rail(9)), canGoBack: true, canRefresh: false).contains("r Refresh"))
+        XCTAssertTrue(homeFooterHint(nil, canGoBack: false, canRefresh: true).contains("r Refresh"))
+        XCTAssertFalse(homeFooterHint(nil, canGoBack: false, canRefresh: false).contains("r Refresh"))
     }
 
     // MARK: - Panel

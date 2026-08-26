@@ -37,16 +37,20 @@ struct Home: ParsableCommand {
         // Home tab go through to turn a raw feed into curated rails. CLI/TUI
         // drift on shared data is this repo's most-repeated bug (1c06027 was
         // exactly this), so composing its two pieces by hand at a call site is
-        // exactly what this guards against. `--all` opts back into the raw
-        // ordered feed for scripting, so it still calls `orderedHomeRails`
-        // directly — there is no curation to share in that branch.
+        // exactly what this guards against. `--all` deliberately skips BOTH
+        // `resolvedHomeRails` (the five-slot selection policy) AND
+        // `orderedHomeRails` (which hoists Recently Played ahead of Apple's
+        // order) — it exists for scripting and inspection, so it must show
+        // exactly what the API returned, in the order the API returned it.
+        // Any reordering here would make the flag's own help text ("Every
+        // rail from the feed, uncurated") a lie.
         //
         // Items per rail is deliberately NOT unified: the TUI shows 4 with a
         // `View all N` to page through the rest; the CLI has no navigation to
         // offer instead, so it keeps `--per-rail` (default 6). That is a
         // decision, not drift.
         let feedRails = try feed.rails()
-        let curated = all ? orderedHomeRails(feedRails) : resolvedHomeRails(feedRails)
+        let curated = all ? feedRails : resolvedHomeRails(feedRails)
         let rails = curated.prefix(max(1, limit))
         if json {
             let payload = rails.map { rail -> [String: Any] in

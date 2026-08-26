@@ -163,7 +163,17 @@ final class HomeScene: Scene {
 
     private var canGoBack: Bool { stack.count > 1 }
 
-    var footerHint: String { homeFooterHint(selection, canGoBack: canGoBack) }
+    /// `r` is guarded to the top level in handle(), because refresh() resets the
+    /// stack — offering it deeper would silently teleport the user to Home. The
+    /// footer must not advertise it where it is ignored.
+    private var canRefresh: Bool {
+        if case .home = current.level { return true }
+        return false
+    }
+
+    var footerHint: String {
+        homeFooterHint(selection, canGoBack: canGoBack, canRefresh: canRefresh)
+    }
 
     // MARK: - Input
 
