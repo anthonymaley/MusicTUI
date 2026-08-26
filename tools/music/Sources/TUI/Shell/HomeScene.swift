@@ -38,8 +38,21 @@ final class HomeScene: Scene {
     private var rowsCache: [HomeDisplayRow] = []
 
     private struct RowsCacheKey: Equatable {
-        let level: HomeLevel
+        let level: String    // identity only: comparing a whole HomeRail costs
+                             // more than the flatMap the cache is guarding
         let version: Int
+    }
+
+    /// Cheap stand-in for `current.level` in the cache key. `.rail`/`.tracks`
+    /// carry a whole HomeRail/HomeItem — deep-comparing those on every `rows`
+    /// access would cost at least what the flatMap below costs, defeating the
+    /// point of caching it.
+    private var rowsCacheIdentity: String {
+        switch current.level {
+        case .home:            return "home"
+        case .rail(let rail):  return "rail:\(rail.id)"
+        case .tracks(let it):  return "tracks:\(it.id)"
+        }
     }
 
     /// The active level. Writable so cursorIndex and scroll do not each have to
@@ -91,7 +104,7 @@ final class HomeScene: Scene {
     /// is captured by value), so only `.home` actually depends on mutable
     /// state, but the same key is used for all three levels for uniformity.
     private var rows: [HomeDisplayRow] {
-        let key = RowsCacheKey(level: current.level, version: feedVersion)
+        let key = RowsCacheKey(level: rowsCacheIdentity, version: feedVersion)
         if rowsCacheKey == key {
             return rowsCache
         }
@@ -111,7 +124,15 @@ final class HomeScene: Scene {
         return computed
     }
 
-    private var selection: HomeSelection? { homeSelection(rows: rows, cursor: cursorIndex) }
+    /// nil while a fetch is in flight or has failed. The panel and the footer
+    /// both derive from this, and neither is gated on `loaded` the way
+    /// renderLeft is — so without this guard, pressing `r` leaves them
+    /// describing an item from the previous feed while the left pane says
+    /// "Loading…".
+    private var selection: HomeSelection? {
+        guard loaded, !failed else { return nil }
+        return homeSelection(rows: rows, cursor: cursorIndex)
+    }
 
     private var canGoBack: Bool { stack.count > 1 }
 
@@ -212,6 +233,13 @@ final class HomeScene: Scene {
         guard !tracksInFlight else { return }
         stack = pushLevel(stack, .tracks(item))
         trackRows = []
+        // drillIn always refetches (no dedupe on re-entering the same
+        // album), so re-opening it after Back would find a level key equal
+        // to the one still cached — same item id, unchanged version — and
+        // clampScroll() (which runs in render() before renderLeft's
+        // trackRows.isEmpty guard) would compute against the previous
+        // visit's rows.
+        feedVersion += 1
         tracksInFlight = true
         DispatchQueue.global().async { [weak self] in
             let fetched = (try? feed.tracks(for: item)) ?? []
@@ -349,8 +377,7 @@ final class HomeScene: Scene {
         // Only stations play from Home, so only stations carry the play marker.
         // A marker on a row that cannot play is a promise the tab cannot keep.
         let marker = item.kind == .station ? "\(ANSICode.lime)\u{25B6}\(ANSICode.reset)" : " "
-        let subW = item.subtitle == nil ? 0 : max(0, (width - 8) / 3)
-        let nameW = max(12, width - 8 - subW)
+        let (nameW, subW) = homeRowColumns(width: width, hasSubtitle: item.subtitle != nil)
         let name = truncText(item.name, to: nameW)
         let padded = name + String(repeating: " ", count: max(0, nameW - name.count))
         let nameStr = selected
@@ -388,7 +415,7 @@ final class HomeScene: Scene {
             }
             if let meta = homePanelMeta(item.detail) {
                 line("")
-                for chunk in wrapText(meta, to: w, maxLines: 4) {
+                for chunk in homeWrapText(meta, to: w, maxLines: 4) {
                     line("\(ANSICode.dim)\(chunk)\(ANSICode.reset)")
                 }
             }
@@ -399,24 +426,5 @@ final class HomeScene: Scene {
             line("\(ANSICode.dim)\(action)\(ANSICode.reset)")
         }
         return out
-    }
-
-    /// Playlist descriptions run to full sentences, so the panel wraps rather
-    /// than truncating them to a single unreadable line.
-    private func wrapText(_ s: String, to width: Int, maxLines: Int) -> [String] {
-        guard width > 0 else { return [] }
-        var lines: [String] = []
-        var line = ""
-        for word in s.split(separator: " ") {
-            let candidate = line.isEmpty ? String(word) : line + " " + word
-            if candidate.count <= width { line = candidate }
-            else {
-                lines.append(line)
-                line = String(word)
-                if lines.count == maxLines { return lines }
-            }
-        }
-        if !line.isEmpty, lines.count < maxLines { lines.append(line) }
-        return lines
     }
 }

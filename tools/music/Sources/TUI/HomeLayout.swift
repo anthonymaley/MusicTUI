@@ -89,3 +89,46 @@ func homePanelAction(_ selection: HomeSelection) -> String {
         return "Enter  View all \(rail.items.count)"
     }
 }
+
+/// Word-wrap for the panel's description block. Anything wider than the panel
+/// is truncated rather than carried through: playlist descriptions are API
+/// text, and one unbroken token (a URL, a hashtag run) would otherwise overrun
+/// the column, which renderPanel's line writer does not clamp.
+///
+/// When the description runs past `maxLines`, the last kept line gets a
+/// trailing ellipsis via truncText, the same marker every other cut in this
+/// file uses — a wrap that silently drops the tail reads as complete text
+/// rather than as clipped.
+func homeWrapText(_ s: String, to width: Int, maxLines: Int) -> [String] {
+    guard width > 0, maxLines > 0 else { return [] }
+    var lines: [String] = []
+    var line = ""
+    for word in s.split(separator: " ") {
+        let w = truncText(String(word), to: width)
+        let candidate = line.isEmpty ? w : line + " " + w
+        if candidate.count <= width { line = candidate; continue }
+        if !line.isEmpty { lines.append(line) }
+        line = w
+        if lines.count == maxLines {
+            lines[lines.count - 1] = homeMarkClipped(lines[lines.count - 1], width: width)
+            return lines
+        }
+    }
+    if !line.isEmpty, lines.count < maxLines { lines.append(line) }
+    return lines
+}
+
+/// Marks a wrapped line as clipped, reusing truncText's own ellipsis rule
+/// rather than inventing a second one.
+private func homeMarkClipped(_ line: String, width: Int) -> String {
+    guard !line.hasSuffix("\u{2026}") else { return line }
+    return truncText(line + "\u{2026}", to: width)
+}
+
+/// The left pane's two-column split. Subtitle gets a third of the usable width
+/// when present, the title takes the rest — which is what removed the old hard
+/// 40-column title cap.
+func homeRowColumns(width: Int, hasSubtitle: Bool) -> (nameW: Int, subW: Int) {
+    let subW = hasSubtitle ? max(0, (width - 8) / 3) : 0
+    return (max(12, width - 8 - subW), subW)
+}

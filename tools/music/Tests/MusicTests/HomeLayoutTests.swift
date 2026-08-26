@@ -126,4 +126,58 @@ final class HomeLayoutTests: XCTestCase {
                        "Enter  Browse tracks")
         XCTAssertEqual(homePanelAction(.viewAll(rail(11))), "Enter  View all 11")
     }
+
+    // MARK: - Wrap text
+
+    /// A single word wider than the panel must be truncated to fit, not
+    /// carried through unclamped past the column — playlist descriptions are
+    /// API text and a long URL or hashtag run is realistic. Also proves the
+    /// overflow branch does not emit a leading blank line for the word that
+    /// triggered it.
+    func testWrapTextTruncatesAWordLongerThanWidth() {
+        XCTAssertEqual(homeWrapText("aaaaaaaaaa", to: 5, maxLines: 4), ["aaaa\u{2026}"])
+    }
+
+    /// Ordinary short words wrap at the column, none of them clipped, because
+    /// every word fits and nothing runs past maxLines.
+    func testWrapTextWrapsOrdinaryWordsAcrossLines() {
+        XCTAssertEqual(homeWrapText("the quick brown fox jumps", to: 11, maxLines: 5),
+                       ["the quick", "brown fox", "jumps"])
+    }
+
+    /// maxLines caps the line count exactly, and the last kept line carries a
+    /// visible clip marker so the cut reads as clipped, not as complete text.
+    func testWrapTextRespectsMaxLinesAndMarksTheCut() {
+        let result = homeWrapText("one two three four five six", to: 8, maxLines: 2)
+        XCTAssertEqual(result, ["one two", "three\u{2026}"])
+        XCTAssertEqual(result.count, 2)
+    }
+
+    func testWrapTextOfEmptyStringIsEmpty() {
+        XCTAssertEqual(homeWrapText("", to: 20, maxLines: 4), [])
+    }
+
+    // MARK: - Row columns
+
+    /// With a subtitle, it gets a third of the usable width and the name
+    /// takes the rest; without one, the name gets everything.
+    func testRowColumnsSplitsWidthWhenSubtitlePresent() {
+        let cols = homeRowColumns(width: 80, hasSubtitle: true)
+        XCTAssertEqual(cols.subW, 24)
+        XCTAssertEqual(cols.nameW, 48)
+    }
+
+    func testRowColumnsGivesTheNameEverythingWithNoSubtitle() {
+        let cols = homeRowColumns(width: 80, hasSubtitle: false)
+        XCTAssertEqual(cols.subW, 0)
+        XCTAssertEqual(cols.nameW, 72)
+    }
+
+    /// The name column has a 12-column floor regardless of how narrow the
+    /// pane gets, so a subtitle can never squeeze the title unreadable.
+    func testRowColumnsClampsNameWidthToAFloorOfTwelve() {
+        let cols = homeRowColumns(width: 20, hasSubtitle: true)
+        XCTAssertEqual(cols.subW, 4)
+        XCTAssertEqual(cols.nameW, 12)
+    }
 }
