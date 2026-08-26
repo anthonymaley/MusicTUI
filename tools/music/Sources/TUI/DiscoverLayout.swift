@@ -1,4 +1,4 @@
-// Home's layout arithmetic and text composition, kept pure so the dashboard is
+// Discover's layout arithmetic and text composition, kept pure so the dashboard is
 // testable without a terminal.
 //
 // Row budgets are measured against ShellFrame.bodyHeight, never against raw
@@ -8,11 +8,11 @@ import Foundation
 
 /// Same breakpoint as the Now tab, so the two designed scenes agree on when a
 /// second pane is affordable.
-func homeIsTwoPane(width: Int) -> Bool { width >= 92 }
+func discoverIsTwoPane(width: Int) -> Bool { width >= 92 }
 
-/// Home's left column is the primary content rail rather than a metadata block,
+/// Discover's left column is the primary content rail rather than a metadata block,
 /// so it is the dominant side: wider than the Now tab's 44...54.
-func homeLeftWidth(frameWidth: Int) -> Int {
+func discoverLeftWidth(frameWidth: Int) -> Int {
     let minWidth = 92.0, maxWidth = 180.0
     let floorW = 56.0, capW = 88.0
     let t = min(1.0, max(0.0, (Double(frameWidth) - minWidth) / (maxWidth - minWidth)))
@@ -25,13 +25,13 @@ func homeLeftWidth(frameWidth: Int) -> Int {
 ///
 /// `canGoBack` and `canRefresh` are separate flags, not one "depth" concept,
 /// because they are governed by different rules: back is available at any
-/// level below Home, while refresh is guarded to the top level ONLY (see
-/// HomeScene.handle) because refresh() resets the whole navigation stack —
+/// level below Discover, while refresh is guarded to the top level ONLY (see
+/// DiscoverScene.handle) because refresh() resets the whole navigation stack —
 /// offering it inside a rail or track list would silently teleport the user
-/// back to Home. The footer must advertise only what the current level will
+/// back to Discover. The footer must advertise only what the current level will
 /// actually do with the key, so `r Refresh` is appended solely when
 /// `canRefresh` is true.
-func homeFooterHint(_ selection: HomeSelection?, canGoBack: Bool, canRefresh: Bool) -> String {
+func discoverFooterHint(_ selection: DiscoverSelection?, canGoBack: Bool, canRefresh: Bool) -> String {
     let back = canGoBack ? "  \u{2190} Back" : ""
     let refresh = canRefresh ? "  r Refresh" : ""
     switch selection {
@@ -55,7 +55,7 @@ func homeFooterHint(_ selection: HomeSelection?, canGoBack: Bool, canRefresh: Bo
 /// convention LibraryScene and PlaylistsScene both document. A station's Enter
 /// means Listen, so → must not fire it, or an arrow key would start playback
 /// and pull Music.app to the front.
-func homeRightArrowActivates(_ selection: HomeSelection?) -> Bool {
+func discoverRightArrowActivates(_ selection: DiscoverSelection?) -> Bool {
     switch selection {
     case .item(let item):
         switch item.detail {
@@ -68,7 +68,7 @@ func homeRightArrowActivates(_ selection: HomeSelection?) -> Bool {
 }
 
 /// The panel's metadata line. nil means render nothing rather than a blank block.
-func homePanelMeta(_ detail: HomeItemDetail) -> String? {
+func discoverPanelMeta(_ detail: DiscoverItemDetail) -> String? {
     switch detail {
     case .station:
         return nil
@@ -92,7 +92,7 @@ func homePanelMeta(_ detail: HomeItemDetail) -> String? {
 
 /// PERSONAL is deliberately absent: `ra.u-` is an observed id prefix, not a
 /// documented API contract, and not strong enough to become product language.
-func homePanelBadge(_ detail: HomeItemDetail) -> String {
+func discoverPanelBadge(_ detail: DiscoverItemDetail) -> String {
     switch detail {
     case .station(let isLive): return isLive ? "LIVE" : "STATION"
     case .album:               return "ALBUM"
@@ -103,7 +103,7 @@ func homePanelBadge(_ detail: HomeItemDetail) -> String {
 
 /// The panel's single primary action. Obeys the same rule as the play marker:
 /// never promise an action the platform cannot deliver.
-func homePanelAction(_ selection: HomeSelection) -> String {
+func discoverPanelAction(_ selection: DiscoverSelection) -> String {
     switch selection {
     case .item(let item):
         switch item.detail {
@@ -125,7 +125,7 @@ func homePanelAction(_ selection: HomeSelection) -> String {
 /// trailing ellipsis via truncText, the same marker every other cut in this
 /// file uses — a wrap that silently drops the tail reads as complete text
 /// rather than as clipped.
-func homeWrapText(_ s: String, to width: Int, maxLines: Int) -> [String] {
+func discoverWrapText(_ s: String, to width: Int, maxLines: Int) -> [String] {
     guard width > 0, maxLines > 0 else { return [] }
     var lines: [String] = []
     var line = ""
@@ -136,7 +136,7 @@ func homeWrapText(_ s: String, to width: Int, maxLines: Int) -> [String] {
         if !line.isEmpty { lines.append(line) }
         line = w
         if lines.count == maxLines {
-            lines[lines.count - 1] = homeMarkClipped(lines[lines.count - 1], width: width)
+            lines[lines.count - 1] = discoverMarkClipped(lines[lines.count - 1], width: width)
             return lines
         }
     }
@@ -146,7 +146,7 @@ func homeWrapText(_ s: String, to width: Int, maxLines: Int) -> [String] {
 
 /// Marks a wrapped line as clipped, reusing truncText's own ellipsis rule
 /// rather than inventing a second one.
-private func homeMarkClipped(_ line: String, width: Int) -> String {
+private func discoverMarkClipped(_ line: String, width: Int) -> String {
     guard !line.hasSuffix("\u{2026}") else { return line }
     return truncText(line + "\u{2026}", to: width)
 }
@@ -154,7 +154,7 @@ private func homeMarkClipped(_ line: String, width: Int) -> String {
 /// The left pane's two-column split. Subtitle gets a third of the usable width
 /// when present, the title takes the rest — which is what removed the old hard
 /// 40-column title cap.
-func homeRowColumns(width: Int, hasSubtitle: Bool) -> (nameW: Int, subW: Int) {
+func discoverRowColumns(width: Int, hasSubtitle: Bool) -> (nameW: Int, subW: Int) {
     let subW = hasSubtitle ? max(0, (width - 8) / 3) : 0
     return (max(12, width - 8 - subW), subW)
 }

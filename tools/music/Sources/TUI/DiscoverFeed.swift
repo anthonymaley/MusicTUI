@@ -1,4 +1,4 @@
-// The Home tab's read layer: Apple's own For You rails plus recently played.
+// The Discover tab's read layer: Apple's own For You rails plus recently played.
 // Both endpoints need a Music User Token (403 without), unlike RadioCatalog's
 // catalog reads which run on the developer token alone.
 //
@@ -7,14 +7,14 @@
 //
 //  - /v1/me/recommendations returned 17 rails on first probe; a same-day
 //    re-probe with the same limit and account returned 10. Rail count is NOT
-//    a stable fact — it varies call to call, which is part of why Home
-//    resolves down to a fixed five-slot selection (see selectHomeRails)
+//    a stable fact — it varies call to call, which is part of why Discover
+//    resolves down to a fixed five-slot selection (see selectDiscoverRails)
 //    rather than assuming a fixed shape from the feed. Ids were stable across
 //    calls, and the response carried `cache-control: private, max-age=600`.
 //    Ten minutes is Apple's own hint to its clients, so refresh-on-load with a
 //    10 minute cache tracks the real rotation rather than guessing at one.
 //    Caching is the caller's job.
-//  - "Top Picks for You", the first rail in Music.app's Home, is NOT in that
+//  - "Top Picks for You", the first rail in Music.app's Discover, is NOT in that
 //    list. It is composed client side. Its ingredients are here (its station
 //    cards live in "Stations for You", its new release in "New Releases for
 //    You"), but the rail itself cannot be fetched. Do not go looking again.
@@ -25,15 +25,15 @@
 //    music-summaries 404 (there is no Replay API), platform=web rejected.
 import Foundation
 
-enum HomeFeedError: Error {
+enum DiscoverFeedError: Error {
     case noToken
     case fetchFailed
     case badResponse
 }
 
-/// What a Home row points at. Rails are deliberately mixed: one rail can hold
+/// What a Discover row points at. Rails are deliberately mixed: one rail can hold
 /// stations, albums and playlists side by side, and each plays differently.
-enum HomeItemKind: Equatable {
+enum DiscoverItemKind: Equatable {
     case station, album, playlist, song
 }
 
@@ -41,13 +41,13 @@ enum HomeItemKind: Equatable {
 /// payload (probed live 2026-08-25) so the detail panel costs no extra request.
 /// Modelled as an enum rather than a widening set of optionals so an album
 /// cannot carry isLive and a station cannot carry a track count.
-enum HomeItemDetail: Equatable {
+enum DiscoverItemDetail: Equatable {
     case station(isLive: Bool)
     case album(trackCount: Int?, year: Int?, genre: String?)
     case playlist(description: String?)
     case song
 
-    var kind: HomeItemKind {
+    var kind: DiscoverItemKind {
         switch self {
         case .station:  return .station
         case .album:    return .album
@@ -57,14 +57,14 @@ enum HomeItemDetail: Equatable {
     }
 
     /// nil for a type Apple added that we do not model yet: skip the row rather
-    /// than throwing, matching the old HomeItemKind(apiType:) behaviour.
+    /// than throwing, matching the old DiscoverItemKind(apiType:) behaviour.
     init?(apiType: String, attributes a: [String: Any]) {
         switch apiType {
         case "stations":
             self = .station(isLive: a["isLive"] as? Bool ?? false)
         case "albums":
             self = .album(trackCount: a["trackCount"] as? Int,
-                          year: homeReleaseYear(a["releaseDate"] as? String),
+                          year: discoverReleaseYear(a["releaseDate"] as? String),
                           genre: (a["genreNames"] as? [String])?.first)
         case "playlists":
             self = .playlist(
@@ -79,12 +79,12 @@ enum HomeItemDetail: Equatable {
 
 /// Apple's releaseDate is "YYYY-MM-DD". Anything else yields nil rather than a
 /// zero, which would render as year 0 in the panel.
-private func homeReleaseYear(_ raw: String?) -> Int? {
+private func discoverReleaseYear(_ raw: String?) -> Int? {
     guard let raw, raw.count >= 4 else { return nil }
     return Int(raw.prefix(4))
 }
 
-struct HomeItem: Equatable {
+struct DiscoverItem: Equatable {
     let id: String
     let name: String
     /// artistName for albums and songs, curatorName for playlists, nil for
@@ -96,15 +96,15 @@ struct HomeItem: Equatable {
     /// those, measured 2026-08-25.
     let url: String?
     let artworkURL: String?
-    let detail: HomeItemDetail
+    let detail: DiscoverItemDetail
 
-    var kind: HomeItemKind { detail.kind }
+    var kind: DiscoverItemKind { detail.kind }
 }
 
-struct HomeRail: Equatable {
+struct DiscoverRail: Equatable {
     let id: String
     let title: String
-    let items: [HomeItem]
+    let items: [DiscoverItem]
     /// True for the feed's own recently-played rail. Keyed off the API's `kind`
     /// rather than the display title, which is localized.
     let isRecentlyPlayed: Bool
@@ -115,39 +115,39 @@ struct HomeRail: Equatable {
 
 // MARK: - Display model (pure, so the scene's layout is testable without a network)
 
-/// A flattened Home row. Rails become headers; items and View all are selectable.
-enum HomeDisplayRow: Equatable {
+/// A flattened Discover row. Rails become headers; items and View all are selectable.
+enum DiscoverDisplayRow: Equatable {
     case header(String)
-    case item(HomeItem)
-    case viewAll(HomeRail)
+    case item(DiscoverItem)
+    case viewAll(DiscoverRail)
 }
 
-/// What the cursor is on. `.viewAll` is not a HomeItem, so a HomeItem?
+/// What the cursor is on. `.viewAll` is not a DiscoverItem, so a DiscoverItem?
 /// selection would return nil there and Enter would silently do nothing.
 /// Modelling both cases means every selectable row has an action and a footer
 /// hint by construction, and a future row type is a compile error in both
 /// switches rather than a no-op.
-enum HomeSelection: Equatable {
-    case item(HomeItem)
-    case viewAll(HomeRail)
+enum DiscoverSelection: Equatable {
+    case item(DiscoverItem)
+    case viewAll(DiscoverRail)
 }
 
-/// Music.app's Home leads with Top Picks and then Recently Played. Top Picks is
+/// Music.app's Discover leads with Top Picks and then Recently Played. Top Picks is
 /// not fetchable at all, so the closest honest thing is to lead with the row the
 /// user actually recognizes rather than leaving it wherever the feed put it.
 /// Stable otherwise: relative order is preserved on both sides of the split.
-func orderedHomeRails(_ rails: [HomeRail]) -> [HomeRail] {
+func orderedDiscoverRails(_ rails: [DiscoverRail]) -> [DiscoverRail] {
     rails.filter(\.isRecentlyPlayed) + rails.filter { !$0.isRecentlyPlayed }
 }
 
-func homeDisplayRows(rails: [HomeRail], perRail: Int) -> [HomeDisplayRow] {
+func discoverDisplayRows(rails: [DiscoverRail], perRail: Int) -> [DiscoverDisplayRow] {
     let cap = max(1, perRail)
-    return rails.flatMap { rail -> [HomeDisplayRow] in
+    return rails.flatMap { rail -> [DiscoverDisplayRow] in
         let items = rail.items.prefix(cap)
         // An empty rail is a bare heading with nothing under it, which reads as
         // a bug rather than as an empty state.
         guard !items.isEmpty else { return [] }
-        var rows: [HomeDisplayRow] = [.header(rail.title)] + items.map { HomeDisplayRow.item($0) }
+        var rows: [DiscoverDisplayRow] = [.header(rail.title)] + items.map { DiscoverDisplayRow.item($0) }
         // Only when there is genuinely more to see; otherwise it is needless
         // navigation to a screen showing the same rows.
         if rail.items.count > cap { rows.append(.viewAll(rail)) }
@@ -159,9 +159,9 @@ func homeDisplayRows(rails: [HomeRail], perRail: Int) -> [HomeDisplayRow] {
 ///
 /// Deliberately an exhaustive switch rather than "anything that is not a
 /// header": a new row case must be an explicit decision here, at the point
-/// selectability is decided, not only in homeSelection where it is projected.
+/// selectability is decided, not only in discoverSelection where it is projected.
 /// Those two must agree, and a deny-list lets them drift silently.
-func selectableHomeIndices(_ rows: [HomeDisplayRow]) -> [Int] {
+func selectableDiscoverIndices(_ rows: [DiscoverDisplayRow]) -> [Int] {
     rows.enumerated().compactMap { i, row in
         switch row {
         case .header:  return nil
@@ -172,8 +172,8 @@ func selectableHomeIndices(_ rows: [HomeDisplayRow]) -> [Int] {
 }
 
 /// Project the cursor onto what it is actually pointing at.
-func homeSelection(rows: [HomeDisplayRow], cursor: Int) -> HomeSelection? {
-    let selectable = selectableHomeIndices(rows)
+func discoverSelection(rows: [DiscoverDisplayRow], cursor: Int) -> DiscoverSelection? {
+    let selectable = selectableDiscoverIndices(rows)
     guard cursor >= 0, cursor < selectable.count else { return nil }
     switch rows[selectable[cursor]] {
     case .item(let item):  return .item(item)
@@ -182,7 +182,7 @@ func homeSelection(rows: [HomeDisplayRow], cursor: Int) -> HomeSelection? {
     }
 }
 
-final class HomeFeed {
+final class DiscoverFeed {
     private let storefront: String
     private let token: () -> String?
     private let fetch: (String) -> Data?
@@ -195,7 +195,7 @@ final class HomeFeed {
     }
 
     /// Apple's For You rails, empty ones dropped.
-    func rails(limit: Int = 30) throws -> [HomeRail] {
+    func rails(limit: Int = 30) throws -> [DiscoverRail] {
         let root = try json(at: "/v1/me/recommendations?limit=\(limit)")
         let rows = root["data"] as? [[String: Any]] ?? []
         return rows.compactMap { row in
@@ -206,7 +206,7 @@ final class HomeFeed {
             let items = decodeItems(contents)
             // A rail with nothing in it is an empty heading, not a row.
             guard !items.isEmpty else { return nil }
-            return HomeRail(
+            return DiscoverRail(
                 id: id,
                 title: (a["title"] as? [String: Any])?["stringForDisplay"] as? String ?? "",
                 items: items,
@@ -217,7 +217,7 @@ final class HomeFeed {
 
     /// The mixed recently-played rail: stations, albums and playlists, newest
     /// first. Matches Music.app's own Recently Played row.
-    func recentlyPlayed(limit: Int = 20) throws -> [HomeItem] {
+    func recentlyPlayed(limit: Int = 20) throws -> [DiscoverItem] {
         let root = try json(at: "/v1/me/recent/played?limit=\(limit)")
         return decodeItems(root["data"] as? [[String: Any]] ?? [])
     }
@@ -230,7 +230,7 @@ final class HomeFeed {
     /// tracks relationship (the API 400s with "No relationship found matching
     /// 'tracks'"). Their nearest equivalent is the next-tracks feed, which is a
     /// POST that advances the station, so it does not belong behind a browse key.
-    func tracks(for item: HomeItem) throws -> [HomeItem] {
+    func tracks(for item: DiscoverItem) throws -> [DiscoverItem] {
         let collection: String
         switch item.kind {
         case .album: collection = "albums"
@@ -246,15 +246,15 @@ final class HomeFeed {
 
     // MARK: - Parsing
 
-    private func decodeItems(_ rows: [[String: Any]]) -> [HomeItem] {
+    private func decodeItems(_ rows: [[String: Any]]) -> [DiscoverItem] {
         rows.compactMap { row in
             guard let id = row["id"] as? String,
                   let type = row["type"] as? String,
                   let a = row["attributes"] as? [String: Any],
                   let name = a["name"] as? String,
-                  let detail = HomeItemDetail(apiType: type, attributes: a)
+                  let detail = DiscoverItemDetail(apiType: type, attributes: a)
             else { return nil }
-            return HomeItem(
+            return DiscoverItem(
                 id: id,
                 name: name,
                 subtitle: (a["artistName"] as? String) ?? (a["curatorName"] as? String),
@@ -265,22 +265,22 @@ final class HomeFeed {
     }
 
     private func json(at path: String) throws -> [String: Any] {
-        guard token() != nil else { throw HomeFeedError.noToken }
-        guard let data = fetch(base + path) else { throw HomeFeedError.fetchFailed }
+        guard token() != nil else { throw DiscoverFeedError.noToken }
+        guard let data = fetch(base + path) else { throw DiscoverFeedError.fetchFailed }
         guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            throw HomeFeedError.badResponse
+            throw DiscoverFeedError.badResponse
         }
         return root
     }
 }
 
 /// Wired against the real AuthManager. nil when either token is missing —
-/// callers hide the Home tab rather than showing an error surface, the same way
+/// callers hide the Discover tab rather than showing an error surface, the same way
 /// makeCatalog() degrades to favorites-only.
-func makeHomeFeed() -> HomeFeed? {
+func makeDiscoverFeed() -> DiscoverFeed? {
     let auth = AuthManager()
     guard (try? auth.requireDeveloperToken()) != nil, auth.userToken() != nil else { return nil }
-    return HomeFeed(
+    return DiscoverFeed(
         storefront: auth.storefront(),
         token: { AuthManager().userToken() },
         fetch: { urlString in

@@ -1,7 +1,7 @@
 import XCTest
 @testable import music
 
-final class HomeFeedTests: XCTestCase {
+final class DiscoverFeedTests: XCTestCase {
     /// Verbatim shape from the live probe (2026-08-25), trimmed to two rails and
     /// the fields we read. The real feed returned 17 rails.
     private let recommendationsJSON = """
@@ -63,22 +63,22 @@ final class HomeFeedTests: XCTestCase {
       ]}}}]}
     """
 
-    private func feed(_ body: String, capture: ((String) -> Void)? = nil) -> HomeFeed {
-        HomeFeed(storefront: "us", token: { "tok" }, fetch: { url in
+    private func feed(_ body: String, capture: ((String) -> Void)? = nil) -> DiscoverFeed {
+        DiscoverFeed(storefront: "us", token: { "tok" }, fetch: { url in
             capture?(url)
             return body.data(using: .utf8)
         })
     }
 
-    private func item(_ kind: HomeItemKind, id: String = "6776025177") -> HomeItem {
-        let detail: HomeItemDetail
+    private func item(_ kind: DiscoverItemKind, id: String = "6776025177") -> DiscoverItem {
+        let detail: DiscoverItemDetail
         switch kind {
         case .station:  detail = .station(isLive: false)
         case .album:    detail = .album(trackCount: nil, year: nil, genre: nil)
         case .playlist: detail = .playlist(description: nil)
         case .song:     detail = .song
         }
-        return HomeItem(id: id, name: "X", subtitle: nil, url: nil, artworkURL: nil, detail: detail)
+        return DiscoverItem(id: id, name: "X", subtitle: nil, url: nil, artworkURL: nil, detail: detail)
     }
 
     // MARK: - Rails
@@ -90,7 +90,7 @@ final class HomeFeedTests: XCTestCase {
     }
 
     /// The feed carries its own Recently Played rail under a distinct `kind`, so
-    /// Home can special-case it rather than string-matching the title.
+    /// Discover can special-case it rather than string-matching the title.
     func testFlagsTheRecentlyPlayedRailByKindNotTitle() throws {
         let rails = try feed(recommendationsJSON).rails()
         XCTAssertEqual(rails.first?.isRecentlyPlayed, false)
@@ -145,7 +145,7 @@ final class HomeFeedTests: XCTestCase {
     // MARK: - Degradation
 
     /// An unknown resource type is skipped, not fatal: Apple can add one at any
-    /// time and a Home tab that throws on it is worse than one that omits a row.
+    /// time and a Discover tab that throws on it is worse than one that omits a row.
     func testSkipsUnknownItemTypes() throws {
         let json = """
         {"data":[{"id":"x","type":"music-videos","attributes":{"name":"V"}},
@@ -189,7 +189,7 @@ final class HomeFeedTests: XCTestCase {
     /// it. Stations are played, not browsed.
     func testDoesNotFetchTracksForAStation() throws {
         var fetched = false
-        let f = HomeFeed(storefront: "us", token: { "tok" }, fetch: { _ in
+        let f = DiscoverFeed(storefront: "us", token: { "tok" }, fetch: { _ in
             fetched = true
             return self.tracksJSON.data(using: .utf8)
         })
@@ -198,7 +198,7 @@ final class HomeFeedTests: XCTestCase {
     }
 
     func testThrowsWithoutAUserToken() {
-        let f = HomeFeed(storefront: "us", token: { nil }, fetch: { _ in Data() })
+        let f = DiscoverFeed(storefront: "us", token: { nil }, fetch: { _ in Data() })
         XCTAssertThrowsError(try f.rails())
     }
 
@@ -222,7 +222,7 @@ final class HomeFeedTests: XCTestCase {
               "releaseDate":"1992-07-02","genreNames":["House","Dance"]}}
           ]}}}]}
         """
-        let feed = HomeFeed(storefront: "us", token: { "t" },
+        let feed = DiscoverFeed(storefront: "us", token: { "t" },
                             fetch: { _ in Data(json.utf8) })
         let item = try XCTUnwrap(feed.rails().first?.items.first)
         XCTAssertEqual(item.detail, .album(trackCount: 5, year: 1992, genre: "House"))
@@ -244,7 +244,7 @@ final class HomeFeedTests: XCTestCase {
               "curatorName":"Anthony Maley"}}
           ]}}}]}
         """
-        let feed = HomeFeed(storefront: "us", token: { "t" },
+        let feed = DiscoverFeed(storefront: "us", token: { "t" },
                             fetch: { _ in Data(json.utf8) })
         let items = try XCTUnwrap(feed.rails().first?.items)
         XCTAssertEqual(items[0].detail, .playlist(description: "The ones you play."))
@@ -264,7 +264,7 @@ final class HomeFeedTests: XCTestCase {
             {"id":"ra.u-2","type":"stations","attributes":{"name":"My Station"}}
           ]}}}]}
         """
-        let feed = HomeFeed(storefront: "us", token: { "t" },
+        let feed = DiscoverFeed(storefront: "us", token: { "t" },
                             fetch: { _ in Data(json.utf8) })
         let items = try XCTUnwrap(feed.rails().first?.items)
         XCTAssertEqual(items[0].detail, .station(isLive: true))
@@ -283,7 +283,7 @@ final class HomeFeedTests: XCTestCase {
             {"id":"2","type":"albums","attributes":{"name":"B"}}
           ]}}}]}
         """
-        let feed = HomeFeed(storefront: "us", token: { "t" },
+        let feed = DiscoverFeed(storefront: "us", token: { "t" },
                             fetch: { _ in Data(json.utf8) })
         let items = try XCTUnwrap(feed.rails().first?.items)
         XCTAssertEqual(items[0].detail, .album(trackCount: nil, year: nil, genre: nil))
@@ -293,7 +293,7 @@ final class HomeFeedTests: XCTestCase {
     /// resourceTypes is the flag that partitions rails by content type. It is
     /// the whole basis of rail selection, so it must survive decoding.
     func testDecodesRailResourceTypes() throws {
-        let feed = HomeFeed(storefront: "us", token: { "t" },
+        let feed = DiscoverFeed(storefront: "us", token: { "t" },
                             fetch: { _ in Data(self.recommendationsJSON.utf8) })
         let rails = try feed.rails()
         XCTAssertEqual(rails.first?.resourceTypes, ["playlists"])

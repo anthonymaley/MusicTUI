@@ -1,7 +1,7 @@
-// tools/music/Sources/TUI/Shell/HomeScene.swift
+// tools/music/Sources/TUI/Shell/DiscoverScene.swift
 import Foundation
 
-// The Home tab: Apple's own For You rails, browsable, with a read-only drill-in
+// The Discover tab: Apple's own For You rails, browsable, with a read-only drill-in
 // on albums and playlists.
 //
 // Enter is deliberately asymmetric, and the asymmetry is a platform fact rather
@@ -12,20 +12,20 @@ import Foundation
 //
 // Catalog albums and playlists cannot be played without first adding them to the
 // library: music:// does nothing on a non-station URL, and the REST API has no
-// play verb. Home is for discovery and listening, not for shopping, so it does
+// play verb. Discover is for discovery and listening, not for shopping, so it does
 // not quietly write to the library to make a keypress work. The add/play/sweep
 // transaction that would let albums play is designed but deliberately unbuilt.
-final class HomeScene: Scene {
-    let id: SceneID = .home
-    let tabTitle = "Home"
+final class DiscoverScene: Scene {
+    let id: SceneID = .discover
+    let tabTitle = "Discover"
 
-    private let feed: HomeFeed?
+    private let feed: DiscoverFeed?
     private let status: StatusStore
     private let opener: Opener
 
-    private var stack: [HomeFrameState] = [HomeFrameState(level: .home, cursor: HomeCursor())]
-    private var rails: [HomeRail] = []
-    private var trackRows: [HomeItem] = []
+    private var stack: [DiscoverFrameState] = [DiscoverFrameState(level: .root, cursor: DiscoverCursor())]
+    private var rails: [DiscoverRail] = []
+    private var trackRows: [DiscoverItem] = []
     private var loaded = false
     private var failed = false
     private var lastBodyHeight = 1
@@ -35,21 +35,21 @@ final class HomeScene: Scene {
     /// themselves on every access.
     private var feedVersion = 0
     private var rowsCacheKey: RowsCacheKey?
-    private var rowsCache: [HomeDisplayRow] = []
+    private var rowsCache: [DiscoverDisplayRow] = []
 
     private struct RowsCacheKey: Equatable {
-        let level: String    // identity only: comparing a whole HomeRail costs
+        let level: String    // identity only: comparing a whole DiscoverRail costs
                              // more than the flatMap the cache is guarding
         let version: Int
     }
 
     /// Cheap stand-in for `current.level` in the cache key. `.rail`/`.tracks`
-    /// carry a whole HomeRail/HomeItem — deep-comparing those on every `rows`
+    /// carry a whole DiscoverRail/DiscoverItem — deep-comparing those on every `rows`
     /// access would cost at least what the flatMap below costs, defeating the
     /// point of caching it.
     private var rowsCacheIdentity: String {
         switch current.level {
-        case .home:            return "home"
+        case .root:            return "root"
         case .rail(let rail):  return "rail:\(rail.id)"
         case .tracks(let it):  return "tracks:\(it.id)"
         }
@@ -59,7 +59,7 @@ final class HomeScene: Scene {
     /// index the stack's top element themselves — one place owns that arithmetic.
     /// The stack is never empty: it is seeded in init and popLevel refuses to
     /// drop the last frame, so this subscript cannot trap.
-    private var current: HomeFrameState {
+    private var current: DiscoverFrameState {
         get { stack[stack.count - 1] }
         set { stack[stack.count - 1] = newValue }
     }
@@ -75,13 +75,13 @@ final class HomeScene: Scene {
     }
 
     // Background fetch, inbox-under-lock, drained in tick() — the same
-    // discipline RadioScene uses, because HomeFeed blocks up to 20s per call and
+    // discipline RadioScene uses, because DiscoverFeed blocks up to 20s per call and
     // must never run on the UI loop.
     private let inboxLock = NSLock()
     private var fetchStarted = false
-    private var railsInbox: [HomeRail]?      // guarded by inboxLock
+    private var railsInbox: [DiscoverRail]?      // guarded by inboxLock
     private var railsFailed = false          // guarded by inboxLock
-    private var tracksInbox: [HomeItem]?     // guarded by inboxLock
+    private var tracksInbox: [DiscoverItem]?     // guarded by inboxLock
     private var tracksInFlight = false       // tick()/handle() thread only
 
     // Real hero cover for the detail panel: store owns fetch/cache/render;
@@ -104,7 +104,7 @@ final class HomeScene: Scene {
     // geometry change alone is enough to force a delete+redraw.
     private var lastPlaced: ArtPlacement? = nil
 
-    init(feed: HomeFeed?, status: StatusStore, opener: Opener = SystemOpener(),
+    init(feed: DiscoverFeed?, status: StatusStore, opener: Opener = SystemOpener(),
          kittyEnabled: Bool = false) {
         self.feed = feed
         self.status = status
@@ -121,30 +121,30 @@ final class HomeScene: Scene {
 
     // MARK: - Rows
 
-    /// Home shows five curated rails at four items each. The rail level shows
+    /// Discover shows five curated rails at four items each. The rail level shows
     /// one rail in full, in Apple's own item order.
     ///
     /// Memoised: this ran rail selection plus flattening on every access,
     /// measured at 3 evaluations per idle repaint and up to 5 on a keypress
     /// frame. Keyed on (level, feedVersion) rather than level alone — keying
     /// on level alone would fail to invalidate when a background refresh
-    /// replaces `rails` while the user is still sitting at `.home`. `.rail`
-    /// and `.tracks` are already frozen at push time (the HomeRail/HomeItem
-    /// is captured by value), so only `.home` actually depends on mutable
+    /// replaces `rails` while the user is still sitting at `.root`. `.rail`
+    /// and `.tracks` are already frozen at push time (the DiscoverRail/DiscoverItem
+    /// is captured by value), so only `.root` actually depends on mutable
     /// state, but the same key is used for all three levels for uniformity.
-    private var rows: [HomeDisplayRow] {
+    private var rows: [DiscoverDisplayRow] {
         let key = RowsCacheKey(level: rowsCacheIdentity, version: feedVersion)
         if rowsCacheKey == key {
             return rowsCache
         }
-        let computed: [HomeDisplayRow]
+        let computed: [DiscoverDisplayRow]
         switch current.level {
-        case .home:
-            computed = homeDisplayRows(rails: resolvedHomeRails(rails), perRail: 4)
+        case .root:
+            computed = discoverDisplayRows(rails: resolvedDiscoverRails(rails), perRail: 4)
         case .rail(let rail):
-            computed = homeDisplayRows(rails: [rail], perRail: rail.items.count)
+            computed = discoverDisplayRows(rails: [rail], perRail: rail.items.count)
         case .tracks:
-            computed = trackRows.map { HomeDisplayRow.item($0) }
+            computed = trackRows.map { DiscoverDisplayRow.item($0) }
         }
         rowsCacheKey = key
         rowsCache = computed
@@ -156,30 +156,30 @@ final class HomeScene: Scene {
     /// renderLeft is — so without this guard, pressing `r` leaves them
     /// describing an item from the previous feed while the left pane says
     /// "Loading…".
-    private var selection: HomeSelection? {
+    private var selection: DiscoverSelection? {
         guard loaded, !failed else { return nil }
-        return homeSelection(rows: rows, cursor: cursorIndex)
+        return discoverSelection(rows: rows, cursor: cursorIndex)
     }
 
     private var canGoBack: Bool { stack.count > 1 }
 
     /// `r` is guarded to the top level in handle(), because refresh() resets the
-    /// stack — offering it deeper would silently teleport the user to Home. The
+    /// stack — offering it deeper would silently teleport the user to Discover. The
     /// footer must not advertise it where it is ignored.
     private var canRefresh: Bool {
-        if case .home = current.level { return true }
+        if case .root = current.level { return true }
         return false
     }
 
     var footerHint: String {
-        homeFooterHint(selection, canGoBack: canGoBack, canRefresh: canRefresh)
+        discoverFooterHint(selection, canGoBack: canGoBack, canRefresh: canRefresh)
     }
 
     // MARK: - Input
 
     func handle(_ key: KeyPress) -> SceneAction {
         let k = vimAlias(key, listScene: true)
-        let count = selectableHomeIndices(rows).count
+        let count = selectableDiscoverIndices(rows).count
 
         switch k {
         case .up:
@@ -194,13 +194,13 @@ final class HomeScene: Scene {
             guard canGoBack else { return .none }
             // Leaving the track list drops its rows. drillIn resets them before
             // every fetch, so this is memory hygiene rather than correctness —
-            // but gating it on landing at .home meant it only fired on the
+            // but gating it on landing at .root meant it only fired on the
             // second pop and left the array alive in between.
             if case .tracks = current.level { trackRows = [] }
             stack = popLevel(stack)
             return .redraw
         case .char("r"):
-            guard case .home = current.level else { return .none }
+            guard case .root = current.level else { return .none }
             refresh(); return .redraw
         case .enter:
             return activate()
@@ -211,7 +211,7 @@ final class HomeScene: Scene {
             // play, → stays a no-op. A station's Enter means Listen, so firing
             // it from → would start playback and pull Music.app to the front,
             // which is not what an arrow key should do.
-            guard homeRightArrowActivates(selection) else { return .none }
+            guard discoverRightArrowActivates(selection) else { return .none }
             return activate()
         default:
             return .none
@@ -227,7 +227,7 @@ final class HomeScene: Scene {
     /// per header above the cursor.
     private func clampScroll() {
         let all = rows
-        let selectable = selectableHomeIndices(all)
+        let selectable = selectableDiscoverIndices(all)
         let cursorRow = cursorIndex < selectable.count ? selectable[cursorIndex] : 0
         scroll = scrollToShow(row: cursorRow, scroll: scroll,
                               visibleHeight: max(1, lastBodyHeight), count: all.count)
@@ -270,11 +270,11 @@ final class HomeScene: Scene {
         loaded = false
         failed = false
         fetchStarted = false
-        stack = [HomeFrameState(level: .home, cursor: HomeCursor())]
-        status.post("Refreshing Home\u{2026}")
+        stack = [DiscoverFrameState(level: .root, cursor: DiscoverCursor())]
+        status.post("Refreshing Discover\u{2026}")
     }
 
-    private func drillIn(_ item: HomeItem) {
+    private func drillIn(_ item: DiscoverItem) {
         guard let feed else { return }
         guard !tracksInFlight else { return }
         stack = pushLevel(stack, .tracks(item))
@@ -300,7 +300,7 @@ final class HomeScene: Scene {
         if !fetchStarted, let feed {
             fetchStarted = true
             DispatchQueue.global().async { [weak self] in
-                var fetched: [HomeRail] = []
+                var fetched: [DiscoverRail] = []
                 var failed = false
                 do { fetched = try feed.rails() } catch { failed = true }
                 guard let self else { return }
@@ -326,7 +326,7 @@ final class HomeScene: Scene {
             feedVersion += 1
             loaded = true
             failed = incomingFailed || incomingRails.isEmpty
-            cursorIndex = min(cursorIndex, max(0, selectableHomeIndices(rows).count - 1))
+            cursorIndex = min(cursorIndex, max(0, selectableDiscoverIndices(rows).count - 1))
             changed = true
         }
         if let incomingTracks {
@@ -355,8 +355,8 @@ final class HomeScene: Scene {
         for r in frame.bodyY..<(frame.bodyY + frame.bodyHeight) {
             out += ANSICode.moveTo(row: r, col: 1) + ANSICode.clearLine
         }
-        let twoPane = homeIsTwoPane(width: frame.width)
-        let leftW = twoPane ? homeLeftWidth(frameWidth: frame.width) : (frame.width - 6)
+        let twoPane = discoverIsTwoPane(width: frame.width)
+        let leftW = twoPane ? discoverLeftWidth(frameWidth: frame.width) : (frame.width - 6)
         out += renderLeft(frame: frame, width: leftW)
         if twoPane, let selection {
             out += renderPanel(frame: frame, x: leftW + 4, selection: selection)
@@ -376,7 +376,7 @@ final class HomeScene: Scene {
 
     private var levelTitle: String {
         switch current.level {
-        case .home:            return "Home"
+        case .root:            return "Discover"
         case .rail(let rail):  return rail.title
         case .tracks(let it):  return it.name
         }
@@ -393,7 +393,7 @@ final class HomeScene: Scene {
 
         if feed == nil {
             out += ANSICode.moveTo(row: y, col: 3)
-            return out + "\(ANSICode.dim)Sign in to see your Home feed (music auth setup).\(ANSICode.reset)"
+            return out + "\(ANSICode.dim)Sign in to see your Discover feed (music auth setup).\(ANSICode.reset)"
         }
         if !loaded {
             out += ANSICode.moveTo(row: y, col: 3)
@@ -409,7 +409,7 @@ final class HomeScene: Scene {
         }
 
         let all = rows
-        let selectable = selectableHomeIndices(all)
+        let selectable = selectableDiscoverIndices(all)
         let cursorRow = cursorIndex < selectable.count ? selectable[cursorIndex] : 0
 
         for idx in scroll..<all.count {
@@ -434,11 +434,11 @@ final class HomeScene: Scene {
 
     /// The 40-column title cap is gone: the name column now grows with the pane,
     /// which is what reclaimed 48% of a 150-column screen.
-    private func renderRow(_ item: HomeItem, selected: Bool, width: Int) -> String {
-        // Only stations play from Home, so only stations carry the play marker.
+    private func renderRow(_ item: DiscoverItem, selected: Bool, width: Int) -> String {
+        // Only stations play from Discover, so only stations carry the play marker.
         // A marker on a row that cannot play is a promise the tab cannot keep.
         let marker = item.kind == .station ? "\(ANSICode.lime)\u{25B6}\(ANSICode.reset)" : " "
-        let (nameW, subW) = homeRowColumns(width: width, hasSubtitle: item.subtitle != nil)
+        let (nameW, subW) = discoverRowColumns(width: width, hasSubtitle: item.subtitle != nil)
         let name = truncText(item.name, to: nameW)
         let padded = name + String(repeating: " ", count: max(0, nameW - name.count))
         let nameStr = selected
@@ -450,7 +450,7 @@ final class HomeScene: Scene {
         return "  \(marker) \(nameStr)\(sub)"
     }
 
-    private func renderPanel(frame: ShellFrame, x: Int, selection: HomeSelection) -> String {
+    private func renderPanel(frame: ShellFrame, x: Int, selection: DiscoverSelection) -> String {
         var out = ""
         var y = frame.bodyY + 2
         let bottom = frame.bodyY + frame.bodyHeight - 1
@@ -512,19 +512,19 @@ final class HomeScene: Scene {
             line("")
             line("\(ANSICode.dim)\(rail.items.count) items\(ANSICode.reset)")
         case .item(let item):
-            line("\(ANSICode.amber)\(homePanelBadge(item.detail))\(ANSICode.reset)")
+            line("\(ANSICode.amber)\(discoverPanelBadge(item.detail))\(ANSICode.reset)")
             line("\(ANSICode.brightWhite)\(truncText(item.name, to: w))\(ANSICode.reset)")
             if let subtitle = item.subtitle {
                 line("\(ANSICode.dim)\(truncText(subtitle, to: w))\(ANSICode.reset)")
             }
-            if let meta = homePanelMeta(item.detail) {
+            if let meta = discoverPanelMeta(item.detail) {
                 line("")
-                for chunk in homeWrapText(meta, to: w, maxLines: 4) {
+                for chunk in discoverWrapText(meta, to: w, maxLines: 4) {
                     line("\(ANSICode.dim)\(chunk)\(ANSICode.reset)")
                 }
             }
         }
-        let action = homePanelAction(selection)
+        let action = discoverPanelAction(selection)
         if !action.isEmpty {
             line("")
             line("\(ANSICode.dim)\(action)\(ANSICode.reset)")

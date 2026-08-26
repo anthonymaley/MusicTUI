@@ -1,54 +1,54 @@
 import XCTest
 @testable import music
 
-final class HomeNavTests: XCTestCase {
-    private func item(_ name: String) -> HomeItem {
-        HomeItem(id: name, name: name, subtitle: nil, url: nil, artworkURL: nil,
+final class DiscoverNavTests: XCTestCase {
+    private func item(_ name: String) -> DiscoverItem {
+        DiscoverItem(id: name, name: name, subtitle: nil, url: nil, artworkURL: nil,
                  detail: .album(trackCount: nil, year: nil, genre: nil))
     }
 
-    private func rail(_ title: String) -> HomeRail {
-        HomeRail(id: title, title: title, items: [item("i")],
+    private func rail(_ title: String) -> DiscoverRail {
+        DiscoverRail(id: title, title: title, items: [item("i")],
                  isRecentlyPlayed: false, resourceTypes: ["albums"])
     }
 
     // MARK: - Stack
 
     func testPushAddsALevelWithAFreshCursor() {
-        var stack = [HomeFrameState(level: .home, cursor: HomeCursor(index: 7, scroll: 3))]
+        var stack = [DiscoverFrameState(level: .root, cursor: DiscoverCursor(index: 7, scroll: 3))]
         stack = pushLevel(stack, .rail(rail("R")))
         XCTAssertEqual(stack.count, 2)
-        XCTAssertEqual(stack.last?.cursor, HomeCursor(index: 0, scroll: 0))
-        XCTAssertEqual(stack.first?.cursor, HomeCursor(index: 7, scroll: 3),
+        XCTAssertEqual(stack.last?.cursor, DiscoverCursor(index: 0, scroll: 0))
+        XCTAssertEqual(stack.first?.cursor, DiscoverCursor(index: 7, scroll: 3),
                        "push must not disturb the parent's position")
     }
 
     /// The whole point of the stack: coming back from an item's track list must
-    /// land on the rail you opened it from, at the row you left, not on Home.
+    /// land on the rail you opened it from, at the row you left, not on Discover.
     func testPopRestoresTheParentCursorAndScroll() {
-        var stack = [HomeFrameState(level: .home, cursor: HomeCursor(index: 4, scroll: 2))]
+        var stack = [DiscoverFrameState(level: .root, cursor: DiscoverCursor(index: 4, scroll: 2))]
         stack = pushLevel(stack, .rail(rail("R")))
-        stack[1].cursor = HomeCursor(index: 9, scroll: 6)
+        stack[1].cursor = DiscoverCursor(index: 9, scroll: 6)
         stack = pushLevel(stack, .tracks(item("a")))
         stack = popLevel(stack)
         XCTAssertEqual(stack.count, 2)
-        XCTAssertEqual(stack.last?.cursor, HomeCursor(index: 9, scroll: 6))
+        XCTAssertEqual(stack.last?.cursor, DiscoverCursor(index: 9, scroll: 6))
         stack = popLevel(stack)
-        XCTAssertEqual(stack.last?.cursor, HomeCursor(index: 4, scroll: 2))
+        XCTAssertEqual(stack.last?.cursor, DiscoverCursor(index: 4, scroll: 2))
     }
 
     func testPopNeverEmptiesTheStack() {
-        let stack = [HomeFrameState(level: .home, cursor: HomeCursor())]
+        let stack = [DiscoverFrameState(level: .root, cursor: DiscoverCursor())]
         XCTAssertEqual(popLevel(popLevel(stack)).count, 1)
     }
 
     func testThreeLevelsRoundTrip() {
-        var stack = [HomeFrameState(level: .home, cursor: HomeCursor())]
+        var stack = [DiscoverFrameState(level: .root, cursor: DiscoverCursor())]
         stack = pushLevel(stack, .rail(rail("R")))
         stack = pushLevel(stack, .tracks(item("a")))
         XCTAssertEqual(stack.count, 3)
         XCTAssertEqual(popLevel(popLevel(stack)).count, 1)
-        XCTAssertEqual(popLevel(popLevel(stack)).first?.level, .home)
+        XCTAssertEqual(popLevel(popLevel(stack)).first?.level, .root)
     }
 
     // MARK: - Viewport
@@ -84,7 +84,7 @@ final class HomeNavTests: XCTestCase {
         XCTAssertEqual(scrollToShow(row: 0, scroll: 0, visibleHeight: 10, count: 0), 0)
     }
 
-    /// A stale cursor can outlive its list: the Home feed refreshes on a ten
+    /// A stale cursor can outlive its list: the Discover feed refreshes on a ten
     /// minute cache and on `r`, so `count` can shrink between a keypress and the
     /// next render, leaving `row` past the end.
     ///
