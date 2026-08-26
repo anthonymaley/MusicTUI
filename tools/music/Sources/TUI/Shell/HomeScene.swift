@@ -30,6 +30,18 @@ final class HomeScene: Scene {
     private var failed = false
     private var lastBodyHeight = 1
 
+    /// Bumped every time `rails` or `trackRows` is replaced in tick(), so
+    /// `rows` below can invalidate its cache without comparing the arrays
+    /// themselves on every access.
+    private var feedVersion = 0
+    private var rowsCacheKey: RowsCacheKey?
+    private var rowsCache: [HomeDisplayRow] = []
+
+    private struct RowsCacheKey: Equatable {
+        let level: HomeLevel
+        let version: Int
+    }
+
     /// The active level. Writable so cursorIndex and scroll do not each have to
     /// index the stack's top element themselves — one place owns that arithmetic.
     /// The stack is never empty: it is seeded in init and popLevel refuses to
@@ -69,17 +81,34 @@ final class HomeScene: Scene {
 
     /// Home shows five curated rails at four items each. The rail level shows
     /// one rail in full, in Apple's own item order.
+    ///
+    /// Memoised: this ran rail selection plus flattening on every access,
+    /// measured at 3 evaluations per idle repaint and up to 5 on a keypress
+    /// frame. Keyed on (level, feedVersion) rather than level alone — keying
+    /// on level alone would fail to invalidate when a background refresh
+    /// replaces `rails` while the user is still sitting at `.home`. `.rail`
+    /// and `.tracks` are already frozen at push time (the HomeRail/HomeItem
+    /// is captured by value), so only `.home` actually depends on mutable
+    /// state, but the same key is used for all three levels for uniformity.
     private var rows: [HomeDisplayRow] {
+        let key = RowsCacheKey(level: current.level, version: feedVersion)
+        if rowsCacheKey == key {
+            return rowsCache
+        }
+        let computed: [HomeDisplayRow]
         switch current.level {
         case .home:
-            return homeDisplayRows(rails: selectHomeRails(orderedHomeRails(rails),
-                                                          currentYear: homeCurrentYear()),
-                                   perRail: 4)
+            computed = homeDisplayRows(rails: selectHomeRails(orderedHomeRails(rails),
+                                                              currentYear: homeCurrentYear()),
+                                       perRail: 4)
         case .rail(let rail):
-            return homeDisplayRows(rails: [rail], perRail: rail.items.count)
+            computed = homeDisplayRows(rails: [rail], perRail: rail.items.count)
         case .tracks:
-            return trackRows.map { HomeDisplayRow.item($0) }
+            computed = trackRows.map { HomeDisplayRow.item($0) }
         }
+        rowsCacheKey = key
+        rowsCache = computed
+        return computed
     }
 
     private var selection: HomeSelection? { homeSelection(rows: rows, cursor: cursorIndex) }
@@ -218,6 +247,7 @@ final class HomeScene: Scene {
 
         if let incomingRails {
             rails = incomingRails
+            feedVersion += 1
             loaded = true
             failed = incomingFailed || incomingRails.isEmpty
             cursorIndex = min(cursorIndex, max(0, selectableHomeIndices(rows).count - 1))
@@ -225,6 +255,7 @@ final class HomeScene: Scene {
         }
         if let incomingTracks {
             trackRows = incomingTracks
+            feedVersion += 1
             tracksInFlight = false
             changed = true
         }
@@ -233,52 +264,59 @@ final class HomeScene: Scene {
 
     // MARK: - Render
 
-    // NOTE: renderRails/renderTracks below are the pre-stack renderers, adapted
-    // just enough to compile against the new state (stack/cursorIndex/scroll
-    // instead of level/cursor/trackCursor). They are not the two-pane layout —
-    // that is a separate renderer that replaces this method wholesale.
     func render(frame: ShellFrame, snapshot: NowPlayingSnapshot) -> String {
+        lastBodyHeight = max(1, frame.bodyHeight - 2)
+        // Re-derive the viewport every frame, not only on keypress: this ran
+        // inline in the pre-stack renderer, so a resize was reflected on the
+        // next paint. That was lost once when the clamp moved into
+        // clampScroll() for uniformity across levels — lastBodyHeight updated
+        // here, but nothing recomputed scroll from it until the next arrow
+        // key, leaving a resized terminal showing a stale window. Calling it
+        // here keeps that fix in place.
+        clampScroll()
         var out = ""
         for r in frame.bodyY..<(frame.bodyY + frame.bodyHeight) {
             out += ANSICode.moveTo(row: r, col: 1) + ANSICode.clearLine
         }
-        // Re-derive the viewport every frame, not only on keypress. The scroll
-        // clamp used to live inline in renderRails and therefore ran on every
-        // paint, so a resize was reflected on the next frame. Moving it into
-        // clampScroll() for uniformity across levels lost that: lastBodyHeight
-        // updates here, but nothing recomputed scroll from it until the next
-        // arrow key, leaving a resized terminal showing a stale window.
-        lastBodyHeight = max(1, frame.bodyHeight - 2)
-        clampScroll()
-        if case .tracks(let item) = current.level {
-            return out + renderTracks(frame: frame, parent: item)
-        }
-        return out + renderRails(frame: frame)
+        let twoPane = homeIsTwoPane(width: frame.width)
+        let leftW = twoPane ? homeLeftWidth(frameWidth: frame.width) : (frame.width - 6)
+        out += renderLeft(frame: frame, width: leftW)
+        if twoPane, let selection { out += renderPanel(frame: frame, x: leftW + 4, selection: selection) }
+        return out
     }
 
-    private func renderRails(frame: ShellFrame) -> String {
+    private var levelTitle: String {
+        switch current.level {
+        case .home:            return "Home"
+        case .rail(let rail):  return rail.title
+        case .tracks(let it):  return it.name
+        }
+    }
+
+    private func renderLeft(frame: ShellFrame, width: Int) -> String {
         var out = ""
         var y = frame.bodyY
         let bottom = frame.bodyY + frame.bodyHeight - 1
 
         out += ANSICode.moveTo(row: y, col: 3)
-        out += "\(ANSICode.bold)\(ANSICode.cyan)Home\(ANSICode.reset)"
+        out += "\(ANSICode.bold)\(ANSICode.cyan)\(truncText(levelTitle, to: width))\(ANSICode.reset)"
         y += 2
 
         if feed == nil {
             out += ANSICode.moveTo(row: y, col: 3)
-            out += "\(ANSICode.dim)Sign in to see your Home feed (music auth setup).\(ANSICode.reset)"
-            return out
+            return out + "\(ANSICode.dim)Sign in to see your Home feed (music auth setup).\(ANSICode.reset)"
         }
         if !loaded {
             out += ANSICode.moveTo(row: y, col: 3)
-            out += "\(ANSICode.dim)Loading\u{2026}\(ANSICode.reset)"
-            return out
+            return out + "\(ANSICode.dim)Loading\u{2026}\(ANSICode.reset)"
         }
         if failed || rails.isEmpty {
             out += ANSICode.moveTo(row: y, col: 3)
-            out += "\(ANSICode.dim)No recommendations right now. r to retry.\(ANSICode.reset)"
-            return out
+            return out + "\(ANSICode.dim)No recommendations right now. r to retry.\(ANSICode.reset)"
+        }
+        if case .tracks = current.level, trackRows.isEmpty {
+            out += ANSICode.moveTo(row: y, col: 3)
+            return out + "\(ANSICode.dim)\(tracksInFlight ? "Loading\u{2026}" : "No tracks.")\(ANSICode.reset)"
         }
 
         let all = rows
@@ -290,65 +328,95 @@ final class HomeScene: Scene {
             out += ANSICode.moveTo(row: y, col: 3)
             switch all[idx] {
             case .header(let title):
-                out += "\(ANSICode.bold)\(truncText(title, to: max(10, frame.width - 6)))\(ANSICode.reset)"
+                out += "\(ANSICode.bold)\(ANSICode.cyan)\(truncText(title, to: width))\(ANSICode.reset)"
             case .item(let item):
-                out += renderItemLine(item, selected: idx == cursorRow, width: frame.width)
+                out += renderRow(item, selected: idx == cursorRow, width: width)
             case .viewAll(let rail):
-                // This row has a real activation (Enter opens the rail as its
-                // own level), but it renders inertly here — no selection
-                // marker — because this renderer is a placeholder: the
-                // two-pane renderer replaces this method wholesale.
-                out += "\(ANSICode.dim)    View all \(rail.items.count)\(ANSICode.reset)"
+                let label = "View all \(rail.items.count)"
+                let text = idx == cursorRow
+                    ? "\(ANSICode.inverse)\(label)\(ANSICode.reset)"
+                    : "\(ANSICode.dim)\(label)\(ANSICode.reset)"
+                out += "    " + text
             }
             y += 1
         }
         return out
     }
 
-    private func renderItemLine(_ item: HomeItem, selected: Bool, width: Int) -> String {
+    /// The 40-column title cap is gone: the name column now grows with the pane,
+    /// which is what reclaimed 48% of a 150-column screen.
+    private func renderRow(_ item: HomeItem, selected: Bool, width: Int) -> String {
         // Only stations play from Home, so only stations carry the play marker.
         // A marker on a row that cannot play is a promise the tab cannot keep.
         let marker = item.kind == .station ? "\(ANSICode.lime)\u{25B6}\(ANSICode.reset)" : " "
-        let subtitle = item.subtitle.map { " \(ANSICode.dim)\u{2014} \($0)\(ANSICode.reset)" } ?? ""
-        let nameW = max(12, min(40, width - 24))
+        let subW = item.subtitle == nil ? 0 : max(0, (width - 8) / 3)
+        let nameW = max(12, width - 8 - subW)
         let name = truncText(item.name, to: nameW)
         let padded = name + String(repeating: " ", count: max(0, nameW - name.count))
-        let nameStr = selected ? "\(ANSICode.inverse)\(padded)\(ANSICode.reset)" : padded
-        return "  \(marker) \(nameStr)\(subtitle)"
+        let nameStr = selected
+            ? "\(ANSICode.inverse)\(padded)\(ANSICode.reset)"
+            : "\(ANSICode.brightWhite)\(padded)\(ANSICode.reset)"
+        let sub = item.subtitle.map {
+            " \(ANSICode.dim)\(truncText($0, to: subW))\(ANSICode.reset)"
+        } ?? ""
+        return "  \(marker) \(nameStr)\(sub)"
     }
 
-    private func renderTracks(frame: ShellFrame, parent: HomeItem) -> String {
+    private func renderPanel(frame: ShellFrame, x: Int, selection: HomeSelection) -> String {
         var out = ""
-        var y = frame.bodyY
+        var y = frame.bodyY + 2
         let bottom = frame.bodyY + frame.bodyHeight - 1
+        let w = max(10, frame.width - x - 1)
 
-        out += ANSICode.moveTo(row: y, col: 3)
-        out += "\(ANSICode.bold)\(ANSICode.cyan)\(truncText(parent.name, to: max(10, frame.width - 6)))\(ANSICode.reset)"
-        y += 1
-        if let subtitle = parent.subtitle {
-            out += ANSICode.moveTo(row: y, col: 3)
-            out += "\(ANSICode.dim)\(truncText(subtitle, to: max(10, frame.width - 6)))\(ANSICode.reset)"
-        }
-        y += 2
-
-        if trackRows.isEmpty {
-            out += ANSICode.moveTo(row: y, col: 3)
-            out += "\(ANSICode.dim)\(tracksInFlight ? "Loading\u{2026}" : "No tracks.")\(ANSICode.reset)"
-            return out
-        }
-
-        for (i, track) in trackRows.enumerated() {
-            guard y <= bottom else { break }
-            out += ANSICode.moveTo(row: y, col: 3)
-            let num = String(format: "%2d.", i + 1)
-            let nameW = max(12, min(44, frame.width - 26))
-            let name = truncText(track.name, to: nameW)
-            let padded = name + String(repeating: " ", count: max(0, nameW - name.count))
-            let nameStr = i == cursorIndex ? "\(ANSICode.inverse)\(padded)\(ANSICode.reset)" : padded
-            let artist = track.subtitle.map { " \(ANSICode.dim)\u{2014} \($0)\(ANSICode.reset)" } ?? ""
-            out += "\(ANSICode.dim)\(num)\(ANSICode.reset) \(nameStr)\(artist)"
+        func line(_ s: String) {
+            guard y <= bottom else { return }
+            out += ANSICode.moveTo(row: y, col: x) + s
             y += 1
         }
+
+        switch selection {
+        case .viewAll(let rail):
+            line("\(ANSICode.amber)RAIL\(ANSICode.reset)")
+            line("\(ANSICode.brightWhite)\(truncText(rail.title, to: w))\(ANSICode.reset)")
+            line("")
+            line("\(ANSICode.dim)\(rail.items.count) items\(ANSICode.reset)")
+        case .item(let item):
+            line("\(ANSICode.amber)\(homePanelBadge(item.detail))\(ANSICode.reset)")
+            line("\(ANSICode.brightWhite)\(truncText(item.name, to: w))\(ANSICode.reset)")
+            if let subtitle = item.subtitle {
+                line("\(ANSICode.dim)\(truncText(subtitle, to: w))\(ANSICode.reset)")
+            }
+            if let meta = homePanelMeta(item.detail) {
+                line("")
+                for chunk in wrapText(meta, to: w, maxLines: 4) {
+                    line("\(ANSICode.dim)\(chunk)\(ANSICode.reset)")
+                }
+            }
+        }
+        let action = homePanelAction(selection)
+        if !action.isEmpty {
+            line("")
+            line("\(ANSICode.dim)\(action)\(ANSICode.reset)")
+        }
         return out
+    }
+
+    /// Playlist descriptions run to full sentences, so the panel wraps rather
+    /// than truncating them to a single unreadable line.
+    private func wrapText(_ s: String, to width: Int, maxLines: Int) -> [String] {
+        guard width > 0 else { return [] }
+        var lines: [String] = []
+        var line = ""
+        for word in s.split(separator: " ") {
+            let candidate = line.isEmpty ? String(word) : line + " " + word
+            if candidate.count <= width { line = candidate }
+            else {
+                lines.append(line)
+                line = String(word)
+                if lines.count == maxLines { return lines }
+            }
+        }
+        if !line.isEmpty, lines.count < maxLines { lines.append(line) }
+        return lines
     }
 }
