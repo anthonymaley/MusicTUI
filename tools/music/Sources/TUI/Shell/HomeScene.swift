@@ -111,9 +111,7 @@ final class HomeScene: Scene {
         let computed: [HomeDisplayRow]
         switch current.level {
         case .home:
-            computed = homeDisplayRows(rails: selectHomeRails(orderedHomeRails(rails),
-                                                              currentYear: homeCurrentYear()),
-                                       perRail: 4)
+            computed = homeDisplayRows(rails: resolvedHomeRails(rails), perRail: 4)
         case .rail(let rail):
             computed = homeDisplayRows(rails: [rail], perRail: rail.items.count)
         case .tracks:

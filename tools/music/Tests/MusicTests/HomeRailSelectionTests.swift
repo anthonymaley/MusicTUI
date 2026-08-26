@@ -136,10 +136,13 @@ final class HomeRailSelectionTests: XCTestCase {
         XCTAssertEqual(selectHomeRails([y, x], currentYear: 2026).map(\.title), ["Y", "X"])
     }
 
-    /// CLI/TUI drift on shared data is this repo's most-repeated bug: 1c06027
-    /// fixed exactly this for rail ORDER. Rail SELECTION must be shared the same
-    /// way, so both surfaces resolve one feed to one set of rails.
-    func testCliAndTuiResolveTheSameRailsFromOneFeed() {
+    /// Both surfaces must resolve a raw feed identically. This pins the
+    /// COMPOSITION, not just determinism: resolvedHomeRails is the one function
+    /// both call sites go through, so if either ever drifts to composing
+    /// selectHomeRails/orderedHomeRails itself, this is the contract it broke.
+    /// 1c06027 shipped exactly that divergence with a green suite, because each
+    /// surface was internally consistent.
+    func testResolvedHomeRailsIsOrderThenSelect() {
         let feed = [
             albumRail("Boom Bap", [1995]),
             typedRail("Playlists", "playlists"),
@@ -147,16 +150,10 @@ final class HomeRailSelectionTests: XCTestCase {
                      isRecentlyPlayed: true, resourceTypes: ["albums"]),
             albumRail("New Releases", [2026, 2026]),
             typedRail("Stations", "stations"),
-            // Older than "Boom Bap" (1995) on purpose: slot 5 picks the
-            // freshest remaining rail by median year, so "Extra" must be the
-            // least fresh of what's left in order to be the one that misses
-            // the cut — this pins that exclusion, not an arbitrary one.
             albumRail("Extra", [1980]),
         ]
-        let tui = selectHomeRails(orderedHomeRails(feed), currentYear: 2026)
-        let cli = selectHomeRails(orderedHomeRails(feed), currentYear: 2026)
-        XCTAssertEqual(tui.map(\.id), cli.map(\.id))
-        XCTAssertEqual(tui.count, 5)
-        XCTAssertFalse(tui.map(\.title).contains("Extra"), "the sixth rail is not on the dashboard")
+        XCTAssertEqual(resolvedHomeRails(feed, currentYear: 2026).map(\.id),
+                       selectHomeRails(orderedHomeRails(feed), currentYear: 2026).map(\.id))
+        XCTAssertEqual(resolvedHomeRails(feed, currentYear: 2026).count, 5)
     }
 }

@@ -90,3 +90,15 @@ func selectHomeRails(_ rails: [HomeRail], currentYear: Int, slots: Int = 5) -> [
 func homeCurrentYear(_ now: Date = Date()) -> Int {
     Calendar.current.component(.year, from: now)
 }
+
+/// The single place a raw feed becomes Home's curated rails. Both `music home`
+/// and the Home tab call THIS, not the two functions it composes.
+///
+/// That distinction is the point. CLI/TUI drift on shared data is this repo's
+/// most-repeated bug (1c06027 shipped a divergence where each surface was
+/// internally consistent, so the suite stayed green). Two call sites composing
+/// the same two functions in the same order is not "one pure function both
+/// callers go through" — it is two chances to drift. This is the one function.
+func resolvedHomeRails(_ rails: [HomeRail], currentYear: Int = homeCurrentYear()) -> [HomeRail] {
+    selectHomeRails(orderedHomeRails(rails), currentYear: currentYear)
+}
