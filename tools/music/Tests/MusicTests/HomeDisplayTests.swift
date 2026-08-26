@@ -54,7 +54,7 @@ final class HomeDisplayTests: XCTestCase {
 
     func testCapsItemsPerRail() {
         let rows = homeDisplayRows(rails: [rail("One", ["a", "b", "c"])], perRail: 2)
-        XCTAssertEqual(rows.count, 3)   // header + 2
+        XCTAssertEqual(rows.count, 4)   // header + 2 items + View all
     }
 
     /// A rail that arrives empty renders as a bare heading with nothing under
@@ -73,5 +73,54 @@ final class HomeDisplayTests: XCTestCase {
 
     func testSelectableIndicesAreEmptyForNoRails() {
         XCTAssertEqual(selectableHomeIndices([]), [])
+    }
+
+    // MARK: - View all
+
+    /// Rails longer than the visible cap get a selectable row that opens the
+    /// rail level, so a curated Home never silently throws recommendations away.
+    func testEmitsViewAllWhenTheRailIsLongerThanTheCap() {
+        let r = rail("One", ["a", "b", "c", "d", "e"])
+        let rows = homeDisplayRows(rails: [r], perRail: 4)
+        XCTAssertEqual(rows.count, 6)   // header + 4 items + View all
+        XCTAssertEqual(rows.last, .viewAll(r))
+    }
+
+    /// Below the cap it is needless navigation: the rail is already fully shown.
+    func testSuppressesViewAllWhenTheRailFitsExactly() {
+        let rows = homeDisplayRows(rails: [rail("One", ["a", "b", "c", "d"])], perRail: 4)
+        XCTAssertEqual(rows.count, 5)   // header + 4 items, no View all
+        XCTAssertNotEqual(rows.last, .viewAll(rail("One", ["a", "b", "c", "d"])))
+    }
+
+    func testSuppressesViewAllWhenTheRailIsShorterThanTheCap() {
+        let rows = homeDisplayRows(rails: [rail("One", ["a"])], perRail: 4)
+        XCTAssertEqual(rows, [.header("One"), .item(item(.album, "a"))])
+    }
+
+    func testViewAllRowsAreSelectable() {
+        let rows = homeDisplayRows(rails: [rail("One", ["a", "b", "c", "d", "e"])], perRail: 4)
+        XCTAssertEqual(selectableHomeIndices(rows), [1, 2, 3, 4, 5])
+    }
+
+    // MARK: - Selection projection
+
+    /// A row you can land on but cannot act from is worse than no row. The
+    /// projection guarantees every selectable row has a defined target.
+    func testProjectsAnItemSelection() {
+        let rows = homeDisplayRows(rails: [rail("One", ["a", "b"])], perRail: 4)
+        XCTAssertEqual(homeSelection(rows: rows, cursor: 0), .item(item(.album, "a")))
+    }
+
+    func testProjectsAViewAllSelection() {
+        let r = rail("One", ["a", "b", "c", "d", "e"])
+        let rows = homeDisplayRows(rails: [r], perRail: 4)
+        XCTAssertEqual(homeSelection(rows: rows, cursor: 4), .viewAll(r))
+    }
+
+    func testProjectsNilWhenTheCursorIsOutOfRange() {
+        let rows = homeDisplayRows(rails: [rail("One", ["a"])], perRail: 4)
+        XCTAssertNil(homeSelection(rows: rows, cursor: 9))
+        XCTAssertNil(homeSelection(rows: [], cursor: 0))
     }
 }

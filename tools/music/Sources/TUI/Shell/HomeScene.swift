@@ -251,6 +251,15 @@ final class HomeScene: Scene {
                 out += "\(ANSICode.bold)\(truncText(title, to: max(10, frame.width - 6)))\(ANSICode.reset)"
             case .item(let item):
                 out += renderItemLine(item, selected: idx == cursorRow, width: frame.width)
+            case .viewAll(let rail):
+                // Temporary. Task 6 gives this row a real activation (it opens
+                // the rail as its own level) and Task 7 replaces this renderer
+                // wholesale for the two-pane layout. It exists now only so that
+                // widening HomeDisplayRow does not break the build for the two
+                // commits between here and there — Swift's exhaustive switching
+                // makes the enum change and its consumers a single atomic unit,
+                // which this plan sequenced apart.
+                out += "\(ANSICode.dim)    View all \(rail.items.count)\(ANSICode.reset)"
             }
             y += 1
         }

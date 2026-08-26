@@ -110,10 +110,21 @@ struct HomeRail: Equatable {
 
 // MARK: - Display model (pure, so the scene's layout is testable without a network)
 
-/// A flattened Home row. Rails become headers; only items are selectable.
+/// A flattened Home row. Rails become headers; items and View all are selectable.
 enum HomeDisplayRow: Equatable {
     case header(String)
     case item(HomeItem)
+    case viewAll(HomeRail)
+}
+
+/// What the cursor is on. `.viewAll` is not a HomeItem, so a HomeItem?
+/// selection would return nil there and Enter would silently do nothing.
+/// Modelling both cases means every selectable row has an action and a footer
+/// hint by construction, and a future row type is a compile error in both
+/// switches rather than a no-op.
+enum HomeSelection: Equatable {
+    case item(HomeItem)
+    case viewAll(HomeRail)
 }
 
 /// Music.app's Home leads with Top Picks and then Recently Played. Top Picks is
@@ -125,20 +136,36 @@ func orderedHomeRails(_ rails: [HomeRail]) -> [HomeRail] {
 }
 
 func homeDisplayRows(rails: [HomeRail], perRail: Int) -> [HomeDisplayRow] {
-    rails.flatMap { rail -> [HomeDisplayRow] in
-        let items = rail.items.prefix(max(1, perRail))
+    let cap = max(1, perRail)
+    return rails.flatMap { rail -> [HomeDisplayRow] in
+        let items = rail.items.prefix(cap)
         // An empty rail is a bare heading with nothing under it, which reads as
         // a bug rather than as an empty state.
         guard !items.isEmpty else { return [] }
-        return [.header(rail.title)] + items.map { HomeDisplayRow.item($0) }
+        var rows: [HomeDisplayRow] = [.header(rail.title)] + items.map { HomeDisplayRow.item($0) }
+        // Only when there is genuinely more to see; otherwise it is needless
+        // navigation to a screen showing the same rows.
+        if rail.items.count > cap { rows.append(.viewAll(rail)) }
+        return rows
     }
 }
 
 /// Indices of the rows a cursor may land on. Headers are not selectable.
 func selectableHomeIndices(_ rows: [HomeDisplayRow]) -> [Int] {
     rows.enumerated().compactMap { i, row in
-        if case .item = row { return i }
-        return nil
+        if case .header = row { return nil }
+        return i
+    }
+}
+
+/// Project the cursor onto what it is actually pointing at.
+func homeSelection(rows: [HomeDisplayRow], cursor: Int) -> HomeSelection? {
+    let selectable = selectableHomeIndices(rows)
+    guard cursor >= 0, cursor < selectable.count else { return nil }
+    switch rows[selectable[cursor]] {
+    case .item(let item):  return .item(item)
+    case .viewAll(let r):  return .viewAll(r)
+    case .header:          return nil
     }
 }
 
