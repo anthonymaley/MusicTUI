@@ -405,6 +405,37 @@ hidden because it is the actual price of playing catalog content on a platform
 with no write free play verb, and a user deserves to know that pressing play
 touches their library.
 
+## `play playlist` is bounded, `play track N of playlist` is not
+
+Measured 2026-08-27 against a five track temp playlist, checking `current
+playlist` and stepping to the end each time.
+
+| AppleScript | `current playlist` becomes | What happens at the end |
+|---|---|---|
+| `play playlist "X"` | `X` | plays the five tracks and stops |
+| `play track N of playlist "X"` | `Music` | queue is library rooted and continues into unrelated artists |
+| `play playlist "X"`, then `play track N of playlist "X"` | `Music` | worse, `next track` becomes a permanent no op |
+
+The second form reads like a scoped play and is not one. It is a track play
+command that happens to name a playlist: Music.app plays the song, discards the
+playlist as context, and roots the queue in the library. The first form
+establishes a real playlist context, and `next track` then navigates inside it.
+
+This matters for any tool that builds a temporary playlist to play a specific
+album. If you start it with `play track N` you get correct audio for that track
+and a queue that wanders into the rest of the library once the album ends, which
+looks like a queue bug and is not.
+
+`set current playlist` is not writable, so there is no way to attach a context
+after the fact. It fails with error `-10006`.
+
+One workaround exists and is worth knowing about, though this project chose not
+to ship it. `play playlist "X"`, then `pause`, then `next track` repeated, then
+`play`, keeps the bounded context the whole way and lands on any chosen track
+silently. It costs one Apple Event per step, it has only been verified for
+sequential non shuffled playback, and on a setup where transport control travels
+over AirPlay that is a lot of control traffic to start one song.
+
 ## Corrections
 
 If any of this is wrong or has changed in a later macOS release, please open an issue.
