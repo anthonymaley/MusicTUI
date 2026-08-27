@@ -271,8 +271,9 @@ Apple's station search is shallow (5-7 results, no pagination) and misses real s
 | `music suggest 10 --from "Working Vibes"` | Suggest tracks from playlist vibe |
 | `music new-releases --like-current` | New releases from current artist |
 | `music mix --artists "Fouk,Floating Points" --name "Friday Mix"` | Mixed playlist |
-| `music home` | Your Home feed: Apple's For You rails plus recently played |
-| `music home --recent` | Just the recently played row (stations, albums, playlists) |
+| `music discover` | Your Discover feed: curated rails, Apple's For You plus recently played |
+| `music discover --all` | Every rail Apple's API returns, in Apple's own order, uncurated |
+| `music discover --recent` | Just the recently played row (stations, albums, playlists) |
 | `music recent` | Recently played tracks (numbered, so `music play 3` works) |
 | `music rotation` | Your heavy-rotation music |
 
@@ -365,7 +366,7 @@ Claude handles the multi-step orchestration (searching the catalog, creating pla
 
 Run bare `music` in a real terminal (not inside Claude Code; the TUI requires a TTY). Install `chafa` (`brew install chafa`) for album art in now-playing.
 
-**Unified shell** (`music`): a tabbed interface with **Now**, **Home**, **Library**, **Playlists**, **Radio**, and **Speakers** tabs. The Now tab shows a 3-column layout: album art, playback metadata, and a right pane. Select a playlist on the Playlists tab to pin it on the Now tab so you can browse and replay any track while playback continues.
+**Unified shell** (`music`): a tabbed interface with **Now**, **Discover**, **Library**, **Playlists**, **Radio**, and **Speakers** tabs. The Now tab shows a 3-column layout: album art, playback metadata, and a right pane. Select a playlist on the Playlists tab to pin it on the Now tab so you can browse and replay any track while playback continues.
 
 > **Turn off Music's Autoplay (∞).** Playlist track-selection and up/down navigation drive playback track-by-track and rely on a track *stopping* at its end. With Autoplay on, Music bleeds into the library between tracks. Disable it once in Music's Up Next panel (the ∞ button).
 
@@ -373,7 +374,7 @@ Run bare `music` in a real terminal (not inside Claude Code; the TUI requires a 
 
 | Key | Action |
 |-----|--------|
-| `1`/`2`/`3`/`4`/`5`/`6` | Jump to Now / Home / Library / Playlists / Radio / Speakers tab |
+| `1`/`2`/`3`/`4`/`5`/`6` | Jump to Now / Discover / Library / Playlists / Radio / Speakers tab |
 | `j`/`k`/`h`/`l` | Vim aliases for ↓ ↑ ← → (`l`/`g`/`G` stay love/Genius on Now) |
 | `g`/`G`, `ctrl-d`/`ctrl-u` | Top / bottom, half-page jumps in list tabs |
 | `Tab` / `Shift-Tab` | Cycle tabs forward / backward |
@@ -406,7 +407,7 @@ Under the track progress is a **control grid** (Shuffle / Order / Repeat / Geniu
 
 ![Playlist Browser](media/playlist.jpg)
 
-**Speakers tab.** `↑↓` select, `Enter` toggles AirPlay outputs on/off, `←→` adjusts per-speaker volume. Active speakers show volume bars. Toggling a speaker on while playing verifies the route and toasts (e.g. `'X' selected but route NOT verified — try: music speaker wake`) if it couldn't be verified. Below the outputs: an **EQ block** (power row + preset picker; `Enter` toggles/expands, `e` toggles from anywhere) and a **Visualizer** row (`Enter` or `v` toggles Music's on-screen visuals). (The `music speaker`, `music eq`, and `music visualizer` CLIs drive these non-interactively.)
+**Speakers tab.** `↑↓` select, `Enter` toggles AirPlay outputs on/off, `←→` adjusts per-speaker volume. Active speakers show volume bars. Toggling a speaker on while playing verifies the route; if it couldn't be verified, it toasts (e.g. `'X' selected but route NOT verified`) and names the fix: `music speaker wake`. Below the outputs: an **EQ block** (power row + preset picker; `Enter` toggles/expands, `e` toggles from anywhere) and a **Visualizer** row (`Enter` or `v` toggles Music's on-screen visuals). (The `music speaker`, `music eq`, and `music visualizer` CLIs drive these non-interactively.)
 
 ![Speaker Picker](media/speakers.png)
 
@@ -414,7 +415,7 @@ Under the track progress is a **control grid** (Shuffle / Order / Repeat / Geniu
 
 ![Library](media/library.png)
 
-**Home tab.** Apple's own For You feed: the recommendation rails from your Apple Music account, with **Recently Played** hoisted to the top. `↑↓` navigate, `r` refreshes, `Enter` acts on the selected row. What Enter does depends on the row, and the asymmetry is a platform limit rather than a choice: a **station** plays immediately, while an **album** or **playlist** opens a read-only track list (`←` goes back). Catalog albums cannot be played without first copying them into your library, and Home deliberately never writes to your library, so it browses them instead of quietly adding them. Needs the Apple Music user token. The rails come straight from Apple and rotate on Apple's own schedule; "Top Picks for You" is composed inside Music.app and is not available to any client, so it is absent here.
+**Discover tab.** Apple's own For You feed: the recommendation rails from your Apple Music account, with **Recently Played** hoisted to the top; the default view shows five curated rails, four items each. Navigation is three levels deep, Discover, then a rail, then a track list, and each level keeps its own cursor and scroll position. `↑↓` navigate, `←` or `Esc` goes back a level, `→` drills in and never plays, `r` refreshes the top level. `Enter` plays a **station** immediately, opens a read-only track list for an **album** or **playlist**, opens the full list for a `View all N` row, and does nothing yet for a track inside a drill-in (playing from a chosen point partway through an album is deferred: the only mechanism that keeps a bounded queue starts a playlist from its beginning). `p` plays an **album** or **playlist** row directly, bounded to that album or playlist; it does nothing on a station, a `View all N` row, or a track row. Pressing `p` adds the album to your library, and it stays there: the app creates a temporary playlist to play it and removes that playlist afterward, but the songs it added are not removed, because Apple exposes no way to prove which library rows this app added versus ones you added yourself, so automatic cleanup could delete music you added on purpose. See [docs/platform-notes.md](docs/platform-notes.md#playing-catalog-content-from-a-browse-surface-grows-the-library-permanently) for the platform limits behind that. Needs the Apple Music user token. The rails come straight from Apple and rotate on Apple's own schedule; "Top Picks for You" is composed inside Music.app and is not available to any client, so it is absent here.
 
 **Radio tab.** **Favorites · Live · Personal**, switched with `[`/`]` (opens on Favorites, which needs no token; it plays straight from disk; Live and Personal need a developer token to load). `j`/`k` or arrows navigate, `Enter` (or `→`) plays, `f` favorites/unfavorites the selected station. `/` searches the catalog: hits land in the list, `f` favorites one, `Esc` clears back to your sub-view. `a` adds a station by URL: paste a share URL from music.apple.com (or the Music app's share menu) to favorite it directly; anything that isn't a URL gets redirected to `/` instead of being guessed at. Live stations show a `LIVE` badge instead of a progress bar: a livestream has no duration. Favorites are stored locally at `~/.config/music/stations.json` and don't sync to other devices. Apple's station search is shallow (5-7 results, no pagination) and misses real stations outright: it can't find BBC Radio 1 by name or even by its own catalog id, though the station plays perfectly by URL. Pasting a URL always works; search sometimes doesn't.
 

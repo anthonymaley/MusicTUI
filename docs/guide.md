@@ -2,7 +2,7 @@
 
 ## What Is This?
 
-MusicTUI controls Apple Music from the terminal: a TUI, a CLI, and a Claude Code plugin for macOS. Play music, manage AirPlay speakers, search the catalog, build playlists, play radio stations, discover new tracks — without leaving your coding session.
+MusicTUI controls Apple Music from the terminal: a TUI, a CLI, and a Claude Code plugin for macOS. Play music, manage AirPlay speakers, search the catalog, build playlists, play radio stations, and discover new tracks, all without leaving your coding session.
 
 ## Naming
 
@@ -14,11 +14,11 @@ One name for everything: **`music`**.
 | Skill (natural language) | `/music` | `/music play kid a in the kitchen at 60`, or just talk to Claude |
 | CLI binary | `music` | `music now`, `music search "Fouk"` |
 
-The `name` field in `plugin.json` is `music` — this is what makes the skill appear as `/music` in the menu. "Apple Music" appears in descriptions and docs for discoverability. There are no per-action slash commands: the skill is the plugin's single entry point.
+The `name` field in `plugin.json` is `music`; this is what makes the skill appear as `/music` in the menu. "Apple Music" appears in descriptions and docs for discoverability. There are no per-action slash commands: the skill is the plugin's single entry point.
 
 ## Command Vocabulary
 
-Long-form commands are the only registered surface: `music now`, `music volume`, `music speaker wake`. The CLI ships no short aliases — `music np` and `music vol` don't exist; define shell aliases yourself if you want them. Long-form keeps the README, marketplace copy, and skill reference searchable.
+Long-form commands are the only registered surface: `music now`, `music volume`, `music speaker wake`. The CLI ships no short aliases: `music np` and `music vol` don't exist; define shell aliases yourself if you want them. Long-form keeps the README, marketplace copy, and skill reference searchable.
 
 ## How Users Interact
 
@@ -26,11 +26,11 @@ There are five interaction layers, from quickest to most flexible:
 
 ### 1. Media Keys (transport)
 
-Play/pause, next, and previous live on your keyboard (⏯ ⏭ ⏮). They control Apple Music natively through macOS — from any app, with zero setup, zero tokens, and no plugin surface at all. The plugin deliberately ships no slash commands for transport: a hardware key beats any typed command.
+Play/pause, next, and previous live on your keyboard (⏯ ⏭ ⏮). They control Apple Music natively through macOS, from any app, with zero setup, zero tokens, and no plugin surface at all. The plugin deliberately ships no slash commands for transport: a hardware key beats any typed command.
 
-### 2. Natural Language (Skill — `/music`)
+### 2. Natural Language (Skill: `/music`)
 
-The plugin's single entry point in Claude Code. Say what you want — playback with routing, search, library, playlists, discovery — and Claude composes the right `music` CLI calls.
+The plugin's single entry point in Claude Code. Say what you want (playback with routing, search, library, playlists, discovery) and Claude composes the right `music` CLI calls.
 
 ```
 > /music play kid a in the kitchen and living room at 60%
@@ -41,45 +41,45 @@ The plugin's single entry point in Claude Code. Say what you want — playback w
 > make me a mix from Fouk and Floating Points
 ```
 
-Play-shaped requests are a fast path: the skill forwards your words to `music play`, whose parser deterministically extracts the query, speaker names (several at once), filler words, and volume. Naming speakers plays on exactly those speakers. Everything else is composition — multiple CLI calls chained by Claude.
+Play-shaped requests are a fast path: the skill forwards your words to `music play`, whose parser deterministically extracts the query, speaker names (several at once), filler words, and volume. Naming speakers plays on exactly those speakers. Everything else is composition: multiple CLI calls chained by Claude.
 
-The skill triggers automatically when Claude detects music-related intent; `/music` invokes it explicitly. Requires the CLI to be built (one command: `scripts/install.sh`) — if it's missing, the skill says so and points at the script.
+The skill triggers automatically when Claude detects music-related intent; `/music` invokes it explicitly. Requires the CLI to be built (one command: `scripts/install.sh`); if it's missing, the skill says so and points at the script.
 
 ### 3. Interactive TUI
 
-Run bare `music` in a real terminal for the unified interactive shell — a tabbed interface with **Now**, **Home**, **Library**, **Playlists**, **Radio**, and **Speakers** tabs.
+Run bare `music` in a real terminal for the unified interactive shell: a tabbed interface with **Now**, **Discover**, **Library**, **Playlists**, **Radio**, and **Speakers** tabs.
 
 ```
-music                           Unified shell: Now / Home / Library / Playlists / Radio / Speakers tabs
+music                           Unified shell: Now / Discover / Library / Playlists / Radio / Speakers tabs
 ```
 
 Current TUI contract:
 
 - The Playlists tab does not fetch tracks on every playlist highlight; it loads tracks on selection. `/` filters the playlist rail as you type (arrows still navigate while filtering). When signed in, the focused playlist's hero shows its real cover art; built-in smart playlists (Recently Played, Top 25…) aren't API-visible and keep the generated placeholder.
-- Apple-curated playlists added to the library (AppleScript class `subscription playlist`) appear in the rail with an `APPLE` badge. They're read-only on Apple's side — edits fail with a toast, by design.
+- Apple-curated playlists added to the library (AppleScript class `subscription playlist`) appear in the rail with an `APPLE` badge. They're read-only on Apple's side: edits fail with a toast, by design.
 - Selecting a playlist pins it on the Now tab, which shows the full playlist and keeps `↑↓` navigation local.
 - The Now tab shows the current album context, not a real Apple Music queue.
 - Quitting the TUI saves the app-owned queue to `~/.config/music/queue.json`; relaunch adopts it again if the same track is still playing, so an album keeps its scoped Up Next across a restart. The match is strict: if a track ended during the quit→relaunch gap, the saved queue is discarded rather than resumed one track off.
-- The Library tab (requires the Apple Music user token) browses your library via the REST library API in three sub-views — Artists, Albums, Songs (opens on Artists) — switched with `[`/`]`. Enter opens an album's tracks or drills Artist → their albums → tracks; `p` plays and `s` shuffles the focused item (albums/artists play as app-owned queues — a scoped, navigable Up Next that stops at the album's end; needs Music's Autoplay ∞ off). On the Artists list, `a` cycles a track-count filter: All → 12″/EP (artists with a 2–5 track release) → Albums (artists with a 6+ track album). It separates 12″s/EPs — which dominate house/electronic libraries — from full-album deep cuts, and the one-track "album" Apple creates for a loose playlist song falls in neither tier (otherwise the filter would keep the very playlist artists it's meant to drop). Drilling into an artist while a tier is active shows only that tier's albums (their 6+ LPs under Albums, their 2–5 releases under 12″/EP). Apple's library-artists list otherwise includes every artist with any library track, so it bloats fast. The first activation each session paints instantly from a cache (`~/.config/music/artist-tiers.json`, revalidated in the background); the match is a lowercase artist name (compilations / "feat." credits may miss). Without a user token the tab refuses with a toast. The focused album's hero shows its real cover (downloaded once to `~/.config/music/art-cache/`, gradient placeholder while it loads); on kitty-protocol terminals (iTerm2 3.5+, Kitty, WezTerm, Ghostty) covers render as true pixels, elsewhere as chafa half-blocks — plain brightness-mapped blocks when chafa isn't installed — with a gradient placeholder while art loads or when there is none. Vim keys work everywhere: j/k/h/l, g/G, ctrl-d/ctrl-u (l and g/G keep their love/Genius meanings on the Now tab).
-- The Home tab shows Apple's For You rails plus Recently Played, which is hoisted to the top. `r` refreshes. `Enter` plays a station outright, or opens a read-only track list for an album or playlist (`←` backs out). Albums and playlists do not play from Home: a catalog album has to be copied into your library before it can play, and Home never writes to your library. Needs the user token.
+- The Library tab (requires the Apple Music user token) browses your library via the REST library API in three sub-views: Artists, Albums, Songs (opens on Artists), switched with `[`/`]`. Enter opens an album's tracks or drills Artist → their albums → tracks; `p` plays and `s` shuffles the focused item (albums/artists play as app-owned queues, a scoped, navigable Up Next that stops at the album's end; needs Music's Autoplay ∞ off). On the Artists list, `a` cycles a track-count filter: All → 12″/EP (artists with a 2 to 5 track release) → Albums (artists with a 6+ track album). It separates 12″s/EPs (which dominate house/electronic libraries) from full-album deep cuts, and the one-track "album" Apple creates for a loose playlist song falls in neither tier (otherwise the filter would keep the very playlist artists it's meant to drop). Drilling into an artist while a tier is active shows only that tier's albums (their 6+ LPs under Albums, their 2 to 5 releases under 12″/EP). Apple's library-artists list otherwise includes every artist with any library track, so it bloats fast. The first activation each session paints instantly from a cache (`~/.config/music/artist-tiers.json`, revalidated in the background); the match is a lowercase artist name (compilations / "feat." credits may miss). Without a user token the tab refuses with a toast. The focused album's hero shows its real cover (downloaded once to `~/.config/music/art-cache/`, gradient placeholder while it loads); on kitty-protocol terminals (iTerm2 3.5+, Kitty, WezTerm, Ghostty) covers render as true pixels, elsewhere as chafa half-blocks (plain brightness-mapped blocks when chafa isn't installed), with a gradient placeholder while art loads or when there is none. Vim keys work everywhere: j/k/h/l, g/G, ctrl-d/ctrl-u (l and g/G keep their love/Genius meanings on the Now tab).
+- The Discover tab (needs the user token) shows Apple's For You rails, with Recently Played hoisted to the top; the default view holds five curated rails, four items each. Navigation is three levels deep: Discover, then a rail, then a track list, and each level keeps its own cursor and scroll position. `r` refreshes the top level; `←` or `Esc` goes back a level; `→` drills in and never plays. `Enter` plays a station outright, opens a read-only track list for an album or playlist, opens the full rail for a `View all N` row, and does nothing yet for a track inside a drill-in: playing from a chosen track partway down an album is deferred, because the only mechanism that keeps a bounded queue starts a playlist from its beginning. `p` plays an album or playlist row directly, bounded to it, and does nothing on a station, a `View all N` row, or a track row. Playing this way adds the album to your library, and it stays there: Discover creates a temporary playlist to play it and removes that playlist afterward, but leaves the songs it added behind, because Apple gives no way to prove which library rows this app added versus ones you added yourself, so an automatic cleanup could delete music you added deliberately. See `docs/platform-notes.md` for the platform limits behind this.
 - The Radio tab browses stations in three sub-views: Favorites, Live, Personal. It opens on Favorites, switched with `[`/`]`. Favorites needs no token at all (it reads and plays straight from disk); Live and Personal need a developer token to load.
 - Radio keys: `Enter` (or `→`) plays the selected station, `f` favorites/unfavorites it. Of the vim aliases, only `j`/`k` (down/up) and `l` (→, which plays) do anything here. `h`, `g`/`G`, and ctrl-d/ctrl-u are inert on this tab.
-- `/` opens a catalog search — it's the same `/` everyone reaches for everywhere else in the shell, but on Radio it runs a network search rather than filtering the current sub-view (Favorites/Live/Personal are short, scannable lists; a local filter isn't worth stealing `/` from search). Type a term, `Enter` runs it; hits land in the list, `f` favorites one, `Esc` clears back to the sub-view.
+- `/` opens a catalog search: it's the same `/` everyone reaches for everywhere else in the shell, but on Radio it runs a network search rather than filtering the current sub-view (Favorites/Live/Personal are short, scannable lists; a local filter isn't worth stealing `/` from search). Type a term, `Enter` runs it; hits land in the list, `f` favorites one, `Esc` clears back to the sub-view.
 - `a` opens an add-by-URL field. Paste a station's share URL to favorite it directly: it's added from the URL immediately, so it's never lost even when the catalog can't resolve it, and a later resolve just upgrades the name and art in place. Anything that isn't a URL is rejected with a message pointing at `/` instead of being guessed at as a search term.
 - Live stations show a `LIVE` badge instead of a progress bar (a livestream carries no duration). Favorites persist locally at `~/.config/music/stations.json` and do not sync across devices.
 - Apple's station search is shallow (5-7 results, no pagination) and misses real stations outright. It cannot find BBC Radio 1 by name or even by its own catalog id, though the station plays perfectly once you have its URL. An unresolved station's name falls back to a title-cased slug from the URL, e.g. "Bbc Radio 1".
 - `Enter` plays the highlighted row.
 - Keys: `1/2/3/4/5` jump to a tab, `Tab`/`Shift-Tab` cycle, `[`/`]` switch Library sub-view or Radio Favorites/Live/Personal, `a` cycle Library Artists tier (All / 12″/EP / Albums) or open Radio's add-by-URL field, `↑↓` + `PgUp/PgDn/Home/End` navigate (Radio has no page/home/end jumps), `Space` play/pause, `</>` previous/next, `[ ]` seek (Now) / `←→` per-speaker volume (Speakers), `z` shuffle-play, `l` favorite (Now) / `f` favorite (Radio), `+/-` master volume, `n` next-up options, `/` filter (Playlists/Library) or search (Radio), `Esc` back, `q` quit.
 - The Now tab has a **playback-control grid** (Shuffle / Order / Repeat / Genius) under the track progress, showing each value live with the active one lit. Press `←` to focus the grid and `→` to return to the Up Next list; `↑↓` move between control rows and `Enter` cycles the focused row's value (Shuffle on/off, Order Songs→Albums→Groupings, Repeat Off→All→One, Genius triggers). The `s`/`m`/`r`/`g` keys do the same from anywhere. Shuffle/order/repeat write Music's state directly (no extra permission); Genius rebuilds the queue from the current song and is UI-scripted (needs the same Accessibility permission as the equalizer). Distinct from the global `z` (footer: *Reshuffle*), which shuffle-plays the current context.
-- Named-speaker `music play`, and `music speaker` add/`set`/`only`, verify the route automatically while playing (network-truth — established TCP connections to the speaker, not the AppleScript `selected` claim, which can lie) and print `✓ <speaker> verified (…)`; while paused, routing prints `Route set; will verify on next play.` instead, since a paused route can't be network-verified. An unestablished route triggers an automatic heal — an away-and-back reroute, then a transport-cycle reset — before an honest failure names the manual fix. `music speaker wake` also verifies first now and resets only the routes that are actually broken (`✓ X verified — leaving it alone.` for the rest). Routing to the Mac's own output is never "verified" — local output has no AirPlay session.
+- Named-speaker `music play`, and `music speaker` add/`set`/`only`, verify the route automatically while playing (network-truth: established TCP connections to the speaker, not the AppleScript `selected` claim, which can lie) and print `✓ <speaker> verified (…)`; while paused, routing prints `Route set; will verify on next play.` instead, since a paused route can't be network-verified. An unestablished route triggers an automatic heal (an away-and-back reroute, then a transport-cycle reset) before an honest failure names the manual fix. `music speaker wake` also verifies first now and resets only the routes that are actually broken; the rest print `✓ X verified` and are left alone. Routing to the Mac's own output is never "verified": local output has no AirPlay session.
 - Toggling a speaker on in the Speakers scene while playing verifies the route the same way and toasts if it couldn't be verified; toggling off, or toggling while paused, skips verification.
-- The Speakers scene has an **EQ block**: an `EQ on/off` power row (`Enter` toggles it; `e` does the same from anywhere in the scene) and a `Preset` row beneath it — `Enter` expands an inline preset picker (venue pack first, then Music's built-in presets), `↑↓` to navigate, `Enter` to select and auto-enable EQ, `Escape` to collapse without changing the preset. With the Preset row highlighted but the picker collapsed, `←`/`→` quick-cycles presets one at a time.
-- Below the EQ block, a **Visualizer** row toggles Music's on-screen visualizer (`Enter`, or `v` from anywhere in the scene). GUI-only — the visuals render in the Music window on the Mac's display, and turning it on brings Music forward.
-- Music's Autoplay (∞) must stay OFF — playlist track-selection drives playback track-by-track and relies on each track stopping at its end.
+- The Speakers scene has an **EQ block**: an `EQ on/off` power row (`Enter` toggles it; `e` does the same from anywhere in the scene) and a `Preset` row beneath it: `Enter` expands an inline preset picker (venue pack first, then Music's built-in presets), `↑↓` to navigate, `Enter` to select and auto-enable EQ, `Escape` to collapse without changing the preset. With the Preset row highlighted but the picker collapsed, `←`/`→` quick-cycles presets one at a time.
+- Below the EQ block, a **Visualizer** row toggles Music's on-screen visualizer (`Enter`, or `v` from anywhere in the scene). GUI-only: the visuals render in the Music window on the Mac's display, and turning it on brings Music forward.
+- Music's Autoplay (∞) must stay OFF: playlist track-selection drives playback track-by-track and relies on each track stopping at its end.
 
 ### 4. Status Line
 
-A passive display at the bottom of Claude Code showing what's playing — track, speakers, volume. Always visible, zero token cost.
+A passive display at the bottom of Claude Code showing what's playing: track, speakers, volume. Always visible, zero token cost.
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
@@ -103,7 +103,7 @@ Enable in `~/.claude/settings.json` (after running `scripts/install.sh`, which i
 
 ### 5. Direct CLI (`music`)
 
-For power users who want to use music outside Claude Code — in scripts, shell aliases, or other tools. The CLI has `--json` output for every command, making it scriptable.
+For power users who want to use music outside Claude Code, in scripts, shell aliases, or other tools. The CLI has `--json` output for every command, making it scriptable.
 
 ```bash
 music now --json
@@ -116,7 +116,7 @@ music radio list                   # favorite stations
 music radio play "bbc radio 1"     # play a favorite, or paste a station URL
 ```
 
-Errors go to **stderr** (and `--json` mode emits an error object rather than corrupting the stream), so stdout stays clean for piping; previously-silent failures — a failed AirPlay route, a malformed config, dropped playlist indices — now print a `✗`/`⚠` line.
+Errors go to **stderr** (and `--json` mode emits an error object rather than corrupting the stream), so stdout stays clean for piping; previously-silent failures (a failed AirPlay route, a malformed config, dropped playlist indices) now print a `✗`/`⚠` line.
 
 ## Architecture
 
@@ -337,7 +337,7 @@ music auth status
 └── user-token       # User token from MusicKit JS (~6 month expiry)
 ```
 
-All three are written owner-only — files `0600` in a `0700` directory (since 3.7.1; the embedded auth-page server writes the token the same way). Tighten a pre-3.7.1 install with `chmod 700 ~/.config/music && chmod 600 ~/.config/music/{config.json,user-token,AuthKey.p8}`.
+All three are written owner-only: files `0600` in a `0700` directory (since 3.7.1; the embedded auth-page server writes the token the same way). Tighten a pre-3.7.1 install with `chmod 700 ~/.config/music && chmod 600 ~/.config/music/{config.json,user-token,AuthKey.p8}`.
 
 ## Known Gotchas
 
@@ -359,7 +359,7 @@ All three are written owner-only — files `0600` in a `0700` directory (since 3
 
 ## Version
 
-v3.7.1 — all four locations stay in sync:
+Current version: v3.7.1. All four locations stay in sync:
 - `.claude-plugin/plugin.json` → `version`
 - `.claude-plugin/marketplace.json` → `metadata.version`
 - `.claude-plugin/marketplace.json` → `plugins[0].version`
