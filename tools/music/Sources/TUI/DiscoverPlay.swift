@@ -58,3 +58,34 @@ func parseLibraryMembership(_ data: Data) -> LibraryMembership {
     }
     return out
 }
+
+enum DiscoverReadiness: Equatable { case wait, ready, timedOut }
+
+/// Library adds return 202 and materialize asynchronously — about two seconds for
+/// one song (docs/platform-notes.md:229). Poll until the expected count lands, or
+/// give up. `>= expected` rather than `==` so an extra row from Apple's side does
+/// not deadlock the poll.
+func discoverReadiness(observed: Int, expected: Int,
+                       elapsed: TimeInterval, timeout: TimeInterval) -> DiscoverReadiness {
+    if observed >= expected { return .ready }
+    return elapsed >= timeout ? .timedOut : .wait
+}
+
+/// 1-based position of a track within the playlist that actually materialized.
+///
+/// Keyed on CATALOG ID, not title. Repeated titles are common (DJ mixes with
+/// several `ID` entries, albums with a reprise, movements sharing a name) and a
+/// title match plays whichever came first rather than the row the user selected.
+///
+/// `materializedCatalogIDs` comes from GET /v1/me/library/playlists/{id}/tracks,
+/// in order, reading `attributes.playParams.catalogId` — the materialized
+/// playlist, not the catalog list, because unplayable rows never land and every
+/// position after a missing row shifts.
+///
+/// nil means the selected track did not materialize. The caller must report that
+/// and play nothing; falling back to 1 plays a different song than the one
+/// chosen, and a warning does not make that acceptable.
+func discoverPlayPosition(catalogID: String, in materializedCatalogIDs: [String]) -> Int? {
+    guard let idx = materializedCatalogIDs.firstIndex(of: catalogID) else { return nil }
+    return idx + 1
+}
