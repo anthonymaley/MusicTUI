@@ -1,11 +1,17 @@
 tools/music/.build/
 tools/music/Package.resolved
 .DS_Store
+.scorched/
 
-# Dev-process files — live in the private vault (~/eolas/vault/apple-music/repo/),
-# symlinked into this tree per machine via the vault's link.sh
+# BEGIN vault-linked
+# Dev-process files live in the private vault (~/eolas/vault/apple-music/repo/)
+# and are symlinked into this tree per machine by the vault's link.sh, which
+# reads THIS BLOCK as its source of truth. Keep it one path per line, no globs,
+# no trailing slashes, and nothing here that is not carried by the vault.
+# Adding a path here is all that is needed; link.sh picks it up on its next run.
 CLAUDE.md
 AGENTS.md
+MACHINE-SETUP.md
 TODO.md
 CONTEXT.md
 .slainte
@@ -19,4 +25,5 @@ docs/deferred.md
 docs/error-handling-audit.md
 docs/site-redesign-spec.md
 docs/site-editorial-hierarchy-pass.md
-.scorched/
+docs/show-hn-draft.md
+# END vault-linked
