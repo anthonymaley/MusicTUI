@@ -327,6 +327,84 @@ Found 2026-07-15 as a shipped bug in MusicTUI 3.6.0, fixed the same day.
 
 ---
 
+## `include=library` tells you what a user owns, never who added it
+
+Verified 2026-08-27, both directions, against a real library.
+
+`GET /v1/catalog/{sf}/songs?ids=a,b,c&include=library` reports library membership
+for many catalog songs in a single request, with a user token. A song the user
+owns comes back with one entry under `relationships.library.data`, and that
+entry's `id` is the library id, for example `i.OWGzxc4eMxPv`. A song they do not
+own comes back with an empty array.
+
+Membership is three valued in practice, and the distinction matters if you plan
+to act on it. Only an explicitly present empty array proves absence. An absent
+`relationships` block, an absent `library` key, an absent `data` key, a `data`
+value that is not an array, and an entry carrying no `id` all mean the API said
+nothing useful. Treating any of those as "not in the library" is how you end up
+deleting somebody's music.
+
+The important limit is what this cannot tell you. It reports **ownership at the
+moment you ask**, not **authorship**. Check before an add and check again after,
+and all you have proved is that a row appeared between two observations. If the
+user added the same catalog song in Music.app during that window, the identical
+library id and persistent id appear, and nothing distinguishes their action from
+yours. Apple exposes no created-by attribution for a library row, so any cleanup
+built on a before and after comparison can delete music the user added
+deliberately.
+
+## There is no safe automatic cleanup for catalog tracks you add
+
+Following from the two notes above, and measured 2026-08-27.
+
+Playing catalog content requires copying it into the library first, because
+`music://` plays only stations and the REST API has no play verb. Removing those
+rows afterwards is where it breaks down.
+
+Two AppleScript forms exist and neither is usable for automatic cleanup:
+
+| Form | Effect |
+|---|---|
+| `delete track N of playlist "<a user playlist>"` | Unlinks from that playlist only. Library count did not move, 14192 to 14192, while the playlist emptied. |
+| `delete (every track of playlist "Library" whose persistent ID is "...")` | Deletes the library row, 14192 to 14191. |
+
+The first is the intuitive one and it is a silent no op on the library. Cleanup
+built on it reports success, empties the playlist, and leaves every song behind.
+
+The second does delete, and that is the problem: it will delete whatever you name,
+and per the note above you cannot prove you are the one who added it.
+
+AppleScript also cannot address a REST library id at all. Its dictionary exposes
+`id` as an integer, `database ID` as an integer, and `persistent ID` as sixteen
+hex characters. None of them is or derives from `i.OWGzxc4eMxPv`. Measured on a
+single real track: `database ID 28277`, `id 49796`, `persistent ID
+4AA20FFE48BCDF9C`, against a REST library id of `i.1YEo2uLBV16r`. Any pairing has
+to be built while a playlist containing the rows still exists, using position as
+the join key, and it is unrecoverable once that playlist is gone.
+
+Matching on name is not an escape. The same probe found five separate rows titled
+"Hand In Glove" in one library.
+
+The conclusion this project reached: delete only containers you created and can
+prove you created, by their own name prefix, and leave library rows alone. If
+cleanup matters, it belongs in an explicit command that lists what it will remove
+and asks first, not in an automatic sweep claiming an authorship the platform
+cannot establish.
+
+## Playing catalog content from a browse surface grows the library permanently
+
+Measured 2026-08-27, and a direct consequence of the two notes above.
+
+MusicTUI's Discover tab plays a catalog album by creating a temporary playlist
+from catalog ids and playing that. The temporary playlist is removed afterwards.
+The songs are not, and cannot safely be.
+
+So playing an album from Discover adds it to your library and it stays there. A
+four track EP adds four songs and one album. This is documented rather than
+hidden because it is the actual price of playing catalog content on a platform
+with no write free play verb, and a user deserves to know that pressing play
+touches their library.
+
 ## Corrections
 
 If any of this is wrong or has changed in a later macOS release, please open an issue.
