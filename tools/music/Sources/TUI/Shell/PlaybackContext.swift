@@ -79,9 +79,31 @@ func currentTrackArtLines(width: Int, height: Int, path: String) -> (lines: [Str
     return (artworkToAscii(path: written, width: width, height: height), written)
 }
 
-/// Strip internal temp-playlist prefixes so the UI shows the real source name
-/// ("__queue__ House" -> "House", "__discover__ 8B1F" -> "8B1F").
+/// Strip internal temp-playlist prefixes so the UI shows the real source name.
+///
+/// `__queue__ ` names carry nothing after the prefix but the queue's own
+/// display name, so stripping the prefix is the whole job
+/// ("__queue__ House" -> "House").
+///
+/// `__discover__ ` names additionally carry a uuid before the title, since
+/// there is no ledger to map the uuid back to a title:
+/// "__discover__ <uuid> — <title>". After the prefix, everything up to and
+/// including the FIRST occurrence of `discoverPlaylistNameSeparator` is the
+/// uuid and is dropped — only the first, so a title that happens to contain
+/// the same separator survives intact rather than being truncated at its own
+/// separator.
+///
+/// A malformed or hand-edited Discover name with no separator degrades to
+/// the prefix-stripped remainder rather than an empty string — some signal
+/// beats none.
 func cleanContextName(_ name: String) -> String {
+    if name.hasPrefix(discoverPlaylistPrefix) {
+        let rest = String(name.dropFirst(discoverPlaylistPrefix.count))
+        if let range = rest.range(of: discoverPlaylistNameSeparator) {
+            return String(rest[range.upperBound...])
+        }
+        return rest
+    }
     for p in tempPlaylistPrefixes where name.hasPrefix(p) {
         return String(name.dropFirst(p.count))
     }

@@ -24,9 +24,25 @@ final class PlaybackContextTests: XCTestCase {
     }
     /// Now Playing shows the album's real title, not the transaction id.
     func testCleanContextNameStripsTheDiscoverPrefix() {
-        XCTAssertEqual(cleanContextName("__discover__ 8B1F"), "8B1F")
+        XCTAssertEqual(cleanContextName("__discover__ 8B1F — Kid A"), "Kid A")
         XCTAssertEqual(cleanContextName("__queue__ House"), "House")
         XCTAssertEqual(cleanContextName("My Mix"), "My Mix")
+    }
+
+    /// Only the FIRST separator is consumed, so a title that itself contains
+    /// the separator survives intact instead of being truncated at its own
+    /// dash. A naive last-occurrence split, or a greedy split that eats every
+    /// separator, both fail this: they'd return "Reprise" instead of the full
+    /// title.
+    func testCleanContextNamePreservesASeparatorInsideTheTitle() {
+        XCTAssertEqual(cleanContextName("__discover__ 8B1F — Do It Again — Reprise"),
+                       "Do It Again — Reprise")
+    }
+
+    /// A malformed or hand-edited Discover name with no separator degrades to
+    /// the prefix-stripped remainder rather than an empty string.
+    func testCleanContextNameDegradesWhenSeparatorIsMissing() {
+        XCTAssertEqual(cleanContextName("__discover__ 8B1F"), "8B1F")
     }
     func testGeniusClearsWhenRealPlaylistTakesOver() {
         // Within the grace window: keep it (post-trigger lag still shows old ctx).

@@ -137,23 +137,6 @@ struct RESTAPIBackend {
         return parseLibraryAlbums(from: data).first   // the relationship returns album objects
     }
 
-    /// Which of these catalog songs are already in the user's library.
-    /// One request for the whole set — `include=library` batches (probed
-    /// 2026-08-26). Needs a user token; without one there is no library to ask
-    /// about and the caller must not proceed with a transaction.
-    func libraryMembership(catalogIDs: [String], storefront: String) async throws -> LibraryMembership {
-        guard userToken != nil else { throw AuthError.userTokenRequired }
-        guard let path = libraryMembershipPath(storefront: storefront, catalogIDs: catalogIDs) else {
-            return LibraryMembership()
-        }
-        let (data, status) = try await get(path)
-        guard (200...299).contains(status) else {
-            if status == 401 || status == 403 { throw AuthError.userTokenExpired(status) }
-            throw APIError.requestFailed(status)
-        }
-        return parseLibraryMembership(data)
-    }
-
     // MARK: - Library Operations (require user token)
 
     func addToLibrary(songIDs: [String]) async throws {
