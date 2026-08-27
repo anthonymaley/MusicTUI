@@ -319,7 +319,7 @@ final class DiscoverScene: Scene {
     /// when it did not.
     private static func toast(for outcome: DiscoverPlayOutcome, title: String, status: StatusStore) {
         switch outcome {
-        case .playing(let playedTitle, _):
+        case .playing(let playedTitle):
             status.post("Playing \(playedTitle)")
         case .needsSignIn:
             status.post("Sign in to play Discover music (music auth setup).", error: true)

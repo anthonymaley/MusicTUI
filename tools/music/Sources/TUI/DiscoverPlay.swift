@@ -38,7 +38,7 @@ func discoverReadiness(observed: Int, expected: Int,
 /// What a play attempt resolved to. The caller (Task 7, `DiscoverScene`) turns
 /// this into a toast or a push to Now Playing; nothing here owns UI.
 enum DiscoverPlayOutcome: Equatable {
-    case playing(title: String, position: Int)
+    case playing(title: String)
     case needsSignIn
     /// The create request failed outright (nothing was created, there is no
     /// residue).
@@ -134,5 +134,5 @@ func playDiscoverContainer(title: String,
         return .playFailed(error.localizedDescription)
     }
 
-    return .playing(title: title, position: 1)
+    return .playing(title: title)
 }
