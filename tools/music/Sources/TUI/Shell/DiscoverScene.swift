@@ -1,20 +1,25 @@
 // tools/music/Sources/TUI/Shell/DiscoverScene.swift
 import Foundation
 
-// The Discover tab: Apple's own For You rails, browsable, with a read-only drill-in
-// on albums and playlists.
+// The Discover tab: Apple's own For You rails, browsable, with a drill-in on
+// albums and playlists that can also play.
 //
 // Enter is deliberately asymmetric, and the asymmetry is a platform fact rather
 // than a design preference (all measured 2026-08-25, see docs/platform-notes.md):
 //
-//   station          -> plays, via the music:// scheme rewrite. Writes nothing.
-//   album, playlist  -> drills in to a track list. Does NOT play.
+//   station                    -> plays, via the music:// scheme rewrite. Writes nothing.
+//   album, playlist (rail row) -> drills in to a track list. Does NOT play.
+//   track (inside a drill-in)  -> Enter plays from that track; p plays the container.
 //
 // Catalog albums and playlists cannot be played without first adding them to the
 // library: music:// does nothing on a non-station URL, and the REST API has no
-// play verb. Discover is for discovery and listening, not for shopping, so it does
-// not quietly write to the library to make a keypress work. The add/play/sweep
-// transaction that would let albums play is designed but deliberately unbuilt.
+// play verb. So `p` on an album/playlist row, or `p`/Enter on a track row inside
+// a drill-in, creates a temp playlist (playDiscoverContainer, DiscoverPlay.swift)
+// and plays that — the songs stay in the library permanently (no per-track
+// authorship is exposed to sweep them back out); only the temp playlist
+// CONTAINER is ever swept, and only by the name this app gave it
+// (sweepDiscoverPlaylists, PlaylistDataSources.swift). `→` still never plays —
+// see discoverRightArrowActivates.
 final class DiscoverScene: Scene {
     let id: SceneID = .discover
     let tabTitle = "Discover"
@@ -22,6 +27,15 @@ final class DiscoverScene: Scene {
     private let feed: DiscoverFeed?
     private let status: StatusStore
     private let opener: Opener
+    // The play transaction's dependencies (Task 6, DiscoverPlay.swift). nil
+    // `api` means no dev+user token pair, same gate makeDiscoverFeed() and
+    // makeArtworkAPI() already use — in practice `feed` is also nil whenever
+    // `api` is, since both require the same two tokens, but each play path
+    // guards `api` independently rather than assuming that correlation holds.
+    private let actions: ActionRunner
+    private let api: RESTAPIBackend?
+    private let backend: AppleScriptBackend
+    private let storefront: String
 
     private var stack: [DiscoverFrameState] = [DiscoverFrameState(level: .root, cursor: DiscoverCursor())]
     private var rails: [DiscoverRail] = []
@@ -104,10 +118,15 @@ final class DiscoverScene: Scene {
     // geometry change alone is enough to force a delete+redraw.
     private var lastPlaced: ArtPlacement? = nil
 
-    init(feed: DiscoverFeed?, status: StatusStore, opener: Opener = SystemOpener(),
+    init(feed: DiscoverFeed?, status: StatusStore, actions: ActionRunner, api: RESTAPIBackend?,
+         backend: AppleScriptBackend, storefront: String, opener: Opener = SystemOpener(),
          kittyEnabled: Bool = false) {
         self.feed = feed
         self.status = status
+        self.actions = actions
+        self.api = api
+        self.backend = backend
+        self.storefront = storefront
         self.opener = opener
         self.kittyEnabled = kittyEnabled
     }
@@ -204,6 +223,8 @@ final class DiscoverScene: Scene {
             refresh(); return .redraw
         case .enter:
             return activate()
+        case .char("p"):
+            return activatePlayAll()
         case .right:
             // → drills in like Enter (vim `l` arrives here as .right),
             // symmetric with ← back — but it never plays. LibraryScene and
@@ -259,9 +280,121 @@ final class DiscoverScene: Scene {
                 drillIn(item)
                 return .redraw
             case .song:
-                return .none
+                // Enter on a track row inside a drill-in: play the container
+                // starting at exactly this track (never position 1 — that
+                // would play a different song than the one selected).
+                playFromDrillIn(startingAt: item.id)
+                return .push(.nowPlaying)
             }
         }
+    }
+
+    /// `p`: play the whole container, from the top. Reachable from an
+    /// un-drilled album/playlist rail row (fetches the track list itself,
+    /// since only a drill-in populates one) or from a track row already
+    /// inside a drill-in (trackRows is already that container's full,
+    /// materialized-order id list). A no-op everywhere else — stations
+    /// already play on Enter, and there is nothing to play at a `View all` row.
+    private func activatePlayAll() -> SceneAction {
+        guard let selection else { return .none }
+        switch selection {
+        case .item(let item):
+            switch item.detail {
+            case .station:
+                return .none
+            case .album, .playlist:
+                playAllFromRail(item)
+                return .push(.nowPlaying)
+            case .song:
+                playFromDrillIn(startingAt: nil)
+                return .push(.nowPlaying)
+            }
+        case .viewAll:
+            return .none
+        }
+    }
+
+    // MARK: - Play
+
+    /// Maps a resolved DiscoverPlayOutcome to the one honest toast it earns.
+    /// Shared by both play paths so the wording can't drift between them.
+    /// Never posts a success toast for anything but `.playing` — the whole
+    /// point of resolving the outcome first is to not claim playback started
+    /// when it did not.
+    private static func toast(for outcome: DiscoverPlayOutcome, title: String, status: StatusStore) {
+        switch outcome {
+        case .playing(let playedTitle, _):
+            status.post("Playing \(playedTitle)")
+        case .needsSignIn:
+            status.post("Sign in to play Discover music (music auth setup).", error: true)
+        case .notReady:
+            status.post("'\(title)' is still loading — try again in a moment.", error: true)
+        case .selectedTrackMissing:
+            status.post("That track isn't available to play.", error: true)
+        case .createFailed(let message):
+            status.post("Couldn't start '\(title)': \(message)", error: true)
+        case .playFailed(let message):
+            status.post("Couldn't play '\(title)': \(message)", error: true)
+        }
+    }
+
+    /// The single place both play paths land: dispatch off the input loop
+    /// (playDiscoverContainer is async and can block up to `readinessTimeout`
+    /// seconds), then turn the outcome into an honest toast. Never claims
+    /// playback started when it did not — a toast fires only after the
+    /// transaction actually resolves, not when the keypress is handled.
+    private func launchPlay(title: String, catalogIDs: [String], startingAt selectedID: String?) {
+        guard let api else {
+            status.post("Sign in to play Discover music (music auth setup).", error: true)
+            return
+        }
+        let backend = self.backend
+        let storefront = self.storefront
+        let status = self.status
+        actions.run("Play") {
+            try require(!catalogIDs.isEmpty, "'\(title)': no tracks to play.")
+            let outcome = try syncRun {
+                await playDiscoverContainer(title: title, catalogIDs: catalogIDs, startingAt: selectedID,
+                                            api: api, backend: backend, storefront: storefront)
+            }
+            DiscoverScene.toast(for: outcome, title: title, status: status)
+        }
+    }
+
+    /// "p" on an un-drilled album/playlist rail row: there is no cached track
+    /// list yet — only a drill-in populates `trackRows` — so this fetches the
+    /// container's own tracks first, off the input loop, before handing off
+    /// to the same play transaction a drill-in "Play all" uses.
+    private func playAllFromRail(_ item: DiscoverItem) {
+        guard let feed else { return }
+        guard let api else {
+            status.post("Sign in to play Discover music (music auth setup).", error: true)
+            return
+        }
+        let backend = self.backend
+        let storefront = self.storefront
+        let status = self.status
+        let title = item.name
+        actions.run("Play") {
+            let tracks = try feed.tracks(for: item)
+            let catalogIDs = tracks.map { $0.id }
+            try require(!catalogIDs.isEmpty, "'\(title)': no tracks to play.")
+            let outcome = try syncRun {
+                await playDiscoverContainer(title: title, catalogIDs: catalogIDs, startingAt: nil,
+                                            api: api, backend: backend, storefront: storefront)
+            }
+            DiscoverScene.toast(for: outcome, title: title, status: status)
+        }
+    }
+
+    /// Enter ("Play from here", `selectedID` set) or `p` ("Play all",
+    /// `selectedID` nil) on a track row already inside a drill-in.
+    /// `trackRows` is that container's full, materialized-order catalog id
+    /// list — the same array the left pane is rendering — so no extra fetch
+    /// is needed, unlike `playAllFromRail`.
+    private func playFromDrillIn(startingAt selectedID: String?) {
+        guard case .tracks(let container) = current.level else { return }
+        launchPlay(title: container.name, catalogIDs: trackRows.map { $0.id }, startingAt: selectedID)
     }
 
     // MARK: - Fetching

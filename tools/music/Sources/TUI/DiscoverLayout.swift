@@ -23,6 +23,14 @@ func discoverLeftWidth(frameWidth: Int) -> Int {
 /// was ambiguous exactly where the tab needs to be honest: a station listens, an
 /// album only opens a read-only track list.
 ///
+/// `p` is advertised only on rows where the handler actually acts on it — an
+/// album/playlist rail row ("Play all") and a track row inside a drill-in
+/// ("Play all" there too; Enter on that same row reads "Play" since Enter
+/// there means "from here", not "from the top"). Station rows and `View all`
+/// rows never gain `p`: DiscoverScene's `p` handler is a no-op on both, and a
+/// key the handler ignores must not be advertised — this repo has already
+/// shipped that exact bug once.
+///
 /// `canGoBack` and `canRefresh` are separate flags, not one "depth" concept,
 /// because they are governed by different rules: back is available at any
 /// level below Discover, while refresh is guarded to the top level ONLY (see
@@ -40,9 +48,9 @@ func discoverFooterHint(_ selection: DiscoverSelection?, canGoBack: Bool, canRef
         case .station:
             return "\u{2191}\u{2193} Move  Enter Listen" + refresh + back
         case .album, .playlist:
-            return "\u{2191}\u{2193} Move  Enter Browse" + refresh + back
+            return "\u{2191}\u{2193} Move  Enter Browse  p Play" + refresh + back
         case .song:
-            return "\u{2191}\u{2193} Move" + back
+            return "\u{2191}\u{2193} Move  Enter Play  p Play all" + back
         }
     case .viewAll:
         return "\u{2191}\u{2193} Move  Enter View all" + refresh + back

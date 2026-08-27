@@ -111,7 +111,12 @@ func runShell() {
                 status.post("Sign in to see your Discover feed (music auth setup).", error: true)
                 return nil
             }
-            let scene = DiscoverScene(feed: makeDiscoverFeed(), status: status, kittyEnabled: kittyEnabled)
+            // Play (Enter/p) needs the same both-tokens REST backend the artwork
+            // fallback and Library browsing use — makeArtworkAPI() nil means no
+            // dev token, same gate makeDiscoverFeed() applies to `feed`.
+            let scene = DiscoverScene(feed: makeDiscoverFeed(), status: status, actions: actions,
+                                      api: makeArtworkAPI(), backend: backend,
+                                      storefront: AuthManager().storefront(), kittyEnabled: kittyEnabled)
             scenes[id] = scene
             return scene
         case .radio:
