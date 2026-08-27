@@ -22,6 +22,12 @@ final class PlaybackContextTests: XCTestCase {
         XCTAssertEqual(q.name, "")
         XCTAssertTrue(q.tracks.isEmpty)
     }
+    /// Now Playing shows the album's real title, not the transaction id.
+    func testCleanContextNameStripsTheDiscoverPrefix() {
+        XCTAssertEqual(cleanContextName("__discover__ 8B1F"), "8B1F")
+        XCTAssertEqual(cleanContextName("__queue__ House"), "House")
+        XCTAssertEqual(cleanContextName("My Mix"), "My Mix")
+    }
     func testGeniusClearsWhenRealPlaylistTakesOver() {
         // Within the grace window: keep it (post-trigger lag still shows old ctx).
         XCTAssertFalse(geniusShouldClear(elapsedSinceTrigger: 1, hasAppQueue: false, contextName: "Friday Mix"))

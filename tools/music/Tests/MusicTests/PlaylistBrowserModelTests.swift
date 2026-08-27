@@ -39,6 +39,12 @@ final class PlaylistBrowserModelTests: XCTestCase {
         XCTAssertEqual(parsed.names, ["Real One"])
         XCTAssertTrue(parsed.subscription.isEmpty)
     }
+    /// Discover's temp playlists must be as invisible as the queue's. A user
+    /// should never see a __discover__ uuid in their Playlists tab.
+    func testRailNamesHideDiscoverTempPlaylists() {
+        let raw = "U\u{1F}My Mix\nU\u{1F}__discover__ 8B1F\nU\u{1F}__queue__ House\nU\u{1F}Chill"
+        XCTAssertEqual(parseRailPlaylistNames(raw).names, ["My Mix", "Chill"])
+    }
 
     // duration formatting
     func testFormatDurationHoursAndMinutes() {

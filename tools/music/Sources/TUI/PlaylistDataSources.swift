@@ -94,9 +94,20 @@ func sweepQueuePlaylists(backend: AppleScriptBackend) {
     }
 }
 
+/// Temp playlists this app creates and later sweeps. Hidden from the Playlists
+/// rail and stripped from Now Playing, so the user never sees the plumbing.
+/// A list rather than a constant: a third temp kind should be a one-line change,
+/// not a third copy of the same two call sites.
+let tempPlaylistPrefixes = ["__queue__ ", discoverPlaylistPrefix]
+
+func isTempPlaylistName(_ name: String) -> Bool {
+    tempPlaylistPrefixes.contains { name.hasPrefix($0) }
+}
+
 /// Parse the rail-names script output: one `U<US>name` (user playlist) or
 /// `S<US>name` (subscription playlist) line per playlist. Pure, tested.
-/// Filters obsolete `__queue__` temp playlists so they don't clutter the rail.
+/// Filters obsolete temp playlists (queue, Discover, ...) so they don't clutter
+/// the rail.
 func parseRailPlaylistNames(_ raw: String) -> (names: [String], subscription: Set<String>) {
     var names: [String] = []
     var subscription: Set<String> = []
@@ -104,7 +115,7 @@ func parseRailPlaylistNames(_ raw: String) -> (names: [String], subscription: Se
         let parts = line.split(separator: asFieldSep, maxSplits: 1).map(String.init)
         guard parts.count == 2 else { continue }
         let name = parts[1].trimmingCharacters(in: .whitespaces)
-        guard !name.isEmpty, !name.hasPrefix("__queue__ ") else { continue }
+        guard !name.isEmpty, !isTempPlaylistName(name) else { continue }
         names.append(name)
         if parts[0].trimmingCharacters(in: .whitespaces) == "S" { subscription.insert(name) }
     }
