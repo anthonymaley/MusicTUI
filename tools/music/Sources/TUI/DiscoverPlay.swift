@@ -33,25 +33,6 @@ func discoverReadiness(observed: Int, expected: Int,
     return elapsed >= timeout ? .timedOut : .wait
 }
 
-/// 1-based position of a track within the playlist that actually materialized.
-///
-/// Keyed on CATALOG ID, not title. Repeated titles are common (DJ mixes with
-/// several `ID` entries, albums with a reprise, movements sharing a name) and a
-/// title match plays whichever came first rather than the row the user selected.
-///
-/// `materializedCatalogIDs` comes from GET /v1/me/library/playlists/{id}/tracks,
-/// in order, reading `attributes.playParams.catalogId` — the materialized
-/// playlist, not the catalog list, because unplayable rows never land and every
-/// position after a missing row shifts.
-///
-/// nil means the selected track did not materialize. The caller must report that
-/// and play nothing; falling back to 1 plays a different song than the one
-/// chosen, and a warning does not make that acceptable.
-func discoverPlayPosition(catalogID: String, in materializedCatalogIDs: [String]) -> Int? {
-    guard let idx = materializedCatalogIDs.firstIndex(of: catalogID) else { return nil }
-    return idx + 1
-}
-
 // MARK: - The transaction
 
 /// What a play attempt resolved to. The caller (Task 7, `DiscoverScene`) turns
@@ -63,7 +44,6 @@ enum DiscoverPlayOutcome: Equatable {
     /// residue).
     case createFailed(String)
     case notReady                  // materialization timed out; playlist left behind
-    case selectedTrackMissing      // the chosen row never materialized
     case playFailed(String)
 }
 
@@ -84,45 +64,17 @@ private func discoverReadPlaylistTrackCount(name: String, backend: AppleScriptBa
     return Int(raw.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
 }
 
-/// The materialized tracks of a library playlist, in playlist order, each as
-/// its catalog id — `GET /v1/me/library/playlists/{id}/tracks`, walked to the
-/// end via `next` the same way `libraryPlaylists()` does.
-///
-/// A row is kept as an empty-string placeholder rather than dropped when it
-/// somehow carries no `playParams.catalogId`: position N in the returned array
-/// must line up with AppleScript position N, and dropping a row would shift
-/// every later position out from under `discoverPlayPosition`.
-private func discoverFetchMaterializedCatalogIDs(api: RESTAPIBackend, playlistID: String) async throws -> [String] {
-    var out: [String] = []
-    var path: String? = "/v1/me/library/playlists/\(playlistID)/tracks?limit=100"
-    while let p = path {
-        let (data, status) = try await api.get(p)
-        guard (200...299).contains(status) else { throw APIError.requestFailed(status) }
-        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
-        for item in json?["data"] as? [[String: Any]] ?? [] {
-            let attrs = item["attributes"] as? [String: Any] ?? [:]
-            let catalogId = (attrs["playParams"] as? [String: Any])?["catalogId"] as? String ?? ""
-            out.append(catalogId)
-        }
-        path = json?["next"] as? String
-    }
-    return out
-}
-
 /// The single entry point for playing a Discover album or playlist. Creates a
-/// temp playlist, waits for it to materialize, and plays it. It never deletes
-/// a playlist or a library row, on any path — see the module doc for why.
+/// temp playlist, waits for it to materialize, and plays it — the whole
+/// container, from the top, bounded to its own tracks. It never deletes a
+/// playlist or a library row, on any path — see the module doc for why.
 ///
 /// - Parameters:
 ///   - title: folded into the playlist name (after `discoverPlaylistNameSeparator`)
 ///     so Now Playing can show it — NEVER used as an identifier.
 ///   - catalogIDs: every track in the container, in catalog order.
-///   - selectedCatalogID: nil plays from the top (position 1); set, it must
-///     resolve to a materialized position or the call fails rather than
-///     silently playing a different track.
 func playDiscoverContainer(title: String,
                            catalogIDs: [String],
-                           startingAt selectedCatalogID: String?,
                            api: RESTAPIBackend,
                            backend: AppleScriptBackend,
                            storefront: String,
@@ -138,10 +90,11 @@ func playDiscoverContainer(title: String,
     let txID = UUID().uuidString
     let name = discoverPlaylistPrefix + txID + discoverPlaylistNameSeparator + title
 
-    // Step 3: create and seed the playlist in one request.
-    let playlistID: String
+    // Step 3: create and seed the playlist in one request. The returned id
+    // is not needed after this: readiness below polls by NAME through
+    // AppleScript, and playback plays the playlist by name too.
     do {
-        playlistID = try await api.createPlaylist(name: name, songIDs: catalogIDs)
+        _ = try await api.createPlaylist(name: name, songIDs: catalogIDs)
     } catch {
         if isExpiredToken(error) { return .needsSignIn }
         return .createFailed(error.localizedDescription)
@@ -164,38 +117,22 @@ func playDiscoverContainer(title: String,
         }
     }
 
-    // Step 5: resolve position on the MATERIALIZED playlist, never the catalog
-    // list — unplayable rows never land and every position after a missing row
-    // shifts.
-    let materializedCatalogIDs: [String]
-    do {
-        materializedCatalogIDs = try await discoverFetchMaterializedCatalogIDs(api: api, playlistID: playlistID)
-    } catch {
-        // The playlist was created and materialized; only the read that
-        // resolves a starting position failed. It's left exactly as is.
-        return .playFailed("could not read materialized tracks: \(error.localizedDescription)")
-    }
-
-    let position: Int
-    if let selected = selectedCatalogID {
-        guard let resolved = discoverPlayPosition(catalogID: selected, in: materializedCatalogIDs) else {
-            // Never fall back to position 1 — that plays a different song than
-            // the one the user chose.
-            return .selectedTrackMissing
-        }
-        position = resolved
-    } else {
-        position = 1
-    }
-
-    // Step 6: play by position via AppleScript, reusing the codebase's existing
-    // AppleScript string escaping rather than writing a second one.
+    // Step 5: play the playlist itself, not a track position within it.
+    // `play track N of playlist "X"` is a track-play command that merely
+    // NAMES a playlist — Music.app discards the playlist as context and
+    // roots the queue in the library, so playback runs past the end of the
+    // album into unrelated artists instead of stopping. `play playlist "X"`
+    // establishes the playlist as `current playlist`, which plays every
+    // track and then stops. Measured live 2026-08-25; `set current playlist`
+    // is not writable (-10006), so this is the only lever. Reuses the
+    // codebase's existing AppleScript string escaping rather than writing a
+    // second one.
     let esc = escapeAppleScriptString(name)
     do {
-        _ = try await backend.runMusic("play track \(position) of playlist \"\(esc)\"")
+        _ = try await backend.runMusic("play playlist \"\(esc)\"")
     } catch {
         return .playFailed(error.localizedDescription)
     }
 
-    return .playing(title: title, position: position)
+    return .playing(title: title, position: 1)
 }

@@ -25,11 +25,13 @@ func discoverLeftWidth(frameWidth: Int) -> Int {
 ///
 /// `p` is advertised only on rows where the handler actually acts on it — an
 /// album/playlist rail row ("Play all") and a track row inside a drill-in
-/// ("Play all" there too; Enter on that same row reads "Play" since Enter
-/// there means "from here", not "from the top"). Station rows and `View all`
-/// rows never gain `p`: DiscoverScene's `p` handler is a no-op on both, and a
-/// key the handler ignores must not be advertised — this repo has already
-/// shipped that exact bug once.
+/// ("Play all" there too — DiscoverScene's `p` on a track row plays the whole
+/// container, never just that track). Enter does NOT play on a track row:
+/// there is no per-track play path (deferred), so a track row's footer is
+/// bare movement plus Back. Station rows and `View all` rows never gain `p`:
+/// DiscoverScene's `p` handler is a no-op on both, and a key the handler
+/// ignores must not be advertised — this repo has already shipped that exact
+/// bug once.
 ///
 /// `canGoBack` and `canRefresh` are separate flags, not one "depth" concept,
 /// because they are governed by different rules: back is available at any
@@ -50,7 +52,7 @@ func discoverFooterHint(_ selection: DiscoverSelection?, canGoBack: Bool, canRef
         case .album, .playlist:
             return "\u{2191}\u{2193} Move  Enter Browse  p Play" + refresh + back
         case .song:
-            return "\u{2191}\u{2193} Move  Enter Play  p Play all" + back
+            return "\u{2191}\u{2193} Move" + back
         }
     case .viewAll:
         return "\u{2191}\u{2193} Move  Enter View all" + refresh + back

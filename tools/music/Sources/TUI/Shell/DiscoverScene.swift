@@ -9,17 +9,18 @@ import Foundation
 //
 //   station                    -> plays, via the music:// scheme rewrite. Writes nothing.
 //   album, playlist (rail row) -> drills in to a track list. Does NOT play.
-//   track (inside a drill-in)  -> Enter plays from that track; p plays the container.
+//   track (inside a drill-in)  -> does NOT play. Enter and p are both no-ops here.
 //
 // Catalog albums and playlists cannot be played without first adding them to the
 // library: music:// does nothing on a non-station URL, and the REST API has no
-// play verb. So `p` on an album/playlist row, or `p`/Enter on a track row inside
-// a drill-in, creates a temp playlist (playDiscoverContainer, DiscoverPlay.swift)
-// and plays that — the songs stay in the library permanently (no per-track
-// authorship is exposed to sweep them back out); only the temp playlist
-// CONTAINER is ever swept, and only by the name this app gave it
-// (sweepDiscoverPlaylists, PlaylistDataSources.swift). `→` still never plays —
-// see discoverRightArrowActivates.
+// play verb. So `p` on an album/playlist row creates a temp playlist
+// (playDiscoverContainer, DiscoverPlay.swift) and plays it, bounded, from the
+// top — the songs stay in the library permanently (no per-track authorship is
+// exposed to sweep them back out); only the temp playlist CONTAINER is ever
+// swept, and only by the name this app gave it (sweepDiscoverPlaylists,
+// PlaylistDataSources.swift). `→` still never plays — see
+// discoverRightArrowActivates. "Play from here" on a specific track is
+// deferred; there is no per-track play path yet.
 final class DiscoverScene: Scene {
     let id: SceneID = .discover
     let tabTitle = "Discover"
@@ -280,33 +281,29 @@ final class DiscoverScene: Scene {
                 drillIn(item)
                 return .redraw
             case .song:
-                // Enter on a track row inside a drill-in: play the container
-                // starting at exactly this track (never position 1 — that
-                // would play a different song than the one selected).
-                playFromDrillIn(startingAt: item.id)
-                return .push(.nowPlaying)
+                // A track row inside a drill-in does not play. There is no
+                // per-track play path yet ("play from here" is deferred); p
+                // on this same row still plays the whole container.
+                return .none
             }
         }
     }
 
-    /// `p`: play the whole container, from the top. Reachable from an
+    /// `p`: play the whole container, from the top. Reachable only from an
     /// un-drilled album/playlist rail row (fetches the track list itself,
-    /// since only a drill-in populates one) or from a track row already
-    /// inside a drill-in (trackRows is already that container's full,
-    /// materialized-order id list). A no-op everywhere else — stations
-    /// already play on Enter, and there is nothing to play at a `View all` row.
+    /// since only a drill-in populates one). A no-op everywhere else —
+    /// stations already play on Enter, there is nothing to play at a `View
+    /// all` row, and a track row inside a drill-in has no play action at
+    /// all (there is no per-track play path; see the module doc).
     private func activatePlayAll() -> SceneAction {
         guard let selection else { return .none }
         switch selection {
         case .item(let item):
             switch item.detail {
-            case .station:
+            case .station, .song:
                 return .none
             case .album, .playlist:
                 playAllFromRail(item)
-                return .push(.nowPlaying)
-            case .song:
-                playFromDrillIn(startingAt: nil)
                 return .push(.nowPlaying)
             }
         case .viewAll:
@@ -317,7 +314,6 @@ final class DiscoverScene: Scene {
     // MARK: - Play
 
     /// Maps a resolved DiscoverPlayOutcome to the one honest toast it earns.
-    /// Shared by both play paths so the wording can't drift between them.
     /// Never posts a success toast for anything but `.playing` — the whole
     /// point of resolving the outcome first is to not claim playback started
     /// when it did not.
@@ -329,8 +325,6 @@ final class DiscoverScene: Scene {
             status.post("Sign in to play Discover music (music auth setup).", error: true)
         case .notReady:
             status.post("'\(title)' is still loading — try again in a moment.", error: true)
-        case .selectedTrackMissing:
-            status.post("That track isn't available to play.", error: true)
         case .createFailed(let message):
             status.post("Couldn't start '\(title)': \(message)", error: true)
         case .playFailed(let message):
@@ -338,33 +332,12 @@ final class DiscoverScene: Scene {
         }
     }
 
-    /// The single place both play paths land: dispatch off the input loop
-    /// (playDiscoverContainer is async and can block up to `readinessTimeout`
-    /// seconds), then turn the outcome into an honest toast. Never claims
-    /// playback started when it did not — a toast fires only after the
-    /// transaction actually resolves, not when the keypress is handled.
-    private func launchPlay(title: String, catalogIDs: [String], startingAt selectedID: String?) {
-        guard let api else {
-            status.post("Sign in to play Discover music (music auth setup).", error: true)
-            return
-        }
-        let backend = self.backend
-        let storefront = self.storefront
-        let status = self.status
-        actions.run("Play") {
-            try require(!catalogIDs.isEmpty, "'\(title)': no tracks to play.")
-            let outcome = try syncRun {
-                await playDiscoverContainer(title: title, catalogIDs: catalogIDs, startingAt: selectedID,
-                                            api: api, backend: backend, storefront: storefront)
-            }
-            DiscoverScene.toast(for: outcome, title: title, status: status)
-        }
-    }
-
-    /// "p" on an un-drilled album/playlist rail row: there is no cached track
-    /// list yet — only a drill-in populates `trackRows` — so this fetches the
-    /// container's own tracks first, off the input loop, before handing off
-    /// to the same play transaction a drill-in "Play all" uses.
+    /// `p` on an album/playlist rail row: there is no cached track list yet —
+    /// only a drill-in populates `trackRows`, and a track row inside a
+    /// drill-in has no play action of its own (see the module doc) — so this
+    /// fetches the container's own tracks first, off the input loop, then
+    /// hands off to playDiscoverContainer the same way `refresh`/`drillIn`
+    /// dispatch off the input loop for their own fetches.
     private func playAllFromRail(_ item: DiscoverItem) {
         guard let feed else { return }
         guard let api else {
@@ -380,21 +353,11 @@ final class DiscoverScene: Scene {
             let catalogIDs = tracks.map { $0.id }
             try require(!catalogIDs.isEmpty, "'\(title)': no tracks to play.")
             let outcome = try syncRun {
-                await playDiscoverContainer(title: title, catalogIDs: catalogIDs, startingAt: nil,
+                await playDiscoverContainer(title: title, catalogIDs: catalogIDs,
                                             api: api, backend: backend, storefront: storefront)
             }
             DiscoverScene.toast(for: outcome, title: title, status: status)
         }
-    }
-
-    /// Enter ("Play from here", `selectedID` set) or `p` ("Play all",
-    /// `selectedID` nil) on a track row already inside a drill-in.
-    /// `trackRows` is that container's full, materialized-order catalog id
-    /// list — the same array the left pane is rendering — so no extra fetch
-    /// is needed, unlike `playAllFromRail`.
-    private func playFromDrillIn(startingAt selectedID: String?) {
-        guard case .tracks(let container) = current.level else { return }
-        launchPlay(title: container.name, catalogIDs: trackRows.map { $0.id }, startingAt: selectedID)
     }
 
     // MARK: - Fetching

@@ -91,11 +91,12 @@ final class DiscoverLayoutTests: XCTestCase {
     /// it WERE allowed there, it would teleport the user back to Discover without
     /// warning). The footer must show `r Refresh` exactly when the level
     /// actually accepts it, regardless of what is selected.
-    /// `p` plays the container from a rail row (album/playlist) and plays it
-    /// from the top from a drill-in track row — but must never be advertised
-    /// on a station or `View all` row, where DiscoverScene's `p` handler is a
-    /// no-op. This repo has already shipped a footer that advertised a key
-    /// the handler ignored; this test is the guard against doing it again.
+    /// `p` plays the container only from a rail row (album/playlist) — never
+    /// on a station, `View all`, or track row, where DiscoverScene's `p`
+    /// handler is a no-op (a track row has no play action of its own; there
+    /// is no per-track play path). This repo has already shipped a footer
+    /// that advertised a key the handler ignored; this test is the guard
+    /// against doing it again.
     func testFooterAdvertisesPOnlyWhereItActs() {
         XCTAssertFalse(discoverFooterHint(.item(item(.station(isLive: false))), canGoBack: false, canRefresh: true)
             .contains("p Play"), "station: Enter already plays; p does nothing")
@@ -103,16 +104,18 @@ final class DiscoverLayoutTests: XCTestCase {
                                          canGoBack: false, canRefresh: true).contains("p Play"))
         XCTAssertTrue(discoverFooterHint(.item(item(.playlist(description: nil))), canGoBack: false, canRefresh: true)
             .contains("p Play"))
-        XCTAssertTrue(discoverFooterHint(.item(item(.song)), canGoBack: true, canRefresh: true).contains("p Play all"))
+        XCTAssertFalse(discoverFooterHint(.item(item(.song)), canGoBack: true, canRefresh: true).contains("p Play"),
+                       "track row: no per-track play path; p does nothing here")
         XCTAssertFalse(discoverFooterHint(.viewAll(rail(9)), canGoBack: false, canRefresh: true).contains("p Play"),
                        "View all: nothing to play at this row")
         XCTAssertFalse(discoverFooterHint(nil, canGoBack: false, canRefresh: true).contains("p Play"))
     }
 
-    /// The track row's exact footer text the spec names verbatim.
+    /// The track row's exact footer text the spec names verbatim: bare
+    /// movement plus Back, since neither Enter nor p acts on a track row.
     func testTrackRowFooterMatchesTheAgreedGrammar() {
         XCTAssertEqual(discoverFooterHint(.item(item(.song)), canGoBack: true, canRefresh: true),
-                       "\u{2191}\u{2193} Move  Enter Play  p Play all  \u{2190} Back")
+                       "\u{2191}\u{2193} Move  \u{2190} Back")
     }
 
     func testFooterShowsRefreshOnlyWhenCanRefreshIsTrue() {
