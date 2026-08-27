@@ -142,8 +142,17 @@ func runShell() {
     // Sweep temp queue playlists left by a prior session (sparing the one still
     // playing). Off-main so a slow Music doesn't delay first paint.
     DispatchQueue.global().async { sweepQueuePlaylists(backend: backend) }
+    // Same sweep for Discover's temp playlists, containers only (see
+    // sweepDiscoverPlaylists' doc). Off-main for the same reason.
+    DispatchQueue.global().async { sweepDiscoverPlaylists(backend: backend) }
     defer {
         poller.stop()
+        // Sweep Discover temp playlists now that the poller is confirmed
+        // stopped, i.e. this is a genuine exit — never on a mid-session stop
+        // event: the poller tolerates four consecutive stopped polls because
+        // inter-track gaps look like stops, and sweeping on a false stop would
+        // churn a live queue.
+        sweepDiscoverPlaylists(backend: backend)
         // Delete this session's per-album art temp files (/tmp/music-now-art-*.dat)
         // now that the poller thread is confirmed stopped — a graceful exit
         // shouldn't leak one file per distinct album played.

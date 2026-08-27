@@ -94,6 +94,35 @@ func sweepQueuePlaylists(backend: AppleScriptBackend) {
     }
 }
 
+/// Delete leftover "__discover__ …" temp playlists from prior sessions, sparing
+/// the one currently playing — deleting the playing playlist reverts Music to
+/// the library. Mirrors sweepQueuePlaylists exactly, prefix aside.
+///
+/// Containers only, by design: this script never says `track` or `song` and
+/// never can reach a library row — it enumerates `every user playlist` and
+/// `delete`s whichever ones it named, nothing else. See DiscoverPlay.swift's
+/// module doc for why a sweep that could reach a track is unsafe: Apple
+/// exposes no authorship for a library row, so any such cleanup risks deleting
+/// music the user added themselves. The songs a Discover play adds stay,
+/// permanently — only the container it created is ever removed, and only by
+/// the name this app gave it.
+func sweepDiscoverPlaylists(backend: AppleScriptBackend) {
+    _ = try? syncRun {
+        try await backend.runMusic("""
+            set keepName to ""
+            try
+                set keepName to name of current playlist
+            end try
+            repeat with pp in (every user playlist)
+                try
+                    set nm to name of pp
+                    if (nm starts with "\(discoverPlaylistPrefix)") and (nm is not keepName) then delete pp
+                end try
+            end repeat
+        """)
+    }
+}
+
 /// Temp playlists this app creates and later sweeps. Hidden from the Playlists
 /// rail and stripped from Now Playing, so the user never sees the plumbing.
 /// A list rather than a constant: a third temp kind should be a one-line change,
