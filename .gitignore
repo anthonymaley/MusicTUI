@@ -14,7 +14,6 @@ AGENTS.md
 MACHINE-SETUP.md
 TODO.md
 CONTEXT.md
-.slainte
 kivna
 docs/naming.md
 docs/playbook.md
@@ -27,3 +26,5 @@ docs/site-redesign-spec.md
 docs/site-editorial-hierarchy-pass.md
 docs/show-hn-draft.md
 # END vault-linked
+kivna/input/
+kivna/output/

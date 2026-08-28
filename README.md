@@ -37,7 +37,7 @@ Everything is scriptable and there is no daemon. An optional [Claude Code plugin
 | Layer | How | Setup | Token cost |
 |-------|-----|-------|-----------|
 | **CLI + TUI** (`music`, `music now`, `music speaker`) | Terminal commands, interactive shell, scriptable | Build from source | None |
-| **CLI + API** (`music search`, `music playlist create`) | Catalog, library, discovery | + Apple Developer account | None |
+| **CLI + API** (`music search`, `music discover`) | Catalog and discovery (your own library needs no key) | + Apple Developer account | None |
 | **Natural language** (`/music play Kid A in the kitchen and living room at 60%`) | Everything in words: playback with routing, search, playlists, radio, discovery | Build CLI from source | Normal |
 
 There are no per-action slash commands. `/music` (the skill) is the single entry point, and bare transport belongs to the keys your Mac already has.
