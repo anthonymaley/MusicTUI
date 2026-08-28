@@ -7,6 +7,20 @@ import Foundation
 /// hand-rolled copies, each with its own manual escaping.
 func libraryTrackLookupScript(title: String, artist: String) -> String {
     let t = escapeAppleScriptString(title)
+    // Music.app's AppleScript treats `contains ""` as FALSE, not true, so an
+    // empty artist clause matches nothing and defeats an otherwise exact title
+    // hit. Measured on a live 14k library: title-only matched 1, while both
+    // `artist is ""` and `artist contains ""` matched 0. Callers that know only
+    // a title (a keyless `playlist add`) must therefore drop the clause, not
+    // pass an empty string.
+    guard !artist.isEmpty else {
+        return """
+        set results to (every track of playlist "Library" whose name is "\(t)")
+        if (count of results) = 0 then
+            set results to (every track of playlist "Library" whose name contains "\(t)")
+        end if
+        """
+    }
     let a = escapeAppleScriptString(artist)
     return """
     set results to (every track of playlist "Library" whose name is "\(t)" and artist is "\(a)")

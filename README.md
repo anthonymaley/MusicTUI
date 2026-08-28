@@ -458,7 +458,8 @@ After running `scripts/install.sh`, add to `~/.claude/settings.json`:
 | Radio catalog search | — | Yes | Yes |
 | Library search (`--library`) + Library tab | — | — | Yes |
 | Add to library | — | — | Yes |
-| Playlist CRUD via API | — | — | Yes |
+| Playlist create, delete, add a track you already own | Yes | Yes | Yes |
+| Playlist add from the catalog, add by result index | — | — | Yes |
 | Similar, suggestions, new releases, mix | — | — | Yes |
 | Recently played, heavy rotation | — | — | Yes |
 

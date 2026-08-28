@@ -197,6 +197,25 @@ func playlistCreateStrategy(hasTokens: Bool, indexCount: Int) -> PlaylistCreateS
     return indexCount == 0 ? .appleScriptEmpty : .needsAuthToSeed
 }
 
+/// Which path `playlist add` should take. A developer key is needed only to
+/// reach the CATALOG. Adding a track already in the library is
+/// `duplicateLibraryTrack`, which this file already uses and which has never
+/// needed a token. Pure, for testability.
+enum PlaylistAddStrategy: Equatable {
+    /// Tokens present: unchanged behaviour, catalog and library both reachable.
+    case rest
+    /// No tokens: resolve the title against the library and duplicate it in.
+    case appleScriptLibrary
+    /// No tokens, but indices given. Indices address the result cache, which
+    /// only a catalog search fills, so there is nothing for them to point at.
+    case needsAuthForIndices
+}
+
+func playlistAddStrategy(hasTokens: Bool, itemsAreIndices: Bool) -> PlaylistAddStrategy {
+    if hasTokens { return .rest }
+    return itemsAreIndices ? .needsAuthForIndices : .appleScriptLibrary
+}
+
 struct PlaylistCreate: ParsableCommand {
     static let configuration = CommandConfiguration(commandName: "create", abstract: "Create a playlist.")
     @Argument(help: "Playlist name") var name: String
@@ -297,13 +316,49 @@ struct PlaylistAdd: ParsableCommand {
     @Flag(name: .long, help: "Output JSON") var json = false
     func run() throws {
         let auth = AuthManager()
-        let devToken = try auth.requireDeveloperToken()
-        let userToken = try auth.requireUserToken()
-        let api = RESTAPIBackend(developerToken: devToken, userToken: userToken, storefront: auth.storefront())
+        let devToken = try? auth.requireDeveloperToken()
+        let userToken = auth.userToken()
         let backend = AppleScriptBackend()
 
         let ints = items.compactMap { Int($0) }
-        if ints.count == items.count && !ints.isEmpty {
+        let itemsAreIndices = ints.count == items.count && !ints.isEmpty
+
+        switch playlistAddStrategy(hasTokens: devToken != nil && userToken != nil,
+                                   itemsAreIndices: itemsAreIndices) {
+        case .needsAuthForIndices:
+            print("Adding by result index needs a Music User Token. Run: music auth setup")
+            print("Adding a track you already own needs no token: music playlist add \"\(playlist)\" \"Song Title\"")
+            throw ExitCode.failure
+
+        case .appleScriptLibrary:
+            let wanted = items.first ?? ""
+            guard !wanted.isEmpty else {
+                print("Give a song title: music playlist add \"\(playlist)\" \"Song Title\"")
+                throw ExitCode.failure
+            }
+            let wantedArtist = items.count > 1 ? items.dropFirst().joined(separator: " ") : ""
+            guard duplicateLibraryTrack(backend: backend, title: wanted,
+                                        artist: wantedArtist, toPlaylist: playlist) else {
+                print("Not in your library: '\(wanted)'.")
+                print("Adding from the Apple Music catalog needs a Music User Token. Run: music auth setup")
+                throw ExitCode.failure
+            }
+            if json {
+                let output = OutputFormat(mode: .json)
+                print(output.render(["added": 1, "playlist": playlist, "track": wanted]))
+            } else {
+                print("Added to '\(playlist)'.")
+            }
+            return
+
+        case .rest:
+            break
+        }
+        // `.rest` guarantees both tokens are present.
+        guard let devToken, let userToken else { return }
+        let api = RESTAPIBackend(developerToken: devToken, userToken: userToken, storefront: auth.storefront())
+
+        if itemsAreIndices {
             let cache = ResultCache()
             let (songs, dropped) = cache.lookupSongs(indices: ints)
             if !dropped.isEmpty {
