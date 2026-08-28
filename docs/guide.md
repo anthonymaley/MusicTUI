@@ -309,9 +309,9 @@ The plugin works at three levels depending on what's configured:
 
 | Level | What you need | What you get |
 |-------|--------------|-------------|
-| **No auth** | Just install the plugin | Playback, speakers, volume, now playing, shuffle, repeat, radio favorites (list/play/add by URL), Library tab (artists, albums, songs) |
+| **No auth** | Just install the plugin | Playback, speakers, volume, now playing, shuffle, repeat, radio favorites (list/play/add by URL), Library tab (artists, albums, songs), library search (`music search --library`) |
 | **Developer token** | Apple Developer account + MusicKit key | Above + catalog search (100M+ tracks), radio catalog search |
-| **Full auth** | Above + user token from browser | Above + add to library, playlist CRUD, similar tracks, suggestions, new releases, mixes |
+| **Full auth** | Above + user token from browser | Above + add to library, playlist CRUD, similar tracks, suggestions, new releases, mixes, recently played, heavy rotation, Discover |
 
 ### Setting up auth
 

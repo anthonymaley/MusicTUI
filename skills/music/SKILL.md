@@ -157,15 +157,15 @@ music radio add "https://music.apple.com/us/station/<slug>/<id>"
 Favorites are stored locally at `~/.config/music/stations.json` and don't sync
 to other devices.
 
-## Search (catalog: developer token · library: + user token)
+## Search (catalog: developer token · library: no auth)
 
 ```bash
 music search "Bohemian Rhapsody Queen"        # search songs (writes to cache)
 music search "Fouk" --limit 20               # control result count
 music search "house" --types songs,albums,artists,playlists  # multi-type catalog search
-music search "The Smiths" --library          # search YOUR library (needs user token)
+music search "The Smiths" --library          # search YOUR library (no token, Music's own library)
 music search "kid a" --library --types playlists             # library, specific types
-music search --artist "Radiohead"             # narrow the query text by artist
+music search --artist "Radiohead"             # narrow the query text by artist (on --library these filter the library, not the query text)
 music search --album "OK Computer"            # narrow the query text by album
 music search "query" --json                   # structured results with catalog IDs
 ```
@@ -218,7 +218,7 @@ music discover                                # your Discover feed: curated rail
 music discover --all                          # every rail the API returns, in Apple's own order
 music discover --recent                       # just the recently played row (mixed types)
 music discover --json --limit 5               # rails as JSON
-music recent                                  # recently played tracks (cached for `play N`)
+music recent                                  # recently played tracks (needs user token; cached for `play N`)
 music rotation                                # your heavy-rotation music
 music suggest                                 # suggest tracks from now playing
 music suggest 10 --from "Working Vibes"       # suggest from playlist vibe
@@ -264,7 +264,7 @@ music auth set-token <TOKEN>                  # save user token from browser
 
 | Tier | What works | What doesn't |
 |------|-----------|--------------|
-| No auth | play, pause, skip, back, stop, now, shuffle, repeat, speaker, volume, radio list/play/add | search, add, playlist (API), similar, suggest, new-releases, mix, radio search |
+| No auth | play, pause, skip, back, stop, now, shuffle, repeat, speaker, volume, radio list/play/add, search --library | search, add, playlist (API), similar, suggest, new-releases, mix, radio search |
 | Developer token only | Above + search, radio search | add, playlist (API), similar, suggest, new-releases, mix |
 | Both tokens | Everything | — |
 

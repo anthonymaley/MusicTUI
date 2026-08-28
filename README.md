@@ -235,7 +235,7 @@ Apple's station search is shallow (5-7 results, no pagination) and misses real s
 |---------|-------------|
 | `music search "gypsy woman"` | Catalog search: songs by default, numbered so `music play 3` works |
 | `music search "kid a" --types songs,albums,artists,playlists` | Multi-type catalog search (any subset) |
-| `music search "radiohead" --library` | Search your library instead of the catalog |
+| `music search "radiohead" --library` | Search your library instead of the catalog (no token: reads Music's own library) |
 | `music search "gypsy woman" --artist "crystal waters"` | Refine by `--artist` / `--album` |
 | `music search "fouk" --limit 20 --json` | More results, structured output |
 
@@ -457,12 +457,13 @@ After running `scripts/install.sh`, add to `~/.claude/settings.json`:
 | Library tab: browse artists, albums, songs | Yes | Yes | Yes |
 | Catalog search | — | Yes | Yes |
 | Radio catalog search | — | Yes | Yes |
-| Library search (`--library`) | — | — | Yes |
+| Library search (`--library`) | Yes | Yes | Yes |
 | Add to library | — | — | Yes |
 | Playlist create, create-from, delete, add a track you already own | Yes | Yes | Yes |
 | Playlist add from the catalog, add by result index | — | — | Yes |
 | Similar, suggestions, new releases, mix | — | — | Yes |
 | Recently played, heavy rotation | — | — | Yes |
+| Discover tab and `music discover` | — | — | Yes |
 
 ## How It Works
 

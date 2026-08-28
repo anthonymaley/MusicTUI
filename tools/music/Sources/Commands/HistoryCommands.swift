@@ -6,12 +6,30 @@ import Foundation
 // docs JSON). Results land in the shared ResultCache, so `music play 3`,
 // `music add 2`, and `music playlist create X 1 2 3` chain off them.
 
+/// Why there is no keyless `music recent`: it shows Apple's account level
+/// history, which only the REST API serves. Music.app's own "Recently
+/// Played" is a different, this Mac only list (measured 2026-08-27: zero
+/// overlapping rows between the two), so an AppleScript read would answer
+/// a different question. Pure, for testability.
+func recentNeedsAuthMessage(json: Bool) -> String {
+    let text = "music recent shows Apple's account level listening history, which only the Apple Music API serves. Music.app's own Recently Played is a different, this Mac only list (measured 2026-08-27: zero overlapping rows), so there is no keyless equivalent. Run: music auth setup"
+    if json {
+        return OutputFormat(mode: .json).render(["recent": [], "error": text])
+    }
+    return "✗ " + text
+}
+
 struct Recent: ParsableCommand {
     static let configuration = CommandConfiguration(abstract: "Recently played tracks.")
     @Option(name: .long, help: "Max results (API caps at 10 per page)") var limit: Int = 10
     @Flag(name: .long, help: "Output JSON") var json = false
 
     func run() throws {
+        let auth = AuthManager()
+        if auth.userToken() == nil || (try? auth.requireDeveloperToken()) == nil {
+            if json { print(recentNeedsAuthMessage(json: true)) } else { errorOut(recentNeedsAuthMessage(json: false)) }
+            throw ExitCode.failure
+        }
         let api = try makeUserAPI()
         // Apple's docs slug says "played-tracks" but the live API serves
         // /recent/played/tracks (the hyphenated path 404s — verified live).

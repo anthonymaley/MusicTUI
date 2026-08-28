@@ -2,29 +2,35 @@ import ArgumentParser
 import Foundation
 
 struct Search: ParsableCommand {
-    static let configuration = CommandConfiguration(abstract: "Search the Apple Music catalog or your library.")
+    static let configuration = CommandConfiguration(abstract: "Search the Apple Music catalog (developer token) or your library (no token).")
     @Argument(help: "Search query") var query: [String]
     @Option(name: .long, help: "Filter by artist") var artist: String?
     @Option(name: .long, help: "Filter by album") var album: String?
     @Option(name: .long, help: "Types to search: songs,albums,artists,playlists") var types: String = "songs"
-    @Flag(name: .long, help: "Search your library instead of the catalog") var library = false
+    @Flag(name: .long, help: "Search your library instead of the catalog (no token needed)") var library = false
     @Option(name: .long, help: "Max results") var limit: Int = 10
     @Flag(name: .long, help: "Output JSON") var json = false
 
     func run() throws {
-        let auth = AuthManager()
-        let devToken = try auth.requireDeveloperToken()
-        // Library search needs the user token; catalog search does not.
-        let userToken = library ? try auth.requireUserToken() : nil
-        let api = RESTAPIBackend(developerToken: devToken, userToken: userToken, storefront: auth.storefront())
-
-        var term = query.joined(separator: " ")
-        if let artist = artist { term += " \(artist)" }
-        if let album = album { term += " \(album)" }
         let searchTypes = parseSearchTypes(types)
-
-        let results = try syncRun {
-            try await api.search(term: term, types: searchTypes, limit: limit, library: library)
+        let results: SearchResults
+        let term: String
+        if library {
+            // Branch Search.run() before requireDeveloperToken(). Catalog
+            // search still needs the developer token; --library must not
+            // read either token before doing its AppleScript path.
+            term = query.joined(separator: " ")
+            results = try librarySearchResults(term: term, artist: artist, album: album,
+                                               types: searchTypes, limit: limit)
+        } else {
+            let auth = AuthManager()
+            let devToken = try auth.requireDeveloperToken()
+            let api = RESTAPIBackend(developerToken: devToken, userToken: nil, storefront: auth.storefront())
+            var catalogTerm = query.joined(separator: " ")
+            if let artist = artist { catalogTerm += " \(artist)" }
+            if let album = album { catalogTerm += " \(album)" }
+            term = catalogTerm
+            results = try syncRun { try await api.search(term: term, types: searchTypes, limit: limit, library: false) }
         }
 
         if results.isEmpty {
