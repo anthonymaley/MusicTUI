@@ -156,6 +156,20 @@ final class LibraryScene: Scene {
     private var previewInFlight: Set<String> = []
     private let previewQueue = DispatchQueue(label: "music.library.preview")
 
+    // Cover ladder cache, same main-thread-only / inbox-under-inboxLock
+    // discipline as the track preview above: coverCache/coverInFlight are
+    // touched only from tick/handle, coverInbox is appended to under
+    // inboxLock from previewQueue and drained in tick. A double-optional
+    // entry (nil value) records a tried-and-missed album so it isn't
+    // re-scanned every frame (same negative-cache intent as ArtworkStore's
+    // `failed` and the Now tab's restAttempted). The ladder runs on
+    // previewQueue, not its own queue, so at most one AppleScript scan of
+    // the library is in flight for previews and covers together, and a fast
+    // scroll can't pile persistent-ID scans onto Music.
+    private var coverCache: [String: LibraryCover?] = [:]
+    private var coverInFlight: Set<String> = []
+    private var coverInbox: [(id: String, cover: LibraryCover?)] = []
+
     private let inboxLock = NSLock()
     // The three paginated lists stream page-by-page for progressive render: the
     // background walk appends each page to `*Pending` under inboxLock; tick drains
@@ -174,9 +188,12 @@ final class LibraryScene: Scene {
     private var artistAlbumsInbox: (artistID: String, albums: [LibraryAlbum])? = nil
     private var previewInbox: [(id: String, tracks: [String])] = []
 
-    // Real hero covers: store owns fetch/cache/render; onReady sets artDirty
-    // under inboxLock (same discipline as the streaming inboxes) and tick
-    // drains it into `changed` so the swap paints on the next frame.
+    // Real hero covers: the artwork ladder (embedded, then REST, then the
+    // gradient, see coverCache above and kickCoverFetch below) resolves one
+    // LibraryCover per focused album; ArtworkStore then owns that cover's
+    // fetch/cache/render exactly as it does for Playlists/Radio. onReady sets
+    // artDirty under inboxLock (same discipline as the streaming inboxes) and
+    // tick drains it into `changed` so the swap paints on the next frame.
     private let artwork = ArtworkStore()
     private var artDirty = false
     private let kittyEnabled: Bool
@@ -303,6 +320,24 @@ final class LibraryScene: Scene {
         }
     }
 
+    /// Kick a serial background run of the cover ladder for one album, unless
+    /// it's already cached (hit or negative) or in flight. Shares previewQueue
+    /// with kickTrackFetch so at most one full-library AppleScript scan is in
+    /// flight for previews and covers together. Called only from the main
+    /// thread.
+    private func kickCoverFetch(albumID: String) {
+        guard coverCache[albumID] == nil, !coverInFlight.contains(albumID) else { return }
+        coverInFlight.insert(albumID)
+        let sources = self.sources
+        previewQueue.async { [weak self] in
+            let hit = sources.onAlbumCover(albumID)
+            guard let self else { return }
+            self.inboxLock.lock()
+            self.coverInbox.append((albumID, hit))
+            self.inboxLock.unlock()
+        }
+    }
+
     // MARK: Scene
 
     @discardableResult
@@ -317,6 +352,7 @@ final class LibraryScene: Scene {
         let artistsWalkDone = artistsDone
         let freshArtistAlbums = artistAlbumsInbox; artistAlbumsInbox = nil
         let landedPreviews = previewInbox; previewInbox = []
+        let landedCovers = coverInbox; coverInbox = []
         let artLanded = artDirty; artDirty = false
         inboxLock.unlock()
 
@@ -369,6 +405,11 @@ final class LibraryScene: Scene {
             previewInFlight.remove(item.id)
             changed = true
         }
+        for item in landedCovers {
+            coverCache[item.id] = item.cover
+            coverInFlight.remove(item.id)
+            changed = true
+        }
         if artLanded { changed = true }
         // Clamp the track cursor once the drilled album's tracks land.
         if case .tracks(let id, _, _) = nav.current, let t = trackCache[id], nav.cursor >= t.count {
@@ -382,6 +423,13 @@ final class LibraryScene: Scene {
            playlistZones(width: ScreenFrame.current().width).mode == .three,
            let a = focusedAlbum(), trackCache[a.id] == nil, !previewInFlight.contains(a.id) {
             kickTrackFetch(albumID: a.id, title: a.name, artist: a.artist)
+        }
+        // Cover ladder kick: after the preview kick so the tracklist lands
+        // first on the shared serial previewQueue. The hero renders in every
+        // zone mode (not just .three, unlike the track preview above), so no
+        // .three gate here.
+        if isAlbumRail || isTracksLevel, let a = focusedAlbum() {
+            kickCoverFetch(albumID: a.id)
         }
         return changed
     }
@@ -592,8 +640,8 @@ final class LibraryScene: Scene {
             // (remix/compilation albums credit each track to the remixer, so
             // `album artist` catches those, and the artist clause disambiguates
             // same-named albums), then falls back to matching by album title alone
-            // when the REST-sourced artist string has drifted from the stored album
-            // artist — the pre-release "Mere Mortals" case, where the exact clause
+            // when the library credit has drifted from the stored album artist:
+            // the pre-release "Mere Mortals" case, where the exact clause
             // matched 0 of 14 tracks. It also drops tracks Music can't play yet
             // (pre-release/removed), on which `play track` would silently no-op.
             let res = resolveAlbumPlaybackTracks(backend: backend, title: title, artist: artist)
@@ -621,11 +669,11 @@ final class LibraryScene: Scene {
         let backend = self.backend
         let store = self.appQueue
         actions.run("Play") {
-            // Same credit drift as playAlbum: the song row's artist comes from REST
-            // and can differ from the stored credit (comma vs ampersand, per-track
-            // soloists), so the strict name+artist clause matches nothing. Falls back
-            // to a title-only fetch resolved in Swift, and refuses rather than guesses
-            // when nothing folds.
+            // Same credit drift as playAlbum: the song row's artist is the library
+            // credit and can differ from the stored credit (comma vs ampersand,
+            // per-track soloists), so the strict name+artist clause matches nothing.
+            // Falls back to a title-only fetch resolved in Swift, and refuses
+            // rather than guesses when nothing folds.
             let res = resolveSongPlaybackTrack(backend: backend, title: title, artist: artist)
             try require(!res.tracks.isEmpty, res.matched > 0
                 ? "'\(title)' isn't available to play yet."
@@ -644,14 +692,14 @@ final class LibraryScene: Scene {
         let store = self.appQueue
         let status = self.status
         actions.run("Play") {
-            // The Artists list is REST-sourced, so `name` is Apple Music's display
-            // credit and can differ from every stored track credit — on the live
-            // repro ("Floating Points, San Francisco Ballet Orchestra") the four
-            // movements each credit a different soloist while the album artist is
-            // uniform, so the strict `artist is` clause matched nothing. The resolver
-            // keeps that strict clause as the fast path, then falls back to a loose
-            // fetch on the primary credit narrowed in Swift, and drops tracks Music
-            // silently refuses to play.
+            // `name` is the library credit (album artist, else artist), so the
+            // strict `artist is` clause now usually hits. The loose fallback stays
+            // for per-track soloist credits: on the live repro ("Floating Points,
+            // San Francisco Ballet Orchestra") the four movements each credit a
+            // different soloist while the album artist is uniform, so the strict
+            // clause matched nothing there. The resolver keeps that strict clause
+            // as the fast path, then falls back to a loose fetch on the primary
+            // credit narrowed in Swift, and drops tracks Music silently refuses to play.
             let res = resolveArtistPlaybackTracks(backend: backend, artist: name)
             try require(!res.tracks.isEmpty, res.matched > 0
                 ? "'\(name)': no tracks available to play yet."
@@ -958,9 +1006,9 @@ final class LibraryScene: Scene {
         let gw = z.heroWidth
         let gh = max(0, bodyBottom - y - 4)
         var artBlock: ArtBlock? = nil
-        if let template = a.artworkURL {
-            artBlock = artwork.block(key: a.id,
-                                     url: ArtworkStore.resolveURL(template, width: 300, height: 300),
+        if let hit = coverCache[a.id] ?? nil {
+            artBlock = artwork.block(key: hit.key,
+                                     url: hit.url,
                                      // Degenerate geometry (very short/narrow terminal) skips the
                                      // kitty path: PNG conversion doesn't depend on gw/gh, so
                                      // without this it would still return .kitty and place a

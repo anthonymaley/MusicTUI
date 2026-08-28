@@ -30,7 +30,7 @@ func runShell() {
     let kittyEnabled = kittyGraphicsSupported(env: ProcessInfo.processInfo.environment)
 
     // Now's REST artwork fallback, for tracks whose embedded artwork is absent
-    // (the Library tab resolves those covers from REST and always has). Built
+    // (the Library tab runs the same ladder per focused album). Built
     // once at startup on the same both-tokens gate Playlists' hero covers use;
     // nil (no token) simply leaves Now on embedded-or-gradient — its exact
     // pre-REST behavior, no error, no dead tab.
@@ -81,27 +81,13 @@ func runShell() {
             scenes[id] = scene
             return scene
         case .library:
-            // Library browse needs a signed-in user (library endpoints) and a
-            // configured developer token. Refuse with a toast rather than a dead
-            // key when either is missing.
-            let auth = AuthManager()
-            guard auth.userToken() != nil else {
-                status.post("Sign in to browse your library (music auth login).", error: true)
-                return nil
-            }
-            guard let devToken = try? auth.requireDeveloperToken() else {
-                status.post("Apple Music isn't configured (music auth setup).", error: true)
-                return nil
-            }
-            let api = RESTAPIBackend(developerToken: devToken,
-                                     userToken: auth.userToken(),
-                                     storefront: auth.storefront())
+            // Keyless: the lists come from one AppleScript bulk read of playlist
+            // "Library" (0.85s for 14k tracks, measured 2026-08-28). makeArtworkAPI()
+            // is nil without both tokens and only feeds the cover ladder's REST
+            // fallback; nil leaves covers on embedded-or-gradient, never a dead tab.
             let scene = LibraryScene(backend: backend,
-                                     sources: makeLibraryDataSources(api: api, backend: backend),
-                                     appQueue: appQueue,
-                                     status: status,
-                                     actions: actions,
-                                     kittyEnabled: kittyEnabled)
+                                     sources: makeLibraryDataSources(backend: backend, artworkAPI: makeArtworkAPI()),
+                                     appQueue: appQueue, status: status, actions: actions, kittyEnabled: kittyEnabled)
             scenes[id] = scene
             return scene
         case .discover:
@@ -112,8 +98,8 @@ func runShell() {
                 return nil
             }
             // Play (Enter/p) needs the same both-tokens REST backend the artwork
-            // fallback and Library browsing use — makeArtworkAPI() nil means no
-            // dev token, same gate makeDiscoverFeed() applies to `feed`.
+            // fallback uses — makeArtworkAPI() nil means no dev token, same gate
+            // makeDiscoverFeed() applies to `feed`.
             let scene = DiscoverScene(feed: makeDiscoverFeed(), status: status, actions: actions,
                                       api: makeArtworkAPI(), backend: backend,
                                       storefront: AuthManager().storefront(), kittyEnabled: kittyEnabled)
@@ -132,7 +118,7 @@ func runShell() {
     // Refusing a tab switch must say why — a dead keypress reads as a broken key.
     func switchOrExplain(_ id: SceneID) {
         // Each ensureScene refusal owns its toast (Playlists: "No playlists found.";
-        // Library: "Sign in…"), so there is no generic cross-tab fallback here.
+        // Discover: "Sign in…"), so there is no generic cross-tab fallback here.
         if ensureScene(id) != nil { router.switchTo(id); invalidateArtOnSwitch() }
     }
 
@@ -162,6 +148,10 @@ func runShell() {
         // now that the poller thread is confirmed stopped — a graceful exit
         // shouldn't leak one file per distinct album played.
         poller.cleanupArtFiles()
+        // Same sweep for the Library tab's cover ladder temp files
+        // (/tmp/music-lib-art-*.dat): the bytes already live in the art
+        // cache by now, so nothing is lost.
+        sweepLibraryArtFiles()
         // Free every transmitted image, alongside the terminal restore below,
         // so no image ghosts survive into scrollback (design doc sharp edge #4).
         if kittyEnabled {

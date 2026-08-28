@@ -77,47 +77,7 @@ struct RESTAPIBackend {
         return try parseCatalogSong(from: data)
     }
 
-    // MARK: - Library Browse (require user token)
-
-    func libraryAlbums(limit: Int = 100, offset: Int = 0) async throws -> [LibraryAlbum] {
-        guard userToken != nil else { throw AuthError.userTokenRequired }
-        let (data, status) = try await get(libraryAlbumsPath(limit: limit, offset: offset))
-        guard (200...299).contains(status) else {
-            if status == 401 || status == 403 { throw AuthError.userTokenExpired(status) }
-            throw APIError.requestFailed(status)
-        }
-        return parseLibraryAlbums(from: data)
-    }
-
-    func librarySongs(limit: Int = 100, offset: Int = 0) async throws -> [LibrarySong] {
-        guard userToken != nil else { throw AuthError.userTokenRequired }
-        let (data, status) = try await get(librarySongsPath(limit: limit, offset: offset))
-        guard (200...299).contains(status) else {
-            if status == 401 || status == 403 { throw AuthError.userTokenExpired(status) }
-            throw APIError.requestFailed(status)
-        }
-        return parseLibrarySongs(from: data)
-    }
-
-    func libraryArtists(limit: Int = 100, offset: Int = 0) async throws -> [LibraryArtist] {
-        guard userToken != nil else { throw AuthError.userTokenRequired }
-        let (data, status) = try await get(libraryArtistsPath(limit: limit, offset: offset))
-        guard (200...299).contains(status) else {
-            if status == 401 || status == 403 { throw AuthError.userTokenExpired(status) }
-            throw APIError.requestFailed(status)
-        }
-        return parseLibraryArtists(from: data)
-    }
-
-    func artistAlbums(artistID: String) async throws -> [LibraryAlbum] {
-        guard userToken != nil else { throw AuthError.userTokenRequired }
-        let (data, status) = try await get(artistAlbumsPath(artistID: artistID))
-        guard (200...299).contains(status) else {
-            if status == 401 || status == 403 { throw AuthError.userTokenExpired(status) }
-            throw APIError.requestFailed(status)
-        }
-        return parseLibraryAlbums(from: data)   // the relationship returns album objects
-    }
+    // MARK: - Library album lookup (require user token)
 
     /// The library album a library song belongs to, via the song's `albums`
     /// relationship. One targeted request that yields the SAME album object
@@ -353,15 +313,11 @@ func parseCatalogPlaylistObject(_ playlist: [String: Any]) -> CatalogPlaylist {
         curator: attrs["curatorName"] as? String ?? "")
 }
 
-// MARK: - Library browse (pure helpers)
+// MARK: - Library types and album parsing
 
 struct LibraryAlbum { let id: String; let name: String; let artist: String; let trackCount: Int
     var artworkURL: String? = nil
     func toDict() -> [String: Any] { ["id": id, "name": name, "artist": artist, "trackCount": trackCount] } }
-
-func libraryAlbumsPath(limit: Int, offset: Int) -> String {
-    "/v1/me/library/albums?limit=\(limit)&offset=\(offset)"
-}
 
 // Library list endpoints return resources under a top-level `data` array
 // (unlike catalog search's results{<key>}{data}).
@@ -387,38 +343,12 @@ func parseLibraryAlbums(from data: Data) -> [LibraryAlbum] {
 struct LibrarySong { let id: String; let title: String; let artist: String; let album: String
     func toDict() -> [String: Any] { ["id": id, "title": title, "artist": artist, "album": album] } }
 
-func librarySongsPath(limit: Int, offset: Int) -> String {
-    "/v1/me/library/songs?limit=\(limit)&offset=\(offset)"
-}
-
-func parseLibrarySongs(from data: Data) -> [LibrarySong] {
-    parseLibraryDataArray(from: data).map { obj in
-        let a = obj["attributes"] as? [String: Any] ?? [:]
-        return LibrarySong(id: obj["id"] as? String ?? "",
-                           title: a["name"] as? String ?? "Unknown",
-                           artist: a["artistName"] as? String ?? "Unknown",
-                           album: a["albumName"] as? String ?? "")
-    }
-}
-
 struct LibraryArtist { let id: String; let name: String
     func toDict() -> [String: Any] { ["id": id, "name": name] } }
 
-func libraryArtistsPath(limit: Int, offset: Int) -> String {
-    "/v1/me/library/artists?limit=\(limit)&offset=\(offset)"
-}
-func artistAlbumsPath(artistID: String) -> String {
-    "/v1/me/library/artists/\(artistID)/albums?limit=100"
-}
 /// A library song's `albums` relationship — one album per song, so no paging.
 func librarySongAlbumsPath(songID: String) -> String {
     "/v1/me/library/songs/\(songID)/albums"
-}
-func parseLibraryArtists(from data: Data) -> [LibraryArtist] {
-    parseLibraryDataArray(from: data).map { obj in
-        let a = obj["attributes"] as? [String: Any] ?? [:]
-        return LibraryArtist(id: obj["id"] as? String ?? "", name: a["name"] as? String ?? "Unknown")
-    }
 }
 
 enum APIError: Error, LocalizedError {

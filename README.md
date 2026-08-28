@@ -411,7 +411,7 @@ Under the track progress is a **control grid** (Shuffle / Order / Repeat / Geniu
 
 ![Speaker Picker](media/speakers.png)
 
-**Library tab** (needs the Apple Music user token). Browse your library in three sub-views, **Artists · Albums · Songs** (opens on Artists), switched with `[`/`]`. `Enter` opens an album's tracks or drills Artist → their albums → tracks; `p` plays and `s` shuffles the focused item (albums/artists play as an app-owned queue: a scoped, navigable Up Next that stops at the album's end; needs Autoplay ∞ off). `/` filters as you type. On the Artists list, `a` cycles a track-count filter (**All → 12″/EP → Albums**) that cuts the bloat Apple's library-artists list carries (every artist with any library track, even one dragged in by a single playlist song) and separates 12″s/EPs from full-album deep cuts; drilling into an artist shows only that tier's albums. The first activation each session paints instantly from a cache, revalidated in the background. The focused album shows its real cover art: true pixels on kitty-protocol terminals (iTerm2 3.5+, Kitty, WezTerm, Ghostty), chafa half-blocks elsewhere; fetched once, cached on disk.
+**Library tab** (no token needed: it reads Music's own library over AppleScript, one bulk read of about a second for a 14,000 track library). Browse your library in three sub-views, **Artists · Albums · Songs** (opens on Artists), switched with `[`/`]`. `Enter` opens an album's tracks or drills Artist → their albums → tracks; `p` plays and `s` shuffles the focused item (albums/artists play as an app-owned queue: a scoped, navigable Up Next that stops at the album's end; needs Autoplay ∞ off). `/` filters as you type. On the Artists list, `a` cycles a track-count filter (**All → 12″/EP → Albums**) that cuts the bloat Apple's library-artists list carries (every artist with any library track, even one dragged in by a single playlist song) and separates 12″s/EPs from full-album deep cuts; drilling into an artist shows only that tier's albums. The first activation each session paints instantly from a cache, revalidated in the background. The focused album shows its real cover art: true pixels on kitty-protocol terminals (iTerm2 3.5+, Kitty, WezTerm, Ghostty), chafa half-blocks elsewhere; fetched once, cached on disk. Covers come from the track's embedded artwork; with a developer key and sign-in, an album without embedded art falls back to Apple's library lookup; otherwise a gradient.
 
 ![Library](media/library.png)
 
@@ -454,9 +454,10 @@ After running `scripts/install.sh`, add to `~/.claude/settings.json`:
 | Play, pause, skip, stop, seek, shuffle, repeat | Yes | Yes | Yes |
 | Speakers, volume, now playing, love/unlove | Yes | Yes | Yes |
 | Radio: list, play favorite/URL, add by URL | Yes | Yes | Yes |
+| Library tab: browse artists, albums, songs | Yes | Yes | Yes |
 | Catalog search | — | Yes | Yes |
 | Radio catalog search | — | Yes | Yes |
-| Library search (`--library`) + Library tab | — | — | Yes |
+| Library search (`--library`) | — | — | Yes |
 | Add to library | — | — | Yes |
 | Playlist create, create-from, delete, add a track you already own | Yes | Yes | Yes |
 | Playlist add from the catalog, add by result index | — | — | Yes |

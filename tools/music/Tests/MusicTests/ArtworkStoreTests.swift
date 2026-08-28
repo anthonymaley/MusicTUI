@@ -64,6 +64,25 @@ final class ArtworkStoreTests: XCTestCase {
         XCTAssertEqual(store.lines(key: "a.2", url: "u", width: 8, height: 4) { }, ["DISK"])
     }
 
+    /// The library cover ladder hands the store a file:// URL for embedded
+    /// artwork bytes (no CDN, no token). The default fetch is `try?
+    /// Data(contentsOf: url)`, which reads a file URL exactly like an http
+    /// one, so this property is load-bearing for the ladder and was untested
+    /// until now. render is injected (no chafa); fetch is left at its default.
+    func testDefaultFetchReadsFileURLs() {
+        let dir = tmpDir(); defer { try? FileManager.default.removeItem(atPath: dir) }
+        let bytes = Data([7, 7, 7])
+        try? bytes.write(to: URL(fileURLWithPath: "\(dir)/src.dat"))
+        let store = ArtworkStore(cacheDir: dir, render: { _, _, _ in ["FILE"] })
+        let fileURL = URL(fileURLWithPath: "\(dir)/src.dat").absoluteString
+        let ready = expectation(description: "onReady")
+        XCTAssertNil(store.lines(key: "f.1", url: fileURL, width: 8, height: 4) { ready.fulfill() })
+        wait(for: [ready], timeout: 2)
+        XCTAssertEqual(store.lines(key: "f.1", url: fileURL, width: 8, height: 4) { }, ["FILE"])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: "\(dir)/f_1"))
+        XCTAssertEqual(FileManager.default.contents(atPath: "\(dir)/f_1"), bytes)
+    }
+
     func testFailedFetchIsNegativeCachedForTheSession() {
         let dir = tmpDir(); defer { try? FileManager.default.removeItem(atPath: dir) }
         var fetches = 0

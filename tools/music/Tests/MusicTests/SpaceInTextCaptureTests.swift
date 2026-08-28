@@ -61,7 +61,8 @@ final class SpaceInTextCaptureTests: XCTestCase {
             onSongs: { _ in },
             onArtists: { _ in },
             onAlbumTracks: { _, _ in [] },
-            onArtistAlbums: { _ in [] }
+            onArtistAlbums: { _ in [] },
+            onAlbumCover: { _ in nil }
         )
         let scene = LibraryScene(backend: AppleScriptBackend(), sources: sources,
                                   appQueue: AppQueueStore(), status: status,
