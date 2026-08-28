@@ -197,6 +197,22 @@ func playlistCreateStrategy(hasTokens: Bool, indexCount: Int) -> PlaylistCreateS
     return indexCount == 0 ? .appleScriptEmpty : .needsAuthToSeed
 }
 
+/// One title/artist pair from `create-from`'s alternating argument list.
+struct TitleArtist: Equatable {
+    let title: String
+    let artist: String
+}
+
+/// Split `create-from`'s alternating `title artist title artist ...` arguments
+/// into pairs. Returns nil when the list is empty or odd, which is the caller's
+/// cue to print usage. Pure, for testability.
+func titleArtistPairs(_ items: [String]) -> [TitleArtist]? {
+    guard items.count >= 2, items.count % 2 == 0 else { return nil }
+    return stride(from: 0, to: items.count, by: 2).map {
+        TitleArtist(title: items[$0], artist: items[$0 + 1])
+    }
+}
+
 /// Which path `playlist add` should take. A developer key is needed only to
 /// reach the CATALOG. Adding a track already in the library is
 /// `duplicateLibraryTrack`, which this file already uses and which has never
@@ -531,21 +547,59 @@ struct PlaylistCreateFrom: ParsableCommand {
     @Argument(help: "Alternating title artist title artist...") var items: [String]
     @Option(name: .long, help: "Playlist name") var name: String = "New Playlist"
     func run() throws {
-        guard items.count >= 2, items.count % 2 == 0 else {
+        guard let pairs = titleArtistPairs(items) else {
             print("Provide alternating title artist pairs: create-from \"Song\" \"Artist\" \"Song2\" \"Artist2\"")
             throw ExitCode.failure
         }
 
         let auth = AuthManager()
-        let devToken = try auth.requireDeveloperToken()
-        let userToken = try auth.requireUserToken()
+        let devToken = try? auth.requireDeveloperToken()
+        let userToken = auth.userToken()
+
+        // No key: resolve each pair against the library instead of the catalog.
+        // Creating the playlist and duplicating tracks into it are both keyless.
+        if devToken == nil || userToken == nil {
+            let backend = AppleScriptBackend()
+            let escName = escapeAppleScriptString(name)
+            _ = try syncRun {
+                try await backend.runMusic("make new playlist with properties {name:\"\(escName)\"}")
+            }
+            var added = 0
+            var missing: [TitleArtist] = []
+            for pair in pairs {
+                if duplicateLibraryTrack(backend: backend, title: pair.title,
+                                         artist: pair.artist, toPlaylist: name) {
+                    print("  + \(pair.title) — \(pair.artist)")
+                    added += 1
+                } else {
+                    missing.append(pair)
+                    print("  ✗ Not in your library: \(pair.title) — \(pair.artist)")
+                }
+            }
+            guard added > 0 else {
+                // Match the REST path's contract: nothing found, nothing left behind.
+                _ = try? syncRun {
+                    try await backend.runMusic("delete (every playlist whose name is \"\(escName)\")")
+                }
+                print("No tracks found. Playlist not created.")
+                print("Finding tracks you do not own needs a Music User Token. Run: music auth setup")
+                throw ExitCode.failure
+            }
+            print("Created '\(name)' with \(added) track(s) from your library.")
+            if !missing.isEmpty {
+                print("Not in your library (\(missing.count)). Reaching the Apple Music catalog needs a Music User Token.")
+            }
+            return
+        }
+        // Both tokens present.
+        guard let devToken, let userToken else { return }
         let api = RESTAPIBackend(developerToken: devToken, userToken: userToken, storefront: auth.storefront())
 
         var found: [CatalogSong] = []
         var failed: [(title: String, artist: String)] = []
-        for i in stride(from: 0, to: items.count, by: 2) {
-            let title = items[i]
-            let artist = items[i + 1]
+        for pair in pairs {
+            let title = pair.title
+            let artist = pair.artist
             do {
                 let songs = try syncRun { try await api.searchSongs(query: "\(title) \(artist)", limit: 1) }
                 if let song = songs.first {
