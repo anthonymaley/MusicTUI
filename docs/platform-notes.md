@@ -436,6 +436,57 @@ silently. It costs one Apple Event per step, it has only been verified for
 sequential non shuffled playback, and on a setup where transport control travels
 over AirPlay that is a lot of control traffic to start one song.
 
+## The REST library and the AppleScript library are the same library
+
+Measured 2026-08-28. Both surfaces were walked to exhaustion on one 14k track
+library and compared row by row, to decide whether AppleScript can replace the
+REST `/v1/me/library` reads for browsing your own library. It can.
+
+| Collection | REST (`meta.total`) | AppleScript | Relation |
+|---|---|---|---|
+| Songs | 14,201 | 14,223 (`count of tracks of playlist "Library"`) | REST is a strict subset |
+| Albums | 2,963 | 2,962 distinct (album, album artist) | Equal up to name drift |
+| Artists | 1,760 | 1,762 distinct album artist | Equal up to name drift |
+
+**Songs.** Every REST row has an AppleScript row with the same name, artist and
+album. The 22 rows only AppleScript sees are all accounted for:
+
+- 12 are local duplicates: two library rows with different `persistent ID`s for
+  one subscription track (seven from one album, five from another). REST returns
+  one row per song, AppleScript one per library entry.
+- 4 have `cloud status` of `no longer available` and an empty album field. The
+  other 100 rows with that status are present in REST, so the status alone does
+  not exclude a row.
+- 2 are not songs at all: a bonus footage video and a purchased PDF booklet.
+  REST `songs` never lists them.
+- 4 are name or album drift on the REST side: `Silhouettes` against
+  `Silhouettes (I, II, III)`, `Blue Monday '88` against `Blue Monday`, a remix
+  suffix, and one row whose album field is empty in AppleScript and filled in
+  REST.
+
+**Albums and artists.** After loosening the match to ignore punctuation,
+diacritics, edition parentheticals and `EP` suffixes, five album titles and
+three artist names still differ, and in each case REST carries the older
+metadata: an album REST still titles by the single it was, an artist REST lists
+under a name the band no longer uses while REST's own `songs` already credit the
+new one, and an artist with eleven REST songs who has no REST artist row at all.
+The REST `artists` collection is not derivable from the REST `songs`
+collection; the AppleScript one is.
+
+**Cloud status is not an iCloud marker.** 1,528 tracks report `unknown`, and all
+of them are in REST. `unknown` is what a subscription track reports until the
+app resolves it, not a local-only file.
+
+**Cost.** The REST walk took 206 s for songs, 47 s for albums and 7 s for
+artists, at 100 rows a page. The AppleScript read of seven properties for every
+track took 26 s in one call, and that time is the per-row concatenation loop,
+not the property reads: each `every track of lib` property get is a single
+Apple Event. Keep serialisation bulk too, or the win evaporates.
+
+**What this settles.** A keyless Library tab built on AppleScript sees more of
+the library than the REST one does, never less. Where the two disagree the
+AppleScript metadata is the newer of the two.
+
 ## Corrections
 
 If any of this is wrong or has changed in a later macOS release, please open an issue.
