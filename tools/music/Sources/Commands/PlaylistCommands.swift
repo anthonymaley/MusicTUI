@@ -177,6 +177,26 @@ func showPlaylistTracks(name: String, json: Bool) throws {
     }
 }
 
+/// Which path `playlist create` should take. A developer key is needed only to
+/// SEED tracks by catalog id; creating an empty playlist is pure AppleScript,
+/// which this file already does for the temp-playlist machinery. Pure, for
+/// testability.
+enum PlaylistCreateStrategy: Equatable {
+    /// Tokens present: one API call creates and seeds in a single round trip.
+    case rest
+    /// No tokens, no tracks asked for: `make new playlist` needs no key.
+    case appleScriptEmpty
+    /// No tokens but tracks were requested. Seeding resolves catalog ids from
+    /// the result cache, which only a catalog search fills, so refuse honestly
+    /// rather than silently creating an empty playlist.
+    case needsAuthToSeed
+}
+
+func playlistCreateStrategy(hasTokens: Bool, indexCount: Int) -> PlaylistCreateStrategy {
+    if hasTokens { return .rest }
+    return indexCount == 0 ? .appleScriptEmpty : .needsAuthToSeed
+}
+
 struct PlaylistCreate: ParsableCommand {
     static let configuration = CommandConfiguration(commandName: "create", abstract: "Create a playlist.")
     @Argument(help: "Playlist name") var name: String
@@ -184,8 +204,37 @@ struct PlaylistCreate: ParsableCommand {
     @Flag(name: .long, help: "Output JSON") var json = false
     func run() throws {
         let auth = AuthManager()
-        let devToken = try auth.requireDeveloperToken()
-        let userToken = try auth.requireUserToken()
+        let devToken = try? auth.requireDeveloperToken()
+        let userToken = auth.userToken()
+
+        switch playlistCreateStrategy(hasTokens: devToken != nil && userToken != nil,
+                                      indexCount: indices.count) {
+        case .needsAuthToSeed:
+            print("Adding tracks to a new playlist needs a Music User Token. Run: music auth setup")
+            print("Creating an empty playlist needs no token: music playlist create \"\(name)\"")
+            throw ExitCode.failure
+
+        case .appleScriptEmpty:
+            // `make new playlist` is the same call the temp-playlist machinery
+            // uses below, and it has never needed a token.
+            let backend = AppleScriptBackend()
+            _ = try syncRun {
+                try await backend.runMusic(
+                    "make new playlist with properties {name:\"\(escapeAppleScriptString(name))\"}")
+            }
+            if json {
+                let output = OutputFormat(mode: .json)
+                print(output.render(["created": name, "tracks": []]))
+            } else {
+                print("Created playlist '\(name)'.")
+            }
+            return
+
+        case .rest:
+            break
+        }
+        // `.rest` guarantees both tokens are present.
+        guard let devToken, let userToken else { return }
         let api = RESTAPIBackend(developerToken: devToken, userToken: userToken, storefront: auth.storefront())
 
         // One API call creates the playlist and seeds the tracks — no
