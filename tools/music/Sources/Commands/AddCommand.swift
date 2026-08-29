@@ -8,11 +8,15 @@ enum AddIndexRoute: Equatable {
     case alreadyInLibrary
     case duplicateIntoPlaylists
     case catalog
+    /// A catalog-origin row with no catalog id (a keyless `playlist tracks`
+    /// listing writes these). Refused here, before any token read, so an
+    /// empty id never reaches the API from either auth state.
+    case noCatalogId
 }
 
-func addIndexRoute(origin: SongOrigin, hasTargets: Bool) -> AddIndexRoute {
+func addIndexRoute(origin: SongOrigin, catalogId: String, hasTargets: Bool) -> AddIndexRoute {
     switch origin {
-    case .catalog: return .catalog
+    case .catalog: return catalogId.isEmpty ? .noCatalogId : .catalog
     case .library: return hasTargets ? .duplicateIntoPlaylists : .alreadyInLibrary
     }
 }
@@ -30,9 +34,18 @@ struct Add: ParsableCommand {
         // before requireDeveloperToken().
         if id == nil, query.count == 1, let index = Int(query[0]) {
             let song = try ResultCache().lookupSong(index: index)
-            switch addIndexRoute(origin: song.origin, hasTargets: !to.isEmpty) {
+            switch addIndexRoute(origin: song.origin, catalogId: song.catalogId, hasTargets: !to.isEmpty) {
             case .catalog:
                 break
+            case .noCatalogId:
+                if json {
+                    print(OutputFormat(mode: .json).render(
+                        ["added": false, "error": "no catalog id", "track": song.title, "artist": song.artist]))
+                } else {
+                    print("No catalog ID for '\(song.title)' by \(song.artist): playlist listings do not carry one.")
+                    print("It is already in your library. To put it in a playlist: music search --library \"\(song.title)\"  then  music add N --to \"<playlist>\".")
+                }
+                throw ExitCode.failure
             case .alreadyInLibrary:
                 if json {
                     print(OutputFormat(mode: .json).render(

@@ -280,6 +280,27 @@ func duplicateLibraryRows(_ rows: [SongResult], toPlaylist playlist: String,
 
 /// `make new playlist` via AppleScript: the keyless path shared by an empty
 /// create and a library-seeded create. Never needs a token.
+/// Delete by object reference, never by name. `delete playlist "X"` returns
+/// -1708 ("doesn't understand the delete message") on a playlist the REST API
+/// created, while the `whose` reference form deletes every playlist so named
+/// regardless of origin (measured 2026-08-28). Pure so the form is pinned.
+func playlistDeleteScript(name: String) -> String {
+    "delete (every user playlist whose name is \"\(escapeAppleScriptString(name))\")"
+}
+
+/// Same reference form for the temp-playlist sweep: the old loop resolved
+/// each name back through `delete playlist p` and hit the same -1708.
+func playlistCleanupScript() -> String {
+    """
+    set temps to every user playlist whose name starts with "__temp__"
+    set deleted to count of temps
+    repeat with p in temps
+        delete p
+    end repeat
+    return deleted
+    """
+}
+
 func createEmptyPlaylistViaAppleScript(name: String, backend: AppleScriptBackend) throws {
     _ = try syncRun {
         try await backend.runMusic(
@@ -412,9 +433,8 @@ struct PlaylistDelete: ParsableCommand {
             }
         }
         let backend = AppleScriptBackend()
-        let escName = escapeAppleScriptString(name)
         _ = try syncRun {
-            try await backend.runMusic("delete playlist \"\(escName)\"")
+            try await backend.runMusic(playlistDeleteScript(name: name))
         }
         print(json ? "{\"deleted\":\"\(name)\"}" : "Deleted playlist '\(name)'.")
     }
@@ -760,17 +780,7 @@ struct PlaylistCleanup: ParsableCommand {
     func run() throws {
         let backend = AppleScriptBackend()
         let result = try syncRun {
-            try await backend.runMusic("""
-                set pNames to name of every playlist
-                set deleted to 0
-                repeat with p in pNames
-                    if p starts with "__temp__" then
-                        delete playlist p
-                        set deleted to deleted + 1
-                    end if
-                end repeat
-                return deleted
-            """)
+            try await backend.runMusic(playlistCleanupScript())
         }
         let count = result.trimmingCharacters(in: .whitespacesAndNewlines)
         print("Cleaned up \(count) temp playlist(s).")

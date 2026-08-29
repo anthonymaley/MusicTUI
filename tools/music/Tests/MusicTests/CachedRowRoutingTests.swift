@@ -29,15 +29,30 @@ final class CachedRowRoutingTests: XCTestCase {
     }
 
     func testAddIndexCatalogRowAlwaysGoesToTheCatalogPath() {
-        XCTAssertEqual(addIndexRoute(origin: .catalog, hasTargets: false), .catalog)
-        XCTAssertEqual(addIndexRoute(origin: .catalog, hasTargets: true), .catalog)
+        XCTAssertEqual(addIndexRoute(origin: .catalog, catalogId: "id", hasTargets: false), .catalog)
+        XCTAssertEqual(addIndexRoute(origin: .catalog, catalogId: "id", hasTargets: true), .catalog)
     }
 
     func testAddIndexLibraryRowWithNoTargetIsAlreadyOwned() {
-        XCTAssertEqual(addIndexRoute(origin: .library, hasTargets: false), .alreadyInLibrary)
+        XCTAssertEqual(addIndexRoute(origin: .library, catalogId: "id", hasTargets: false), .alreadyInLibrary)
     }
 
     func testAddIndexLibraryRowWithTargetsDuplicates() {
-        XCTAssertEqual(addIndexRoute(origin: .library, hasTargets: true), .duplicateIntoPlaylists)
+        XCTAssertEqual(addIndexRoute(origin: .library, catalogId: "id", hasTargets: true), .duplicateIntoPlaylists)
+    }
+}
+
+/// A cached row with no catalog id (a keyless `playlist tracks` listing writes
+/// such rows) must never reach the API: the guard is pure and runs before any
+/// token read, so keyed and keyless users get the same honest refusal.
+final class AddIndexEmptyIdTests: XCTestCase {
+    func testCatalogRowWithEmptyIdIsRefusedBeforeTheApi() {
+        XCTAssertEqual(addIndexRoute(origin: .catalog, catalogId: "", hasTargets: false), .noCatalogId)
+        XCTAssertEqual(addIndexRoute(origin: .catalog, catalogId: "", hasTargets: true), .noCatalogId)
+    }
+
+    func testLibraryRowWithEmptyIdStillRoutesByOwnership() {
+        XCTAssertEqual(addIndexRoute(origin: .library, catalogId: "", hasTargets: false), .alreadyInLibrary)
+        XCTAssertEqual(addIndexRoute(origin: .library, catalogId: "", hasTargets: true), .duplicateIntoPlaylists)
     }
 }
