@@ -1,6 +1,22 @@
 import ArgumentParser
 import Foundation
 
+/// What `add N` does with a cached row. A library row is already owned, so
+/// with no target playlist there is nothing to add and nothing to fetch; with
+/// targets it is duplicated straight in. Neither needs a token. Pure.
+enum AddIndexRoute: Equatable {
+    case alreadyInLibrary
+    case duplicateIntoPlaylists
+    case catalog
+}
+
+func addIndexRoute(origin: SongOrigin, hasTargets: Bool) -> AddIndexRoute {
+    switch origin {
+    case .catalog: return .catalog
+    case .library: return hasTargets ? .duplicateIntoPlaylists : .alreadyInLibrary
+    }
+}
+
 struct Add: ParsableCommand {
     static let configuration = CommandConfiguration(abstract: "Search and add a track to your library, or add to a playlist.")
     @Argument(help: "Search query or result index") var query: [String] = []
@@ -9,6 +25,42 @@ struct Add: ParsableCommand {
     @Flag(name: .long, help: "Output JSON") var json = false
 
     func run() throws {
+        // A library row needs no token for anything, so it is handled before
+        // the token reads below, the same way `search --library` branches
+        // before requireDeveloperToken().
+        if id == nil, query.count == 1, let index = Int(query[0]) {
+            let song = try ResultCache().lookupSong(index: index)
+            switch addIndexRoute(origin: song.origin, hasTargets: !to.isEmpty) {
+            case .catalog:
+                break
+            case .alreadyInLibrary:
+                if json {
+                    print(OutputFormat(mode: .json).render(
+                        ["added": false, "alreadyInLibrary": true, "track": song.title, "artist": song.artist]))
+                } else {
+                    print("Already in your library: \(song.title) by \(song.artist).")
+                }
+                return
+            case .duplicateIntoPlaylists:
+                let backend = AppleScriptBackend()
+                var landed: [String] = []
+                for pl in to {
+                    if duplicateLibraryTrack(backend: backend, title: song.title, artist: song.artist, toPlaylist: pl) {
+                        landed.append(pl)
+                        if !json { print("Added to '\(pl)'.") }
+                    } else if !json {
+                        print("Couldn't add '\(song.title)' to '\(pl)'.")
+                    }
+                }
+                if json {
+                    print(OutputFormat(mode: .json).render(
+                        ["added": landed.count, "track": song.title, "artist": song.artist, "playlists": landed]))
+                }
+                if landed.isEmpty { throw ExitCode.failure }
+                return
+            }
+        }
+
         let auth = AuthManager()
         let devToken = try auth.requireDeveloperToken()
         let userToken = try auth.requireUserToken()

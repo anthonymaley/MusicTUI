@@ -40,9 +40,7 @@ struct Search: ParsableCommand {
 
         // Cache songs so index-based `add`/quick-pick keep working off results.
         if !results.songs.isEmpty {
-            let songResults = results.songs.enumerated().map { (i, s) in
-                SongResult(index: i + 1, title: s.title, artist: s.artist, album: s.album, catalogId: s.id)
-            }
+            let songResults = searchCacheRows(results.songs, origin: library ? .library : .catalog)
             try? ResultCache().writeSongs(songResults)
         }
 
@@ -64,6 +62,16 @@ struct Search: ParsableCommand {
         }
 
         printSearchResults(results)
+    }
+}
+
+/// Cache rows for numbered song results. Library search rows carry Music's
+/// persistent id, not a catalog id, so they are tagged by origin and the
+/// index readers route them by that tag instead of by the id.
+func searchCacheRows(_ songs: [CatalogSong], origin: SongOrigin) -> [SongResult] {
+    songs.enumerated().map { (i, s) in
+        SongResult(index: i + 1, title: s.title, artist: s.artist, album: s.album,
+                   catalogId: s.id, origin: origin)
     }
 }
 

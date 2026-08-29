@@ -92,4 +92,24 @@ final class SearchTests: XCTestCase {
       "library-songs": { "data": [ { "id": "l1", "attributes": { "name": "Lib Song", "artistName": "Lib Artist", "albumName": "Lib Album" } } ] }
     } }
     """
+
+    // MARK: - searchCacheRows
+
+    func testLibrarySearchRowsAreTaggedLibrary() {
+        let rows = searchCacheRows([CatalogSong(id: "PID1", title: "T", artist: "A", album: "B")], origin: .library)
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(rows[0].index, 1)
+        XCTAssertEqual(rows[0].origin, .library)
+        XCTAssertEqual(rows[0].catalogId, "PID1")
+    }
+
+    func testCatalogSearchRowsAreTaggedCatalogAndNumberedFromOne() {
+        let songs = [
+            CatalogSong(id: "c1", title: "T1", artist: "A1", album: "B1"),
+            CatalogSong(id: "c2", title: "T2", artist: "A2", album: "B2"),
+        ]
+        let rows = searchCacheRows(songs, origin: .catalog)
+        XCTAssertEqual(rows.map(\.index), [1, 2])
+        XCTAssertTrue(rows.allSatisfy { $0.origin == .catalog })
+    }
 }

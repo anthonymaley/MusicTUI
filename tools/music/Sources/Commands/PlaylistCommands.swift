@@ -182,19 +182,31 @@ func showPlaylistTracks(name: String, json: Bool) throws {
 /// which this file already does for the temp-playlist machinery. Pure, for
 /// testability.
 enum PlaylistCreateStrategy: Equatable {
-    /// Tokens present: one API call creates and seeds in a single round trip.
+    /// Tokens present and at least one requested row is a catalog row (or no
+    /// tracks requested): one API call creates and seeds in a single round
+    /// trip. A create that carries tracks syncs to Music.app; an empty one
+    /// does not, which is why a pure library selection never lands here.
     case rest
     /// No tokens, no tracks asked for: `make new playlist` needs no key.
     case appleScriptEmpty
-    /// No tokens but tracks were requested. Seeding resolves catalog ids from
-    /// the result cache, which only a catalog search fills, so refuse honestly
-    /// rather than silently creating an empty playlist.
+    /// Tracks requested and every requested row is a library row, keyed or
+    /// keyless: make the playlist with AppleScript and duplicate each owned
+    /// track in.
+    case appleScriptSeedFromLibrary
+    /// No tokens and at least one requested row is a catalog row. Catalog ids
+    /// are only reachable through the API, so refuse honestly rather than
+    /// silently creating a shorter playlist.
     case needsAuthToSeed
 }
 
-func playlistCreateStrategy(hasTokens: Bool, indexCount: Int) -> PlaylistCreateStrategy {
+func playlistCreateStrategy(hasTokens: Bool, indexCount: Int, allLibraryRows: Bool) -> PlaylistCreateStrategy {
+    // A pure library selection never goes through REST, keyed or not. An
+    // empty REST playlist does not reach Music.app in any window worth
+    // waiting for, so AppleScript owns that case outright.
+    if indexCount > 0 && allLibraryRows { return .appleScriptSeedFromLibrary }
     if hasTokens { return .rest }
-    return indexCount == 0 ? .appleScriptEmpty : .needsAuthToSeed
+    if indexCount == 0 { return .appleScriptEmpty }
+    return .needsAuthToSeed
 }
 
 /// One title/artist pair from `create-from`'s alternating argument list.
@@ -222,14 +234,57 @@ enum PlaylistAddStrategy: Equatable {
     case rest
     /// No tokens: resolve the title against the library and duplicate it in.
     case appleScriptLibrary
-    /// No tokens, but indices given. Indices address the result cache, which
-    /// only a catalog search fills, so there is nothing for them to point at.
+    /// No tokens, indices given, and every index points at a library row:
+    /// duplicate each owned track into the playlist.
+    case appleScriptLibraryIndices
+    /// No tokens and at least one index points at a catalog row. A catalog id
+    /// is only reachable through the API.
     case needsAuthForIndices
 }
 
-func playlistAddStrategy(hasTokens: Bool, itemsAreIndices: Bool) -> PlaylistAddStrategy {
+func playlistAddStrategy(hasTokens: Bool, itemsAreIndices: Bool, allLibraryRows: Bool) -> PlaylistAddStrategy {
     if hasTokens { return .rest }
-    return itemsAreIndices ? .needsAuthForIndices : .appleScriptLibrary
+    if !itemsAreIndices { return .appleScriptLibrary }
+    return allLibraryRows ? .appleScriptLibraryIndices : .needsAuthForIndices
+}
+
+/// Split cached rows by origin so each goes down its only valid route:
+/// catalog rows to the API, library rows to an AppleScript duplicate. Order
+/// inside each half is the order the user typed. Pure, for testability.
+func partitionByOrigin(_ rows: [SongResult]) -> (catalog: [SongResult], library: [SongResult]) {
+    (rows.filter { $0.origin == .catalog }, rows.filter { $0.origin == .library })
+}
+
+/// True when there is at least one row and every row is a library row. This
+/// is the fact the keyless strategies need; computed once from one cache read.
+func allLibraryRows(_ rows: [SongResult]) -> Bool {
+    !rows.isEmpty && rows.allSatisfy { $0.origin == .library }
+}
+
+/// The single route for adding LIBRARY rows to a playlist, keyed or keyless:
+/// duplicate the owned track by title and artist. Returns the rows that did
+/// not land so the caller can report them; nothing is dropped silently.
+func duplicateLibraryRows(_ rows: [SongResult], toPlaylist playlist: String,
+                          backend: AppleScriptBackend) -> (added: [SongResult], failed: [SongResult]) {
+    var added: [SongResult] = []
+    var failed: [SongResult] = []
+    for row in rows {
+        if duplicateLibraryTrack(backend: backend, title: row.title, artist: row.artist, toPlaylist: playlist) {
+            added.append(row)
+        } else {
+            failed.append(row)
+        }
+    }
+    return (added, failed)
+}
+
+/// `make new playlist` via AppleScript: the keyless path shared by an empty
+/// create and a library-seeded create. Never needs a token.
+func createEmptyPlaylistViaAppleScript(name: String, backend: AppleScriptBackend) throws {
+    _ = try syncRun {
+        try await backend.runMusic(
+            "make new playlist with properties {name:\"\(escapeAppleScriptString(name))\"}")
+    }
 }
 
 struct PlaylistCreate: ParsableCommand {
@@ -242,26 +297,50 @@ struct PlaylistCreate: ParsableCommand {
         let devToken = try? auth.requireDeveloperToken()
         let userToken = auth.userToken()
 
+        let (resolved, dropped) = ResultCache().lookupSongs(indices: indices)
+        if !dropped.isEmpty {
+            errorOut("⚠ Skipped index(es) not in the last results: \(dropped.map(String.init).joined(separator: ", "))")
+        }
+
         switch playlistCreateStrategy(hasTokens: devToken != nil && userToken != nil,
-                                      indexCount: indices.count) {
+                                      indexCount: indices.count,
+                                      allLibraryRows: allLibraryRows(resolved)) {
         case .needsAuthToSeed:
             print("Adding tracks to a new playlist needs a Music User Token. Run: music auth setup")
             print("Creating an empty playlist needs no token: music playlist create \"\(name)\"")
+            print("Tracks from a library search need no token: music search \"query\" --library, then music playlist create \"\(name)\" 1 2")
             throw ExitCode.failure
 
         case .appleScriptEmpty:
             // `make new playlist` is the same call the temp-playlist machinery
             // uses below, and it has never needed a token.
             let backend = AppleScriptBackend()
-            _ = try syncRun {
-                try await backend.runMusic(
-                    "make new playlist with properties {name:\"\(escapeAppleScriptString(name))\"}")
-            }
+            try createEmptyPlaylistViaAppleScript(name: name, backend: backend)
             if json {
                 let output = OutputFormat(mode: .json)
                 print(output.render(["created": name, "tracks": []]))
             } else {
                 print("Created playlist '\(name)'.")
+            }
+            return
+
+        case .appleScriptSeedFromLibrary:
+            let backend = AppleScriptBackend()
+            try createEmptyPlaylistViaAppleScript(name: name, backend: backend)
+            let (added, failed) = duplicateLibraryRows(resolved, toPlaylist: name, backend: backend)
+            for row in added { print("  + \(row.title) by \(row.artist)") }
+            for row in failed { print("  ✗ Not in your library: \(row.title) by \(row.artist)") }
+            if json {
+                let output = OutputFormat(mode: .json)
+                print(output.render([
+                    "created": name,
+                    "tracks": added.map { ["title": $0.title, "artist": $0.artist] },
+                    "failed": failed.map { ["title": $0.title, "artist": $0.artist] }
+                ]))
+            } else if added.isEmpty {
+                print("Created playlist '\(name)'.")
+            } else {
+                print("Created '\(name)' with \(added.count) tracks.")
             }
             return
 
@@ -271,31 +350,47 @@ struct PlaylistCreate: ParsableCommand {
         // `.rest` guarantees both tokens are present.
         guard let devToken, let userToken else { return }
         let api = RESTAPIBackend(developerToken: devToken, userToken: userToken, storefront: auth.storefront())
+        let backend = AppleScriptBackend()
 
         // One API call creates the playlist and seeds the tracks — no
         // add-to-library detour, no sync sleep, no per-track AppleScript.
-        let cache = ResultCache()
-        let (resolved, dropped) = cache.lookupSongs(indices: indices)
-        if !dropped.isEmpty {
-            errorOut("⚠ Skipped index(es) not in the last results: \(dropped.map(String.init).joined(separator: ", "))")
-        }
-        let songs = resolved.filter { !$0.catalogId.isEmpty }
-        let noCatalog = resolved.filter { $0.catalogId.isEmpty }.map(\.index)
+        let (catalogRows, libraryRows) = partitionByOrigin(resolved)
+        let songs = catalogRows.filter { !$0.catalogId.isEmpty }
+        let noCatalog = catalogRows.filter { $0.catalogId.isEmpty }.map(\.index)
         if !noCatalog.isEmpty {
             errorOut("⚠ Skipped track(s) with no catalog id: \(noCatalog.map(String.init).joined(separator: ", "))")
         }
         _ = try syncRun { try await api.createPlaylist(name: name, songIDs: songs.map(\.catalogId)) }
 
+        var added: [SongResult] = []
+        var failed: [SongResult] = []
+        // Mixed selection only: the strategy sends a pure library selection to AppleScript, so a REST create here always carried at least one catalog track and will sync.
+        if !libraryRows.isEmpty {
+            guard waitForLocalPlaylist(backend: backend, name: name, minTracks: songs.count) else {
+                errorOut("✗ '\(name)' did not appear in Music.app in time; library rows not added: \(libraryRows.map { "\($0.title) by \($0.artist)" }.joined(separator: ", "))")
+                throw ExitCode.failure
+            }
+            (added, failed) = duplicateLibraryRows(libraryRows, toPlaylist: name, backend: backend)
+        }
+
         if json {
             let output = OutputFormat(mode: .json)
-            print(output.render(["created": name, "tracks": songs.map { ["title": $0.title, "artist": $0.artist] }]))
+            print(output.render([
+                "created": name,
+                "tracks": songs.map { ["title": $0.title, "artist": $0.artist] }
+                    + added.map { ["title": $0.title, "artist": $0.artist] },
+                "failed": failed.map { ["title": $0.title, "artist": $0.artist] }
+            ]))
             return
         }
         for song in songs { print("  + \(song.title) — \(song.artist)") }
-        if songs.isEmpty {
+        for row in added { print("  + \(row.title) by \(row.artist)") }
+        for row in failed { print("  ✗ Not in your library: \(row.title) by \(row.artist)") }
+        let total = songs.count + added.count
+        if total == 0 {
             print("Created playlist '\(name)'.")
         } else {
-            print("Created '\(name)' with \(songs.count) tracks.")
+            print("Created '\(name)' with \(total) tracks.")
         }
     }
 }
@@ -339,12 +434,40 @@ struct PlaylistAdd: ParsableCommand {
         let ints = items.compactMap { Int($0) }
         let itemsAreIndices = ints.count == items.count && !ints.isEmpty
 
+        var resolved: [SongResult] = []
+        if itemsAreIndices {
+            let lookup = ResultCache().lookupSongs(indices: ints)
+            resolved = lookup.resolved
+            if !lookup.dropped.isEmpty {
+                errorOut("⚠ Skipped index(es) not in the last results: \(lookup.dropped.map(String.init).joined(separator: ", "))")
+            }
+        }
+
         switch playlistAddStrategy(hasTokens: devToken != nil && userToken != nil,
-                                   itemsAreIndices: itemsAreIndices) {
+                                   itemsAreIndices: itemsAreIndices,
+                                   allLibraryRows: allLibraryRows(resolved)) {
         case .needsAuthForIndices:
             print("Adding by result index needs a Music User Token. Run: music auth setup")
             print("Adding a track you already own needs no token: music playlist add \"\(playlist)\" \"Song Title\"")
+            print("Indices from a library search need no token: music search \"query\" --library, then music playlist add \"\(playlist)\" 1 2")
             throw ExitCode.failure
+
+        case .appleScriptLibraryIndices:
+            let (added, failed) = duplicateLibraryRows(resolved, toPlaylist: playlist, backend: backend)
+            for row in added { print("  + \(row.title) by \(row.artist)") }
+            for row in failed { print("  ✗ Not in your library: \(row.title) by \(row.artist)") }
+            if json {
+                let output = OutputFormat(mode: .json)
+                print(output.render([
+                    "added": added.count,
+                    "playlist": playlist,
+                    "failed": failed.map { ["title": $0.title, "artist": $0.artist] }
+                ]))
+            } else {
+                print("Added \(added.count) track(s) to '\(playlist)'.")
+            }
+            if added.isEmpty { throw ExitCode.failure }
+            return
 
         case .appleScriptLibrary:
             let wanted = items.first ?? ""
@@ -375,24 +498,26 @@ struct PlaylistAdd: ParsableCommand {
         let api = RESTAPIBackend(developerToken: devToken, userToken: userToken, storefront: auth.storefront())
 
         if itemsAreIndices {
-            let cache = ResultCache()
-            let (songs, dropped) = cache.lookupSongs(indices: ints)
-            if !dropped.isEmpty {
-                errorOut("⚠ Skipped index(es) not in the last results: \(dropped.map(String.init).joined(separator: ", "))")
-            }
-            guard !songs.isEmpty else {
+            guard !resolved.isEmpty else {
                 errorOut("✗ No valid tracks to add.")
                 return
             }
-            try addSongs(songs.map { CatalogSong(id: $0.catalogId, title: $0.title, artist: $0.artist, album: $0.album) },
-                         to: playlist, api: api, backend: backend)
+            let (catalogRows, libraryRows) = partitionByOrigin(resolved)
+            if !catalogRows.isEmpty {
+                try addSongs(catalogRows.map { CatalogSong(id: $0.catalogId, title: $0.title, artist: $0.artist, album: $0.album) },
+                             to: playlist, api: api, backend: backend)
+            }
+            let (added, failed) = duplicateLibraryRows(libraryRows, toPlaylist: playlist, backend: backend)
+            let total = catalogRows.count + added.count
             if json {
                 let output = OutputFormat(mode: .json)
-                print(output.render(["added": songs.count, "playlist": playlist]))
+                print(output.render(["added": total, "playlist": playlist]))
                 return
             }
-            for song in songs { print("  + \(song.title) — \(song.artist)") }
-            print("Added \(songs.count) track(s) to '\(playlist)'.")
+            for song in catalogRows { print("  + \(song.title) — \(song.artist)") }
+            for row in added { print("  + \(row.title) by \(row.artist)") }
+            for row in failed { print("  ✗ Not in your library: \(row.title) by \(row.artist)") }
+            print("Added \(total) track(s) to '\(playlist)'.")
             return
         }
 

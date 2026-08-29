@@ -251,6 +251,8 @@ music add 3 --to "House"    # add #3 to playlist
 music playlist create "House" 1 3 5  # create playlist from results
 ```
 
+Rows from `music search --library` are tagged as library rows; index follow-ups on them (`add`, `playlist add`, `playlist create`) need no token, and `music add N` on one reports that it is already in your library instead of calling the API.
+
 ## Auth Management
 
 ```bash
@@ -308,6 +310,7 @@ music playlist create-from "Losing It" "FISHER" "Coconuts" "Fouk" "Stay With Me"
 - Never chain `music speaker` + `music volume` + `music play` for a play request: one `music play` call does all three
 - Use `--json` on search to get structured results for parsing
 - Both `create-from` and index-based create handle errors gracefully
+- After `music search "query" --library`, build playlists by index without a token: `music playlist create "Name" 1 2 3`. Mixed catalog and library rows need the user token for the catalog rows only; library rows are added either way.
 
 ## Output Modes
 

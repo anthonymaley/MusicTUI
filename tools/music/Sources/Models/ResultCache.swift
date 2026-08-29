@@ -1,11 +1,42 @@
 import Foundation
 
+/// Where a cached row came from. A library row has no catalog id (the id it
+/// carries is Music's persistent id), so it can only be added to a playlist by
+/// duplicating the owned track by title and artist. A catalog row goes through
+/// the REST API as before. Files written before this field existed decode as
+/// catalog, which is what every writer produced at the time.
+enum SongOrigin: String, Codable, Equatable {
+    case catalog
+    case library
+}
+
 struct SongResult: Codable, Equatable {
     let index: Int
     let title: String
     let artist: String
     let album: String
     let catalogId: String
+    let origin: SongOrigin
+
+    init(index: Int, title: String, artist: String, album: String, catalogId: String,
+         origin: SongOrigin = .catalog) {
+        self.index = index
+        self.title = title
+        self.artist = artist
+        self.album = album
+        self.catalogId = catalogId
+        self.origin = origin
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        index = try c.decode(Int.self, forKey: .index)
+        title = try c.decode(String.self, forKey: .title)
+        artist = try c.decode(String.self, forKey: .artist)
+        album = try c.decode(String.self, forKey: .album)
+        catalogId = try c.decode(String.self, forKey: .catalogId)
+        origin = try c.decodeIfPresent(SongOrigin.self, forKey: .origin) ?? .catalog
+    }
 }
 
 struct SpeakerResult: Codable, Equatable {

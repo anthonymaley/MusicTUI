@@ -159,4 +159,32 @@ final class ResultCacheTests: XCTestCase {
         XCTAssertEqual(hit?.ep, ["actress"])
         XCTAssertEqual(hit?.albums, ["air", "boards of canada"])
     }
+
+    // MARK: - Row origin
+
+    func testOriginDefaultsToCatalogWhenAbsentFromFile() throws {
+        let json = "[{\"index\":1,\"title\":\"Alpha\",\"artist\":\"A\",\"album\":\"AA\",\"catalogId\":\"id1\"}]"
+        try json.data(using: .utf8)!.write(to: testDir.appendingPathComponent("last-songs.json"))
+        let loaded = try ResultCache(directory: testDir.path).readSongs()
+        XCTAssertEqual(loaded.count, 1)
+        XCTAssertEqual(loaded[0].origin, .catalog)
+        XCTAssertEqual(loaded[0].catalogId, "id1")
+    }
+
+    func testOriginRoundTripsThroughTheCache() throws {
+        let cache = ResultCache(directory: testDir.path)
+        try cache.writeSongs([
+            SongResult(index: 1, title: "Alpha", artist: "A", album: "AA", catalogId: "pid1", origin: .library),
+            SongResult(index: 2, title: "Beta", artist: "B", album: "BB", catalogId: "id2"),
+        ])
+        let loaded = try cache.readSongs()
+        XCTAssertEqual(loaded[0].origin, .library)
+        XCTAssertEqual(loaded[1].origin, .catalog)
+        let raw = try String(contentsOf: testDir.appendingPathComponent("last-songs.json"), encoding: .utf8)
+        XCTAssertTrue(raw.contains("\"origin\":\"library\""))
+    }
+
+    func testMemberwiseInitDefaultsOriginToCatalog() {
+        XCTAssertEqual(SongResult(index: 1, title: "t", artist: "a", album: "b", catalogId: "c").origin, .catalog)
+    }
 }

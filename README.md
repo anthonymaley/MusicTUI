@@ -460,7 +460,8 @@ After running `scripts/install.sh`, add to `~/.claude/settings.json`:
 | Library search (`--library`) | Yes | Yes | Yes |
 | Add to library | — | — | Yes |
 | Playlist create, create-from, delete, add a track you already own | Yes | Yes | Yes |
-| Playlist add from the catalog, add by result index | — | — | Yes |
+| Playlist create or add from a library search by index | Yes | Yes | Yes |
+| Playlist add from a catalog search by index | — | — | Yes |
 | Similar, suggestions, new releases, mix | — | — | Yes |
 | Recently played, heavy rotation | — | — | Yes |
 | Discover tab and `music discover` | — | — | Yes |
@@ -476,6 +477,8 @@ Everything routes through the `music` CLI. The `/music` skill turns natural lang
 ```
 
 Search results are cached locally (`~/.config/music/last-songs.json`). When you run `music search`, `music similar`, or view playlist tracks, the numbered results persist so you can reference them by index in follow-up commands like `music play 3` or `music add 3 --to "House"`. Play commands show full now-playing info (track, album, speakers) after starting playback.
+
+Each cached row remembers whether it came from the catalog or from a library search. Library rows need no token: `music add 3` on one tells you it is already in your library, `music add 3 --to "House"` and `music playlist add "House" 3` put the track you own straight into the playlist, and `music playlist create "Mix" 1 2` builds a playlist from them.
 
 Speaker lists work the same way (`~/.config/music/last-speakers.json`). Run `music speaker list`, then `music speaker 1 2 5` to add speakers by their numbers.
 
