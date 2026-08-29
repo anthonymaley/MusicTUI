@@ -487,6 +487,50 @@ Apple Event. Keep serialisation bulk too, or the win evaporates.
 the library than the REST one does, never less. Where the two disagree the
 AppleScript metadata is the newer of the two.
 
+## A Homebrew bottle keeps a code signature only if Homebrew never touches the Mach-O
+
+Checked 2026-08-29, Homebrew 6.0.20, Apple Silicon, macOS 26. This matters if
+you want a signed binary in a bottle, for instance to use a framework that
+checks the signing team such as MusicKit.
+
+The mechanism, read from the installed Homebrew source
+(`Library/Homebrew/extend/os/mac/keg.rb`, `codesign_patched_binary`, and
+`keg_relocate.rb`): Homebrew re-signs a Mach-O file ad hoc only after it has
+patched that file. On Apple Silicon the re-sign is done in Ruby (ruby-macho);
+on Intel it shells out to `codesign --sign -` and only when its edit broke an
+existing signature (brew issue 23418). Files it does not patch are left
+byte for byte as they were. `docs/Bottles.md` in the brew repo describes the
+three cellar classes but says nothing about signing.
+
+Measured with the `music` binary signed with an Apple Development identity
+(team 8NS66RKB45), one keg, three bottles, four pours:
+
+| Case | What Homebrew did | Signature after |
+|---|---|---|
+| `brew bottle --skip-relocation`, poured into the same Cellar | nothing to the file | real, byte identical |
+| natural bottle (prefix dependent, `cellar` omitted), poured into the same Cellar | nothing to the file | real, byte identical |
+| same bottle, `--force-bottle` into a different prefix | poured, nothing to the file | real, byte identical |
+| bottle of a binary carrying an `LC_RPATH` into the Cellar | rewrote the rpath to `@@HOMEBREW_CELLAR@@` at `brew bottle` time, re-signed ad hoc; pour rewrote it again to the new Cellar and re-signed ad hoc again | ad hoc, team not set, `codesign --verify` passes |
+
+Two details worth knowing:
+
+- The signature is lost at `brew bottle`, before any user pours anything.
+  The placeholder rewrite happens on the build machine, so a signed keg with
+  any Cellar reference in an install name or rpath ships unsigned.
+- A prefix dependent bottle is not relocated at all. Poured into a Cellar
+  other than the one it was built for, Homebrew silently builds from source
+  instead (`poured_from_bottle: false`, "built in 41 seconds"). Only
+  `--force-bottle` pours it, and then the embedded `/opt/homebrew/bin/`
+  string is left pointing at the old prefix.
+
+So a signed bottle is possible on one condition: the binary must contain no
+Cellar path in any load command. Plain strings such as `/opt/homebrew/bin/`
+are fine; they are neither rewritten nor re-signed. The `music` binary meets
+the condition today (its only prefix reference is a string, its rpaths point
+at the Swift runtime and `@loader_path`), so it bottles as
+`:any_skip_relocation` when asked to and keeps whatever signature it was
+given.
+
 ## Corrections
 
 If any of this is wrong or has changed in a later macOS release, please open an issue.
