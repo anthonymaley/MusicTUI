@@ -50,7 +50,7 @@ There are no per-action slash commands. `/music` (the skill) is the single entry
 brew install anthonymaley/musictui/musictui
 ```
 
-That installs the `music` binary: the TUI, playback, AirPlay routing, volume, and the equalizer. A prebuilt binary, so no language runtime and no toolchain.
+That installs the `music` binary: the TUI, playback, AirPlay routing, volume, and the equalizer. On an Apple Silicon Mac running macOS 26 it is a prebuilt binary, so no toolchain. Other Macs build it from source, which needs Swift 5.9+ (the Command Line Tools are enough).
 
 ### Claude Code plugin (optional)
 
