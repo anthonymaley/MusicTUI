@@ -1,0 +1,365 @@
+name: Bottles
+
+# Builds Homebrew bottles for a published release tag and, optionally, uploads
+# them to that release. Dispatch only: a tag-push trigger is deliberately not
+# wired until this dispatch path has run against a real release.
+#
+# Build jobs are contents:read. Only the `publish` job can write to a release,
+# and it is skipped unless `publish` is true — so an artifacts-only run holds
+# no release-write capability at all.
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Release tag to bottle, e.g. v3.10.1'
+        required: true
+        type: string
+      tags:
+        description: 'Comma-separated bottle tags to build'
+        required: false
+        default: 'arm64_sonoma,arm64_tahoe,sequoia'
+        type: string
+      publish:
+        description: 'Upload the bottles to the release'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+env:
+  BASE_FORMULA_URL: https://raw.githubusercontent.com/anthonymaley/homebrew-musictui/main/Formula/musictui.rb
+  SCRATCH_TAP: local/bottlebuild
+
+jobs:
+  setup:
+    name: Resolve matrix
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.resolve.outputs.matrix }}
+    steps:
+      - name: Resolve requested bottle tags
+        id: resolve
+        env:
+          REQUESTED: ${{ inputs.tags }}
+        run: |
+          set -euo pipefail
+          known='[
+            {"bottle_tag":"arm64_sonoma","runner":"macos-14"},
+            {"bottle_tag":"arm64_tahoe","runner":"macos-26"},
+            {"bottle_tag":"sequoia","runner":"macos-15-intel"}
+          ]'
+          req=$(printf '%s' "$REQUESTED" | tr ',' '\n' | tr -d '[:space:]' \
+                | grep -v '^$' | jq -R . | jq -s 'unique')
+          unknown=$(jq -cn --argjson k "$known" --argjson r "$req" \
+                    '$r - ($k | map(.bottle_tag))')
+          if [ "$unknown" != "[]" ]; then
+            echo "::error::Unknown bottle tag(s): $unknown" >&2
+            exit 1
+          fi
+          matrix=$(jq -cn --argjson k "$known" --argjson r "$req" \
+                   '$k | map(select(.bottle_tag as $t | $r | index($t))) | sort_by(.bottle_tag)')
+          if [ "$(jq 'length' <<<"$matrix")" -eq 0 ]; then
+            echo "::error::No bottle tags requested" >&2
+            exit 1
+          fi
+          echo "Building: $matrix"
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+
+  bottle:
+    name: ${{ matrix.bottle_tag }}
+    needs: setup
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.setup.outputs.matrix) }}
+    steps:
+      - name: Check out the release tag
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.release_tag }}
+
+      - name: Assert the tag matches the source version
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          expected="${RELEASE_TAG#v}"
+          found=$(grep -m1 -o 'version: "[^"]*"' tools/music/Sources/Music.swift \
+                  | sed 's/.*"\(.*\)"/\1/')
+          echo "tag says '$expected'; Music.swift says '$found'"
+          if [ "$expected" != "$found" ]; then
+            echo "::error::release_tag does not match the source version" >&2
+            exit 1
+          fi
+
+      - name: Download the release tarball and compute its sha256
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          url="https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/${RELEASE_TAG}.tar.gz"
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/source.tar.gz" "$url"
+          sha=$(shasum -a 256 "$RUNNER_TEMP/source.tar.gz" | cut -d' ' -f1)
+          echo "url=$url"
+          echo "sha256=$sha"
+          {
+            echo "SOURCE_URL=$url"
+            echo "SOURCE_SHA=$sha"
+          } >> "$GITHUB_ENV"
+
+      - name: Generate the bottling formula
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          export VERSION="${RELEASE_TAG#v}"
+          # The tap owns HOW to build; release_tag owns WHAT to build. Inherit the
+          # install/test/deps stanzas, overwrite every version-bearing field, and
+          # drop the bottle block so `brew bottle` assigns rebuild 0.
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/base.rb" "$BASE_FORMULA_URL"
+          brew tap-new "$SCRATCH_TAP"
+          tapdir="$(brew --repository "$SCRATCH_TAP")/Formula"
+          mkdir -p "$tapdir"
+          awk '
+            /^  bottle do$/ { skip = 1 }
+            skip && /^  end$/ { skip = 0; next }
+            !skip { print }
+          ' "$RUNNER_TEMP/base.rb" > "$RUNNER_TEMP/patched.rb"
+          python3 - "$RUNNER_TEMP/patched.rb" "$tapdir/musictui.rb" <<'PY'
+          import re, sys
+          src, dst = sys.argv[1], sys.argv[2]
+          import os
+          url, sha, ver = os.environ['SOURCE_URL'], os.environ['SOURCE_SHA'], os.environ['VERSION']
+          s = open(src).read()
+          s, n1 = re.subn(r'^  url ".*"$', f'  url "{url}"', s, count=1, flags=re.M)
+          s, n2 = re.subn(r'^  sha256 ".*"$', f'  sha256 "{sha}"', s, count=1, flags=re.M)
+          s, n3 = re.subn(r'assert_match "[^"]*"', f'assert_match "{ver}"', s, count=1)
+          assert n1 == 1 and n2 == 1 and n3 == 1, f"patch counts: {n1} {n2} {n3}"
+          assert "bottle do" not in s, "bottle block survived the strip"
+          open(dst, 'w').write(s)
+          PY
+          echo "--- generated formula ---"
+          cat "$tapdir/musictui.rb"
+          grep -q "$SOURCE_URL" "$tapdir/musictui.rb"
+          grep -q "$SOURCE_SHA" "$tapdir/musictui.rb"
+          ! grep -q "bottle do" "$tapdir/musictui.rb"
+
+      - name: Build the keg
+        run: |
+          set -euo pipefail
+          brew install --build-bottle "$SCRATCH_TAP/musictui"
+
+      - name: Assert the keg carries no Cellar or prefix references
+        run: |
+          set -euo pipefail
+          prefix=$(brew --prefix)
+          cellar=$(brew --cellar)
+          keg=$(brew --prefix "$SCRATCH_TAP/musictui")
+          bin="$keg/bin/music"
+          echo "prefix=$prefix"
+          echo "cellar=$cellar"
+          echo "binary=$bin"
+          test -x "$bin"
+
+          echo "--- otool -L ---"
+          otool -L "$bin"
+          echo "--- LC_RPATH ---"
+          otool -l "$bin" | grep -A2 LC_RPATH || echo "(no LC_RPATH)"
+          echo "--- install name ---"
+          otool -D "$bin" || true
+
+          hits=0
+          for needle in "$cellar" "$prefix"; do
+            echo "--- scanning load commands for: $needle ---"
+            if otool -l "$bin" | grep -F -- "$needle"; then hits=1; fi
+            echo "--- scanning strings for: $needle ---"
+            if strings -a "$bin" | grep -F -- "$needle"; then hits=1; fi
+          done
+
+          if [ "$hits" -ne 0 ]; then
+            echo "::error::Binary references the build Cellar or prefix; a bottle of it is not relocatable and --skip-relocation would be a lie." >&2
+            exit 1
+          fi
+          echo "clean: no Cellar or prefix references"
+
+      - name: Bottle
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/bottling"
+          mkdir -p "$out"
+          cd "$out"
+          brew bottle --skip-relocation --json \
+            --root-url "https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}" \
+            "$SCRATCH_TAP/musictui"
+          ls -la
+
+      - name: Resolve the bottle filenames from the JSON
+        env:
+          EXPECTED_TAG: ${{ matrix.bottle_tag }}
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/bottling"
+          json=$(ls *.json)
+          echo "json=$json"
+          cat "$json"
+
+          # Never reconstruct the single-dash download name: brew emits both.
+          builttag=$(jq -r '.[].bottle.tags | keys[]' "$json")
+          local_filename=$(jq -r '.[].bottle.tags[].local_filename' "$json")
+          filename=$(jq -r '.[].bottle.tags[].filename' "$json")
+          rebuild=$(jq -r '.[].bottle.rebuild' "$json")
+          cellar=$(jq -r '.[].bottle.cellar' "$json")
+          sha=$(jq -r '.[].bottle.tags[].sha256' "$json")
+
+          echo "tag=$builttag rebuild=$rebuild cellar=$cellar"
+          echo "local_filename=$local_filename"
+          echo "filename=$filename"
+
+          if [ "$builttag" != "$EXPECTED_TAG" ]; then
+            echo "::error::built tag '$builttag' is not the requested '$EXPECTED_TAG'" >&2
+            exit 1
+          fi
+          if [ "$cellar" != "any_skip_relocation" ]; then
+            echo "::error::expected cellar any_skip_relocation, got '$cellar'" >&2
+            exit 1
+          fi
+          test -f "$local_filename"
+          cp "$local_filename" "$filename"
+          actual=$(shasum -a 256 "$filename" | cut -d' ' -f1)
+          if [ "$actual" != "$sha" ]; then
+            echo "::error::sha256 in JSON ($sha) does not match the file ($actual)" >&2
+            exit 1
+          fi
+          rm -f "$local_filename"
+          ls -la
+
+      - name: Upload the bottle and its JSON
+        uses: actions/upload-artifact@v4
+        with:
+          name: bottle-${{ matrix.bottle_tag }}
+          path: |
+            ${{ runner.temp }}/bottling/*.tar.gz
+            ${{ runner.temp }}/bottling/*.json
+          if-no-files-found: error
+          retention-days: 7
+
+  collect:
+    name: Merge bottle metadata
+    needs: bottle
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Download every bottle artifact
+        uses: actions/download-artifact@v4
+        with:
+          pattern: bottle-*
+          path: bottles
+          merge-multiple: true
+
+      - name: Check structure and emit the bottle block
+        run: |
+          set -euo pipefail
+          cd bottles
+          ls -la
+
+          # Deterministic input order: sorted filenames, never arrival order.
+          mapfile -t jsons < <(ls *.json | LC_ALL=C sort)
+          echo "merging: ${jsons[*]}"
+
+          merged=$(jq -s 'map(to_entries[]) | .[0].value as $first
+            | { root_url:   $first.bottle.root_url,
+                rebuild:    $first.bottle.rebuild,
+                cellar:     $first.bottle.cellar,
+                pkg_version:$first.formula.pkg_version,
+                tags: (map(.value.bottle.tags | to_entries[])
+                       | map({tag: .key, sha256: .value.sha256, filename: .value.filename})
+                       | sort_by(.tag)) }' "${jsons[@]}")
+          echo "$merged" | jq .
+
+          # Structure must be identical across entries; only sha256 and tag differ.
+          for f in "${jsons[@]}"; do
+            r=$(jq -r '.[].bottle.rebuild' "$f")
+            u=$(jq -r '.[].bottle.root_url' "$f")
+            v=$(jq -r '.[].formula.pkg_version' "$f")
+            c=$(jq -r '.[].bottle.cellar' "$f")
+            exp_r=$(jq -r '.rebuild' <<<"$merged")
+            exp_u=$(jq -r '.root_url' <<<"$merged")
+            exp_v=$(jq -r '.pkg_version' <<<"$merged")
+            if [ "$r" != "$exp_r" ] || [ "$u" != "$exp_u" ] || [ "$v" != "$exp_v" ] || [ "$c" != "any_skip_relocation" ]; then
+              echo "::error::$f disagrees on rebuild/root_url/pkg_version/cellar" >&2
+              exit 1
+            fi
+          done
+
+          # Every sha256 well-formed and matching the artifact it names.
+          while read -r tag sha filename; do
+            if ! printf '%s' "$sha" | grep -Eq '^[0-9a-f]{64}$'; then
+              echo "::error::malformed sha256 for $tag: $sha" >&2
+              exit 1
+            fi
+            test -f "$filename"
+            actual=$(sha256sum "$filename" | cut -d' ' -f1)
+            if [ "$actual" != "$sha" ]; then
+              echo "::error::$filename hashes to $actual, block claims $sha" >&2
+              exit 1
+            fi
+            echo "ok: $tag $sha $filename"
+          done < <(jq -r '.tags[] | "\(.tag) \(.sha256) \(.filename)"' <<<"$merged")
+
+          {
+            echo '### `bottle do` block for the tap formula'
+            echo
+            echo '```ruby'
+            echo '  bottle do'
+            echo "    root_url \"$(jq -r '.root_url' <<<"$merged")\""
+            rebuild=$(jq -r '.rebuild' <<<"$merged")
+            if [ "$rebuild" != "0" ]; then echo "    rebuild $rebuild"; fi
+            cellar=$(jq -r '.cellar' <<<"$merged")
+            jq -r --arg cellar "$cellar" '.tags[] | "    sha256 cellar: :\($cellar), \(.tag): \"\(.sha256)\""' <<<"$merged"
+            echo '  end'
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY" > block.md
+          cat block.md
+
+      - name: Upload the bottle block
+        uses: actions/upload-artifact@v4
+        with:
+          name: bottle-block
+          path: bottles/block.md
+          if-no-files-found: error
+
+  publish:
+    name: Upload to the release
+    needs: [collect]
+    if: ${{ inputs.publish }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download every bottle artifact
+        uses: actions/download-artifact@v4
+        with:
+          pattern: bottle-*
+          path: bottles
+          merge-multiple: true
+
+      - name: Upload the bottles to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          cd bottles
+          ls -la
+          # No --clobber: a collision with an existing asset must fail loudly
+          # rather than silently replace a bottle someone already poured.
+          gh release upload "$RELEASE_TAG" *.tar.gz --repo "$GITHUB_REPOSITORY"
