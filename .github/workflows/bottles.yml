@@ -51,7 +51,8 @@ jobs:
             {"bottle_tag":"arm64_tahoe","runner":"macos-26"},
             {"bottle_tag":"sequoia","runner":"macos-15-intel"}
           ]'
-          req=$(printf '%s' "$REQUESTED" | tr ',' '\n' | tr -d '[:space:]' \
+          # Strip blanks, never newlines: '[:space:]' would undo the split above.
+          req=$(printf '%s' "$REQUESTED" | tr ',' '\n' | tr -d ' \t\r' \
                 | grep -v '^$' | jq -R . | jq -s 'unique')
           unknown=$(jq -cn --argjson k "$known" --argjson r "$req" \
                     '$r - ($k | map(.bottle_tag))')
