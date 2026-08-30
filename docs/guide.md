@@ -359,8 +359,9 @@ All three are written owner-only: files `0600` in a `0700` directory (since 3.7.
 
 ## Version
 
-Current version: v3.10.1. All four locations stay in sync:
+Current version: v3.10.1. All five locations stay in sync:
 - `.claude-plugin/plugin.json` → `version`
 - `.claude-plugin/marketplace.json` → `metadata.version`
 - `.claude-plugin/marketplace.json` → `plugins[0].version`
 - `tools/music/Sources/Music.swift` → `CommandConfiguration(version:)` (rebuild via `scripts/install.sh` so `music --version` matches)
+- this line, which carries the version in prose

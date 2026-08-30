@@ -531,6 +531,65 @@ at the Swift runtime and `@loader_path`), so it bottles as
 `:any_skip_relocation` when asked to and keeps whatever signature it was
 given.
 
+## Homebrew pours an older macOS bottle when there is no exact match
+
+Checked 2026-08-30, Homebrew 6.0.20. This decides how many bottles a small tap
+has to build, and the answer is fewer than one per macOS release.
+
+The mechanism, read from the installed Homebrew source
+(`Library/Homebrew/extend/os/mac/utils/bottles.rb`, `find_older_compatible_tag`):
+when a formula declares no bottle for the running system's exact tag, brew looks
+for one whose macOS version is less than or equal to the running version on the
+same standardized architecture, and pours that instead of building. The
+comparison only ever runs downward. A bottle built on macOS 26 is never poured
+on macOS 15, so building on the newest system you have is the one choice that
+covers nothing but itself.
+
+So bottle coverage is a floor rather than a list. One bottle built on the oldest
+macOS you support covers every newer macOS on that architecture.
+
+Measured on 2026-08-30, and it is worth measuring rather than trusting the
+source read. A bottle built on `macos-14`, declared in the formula as
+`arm64_sonoma` and nothing else, offered through a `file://` root_url, was
+installed on macOS 26 Apple Silicon. Homebrew printed `Pouring
+musictui-3.10.1.arm64_sonoma.bottle.tar.gz` rather than building, `brew test`
+passed, and the poured binary reported its own version correctly. So the
+fallback is real, and a binary built against the macOS 14 SDK runs unmodified
+on macOS 26.
+
+Verify a poured binary by its keg path, never by name. On this machine
+`music` on `PATH` resolves to a local development build, and Homebrew says so
+in a hint that is easy to scroll past. Use `"$(brew --prefix <formula>)/bin/<name>"`
+or the check silently passes against the wrong binary.
+
+For a tap that builds on GitHub-hosted runners, that floor is set by which
+runner images exist, and two of them are on a clock:
+
+| Runner | Bottle tag | Covers | Until |
+|---|---|---|---|
+| `macos-14` | `arm64_sonoma` | Apple Silicon, macOS 14 and newer | 2026-11-02 |
+| `macos-15` | `arm64_sequoia` | Apple Silicon, macOS 15 and newer | while macOS 15 is supported |
+| `macos-26` | `arm64_tahoe` | Apple Silicon, macOS 26 and newer | current |
+| `macos-15-intel` | `sequoia` | Intel, macOS 15 and newer | August 2027 |
+
+`macos-14` began deprecation on 2026-07-06 and is fully unsupported on
+2026-11-02 (actions/runner-images#13518), so a bottle covering Apple Silicon
+Sonoma can be produced for a limited time only. After that the oldest available
+Apple Silicon runner is `macos-15`, and because the fallback never reaches
+upward, Sonoma machines return to building from source unless the formula's
+floor moves with it.
+
+`macos-15-intel` is the last x86_64 image GitHub will offer, scheduled through
+August 2027 (actions/runner-images#13045), after which x86_64 is unsupported on
+GitHub Actions entirely. There is no Intel Sonoma runner at all, so an Intel Mac
+on macOS 14 has no bottle path and never will.
+
+One consequence worth stating plainly for anyone copying this: a bottle you can
+no longer rebuild is not coverage. The bottles already attached to a published
+release keep working, but every new release needs its own, so a tag whose runner
+has been retired quietly stops being covered at the next version bump rather
+than at the retirement date.
+
 ## Corrections
 
 If any of this is wrong or has changed in a later macOS release, please open an issue.
