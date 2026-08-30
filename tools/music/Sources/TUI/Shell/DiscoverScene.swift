@@ -9,7 +9,8 @@ import Foundation
 //
 //   station                    -> plays, via the music:// scheme rewrite. Writes nothing.
 //   album, playlist (rail row) -> drills in to a track list. Does NOT play.
-//   track (inside a drill-in)  -> does NOT play. Enter and p are both no-ops here.
+//   track (inside a drill-in)  -> plays from that row to the container's end.
+//                                 `p` is still a no-op here (it acts on rail rows).
 //
 // Catalog albums and playlists cannot be played without first adding them to the
 // library: music:// does nothing on a non-station URL, and the REST API has no
@@ -19,8 +20,16 @@ import Foundation
 // exposed to sweep them back out); only the temp playlist CONTAINER is ever
 // swept, and only by the name this app gave it (sweepDiscoverPlaylists,
 // PlaylistDataSources.swift). `→` still never plays — see
-// discoverRightArrowActivates. "Play from here" on a specific track is
-// deferred; there is no per-track play path yet.
+// discoverRightArrowActivates.
+//
+// "Play from here" (2026-08-30) is the SAME transaction over a shorter id
+// list: discoverPlaySlice cuts the container from the selected row to its end,
+// so the bounded `play playlist` form starts where the user pointed. It also
+// turns shuffle off first, because `play playlist` honours Music's
+// `shuffle enabled` (measured, six trials) and would otherwise start on some
+// other track entirely. `p` deliberately does NOT do that: the guard is scoped
+// to Enter, so "play all" never reaches out and clears a setting the user
+// turned on somewhere else.
 final class DiscoverScene: Scene {
     let id: SceneID = .discover
     let tabTitle = "Discover"
@@ -281,10 +290,10 @@ final class DiscoverScene: Scene {
                 drillIn(item)
                 return .redraw
             case .song:
-                // A track row inside a drill-in does not play. There is no
-                // per-track play path yet ("play from here" is deferred); p
-                // on this same row still plays the whole container.
-                return .none
+                // Play from here: the container sliced from this row to its
+                // end. `p` on this same row is still a no-op (it plays a
+                // whole RAIL row, and a track row is not one).
+                return playFromHere()
             }
         }
     }
@@ -312,6 +321,48 @@ final class DiscoverScene: Scene {
     }
 
     // MARK: - Play
+
+    /// Track-level `Enter`: play the drilled-in container from the SELECTED
+    /// row to its end, then jump to Now Playing like every other play in the
+    /// shell.
+    ///
+    /// The feature is `discoverPlaySlice` plus the shuffle guard, and nothing
+    /// else. The bounded play form starts a playlist from its beginning — the
+    /// deferral reason recorded in the docs, and still true — so this makes the
+    /// slice's beginning BE the selected track instead of fighting it. Unlike
+    /// `playAllFromRail` there is no fetch: a drill-in has already populated
+    /// `trackRows`, which is the only level this is reachable from.
+    ///
+    /// `→` deliberately does not reach here (`discoverRightArrowActivates`).
+    private func playFromHere() -> SceneAction {
+        guard case .tracks(let container) = current.level else { return .none }
+        guard let api else {
+            status.post("Sign in to play Discover music (music auth setup).", error: true)
+            return .redraw
+        }
+        // At the tracks level every display row is a selectable item (`rows`
+        // maps trackRows 1:1 with no headers), so the cursor ordinal IS the
+        // trackRows index. This is the one level where no header-offset
+        // conversion is needed — see clampScroll() for where it is.
+        let ids = discoverPlaySlice(catalogIDs: trackRows.map { $0.id }, from: cursorIndex)
+        guard !ids.isEmpty else {
+            status.post("Couldn't tell which track to play from.", error: true)
+            return .redraw
+        }
+        let title = container.name
+        let backend = self.backend
+        let storefront = self.storefront
+        let status = self.status
+        actions.run("Play") {
+            let outcome = try syncRun {
+                await playDiscoverContainer(title: title, catalogIDs: ids,
+                                            api: api, backend: backend, storefront: storefront,
+                                            disableShuffle: true)
+            }
+            DiscoverScene.toast(for: outcome, title: title, status: status)
+        }
+        return .push(.nowPlaying)
+    }
 
     /// Maps a resolved DiscoverPlayOutcome to the one honest toast it earns.
     /// Never posts a success toast for anything but `.playing` — the whole

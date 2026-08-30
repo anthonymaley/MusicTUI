@@ -33,6 +33,50 @@ func discoverReadiness(observed: Int, expected: Int,
     return elapsed >= timeout ? .timedOut : .wait
 }
 
+// MARK: - Play from here
+
+/// The id list for "play from here": the container sliced from the selected
+/// row to its end.
+///
+/// This is the whole mechanism behind track-level `Enter`, and it is why the
+/// feature stopped being blocked. The deferral reason recorded in the docs was
+/// that the only bounded play form starts a playlist from its beginning — true,
+/// and unchanged. Slicing sidesteps it rather than fighting it: the slice's
+/// beginning IS the selected track, so `play playlist` on the sliced container
+/// starts where the user pointed and still stops at the album's end.
+///
+/// An out-of-range index returns an empty slice rather than clamping. Clamping
+/// would play position 1, i.e. a DIFFERENT song than the one chosen, which is
+/// the single failure the design doc refuses outright ("report and play
+/// nothing"). The caller's non-empty guard turns the empty slice into a toast.
+func discoverPlaySlice(catalogIDs: [String], from index: Int) -> [String] {
+    guard index >= 0, index < catalogIDs.count else { return [] }
+    return Array(catalogIDs[index...])
+}
+
+/// The ordered AppleScript commands one Discover play emits.
+///
+/// Kept pure and separate because `playDiscoverContainer` takes a concrete
+/// `AppleScriptBackend`, so the emission itself cannot be asserted in a unit
+/// test — the ORDER can, and the order is the part that carries the promise.
+///
+/// Two commands, never one block: combining a `set` with a `play` in a single
+/// script is what produced parameter error -50 in the shipped playlist code
+/// (see `PlaylistCommands`' "Split into separate calls" comment), so they stay
+/// separate `runMusic` calls.
+///
+/// `disableShuffle` defaults to off at the call site that plays a whole
+/// container, leaving `p` exactly as it shipped.
+func discoverPlayScripts(playlistName: String, disableShuffle: Bool) -> [String] {
+    let esc = escapeAppleScriptString(playlistName)
+    var scripts: [String] = []
+    if disableShuffle {
+        scripts.append("set shuffle enabled to false")
+    }
+    scripts.append("play playlist \"\(esc)\"")
+    return scripts
+}
+
 // MARK: - The transaction
 
 /// What a play attempt resolved to. The caller (Task 7, `DiscoverScene`) turns
@@ -72,12 +116,21 @@ private func discoverReadPlaylistTrackCount(name: String, backend: AppleScriptBa
 /// - Parameters:
 ///   - title: folded into the playlist name (after `discoverPlaylistNameSeparator`)
 ///     so Now Playing can show it — NEVER used as an identifier.
-///   - catalogIDs: every track in the container, in catalog order.
+///   - catalogIDs: every track in the container, in catalog order — or, for
+///     track-level `Enter`, the slice of it from the selected row onward
+///     (`discoverPlaySlice`).
+///   - disableShuffle: turns Music's shuffle off immediately before the play.
+///     Track-level `Enter` passes true, because it promises the SELECTED track
+///     starts and `play playlist` honours `shuffle enabled` (measured
+///     2026-08-30). `p` passes false by default and is unchanged: the producer
+///     scoped this guard to Enter alone rather than have "play all" reach out
+///     and clear a setting the user turned on elsewhere.
 func playDiscoverContainer(title: String,
                            catalogIDs: [String],
                            api: RESTAPIBackend,
                            backend: AppleScriptBackend,
                            storefront: String,
+                           disableShuffle: Bool = false,
                            now: @escaping () -> Date = Date.init,
                            pollInterval: TimeInterval = 0.5,
                            readinessTimeout: TimeInterval = 20) async -> DiscoverPlayOutcome {
@@ -127,9 +180,10 @@ func playDiscoverContainer(title: String,
     // is not writable (-10006), so this is the only lever. Reuses the
     // codebase's existing AppleScript string escaping rather than writing a
     // second one.
-    let esc = escapeAppleScriptString(name)
     do {
-        _ = try await backend.runMusic("play playlist \"\(esc)\"")
+        for script in discoverPlayScripts(playlistName: name, disableShuffle: disableShuffle) {
+            _ = try await backend.runMusic(script)
+        }
     } catch {
         return .playFailed(error.localizedDescription)
     }

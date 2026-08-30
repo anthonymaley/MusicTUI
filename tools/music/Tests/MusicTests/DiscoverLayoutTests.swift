@@ -93,8 +93,9 @@ final class DiscoverLayoutTests: XCTestCase {
     /// actually accepts it, regardless of what is selected.
     /// `p` plays the container only from a rail row (album/playlist) — never
     /// on a station, `View all`, or track row, where DiscoverScene's `p`
-    /// handler is a no-op (a track row has no play action of its own; there
-    /// is no per-track play path). This repo has already shipped a footer
+    /// handler is a no-op. A track row DOES now play on Enter (from that row
+    /// to the container's end), but `p` there still does nothing, so the
+    /// footer must not advertise it. This repo has already shipped a footer
     /// that advertised a key the handler ignored; this test is the guard
     /// against doing it again.
     func testFooterAdvertisesPOnlyWhereItActs() {
@@ -111,11 +112,13 @@ final class DiscoverLayoutTests: XCTestCase {
         XCTAssertFalse(discoverFooterHint(nil, canGoBack: false, canRefresh: true).contains("p Play"))
     }
 
-    /// The track row's exact footer text the spec names verbatim: bare
-    /// movement plus Back, since neither Enter nor p acts on a track row.
+    /// The track row's exact footer text: Enter now plays from the selected
+    /// row to the container's end. `p` is still absent, because it acts on a
+    /// RAIL row and a track row is not one — the asymmetry is real, so the
+    /// footer keeps advertising exactly one of the two keys here.
     func testTrackRowFooterMatchesTheAgreedGrammar() {
         XCTAssertEqual(discoverFooterHint(.item(item(.song)), canGoBack: true, canRefresh: true),
-                       "\u{2191}\u{2193} Move  \u{2190} Back")
+                       "\u{2191}\u{2193} Move  Enter Play from here  \u{2190} Back")
     }
 
     func testFooterShowsRefreshOnlyWhenCanRefreshIsTrue() {

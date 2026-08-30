@@ -52,7 +52,11 @@ func discoverFooterHint(_ selection: DiscoverSelection?, canGoBack: Bool, canRef
         case .album, .playlist:
             return "\u{2191}\u{2193} Move  Enter Browse  p Play" + refresh + back
         case .song:
-            return "\u{2191}\u{2193} Move" + back
+            // Enter plays from this row to the container's end. `p` is
+            // deliberately absent: it acts on a rail row, and a track row is
+            // not one — advertising a key the handler ignores is a mistake
+            // this footer has already shipped once.
+            return "\u{2191}\u{2193} Move  Enter Play from here" + back
         }
     case .viewAll:
         return "\u{2191}\u{2193} Move  Enter View all" + refresh + back
