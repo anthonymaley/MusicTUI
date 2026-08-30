@@ -175,19 +175,42 @@ jobs:
           echo "--- install name ---"
           otool -D "$bin" || true
 
+          # otool prints the filename as its first line; drop it or the scan
+          # matches otool's own echo rather than a load command.
+          loadcmds=$(otool -l "$bin" | tail -n +2)
+
           hits=0
-          for needle in "$cellar" "$prefix"; do
-            echo "--- scanning load commands for: $needle ---"
-            if otool -l "$bin" | grep -F -- "$needle"; then hits=1; fi
-            echo "--- scanning strings for: $needle ---"
-            if strings -a "$bin" | grep -F -- "$needle"; then hits=1; fi
-          done
+
+          # A Cellar path is always a build artifact: it carries the version.
+          echo "--- Cellar in load commands ---"
+          if grep -F -- "$cellar" <<<"$loadcmds"; then hits=1; else echo "(none)"; fi
+          echo "--- Cellar in strings ---"
+          if strings -a "$bin" | grep -F -- "$cellar"; then hits=1; else echo "(none)"; fi
+
+          # A prefix path in a load command is injected by the build.
+          echo "--- prefix in load commands ---"
+          if grep -F -- "$prefix" <<<"$loadcmds"; then hits=1; else echo "(none)"; fi
+
+          # A prefix path in a plain string may be source data rather than a
+          # build artifact: findExecutable lists both Homebrew prefixes and
+          # /usr/bin as candidates. Allow only literals that are actually in
+          # the source tree we just built; anything else the build injected.
+          echo "--- prefix in strings ---"
+          while IFS= read -r found; do
+            [ -n "$found" ] || continue
+            if grep -rqF -- "$found" tools/music/Sources/; then
+              echo "ok, present in Sources so it is source data: $found"
+            else
+              echo "unexplained, absent from Sources so the build injected it: $found"
+              hits=1
+            fi
+          done < <(strings -a "$bin" | grep -F -- "$prefix" | sort -u)
 
           if [ "$hits" -ne 0 ]; then
-            echo "::error::Binary references the build Cellar or prefix; a bottle of it is not relocatable and --skip-relocation would be a lie." >&2
+            echo "::error::Binary carries a build-injected Cellar or prefix reference; a bottle of it is not relocatable and --skip-relocation would be a lie." >&2
             exit 1
           fi
-          echo "clean: no Cellar or prefix references"
+          echo "clean: no build-injected Cellar or prefix references"
 
       - name: Bottle
         env:
