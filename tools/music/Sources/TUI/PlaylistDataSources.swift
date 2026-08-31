@@ -76,7 +76,12 @@ func parsePlaylistTracksResult(_ result: String) -> (count: Int, lines: [String]
 /// Fetch the user's playlist names (one instant AppleScript call).
 /// Delete leftover "__queue__ …" temp playlists from prior sessions, sparing the one
 /// currently playing — deleting the playing playlist reverts Music to the library.
-/// Safe to run off-main at startup; playTrack also sweeps after each play.
+/// Safe to run off-main at startup. Called once, from the shell's launch path.
+///
+/// Legacy cleanup, deliberately left on the old spare rule: nothing in Sources/
+/// creates a `__queue__ ` playlist any more, so this collects containers from
+/// versions that did. The paused-container leak fixed in sweepDiscoverPlaylists
+/// below is not worth porting here, because no path feeds this prefix.
 func sweepQueuePlaylists(backend: AppleScriptBackend) {
     _ = try? syncRun {
         try await backend.runMusic("""
@@ -94,9 +99,77 @@ func sweepQueuePlaylists(backend: AppleScriptBackend) {
     }
 }
 
-/// Delete leftover "__discover__ …" temp playlists from prior sessions, sparing
-/// the one currently playing — deleting the playing playlist reverts Music to
-/// the library. Mirrors sweepQueuePlaylists exactly, prefix aside.
+/// Player states in which the current playlist is NOT in use and may be swept.
+///
+/// Music's `player state` has five values (sdef, read 2026-08-31): stopped,
+/// playing, paused, fast forwarding, rewinding. Naming the two idle ones rather
+/// than the three active ones is what makes a scrub safe, and it puts any state
+/// Apple adds later on the spare side by construction.
+let sweepablePlayerStates = ["paused", "stopped"]
+
+/// Substituted when `player state` cannot be read, so an unreadable state
+/// spares rather than sweeps. Must not itself be a sweepable state; a test
+/// pins that.
+let unreadablePlayerStateFallback = "playing"
+
+/// True when the current playlist must be spared from a temp-container sweep.
+///
+/// NOT the live path — the guard that runs is the AppleScript in
+/// `discoverSweepScript()`. Both derive from `sweepablePlayerStates` and a test
+/// pins that the generated script keys on the same literals, so the two cannot
+/// drift. This mirrors `nowPlayingReadyState` (PlaybackCommands.swift), the
+/// shape adopted after twin-drift produced two shipped bugs.
+///
+/// The asymmetry is deliberate: a spared container costs one leftover row that
+/// the next sweep collects, while a wrongly swept one reverts live playback to
+/// the library. So everything unrecognised spares.
+func shouldSpareCurrentPlaylist(playerState: String?) -> Bool {
+    guard let state = playerState else { return true }
+    return !sweepablePlayerStates.contains(state)
+}
+
+/// The Discover container sweep, as text. Pure, so it can be pinned by tests.
+///
+/// `current playlist` outlives both a pause and a Music.app restart (measured
+/// 2026-08-31), so reading it unconditionally — as this script used to — spared
+/// a paused container permanently and leaked one row per paused Discover play.
+/// The state guard is what scopes "in use" to actual playback.
+///
+/// Deleting the current playlist while PAUSED is safe, measured 2026-08-31 over
+/// a hand-built container: player state stayed `paused`, the current track and
+/// player position both survived byte-identical, play resumed that same track,
+/// and the source library rows were untouched. What it does cost is context —
+/// `current playlist` reverts to the library, so what follows the paused track
+/// is library order rather than the rest of the container.
+func discoverSweepScript() -> String {
+    let activeGuard = sweepablePlayerStates
+        .map { "playerStateText is not \"\($0)\"" }
+        .joined(separator: " and ")
+    return """
+        set keepName to ""
+        set playerStateText to "\(unreadablePlayerStateFallback)"
+        try
+            set playerStateText to player state as text
+        end try
+        if \(activeGuard) then
+            try
+                set keepName to name of current playlist
+            end try
+        end if
+        repeat with pp in (every user playlist)
+            try
+                set nm to name of pp
+                if (nm starts with "\(discoverPlaylistPrefix)") and (nm is not keepName) then delete pp
+            end try
+        end repeat
+        """
+}
+
+/// Delete leftover "__discover__ …" temp playlists, sparing the current
+/// playlist only while playback is actually active — playing, scrubbing, or in
+/// a state we could not read. A paused or stopped container is collected, which
+/// is the whole point: `current playlist` outlives a pause, so the old
+/// spare-the-current rule never released one.
 ///
 /// Containers only, by design: this script never says `track` or `song` and
 /// never can reach a library row — it enumerates `every user playlist` and
@@ -105,21 +178,10 @@ func sweepQueuePlaylists(backend: AppleScriptBackend) {
 /// exposes no authorship for a library row, so any such cleanup risks deleting
 /// music the user added themselves. The songs a Discover play adds stay,
 /// permanently — only the container it created is ever removed, and only by
-/// the name this app gave it.
+/// the name this app gave it. A test pins that invariant.
 func sweepDiscoverPlaylists(backend: AppleScriptBackend) {
     _ = try? syncRun {
-        try await backend.runMusic("""
-            set keepName to ""
-            try
-                set keepName to name of current playlist
-            end try
-            repeat with pp in (every user playlist)
-                try
-                    set nm to name of pp
-                    if (nm starts with "\(discoverPlaylistPrefix)") and (nm is not keepName) then delete pp
-                end try
-            end repeat
-        """)
+        try await backend.runMusic(discoverSweepScript())
     }
 }
 
