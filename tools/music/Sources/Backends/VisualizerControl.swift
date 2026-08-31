@@ -5,7 +5,8 @@
 // permission. Turning the visualizer ON brings Music to the front — inherent,
 // the visualization renders in Music's own window.
 //
-// NB: the Accessibility-error translation here mirrors EQControl's eqUIRun.
+// NB: the Accessibility-error translation is NOT duplicated here any more; it
+// lives once in runMusicUIScript (MusicUIScripting.swift).
 // Kept local to avoid refactoring shipped EQ code; fold into a shared helper
 // if a third UI-scripted feature lands.
 import Foundation
@@ -22,6 +23,9 @@ func parseVisualizerMark(_ raw: String) -> Bool {
     raw.trimmingCharacters(in: .whitespacesAndNewlines) == "\u{2713}"
 }
 
+/// Runs a Music-process UI script. The denial translation lives in
+/// `runMusicUIScript`; this wrapper exists only to apply the System Events
+/// wrapping and the visualizer's own hint.
 private func visualizerUIRun(_ backend: AppleScriptBackend, _ body: String) throws -> String {
     let script = """
         tell application "System Events"
@@ -30,15 +34,7 @@ private func visualizerUIRun(_ backend: AppleScriptBackend, _ body: String) thro
             end tell
         end tell
         """
-    do {
-        return try syncRun { try await backend.run(script) }
-    } catch let error as AppleScriptBackend.ScriptError {
-        if case .executionFailed(let msg) = error,
-           msg.contains("assistive") || msg.contains("-1719") || msg.contains("-25211") {
-            throw AppleScriptBackend.ScriptError.executionFailed(visualizerAccessibilityHint)
-        }
-        throw error
-    }
+    return try runMusicUIScript(backend, script, hint: visualizerAccessibilityHint)
 }
 
 func visualizerStatus(_ backend: AppleScriptBackend) throws -> Bool {

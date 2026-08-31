@@ -21,6 +21,24 @@ func addIndexRoute(origin: SongOrigin, catalogId: String, hasTargets: Bool) -> A
     }
 }
 
+/// Parse the two-field current-track payload
+/// (`name & ASCII 31 & artist`) that `add --to` reads over AppleScript.
+///
+/// nil means the read did not produce a usable track, and the caller must
+/// refuse rather than continue. The old inline version was
+/// `if parts.count >= 2 { ... }` with no else, so a malformed read left both
+/// fields nil, skipped every downstream branch, and exited 0 having added
+/// nothing and said nothing.
+///
+/// `split` omits empty subsequences, so a separator with a missing side
+/// ("Title" plus separator, or separator plus artist) yields one field and is
+/// correctly refused. Extra trailing fields are ignored rather than rejected.
+func parseCurrentTrackFields(_ raw: String) -> (title: String, artist: String)? {
+    let parts = raw.trimmingCharacters(in: .whitespacesAndNewlines).split(separator: asFieldSep)
+    guard parts.count >= 2 else { return nil }
+    return (title: String(parts[0]), artist: String(parts[1]))
+}
+
 struct Add: ParsableCommand {
     static let configuration = CommandConfiguration(abstract: "Search and add a track to your library, or add to a playlist.")
     @Argument(help: "Search query or result index") var query: [String] = []
@@ -112,11 +130,17 @@ struct Add: ParsableCommand {
             let result = try syncRun {
                 try await backend.runMusic("return name of current track & (ASCII character 31) & artist of current track")
             }
-            let parts = result.trimmingCharacters(in: .whitespacesAndNewlines).split(separator: asFieldSep)
-            if parts.count >= 2 {
-                trackTitle = String(parts[0])
-                trackArtist = String(parts[1])
+            guard let fields = parseCurrentTrackFields(result) else {
+                if json {
+                    print(OutputFormat(mode: .json).render(
+                        ["added": false, "error": "no current track"]))
+                } else {
+                    print("Couldn't read the current track, so there is nothing to add. Is anything playing?")
+                }
+                throw ExitCode.failure
             }
+            trackTitle = fields.title
+            trackArtist = fields.artist
         } else {
             print("Usage: music add <query>, music add <index>, or music add --to <playlist>")
             throw ExitCode.failure

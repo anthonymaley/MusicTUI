@@ -59,18 +59,11 @@ private func eqUIScript(_ body: String) -> String {
     """
 }
 
-/// Runs an Equalizer-window UI script, translating an assistive-access
-/// denial into an actionable message.
+/// Runs an Equalizer-window UI script. The denial translation lives in
+/// `runMusicUIScript`; this wrapper exists only to apply the Equalizer window's
+/// own script shape and hint.
 private func eqUIRun(_ backend: AppleScriptBackend, _ body: String) throws -> String {
-    do {
-        return try syncRun { try await backend.run(eqUIScript(body)) }
-    } catch let error as AppleScriptBackend.ScriptError {
-        if case .executionFailed(let msg) = error,
-           msg.contains("assistive") || msg.contains("-1719") || msg.contains("-25211") {
-            throw AppleScriptBackend.ScriptError.executionFailed(eqAccessibilityHint)
-        }
-        throw error
-    }
+    try runMusicUIScript(backend, eqUIScript(body), hint: eqAccessibilityHint)
 }
 
 // Read the window state ONLY if the Equalizer window is already open — never
