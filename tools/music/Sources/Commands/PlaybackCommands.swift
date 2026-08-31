@@ -434,10 +434,42 @@ struct Now: ParsableCommand {
     }
 }
 
-func showNowPlaying(json: Bool = false, waitForPlay: Bool = false) {
-    let backend = AppleScriptBackend()
-    let stoppedCheck = waitForPlay ? """
-                    if state is "stopped" then
+/// The one player state that means a play has actually landed.
+///
+/// Single-sourced deliberately: the guard that runs is AppleScript, so
+/// `nowPlayingShouldWait` below cannot be the live code path, and a second
+/// copy of this string in the generated script is exactly how the two would
+/// drift. `testGeneratedGuardKeysOnTheSameReadyStateAsThePredicate` pins them
+/// together.
+let nowPlayingReadyState = "playing"
+
+/// Whether a `now` read should retry instead of reporting what it just saw.
+///
+/// Only when we are waiting for a play we just issued. The old guard waited
+/// out `stopped` alone, which left a real window open: measured 2026-08-30
+/// across four runs, a play issued from PAUSED reads back as
+/// `paused | <old track>` before it becomes `stopped | <new track>` and then
+/// `playing | <new track>`. So the outgoing track was printed as though the
+/// new one had started. Anything that is not `playing` is still in flight.
+///
+/// Deliberately NOT keyed on the track identity: `playing` never appeared next
+/// to a stale track in any run, and an identity check would spin for the full
+/// timeout on `music play` with no arguments, where resuming keeps the same
+/// track by definition.
+func nowPlayingShouldWait(state: String, waitForPlay: Bool) -> Bool {
+    guard waitForPlay else { return false }
+    return state != nowPlayingReadyState
+}
+
+/// The state guard emitted into the read loop.
+///
+/// Waiting form: throw back into the surrounding `repeat`, which retries on its
+/// existing bound (10 attempts, 0.3s apart) and falls through to "LOADING" if
+/// playback never lands. Non-waiting form is unchanged, and must NOT error, or
+/// `music now` would retry ten times on a stopped player instead of saying so.
+func nowPlayingStateGuard(waitForPlay: Bool) -> String {
+    waitForPlay ? """
+                    if state is not "\(nowPlayingReadyState)" then
                         error "waiting for playback"
                     end if
     """ : """
@@ -445,6 +477,11 @@ func showNowPlaying(json: Bool = false, waitForPlay: Bool = false) {
                         return "STOPPED"
                     end if
     """
+}
+
+func showNowPlaying(json: Bool = false, waitForPlay: Bool = false) {
+    let backend = AppleScriptBackend()
+    let stateGuard = nowPlayingStateGuard(waitForPlay: waitForPlay)
     // Device enumeration happens ONCE after the track info succeeds — it used
     // to run inside every iteration of the retry loop, multiplying the
     // known-slow AirPlay probe by up to 10 after every playback command. The
@@ -459,7 +496,7 @@ func showNowPlaying(json: Bool = false, waitForPlay: Bool = false) {
             repeat 10 times
                 try
                     set state to player state as text
-                    \(stoppedCheck)
+                    \(stateGuard)
                     set t to name of current track
                     set a to artist of current track
                     set al to album of current track
