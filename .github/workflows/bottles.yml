@@ -294,6 +294,10 @@ jobs:
           set -euo pipefail
           cd bottles
           ls -la
+          # Recorded because the block's alignment is produced by jq's string
+          # repetition; if a runner image ever changes jq, this is the first
+          # thing to check.
+          echo "jq: $(jq --version)"
 
           # Deterministic input order: sorted filenames, never arrival order.
           mapfile -t jsons < <(ls *.json | LC_ALL=C sort)
