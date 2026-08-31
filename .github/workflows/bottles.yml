@@ -1,8 +1,21 @@
 name: Bottles
 
 # Builds Homebrew bottles for a published release tag and, optionally, uploads
-# them to that release. Dispatch only: a tag-push trigger is deliberately not
-# wired until this dispatch path has run against a real release.
+# them to that release. Dispatch only, and it stays that way.
+#
+# A bare `push: tags` trigger is REJECTED by design, not merely deferred: a tag
+# exists before its GitHub release does, so a tag-triggered run can reach the
+# upload step with no release to upload to. If this is ever automated, drive it
+# from a published-release event or an orchestrating workflow that creates the
+# release first. The earlier note here said the trigger was "not wired until
+# this dispatch path has run against a real release"; that path ran with
+# v3.10.2, so the sentence had become an invitation to build the wrong thing.
+#
+# Bottle builds are NOT byte-reproducible: re-running this against the same tag
+# yields different sha256s (measured 2026-08-31, run 33439636446 against
+# v3.10.2). That is why the publish job has no --clobber, so a second publish
+# against an already-bottled tag fails loudly rather than replacing assets the
+# tap's digests still name.
 #
 # Build jobs are contents:read. Only the `publish` job can write to a release,
 # and it is skipped unless `publish` is true — so an artifacts-only run holds
