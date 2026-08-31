@@ -348,7 +348,21 @@ jobs:
             rebuild=$(jq -r '.rebuild' <<<"$merged")
             if [ "$rebuild" != "0" ]; then echo "    rebuild $rebuild"; fi
             cellar=$(jq -r '.cellar' <<<"$merged")
-            jq -r --arg cellar "$cellar" '.tags[] | "    sha256 cellar: :\($cellar), \(.tag): \"\(.sha256)\""' <<<"$merged"
+            # Digests are padded after each tag's colon so the block is
+            # audit-clean as emitted. `brew audit --strict` rejects unaligned
+            # digests ("Align bottle digests"), and `brew style --fix` pads
+            # BEFORE the tag instead, which audit then rejects as "Unnecessary
+            # spacing" - the two tools genuinely disagree and style is the one
+            # that is wrong here, so never run it on this formula. Width is the
+            # longest tag plus two, which leaves a single space after the
+            # longest tag and matches what shipped in v3.10.1 (one bottle) and
+            # v3.10.2 (three), both audited clean.
+            jq -r --arg cellar "$cellar" '
+              (.tags | map(.tag | length) | max) as $w
+              | .tags[]
+              | (.tag + ":") as $t
+              | "    sha256 cellar: :\($cellar), \($t)\(" " * ($w + 2 - ($t | length)))\"\(.sha256)\""
+            ' <<<"$merged"
             echo '  end'
             echo '```'
           } | tee -a "$GITHUB_STEP_SUMMARY" > block.md
