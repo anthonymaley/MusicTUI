@@ -43,4 +43,18 @@ final class WatcherLauncherTests: XCTestCase {
         }
         XCTAssertFalse(ok)
     }
+
+    /// A rejected uuid (containing "/") makes `writeAlbumManifest` throw. That
+    /// must be reported like any other spawn failure, and MUST NOT reach the
+    /// launcher: the child would have no manifest to read.
+    func testSpawnReportsFailureOnRejectedUUID() {
+        let many = Set((0...(albumWatcherInlineIDLimit + 1)).map { "ID\($0)" })
+        var launcherCalled = false
+        let ok = spawnAlbumWatcher(name: "__album__ bad — A", uuid: "bad/uuid", ids: many) { _, _ in
+            launcherCalled = true
+            return true
+        }
+        XCTAssertFalse(ok)
+        XCTAssertFalse(launcherCalled)
+    }
 }

@@ -44,7 +44,11 @@ func spawnAlbumWatcher(name: String,
                        uuid: String,
                        ids: Set<String>,
                        launch: ProcessLauncher = detachedLaunch) -> Bool {
-    guard let args = try? watcherArguments(name: name, uuid: uuid, ids: ids) else {
+    let args: [String]
+    do {
+        args = try watcherArguments(name: name, uuid: uuid, ids: ids)
+    } catch {
+        verbose("watcher args failed for \(name): \(error.localizedDescription)")
         return false
     }
     let me = URL(fileURLWithPath: CommandLine.arguments[0])
