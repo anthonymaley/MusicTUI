@@ -302,13 +302,19 @@ func playlistDeleteScript(name: String) -> String {
 ///
 /// Containers only: this script never names a track or a song, so it cannot
 /// reach a library row. A test pins that.
+///
+/// Unreadable player state fails toward sparing: if `player state` throws,
+/// `playerStateText` defaults to `unreadablePlayerStateFallback` (which is in
+/// `albumInUsePlayerStates`), so the container is spared. An Apple Event error
+/// is never treated as "not in use"; the conservative choice is to keep the
+/// container.
 func playlistCleanupScript() -> String {
     let inUse = albumInUsePlayerStates
         .map { "playerStateText is \"\($0)\"" }
         .joined(separator: " or ")
     return """
     set keepName to ""
-    set playerStateText to ""
+    set playerStateText to "\(unreadablePlayerStateFallback)"
     try
         set playerStateText to player state as text
     end try

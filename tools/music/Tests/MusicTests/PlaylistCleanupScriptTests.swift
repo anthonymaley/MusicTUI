@@ -37,4 +37,20 @@ final class PlaylistCleanupScriptTests: XCTestCase {
     func testDiscoverSweepIsUnchangedAndStillCollectsPaused() {
         XCTAssertFalse(shouldSpareCurrentPlaylist(playerState: "paused"))
     }
+
+    /// If `player state` throws, the script defaults to `unreadablePlayerStateFallback`,
+    /// which must be an in-use state so the container is spared when a read fails.
+    func testUnreadablePlayerStateSpares() {
+        let s = playlistCleanupScript()
+        XCTAssertTrue(s.contains("\"\(unreadablePlayerStateFallback)\""),
+                      "script must initialise to unreadable fallback")
+    }
+
+    /// The default player state used when a read fails must itself be an in-use state,
+    /// or a throwing `player state` would delete containers that are actually playing.
+    /// This mirrors the check in DiscoverSweepTests.
+    func testTheUnreadableFallbackIsItselfAnInUseState() {
+        XCTAssertTrue(albumInUsePlayerStates.contains(unreadablePlayerStateFallback),
+                      "fallback must be in-use so a thrown read spares, not deletes")
+    }
 }
