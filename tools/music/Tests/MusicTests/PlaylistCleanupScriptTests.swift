@@ -53,4 +53,29 @@ final class PlaylistCleanupScriptTests: XCTestCase {
         XCTAssertTrue(albumInUsePlayerStates.contains(unreadablePlayerStateFallback),
                       "fallback must be in-use so a thrown read spares, not deletes")
     }
+
+    /// When the player is in an in-use state but the context read throws,
+    /// the script must return 0 without deleting. We cannot identify which
+    /// container to spare, so we spare them all.
+    func testUnreadableContextAbortsTheSweep() {
+        let s = playlistCleanupScript()
+        XCTAssertTrue(s.contains("contextReadable"))
+        XCTAssertTrue(s.contains("set contextReadable to false"))
+        XCTAssertTrue(s.contains("if not contextReadable then return 0"),
+                      "must abort before the repeat loop if context is not readable")
+        // Verify the guard precedes the loop
+        let repeatIndex = s.range(of: "repeat with pp")?.lowerBound ?? s.startIndex
+        let guardIndex = s.range(of: "if not contextReadable then return 0")?.lowerBound ?? s.endIndex
+        XCTAssertTrue(guardIndex < repeatIndex, "guard must precede the repeat loop")
+    }
+
+    /// When the player is not in an in-use state, contextReadable stays true,
+    /// and the script proceeds to sweep normally without the context guard blocking it.
+    func testNotInUseStillSweeps() {
+        let s = playlistCleanupScript()
+        XCTAssertTrue(s.contains("set contextReadable to true"),
+                      "must initialise contextReadable true for not-in-use path")
+        // Verify the not-in-use case can reach the loop
+        XCTAssertTrue(s.contains("repeat with pp"), s)
+    }
 }

@@ -303,11 +303,34 @@ func playlistDeleteScript(name: String) -> String {
 /// Containers only: this script never names a track or a song, so it cannot
 /// reach a library row. A test pins that.
 ///
+/// Delete this app's temp containers, sparing one that is actually in use.
+///
+/// Same reference form as `playlistDeleteScript`: the old loop resolved each
+/// name back through `delete playlist p` and hit -1708.
+///
+/// The sparing rule is `albumInUsePlayerStates`, NOT `sweepablePlayerStates`.
+/// This command is user invoked, so a container the user is audibly listening to
+/// is spared whatever its prefix, including a PAUSED one. The automatic Discover
+/// sweep keeps the opposite rule on purpose: it must collect paused containers,
+/// because `current playlist` outlives a pause and one row leaked per paused
+/// play. Do not merge the two.
+///
+/// Containers only: this script never names a track or a song, so it cannot
+/// reach a library row. A test pins that.
+///
 /// Unreadable player state fails toward sparing: if `player state` throws,
 /// `playerStateText` defaults to `unreadablePlayerStateFallback` (which is in
 /// `albumInUsePlayerStates`), so the container is spared. An Apple Event error
 /// is never treated as "not in use"; the conservative choice is to keep the
 /// container.
+///
+/// An unreadable playlist context aborts the sweep: if the player is in an
+/// in-use state but `current playlist` throws, we cannot identify which
+/// container to spare. The script returns 0 without deleting. This conforms
+/// to design spec §6.1: a readable context is a precondition for collecting.
+/// An unreadable context is never grounds to collect, because leaving orphans
+/// is the cheap failure; deleting live playback is the expensive one. Genuine
+/// orphans are collected by the next album invocation or the next cleanup run.
 func playlistCleanupScript() -> String {
     let inUse = albumInUsePlayerStates
         .map { "playerStateText is \"\($0)\"" }
@@ -318,11 +341,15 @@ func playlistCleanupScript() -> String {
     try
         set playerStateText to player state as text
     end try
+    set contextReadable to true
     if \(inUse) then
+        set contextReadable to false
         try
             set keepName to name of current playlist
+            set contextReadable to true
         end try
     end if
+    if not contextReadable then return 0
     set deleted to 0
     repeat with pp in (every user playlist)
         try
