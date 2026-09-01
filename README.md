@@ -24,7 +24,7 @@ Control Apple Music, AirPlay speakers, and AirPods from the terminal. Multi-room
 
 ```bash
 music                              # the TUI
-music play --album "Kid A"         # play an album
+music play --album "Kid A"         # play an album (bounded; needs Autoplay off)
 music speaker kitchen 60           # route to a speaker, set its volume
 music search "deep house 2026"     # search the full catalog
 music eq Nightclub                 # venue EQ preset
@@ -155,7 +155,8 @@ chmod 600 ~/.config/music/config.json ~/.config/music/user-token ~/.config/music
 | `music play 3` | Play result #3 from last search/playlist |
 | `music play "Gypsy Woman" "Tom Misch"` | Play a song by title + artist; falls back to catalog add if authenticated |
 | `music play "https://music.apple.com/...?...i=1581424482"` | Add/play a catalog song URL when authenticated |
-| `music play --album "Kid A" --artist "Radiohead"` | Explicit flags when the name could collide with a speaker |
+| `music play --album "Kid A" --artist "Radiohead"` | Explicit flags when the name could collide with a speaker; `music play "X"` also plays as bounded album if X resolves to an album |
+| | Album playback creates a temporary playlist visible in Music's sidebar and removes it when playback leaves. The album stops at its end only if Autoplay is off (see Autoplay callout below). |
 | `music pause` / `music skip` / `music back` / `music stop` | Transport from the terminal |
 | `music now` | What's playing (track, album, speakers) |
 | `music shuffle` / `music repeat off\|one\|all` | Shuffle and repeat modes |
@@ -370,7 +371,7 @@ Run bare `music` in a real terminal (not inside Claude Code; the TUI requires a 
 
 > **Turn off Music's Autoplay (∞).** Playlist track-selection and up/down navigation drive playback track-by-track and rely on a track *stopping* at its end. With Autoplay on, Music bleeds into the library between tracks. Disable it once in Music's Up Next panel (the ∞ button).
 >
-> This now applies to `music play --album` too. Album playback builds a temporary playlist so the album stops at its end instead of running on into your library, and a one shot background helper removes that playlist when playback leaves it. With Autoplay on, the album still plays, then Music continues into other music as it always has. A temporary playlist appears in your sidebar while the album plays and is removed afterwards. Your shuffle setting is left alone: with shuffle on, the album plays shuffled within itself. If a leftover temporary playlist is ever seen, `music playlist cleanup` collects it.
+> This now applies to `music play --album` and `music play "X"` when X resolves to an album. The album stops at its end only when Autoplay is off. Album playback builds a temporary playlist visible in your sidebar and a one shot background helper removes it when playback leaves. With Autoplay on, the album still plays, then Music continues into other music as it always has. Your shuffle setting is left alone: with shuffle on, the album plays shuffled within itself. If a leftover temporary playlist is ever seen, `music playlist cleanup` collects it.
 
 **Global keys** (work on every tab):
 

@@ -117,6 +117,8 @@ music radio list                   # favorite stations
 music radio play "bbc radio 1"     # play a favorite, or paste a station URL
 ```
 
+Album playback via `music play --album` or `music play "X"` when X resolves to an album is bounded as described in the interactive TUI section above, creating a temporary playlist visible in Music and needing Autoplay off for bounded behavior.
+
 Errors go to **stderr** (and `--json` mode emits an error object rather than corrupting the stream), so stdout stays clean for piping; previously-silent failures (a failed AirPlay route, a malformed config, dropped playlist indices) now print a `✗`/`⚠` line.
 
 ## Architecture

@@ -48,7 +48,8 @@ music play "Gypsy Woman" "Tom Misch"          # song + artist; catalog fallback 
 music play "https://music.apple.com/...?...i=1581424482" # catalog song URL; quote it in zsh
 music play --playlist "Working Vibes"         # explicit playlist flag
 music play "Gypsy Woman (Quarantine Sessions)" # play matching local Library album/song
-music play --album "Kid A" --artist "Radiohead" # explicit local Library album + artist
+music play --album "Kid A" --artist "Radiohead" # explicit local Library album + artist; also `music play "X"` when X resolves to an album
+                                                # creates temp playlist, bounded only when Autoplay off; see TUI Autoplay note
 music play --song "Get It Done" --artist "Fouk"  # search library + play
 music play --verbose                          # diagnostic output on stderr
 music pause
@@ -206,7 +207,7 @@ music playlist share "Playlist" --imessage "+1234567890"  # share via iMessage
 music playlist share "Playlist" --email "a@b.com"         # share via email
 music playlist temp "Song1" "Artist1" "Song2" "Artist2"   # temp playlist, play, cleanup later
 music playlist create-from "Song1" "Artist1" "Song2" "Artist2" --name "My Mix"  # create + populate
-music playlist cleanup                        # delete all __temp__ playlists
+music playlist cleanup                        # delete unused __temp__ and __album__ playlists; spares one in active playback
 ```
 
 ## Discovery (requires user token)
