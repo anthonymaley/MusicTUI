@@ -69,6 +69,30 @@ final class AlbumWatcherDecisionTests: XCTestCase {
         XCTAssertEqual(albumWatcherDecision(o), .spare)
     }
 
+    /// Context-only branch coverage: identity unreadable, context readable and
+    /// matching. macOS 26 throws -1728 on `persistent id` for some tracks, making
+    /// this a real case.
+    func testSparesWhenIdentityUnreadableButContextMatchesContainer() {
+        let o = observe(state: "playing", context: "__album__ U — Moon Safari", currentID: nil)
+        XCTAssertEqual(albumWatcherDecision(o), .spare)
+    }
+
+    /// Context-only branch coverage: identity unreadable, context readable and
+    /// not matching. This is the signal that playback moved away.
+    func testCollectsWhenIdentityUnreadableButContextMovedElsewhere() {
+        let o = observe(state: "playing", context: "House", currentID: nil)
+        XCTAssertEqual(albumWatcherDecision(o), .collect)
+    }
+
+    /// Identity is more reliable than context (§6.1). Even if context still
+    /// matches the container, a readable identity outside the set means playback
+    /// has moved away and the container should be collected. This is intentional
+    /// spec behaviour.
+    func testCollectsWhenIdentityOutsideTheSetEvenIfContextMatches() {
+        let o = observe(state: "playing", context: "__album__ U — Moon Safari", currentID: "OUTSIDE")
+        XCTAssertEqual(albumWatcherDecision(o), .collect)
+    }
+
     func testConstantsAreOrderedSensibly() {
         XCTAssertLessThan(albumWatcherPollInterval, albumWatcherArmTimeout)
         XCTAssertLessThan(albumWatcherArmTimeout, albumWatcherMaxLifetime)
