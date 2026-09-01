@@ -12,7 +12,7 @@ struct NowPlayingSnapshot {
     var artLines: [String] = []            // current track album art, rendered
     var artPath: String? = nil             // current track album art, raw file (kitty path; nil when unset/cleared)
     var queueEnded: Bool = false           // show the continuation card menu
-    var endedPlaylist: String = ""         // playlist that just ended
+    var endedSource: ContinuationSource? = nil  // what just ended, label and source kept apart
     var endedTrack: String = ""            // last context track title (seed for Radio/Similar)
     var endedArtist: String = ""           // last context track artist
     var endedArtLines: [String] = []       // last context track album art (captured at detection)

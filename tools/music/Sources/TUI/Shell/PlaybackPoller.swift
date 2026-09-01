@@ -57,7 +57,7 @@ final class PlaybackPoller {
     private var artLinesKey = ""
     private var lastContext: ContextQueue? = nil
     private var qEnded = false
-    private var endedPlaylist = ""
+    private var endedSource: ContinuationSource? = nil
     private var endedTrack = ""
     private var endedArtist = ""
     private var endedArtLines: [String] = []
@@ -230,7 +230,7 @@ final class PlaybackPoller {
         NowPlayingSnapshot(
             outcome: outcome, history: history, surrounding: surrounding,
             contextName: contextName, artLines: artLines, artPath: artPath,
-            queueEnded: qEnded, endedPlaylist: endedPlaylist,
+            queueEnded: qEnded, endedSource: endedSource,
             endedTrack: endedTrack, endedArtist: endedArtist, endedArtLines: endedArtLines)
     }
 
@@ -351,7 +351,7 @@ final class PlaybackPoller {
                     nowIsLibraryAutoplay: isLibraryContextName(contextName))
                 if fired {
                     qEnded = true
-                    endedPlaylist = prevCtx?.name ?? ""
+                    endedSource = prevCtx.map { .playlist($0.name) }
                     endedTrack = prevTrack
                     endedArtist = prevArtist
                     endedArtLines = prevArt
@@ -413,7 +413,10 @@ final class PlaybackPoller {
                 // Reached the end of the app-owned queue — surface the continuation menu.
                 if !qEnded {
                     qEnded = true
-                    endedPlaylist = appQueue.read()?.playlistName ?? contextName
+                    // Classify by source addressability: a library-sourced album/artist
+                    // queue is bounded to its own tracks and must never be shuffled by name.
+                    endedSource = appQueue.read().map(continuationSource(for:))
+                        ?? .playlist(contextName)
                     endedTrack = lastTrack
                     endedArtist = lastArtist
                     endedArtLines = artLines
@@ -436,7 +439,7 @@ final class PlaybackPoller {
                !isLibraryContextName(ctx.name), !ctx.name.isEmpty,
                ctx.total > 0, ctx.currentIndex >= ctx.total {
                 qEnded = true
-                endedPlaylist = ctx.name
+                endedSource = .playlist(ctx.name)
                 endedTrack = lastTrack
                 endedArtist = lastArtist
                 endedArtLines = artLines

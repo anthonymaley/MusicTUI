@@ -81,7 +81,7 @@ final class NowPlayingScene: Scene {
     private var menuShownLastFrame = false
     private var pendingSeedTitle = ""
     private var pendingSeedArtist = ""
-    private var pendingPlaylist = ""         // context/ended playlist, for the Shuffle action
+    private var pendingSource: ContinuationSource? = nil  // what ended, for the Shuffle action
     private var pendingFromStopped = false   // menu opened from an auto queue-end (playback stopped)
     private var wantsPlaylists = false
     private var contextNameNow = ""          // cleaned context name from the latest snapshot
@@ -214,11 +214,13 @@ final class NowPlayingScene: Scene {
         if snapshot.queueEnded {
             pendingSeedTitle = snapshot.endedTrack
             pendingSeedArtist = snapshot.endedArtist
-            pendingPlaylist = snapshot.endedPlaylist
+            pendingSource = snapshot.endedSource
         } else if case .active(let np) = snapshot.outcome {
             pendingSeedTitle = np.track
             pendingSeedArtist = np.artist
-            pendingPlaylist = cleanContextName(snapshot.contextName)
+            // Not ended: resolved lazily in `continuationSource()` so `tick` never
+            // copies the queue's track array once per frame.
+            pendingSource = nil
         }
         rows = snapshot.surrounding
         contextNameNow = cleanContextName(snapshot.contextName)
@@ -559,7 +561,10 @@ final class NowPlayingScene: Scene {
         }
         let lx = 3
         var ly = artTop + artRows + 1
-        let shuffleTarget = pendingPlaylist.isEmpty ? seedTitle : pendingPlaylist
+        // The label is the queue's human-facing name ("Moon Safari"), never its
+        // addressable source ("Library") — that distinction is the whole point
+        // of ContinuationSource.
+        let shuffleTarget = continuationSourceNow()?.label ?? seedTitle
         let opts: [(String, String)] = [
             ("[S]", "Shuffle  \(ANSICode.dim)\(truncText(shuffleTarget, to: 28))\(ANSICode.reset)"),
             ("[P]", "Playlist  \(ANSICode.dim)browse\(ANSICode.reset)"),
@@ -572,20 +577,40 @@ final class NowPlayingScene: Scene {
         return out
     }
 
+    /// What the continuation menu is offering right now.
+    ///
+    /// At queue-end the poller has already classified it (the app queue is
+    /// cleared immediately after, so it cannot be recovered later). Otherwise
+    /// resolve from the live queue, falling back to the raw context name.
+    private func continuationSourceNow() -> ContinuationSource? {
+        if let ended = pendingSource { return ended }
+        if let q = appQueue.read() { return continuationSource(for: q) }
+        let ctx = contextNameNow
+        return ctx.isEmpty ? nil : .playlist(ctx)
+    }
+
     private func act(on action: ContinuationAction) {
         switch action {
         case .shuffle:
-            // Replay the just-played playlist shuffled, via the app-owned queue.
-            // Falls back to shuffling whatever's playing if there's no playlist name.
-            // On the action queue: shufflePlayPlaylist bulk-fetches the whole
-            // playlist, which must not stall the input loop.
-            let playlist = pendingPlaylist
+            // A bounded album/artist queue shuffles the tracks it already holds:
+            // its source is the library, and `play playlist "Library"` is 14k
+            // tracks, not the album that just ended. A real playlist still
+            // shuffles by name through the existing bulk-fetch path, which must
+            // stay off the input loop.
+            let source = continuationSourceNow()
             let backend = self.backend
             let appQueue = self.appQueue
             actions.run("Shuffle") {
-                let ok = playlist.isEmpty
-                    ? shufflePlayCurrent(backend: backend, appQueue: appQueue)
-                    : shufflePlayPlaylist(backend: backend, appQueue: appQueue, playlist: playlist)
+                let ok: Bool
+                switch source {
+                case .bounded(let label, let src, let tracks):
+                    ok = shufflePlayBounded(backend: backend, appQueue: appQueue,
+                                            label: label, source: src, tracks: tracks)
+                case .playlist(let name):
+                    ok = shufflePlayPlaylist(backend: backend, appQueue: appQueue, playlist: name)
+                case nil:
+                    ok = shufflePlayCurrent(backend: backend, appQueue: appQueue)
+                }
                 try require(ok, "Shuffle failed.")
             }
         case .playlist:
