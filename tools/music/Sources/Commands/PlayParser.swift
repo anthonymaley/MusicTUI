@@ -98,3 +98,17 @@ func albumArtistFilter(artist: String?) -> String {
     let esc = escapeAppleScriptString(artist)
     return " and (artist contains \"\(esc)\" or album artist contains \"\(esc)\")"
 }
+
+/// The single album lookup clause, used by BOTH album-intent routes (the
+/// `--album` flag and the positional `playlistAlbumSong` fallback).
+///
+/// Extracted so the two routes cannot diverge: previously `--album` appended
+/// `albumArtistFilter` while the positional route hardcoded a bare clause and
+/// never called it, so they agreed only because positional strategies happen
+/// never to carry an artist. That was an accident of the parser, not a
+/// property of this code. Anything that changes album matching — escaping,
+/// normalisation, wiring an artist into the positional path — now changes it
+/// once, for both.
+func albumWhereClause(query: String, artist: String?) -> String {
+    "album contains \"\(escapeAppleScriptString(query))\"\(albumArtistFilter(artist: artist))"
+}

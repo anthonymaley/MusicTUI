@@ -35,11 +35,9 @@ struct Play: ParsableCommand {
             // bounded `play playlist` form, then let a detached one shot watcher
             // remove the container. Fail closed: no fallback to the unbounded
             // `play track N of playlist "Library"` this replaces.
-            let artistFilter = albumArtistFilter(artist: artist)
-            let escAlbum = escapeAppleScriptString(album)
             let rows = fetchLibraryAlbumRows(
                 backend: backend,
-                whereClause: "album contains \"\(escAlbum)\"\(artistFilter)")
+                whereClause: albumWhereClause(query: album, artist: artist))
             let outcome = playBoundedAlbum(title: album, rows: rows) { script in
                 try? syncRun { try await backend.runMusic(script) }
             }
@@ -202,6 +200,10 @@ struct Play: ParsableCommand {
                         // album outcome gets the bounded container. Precedence
                         // is unchanged: playlist, then album, then song.
                         let escapedQuery = escapeAppleScriptString(query)
+                        // `try?`: a genuine AppleScript failure here degrades to
+                        // the generic not-found message rather than surfacing a
+                        // distinct error, consistent with the other resolution
+                        // helpers in this file.
                         let playlistResult = try? syncRun {
                             try await backend.runMusic("""
                                 try
@@ -217,7 +219,7 @@ struct Play: ParsableCommand {
 
                         let albumRows = playlistPlayed ? [] : fetchLibraryAlbumRows(
                             backend: backend,
-                            whereClause: "album contains \"\(escapedQuery)\"")
+                            whereClause: albumWhereClause(query: query, artist: nil))
 
                         switch positionalRoute(playlistPlayed: playlistPlayed,
                                                albumRowCount: albumRows.count) {
