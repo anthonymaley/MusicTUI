@@ -40,6 +40,8 @@ struct Music: ParsableCommand {
             Mix.self,
             Recent.self,
             Rotation.self,
+            // Internal
+            WatchContainer.self,
         ],
         defaultSubcommand: Now.self
     )
