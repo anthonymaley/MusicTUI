@@ -416,6 +416,13 @@ playlist` and stepping to the end each time.
 | `play track N of playlist "X"` | `Music` | queue is library rooted and continues into unrelated artists |
 | `play playlist "X"`, then `play track N of playlist "X"` | `Music` | worse, `next track` becomes a permanent no op |
 
+**Correction, 2026-09-01: the third column is Autoplay conditional and this
+table does not say so.** The Autoplay setting was not recorded when these runs
+were made, and it decides what happens at the end of a queue. Read the next
+section before relying on any "stops" or "continues" claim above. The middle
+column is not conditional: the collapse of `current playlist` to `Music` was
+reproduced with Autoplay both on and off.
+
 The second form reads like a scoped play and is not one. It is a track play
 command that happens to name a playlist: Music.app plays the song, discards the
 playlist as context, and roots the queue in the library. The first form
@@ -435,6 +442,60 @@ to ship it. `play playlist "X"`, then `pause`, then `next track` repeated, then
 silently. It costs one Apple Event per step, it has only been verified for
 sequential non shuffled playback, and on a setup where transport control travels
 over AirPlay that is a lot of control traffic to start one song.
+
+## Autoplay decides whether a bounded play stays bounded
+
+Measured 2026-09-01 on macOS 26.x, one machine. The container was a throwaway
+playlist of two local library tracks, 23.8s and 35.7s, 59.5s in total, built by
+duplicating existing rows rather than adding anything. Shuffle was off and
+repeat was off for every run, read back from `shuffle enabled` and `song repeat`
+immediately before each play. **The playing process exited before any
+observation was taken:** the play was one `osascript` invocation and every
+reading came from a separate short lived invocation afterwards, so nothing of
+the tool was resident while the queue ran.
+
+| Autoplay | Context while playing | At the container's end |
+|---|---|---|
+| off | container name held, across the internal track advance | playback stopped, `current playlist` threw, still stopped 20s later |
+| on | container name held, across the internal track advance | playback continued into a track that was not in the container, `current playlist` threw |
+
+State was polled every 5 seconds. Audio began at about t+5 in both runs. With
+Autoplay off the stop landed between t+60 and t+65 against a 59.5s container,
+and the player was watched to t+85 without moving. With Autoplay on the
+unrequested track was already playing at t+65 and was still playing at t+90.
+
+**Control, so that the toggle is measured rather than assumed.** The same
+conditional split appeared on `play track N of playlist "Library"`: with
+Autoplay off it played the one track and stopped, between t+25 and t+30 on a
+23.8s track and watched to t+45; with Autoplay on the identical call continued
+into an unrequested track. `current playlist` read `Music` while the requested
+track played and threw once Autoplay had taken over. This control is scoped to
+`playlist "Library"` as the source. The 2026-08-27 table above used a temp
+playlist as the source and was not re-measured, so its end of queue claim is
+flagged rather than rewritten.
+
+Library state was unchanged across all runs: 14,251 tracks before and after,
+user playlists returned to their starting count once the container was deleted
+by exact name, and both seed tracks remained in the library exactly once.
+`duplicate` into a playlist adds no library rows.
+
+**Autoplay is absent from the scripting interface and from preferences.** The
+string does not appear anywhere in Music.app's `sdef` output, a 608 line dump
+that contains `shuffle enabled` in the same read, and no autoplay, infinite or
+up next key exists in `com.apple.Music` defaults. Reading it through the
+accessibility API failed with "osascript is not allowed assistive access". So an
+application cannot read this setting, cannot set it, and cannot verify it before
+depending on it. The only control is the infinity button in Music's own Up Next
+panel, which the user has to click. Anything that requires Autoplay off can
+document the prerequisite, and that is all it can do.
+
+The consequence for tool design is worth stating plainly. A temporary playlist
+played with `play playlist` is bounded, but conditionally. Building a scoped
+command line album play on that form would fix the end of album wander only for
+users who have already turned Autoplay off, and the tool cannot detect the users
+for whom it will not work, nor warn them. That makes it a product boundary
+question rather than an implementation detail. It is recorded here without being
+answered.
 
 ## The REST library and the AppleScript library are the same library
 
