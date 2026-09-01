@@ -189,7 +189,7 @@ func sweepDiscoverPlaylists(backend: AppleScriptBackend) {
 /// rail and stripped from Now Playing, so the user never sees the plumbing.
 /// A list rather than a constant: a third temp kind should be a one-line change,
 /// not a third copy of the same two call sites.
-let tempPlaylistPrefixes = ["__queue__ ", discoverPlaylistPrefix]
+let tempPlaylistPrefixes = ["__queue__ ", discoverPlaylistPrefix, albumPlaylistPrefix]
 
 func isTempPlaylistName(_ name: String) -> Bool {
     tempPlaylistPrefixes.contains { name.hasPrefix($0) }
