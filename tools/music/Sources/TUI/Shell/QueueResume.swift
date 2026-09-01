@@ -3,6 +3,12 @@
 // Queue resume-across-restart. SAVE is wired into PlaybackPoller.syncQueuePersistence
 // (the one choke point that sees every queue mutation); RESTORE is wired into
 // Shell.runShell() via restoreQueueOnLaunch, called once before poller.start().
+//
+// Restore is v2-lite since 2026-08-31: it adopts when the playing track is the
+// saved current track OR within `queueResumeForwardScan` positions after it, so
+// a track ending during the quit-relaunch gap no longer discards the queue. The
+// forward half matches on name+artist alone and discards on ambiguity; see
+// `resumePosition` for why that asymmetry exists and why it is the safe side.
 import Foundation
 
 /// The on-disk shape of a saved queue: the whole in-memory `AppQueue`, verbatim,
@@ -149,20 +155,80 @@ enum QueueRestoreDecision: Equatable {
     case doNothing
 }
 
+/// How far past the saved current position a restore will look.
+///
+/// Three is a SAFETY bound, not a cost one. Identity at forward positions is
+/// name+artist only, because `TrackListEntry` carries no persistent ID, so a
+/// wider window raises the chance of a duplicate collision the scan cannot
+/// resolve and must therefore discard on. Widening this without giving entries
+/// a persistent ID trades a rare recovered queue for a rarer wrong one.
+let queueResumeForwardScan = 3
+
+/// Where the playing track actually sits in the saved queue, if that can be
+/// said unambiguously. Returns a 1-based position in `saved.queue.tracks` — an
+/// index into the PLAY ORDER, not a source-playlist position. The source
+/// position for `play track N of playlist X` is that entry's own `.index`, and
+/// the two differ once a queue is shuffled.
+///
+/// v1 adopted only when the playing track was still the saved current track, so
+/// a single track ending during the quit-relaunch gap discarded the queue. This
+/// keeps that check first and unchanged — the persistent ID is authoritative at
+/// `currentIndex` — and only then looks ahead.
+///
+/// The forward scan is deliberately weaker than the check it extends, and this
+/// is the crux of v2-lite: forward entries have no persistent ID to compare, so
+/// they match on name+artist alone. **Ambiguity therefore discards.** If more
+/// than one position in the window matches, returning any of them risks putting
+/// `currentSourcePosition` on the wrong entry, and the next auto-advance would
+/// play the wrong song. Losing the queue is the cheaper failure. Ambiguity is
+/// the name+artist PAIR, never the title alone — a compilation repeating a title
+/// under different artists stays resolvable.
+///
+/// Backward movement is out of scope: a queue that went back discards, as it
+/// did in v1. Pure — no I/O.
+func resumePosition(playingPersistentID: String?, playingName: String, playingArtist: String,
+                    saved: PersistedQueue) -> Int? {
+    let q = saved.queue
+    guard q.currentIndex >= 1, q.currentIndex <= q.tracks.count else { return nil }
+
+    // v1 semantics, untouched: ID wins here when both sides have one.
+    if queueMatches(playingPersistentID: playingPersistentID, playingName: playingName,
+                    playingArtist: playingArtist, saved: saved) {
+        return q.currentIndex
+    }
+
+    var candidates: [Int] = []
+    for offset in 1...queueResumeForwardScan {
+        let pos = q.currentIndex + offset
+        guard pos <= q.tracks.count else { break }
+        let e = q.tracks[pos - 1]
+        if namesMatch(playingName, e.name) && namesMatch(playingArtist, e.artist) {
+            candidates.append(pos)
+        }
+    }
+    return candidates.count == 1 ? candidates[0] : nil
+}
+
 /// Pure: given what was saved and one live read of the playing track, decide
 /// whether to adopt the saved queue, discard it, or do nothing (nothing was
 /// saved to begin with). A stopped player always discards — there's nothing
-/// to resume onto — before `queueMatches` is even consulted. Pure — no I/O.
+/// to resume onto — before any matching is consulted. Otherwise `resumePosition`
+/// decides where in the saved queue the playing track is, and the adopted queue
+/// carries that as its `currentIndex`; everything else is the saved queue
+/// verbatim. Pure — no I/O.
 func decideQueueRestore(saved: PersistedQueue?, playerStopped: Bool,
                          playingPersistentID: String?, playingName: String,
                          playingArtist: String) -> QueueRestoreDecision {
     guard let saved else { return .doNothing }
     if playerStopped { return .discard }
-    if queueMatches(playingPersistentID: playingPersistentID, playingName: playingName,
-                     playingArtist: playingArtist, saved: saved) {
-        return .adopt(saved.queue)
-    }
-    return .discard
+    guard let pos = resumePosition(playingPersistentID: playingPersistentID,
+                                   playingName: playingName, playingArtist: playingArtist,
+                                   saved: saved) else { return .discard }
+    // Only the index moves; the play order and its source positions are the
+    // saved queue's, verbatim.
+    var q = saved.queue
+    q.currentIndex = pos
+    return .adopt(q)
 }
 
 /// Startup restore, called once from `runShell()` before `poller.start()`.
