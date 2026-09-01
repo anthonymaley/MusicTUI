@@ -11,25 +11,48 @@ final class BoundedAlbumPlayTests: XCTestCase {
         }
     }
 
+    /// Pull the ids passed to `--ids` out of a watcher argument list, the same
+    /// way `watcherArguments` builds them: sorted, comma joined.
+    private func idsArgument(_ args: [String]) -> String? {
+        guard let i = args.firstIndex(of: "--ids"), i + 1 < args.count else { return nil }
+        return args[i + 1]
+    }
+
     /// Happy path: build, capture ids, play, spawn. No shuffle write anywhere.
+    ///
+    /// `containerTrackIDsScript` contains BOTH "count of tracks" and
+    /// "persistent ID of every track" (it counts before it reads), so the
+    /// mock must key on the unambiguous "set ids to persistent ID" — a
+    /// substring unique to the ids script — checked before the count check,
+    /// or the count branch swallows the ids call and the watcher gets a
+    /// bogus one-element id set with nobody noticing.
     func testPlaysAndSpawnsWatcherWithoutTouchingShuffle() {
         var scripts: [String] = []
         var spawned = false
+        var launchedArgs: [String]?
         let out = playBoundedAlbum(title: "Moon Safari", rows: rows(3), uuid: "U",
                                    run: { s in
                                        scripts.append(s)
-                                       if s.contains("count of tracks") { return "3" }
-                                       if s.contains("persistent ID of every track") {
+                                       if s.contains("set ids to persistent ID") {
                                            return "A\u{1F}B\u{1F}C"
                                        }
+                                       if s.contains("count of tracks") { return "3" }
                                        return ""
                                    },
-                                   launch: { _, _ in spawned = true; return true })
+                                   launch: { _, args in
+                                       spawned = true
+                                       launchedArgs = args
+                                       return true
+                                   })
         XCTAssertEqual(out, .playing)
         XCTAssertTrue(spawned)
         XCTAssertTrue(scripts.contains { $0.contains("play playlist") })
         XCTAssertFalse(scripts.contains { $0.contains("shuffle enabled") },
                        "the user's shuffle setting must never be written")
+        // Positive proof the ids reaching the watcher are the ones parsed
+        // from the CONTAINER's read, not something else (e.g. the bogus
+        // count-string collision above).
+        XCTAssertEqual(idsArgument(launchedArgs ?? []), "A,B,C")
     }
 
     func testNoPlayableTracksPlaysNothing() {
@@ -90,8 +113,8 @@ final class BoundedAlbumPlayTests: XCTestCase {
         let out = playBoundedAlbum(title: "X", rows: rows(2), uuid: "U",
                                    run: { s in
                                        scripts.append(s)
+                                       if s.contains("set ids to persistent ID") { return "A\u{1F}B" }
                                        if s.contains("count of tracks") { return "2" }
-                                       if s.contains("persistent ID of every track") { return "A\u{1F}B" }
                                        if s.contains("play playlist") { return nil }
                                        return ""
                                    },
@@ -107,8 +130,8 @@ final class BoundedAlbumPlayTests: XCTestCase {
         let out = playBoundedAlbum(title: "X", rows: rows(2), uuid: "U",
                                    run: { s in
                                        scripts.append(s)
+                                       if s.contains("set ids to persistent ID") { return "A\u{1F}B" }
                                        if s.contains("count of tracks") { return "2" }
-                                       if s.contains("persistent ID of every track") { return "A\u{1F}B" }
                                        if s.contains("play playlist") { return nil }
                                        if s.contains("every user playlist whose name is") { return nil }
                                        return ""
@@ -121,18 +144,22 @@ final class BoundedAlbumPlayTests: XCTestCase {
     /// must also stop the audio it started.
     func testWatcherLaunchFailurePausesAndDeletes() {
         var scripts: [String] = []
+        var launchedArgs: [String]?
         let out = playBoundedAlbum(title: "X", rows: rows(2), uuid: "U",
                                    run: { s in
                                        scripts.append(s)
+                                       if s.contains("set ids to persistent ID") { return "A\u{1F}B" }
                                        if s.contains("count of tracks") { return "2" }
-                                       if s.contains("persistent ID of every track") { return "A\u{1F}B" }
                                        return ""
                                    },
-                                   launch: { _, _ in false })
+                                   launch: { _, args in launchedArgs = args; return false })
         XCTAssertEqual(out, .watcherFailed(containerRemoved: true))
         XCTAssertTrue(scripts.contains { $0.trimmingCharacters(in: .whitespaces) == "pause" },
                       "must pause the audio it started")
         XCTAssertTrue(scripts.last!.contains("every user playlist whose name is"))
+        // The launcher is invoked (and its args built from the parsed
+        // container ids) even though it reports failure here.
+        XCTAssertEqual(idsArgument(launchedArgs ?? []), "A,B")
     }
 
     /// Watcher spawn fails, and the rollback delete for that failure ALSO
@@ -140,16 +167,18 @@ final class BoundedAlbumPlayTests: XCTestCase {
     /// told the container was not removed.
     func testWatcherFailureWhoseRollbackAlsoFailsReportsContainerNotRemoved() {
         var scripts: [String] = []
+        var launchedArgs: [String]?
         let out = playBoundedAlbum(title: "X", rows: rows(2), uuid: "U",
                                    run: { s in
                                        scripts.append(s)
+                                       if s.contains("set ids to persistent ID") { return "A\u{1F}B" }
                                        if s.contains("count of tracks") { return "2" }
-                                       if s.contains("persistent ID of every track") { return "A\u{1F}B" }
                                        if s.contains("every user playlist whose name is") { return nil }
                                        return ""
                                    },
-                                   launch: { _, _ in false })
+                                   launch: { _, args in launchedArgs = args; return false })
         XCTAssertEqual(out, .watcherFailed(containerRemoved: false))
         XCTAssertTrue(scripts.contains { $0.trimmingCharacters(in: .whitespaces) == "pause" })
+        XCTAssertEqual(idsArgument(launchedArgs ?? []), "A,B")
     }
 }

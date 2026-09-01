@@ -60,7 +60,16 @@ func playBoundedAlbum(title: String,
     }
 
     // Read identity from the container itself, before playing.
-    let ids = parseContainerTrackIDs(run(containerTrackIDsScript(name: name)) ?? "")
+    let idsRaw = run(containerTrackIDsScript(name: name))
+    if idsRaw == nil {
+        // A genuine AppleScript failure, not "no tracks". Safe to continue:
+        // since Task 6 an empty id set makes the watcher run context-only
+        // rather than delete, but that degradation happens silently in a
+        // subsystem whose stdout/stderr both go to /dev/null, so it is worth
+        // a diagnostic even though the control flow does not change.
+        verbose("album container \(name): could not read track ids; watcher will run context-only")
+    }
+    let ids = parseContainerTrackIDs(idsRaw ?? "")
 
     let esc = escapeAppleScriptString(name)
     guard run("play playlist \"\(esc)\"") != nil else {
