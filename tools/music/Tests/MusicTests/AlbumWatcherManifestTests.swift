@@ -41,6 +41,11 @@ final class AlbumWatcherManifestTests: XCTestCase {
 
         let dir = (path as NSString).deletingLastPathComponent
 
+        // Restore on EVERY exit path: this directory holds real credentials
+        // (AuthKey.p8, config.json, user-token). A failing assertion must not
+        // leave them world-readable.
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: dir) }
+
         // Deliberately loosen the directory
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: dir)
 
