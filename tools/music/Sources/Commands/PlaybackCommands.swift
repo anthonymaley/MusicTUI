@@ -198,28 +198,53 @@ struct Play: ParsableCommand {
                 for strategy in strategies {
                     switch strategy {
                     case .playlistAlbumSong(let query):
+                        // Resolution is separated from playback so only the
+                        // album outcome gets the bounded container. Precedence
+                        // is unchanged: playlist, then album, then song.
                         let escapedQuery = escapeAppleScriptString(query)
-                        let result = try syncRun {
+                        let playlistResult = try? syncRun {
                             try await backend.runMusic("""
                                 try
                                     play playlist "\(escapedQuery)"
-                                    return "PLAYLIST"
+                                    return "PLAYED"
                                 on error
-                                    set albumMatches to (every track of playlist "Library" whose album contains "\(escapedQuery)")
-                                    if (count of albumMatches) > 0 then
-                                        play item 1 of albumMatches
-                                        return "ALBUM"
-                                    end if
-                                    set songMatches to (every track of playlist "Library" whose name contains "\(escapedQuery)")
-                                    if (count of songMatches) > 0 then
-                                        play item 1 of songMatches
-                                        return "SONG"
-                                    end if
-                                    return "NOT_FOUND"
+                                    return "NO_PLAYLIST"
                                 end try
                             """)
                         }
-                        played = result.trimmingCharacters(in: .whitespacesAndNewlines) != "NOT_FOUND"
+                        let playlistPlayed = (playlistResult?
+                            .trimmingCharacters(in: .whitespacesAndNewlines) == "PLAYED")
+
+                        let albumRows = playlistPlayed ? [] : fetchLibraryAlbumRows(
+                            backend: backend,
+                            whereClause: "album contains \"\(escapedQuery)\"")
+
+                        switch positionalRoute(playlistPlayed: playlistPlayed,
+                                               albumRowCount: albumRows.count) {
+                        case .playlistAlreadyPlaying:
+                            played = true
+                        case .boundedAlbum:
+                            // Starts at the first playable track in disc/track
+                            // order (via the shared bounded path), not at
+                            // "item 1 of albumMatches" (Library index order)
+                            // as the old inline script did. Intentional: this
+                            // is what makes positional match `--album`.
+                            let outcome = playBoundedAlbum(title: query, rows: albumRows) { s in
+                                try? syncRun { try await backend.runMusic(s) }
+                            }
+                            if let message = albumOutcomeMessage(outcome, title: query) {
+                                print(message)
+                                throw ExitCode.failure
+                            }
+                            played = true
+                        case .song:
+                            // playLocalSong applies the playability filter
+                            // (firstPlayablePosition), where the old inline
+                            // script played "item 1 of songMatches"
+                            // unconditionally — a prerelease/removed track is
+                            // now skipped rather than silently no-oping.
+                            played = try playLocalSong(backend: backend, title: query, artist: nil)
+                        }
                     case .songArtist(let title, let artist):
                         played = try playSongArtist(title: title, artist: artist)
                     }
