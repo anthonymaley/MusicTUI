@@ -369,6 +369,8 @@ Run bare `music` in a real terminal (not inside Claude Code; the TUI requires a 
 **Unified shell** (`music`): a tabbed interface with **Now**, **Discover**, **Library**, **Playlists**, **Radio**, and **Speakers** tabs. The Now tab shows a 3-column layout: album art, playback metadata, and a right pane. Select a playlist on the Playlists tab to pin it on the Now tab so you can browse and replay any track while playback continues.
 
 > **Turn off Music's Autoplay (∞).** Playlist track-selection and up/down navigation drive playback track-by-track and rely on a track *stopping* at its end. With Autoplay on, Music bleeds into the library between tracks. Disable it once in Music's Up Next panel (the ∞ button).
+>
+> This now applies to `music play --album` too. Album playback builds a temporary playlist so the album stops at its end instead of running on into your library, and a one shot background helper removes that playlist when playback leaves it. With Autoplay on, the album still plays, then Music continues into other music as it always has. A temporary playlist appears in your sidebar while the album plays and is removed afterwards. Your shuffle setting is left alone: with shuffle on, the album plays shuffled within itself. If a leftover temporary playlist is ever seen, `music playlist cleanup` collects it.
 
 **Global keys** (work on every tab):
 
