@@ -115,6 +115,15 @@ final class LibraryScene: Scene {
     private let status: StatusStore
     private let actions: ActionRunner
 
+    /// Albums, songs and artists are three views of ONE bulk read, so the
+    /// in-flight guard and the retry budget live here once. Per-list budgets
+    /// would be nine reads of a failing Music.app.
+    private let loads = LibraryLoadCoordinator()
+    /// Mirrored out of `loads` in tick so render and input read plain Bools and
+    /// never touch the coordinator's lock.
+    private var readFailed = false
+    private var retriesExhausted = false
+
     private var nav = LibraryNav.initial
     private var albums: [LibraryAlbum] = []
     private var albumsLoaded = false
@@ -171,12 +180,18 @@ final class LibraryScene: Scene {
     private var coverInbox: [(id: String, cover: LibraryCover?)] = []
 
     private let inboxLock = NSLock()
-    // The three paginated lists stream page-by-page for progressive render: the
-    // background walk appends each page to `*Pending` under inboxLock; tick drains
+    // The three lists come from one bulk read and arrive as a single page each;
+    // the inbox/drain shape is kept from when they were paginated. Nothing here
+    // paginates any more. The background read appends to `*Pending` under
+    // inboxLock; tick drains
     // and appends to the main list, and `*Done` flips `*Loaded` once the walk
     // finishes (so an empty library shows "(no …)" instead of a stuck "Loading …").
     // A single-optional inbox — like artistAlbums/preview below — can't express
     // "first page here, more coming", which is exactly what progressive render needs.
+    private var pendingReadFailed: Bool? = nil   // read outcome, drained in tick
+    private var pendingExhausted = false
+    private var retryScheduled = false           // exactly one shared retry chain
+    private var restartRequested = false         // drained in tick -> one new load
     private var albumsPending: [LibraryAlbum] = []
     private var albumsDone = false
     private var songsPending: [LibrarySong] = []
@@ -222,28 +237,105 @@ final class LibraryScene: Scene {
 
     // MARK: background loads
 
-    /// Off-thread streaming album fetch: each page is appended to albumsPending
-    /// under inboxLock and drained in tick, so the rail fills in as pages land
-    /// rather than after the whole (paginated) walk. The onPage closure returns
-    /// false if the scene has deallocated, which aborts the walk. albumsDone is set
-    /// once the walk finishes so tick can flip albumsLoaded. Kicked once (guarded
-    /// by albumsFetchStarted) when the Albums sub-view first becomes active.
+    /// Perform the shared bulk read exactly once per round, whichever list asks.
+    ///
+    /// BACKGROUND THREAD ONLY: it can block in `awaitInFlight`, so it must never
+    /// be reached from render or input. A refused caller either waits for the
+    /// leader and re-claims (riding a warm cache for free, or becoming the next
+    /// budgeted attempt) or stops when the budget is spent. Every hop re-checks
+    /// `self`, so nothing retries once the scene is gone.
+    private func runSharedRead(_ invoke: @escaping () -> Bool, markDone: @escaping () -> Void) {
+        // The coordinator is captured directly rather than reached through
+        // `self`: `awaitInFlight` blocks, and going through `self` would hold a
+        // strong reference for the whole wait, keeping a dismissed scene alive
+        // and letting its retry continue. Held weakly, the next hop sees nil and
+        // stops.
+        let coordinator = loads
+        Thread.detachNewThread { [weak self] in
+            var outcome: Bool?
+            while outcome == nil {
+                guard self != nil else { return }     // scene gone -> stop entirely
+                switch coordinator.claim() {
+                case .granted:
+                    let ok = invoke()
+                    coordinator.finishRead(success: ok)
+                    outcome = ok
+                case .inFlight:
+                    coordinator.awaitInFlight()       // no strong self held here
+                case .stopped:
+                    outcome = false
+                }
+            }
+            guard let self else { return }
+            self.publishReadOutcome(ok: outcome ?? false)
+            markDone()
+        }
+    }
+
+    /// Hand the read outcome back through the scene's existing serialized path.
+    private func publishReadOutcome(ok: Bool) {
+        inboxLock.lock()
+        pendingReadFailed = !ok
+        pendingExhausted = loads.exhausted
+        inboxLock.unlock()
+        if !ok { scheduleSharedRetry() }
+    }
+
+    /// One retry chain for the whole tab, never one per sub-view. A second
+    /// caller finds `retryScheduled` already set and returns.
+    ///
+    /// Measured live 2026-09-01, and the behaviour to preserve: leaving the
+    /// Library tab PARKS the chain once any in-flight read finishes, because
+    /// `restartRequested` is drained in `tick` and `tick` does not run for an
+    /// inactive scene. Returning resumes the remaining bounded attempts. It
+    /// neither multiplies the budget nor resets it - eight sub-view switches
+    /// during a live chain produced three reads, not nine.
+    private func scheduleSharedRetry() {
+        guard !loads.exhausted else { return }   // budget spent: wait for `r`
+        inboxLock.lock()
+        let already = retryScheduled
+        retryScheduled = true
+        inboxLock.unlock()
+        guard !already else { return }           // a chain is already pending
+        let delay = loads.retryDelay
+        DispatchQueue.global().asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self else { return }           // scene gone -> chain dies
+            self.inboxLock.lock()
+            self.retryScheduled = false
+            self.restartRequested = true
+            self.inboxLock.unlock()
+        }
+    }
+
+    /// Failure text for a sub-view with nothing to show, or nil when the normal
+    /// empty/loading text applies. A failure REPLACES the empty state: "(no
+    /// albums)" must never stand in for "couldn't read the library".
+    private func unreadableMessage(_ st: LibraryStatus) -> String? {
+        (st == .unreadableRetrying || st == .unreadableExhausted) ? libraryStatusMessage(st) : nil
+    }
+
+    /// Off-thread album fetch: the page is appended to albumsPending under
+    /// inboxLock and drained in tick. The onPage closure returns false if the
+    /// scene has deallocated, which aborts the read. albumsDone is set once the
+    /// read finishes so tick can flip albumsLoaded. Kicked once (guarded by
+    /// albumsFetchStarted) when the Albums sub-view first becomes active.
     private func loadAlbums() {
         albumsFetchStarted = true
         let sources = self.sources
-        Thread.detachNewThread { [weak self] in
+        runSharedRead({ [weak self] in
             sources.onAlbums { page in
-                guard let self else { return false }   // scene gone → stop the walk
+                guard let self else { return false }   // scene gone -> stop the walk
                 self.inboxLock.lock()
                 self.albumsPending.append(contentsOf: page)
                 self.inboxLock.unlock()
                 return true
             }
+        }, markDone: { [weak self] in
             guard let self else { return }
             self.inboxLock.lock()
             self.albumsDone = true
             self.inboxLock.unlock()
-        }
+        })
     }
 
     /// Off-thread streaming song fetch — same page-by-page discipline as loadAlbums.
@@ -252,19 +344,20 @@ final class LibraryScene: Scene {
     private func loadSongs() {
         songsFetchStarted = true
         let sources = self.sources
-        Thread.detachNewThread { [weak self] in
+        runSharedRead({ [weak self] in
             sources.onSongs { page in
-                guard let self else { return false }
+                guard let self else { return false }   // scene gone -> stop the walk
                 self.inboxLock.lock()
                 self.songsPending.append(contentsOf: page)
                 self.inboxLock.unlock()
                 return true
             }
+        }, markDone: { [weak self] in
             guard let self else { return }
             self.inboxLock.lock()
             self.songsDone = true
             self.inboxLock.unlock()
-        }
+        })
     }
 
     /// Off-thread streaming artist-list fetch — same page-by-page discipline as
@@ -273,19 +366,20 @@ final class LibraryScene: Scene {
     private func loadArtists() {
         artistsFetchStarted = true
         let sources = self.sources
-        Thread.detachNewThread { [weak self] in
+        runSharedRead({ [weak self] in
             sources.onArtists { page in
-                guard let self else { return false }
+                guard let self else { return false }   // scene gone -> stop the walk
                 self.inboxLock.lock()
                 self.artistsPending.append(contentsOf: page)
                 self.inboxLock.unlock()
                 return true
             }
+        }, markDone: { [weak self] in
             guard let self else { return }
             self.inboxLock.lock()
             self.artistsDone = true
             self.inboxLock.unlock()
-        }
+        })
     }
 
     /// Off-thread fetch of one artist's albums, posted to artistAlbumsInbox and
@@ -354,7 +448,27 @@ final class LibraryScene: Scene {
         let landedPreviews = previewInbox; previewInbox = []
         let landedCovers = coverInbox; coverInbox = []
         let artLanded = artDirty; artDirty = false
+        let landedReadFailed = pendingReadFailed; pendingReadFailed = nil
+        let landedExhausted = pendingExhausted
+        let wantsRestart = restartRequested; restartRequested = false
         inboxLock.unlock()
+
+        // Mirror the shared load state so render and input never touch the
+        // coordinator's lock.
+        if let landedReadFailed {
+            if landedReadFailed != readFailed || landedExhausted != retriesExhausted { changed = true }
+            readFailed = landedReadFailed
+            retriesExhausted = landedExhausted
+        }
+
+        // One shared retry: reopen only the lists that have nothing to show, so
+        // the active sub-view re-kicks below and exactly one new read happens.
+        if wantsRestart {
+            if albums.isEmpty { albumsFetchStarted = false; albumsDone = false; albumsLoaded = false }
+            if songs.isEmpty { songsFetchStarted = false; songsDone = false; songsLoaded = false }
+            if artists.isEmpty { artistsFetchStarted = false; artistsDone = false; artistsLoaded = false }
+            changed = true
+        }
 
         // Streaming lists only grow (append), so a landed page can't push the cursor
         // out of range (the count only rises) — no clamp needed here, unlike the old
@@ -538,6 +652,18 @@ final class LibraryScene: Scene {
             guard isAlbumRail || isArtistList else { return .none }
             libKey = .enter
         case .left, .escape: libKey = .back
+        // Manual retry: resets the shared budget and asks tick to start exactly
+        // one new load. Never blocks the input loop, and is only claimed while a
+        // failure is showing, so `r` keeps any other meaning the rest of the time.
+        case .char("r") where readFailed, .char("R") where readFailed:
+            loads.manualRetry()
+            inboxLock.lock()
+            pendingReadFailed = false
+            pendingExhausted = false
+            restartRequested = true
+            inboxLock.unlock()
+            status.post("Retrying the Music library read\u{2026}")
+            return .none
         case .char("["): libKey = .switchPrev
         case .char("]"): libKey = .switchNext
         case .char("p"), .char("P"): libKey = .play
@@ -861,7 +987,11 @@ final class LibraryScene: Scene {
         if vis.isEmpty {
             out += ANSICode.moveTo(row: listY, col: z.railX)
             let loaded = (nav.subView == .artists) ? artistAlbumsLoaded : albumsLoaded
-            let msg = loaded ? (filter.isEmpty ? "(no albums)" : "(no matches)") : "Loading albums\u{2026}"
+            let st = libraryStatus(hasData: !albums.isEmpty, lastReadFailed: readFailed,
+                                   retriesExhausted: retriesExhausted)
+            let msg: String
+            if let failure = unreadableMessage(st) { msg = failure }
+            else { msg = loaded ? (filter.isEmpty ? "(no albums)" : "(no matches)") : "Loading albums\u{2026}" }
             out += "\(ANSICode.dim)\(msg)\(ANSICode.reset)"
             return
         }
@@ -917,7 +1047,11 @@ final class LibraryScene: Scene {
         let vis = visibleSongIndices()
         if vis.isEmpty {
             out += ANSICode.moveTo(row: listY, col: z.railX)
-            let msg = songsLoaded ? (filter.isEmpty ? "(no songs)" : "(no matches)") : "Loading songs\u{2026}"
+            let st = libraryStatus(hasData: !songs.isEmpty, lastReadFailed: readFailed,
+                                   retriesExhausted: retriesExhausted)
+            let msg: String
+            if let failure = unreadableMessage(st) { msg = failure }
+            else { msg = songsLoaded ? (filter.isEmpty ? "(no songs)" : "(no matches)") : "Loading songs\u{2026}" }
             out += "\(ANSICode.dim)\(msg)\(ANSICode.reset)"
             return
         }
@@ -953,8 +1087,11 @@ final class LibraryScene: Scene {
             // With the album-artists toggle on, an empty list can mean "albums still
             // loading" (the set isn't populated yet) vs "loaded, none owned" — name
             // those honestly instead of a blanket "(no artists)".
+            let st = libraryStatus(hasData: !artists.isEmpty, lastReadFailed: readFailed,
+                                   retriesExhausted: retriesExhausted)
             let msg: String
-            if !artistsLoaded { msg = "Loading artists\u{2026}" }
+            if let failure = unreadableMessage(st) { msg = failure }
+            else if !artistsLoaded { msg = "Loading artists\u{2026}" }
             else if artistFilter != .all && !albumsLoaded { msg = "Loading albums\u{2026}" }
             else if !filter.isEmpty { msg = "(no matches)" }
             else {

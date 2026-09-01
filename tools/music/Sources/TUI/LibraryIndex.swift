@@ -70,11 +70,17 @@ func parseLibraryTrackRows(_ raw: String) -> [LibraryTrackRow] {
 }
 
 /// Run the bulk read. 60s watchdog: the read itself is under a second, the
-/// margin covers a Music that is still launching. Any failure reads as an
-/// empty library (the tab shows "(no ...)") rather than a crash.
-func fetchLibraryTrackRows(backend: AppleScriptBackend) -> [LibraryTrackRow] {
-    let raw = (try? syncRun { try await backend.runMusic(libraryBulkReadScript(), timeout: 60) }) ?? ""
-    return parseLibraryTrackRows(raw)
+/// margin covers a Music that is still launching. A failure is REPORTED as
+/// `.failure`, never as an empty library: the two are different answers and
+/// collapsing them is what made a failed read render "(no ...)" permanently.
+func fetchLibraryTrackRows(backend: AppleScriptBackend) -> LibraryReadResult {
+    // `?? ""` here used to launder a failed AppleScript call into an empty
+    // string, which parsed to zero rows and was indistinguishable from an empty
+    // library all the way up the stack. The failure is reported instead.
+    guard let raw = try? syncRun({ try await backend.runMusic(libraryBulkReadScript(), timeout: 60) }) else {
+        return .failure
+    }
+    return .success(parseLibraryTrackRows(raw))
 }
 
 /// The album identity: album name plus its credit, where the credit is the
@@ -181,11 +187,18 @@ final class LibraryIndexCache {
     private var cached: [LibraryTrackRow]? = nil
     private var albumIndex: [String: [LibraryTrackRow]] = [:]   // album id -> its rows, built with the first load
 
-    func rows(load: () -> [LibraryTrackRow]) -> [LibraryTrackRow] {
+    /// Rows for the Library tab, or `nil` when nothing has been read yet and the
+    /// attempt failed.
+    ///
+    /// A failure is NEVER cached and never displaces a good cache: `[]` reaching
+    /// this cache means a successful read of an empty library and nothing else.
+    /// Caching a failure is what made a failed read render "(no albums)" forever,
+    /// with nothing left for a retry to act on.
+    func rows(load: () -> LibraryReadResult) -> [LibraryTrackRow]? {
         lock.lock()
         defer { lock.unlock() }
         if let cached { return cached }
-        let loaded = load()
+        guard case .success(let loaded) = load() else { return nil }
         cached = loaded
         var index: [String: [LibraryTrackRow]] = [:]
         for row in loaded where !row.album.isEmpty {

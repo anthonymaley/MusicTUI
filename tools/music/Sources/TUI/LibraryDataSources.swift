@@ -8,14 +8,16 @@
 import Foundation
 
 struct LibraryDataSources {
-    // Streaming: each closure walks its paginated endpoint and hands every page to
-    // `onPage` as it lands, so the scene renders the first rows after one round-trip
-    // instead of after the whole walk. `onPage` returns false to abort mid-walk
-    // (e.g. the scene was torn down). `onAlbumTracks`/`onArtistAlbums` are single
-    // AppleScript/REST reads — no paging, so they return their whole result.
-    let onAlbums: (_ onPage: ([LibraryAlbum]) -> Bool) -> Void
-    let onSongs: (_ onPage: ([LibrarySong]) -> Bool) -> Void
-    let onArtists: (_ onPage: ([LibraryArtist]) -> Bool) -> Void
+    // The three big lists come from one bulk AppleScript read and arrive as
+    // exactly one page each; `onPage` is kept only so the scene's inbox/drain
+    // code did not have to change. `onPage` returns false to abort (e.g. the
+    // scene was torn down). Nothing here paginates any more.
+    /// Return false when the underlying bulk read FAILED, as distinct from
+    /// succeeding with zero rows - the scene must never render "(no albums)"
+    /// for a failure.
+    let onAlbums: (_ onPage: ([LibraryAlbum]) -> Bool) -> Bool
+    let onSongs: (_ onPage: ([LibrarySong]) -> Bool) -> Bool
+    let onArtists: (_ onPage: ([LibraryArtist]) -> Bool) -> Bool
     let onAlbumTracks: (_ albumTitle: String, _ artist: String) -> [String]
     let onArtistAlbums: (_ artistID: String) -> [LibraryAlbum]
     let onAlbumCover: (_ albumID: String) -> LibraryCover?
@@ -66,11 +68,20 @@ func fetchAllPages<T>(pageSize: Int = 100, cap: Int = 10_000,
 /// thread by the scene.
 func makeLibraryDataSources(backend: AppleScriptBackend, artworkAPI: RESTAPIBackend? = nil) -> LibraryDataSources {
     let index = LibraryIndexCache()
-    func rows() -> [LibraryTrackRow] { index.rows { fetchLibraryTrackRows(backend: backend) } }
+    func rows() -> [LibraryTrackRow]? { index.rows { fetchLibraryTrackRows(backend: backend) } }
     return LibraryDataSources(
-        onAlbums: { onPage in let a = groupLibraryAlbums(rows()); if !a.isEmpty { _ = onPage(a) } },
-        onSongs: { onPage in let s = groupLibrarySongs(rows()); if !s.isEmpty { _ = onPage(s) } },
-        onArtists: { onPage in let r = groupLibraryArtists(rows()); if !r.isEmpty { _ = onPage(r) } },
+        onAlbums: { onPage in
+            guard let rs = rows() else { return false }
+            let a = groupLibraryAlbums(rs); if !a.isEmpty { _ = onPage(a) }; return true
+        },
+        onSongs: { onPage in
+            guard let rs = rows() else { return false }
+            let s = groupLibrarySongs(rs); if !s.isEmpty { _ = onPage(s) }; return true
+        },
+        onArtists: { onPage in
+            guard let rs = rows() else { return false }
+            let r = groupLibraryArtists(rs); if !r.isEmpty { _ = onPage(r) }; return true
+        },
         // Shares resolveAlbumPlaybackTracks with the play path so the preview pane
         // and the actual queue never disagree — including the album-title fallback
         // for albums whose REST artist string has drifted from the stored album
@@ -78,7 +89,10 @@ func makeLibraryDataSources(backend: AppleScriptBackend, artworkAPI: RESTAPIBack
         onAlbumTracks: { title, artist in
             resolveAlbumPlaybackTracks(backend: backend, title: title, artist: artist).tracks.map(\.name)
         },
-        onArtistAlbums: { id in groupLibraryArtistAlbums(rows(), artistID: id) },
+        // A failed read yields no albums for the artist rather than a wrong
+        // empty answer; the drill-in is a secondary view, so it does not carry
+        // its own retry state.
+        onArtistAlbums: { id in groupLibraryArtistAlbums(rows() ?? [], artistID: id) },
         // Cover ladder for one focused album, run by the scene on its serial
         // previewQueue (never the bulk read): (1) the embedded artwork of the
         // album's first library row, (2) with a keyed, signed-in user, the Now

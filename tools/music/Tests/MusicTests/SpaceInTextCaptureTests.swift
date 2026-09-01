@@ -57,9 +57,9 @@ final class SpaceInTextCaptureTests: XCTestCase {
     func testLibraryFilterCaptureSpace() {
         let status = StatusStore()
         let sources = LibraryDataSources(
-            onAlbums: { _ in },
-            onSongs: { _ in },
-            onArtists: { _ in },
+            onAlbums: { _ in true },
+            onSongs: { _ in true },
+            onArtists: { _ in true },
             onAlbumTracks: { _, _ in [] },
             onArtistAlbums: { _ in [] },
             onAlbumCover: { _ in nil }

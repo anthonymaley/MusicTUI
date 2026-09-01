@@ -181,13 +181,13 @@ final class LibraryIndexTests: XCTestCase {
         var loads = 0
         let fixture = r1
 
-        let first = cache.rows { loads += 1; return [fixture] }
-        let second = cache.rows { loads += 1; return [fixture] }
+        let first = cache.rows { loads += 1; return .success([fixture]) }
+        let second = cache.rows { loads += 1; return .success([fixture]) }
 
         let loaded = expectation(description: "background load")
-        var third: [LibraryTrackRow] = []
+        var third: [LibraryTrackRow]? = []
         DispatchQueue.global().async {
-            third = cache.rows { loads += 1; return [fixture] }
+            third = cache.rows { loads += 1; return .success([fixture]) }
             loaded.fulfill()
         }
         wait(for: [loaded], timeout: 5)
@@ -200,7 +200,7 @@ final class LibraryIndexTests: XCTestCase {
 
     func testIndexCacheAlbumLookupByID() {
         let cache = LibraryIndexCache()
-        _ = cache.rows { [self.r1, self.r2, self.r3] }
+        _ = cache.rows { .success([self.r1, self.r2, self.r3]) }
         let id = libraryAlbumID(forKey: libraryAlbumKey(album: "Kid A", albumArtist: "Radiohead", artist: "Radiohead"))
         XCTAssertEqual(cache.albumRows(id: id)?.map(\.persistentID), ["P1", "P2"])
         XCTAssertNil(cache.albumRows(id: "lib.nope"))
