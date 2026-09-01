@@ -31,28 +31,21 @@ struct Play: ParsableCommand {
         }
 
         if let album = album {
-            // Remix/compilation albums credit each track to the remixer, so also match album artist.
-            // Rows are fetched and the start track decided in Swift so the CLI shares
-            // the TUI resolver's disc-aware order (190f663) and playability filter —
-            // the old inline min-track-number scan could start a multi-disc album on
-            // disc 2 and `play` silently no-ops on prerelease/removed tracks.
+            // Bounded album play: build a temp container and play it with the
+            // bounded `play playlist` form, then let a detached one shot watcher
+            // remove the container. Fail closed: no fallback to the unbounded
+            // `play track N of playlist "Library"` this replaces.
             let artistFilter = albumArtistFilter(artist: artist)
             let escAlbum = escapeAppleScriptString(album)
             let rows = fetchLibraryAlbumRows(
                 backend: backend,
                 whereClause: "album contains \"\(escAlbum)\"\(artistFilter)")
-            switch decideAlbumPlay(rows) {
-            case .notFound:
-                print("No albums found matching '\(album)'")
+            let outcome = playBoundedAlbum(title: album, rows: rows) { script in
+                try? syncRun { try await backend.runMusic(script) }
+            }
+            if let message = albumOutcomeMessage(outcome, title: album) {
+                print(message)
                 throw ExitCode.failure
-            case .nonePlayable(let matched):
-                print("Found \(matched) track(s) matching '\(album)', but none are playable yet (pre-release or removed).")
-                throw ExitCode.failure
-            case .play(let position, _, _):
-                guard playQueueTrack(backend: backend, playlist: "Library", position: position) else {
-                    print("Couldn't start playback for '\(album)'")
-                    throw ExitCode.failure
-                }
             }
             showNowPlaying(json: json, waitForPlay: true)
             return

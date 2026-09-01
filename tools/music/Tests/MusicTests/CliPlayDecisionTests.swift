@@ -66,3 +66,44 @@ final class CliPlayDecisionTests: XCTestCase {
         XCTAssertNil(firstPlayablePosition([]))
     }
 }
+
+extension CliPlayDecisionTests {
+
+    func testOutcomeMessages() {
+        XCTAssertNil(albumOutcomeMessage(.playing, title: "Moon Safari"))
+        XCTAssertEqual(albumOutcomeMessage(.notFound, title: "Moon Safari"),
+                       "No albums found matching 'Moon Safari'")
+        XCTAssertEqual(albumOutcomeMessage(.nonePlayable(matched: 4), title: "X"),
+                       "Found 4 track(s) matching 'X', but none are playable yet (pre-release or removed).")
+    }
+
+    /// Each failure names its own stage, so a bug report can tell them apart.
+    /// `containerRemoved` doubles the case count: a message must never claim a
+    /// cleanup that did not happen, so true and false read differently.
+    func testFailureMessagesAreDistinct() {
+        let msgs = [
+            albumOutcomeMessage(.buildFailed(containerRemoved: true), title: "X"),
+            albumOutcomeMessage(.buildFailed(containerRemoved: false), title: "X"),
+            albumOutcomeMessage(.playFailed(containerRemoved: true), title: "X"),
+            albumOutcomeMessage(.playFailed(containerRemoved: false), title: "X"),
+            albumOutcomeMessage(.watcherFailed(containerRemoved: true), title: "X"),
+            albumOutcomeMessage(.watcherFailed(containerRemoved: false), title: "X"),
+        ].compactMap { $0 }
+        XCTAssertEqual(Set(msgs).count, 6, "each failure stage/removal combination needs a distinct message")
+        XCTAssertTrue(msgs.allSatisfy { $0.contains("X") })
+    }
+
+    /// A `false` removal must never claim the container was removed, and must
+    /// point the user at the cleanup command that will collect it.
+    func testFalseRemovalDoesNotClaimRemovalAndPointsToCleanup() {
+        let msgs = [
+            albumOutcomeMessage(.buildFailed(containerRemoved: false), title: "X")!,
+            albumOutcomeMessage(.playFailed(containerRemoved: false), title: "X")!,
+            albumOutcomeMessage(.watcherFailed(containerRemoved: false), title: "X")!,
+        ]
+        for msg in msgs {
+            XCTAssertFalse(msg.lowercased().contains("removed"), "false removal must not claim removal: \(msg)")
+            XCTAssertTrue(msg.contains("music playlist cleanup"), "false removal must point at cleanup: \(msg)")
+        }
+    }
+}

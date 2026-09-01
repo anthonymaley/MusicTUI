@@ -88,3 +88,38 @@ func playBoundedAlbum(title: String,
 
     return .playing
 }
+
+/// User facing text for an outcome, or nil when there is nothing to say because
+/// playback started. Each failure names its stage so the three are
+/// distinguishable in a bug report, and each is doubled on `containerRemoved`:
+/// a message must never claim a cleanup that did not actually happen, so when
+/// removal failed it instead names the leftover playlist and points at
+/// `music playlist cleanup` to collect it.
+func albumOutcomeMessage(_ outcome: BoundedAlbumOutcome, title: String) -> String? {
+    switch outcome {
+    case .playing:
+        return nil
+    case .notFound:
+        return "No albums found matching '\(title)'"
+    case .nonePlayable(let matched):
+        return "Found \(matched) track(s) matching '\(title)', but none are playable yet (pre-release or removed)."
+    case .buildFailed(let containerRemoved):
+        if containerRemoved {
+            return "Couldn't build the temporary album container for '\(title)'. Nothing was played."
+        }
+        return "Couldn't build the temporary album container for '\(title)'. Nothing was played, but a partial "
+            + "temporary playlist may remain in your library; run `music playlist cleanup` to collect it."
+    case .playFailed(let containerRemoved):
+        if containerRemoved {
+            return "Couldn't start bounded playback for '\(title)'. The container was removed."
+        }
+        return "Couldn't start bounded playback for '\(title)'. A temporary playlist may remain in your library; "
+            + "run `music playlist cleanup` to collect it."
+    case .watcherFailed(let containerRemoved):
+        if containerRemoved {
+            return "Couldn't start the cleanup watcher for '\(title)'. Playback was paused and the container removed."
+        }
+        return "Couldn't start the cleanup watcher for '\(title)'. Playback was paused, but a temporary playlist "
+            + "may remain in your library; run `music playlist cleanup` to collect it."
+    }
+}
