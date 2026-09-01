@@ -156,12 +156,13 @@ chmod 600 ~/.config/music/config.json ~/.config/music/user-token ~/.config/music
 | `music play "Gypsy Woman" "Tom Misch"` | Play a song by title + artist; falls back to catalog add if authenticated |
 | `music play "https://music.apple.com/...?...i=1581424482"` | Add/play a catalog song URL when authenticated |
 | `music play --album "Kid A" --artist "Radiohead"` | Explicit flags when the name could collide with a speaker; `music play "X"` also plays as bounded album if X resolves to an album |
-| | Album playback creates a temporary playlist visible in Music's sidebar and removes it when playback leaves. The album stops at its end only if Autoplay is off (see Autoplay callout below). |
 | `music pause` / `music skip` / `music back` / `music stop` | Transport from the terminal |
 | `music now` | What's playing (track, album, speakers) |
 | `music shuffle` / `music repeat off\|one\|all` | Shuffle and repeat modes |
 | `music seek +30` / `music seek 1:30` | Seek within the current track (relative or absolute) |
 | `music love` / `music unlove` | Favorite / unfavorite the current track |
+
+Album playback creates a temporary playlist visible in Music's sidebar and removes it when playback leaves. The album stops at its end only if Autoplay is off (see Autoplay callout below).
 
 Naming speakers in `music play` routes playback to **exactly those speakers**: it selects the ones you name and deselects the rest, then verifies each route is actually carrying a session (network-truth, not the AppleScript `selected` claim, which can lie) and prints `✓ <speaker> verified (…)`. If a route doesn't establish, an automatic heal runs (an away-and-back reroute, then a transport-cycle reset) before an honest failure message names the manual fix. Routing to the Mac's own output is never "verified": local output has no AirPlay session to check.
 
