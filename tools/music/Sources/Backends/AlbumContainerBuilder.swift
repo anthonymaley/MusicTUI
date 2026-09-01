@@ -61,6 +61,12 @@ enum AlbumContainerBuildResult: Equatable {
     case noTracks
     case createFailed
     case seedMismatch(expected: Int, got: Int)
+    /// A failure whose rollback delete ALSO failed, so a partial container may
+    /// still exist in the user's library. Distinguished from the plain failure
+    /// cases so no caller can claim the container was removed when it was not.
+    /// The container is not orphaned permanently: a later album play sweeps
+    /// stale containers, as does `music playlist cleanup`.
+    case cleanupFailed
 }
 
 /// Build the container, or leave nothing behind.
@@ -73,12 +79,18 @@ func buildAlbumContainer(name: String, indices: [Int], run: ScriptRunner)
     guard !indices.isEmpty else { return .noTracks }
 
     guard let raw = run(albumContainerBuildScript(name: name, indices: indices)) else {
-        _ = run(playlistDeleteScript(name: name))
+        if run(playlistDeleteScript(name: name)) == nil {
+            verbose("album container \(name): build failed and cleanup also failed (container may remain)")
+            return .cleanupFailed
+        }
         return .createFailed
     }
     let got = Int(raw.trimmingCharacters(in: .whitespacesAndNewlines)) ?? -1
     guard got == indices.count else {
-        _ = run(playlistDeleteScript(name: name))
+        if run(playlistDeleteScript(name: name)) == nil {
+            verbose("album container \(name): seed mismatch (expected \(indices.count), got \(got)) and cleanup also failed (container may remain)")
+            return .cleanupFailed
+        }
         return .seedMismatch(expected: indices.count, got: got)
     }
     return .built

@@ -86,4 +86,31 @@ final class AlbumContainerBuilderTests: XCTestCase {
         XCTAssertEqual(result, .noTracks)
         XCTAssertFalse(called)
     }
+
+    /// Honesty test: when build fails AND cleanup delete also fails, report
+    /// cleanupFailed so the caller knows the container may still exist.
+    func testCreateFailureWithFailedRollbackReportsCleanupFailed() {
+        var scripts: [String] = []
+        let result = buildAlbumContainer(name: containerName, indices: [1]) { script in
+            scripts.append(script)
+            return nil // Both build and delete fail
+        }
+        XCTAssertEqual(result, .cleanupFailed)
+        XCTAssertTrue(scripts.count == 2, "rollback delete must be attempted")
+        XCTAssertTrue(scripts[1].contains("every user playlist whose name is"))
+    }
+
+    /// Honesty test: when seed count is wrong AND cleanup delete also fails,
+    /// report cleanupFailed so the caller knows the container may still exist.
+    func testSeedMismatchWithFailedRollbackReportsCleanupFailed() {
+        var scripts: [String] = []
+        let result = buildAlbumContainer(name: containerName, indices: [1, 2, 3]) { script in
+            scripts.append(script)
+            // Build succeeds with wrong count; delete fails
+            return script.contains("make new playlist") ? "2" : nil
+        }
+        XCTAssertEqual(result, .cleanupFailed)
+        XCTAssertTrue(scripts.count == 2, "rollback delete must be attempted")
+        XCTAssertTrue(scripts[1].contains("every user playlist whose name is"))
+    }
 }
