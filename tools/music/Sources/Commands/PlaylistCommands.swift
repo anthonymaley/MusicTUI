@@ -288,14 +288,44 @@ func playlistDeleteScript(name: String) -> String {
     "delete (every user playlist whose name is \"\(escapeAppleScriptString(name))\")"
 }
 
-/// Same reference form for the temp-playlist sweep: the old loop resolved
-/// each name back through `delete playlist p` and hit the same -1708.
+/// Delete this app's temp containers, sparing one that is actually in use.
+///
+/// Same reference form as `playlistDeleteScript`: the old loop resolved each
+/// name back through `delete playlist p` and hit -1708.
+///
+/// The sparing rule is `albumInUsePlayerStates`, NOT `sweepablePlayerStates`.
+/// This command is user invoked, so a container the user is audibly listening to
+/// is spared whatever its prefix, including a PAUSED one. The automatic Discover
+/// sweep keeps the opposite rule on purpose: it must collect paused containers,
+/// because `current playlist` outlives a pause and one row leaked per paused
+/// play. Do not merge the two.
+///
+/// Containers only: this script never names a track or a song, so it cannot
+/// reach a library row. A test pins that.
 func playlistCleanupScript() -> String {
-    """
-    set temps to every user playlist whose name starts with "__temp__"
-    set deleted to count of temps
-    repeat with p in temps
-        delete p
+    let inUse = albumInUsePlayerStates
+        .map { "playerStateText is \"\($0)\"" }
+        .joined(separator: " or ")
+    return """
+    set keepName to ""
+    set playerStateText to ""
+    try
+        set playerStateText to player state as text
+    end try
+    if \(inUse) then
+        try
+            set keepName to name of current playlist
+        end try
+    end if
+    set deleted to 0
+    repeat with pp in (every user playlist)
+        try
+            set nm to name of pp
+            if ((nm starts with "__temp__") or (nm starts with "\(albumPlaylistPrefix)")) and (nm is not keepName) then
+                delete pp
+                set deleted to deleted + 1
+            end if
+        end try
     end repeat
     return deleted
     """

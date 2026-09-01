@@ -18,7 +18,8 @@ final class PlaylistDeleteScriptTests: XCTestCase {
 
     func testCleanupScriptDeletesByReferenceInsideTheLoop() {
         let script = playlistCleanupScript()
-        XCTAssertTrue(script.contains("every user playlist whose name starts with \"__temp__\""), script)
+        XCTAssertTrue(script.contains("repeat with pp in (every user playlist)"), script)
+        XCTAssertTrue(script.contains("delete pp"), script)
         XCTAssertFalse(script.contains("delete playlist p"), script)
     }
 }
