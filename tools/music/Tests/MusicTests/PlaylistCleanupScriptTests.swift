@@ -73,9 +73,13 @@ final class PlaylistCleanupScriptTests: XCTestCase {
     /// and the script proceeds to sweep normally without the context guard blocking it.
     func testNotInUseStillSweeps() {
         let s = playlistCleanupScript()
-        XCTAssertTrue(s.contains("set contextReadable to true"),
-                      "must initialise contextReadable true for not-in-use path")
-        // Verify the not-in-use case can reach the loop
-        XCTAssertTrue(s.contains("repeat with pp"), s)
+        guard let initIndex = s.range(of: "set contextReadable to true")?.lowerBound,
+              let ifIndex = s.range(of: "if playerStateText is")?.lowerBound else {
+            return XCTFail("expected both the contextReadable initialiser and the in-use guard")
+        }
+        // The initialiser must PRECEDE the in-use block, otherwise a not-in-use
+        // player would fall through to the abort guard and spare everything.
+        XCTAssertLessThan(initIndex, ifIndex, "initialiser must precede the in-use guard")
+        XCTAssertTrue(s.contains("repeat with pp"), "script must proceed to the delete loop")
     }
 }

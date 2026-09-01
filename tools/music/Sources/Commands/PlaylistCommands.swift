@@ -303,21 +303,6 @@ func playlistDeleteScript(name: String) -> String {
 /// Containers only: this script never names a track or a song, so it cannot
 /// reach a library row. A test pins that.
 ///
-/// Delete this app's temp containers, sparing one that is actually in use.
-///
-/// Same reference form as `playlistDeleteScript`: the old loop resolved each
-/// name back through `delete playlist p` and hit -1708.
-///
-/// The sparing rule is `albumInUsePlayerStates`, NOT `sweepablePlayerStates`.
-/// This command is user invoked, so a container the user is audibly listening to
-/// is spared whatever its prefix, including a PAUSED one. The automatic Discover
-/// sweep keeps the opposite rule on purpose: it must collect paused containers,
-/// because `current playlist` outlives a pause and one row leaked per paused
-/// play. Do not merge the two.
-///
-/// Containers only: this script never names a track or a song, so it cannot
-/// reach a library row. A test pins that.
-///
 /// Unreadable player state fails toward sparing: if `player state` throws,
 /// `playerStateText` defaults to `unreadablePlayerStateFallback` (which is in
 /// `albumInUsePlayerStates`), so the container is spared. An Apple Event error
