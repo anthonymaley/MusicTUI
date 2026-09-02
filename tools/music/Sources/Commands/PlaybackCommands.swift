@@ -313,7 +313,12 @@ func playLocalSong(backend: AppleScriptBackend, title: String, artist: String?) 
 /// disc-aware order and the playability filter (both live in
 /// `orderedPlayableAlbumTracks`, the TUI's resolver exit) apply to the CLI too.
 enum AlbumPlayDecision: Equatable {
-    case play(position: Int, playable: Int, matched: Int)
+    /// §17.1: `rows` is the CHOSEN album's own rows (unsorted, unfiltered) —
+    /// the one thing that must reach the container. `position`/`playable`/
+    /// `matched` describe that same chosen album; they are informational
+    /// (the CLI's own message text) and are never used to reconstruct which
+    /// rows to seed — `playBoundedAlbum` seeds from `rows` directly.
+    case play(rows: [LibraryAlbumRow], position: Int, playable: Int, matched: Int)
     case notFound
     case nonePlayable(matched: Int)
     /// §16.6: the query matched more than one distinct album, and none of
@@ -343,7 +348,7 @@ func decideAlbumPlay(_ rows: [LibraryAlbumRow], query: String) -> AlbumPlayDecis
     }
     let res = orderedPlayableAlbumTracks(chosen)
     guard let first = res.tracks.first else { return .nonePlayable(matched: res.matched) }
-    return .play(position: first.index, playable: res.tracks.count, matched: res.matched)
+    return .play(rows: chosen, position: first.index, playable: res.tracks.count, matched: res.matched)
 }
 
 /// First track (source-playlist position) that Music can actually play, in

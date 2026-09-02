@@ -19,7 +19,7 @@ final class CliPlayDecisionTests: XCTestCase {
             row(51, name: "D1T2", disc: 1, track: 2),
             row(52, name: "D1T1", disc: 1, track: 1),
         ]
-        XCTAssertEqual(decideAlbumPlay(rows, query: "Anything"), .play(position: 52, playable: 3, matched: 3))
+        XCTAssertEqual(decideAlbumPlay(rows, query: "Anything"), .play(rows: rows, position: 52, playable: 3, matched: 3))
     }
 
     /// The bug: an unplayable first track (prerelease) made `play` silently
@@ -29,7 +29,7 @@ final class CliPlayDecisionTests: XCTestCase {
             row(10, name: "T1", cloud: "prerelease", disc: 1, track: 1),
             row(11, name: "T2", disc: 1, track: 2),
         ]
-        XCTAssertEqual(decideAlbumPlay(rows, query: "Anything"), .play(position: 11, playable: 1, matched: 2))
+        XCTAssertEqual(decideAlbumPlay(rows, query: "Anything"), .play(rows: rows, position: 11, playable: 1, matched: 2))
     }
 
     func testNoMatchesIsNotFound() {
@@ -108,10 +108,11 @@ final class CliPlayDecisionTests: XCTestCase {
             albumRow(2, artist: "X", album: "Moon Safari Live"),
         ]
         switch decideAlbumPlay(rows, query: "Moon Safari") {
-        case .play(let position, let playable, let matched):
+        case .play(let chosenRows, let position, let playable, let matched):
             XCTAssertEqual(position, 1)
             XCTAssertEqual(playable, 1)
             XCTAssertEqual(matched, 1, "only the exact match's own row may be used")
+            XCTAssertEqual(chosenRows.map(\.index), [1], "only the exact match's own row may reach the container")
         default:
             XCTFail("a unique exact normalised match must resolve, not fail ambiguous")
         }
@@ -125,20 +126,27 @@ final class CliPlayDecisionTests: XCTestCase {
             albumRow(2, artist: "Air", album: "Moon Safari", track: 2),
         ]
         switch decideAlbumPlay(rows, query: "moon") {
-        case .play(let position, let playable, let matched):
+        case .play(let chosenRows, let position, let playable, let matched):
             XCTAssertEqual(position, 1)
             XCTAssertEqual(playable, 2)
             XCTAssertEqual(matched, 2)
+            XCTAssertEqual(chosenRows.map(\.index), [1, 2])
         default:
             XCTFail("a loose query resolving to exactly one distinct album must play it")
         }
     }
 
-    /// A container must never be seeded from more than one album, even
-    /// indirectly: this asserts that the `matched`/`playable` counts on a
-    /// `.play` outcome trace back to ONE group's rows only, never the sum
-    /// across groups.
-    func testDecideAlbumPlayNeverCountsTracksFromMoreThanOneAlbum() {
+    /// §17.4: renamed from `testDecideAlbumPlayNeverCountsTracksFromMoreThanOneAlbum`,
+    /// which asserted only on `matched`/`playable` — counts that happened to
+    /// look right even while §17.1's defect made the actual container-seeding
+    /// guarantee false, because `decideAlbumPlay` never seeds anything.
+    /// This proves what `decideAlbumPlay` itself actually guarantees: its
+    /// `.play` payload's `rows` are the exact match's own rows only. It does
+    /// NOT prove the container is seeded correctly — that requires the rows
+    /// to actually reach `playBoundedAlbum`'s build script, which is a
+    /// separate, real seeding-level test:
+    /// `BoundedAlbumPlayTests.testExactMatchSeedsOnlyItsOwnAlbumEvenWhenAnotherAlbumSharesTheQuery`.
+    func testDecideAlbumPlayChosenRowsExcludeTheOtherAlbum() {
         let rows = [
             albumRow(1, artist: "Air", album: "Moon Safari", track: 1),
             albumRow(2, artist: "Air", album: "Moon Safari", track: 2),
@@ -147,9 +155,11 @@ final class CliPlayDecisionTests: XCTestCase {
             albumRow(5, artist: "X", album: "Moon Safari Deluxe", track: 3),
         ]
         switch decideAlbumPlay(rows, query: "Moon Safari") {
-        case .play(_, let playable, let matched):
+        case .play(let chosenRows, _, let playable, let matched):
             XCTAssertEqual(playable, 2, "must be the exact match's own 2 tracks, not all 5")
             XCTAssertEqual(matched, 2)
+            XCTAssertEqual(Set(chosenRows.map(\.index)), [1, 2],
+                          "only the exact match's own rows may reach the container, never the other album's")
         default:
             XCTFail("a unique exact normalised match must resolve")
         }

@@ -42,6 +42,7 @@ func playBoundedAlbum(title: String,
     // result is intentionally discarded.
     _ = run(albumStaleSweepScript())
 
+    let albumRows: [LibraryAlbumRow]
     switch decideAlbumPlay(rows, query: title) {
     case .notFound:
         return .notFound
@@ -49,11 +50,16 @@ func playBoundedAlbum(title: String,
         return .nonePlayable(matched: matched)
     case .ambiguous(let albums):
         return .ambiguous(albums: albums)
-    case .play:
-        break
+    case .play(let chosenRows, _, _, _):
+        // §17.1: the container must be seeded from the CHOSEN album's own
+        // rows, never the full (possibly multi-album) `rows` parameter — that
+        // was the defect this fix wave exists to close. `position` is not
+        // used on this path: it names a Library index for the pre-Task-6
+        // single-track play, which this bounded path never issues.
+        albumRows = chosenRows
     }
 
-    let indices = orderedPlayableAlbumTracks(rows).tracks.map { $0.index }
+    let indices = orderedPlayableAlbumTracks(albumRows).tracks.map { $0.index }
     let name = albumContainerName(title: title, uuid: uuid)
 
     switch buildAlbumContainer(name: name, indices: indices, run: run) {

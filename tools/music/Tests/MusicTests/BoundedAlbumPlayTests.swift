@@ -241,6 +241,57 @@ final class BoundedAlbumPlayTests: XCTestCase {
                        "an ambiguous match must never build a container")
     }
 
+    // MARK: - §17.1: the chosen album must actually reach the container
+
+    /// The core §17.1 defect: `decideAlbumPlay` groups rows and picks one
+    /// album, but the unique-exact-match branch (`exact.count == 1`) is
+    /// reachable even when `groups.count > 1` — the common real-library shape
+    /// of `--album "Kid A"` also matching *Kid A Mnesia*. The seeded
+    /// container must contain ONLY the exact match's own track indices, never
+    /// the other album's, even though both rows arrive in the same fetch.
+    func testExactMatchSeedsOnlyItsOwnAlbumEvenWhenAnotherAlbumSharesTheQuery() {
+        let rows = [
+            // "Kid A Mnesia" rows interleaved BEFORE and AFTER "Kid A" in
+            // fetch order, so a flat/full-rows seed would visibly mix them.
+            LibraryAlbumRow(index: 90, name: "KAM1", artist: "Radiohead", albumArtist: "Radiohead",
+                            cloudStatus: "subscription", disc: 1, track: 1, album: "Kid A Mnesia"),
+            LibraryAlbumRow(index: 10, name: "KA1", artist: "Radiohead", albumArtist: "Radiohead",
+                            cloudStatus: "subscription", disc: 1, track: 1, album: "Kid A"),
+            LibraryAlbumRow(index: 91, name: "KAM2", artist: "Radiohead", albumArtist: "Radiohead",
+                            cloudStatus: "subscription", disc: 1, track: 2, album: "Kid A Mnesia"),
+            LibraryAlbumRow(index: 11, name: "KA2", artist: "Radiohead", albumArtist: "Radiohead",
+                            cloudStatus: "subscription", disc: 1, track: 2, album: "Kid A"),
+            LibraryAlbumRow(index: 12, name: "KA3", artist: "Radiohead", albumArtist: "Radiohead",
+                            cloudStatus: "subscription", disc: 1, track: 3, album: "Kid A"),
+            LibraryAlbumRow(index: 92, name: "KAM3", artist: "Radiohead", albumArtist: "Radiohead",
+                            cloudStatus: "subscription", disc: 1, track: 3, album: "Kid A Mnesia"),
+        ]
+        var scripts: [String] = []
+        let out = playBoundedAlbum(title: "Kid A", rows: rows, uuid: "U",
+                                   run: { s in
+                                       scripts.append(s)
+                                       if s.contains("set ids to persistent ID") { return "A\u{1F}B\u{1F}C" }
+                                       if s.contains("count of tracks") { return "3" }
+                                       return ""
+                                   },
+                                   launch: { _, _ in true })
+        XCTAssertEqual(out, .playing)
+        guard let buildScript = scripts.first(where: { $0.contains("duplicate track") }) else {
+            return XCTFail("no build script was ever sent")
+        }
+        for line in buildScript.split(separator: "\n") where line.contains("duplicate track") {
+            XCTAssertTrue(line.contains("of playlist \"Library\""),
+                          "each seed line must duplicate from Library: \(line)")
+        }
+        let duplicatedIndices = Set(buildScript
+            .matches(of: try! Regex("duplicate track (\\d+) of playlist \"Library\""))
+            .compactMap { Int($0[1].substring ?? "") })
+        XCTAssertEqual(duplicatedIndices, [10, 11, 12],
+                       "only 'Kid A's own indices may be duplicated into the container")
+        XCTAssertTrue(duplicatedIndices.isDisjoint(with: [90, 91, 92]),
+                      "'Kid A Mnesia's tracks must never be duplicated into 'Kid A's container")
+    }
+
     // MARK: - "Also fix while in these files": manifest left behind on watcher failure
 
     /// A large album (manifest path, since ids exceed the inline limit) whose
