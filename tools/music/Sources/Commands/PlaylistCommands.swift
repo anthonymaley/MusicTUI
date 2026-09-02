@@ -527,7 +527,11 @@ func albumSweepDecision(playerState: String?, contextReadable: Bool) -> AlbumSwe
 ///    collision deterministic), so the counted variant sums
 ///    `count of (every user playlist whose name is nm)` per name rather than
 ///    counting names processed — one captured name can remove more than one
-///    object.
+///    object. The count is taken and added to `deleted` only AFTER `delete`
+///    itself succeeds, both inside the same `try`: counting first and
+///    deleting second would let a `delete` that throws (a Music.app hiccup,
+///    a transient Apple Event failure) still inflate `deleted` for objects
+///    that are still there, reporting a removal that did not happen.
 func albumSweepGuardedScript(prefixes: [String], deferReturn: String, countDeleted: Bool) -> String {
     let inUse = albumInUsePlayerStates
         .map { "playerStateText is \"\($0)\"" }
@@ -541,8 +545,9 @@ func albumSweepGuardedScript(prefixes: [String], deferReturn: String, countDelet
         set deleted to 0
         repeat with nm in eligibleNames
             try
-                set deleted to deleted + (count of (every user playlist whose name is nm))
+                set n to count of (every user playlist whose name is nm)
                 delete (every user playlist whose name is nm)
+                set deleted to deleted + n
             end try
         end repeat
         if deleted > 0 then

@@ -195,15 +195,38 @@ final class AlbumSweepDecisionTests: XCTestCase {
 
     /// §20.3: count actual playlist OBJECTS removed, not unique names
     /// processed — exact-name deletion removes every duplicate sharing a
-    /// captured name, so the counted delete loop must sum
-    /// `count of (every user playlist whose name is nm)` per name rather
-    /// than incrementing by one per name.
-    func testCountedDeleteLoopSumsObjectCountsPerNameNotOnePerName() {
+    /// captured name, so the counted delete loop must sum the actual object
+    /// count per name rather than incrementing by one per name.
+    ///
+    /// Coordinator review caught a regression in an earlier draft: the count
+    /// was taken and folded into `deleted` BEFORE `delete` ran, both inside
+    /// the same `try` — so a `delete` that throws (a Music.app hiccup, a
+    /// transient Apple Event failure) still inflated `deleted` for objects
+    /// that are still there, and the CLI would report "Cleaned up N" for
+    /// playlists the user can still see. The pre-§20 loop never had this bug
+    /// (it did `delete pp` and only then `deleted + 1`, both inside one
+    /// `try`); the fix restores that same delete-before-count order. A
+    /// contains-only check on the count expression passes equally against
+    /// the broken order, so this pins it POSITIONALLY: within the counted
+    /// delete loop's own span, `delete` must appear before the increment.
+    func testCountedDeleteLoopCountsObjectsOnlyAfterTheDeleteSucceeds() {
         let script = albumSweepGuardedScript(prefixes: ["x"], deferReturn: "return \"deferred\"", countDeleted: true)
-        XCTAssertTrue(script.contains("set deleted to deleted + (count of (every user playlist whose name is nm))"),
-                      "must sum the actual object count per captured name")
+        XCTAssertTrue(script.contains("count of (every user playlist whose name is nm)"),
+                      "must count the actual object count per captured name")
         XCTAssertFalse(script.contains("set deleted to deleted + 1"),
                        "must never count names processed as a proxy for objects removed")
+
+        guard let loopStart = script.range(of: "repeat with nm in eligibleNames")?.lowerBound,
+              let loopEnd = script.range(of: "end repeat", range: loopStart..<script.endIndex)?.upperBound else {
+            return XCTFail("expected the counted delete loop over eligibleNames")
+        }
+        let loop = script[loopStart..<loopEnd]
+        guard let deleteIndex = loop.range(of: "delete (every user playlist whose name is nm)")?.lowerBound,
+              let incrementIndex = loop.range(of: "set deleted to deleted +")?.lowerBound else {
+            return XCTFail("expected both the delete statement and the increment inside the loop")
+        }
+        XCTAssertLessThan(deleteIndex, incrementIndex,
+                          "delete must happen before the count is folded into deleted, or a throwing delete inflates the count")
     }
 
     /// Both variants delete via the same exact-name reference form
