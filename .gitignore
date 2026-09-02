@@ -28,3 +28,9 @@ docs/show-hn-draft.md
 # END vault-linked
 kivna/input/
 kivna/output/
+
+# Local Claude/Codex collaboration state. The bridge script itself is canonical
+# in the private vault and symlinked in (see the vault-linked block above); the
+# session UUID, the reply mailbox and the review archive are machine-local and
+# must never reach this public repo.
+.agents/
