@@ -141,6 +141,14 @@ final class SweepScriptExecutionTests: XCTestCase {
             return nil
         }
 
+        // The Discover sweep returns nothing at all — it is fire-and-forget at
+        // TUI launch and exit — so assigning its result would error (-2753).
+        // Giving it a terminal value changes no control flow: there is no
+        // earlier `return` to preempt.
+        if !script.contains("return ") {
+            script += "\nreturn \"swept\""
+        }
+
         let libLiteral = "{" + library.map { "\"\(esc($0))\"" }.joined(separator: ", ") + "}"
         let harness = """
         global libNames, ctxValue, ctxThrows, stateValue, deleteMode, countMode
@@ -475,5 +483,58 @@ final class SweepScriptExecutionTests: XCTestCase {
         XCTAssertTrue(r.surviving.contains(playing),
                       "the protected container is still spared in fact, whatever is reported")
         XCTAssertTrue(r.surviving.contains(unrelated), "unrelated playlists are never touched")
+    }
+
+    // MARK: - §20.11: the Discover sweep, the last carrier of the §20 defect
+
+    private var discover: String { discoverSweepScript() }
+    private var discoverA: String { "\(discoverPlaylistPrefix)ONE" }
+    private var discoverB: String { "\(discoverPlaylistPrefix)TWO" }
+
+    /// The defect this closes: `delete pp` while enumerating the collection it
+    /// mutated collected roughly HALF the matches per run (measured live:
+    /// four containers, one run, two removed). All four must go in ONE pass.
+    func testDiscoverSweepCollectsEveryMatchInOnePass() {
+        let four = (1...4).map { "\(discoverPlaylistPrefix)STALE-\($0)" }
+        guard let r = run(discover, library: four + [unrelated], context: nil,
+                          state: "stopped") else { return }
+        XCTAssertEqual(r.surviving, [unrelated],
+                       "one pass must collect all four, not roughly half")
+    }
+
+    /// The sparing rule is preserved: active playback keeps its container.
+    func testDiscoverSweepSparesTheActiveContainer() {
+        guard let r = run(discover, library: [discoverA, discoverB, unrelated],
+                          context: discoverA, state: "playing") else { return }
+        XCTAssertTrue(r.surviving.contains(discoverA), "the playing container is spared")
+        XCTAssertFalse(r.surviving.contains(discoverB), "the stale one is collected")
+        XCTAssertTrue(r.surviving.contains(unrelated))
+    }
+
+    /// The DELIBERATE difference from the album cleanup: a PAUSED Discover
+    /// container IS collected, because `current playlist` outlives a pause and
+    /// sparing on it leaked one row per paused play.
+    func testDiscoverSweepCollectsAPausedContainerUnlikeAlbumCleanup() {
+        guard let r = run(discover, library: [discoverA, unrelated],
+                          context: discoverA, state: "paused") else { return }
+        XCTAssertFalse(r.surviving.contains(discoverA),
+                       "paused releases the container in the Discover lifecycle")
+
+        // Same inputs through the album cleanup, which spares paused. The two
+        // rules are genuinely different and both are now executed.
+        guard let a = run(cleanup, library: [playing, unrelated],
+                          context: playing, state: "paused") else { return }
+        XCTAssertTrue(a.surviving.contains(playing),
+                      "the album cleanup spares a paused container")
+    }
+
+    /// It sweeps its own prefix only — never album containers, never user rows.
+    func testDiscoverSweepTouchesOnlyItsOwnPrefix() {
+        guard let r = run(discover, library: [discoverA, orphan, "__temp__X", unrelated],
+                          context: nil, state: "stopped") else { return }
+        XCTAssertFalse(r.surviving.contains(discoverA))
+        XCTAssertTrue(r.surviving.contains(orphan), "album containers are not its business")
+        XCTAssertTrue(r.surviving.contains("__temp__X"), "nor are manual temp containers")
+        XCTAssertTrue(r.surviving.contains(unrelated))
     }
 }

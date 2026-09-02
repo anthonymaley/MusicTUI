@@ -141,6 +141,22 @@ func shouldSpareCurrentPlaylist(playerState: String?) -> Bool {
 /// and the source library rows were untouched. What it does cost is context —
 /// `current playlist` reverts to the library, so what follows the paused track
 /// is library order rather than the rest of the container.
+/// §20.11: snapshot, then delete — the same correction the album sweeps got.
+///
+/// This loop used to `delete pp` while enumerating `every user playlist`, the
+/// live collection the deletion mutated, so one pass collected roughly HALF the
+/// matching containers (measured 2026-09-02 on a real library: four stale
+/// containers, one run, two removed). It converged over repeated runs, which is
+/// exactly why it never presented as a symptom — the TUI sweeps at both launch
+/// and exit, so a leftover was usually collected on a later pass.
+///
+/// It was deliberately held back from the album wave to keep that correction
+/// narrow, and because the Discover lifecycle has its own **deliberately
+/// different sparing rule**: `sweepablePlayerStates` means a PAUSED container
+/// is collected here, where the album cleanup spares it. That rule is untouched
+/// — only the enumeration is fixed. `keepName` is still set solely in a
+/// non-sweepable state, so the paused-collect behaviour is preserved, and the
+/// nine tests pinning the sparing truth table still hold.
 func discoverSweepScript() -> String {
     let activeGuard = sweepablePlayerStates
         .map { "playerStateText is not \"\($0)\"" }
@@ -156,10 +172,18 @@ func discoverSweepScript() -> String {
                 set keepName to name of current playlist
             end try
         end if
+        set eligibleNames to {}
         repeat with pp in (every user playlist)
             try
                 set nm to name of pp
-                if (nm starts with "\(discoverPlaylistPrefix)") and (nm is not keepName) then delete pp
+                if (nm starts with "\(discoverPlaylistPrefix)") and (nm is not keepName) and (eligibleNames does not contain nm) then
+                    set end of eligibleNames to nm
+                end if
+            end try
+        end repeat
+        repeat with nm in eligibleNames
+            try
+                delete (every user playlist whose name is nm)
             end try
         end repeat
         """
