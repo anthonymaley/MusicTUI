@@ -78,24 +78,46 @@ func parsePlaylistTracksResult(_ result: String) -> (count: Int, lines: [String]
 /// currently playing — deleting the playing playlist reverts Music to the library.
 /// Safe to run off-main at startup. Called once, from the shell's launch path.
 ///
-/// Legacy cleanup, deliberately left on the old spare rule: nothing in Sources/
+/// Legacy cleanup, deliberately left on the old SPARE RULE: nothing in Sources/
 /// creates a `__queue__ ` playlist any more, so this collects containers from
 /// versions that did. The paused-container leak fixed in sweepDiscoverPlaylists
 /// below is not worth porting here, because no path feeds this prefix.
+///
+/// §20.12: the ENUMERATION is another matter and is now fixed. This was still a
+/// `delete pp` while iterating the collection it mutated, so a launch carrying
+/// several legacy orphans collected roughly half of them per run. §20.11's
+/// commit called the Discover sweep "the last carrier" of that defect; that was
+/// wrong, and this is why — it was the last carrier among CURRENTLY GENERATED
+/// containers. Spare rule unchanged, enumeration corrected.
+/// The legacy `__queue__` sweep script, extracted so it can be EXECUTED in a
+/// test rather than only read. It was inline, which is why the §20 defect
+/// survived here after both other sweeps were corrected.
+func legacyQueueSweepScript() -> String {
+    """
+        set keepName to ""
+        try
+            set keepName to name of current playlist
+        end try
+        set eligibleNames to {}
+        repeat with pp in (every user playlist)
+            try
+                set nm to name of pp
+                if (nm starts with "__queue__ ") and (nm is not keepName) and (eligibleNames does not contain nm) then
+                    set end of eligibleNames to nm
+                end if
+            end try
+        end repeat
+        repeat with nm in eligibleNames
+            try
+                delete (every user playlist whose name is nm)
+            end try
+        end repeat
+"""
+}
+
 func sweepQueuePlaylists(backend: AppleScriptBackend) {
     _ = try? syncRun {
-        try await backend.runMusic("""
-            set keepName to ""
-            try
-                set keepName to name of current playlist
-            end try
-            repeat with pp in (every user playlist)
-                try
-                    set nm to name of pp
-                    if (nm starts with "__queue__ ") and (nm is not keepName) then delete pp
-                end try
-            end repeat
-        """)
+        try await backend.runMusic(legacyQueueSweepScript())
     }
 }
 
@@ -141,6 +163,19 @@ func shouldSpareCurrentPlaylist(playerState: String?) -> Bool {
 /// and the source library rows were untouched. What it does cost is context —
 /// `current playlist` reverts to the library, so what follows the paused track
 /// is library order rather than the rest of the container.
+/// §20.12: an ACTIVE state with an unreadable context now defers.
+///
+/// The state read falls back to `playing`, which fails toward sparing — but the
+/// identity needed to spare with was then read in a bare `try`. If
+/// `name of current playlist` threw, `keepName` stayed empty and the sweep
+/// captured and deleted EVERY Discover container, including the one playing.
+/// Measured in the harness: `state: "playing"`, unreadable context, both
+/// containers gone. The state was recognised; the identity was not, and the
+/// documented asymmetry above says a wrongly swept container reverts live
+/// playback to the library. The album cleanup already deferred here; this did
+/// not. Paused is untouched: it is sweepable and never needs a readable
+/// context, so only a NON-sweepable state with an unreadable one defers.
+///
 /// §20.11: snapshot, then delete — the same correction the album sweeps got.
 ///
 /// This loop used to `delete pp` while enumerating `every user playlist`, the
@@ -163,15 +198,19 @@ func discoverSweepScript() -> String {
         .joined(separator: " and ")
     return """
         set keepName to ""
+        set contextReadable to true
         set playerStateText to "\(unreadablePlayerStateFallback)"
         try
             set playerStateText to player state as text
         end try
         if \(activeGuard) then
+            set contextReadable to false
             try
                 set keepName to name of current playlist
+                set contextReadable to true
             end try
         end if
+        if not contextReadable then return
         set eligibleNames to {}
         repeat with pp in (every user playlist)
             try

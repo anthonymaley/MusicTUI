@@ -92,8 +92,16 @@ final class SweepScriptExecutionTests: XCTestCase {
             script = script.replacingOccurrences(of: from, with: to)
             applied += 1
         }
-        XCTAssertGreaterThanOrEqual(applied, 5, "too few substitutions applied — harness is stale",
-                                    file: file, line: line)
+        // The ESSENTIAL substitution is the collection source: without it the
+        // script would read the real library. Everything else varies by script
+        // (the legacy queue sweep reads no player state at all, so an arbitrary
+        // "at least N applied" floor was wrong rather than protective). The
+        // real staleness guard is the post-condition below.
+        XCTAssertTrue(script.contains("repeat with pp in libNames"),
+                      "collection substitution did not apply — the script would read the real library",
+                      file: file, line: line)
+        XCTAssertGreaterThan(applied, 0, "no substitutions applied — harness is stale",
+                             file: file, line: line)
 
         // A REAL whitelist. The previous check denied five known spellings,
         // which is the same KIND of check the round before it failed on: a
@@ -488,6 +496,9 @@ final class SweepScriptExecutionTests: XCTestCase {
     // MARK: - §20.11: the Discover sweep, the last carrier of the §20 defect
 
     private var discover: String { discoverSweepScript() }
+    /// The queue sweep's script is inline in `sweepQueuePlaylists`, so the
+    /// harness needs the same text. Pinned identical by a test below.
+    private var queueSweepScriptForTest: String { legacyQueueSweepScript() }
     private var discoverA: String { "\(discoverPlaylistPrefix)ONE" }
     private var discoverB: String { "\(discoverPlaylistPrefix)TWO" }
 
@@ -536,5 +547,44 @@ final class SweepScriptExecutionTests: XCTestCase {
         XCTAssertTrue(r.surviving.contains(orphan), "album containers are not its business")
         XCTAssertTrue(r.surviving.contains("__temp__X"), "nor are manual temp containers")
         XCTAssertTrue(r.surviving.contains(unrelated))
+    }
+
+    /// §20.12: an ACTIVE state whose context cannot be read must DELETE NOTHING.
+    ///
+    /// The reviewer supplied this case and it failed before the fix: state
+    /// `playing`, unreadable context, and BOTH Discover containers were
+    /// deleted — including the one being listened to. The state read falls back
+    /// to `playing` and so fails toward sparing, but the identity to spare WITH
+    /// was read in a bare `try`; when it threw, `keepName` stayed empty and
+    /// every container looked stale. §20.11's commit claimed the active
+    /// container invariant while the harness could demonstrate its negation.
+    func testDiscoverSweepDefersWhenActiveButContextUnreadable() {
+        guard let r = run(discover, library: [discoverA, discoverB, unrelated],
+                          context: nil, state: "playing") else { return }
+        XCTAssertTrue(r.surviving.contains(discoverA),
+                      "an unreadable context while active must spare, not sweep")
+        XCTAssertTrue(r.surviving.contains(discoverB))
+        XCTAssertEqual(r.surviving.count, 3, "nothing at all is deleted")
+    }
+
+    /// The deliberate paused rule is NOT affected by that deferral: paused is
+    /// sweepable, so it never needs a readable context and still collects.
+    func testDiscoverSweepStillCollectsWhenPausedWithUnreadableContext() {
+        guard let r = run(discover, library: [discoverA, unrelated],
+                          context: nil, state: "paused") else { return }
+        XCTAssertFalse(r.surviving.contains(discoverA),
+                       "paused releases the container regardless of context readability")
+    }
+
+    /// §20.12: the legacy `__queue__` sweep was the OTHER surviving carrier of
+    /// the §20 defect — §20.11 called Discover "the last carrier" and was wrong.
+    /// No current source path creates these, but a library holding several
+    /// legacy orphans collected roughly half of them per launch.
+    func testQueueSweepCollectsEveryLegacyOrphanInOnePass() {
+        let four = (1...4).map { "__queue__ LEGACY-\($0)" }
+        guard let r = run(queueSweepScriptForTest, library: four + [unrelated],
+                          context: nil, state: "stopped") else { return }
+        XCTAssertEqual(r.surviving, [unrelated],
+                       "all four legacy orphans go in one pass, not roughly half")
     }
 }
