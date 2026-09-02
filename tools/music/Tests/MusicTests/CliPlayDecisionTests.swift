@@ -54,9 +54,9 @@ final class CliPlayDecisionTests: XCTestCase {
         XCTAssertFalse(isBlankAlbumQuery(" x "))
     }
 
-    private func albumRow(_ index: Int, artist: String = "A", album: String,
+    private func albumRow(_ index: Int, artist: String = "A", albumArtist: String? = nil, album: String,
                           disc: Int = 1, track: Int = 1, cloud: String = "subscription") -> LibraryAlbumRow {
-        LibraryAlbumRow(index: index, name: "T\(index)", artist: artist, albumArtist: artist,
+        LibraryAlbumRow(index: index, name: "T\(index)", artist: artist, albumArtist: albumArtist ?? artist,
                         cloudStatus: cloud, disc: disc, track: track, album: album)
     }
 
@@ -80,6 +80,68 @@ final class CliPlayDecisionTests: XCTestCase {
             albumRow(2, artist: "Artist B", album: "Greatest Hits"),
         ]
         XCTAssertEqual(groupRowsByAlbum(rows).count, 2)
+    }
+
+    // MARK: §17.3 — compatible album-artist metadata collapses
+
+    /// The album-artist field is not reliably uniform within one real album:
+    /// commonly empty on locally added tracks. Before this fix, a genuine
+    /// album with a mix of empty and populated album-artist credits split
+    /// into two groups and returned an unactionable `.ambiguous` naming the
+    /// same title twice. One side empty is a compatible pair, so it must
+    /// collapse into ONE group carrying every row.
+    func testGroupRowsByAlbumCollapsesEmptyAlbumArtistIntoAPopulatedOne() {
+        let rows = [
+            albumRow(1, artist: "Air", albumArtist: "Air", album: "Moon Safari", track: 1),
+            albumRow(2, artist: "Air", albumArtist: "", album: "Moon Safari", track: 2),   // locally added, no album artist
+            albumRow(3, artist: "Air", albumArtist: "Air", album: "Moon Safari", track: 3),
+        ]
+        let groups = groupRowsByAlbum(rows)
+        XCTAssertEqual(groups.count, 1, "an empty album-artist credit must collapse into the one real album, not split it")
+        XCTAssertEqual(Set(groups[0].rows.map(\.index)), [1, 2, 3])
+    }
+
+    /// §17.1/§16.6 must still hold after the collapse: `decideAlbumPlay`
+    /// resolves and plays the WHOLE collapsed album, not a partial group.
+    func testDecideAlbumPlayResolvesAnAlbumWithMixedEmptyAndPopulatedAlbumArtist() {
+        let rows = [
+            albumRow(1, artist: "Air", albumArtist: "Air", album: "Moon Safari", track: 1),
+            albumRow(2, artist: "Air", albumArtist: "", album: "Moon Safari", track: 2),
+        ]
+        switch decideAlbumPlay(rows, query: "Moon Safari") {
+        case .play(let chosenRows, _, let playable, let matched):
+            XCTAssertEqual(playable, 2)
+            XCTAssertEqual(matched, 2)
+            XCTAssertEqual(Set(chosenRows.map(\.index)), [1, 2])
+        default:
+            XCTFail("compatible (empty vs populated) album-artist credits must collapse and play, not go ambiguous")
+        }
+    }
+
+    /// The other direction, required by §17.3: two GENUINELY different albums
+    /// that merely share a title must stay split and remain ambiguous — the
+    /// compatibility rule must never merge unrelated albums just because they
+    /// share a title.
+    func testGroupRowsByAlbumKeepsGenuinelyDifferentAlbumArtistsSplit() {
+        let rows = [
+            albumRow(1, artist: "Artist A", albumArtist: "Artist A", album: "Greatest Hits"),
+            albumRow(2, artist: "Artist B", albumArtist: "Artist B", album: "Greatest Hits"),
+        ]
+        let groups = groupRowsByAlbum(rows)
+        XCTAssertEqual(groups.count, 2, "genuinely different album artists sharing a title must never collapse")
+    }
+
+    func testDecideAlbumPlayStaysAmbiguousForGenuinelyDifferentAlbumArtists() {
+        let rows = [
+            albumRow(1, artist: "Artist A", albumArtist: "Artist A", album: "Greatest Hits"),
+            albumRow(2, artist: "Artist B", albumArtist: "Artist B", album: "Greatest Hits"),
+        ]
+        switch decideAlbumPlay(rows, query: "Greatest Hits") {
+        case .ambiguous:
+            break
+        default:
+            XCTFail("genuinely different albums sharing a title must stay split and ambiguous")
+        }
     }
 
     /// §16.6's broad-query regression: `music play --album "live"` runs a

@@ -291,7 +291,74 @@ func groupRowsByAlbum(_ rows: [LibraryAlbumRow]) -> [AlbumGroup] {
         }
         buckets[key, default: []].append(r)
     }
-    return order.map { AlbumGroup(displayName: display[$0] ?? "", rows: buckets[$0] ?? []) }
+    let fineGroups = order.map { AlbumGroup(displayName: display[$0] ?? "", rows: buckets[$0] ?? []) }
+    return collapseCompatibleAlbumArtistGroups(fineGroups)
+}
+
+/// §17.3 (corrects §16.6's grouping): collapse groups that share a
+/// normalised album title when their album-artist credits are compatible —
+/// one side empty, or one folds into the other under `normalizeCredit`
+/// (its credit's tokens are a subset of the other's). The album-artist field
+/// is not reliably uniform within one real album: it is commonly empty on
+/// locally added tracks and drifts on compilations and classical releases,
+/// so the fine-grained (title, album-artist) grouping above can split one
+/// genuine album into two groups and return an unactionable `.ambiguous`
+/// naming the same title twice. Groups whose credits are genuinely different
+/// stay split, because two different albums may legitimately share a title
+/// (`--artist` resolves that case).
+///
+/// All-or-nothing per title bucket: if ANY pair of credits in a same-titled
+/// bucket is incompatible, nothing in that bucket merges. This is
+/// deliberately conservative — it never lets an incompatible pair merge
+/// through a third, mutually-compatible group — at the cost of not
+/// collapsing a compatible subset when an unrelated album also shares the
+/// title. That trade favours the same asymmetry as the rest of this feature:
+/// a wrongly-kept-split album is a solvable `--artist` prompt; a wrongly
+/// merged one seeds the container with the wrong tracks. Consistent with
+/// `selectAlbumTracks`'s existing tolerance for per-track soloist credits
+/// (a singleton album-artist set plays whole). Order-preserving. Pure →
+/// unit-tested.
+func collapseCompatibleAlbumArtistGroups(_ groups: [AlbumGroup]) -> [AlbumGroup] {
+    var titleOrder: [String] = []
+    var byTitle: [String: [AlbumGroup]] = [:]
+    for g in groups {
+        let titleKey = normalizeAlbumTitle(g.displayName)
+        if byTitle[titleKey] == nil { titleOrder.append(titleKey) }
+        byTitle[titleKey, default: []].append(g)
+    }
+    var result: [AlbumGroup] = []
+    for titleKey in titleOrder {
+        let bucket = byTitle[titleKey] ?? []
+        if bucket.count > 1, albumArtistCreditsAreCompatible(bucket) {
+            result.append(AlbumGroup(displayName: bucket[0].displayName, rows: bucket.flatMap { $0.rows }))
+        } else {
+            result.append(contentsOf: bucket)
+        }
+    }
+    return result
+}
+
+/// Whether every pair of these groups' album-artist credits is compatible:
+/// one is empty, or one's normalised credit tokens are a subset of the
+/// other's. Each group here is already homogeneous on `normalizeCredit(albumArtist)`
+/// (that's what fine-grained grouping partitioned on), so its first row's
+/// credit represents the whole group.
+func albumArtistCreditsAreCompatible(_ groups: [AlbumGroup]) -> Bool {
+    let credits = groups.map { normalizeCredit($0.rows.first?.albumArtist ?? "") }
+    guard credits.count > 1 else { return true }
+    for i in 0..<(credits.count - 1) {
+        for j in (i + 1)..<credits.count where !creditsAreCompatible(credits[i], credits[j]) {
+            return false
+        }
+    }
+    return true
+}
+
+private func creditsAreCompatible(_ a: String, _ b: String) -> Bool {
+    if a.isEmpty || b.isEmpty { return true }
+    let tokensA = Set(a.split(separator: " "))
+    let tokensB = Set(b.split(separator: " "))
+    return tokensA.isSubset(of: tokensB) || tokensB.isSubset(of: tokensA)
 }
 
 /// Pick an album's tracks from a title-only library fetch, resolving the artist in
