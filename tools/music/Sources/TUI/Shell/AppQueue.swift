@@ -295,17 +295,21 @@ func groupRowsByAlbum(_ rows: [LibraryAlbumRow]) -> [AlbumGroup] {
     return collapseCompatibleAlbumArtistGroups(fineGroups)
 }
 
-/// §17.3 (corrects §16.6's grouping): collapse groups that share a
-/// normalised album title when their album-artist credits are compatible —
-/// one side empty, or one folds into the other under `normalizeCredit`
-/// (its credit's tokens are a subset of the other's). The album-artist field
-/// is not reliably uniform within one real album: it is commonly empty on
-/// locally added tracks and drifts on compilations and classical releases,
-/// so the fine-grained (title, album-artist) grouping above can split one
-/// genuine album into two groups and return an unactionable `.ambiguous`
-/// naming the same title twice. Groups whose credits are genuinely different
-/// stay split, because two different albums may legitimately share a title
-/// (`--artist` resolves that case).
+/// §19 (corrects §16.6's grouping and supersedes §17.3's/§18.3's own
+/// description of it, both now stale): collapse groups that share a
+/// normalised album title when their EFFECTIVE album-artist credits — a
+/// group's own credit, or its rows' track-artist fallback per §18.3 when
+/// that credit is empty — are literally EQUAL as normalised strings.
+/// Neither an empty credit nor a subset/containment relation is compatible
+/// any more; see `albumArtistCreditsAreCompatible` and `creditsAreCompatible`
+/// below for why. The album-artist field is not reliably uniform within one
+/// real album: it is commonly empty on locally added tracks and drifts on
+/// compilations and classical releases, so the fine-grained (title,
+/// album-artist) grouping above can split one genuine album into two groups
+/// and return an unactionable `.ambiguous` naming the same title twice.
+/// Groups whose credits are genuinely different stay split, because two
+/// different albums may legitimately share a title (`--artist` resolves
+/// that case).
 ///
 /// All-or-nothing per title bucket: if ANY pair of credits in a same-titled
 /// bucket is incompatible, nothing in that bucket merges. This is
@@ -349,7 +353,12 @@ func collapseCompatibleAlbumArtistGroups(_ groups: [AlbumGroup]) -> [AlbumGroup]
 /// one another ("Queen" vs. "Queen Latifah"), so containment is rejected:
 /// it is not identity. The accepted cost is the collaboration case itself —
 /// "Queen" against "Queen & David Bowie" now produces an `.ambiguous`
-/// prompt instead of a merge, resolvable with `--artist`. Each group here is
+/// prompt that no `--artist` value resolves (§19.4): `--artist "Queen"`
+/// still matches both groups (`albumArtistFilter` narrows the fetch, it does
+/// not disambiguate the regrouped result), and `--artist "David Bowie"`
+/// matches only one, so it would silently play a partial album rather than
+/// fixing anything. The real remedy is correcting the drifted credit in
+/// Music; the CLI will not merge it speculatively. Each group here is
 /// already homogeneous on `normalizeCredit(albumArtist)` (that's what
 /// fine-grained grouping partitioned on), so `effectiveAlbumArtistCredit`
 /// represents the whole group.
@@ -415,9 +424,12 @@ func effectiveAlbumArtistCredit(_ group: AlbumGroup) -> String {
 /// identity, so it is rejected here for the same reason §18.3 rejected
 /// "empty means compatible": absence of a distinguishing signal is not
 /// evidence of sameness. The accepted cost is that genuine collaboration
-/// drift now surfaces as `.ambiguous` too, resolvable with `--artist` — a
-/// prompt the user can act on beats a container holding an album they did
-/// not ask for.
+/// drift now surfaces as `.ambiguous` too, and — unlike the case §19
+/// defends — no `--artist` value reassembles it (§19.4): any value either
+/// still matches every drifted group (ambiguity persists) or matches only
+/// some of them (a partial album plays, silently). A prompt the user can
+/// act on by fixing the metadata in Music beats a container holding an
+/// album they did not ask for.
 private func creditsAreCompatible(_ a: String, _ b: String) -> Bool {
     guard !a.isEmpty, !b.isEmpty else { return false }
     return a == b

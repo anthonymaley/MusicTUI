@@ -147,11 +147,18 @@ func albumOutcomeMessage(_ outcome: BoundedAlbumOutcome, title: String) -> Strin
     case .nonePlayable(let matched):
         return "Found \(matched) track(s) matching '\(title)', but none are playable yet (pre-release or removed)."
     case .ambiguous(let albums):
+        // §19.4: this is one of two different problems, and the message
+        // must not claim to know which, because the CLI cannot tell them
+        // apart. Offer both remedies rather than the one that only fixes
+        // one of them: --artist only ever narrows the fetch, so for a
+        // metadata-split album no --artist value reassembles it (§19.4).
         let shown = albums.prefix(8).map { $0.isEmpty ? "(untitled album)" : $0 }
         let list = shown.joined(separator: ", ")
         let more = albums.count > shown.count ? ", and \(albums.count - shown.count) more" : ""
         return "'\(title)' matches \(albums.count) different albums: \(list)\(more). "
-            + "Be more specific, or add --artist."
+            + "If these are different albums, add --artist to pick one. If this is one album "
+            + "with inconsistent album-artist credits, fix that metadata in Music — the CLI "
+            + "won't merge it for you."
     case .buildFailed(let containerRemoved):
         if containerRemoved {
             return "Couldn't build the temporary album container for '\(title)'. Nothing was played."

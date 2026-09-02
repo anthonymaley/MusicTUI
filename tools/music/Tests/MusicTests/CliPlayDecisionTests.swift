@@ -289,20 +289,30 @@ final class CliPlayDecisionTests: XCTestCase {
                        "none of the three credits are strictly equal, so the bucket must stay split")
     }
 
-    /// A three-group bucket where one pair is genuinely incompatible must
+    /// A three-group bucket with exactly one genuinely compatible pair must
     /// keep the WHOLE bucket split — the all-or-nothing rule documented on
     /// `collapseCompatibleAlbumArtistGroups` — never merge just the
     /// compatible pair and leave the third out, which could pick the wrong
-    /// two rows to combine.
+    /// two rows to combine. Rows 1 and 2 reach the same effective credit,
+    /// "air" — row 1 directly, row 2 via §18.3's track-artist fallback on
+    /// its blank album-artist — so they are the compatible pair; row 3
+    /// ("abba") is incompatible with both. This fixture replaces a former
+    /// Queen / Queen & David Bowie / ABBA one that, under §19's strict
+    /// string-equality rule, has every pair unequal: it kept asserting 3
+    /// groups but for the wrong reason (`testGroupRowsByAlbumKeepsAThreeGroupSubsetChainSplit`
+    /// above already covers "no pair is compatible"), so a pairwise-merging
+    /// implementation of `collapseCompatibleAlbumArtistGroups` would have
+    /// passed it silently. Only a fixture with a genuinely compatible pair
+    /// can catch that mutation.
     func testGroupRowsByAlbumKeepsAThreeGroupBucketSplitWhenAnyPairIsIncompatible() {
         let rows = [
-            albumRow(1, artist: "Queen", albumArtist: "Queen", album: "Anthology"),
-            albumRow(2, artist: "David Bowie", albumArtist: "Queen & David Bowie", album: "Anthology"),
+            albumRow(1, artist: "Air", albumArtist: "Air", album: "Anthology"),
+            albumRow(2, artist: "Air", albumArtist: "", album: "Anthology"),   // effective credit "air" via §18.3 fallback
             albumRow(3, artist: "ABBA", albumArtist: "ABBA", album: "Anthology"),
         ]
         let groups = groupRowsByAlbum(rows)
         XCTAssertEqual(groups.count, 3,
-                       "one incompatible pair must keep the entire bucket split, not merge the compatible pair alone")
+                       "rows 1 and 2 are compatible (both effective credit \"air\"), but row 3 is not — the entire bucket must stay split, not merge the compatible pair alone")
     }
 
     /// §16.6's broad-query regression: `music play --album "live"` runs a
@@ -419,6 +429,28 @@ extension CliPlayDecisionTests {
                        "No albums found matching 'Moon Safari'")
         XCTAssertEqual(albumOutcomeMessage(.nonePlayable(matched: 4), title: "X"),
                        "Found 4 track(s) matching 'X', but none are playable yet (pre-release or removed).")
+    }
+
+    /// §19.4: the message cannot know which of two problems the user is in
+    /// — several genuinely distinct same-titled albums, or one album split
+    /// across inconsistent album-artist metadata — so it must offer both
+    /// remedies rather than implying it knows. Assert on the two remedies
+    /// independently (not one fixed string), so this fails if either is
+    /// dropped, alongside the pre-existing title list, the
+    /// `(untitled album)` fallback, and the 8-item cap, all exercised at
+    /// once by one payload of 10 albums with a blank title among the first
+    /// eight.
+    func testAmbiguousMessageOffersBothRemediesAndKeepsTheTitleList() {
+        let albums = [""] + (1...9).map { "Album \($0)" }
+        let msg = albumOutcomeMessage(.ambiguous(albums: albums), title: "X")!
+        XCTAssertTrue(msg.contains("--artist"),
+                      "must offer the --artist remedy for genuinely distinct same-titled albums: \(msg)")
+        XCTAssertTrue(msg.lowercased().contains("music"),
+                      "must offer the fix-the-metadata-in-Music remedy for a metadata-split album: \(msg)")
+        XCTAssertTrue(msg.contains("Album 1"), "must keep listing the matched titles: \(msg)")
+        XCTAssertFalse(msg.contains("Album 9"), "must cap the listed titles at 8: \(msg)")
+        XCTAssertTrue(msg.contains("2 more"), "must summarize what the cap dropped: \(msg)")
+        XCTAssertTrue(msg.contains("(untitled album)"), "must fall back for a blank album title: \(msg)")
     }
 
     /// Each failure names its own stage, so a bug report can tell them apart.
