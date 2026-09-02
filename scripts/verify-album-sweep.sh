@@ -11,9 +11,10 @@
 # It DOES invoke `music playlist cleanup` once, as the behaviour under test,
 # and that command deletes EVERY owned temp container in the library
 # (`__temp__` and `__album__ `), not only this script's four. That is why the
-# preflight below FAILS CLOSED three ways: if any owned container already
-# exists, if the probe cannot be read at all, or if the filter over that probe
-# fails. The broad cleanup is only exercised in a fixture positively confirmed
+# preflight below FAILS CLOSED four ways: if any owned container already
+# exists, if the probe cannot be read, if normalising its output fails, or if
+# the filter over it fails. Each stage is checked separately, because under
+# pipefail a later stage's "no match" would otherwise mask an earlier failure. The broad cleanup is only exercised in a fixture positively confirmed
 # clean, so its
 # measured effect is exactly the four this run created and the net-effect
 # assertions below are meaningful rather than accidental.
@@ -103,8 +104,20 @@ fi
 # probe above: grep exit 1 means "no match" (genuinely clean), but exit 2 means
 # the filter FAILED — an unbalanced bracket in an OWNED_PREFIXES entry, say —
 # and collapsing the two reports a clean fixture that was never established.
+# Split the stages. Under pipefail a pipeline reports the RIGHTMOST non-zero
+# status, so grep's exit 1 ("no match" — the clean case) would mask a failure in
+# tr or sed and read as a clean fixture. Each stage is checked on its own.
 set +e
-preexisting=$(printf '%s' "$all_names" | tr ',' '\n' | sed 's/^ *//' | grep -E "$OWNED_RE")
+stripped=$(printf '%s' "$all_names" | tr ',' '\n' | sed 's/^ *//')
+strip_rc=$?
+set -e
+if [ "$strip_rc" -ne 0 ]; then
+    echo "✗ PREFLIGHT ABORTED: could not normalise the playlist list (exit $strip_rc)." >&2
+    echo "  Refusing to run a broad cleanup on an unverified fixture." >&2
+    exit 1
+fi
+set +e
+preexisting=$(printf '%s' "$stripped" | grep -E "$OWNED_RE")
 filter_rc=$?
 set -e
 if [ "$filter_rc" -gt 1 ]; then

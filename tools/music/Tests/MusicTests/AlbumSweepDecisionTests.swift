@@ -169,15 +169,17 @@ final class AlbumSweepDecisionTests: XCTestCase {
                       "uncounted: keepName exclusion must gate the append into eligibleNames")
 
         // §20.6 split this capture body per variant so the counted one could
-        // record `protectedMatch`. That split removed this property's only
-        // coverage for the counted variant: the shared template used to make
-        // one assertion pin both. A mutation making the counted append
-        // UNCONDITIONAL — which deletes the container the user is listening
-        // to — passed every other test in the suite.
+        // record `protectedMatch`, which dropped the counted variant's only
+        // coverage of this property.
         //
-        // The counted gate is an if/else-if rather than a conjunction, so the
-        // ELSE is the load-bearing token: it is the only thing keeping the
-        // append conditional on nm NOT being keepName.
+        // What follows is a TEXT pin, and a text pin cannot see conditionality
+        // or reachability: a dead `else` branch with the append hoisted below
+        // `end if`, or the whole token sequence hoisted into an `if false`
+        // decoy, keeps every token present and ordered while capturing the
+        // container the user is listening to. Those shapes are caught by
+        // SweepCaptureExecutionTests, which RUNS this loop over a synthetic
+        // name list. This pin is kept as a cheap structural guard; it is not
+        // the guarantee. See §20.7.
         let counted = albumSweepGuardedScript(prefixes: ["x"], deferReturn: "return \"deferred\"", countDeleted: true)
         XCTAssertEqual(counted.components(separatedBy: "set end of eligibleNames to nm").count - 1, 1,
                        "counted: exactly one append path into eligibleNames")
