@@ -409,6 +409,10 @@ func parsePlaylistCleanupResult(_ raw: String) -> PlaylistCleanupResult {
     let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
     switch trimmed {
     case "deferred": return .deferred
+    // §20.9: the script says outright that a count read failed, so how many
+    // were removed is genuinely unmeasured. Explicit rather than leaning on
+    // the default arm, so the intent survives a future edit.
+    case "unknown": return .unreadable
     case "none": return .nothingExisted
     case "spared": return .sparedCandidates
     default:
@@ -569,8 +573,19 @@ func albumSweepDecision(playerState: String?, contextReadable: Bool) -> AlbumSwe
 ///      `removedCount = beforeCount - afterCount`, clamped at zero.
 ///    - `afterCount > 0`  -> "partial:<removed>:<remaining>", an explicit
 ///      partial failure that says nothing about playback.
-///    - `afterCount == 0` and `removedCount == 0` (a watcher won the race
-///      and removed them first) -> "none", NEVER "spared".
+///    - `afterCount == 0` and `removedCount == 0` (a watcher won the race and
+///      removed them first) -> "none" when nothing was protected, but
+///      **"spared" when `protectedMatch` is true**. §20.9: reporting "none"
+///      there printed "No temp playlists to clean up." while an `__album__`
+///      container was audibly playing — the precise confusion
+///      `.sparedCandidates` exists to prevent. The rule "race -> none, never
+///      spared" is right about not INVENTING a spare; it was wrong to
+///      suppress a real one. `protectedMatch` is the evidence, and it is only
+///      ever set by the container that is actually current.
+///    - a count that THREW on any name -> "unknown". §20.9: the counts are
+///      accumulated inside `try`, so a library-side failure on every name
+///      previously yielded 0 and 0 and was reported as "none" — claiming
+///      nothing existed on the strength of a read that did not happen.
 ///    - otherwise -> the measured `removedCount`.
 ///
 ///    Counting only the deduplicated names this invocation captured means an
@@ -615,9 +630,12 @@ func albumSweepGuardedScript(prefixes: [String], deferReturn: String, countDelet
             end if
         end if
         set beforeCount to 0
+        set countFailed to false
         repeat with nm in eligibleNames
             try
                 set beforeCount to beforeCount + (count of (every user playlist whose name is nm))
+            on error
+                set countFailed to true
             end try
         end repeat
         repeat with nm in eligibleNames
@@ -629,15 +647,22 @@ func albumSweepGuardedScript(prefixes: [String], deferReturn: String, countDelet
         repeat with nm in eligibleNames
             try
                 set afterCount to afterCount + (count of (every user playlist whose name is nm))
+            on error
+                set countFailed to true
             end try
         end repeat
+        if countFailed then return "unknown"
         set removedCount to beforeCount - afterCount
         if removedCount < 0 then set removedCount to 0
         if afterCount > 0 then
             return "partial:" & removedCount & ":" & afterCount
         end if
         if removedCount is 0 then
-            return "none"
+            if protectedMatch then
+                return "spared"
+            else
+                return "none"
+            end if
         end if
         return removedCount
         """

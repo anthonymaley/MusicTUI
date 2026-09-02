@@ -55,17 +55,36 @@ final class PlaylistCleanupOutcomeTests: XCTestCase {
 
     // MARK: - generated script: classification is measured
 
-    /// TRUE SPARING: `"spared"` is reachable ONLY from the empty-snapshot
-    /// guard, and is unreachable once the delete pass has run.
-    func testSparedIsGuardedByAnEmptySnapshotAndUnreachableAfterDeleting() {
+    /// TRUE SPARING: every `"spared"` return is guarded by `protectedMatch`.
+    ///
+    /// §20.9 changed the shape deliberately. `"spared"` used to be reachable
+    /// only from the empty-snapshot guard, and this test pinned that. But a
+    /// race to zero WITH a protected container then reported "none", printing
+    /// "No temp playlists to clean up." while an `__album__` container was
+    /// audibly playing. So spared is now reachable after the delete pass too —
+    /// and the invariant that actually matters is not WHERE it is returned but
+    /// that it is never returned without evidence: `protectedMatch` is set only
+    /// by the container that is genuinely current.
+    ///
+    /// This is a structural guard. The guarantee is
+    /// `SweepScriptExecutionTests`, which runs the script and asserts spared
+    /// appears only when a protected container really was present.
+    func testEverySparedReturnIsGuardedByTheProtectedMatch() {
         let s = script
-        XCTAssertEqual(s.components(separatedBy: "return \"spared\"").count - 1, 1,
-                       "exactly one spared return")
-        let guardIdx = index("if (count of eligibleNames) is 0 then", s)
-        let spared = index("return \"spared\"", s)
-        let delete = index("delete (every user playlist whose name is nm)", s)
-        XCTAssertLessThan(guardIdx, spared, "spared must sit inside the empty-snapshot guard")
-        XCTAssertLessThan(spared, delete, "spared must be unreachable after the delete pass")
+        let occurrences = s.components(separatedBy: "return \"spared\"").count - 1
+        XCTAssertEqual(occurrences, 2,
+                       "one spared return per protected path: empty snapshot, and race to zero")
+        var searchStart = s.startIndex
+        var checked = 0
+        while let r = s.range(of: "return \"spared\"", range: searchStart..<s.endIndex) {
+            let lookbackStart = s.index(r.lowerBound, offsetBy: -60, limitedBy: s.startIndex) ?? s.startIndex
+            let lookback = String(s[lookbackStart..<r.lowerBound])
+            XCTAssertTrue(lookback.contains("if protectedMatch then"),
+                          "a spared return with no protectedMatch guard above it: ...\(lookback)")
+            checked += 1
+            searchStart = r.upperBound
+        }
+        XCTAssertEqual(checked, 2, "both occurrences were inspected")
     }
 
     /// True sparing additionally requires the PROTECTED match, not merely that

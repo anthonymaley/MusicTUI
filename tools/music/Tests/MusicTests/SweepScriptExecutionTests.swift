@@ -44,7 +44,7 @@ final class SweepScriptExecutionTests: XCTestCase {
     /// `.alwaysZero` models the RACE TO ZERO: the snapshot is non-empty but the
     /// objects are already gone by the time the counts are taken, because a
     /// watcher won the race. That arm must report "none" and never "spared".
-    enum CountMode: String { case real, alwaysZero }
+    enum CountMode: String { case real, alwaysZero, fails }
 
     func run(_ script0: String,
              library: [String],
@@ -103,14 +103,25 @@ final class SweepScriptExecutionTests: XCTestCase {
         // unlisted, because nothing is listed as bad in the first place.
         let permitted: Set<String> = [
             "afterCount", "and", "as", "beforeCount", "contain", "contextReadable",
-            "count", "countOf", "ctxRead", "deleteAll", "does", "eligibleNames",
+            "count", "countFailed", "countOf", "ctxRead", "deleteAll", "does",
+            "eligibleNames", "error", "on",
             "else", "end", "false", "if", "in", "is", "keepName", "libNames",
             "my", "nm", "not", "of", "or", "playerStateText", "pp",
             "protectedMatch", "recognised", "removedCount", "repeat", "return",
             "set", "starts", "stateRead", "text", "then", "to", "true", "try", "with",
         ]
+        // `"[^"]*"` pairs quotes POSITIONALLY, so a single escaped quote inside
+        // a literal inverts which regions are treated as code — verified to let
+        // injected code past the whitelist entirely. This form consumes escape
+        // pairs, and the post-condition below is the real guard: if any quote
+        // survives, stripping desynchronised and the token scan is meaningless.
         let literalsStripped = script.replacingOccurrences(
-            of: "\"[^\"]*\"", with: "\"\"", options: .regularExpression)
+            of: "\"(\\\\.|[^\"\\\\])*\"", with: "", options: .regularExpression)
+        guard !literalsStripped.contains("\"") else {
+            XCTFail("literal stripping desynchronised — token scan cannot be trusted",
+                    file: file, line: line)
+            return nil
+        }
         var seen = Set<String>()
         literalsStripped.enumerateSubstrings(in: literalsStripped.startIndex...,
                                              options: [.byWords]) { w, _, _, _ in
@@ -142,6 +153,7 @@ final class SweepScriptExecutionTests: XCTestCase {
         on countOf(n)
             global libNames, countMode
             if countMode is "alwaysZero" then return 0
+            if countMode is "fails" then error "count unavailable" number -1728
             set c to 0
             repeat with x in libNames
                 if (x as text) is n then set c to c + 1
@@ -398,10 +410,41 @@ final class SweepScriptExecutionTests: XCTestCase {
     /// race. Nothing was removed BY THIS INVOCATION, so the honest report is
     /// "none". Reporting "spared" here would claim playback that is not
     /// happening, which is the §20.3 misreport this series began with.
-    func testRaceToZeroReportsNoneNeverSpared() {
+    func testRaceToZeroReportsNoneWhenNothingWasProtected() {
+        // deleteMode .all so the synthetic library is CONSISTENT with the
+        // modelled race: the objects really are gone when the counts are taken.
         guard let r = run(cleanup, library: [orphan, unrelated], context: nil,
-                          state: "stopped", deleteMode: .none, countMode: .alwaysZero) else { return }
-        XCTAssertEqual(r.result, "none", "a race to zero reports nothing, never spared")
-        XCTAssertNotEqual(r.result, "spared")
+                          state: "stopped", deleteMode: .all, countMode: .alwaysZero) else { return }
+        XCTAssertEqual(r.result, "none", "nothing protected, nothing measured removed")
+        XCTAssertNotEqual(r.result, "spared", "never invent a spare that did not happen")
+    }
+
+    /// §20.9: the same race, but a container IS playing and WAS spared.
+    /// Reporting "none" here printed "No temp playlists to clean up." while an
+    /// `__album__` container was audibly playing. The race rule is right that
+    /// a spare must not be invented; it was wrong to suppress a real one.
+    func testRaceToZeroStillReportsSparedWhenAContainerWasProtected() {
+        guard let r = run(cleanup, library: [playing, orphan, unrelated], context: playing,
+                          state: "playing", deleteMode: .all, countMode: .alwaysZero) else { return }
+        XCTAssertEqual(r.result, "spared",
+                       "a container was playing and spared — saying 'none' denies it exists")
+        XCTAssertNotEqual(playlistCleanupMessage(parsePlaylistCleanupResult(r.result)),
+                          "No temp playlists to clean up.")
+        XCTAssertTrue(r.surviving.contains(playing), "and it is still there")
+    }
+
+    /// §20.9: the counts are accumulated inside `try`. A library-side read
+    /// failure on every name previously yielded 0 and 0 and was reported as
+    /// "none" — claiming nothing existed on the strength of a read that never
+    /// happened.
+    func testCountFailureReportsUnknownNotNothing() {
+        guard let r = run(cleanup, library: [orphan, unrelated], context: nil,
+                          state: "stopped", deleteMode: .none, countMode: .fails) else { return }
+        XCTAssertEqual(r.result, "unknown")
+        XCTAssertEqual(parsePlaylistCleanupResult(r.result), .unreadable)
+        let msg = playlistCleanupMessage(.unreadable)
+        XCTAssertTrue(msg.contains("unknown"), "the user is told the count is unknown")
+        XCTAssertNotEqual(msg, "No temp playlists to clean up.")
+        XCTAssertTrue(r.surviving.contains(orphan), "and nothing was actually removed")
     }
 }
