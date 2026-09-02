@@ -11,9 +11,10 @@
 # It DOES invoke `music playlist cleanup` once, as the behaviour under test,
 # and that command deletes EVERY owned temp container in the library
 # (`__temp__` and `__album__ `), not only this script's four. That is why the
-# preflight below FAILS CLOSED if any owned container already exists, AND if
-# the probe that checks cannot be read at all: the
-# broad cleanup is only exercised in an intentionally clean fixture, so its
+# preflight below FAILS CLOSED three ways: if any owned container already
+# exists, if the probe cannot be read at all, or if the filter over that probe
+# fails. The broad cleanup is only exercised in a fixture positively confirmed
+# clean, so its
 # measured effect is exactly the four this run created and the net-effect
 # assertions below are meaningful rather than accidental.
 #
@@ -30,7 +31,10 @@ set -euo pipefail
 MUSIC_BIN="${1:-$HOME/.local/bin/music}"
 OWNED_PREFIXES=('__temp__' '__album__ ')
 # Single source of truth: the preflight regex is BUILT from OWNED_PREFIXES, so
-# adding a prefix to the array cannot silently fail to take effect.
+# a prefix added to the array cannot fail to reach the filter. Entries are used
+# as ERE fragments, so an entry containing a metacharacter would break the
+# filter — which is why the filter's exit status is checked below rather than
+# being swallowed.
 OWNED_RE=$(printf '^%s|' "${OWNED_PREFIXES[@]}"); OWNED_RE=${OWNED_RE%|}
 
 if [ ! -x "$MUSIC_BIN" ]; then
@@ -95,7 +99,20 @@ if ! all_names=$(read_playlist_names); then
     echo "    $all_names" >&2
     exit 1
 fi
-preexisting=$(printf '%s' "$all_names" | tr ',' '\n' | sed 's/^ *//' | grep -E "$OWNED_RE" || true)
+# `|| true` here would defeat pipefail exactly as `2>/dev/null` defeated the
+# probe above: grep exit 1 means "no match" (genuinely clean), but exit 2 means
+# the filter FAILED — an unbalanced bracket in an OWNED_PREFIXES entry, say —
+# and collapsing the two reports a clean fixture that was never established.
+set +e
+preexisting=$(printf '%s' "$all_names" | tr ',' '\n' | sed 's/^ *//' | grep -E "$OWNED_RE")
+filter_rc=$?
+set -e
+if [ "$filter_rc" -gt 1 ]; then
+    echo "✗ PREFLIGHT ABORTED: could not filter the playlist list (exit $filter_rc)." >&2
+    echo "  OWNED_RE was: $OWNED_RE" >&2
+    echo "  Refusing to run a broad cleanup on an unverified fixture." >&2
+    exit 1
+fi
 if [ -n "$preexisting" ]; then
     echo "✗ PREFLIGHT REFUSED: owned temp container(s) already exist:" >&2
     # Quoted + sed rather than unquoted printf: every `__album__ ` name

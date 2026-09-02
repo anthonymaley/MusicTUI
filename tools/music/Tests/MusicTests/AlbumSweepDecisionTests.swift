@@ -179,16 +179,28 @@ final class AlbumSweepDecisionTests: XCTestCase {
         // ELSE is the load-bearing token: it is the only thing keeping the
         // append conditional on nm NOT being keepName.
         let counted = albumSweepGuardedScript(prefixes: ["x"], deferReturn: "return \"deferred\"", countDeleted: true)
-        XCTAssertTrue(counted.contains("else if (eligibleNames does not contain nm) then"),
-                      "counted: the append must sit on the ELSE branch of the keepName test")
         XCTAssertEqual(counted.components(separatedBy: "set end of eligibleNames to nm").count - 1, 1,
                        "counted: exactly one append path into eligibleNames")
+
+        // Pin the ORDERED SEQUENCE, not the four tokens independently. Checking
+        // that each token merely appears somewhere passed against a mutation
+        // that SWAPPED the two branch bodies — appending keepName itself and
+        // recording protectedMatch for the stale containers, i.e. deleting the
+        // album the user is listening to and sparing the orphans. That mutation
+        // compiled, and all 925 tests passed. Order is the property; presence
+        // is not.
         guard let keepTest = counted.range(of: "if (nm is keepName) then")?.lowerBound,
+              let protectedSet = counted.range(of: "set protectedMatch to true")?.lowerBound,
+              let elseIf = counted.range(of: "else if (eligibleNames does not contain nm) then")?.lowerBound,
               let append = counted.range(of: "set end of eligibleNames to nm")?.lowerBound else {
-            return XCTFail("counted: expected a keepName test and an append")
+            return XCTFail("counted: expected keepName test, protected set, else-if and append")
         }
-        XCTAssertLessThan(keepTest, append,
-                          "counted: the append must be unreachable without passing the keepName test")
+        XCTAssertLessThan(keepTest, protectedSet,
+                          "counted: the THEN branch of the keepName test records protectedMatch")
+        XCTAssertLessThan(protectedSet, elseIf,
+                          "counted: protectedMatch belongs to the THEN branch, before the else-if")
+        XCTAssertLessThan(elseIf, append,
+                          "counted: the append belongs to the ELSE branch, after the else-if")
     }
 
     /// §20.6: the counted variant must distinguish FOUR outcomes, and each
@@ -222,6 +234,7 @@ final class AlbumSweepDecisionTests: XCTestCase {
         XCTAssertFalse(script.contains("\"none\""))
         XCTAssertFalse(script.contains("\"spared\""))
     }
+
     /// §20.6: the reported count is MEASURED, never predicted.
     ///
     /// The pre-§20.6 shape took the object count BEFORE deleting and reported
