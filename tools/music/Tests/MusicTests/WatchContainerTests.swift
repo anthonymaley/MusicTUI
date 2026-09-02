@@ -147,6 +147,7 @@ final class WatchContainerTests: XCTestCase {
 
         let deleted = executeAlbumWatcher(name: containerName, trackIDs: ["A"],
                                           manifestPath: manifestPath, run: recorder.run,
+                                          isRunning: { true },
                                           now: clock.now, sleep: clock.sleep,
                                           armTimeout: 5, pollInterval: 1, maxLifetime: 60)
 
@@ -167,6 +168,7 @@ final class WatchContainerTests: XCTestCase {
 
         let deleted = executeAlbumWatcher(name: containerName, trackIDs: ["TRACKX"],
                                           manifestPath: manifestPath, run: recorder.run,
+                                          isRunning: { true },
                                           now: clock.now, sleep: clock.sleep,
                                           armTimeout: 30, pollInterval: 15, maxLifetime: 3600)
 
@@ -189,6 +191,7 @@ final class WatchContainerTests: XCTestCase {
 
         let deleted = executeAlbumWatcher(name: containerName, trackIDs: ["TRACKX"],
                                           manifestPath: manifestPath, run: recorder.run,
+                                          isRunning: { true },
                                           now: clock.now, sleep: clock.sleep,
                                           armTimeout: 5, pollInterval: 1, maxLifetime: 5)
 
@@ -208,11 +211,141 @@ final class WatchContainerTests: XCTestCase {
         let clock = FakeClock()
 
         let deleted = albumWatcherLifecycle(name: containerName, trackIDs: ["TRACKX"],
-                                            run: recorder.run, now: clock.now, sleep: clock.sleep,
+                                            run: recorder.run, isRunning: { true },
+                                            now: clock.now, sleep: clock.sleep,
                                             armTimeout: 30, pollInterval: 15, maxLifetime: 3600)
 
         XCTAssertTrue(deleted, "must reach the real decision past the unreadable poll")
         XCTAssertEqual(recorder.calls.count, 3,
                        "must consume the nil poll via continue, not stop or misinterpret it")
+    }
+
+    // MARK: - §16.3: the watcher must never relaunch Music
+
+    /// `tell application "Music"` sends an Apple Event that launches a quit
+    /// app. The observation script must never reference `application "Music"`
+    /// at all — it has to ask System Events instead.
+    func testMusicIsRunningScriptNeverReferencesApplicationMusic() {
+        let s = musicIsRunningScript()
+        XCTAssertFalse(s.contains("application \"Music\""),
+                       "must never tell application \"Music\" — that launches a quit app")
+        XCTAssertTrue(s.contains("System Events"))
+        XCTAssertTrue(s.contains("exists process"))
+    }
+
+    /// If Music was never observed running, the lifecycle must exit
+    /// immediately without ever reaching an observation (which would itself
+    /// risk a `tell application "Music"` Apple Event).
+    /// Producer addendum 2026-09-01: the negative control. With the probe
+    /// returning false throughout, the watcher must invoke the script runner
+    /// ZERO times — neither the observation script nor the delete script is
+    /// ever issued — remove the manifest, and exit without deleting.
+    /// Asserting `recorder.calls.isEmpty` (not merely `deleted == false`) is
+    /// the property that actually proves "never spoke to Music at all":
+    /// "it didn't delete" is satisfiable by many wrong implementations that
+    /// still leak an observation Apple Event.
+    func testMusicNotRunningExitsWithoutInvokingTheRunnerAndRemovesManifest() throws {
+        let recorder = ScriptCallRecorder([nil])
+        let clock = FakeClock()
+        let manifestPath = NSTemporaryDirectory() + "watch-test-\(UUID().uuidString).ids"
+        try "A\n".write(toFile: manifestPath, atomically: true, encoding: .utf8)
+
+        let deleted = executeAlbumWatcher(name: containerName, trackIDs: ["A"],
+                                          manifestPath: manifestPath, run: recorder.run,
+                                          isRunning: { false },
+                                          now: clock.now, sleep: clock.sleep,
+                                          armTimeout: 30, pollInterval: 15, maxLifetime: 3600)
+
+        XCTAssertFalse(deleted)
+        XCTAssertTrue(recorder.calls.isEmpty,
+                      "must never invoke the script runner at all once Music is observed not running "
+                      + "— neither the observation script nor the delete script")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: manifestPath),
+                       "manifest must still be removed when Music was never observed running")
+    }
+
+    /// The paired positive control. Without this, a broken probe that always
+    /// returns false would pass the negative test above while silently
+    /// disabling the whole watcher. With the probe returning true throughout,
+    /// the watcher proceeds normally and the runner IS invoked.
+    func testMusicRunningProceedsNormallyAndInvokesTheRunner() {
+        let armRaw = "playing\u{1F}\(containerName)\u{1F}TRACKX"
+        let leftRaw = "playing\u{1F}Somewhere Else\u{1F}TRACKY"
+        let recorder = ScriptCallRecorder([armRaw, leftRaw])
+        let clock = FakeClock()
+
+        let deleted = albumWatcherLifecycle(name: containerName, trackIDs: ["TRACKX"],
+                                            run: recorder.run, isRunning: { true },
+                                            now: clock.now, sleep: clock.sleep,
+                                            armTimeout: 30, pollInterval: 15, maxLifetime: 3600)
+
+        XCTAssertTrue(deleted)
+        XCTAssertFalse(recorder.calls.isEmpty,
+                       "with Music running throughout, the runner must be invoked")
+    }
+
+    /// Music quits WHILE the watcher is armed and watching (the realistic
+    /// case — arming happens promptly after `play playlist` succeeds, so
+    /// Music is virtually always running at armDeadline; a user quitting
+    /// mid-album is the scenario this exists for). The watcher must exit
+    /// without deleting and without touching the playlist, leaving the
+    /// orphan for §16.1's next-invocation sweep or explicit cleanup.
+    func testMusicQuitsDuringWatchExitsWithoutDeleting() {
+        let armRaw = "playing\u{1F}\(containerName)\u{1F}TRACKX"
+        let recorder = ScriptCallRecorder([armRaw])
+        let clock = FakeClock()
+        var runningCalls = 0
+        func isRunning() -> Bool {
+            runningCalls += 1
+            return runningCalls <= 2 // running through arming, quit before the first watch poll
+        }
+
+        let manifestPath = NSTemporaryDirectory() + "watch-test-\(UUID().uuidString).ids"
+        try? "TRACKX\n".write(toFile: manifestPath, atomically: true, encoding: .utf8)
+
+        let deleted = executeAlbumWatcher(name: containerName, trackIDs: ["TRACKX"],
+                                          manifestPath: manifestPath, run: recorder.run,
+                                          isRunning: isRunning,
+                                          now: clock.now, sleep: clock.sleep,
+                                          armTimeout: 30, pollInterval: 15, maxLifetime: 3600)
+
+        XCTAssertFalse(deleted)
+        XCTAssertFalse(recorder.calls.contains(where: { $0.contains("delete") }),
+                       "must never delete once Music is observed not running")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: manifestPath),
+                       "manifest must still be removed when the watcher exits because Music quit")
+    }
+
+    // MARK: - §16.4: the watcher validates its own ownership
+
+    func testOwnedAlbumContainerNameIsAccepted() {
+        let name = albumContainerName(title: "Moon Safari", uuid: UUID().uuidString)
+        XCTAssertTrue(isOwnedAlbumContainerName(name))
+    }
+
+    /// The exact attack named in §16.4: an arbitrary user playlist name must
+    /// never validate, or `music __watch-container "Working Vibes"` would be
+    /// able to delete it once it became current and playback left it.
+    func testArbitraryPlaylistNameIsRejected() {
+        XCTAssertFalse(isOwnedAlbumContainerName("Working Vibes"))
+    }
+
+    func testPrefixSimilarNameIsRejected() {
+        XCTAssertFalse(isOwnedAlbumContainerName("__album__not the real separator"))
+        XCTAssertFalse(isOwnedAlbumContainerName("__albums__ \(UUID().uuidString) — Title"))
+    }
+
+    func testNonUUIDIdentifierIsRejected() {
+        XCTAssertFalse(isOwnedAlbumContainerName("__album__ not-a-uuid — Title"))
+    }
+
+    func testEmptyTitleIsRejected() {
+        XCTAssertFalse(isOwnedAlbumContainerName("__album__ \(UUID().uuidString) — "))
+    }
+
+    func testOtherOwnedPrefixIsNotAnOwnedAlbumName() {
+        // __discover__ containers are a different owner; the watcher must
+        // never act on one even though it shares the uuid-carrying shape.
+        XCTAssertFalse(isOwnedAlbumContainerName("__discover__ \(UUID().uuidString) — Title"))
     }
 }

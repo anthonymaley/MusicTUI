@@ -21,11 +21,16 @@ func albumContainerName(title: String, uuid: String) -> String {
 }
 
 // MARK: - Lifecycle constants
-
-/// Playback must be confirmed started before the watcher is spawned. The
-/// existing `showNowPlaying` wait measures about 3.2s against a stopped player,
-/// so this clears it with margin.
-let albumPlaybackConfirmTimeout: TimeInterval = 5
+//
+// `albumPlaybackConfirmTimeout` (a documented-but-unwired 5s constant for a
+// polled "playback confirmed started" wait before spawning the watcher) was
+// removed here 2026-09-01 (§16, "also fix while in these files"): nothing in
+// `Sources/` ever read it. The confirm signal `playBoundedAlbum` actually
+// uses is the synchronous return of `run("play playlist \"...\"")` — Music's
+// `play playlist` AppleScript command does not return until the command has
+// been accepted and executed, so a non-nil result already means more than
+// "the play command was issued" without a separate polled wait. Design §7
+// and §7.1 are amended to match; see docs/plans/2026-09-01-cli-album-scoping-design.md.
 
 /// How long the watcher waits for the container to become `current playlist`
 /// before giving up and exiting WITHOUT deleting.
@@ -71,24 +76,49 @@ enum AlbumWatcherDecision: Equatable {
 
 /// Whether the watcher may delete its container.
 ///
-/// Identity is load bearing, not a refinement. When Autoplay carries playback
-/// past the container's end, `player state` reads `playing` and
-/// `current playlist` THROWS (measured 2026-09-01). A predicate on state and
-/// context alone reads that as "playing, context unreadable" and spares
-/// forever, so the container would survive until the max lifetime. The current
-/// track's persistent ID is the signal that still works there.
+/// §16.2 (corrects §6.1's evaluation order — the identity-first order below
+/// let a same-album-twice bug through: two containers of the same album
+/// duplicate references to the SAME underlying library tracks, so their
+/// captured id sets are identical, and identity alone could never tell them
+/// apart). The order is now exactly this, and it is normative:
 ///
-/// Everything unreadable spares, on the same asymmetry the Discover sweep uses:
-/// a wrongly spared container costs one leftover row that a later sweep
-/// collects, a wrongly collected one destroys live playback.
+///   1. Music not running — handled by the caller, not this predicate (an
+///      observation can't even be TAKEN without risking launching Music; see
+///      `albumWatcherLifecycle`'s `isRunning` guard, §16.3).
+///   2. Player state unreadable, or a value not recognised: SPARE. This
+///      replaces a negative allowlist test
+///      (`if !albumInUsePlayerStates.contains(state) { return .collect }`)
+///      that put an unrecognised or future state value on the DELETE side —
+///      the only code path in this app that deletes unattended.
+///   3. Player state exactly `stopped`: COLLECT.
+///   4. Context readable and DIFFERENT from the watched container: COLLECT,
+///      even when the current track id belongs to the same album. This is
+///      the same-album-twice fix: a readable, differing context is the one
+///      signal that still distinguishes "this album, this container" from
+///      "this album, some OTHER container" when both share every track id.
+///   5. Context readable and MATCHING: SPARE.
+///   6. Context unreadable: fall back to identity. This is the case identity
+///      exists for — when Autoplay carries playback past the container's
+///      end, `player state` reads `playing` and `current playlist` THROWS
+///      (measured 2026-09-01), so context is useless and identity is the
+///      only usable signal. Inside the set spares, outside collects,
+///      unreadable identity spares.
+///
+/// Everything unreadable spares, on the same asymmetry the Discover sweep
+/// uses: a wrongly spared container costs one leftover row that a later
+/// sweep collects, a wrongly collected one destroys live playback.
 func albumWatcherDecision(_ o: AlbumWatcherObservation) -> AlbumWatcherDecision {
-    guard let state = o.playerState else { return .spare }
-    if !albumInUsePlayerStates.contains(state) { return .collect }
-    if let id = o.currentTrackID {
-        return o.containerTrackIDs.contains(id) ? .spare : .collect
-    }
-    if let context = o.currentPlaylist {
+    guard let state = o.playerState else { return .spare }                    // step 2: unreadable
+    let recognised = albumInUsePlayerStates.contains(state) || state == "stopped"
+    guard recognised else { return .spare }                                   // step 2: unrecognised
+    if state == "stopped" { return .collect }                                 // step 3
+
+    // From here `state` is a recognised in-use state.
+    if let context = o.currentPlaylist {                                     // steps 4/5
         return context == o.containerName ? .spare : .collect
     }
-    return .spare
+
+    // Step 6: context unreadable — fall back to identity.
+    guard let id = o.currentTrackID else { return .spare }
+    return o.containerTrackIDs.contains(id) ? .spare : .collect
 }

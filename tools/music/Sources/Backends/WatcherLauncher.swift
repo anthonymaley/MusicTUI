@@ -53,5 +53,14 @@ func spawnAlbumWatcher(name: String,
     }
     let me = URL(fileURLWithPath: CommandLine.arguments[0])
         .resolvingSymlinksInPath().path
-    return launch(me, args)
+    let launched = launch(me, args)
+    if !launched, let manifestIndex = args.firstIndex(of: "--manifest"), manifestIndex + 1 < args.count {
+        // A manifest was written (large album) but the watcher process never
+        // started, so nobody will ever own or remove this file — the manifest
+        // is owned by a RUNNING watcher, and there isn't one. Left behind,
+        // this would sit beside the auth files permanently rather than for
+        // at most six hours.
+        removeAlbumManifest(path: args[manifestIndex + 1])
+    }
+    return launched
 }

@@ -57,4 +57,21 @@ final class WatcherLauncherTests: XCTestCase {
         XCTAssertFalse(ok)
         XCTAssertFalse(launcherCalled)
     }
+
+    /// "Also fix while in these files": a large album (manifest path) whose
+    /// watcher process fails to launch must not leave the manifest behind —
+    /// the file is only ever owned by a RUNNING watcher, and there isn't one.
+    /// Before the fix this manifest sat beside the auth files permanently.
+    func testSpawnFailureCleansUpTheManifestForALargeAlbum() {
+        let many = Set((0...(albumWatcherInlineIDLimit + 1)).map { "ID\($0)" })
+        let uuid = "TEST-\(UUID().uuidString)"
+        let path = albumManifestPath(uuid: uuid)!
+        defer { removeAlbumManifest(path: path) }
+
+        let ok = spawnAlbumWatcher(name: "__album__ \(uuid) — A", uuid: uuid, ids: many) { _, _ in false }
+
+        XCTAssertFalse(ok)
+        XCTAssertNil(readAlbumManifest(path: path),
+                     "a failed spawn must not leave the manifest behind")
+    }
 }
