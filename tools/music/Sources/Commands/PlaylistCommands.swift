@@ -390,6 +390,18 @@ enum PlaylistCleanupResult: Equatable {
     case unreadable
 }
 
+/// A count field as the generator can actually emit it: ASCII digits only.
+///
+/// §20.8: `Int("+3")` is 3 and `Int(" 3")` is nil, so leaning on `Int` alone
+/// accepts shapes the script cannot produce. A payload that does not look like
+/// what the generator emits is not a count — it is an unreadable result, and
+/// the failure direction for an unreadable result is UNKNOWN, never "nothing"
+/// and never "spared".
+func strictCountField(_ s: Substring) -> Int? {
+    guard !s.isEmpty, s.allSatisfy({ $0.isASCII && $0.isNumber }) else { return nil }
+    return Int(s)
+}
+
 func parsePlaylistCleanupResult(_ raw: String) -> PlaylistCleanupResult {
     let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
     switch trimmed {
@@ -403,12 +415,12 @@ func parsePlaylistCleanupResult(_ raw: String) -> PlaylistCleanupResult {
         if trimmed.hasPrefix("partial:") {
             let parts = trimmed.split(separator: ":", omittingEmptySubsequences: false)
             guard parts.count == 3,
-                  let removed = Int(parts[1]), removed >= 0,
-                  let remaining = Int(parts[2]), remaining > 0
+                  let removed = strictCountField(parts[1]), removed >= 0,
+                  let remaining = strictCountField(parts[2]), remaining > 0
             else { return .unreadable }
             return .partiallyRemoved(removed: removed, remaining: remaining)
         }
-        guard let count = Int(trimmed), count > 0 else { return .unreadable }
+        guard let count = strictCountField(Substring(trimmed)), count > 0 else { return .unreadable }
         return .removed(count)
     }
 }
@@ -1145,6 +1157,50 @@ struct PlaylistCreateFrom: ParsableCommand {
     }
 }
 
+/// The user-facing message for every cleanup outcome, pure so it is testable.
+///
+/// §20.8: extracted from the command body because the message is a claim about
+/// what happened, and this series has now produced four separate misreports
+/// where the claim outran the evidence. Inline in `run()` nothing could pin
+/// that a partial failure keeps BOTH measured counts, or that no arm ever
+/// prints a bare "Cleaned up 0".
+func playlistCleanupMessage(_ result: PlaylistCleanupResult) -> String {
+    switch result {
+    case .removed(let count):
+        return "Cleaned up \(count) temp playlist(s)."
+    case .partiallyRemoved(let removed, let remaining):
+        // Deliberately says NOTHING about playback: this outcome is reached by
+        // measuring live objects after the delete pass and carries no evidence
+        // about player state. Claiming "it's playing" here would be the §20.3
+        // misreport in a new place. Both MEASURED counts are stated, because
+        // "some were removed" without saying how many leaves the user unable
+        // to tell a near-complete cleanup from one that did nothing.
+        return "Cleanup incomplete: removed \(removed) temp playlist(s), "
+            + "but \(remaining) still present. Re-run cleanup; if this repeats, "
+            + "check Music for a playlist that refuses to delete."
+    case .nothingExisted:
+        return "No temp playlists to clean up."
+    case .sparedCandidates:
+        // §20.3: never say "Cleaned up 0" here — that reads as "nothing to
+        // clean", but a matching container DID exist; it was correctly spared
+        // because it's the one currently playing or paused.
+        return "Found a temp playlist, but it's currently playing or paused, so it was spared. "
+            + "Nothing was deleted. Try again once playback settles, or after it stops."
+    case .deferred:
+        // §16.5: playback is active and its context couldn't be read, so
+        // cleanup COULD NOT tell what's safe to delete and deleted nothing.
+        return "Cleanup deferred: playback is active and its container couldn't be identified, "
+            + "so nothing was deleted. Try again once playback settles, or after it stops."
+    case .unreadable:
+        // §17.4/§20.8: the script's result didn't parse, so whether anything
+        // was deleted is genuinely UNKNOWN. Never "nothing", never "spared" —
+        // both are positive claims an unreadable payload cannot support.
+        return "Cleanup ran, but its result couldn't be read, so it's unknown how many temp playlists "
+            + "were removed. Run `music playlist cleanup` again, or check your library for a leftover "
+            + "__temp__ or \(albumPlaylistPrefix.trimmingCharacters(in: .whitespaces)) playlist."
+    }
+}
+
 struct PlaylistCleanup: ParsableCommand {
     static let configuration = CommandConfiguration(commandName: "cleanup", abstract: "Delete all temp playlists.")
     func run() throws {
@@ -1152,41 +1208,7 @@ struct PlaylistCleanup: ParsableCommand {
         let result = try syncRun {
             try await backend.runMusic(playlistCleanupScript())
         }
-        switch parsePlaylistCleanupResult(result) {
-        case .removed(let count):
-            print("Cleaned up \(count) temp playlist(s).")
-        case .partiallyRemoved(let removed, let remaining):
-            // Deliberately says NOTHING about playback: this outcome is
-            // reached by measuring live objects after the delete pass, and
-            // carries no evidence about player state. Claiming "it's playing"
-            // here would be the §20.3 misreport in a new place.
-            print("Cleanup incomplete: removed \(removed) temp playlist(s), "
-                + "but \(remaining) still present. Re-run cleanup; if this repeats, "
-                + "check Music for a playlist that refuses to delete.")
-        case .nothingExisted:
-            print("No temp playlists to clean up.")
-        case .sparedCandidates:
-            // §20.3: never say "Cleaned up 0" here — that reads as "nothing to
-            // clean", but a matching container DID exist; it was correctly
-            // spared because it's the one currently playing or paused.
-            print("Found a temp playlist, but it's currently playing or paused, so it was spared. "
-                + "Nothing was deleted. Try again once playback settles, or after it stops.")
-        case .deferred:
-            // §16.5: never say "Cleaned up 0" here — that reads as "nothing to
-            // clean", but this path means playback is active and its context
-            // couldn't be read, so cleanup COULD NOT tell what's safe to
-            // delete and deleted nothing.
-            print("Cleanup deferred: playback is active and its container couldn't be identified, "
-                + "so nothing was deleted. Try again once playback settles, or after it stops.")
-        case .unreadable:
-            // §17.4: never say "Cleaned up 0" here either — the script's
-            // result didn't parse, so whether anything was deleted is
-            // genuinely unknown; claiming 0 would misreport a non-empty
-            // sweep as an empty one just as surely as the deferred case did.
-            print("Cleanup ran, but its result couldn't be read, so it's unknown how many temp playlists "
-                + "were removed. Run `music playlist cleanup` again, or check your library for a leftover "
-                + "__temp__ or \(albumPlaylistPrefix.trimmingCharacters(in: .whitespaces)) playlist.")
-        }
+        print(playlistCleanupMessage(parsePlaylistCleanupResult(result)))
     }
 }
 

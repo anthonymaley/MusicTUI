@@ -138,4 +138,81 @@ final class PlaylistCleanupOutcomeTests: XCTestCase {
             XCTAssertFalse(s.contains(token), "uncounted variant must not emit \(token)")
         }
     }
+
+    // MARK: - §20.8: malformed or incomplete payloads are UNKNOWN, never nothing
+
+    /// The failure direction is the whole point. `.nothingExisted` and
+    /// `.sparedCandidates` are positive claims — "there was nothing to clean",
+    /// "a container existed and was deliberately kept" — and a payload the
+    /// parser could not read is evidence for neither. Collapsing an unreadable
+    /// result into either is the §16.5/§17.4/§20.3 misreport with a new cause.
+    func testMalformedOrIncompletePayloadsAreNeverNothingOrSpared() {
+        let malformed = [
+            "", " ", "\n",
+            "0", "-1", "3.5", "1e3", "+3", "one",
+            "partial", "partial:", "partial:3", "partial:3:",
+            "partial::2", "partial:::", "partial:x:1", "partial:1:y",
+            "partial:-1:2", "partial:2:0", "partial:2:-1", "partial:1:2:3",
+            "None", "NONE", "Spared", "SPARED", "Deferred",
+            "cleaned up 4", "deleted 4", "{}", "missing value",
+        ]
+        for raw in malformed {
+            let r = parsePlaylistCleanupResult(raw)
+            XCTAssertNotEqual(r, .nothingExisted,
+                              "an unreadable payload must never claim nothing existed: \(raw.debugDescription)")
+            XCTAssertNotEqual(r, .sparedCandidates,
+                              "an unreadable payload must never claim sparing: \(raw.debugDescription)")
+            switch r {
+            case .unreadable, .deferred: break
+            default:
+                XCTFail("\(raw.debugDescription) parsed as \(r); expected unknown")
+            }
+        }
+    }
+
+    /// The well-formed set still parses, so the guard above is not simply
+    /// rejecting everything.
+    func testWellFormedPayloadsStillParse() {
+        XCTAssertEqual(parsePlaylistCleanupResult("none"), .nothingExisted)
+        XCTAssertEqual(parsePlaylistCleanupResult("spared"), .sparedCandidates)
+        XCTAssertEqual(parsePlaylistCleanupResult("deferred"), .deferred)
+        XCTAssertEqual(parsePlaylistCleanupResult("4"), .removed(4))
+        XCTAssertEqual(parsePlaylistCleanupResult(" 4 \n"), .removed(4))
+        XCTAssertEqual(parsePlaylistCleanupResult("partial:3:2"),
+                       .partiallyRemoved(removed: 3, remaining: 2))
+        XCTAssertEqual(parsePlaylistCleanupResult("partial:0:4"),
+                       .partiallyRemoved(removed: 0, remaining: 4))
+    }
+
+    // MARK: - §20.8: the partial message states BOTH counts
+
+    func testPartialMessageStatesRemovedAndRemaining() {
+        let msg = playlistCleanupMessage(.partiallyRemoved(removed: 3, remaining: 2))
+        XCTAssertTrue(msg.contains("3"), "the removed count must appear")
+        XCTAssertTrue(msg.contains("2"), "the remaining count must appear")
+        XCTAssertFalse(msg.lowercased().contains("playing"),
+                       "a partial failure carries no evidence about playback")
+        XCTAssertFalse(msg.contains("Cleaned up 0"))
+    }
+
+    /// Distinct counts must both survive, so a message that printed one number
+    /// twice cannot pass.
+    func testPartialMessageDoesNotConflateTheTwoCounts() {
+        let msg = playlistCleanupMessage(.partiallyRemoved(removed: 7, remaining: 5))
+        XCTAssertTrue(msg.contains("7") && msg.contains("5"))
+        let a = playlistCleanupMessage(.partiallyRemoved(removed: 1, remaining: 9))
+        let b = playlistCleanupMessage(.partiallyRemoved(removed: 9, remaining: 1))
+        XCTAssertNotEqual(a, b, "removed and remaining are not interchangeable")
+    }
+
+    /// No outcome may print a bare "Cleaned up 0".
+    func testNoOutcomeEverPrintsCleanedUpZero() {
+        let all: [PlaylistCleanupResult] = [
+            .nothingExisted, .sparedCandidates, .deferred, .unreadable,
+            .removed(1), .partiallyRemoved(removed: 0, remaining: 3),
+        ]
+        for r in all {
+            XCTAssertFalse(playlistCleanupMessage(r).contains("Cleaned up 0"), "\(r)")
+        }
+    }
 }

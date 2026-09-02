@@ -36,10 +36,16 @@ final class SweepScriptExecutionTests: XCTestCase {
     }
 
     /// Run a generated sweep script against a synthetic library.
+    /// How the synthetic delete behaves. `.all` models the optimistic case the
+    /// generator's doc explicitly refuses to ASSUME; the others make the
+    /// measured-after branches (`partial:`, race-to-zero) reachable.
+    enum DeleteMode: String { case all, none, firstOnly }
+
     func run(_ script0: String,
              library: [String],
              context: String?,
              state: String = "playing",
+             deleteMode: DeleteMode = .all,
              mutate: ((String) -> String)? = nil,
              file: StaticString = #filePath, line: UInt = #line) -> Outcome? {
         var script = script0
@@ -65,6 +71,12 @@ final class SweepScriptExecutionTests: XCTestCase {
             ("delete (every user playlist whose name is nm)", "my deleteAll(nm as text)"),
             ("count of (every user playlist whose name is keepName)", "(my countOf(keepName))"),
             ("delete (every user playlist whose name is keepName)", "my deleteAll(keepName)"),
+            // The stale sweep's deferReturn is a BARE `return`, so assigning its
+            // result errors (-2753) and its two defer guards were structurally
+            // unmeasurable. Giving the same immediate return a value preserves
+            // control flow exactly and makes the deferral observable.
+            ("if not recognised then return\n", "if not recognised then return \"deferred\"\n"),
+            ("if not contextReadable then return\n", "if not contextReadable then return \"deferred\"\n"),
         ]
         var applied = 0
         for (from, to) in subs where script.contains(from) {
@@ -73,14 +85,24 @@ final class SweepScriptExecutionTests: XCTestCase {
         }
         XCTAssertGreaterThanOrEqual(applied, 5, "too few substitutions applied — harness is stale",
                                     file: file, line: line)
-        for residue in ["every user playlist", "name of current playlist", "player state", "name of pp"] {
-            XCTAssertFalse(script.contains(residue),
-                           "application term survived substitution: \(residue)", file: file, line: line)
+
+        // WHITELIST, not blacklist. Denying a list of known spellings misses a
+        // one-word drift: `user playlists whose name is ...` (plural, no
+        // `every`) slipped every previous check and reached the real library
+        // with the suite green. Assert instead that NO application vocabulary
+        // survives, with word boundaries so `playerStateText` is not a match.
+        for pattern in ["\\btell\\b", "\\bapplication\\b", "\\bplaylists?\\b",
+                        "\\btracks?\\b", "\\bplayer\\b"] {
+            if let r = script.range(of: pattern, options: .regularExpression) {
+                XCTFail("application vocabulary survived substitution: \(script[r])",
+                        file: file, line: line)
+                return nil
+            }
         }
 
         let libLiteral = "{" + library.map { "\"\(esc($0))\"" }.joined(separator: ", ") + "}"
         let harness = """
-        global libNames, ctxValue, ctxThrows, stateValue
+        global libNames, ctxValue, ctxThrows, stateValue, deleteMode
         on stateRead()
             global stateValue
             return stateValue
@@ -99,10 +121,20 @@ final class SweepScriptExecutionTests: XCTestCase {
             return c
         end countOf
         on deleteAll(n)
-            global libNames
+            global libNames, deleteMode
+            if deleteMode is "none" then return
             set out to {}
+            set skipped to false
             repeat with x in libNames
-                if (x as text) is not n then set end of out to (x as text)
+                if (x as text) is n then
+                    if deleteMode is "firstOnly" and skipped then
+                        set end of out to (x as text)
+                    else
+                        set skipped to true
+                    end if
+                else
+                    set end of out to (x as text)
+                end if
             end repeat
             set libNames to out
         end deleteAll
@@ -110,6 +142,7 @@ final class SweepScriptExecutionTests: XCTestCase {
         set ctxValue to "\(esc(context ?? ""))"
         set ctxThrows to \(context == nil ? "true" : "false")
         set stateValue to "\(esc(state))"
+        set deleteMode to "\(deleteMode.rawValue)"
         on runScript()
             global libNames
         \(script)
@@ -131,9 +164,18 @@ final class SweepScriptExecutionTests: XCTestCase {
         // hang here must fail the test rather than hang CI indefinitely.
         let watchdog = DispatchWorkItem { if p.isRunning { p.terminate() } }
         DispatchQueue.global().asyncAfter(deadline: .now() + 20, execute: watchdog)
+        // Drain stderr on a background queue: draining both to EOF in sequence
+        // deadlocks if the child ever fills the stderr buffer while the parent
+        // blocks on stdout.
+        var errData = Data()
+        let errDone = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async {
+            errData = err.fileHandleForReading.readDataToEndOfFile()
+            errDone.signal()
+        }
         let data = out.fileHandleForReading.readDataToEndOfFile()
-        let errData = err.fileHandleForReading.readDataToEndOfFile()
         p.waitUntilExit()
+        _ = errDone.wait(timeout: .now() + 5)
         watchdog.cancel()
         guard p.terminationStatus == 0 else {
             XCTFail("osascript exit \(p.terminationStatus): \(String(data: errData, encoding: .utf8) ?? "")",
@@ -253,5 +295,66 @@ final class SweepScriptExecutionTests: XCTestCase {
         }) else { return }
         XCTAssertFalse(r.surviving.contains(playing),
                        "harness self-check: a wrongly derived keepName MUST delete the active container")
+    }
+
+    // MARK: - §20.8: the uncounted variant's deferral paths, now executable
+
+    /// The stale sweep runs UNCOMMANDED at the start of every bounded album
+    /// play, so its defer guards matter more than cleanup's. They were
+    /// structurally unmeasurable until the bare `return` was given a value.
+    func testStaleSweepDefersOnUnrecognisedStateAndDeletesNothing() {
+        guard let r = run(staleSweep, library: [playing, orphan], context: nil, state: "teleporting") else { return }
+        XCTAssertEqual(r.result, "deferred")
+        XCTAssertEqual(r.surviving.sorted(), [playing, orphan].sorted(), "a deferral deletes nothing")
+    }
+
+    func testStaleSweepDefersOnUnreadableContextAndDeletesNothing() {
+        guard let r = run(staleSweep, library: [playing, orphan], context: nil, state: "playing") else { return }
+        XCTAssertEqual(r.result, "deferred")
+        XCTAssertEqual(r.surviving.sorted(), [playing, orphan].sorted(), "a deferral deletes nothing")
+    }
+
+    // MARK: - §20.8: prefix narrowness, measured rather than asserted
+
+    /// Cleanup collects both owned prefixes; the automatic stale sweep collects
+    /// only its own and must leave a `__temp__` container alone.
+    func testTempPrefixIsCollectedByCleanupButNotByTheStaleSweep() {
+        let temp = "__temp__ORPHAN"
+        guard let c = run(cleanup, library: [temp, orphan, unrelated], context: nil, state: "stopped") else { return }
+        XCTAssertFalse(c.surviving.contains(temp), "cleanup collects __temp__")
+        XCTAssertFalse(c.surviving.contains(orphan))
+        XCTAssertTrue(c.surviving.contains(unrelated))
+
+        guard let sweep = run(staleSweep, library: [temp, orphan, unrelated], context: nil, state: "stopped") else { return }
+        XCTAssertTrue(sweep.surviving.contains(temp), "the stale sweep must NOT touch __temp__")
+        XCTAssertFalse(sweep.surviving.contains(orphan))
+        XCTAssertTrue(sweep.surviving.contains(unrelated))
+    }
+
+    // MARK: - §20.8: the measure-after branches, reachable at last
+
+    /// Every delete fails: nothing removed, everything still there. The
+    /// outcome must be an explicit partial failure carrying both counts, not
+    /// a success and not a claim about playback.
+    func testTotalDeleteFailureReportsPartialWithZeroRemoved() {
+        guard let r = run(cleanup, library: [orphan, unrelated], context: nil,
+                          state: "stopped", deleteMode: .none) else { return }
+        XCTAssertEqual(r.result, "partial:0:1")
+        XCTAssertTrue(r.surviving.contains(orphan), "nothing was actually removed")
+        XCTAssertEqual(parsePlaylistCleanupResult(r.result),
+                       .partiallyRemoved(removed: 0, remaining: 1))
+        let msg = playlistCleanupMessage(parsePlaylistCleanupResult(r.result))
+        XCTAssertTrue(msg.contains("0") && msg.contains("1"), "both measured counts are stated")
+        XCTAssertFalse(msg.lowercased().contains("playing"), "no playback claim")
+    }
+
+    /// One of two objects sharing a captured name is removed. This is the
+    /// branch §20.6 exists for: a pre-delete count would have reported 2.
+    func testPartialDeletionReportsMeasuredRemovedAndRemaining() {
+        guard let r = run(cleanup, library: [orphan, orphan, unrelated], context: nil,
+                          state: "stopped", deleteMode: .firstOnly) else { return }
+        XCTAssertEqual(r.result, "partial:1:1",
+                       "measured: one object gone, one still present — never the pre-delete count of 2")
+        XCTAssertEqual(r.surviving.sorted(), [orphan, unrelated].sorted())
     }
 }
