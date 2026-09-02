@@ -21,7 +21,13 @@ final class WatchContainerTests: XCTestCase {
         XCTAssertTrue(s.contains("current playlist"))
         XCTAssertTrue(s.contains("persistent ID of current track"))
         XCTAssertTrue(s.contains("ASCII character 31"))
-        XCTAssertGreaterThanOrEqual(s.components(separatedBy: "try").count - 1, 3,
+        // §18.5: counting "try" double-counts every guard, because "end try"
+        // itself contains the substring "try" — three guards emit six "try"
+        // substring occurrences, not three, so the old `>= 3` threshold
+        // survived deleting an entire guard (two guards is still four).
+        // "end try" occurs exactly once per guard, so this actually pins
+        // the guard count.
+        XCTAssertGreaterThanOrEqual(s.components(separatedBy: "end try").count - 1, 3,
                                     "each read needs its own try guard")
     }
 
@@ -347,5 +353,72 @@ final class WatchContainerTests: XCTestCase {
         // __discover__ containers are a different owner; the watcher must
         // never act on one even though it shares the uuid-carrying shape.
         XCTAssertFalse(isOwnedAlbumContainerName("__discover__ \(UUID().uuidString) — Title"))
+    }
+
+    // MARK: - §18.1: the manifest path must be validated, not just the name
+
+    func testManifestPathMatchingTheDerivedPathIsValid() {
+        let uuid = UUID().uuidString
+        let name = albumContainerName(title: "Moon Safari", uuid: uuid)
+        guard let expected = albumManifestPath(uuid: uuid) else {
+            return XCTFail("a freshly generated UUID must always produce a manifest path")
+        }
+        XCTAssertTrue(manifestPathIsValidForOwnedName(expected, name: name))
+    }
+
+    /// The exact attack §18.1 exists to close: `executeAlbumWatcher` removes
+    /// whatever `--manifest` path it is given on every exit path, so an
+    /// owned NAME plus an ARBITRARY `--manifest` argument must never
+    /// validate — `music __watch-container "<owned name>" --manifest
+    /// <any path>` would otherwise delete that file, unattended, with all
+    /// three streams at /dev/null.
+    func testArbitraryManifestPathIsRejectedForAnOwnedName() {
+        let uuid = UUID().uuidString
+        let name = albumContainerName(title: "Moon Safari", uuid: uuid)
+        XCTAssertFalse(manifestPathIsValidForOwnedName("/etc/hosts", name: name))
+        XCTAssertFalse(manifestPathIsValidForOwnedName(NSTemporaryDirectory() + "not-mine.ids", name: name))
+    }
+
+    /// A real, well-formed manifest path for a DIFFERENT container's uuid
+    /// must not validate against this name either — "looks like a manifest
+    /// path" is not the bar, "is THIS container's manifest path" is.
+    func testAnotherContainersManifestPathIsRejected() {
+        let uuid = UUID().uuidString
+        let name = albumContainerName(title: "Moon Safari", uuid: uuid)
+        guard let otherPath = albumManifestPath(uuid: UUID().uuidString) else {
+            return XCTFail("a freshly generated UUID must always produce a manifest path")
+        }
+        XCTAssertFalse(manifestPathIsValidForOwnedName(otherPath, name: name))
+    }
+
+    /// Fails closed for a name that was never owned in the first place —
+    /// there is no uuid to derive an expected path from.
+    func testManifestPathValidationFailsClosedForAnUnownedName() {
+        XCTAssertFalse(manifestPathIsValidForOwnedName(NSTemporaryDirectory() + "anything.ids",
+                                                        name: "Working Vibes"))
+    }
+
+    // MARK: - §18.2: the running probe distinguishes failure from absence
+
+    func testProbeClassifiesTrueAsRunning() {
+        XCTAssertEqual(classifyMusicRunningProbe("true"), .running)
+        XCTAssertEqual(classifyMusicRunningProbe(" true \n"), .running)
+    }
+
+    func testProbeClassifiesFalseAsNotRunning() {
+        XCTAssertEqual(classifyMusicRunningProbe("false"), .notRunning)
+    }
+
+    /// `nil` means the probe itself threw (`syncRun` rethrew and `try?`
+    /// swallowed it) — distinct from a well-formed "false" response. Before
+    /// §18.2 both collapsed into the same `false`, with nothing anywhere to
+    /// tell a failing probe apart from Music genuinely not running.
+    func testProbeClassifiesAThrowAsProbeFailedNotNotRunning() {
+        XCTAssertEqual(classifyMusicRunningProbe(nil), .probeFailed)
+    }
+
+    func testProbeClassifiesGarbageAsProbeFailed() {
+        XCTAssertEqual(classifyMusicRunningProbe("garbage"), .probeFailed)
+        XCTAssertEqual(classifyMusicRunningProbe(""), .probeFailed)
     }
 }

@@ -113,18 +113,68 @@ func musicIsRunningScript() -> String {
     "tell application \"System Events\" to return (exists process \"Music\")"
 }
 
+/// §18.2 (corrects §16.3's `Bool`-only probe): a throw is distinguishable
+/// from a confirmed "not running". `musicIsRunningScript()` always returns
+/// the literal text "true" or "false" when it runs at all — anything else,
+/// including nil (the probe threw), means the read itself failed rather than
+/// answering "not running".
+enum MusicRunningProbeResult: Equatable {
+    case running
+    case notRunning
+    /// The probe threw, or returned something that is neither "true" nor
+    /// "false". Distinguished from `.notRunning` so a caller can log it
+    /// distinctly — see `musicRunningProbeResult()`.
+    case probeFailed
+}
+
+/// Pure classification of the probe's raw result (`nil` when `syncRun`
+/// threw). Pure → tested.
+func classifyMusicRunningProbe(_ raw: String?) -> MusicRunningProbeResult {
+    switch raw?.trimmingCharacters(in: .whitespacesAndNewlines) {
+    case "true": return .running
+    case "false": return .notRunning
+    default: return .probeFailed
+    }
+}
+
 /// The real running-observation probe: runs `musicIsRunningScript()` through
 /// `AppleScriptBackend.run` directly (never `.runMusic`, which always wraps
 /// its argument in `tell application "Music" ... end tell` and would defeat
-/// the entire point). The default for `isRunning:` below, mirroring `launch:
-/// ProcessLauncher = detachedLaunch` — a real implementation as the default,
-/// with an injected seam for tests. A test that cares about this check must
-/// still pass an explicit closure rather than rely on the default, exactly
-/// as the Safety section requires for `launch`.
-func musicIsRunningNow() -> Bool {
+/// the entire point).
+///
+/// §18.2: this is now tri-state (`MusicRunningProbeResult`), and a
+/// `.probeFailed` result is logged distinctly — a failing probe used to
+/// collapse silently into "not running" with nothing written anywhere,
+/// which would look identical to a watcher bug rather than to what it
+/// actually is: §16.3 introduced a SECOND TCC Automation target (System
+/// Events, not Music), and a signed binary missing that grant throws on
+/// every single probe, exiting every watcher within a second and leaking
+/// every container — "containers only ever collected by the next album
+/// play" is the exact symptom a watcher bug would also produce.
+func musicRunningProbeResult() -> MusicRunningProbeResult {
     let backend = AppleScriptBackend()
     let raw = try? syncRun { try await backend.run(musicIsRunningScript()) }
-    return raw?.trimmingCharacters(in: .whitespacesAndNewlines) == "true"
+    let result = classifyMusicRunningProbe(raw)
+    if result == .probeFailed {
+        verbose("music running probe failed (threw, or returned neither \"true\" nor \"false\"); "
+                + "treating as not running — if this recurs, check the System Events Automation grant")
+    }
+    return result
+}
+
+/// The default for `isRunning:` below, mirroring `launch: ProcessLauncher =
+/// detachedLaunch` — a real implementation as the default, with an injected
+/// seam for tests. A test that cares about this check must still pass an
+/// explicit closure rather than rely on the default, exactly as the Safety
+/// section requires for `launch`.
+///
+/// §18.2: control flow is UNCHANGED from §16.3 — both `.notRunning` and
+/// `.probeFailed` collapse to `false` here, so the lifecycle still exits
+/// without deleting in both cases. Only `musicRunningProbeResult()` above
+/// can tell the two apart; this collapsed `Bool` cannot, by design — it is
+/// the `isRunning` seam every existing caller and test already depends on.
+func musicIsRunningNow() -> Bool {
+    musicRunningProbeResult() == .running
 }
 
 /// §16.4: true when `name` is exactly the owned album-container form this
@@ -139,14 +189,52 @@ func musicIsRunningNow() -> Bool {
 /// playlist unattended and unobservably — without it, `music
 /// __watch-container "Working Vibes"` would delete any playlist by name once
 /// it became current and playback left it. Pure → tested.
+///
+/// Shares its parse with `manifestPathIsValidForOwnedName` (§18.1) via
+/// `ownedAlbumContainerUUID`, so the ownership check and the manifest-path
+/// check can never disagree about what a name's uuid is.
 func isOwnedAlbumContainerName(_ name: String) -> Bool {
-    guard name.hasPrefix(albumPlaylistPrefix) else { return false }
+    ownedAlbumContainerUUID(name) != nil
+}
+
+/// The uuid embedded in an OWNED album container name — see
+/// `isOwnedAlbumContainerName`, which this backs — or nil when `name` is not
+/// one. The exact substring that was embedded, not a re-derived
+/// `UUID(...).uuidString`, so it round-trips byte-for-byte back into
+/// `albumManifestPath(uuid:)`. Pure → tested (indirectly, through both
+/// `isOwnedAlbumContainerName` and `manifestPathIsValidForOwnedName`).
+func ownedAlbumContainerUUID(_ name: String) -> String? {
+    guard name.hasPrefix(albumPlaylistPrefix) else { return nil }
     let rest = name.dropFirst(albumPlaylistPrefix.count)
-    guard let range = rest.range(of: discoverPlaylistNameSeparator) else { return false }
-    let uuidPart = rest[..<range.lowerBound]
+    guard let range = rest.range(of: discoverPlaylistNameSeparator) else { return nil }
+    let uuidPart = String(rest[..<range.lowerBound])
     let title = rest[range.upperBound...]
-    guard !title.isEmpty else { return false }
-    return UUID(uuidString: String(uuidPart)) != nil
+    guard !title.isEmpty else { return nil }
+    guard UUID(uuidString: uuidPart) != nil else { return nil }
+    return uuidPart
+}
+
+/// §18.1 (corrects §16.4): the WRITE side already guards the manifest path —
+/// `albumManifestPath` rejects a uuid containing "/" or ".." — but the
+/// REMOVE side did not: `executeAlbumWatcher` calls
+/// `removeAlbumManifest(path:)` on every exit path with whatever
+/// `--manifest` argument it was given, unvalidated. A name that passes
+/// `isOwnedAlbumContainerName` plus `--manifest <any path>` could delete
+/// that arbitrary path, unattended, with all three streams at /dev/null.
+///
+/// `name` must already have passed `isOwnedAlbumContainerName` — this
+/// re-derives the uuid from it (never re-validates ownership) and checks
+/// that `manifestPath` is EXACTLY the one path that uuid's manifest can live
+/// at. This is strictly stronger than sanitising the path, because the
+/// expected path is fully derivable from the name rather than merely
+/// pattern-checked. `albumManifestPath` returns `String?` (it rejects a
+/// uuid containing "/" or ".."); a nil expected path never validates
+/// anything, deliberately — there is nothing it could legitimately equal.
+/// Pure → tested.
+func manifestPathIsValidForOwnedName(_ manifestPath: String, name: String) -> Bool {
+    guard let uuid = ownedAlbumContainerUUID(name) else { return false }
+    guard let expected = albumManifestPath(uuid: uuid) else { return false }
+    return manifestPath == expected
 }
 
 /// The watcher's three-phase decision lifecycle: arm, watch, timeout.
@@ -272,8 +360,15 @@ struct WatchContainer: ParsableCommand {
     @Argument(help: "Exact container playlist name") var name: String
     @Option(name: .long, help: "Comma separated persistent IDs") var ids: String?
     @Option(name: .long, help: "Path to a manifest of persistent IDs") var manifest: String?
+    // §18.5: `verbose()` is gated on `Music.verbose`, which nothing on this
+    // path ever set, so all six `verbose(...)` calls reachable from this
+    // command were dead in every invocation, including a manual foreground
+    // run — the one place a human could actually watch them. This is what
+    // makes that observable at all.
+    @Flag(name: [.customShort("v"), .customLong("verbose")], help: "Show diagnostic output") var verboseFlag = false
 
     func run() throws {
+        Music.verbose = verboseFlag
         // §16.4: ownership is checked, not assumed — BEFORE the manifest is
         // read and BEFORE any AppleScript runs. This is the only unattended,
         // unobservable delete path in the app (stdin/stdout/stderr all go to
@@ -283,13 +378,24 @@ struct WatchContainer: ParsableCommand {
             verbose("__watch-container: refusing unowned name \(name)")
             Foundation.exit(1)
         }
+        // §18.1: the manifest path is validated too, BEFORE either the read
+        // in `resolveTrackIDs` below or the unconditional remove inside
+        // `executeAlbumWatcher` ever touches the file at that path. An
+        // owned NAME does not make an arbitrary `--manifest` argument safe —
+        // `executeAlbumWatcher` removes whatever path it is given on every
+        // exit path, so this is the only gate standing between an arbitrary
+        // `--manifest <path>` and an unattended delete of it.
+        if let manifest, !manifestPathIsValidForOwnedName(manifest, name: name) {
+            verbose("__watch-container: refusing invalid manifest path \(manifest)")
+            Foundation.exit(1)
+        }
         let backend = AppleScriptBackend()
         func music(_ script: String) -> String? {
             try? syncRun { try await backend.runMusic(script) }
         }
         let trackIDs = resolveTrackIDs(idsOption: ids, manifestPath: manifest)
-        // `isRunning` defaults to `musicIsRunningNow` (§16.3) — omitted here
-        // deliberately, so production always gets the real probe.
+        // `isRunning` defaults to `musicIsRunningNow` (§16.3/§18.2) — omitted
+        // here deliberately, so production always gets the real probe.
         executeAlbumWatcher(name: name, trackIDs: trackIDs, manifestPath: manifest, run: music)
         Foundation.exit(0)
     }
