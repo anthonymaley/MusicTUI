@@ -11,7 +11,8 @@
 # It DOES invoke `music playlist cleanup` once, as the behaviour under test,
 # and that command deletes EVERY owned temp container in the library
 # (`__temp__` and `__album__ `), not only this script's four. That is why the
-# preflight below FAILS CLOSED if any owned container already exists: the
+# preflight below FAILS CLOSED if any owned container already exists, AND if
+# the probe that checks cannot be read at all: the
 # broad cleanup is only exercised in an intentionally clean fixture, so its
 # measured effect is exactly the four this run created and the net-effect
 # assertions below are meaningful rather than accidental.
@@ -28,6 +29,9 @@ set -euo pipefail
 
 MUSIC_BIN="${1:-$HOME/.local/bin/music}"
 OWNED_PREFIXES=('__temp__' '__album__ ')
+# Single source of truth: the preflight regex is BUILT from OWNED_PREFIXES, so
+# adding a prefix to the array cannot silently fail to take effect.
+OWNED_RE=$(printf '^%s|' "${OWNED_PREFIXES[@]}"); OWNED_RE=${OWNED_RE%|}
 
 if [ ! -x "$MUSIC_BIN" ]; then
     echo "✗ Not executable: $MUSIC_BIN" >&2
@@ -60,9 +64,12 @@ delete_named() {
     osascript -e "tell application \"Music\" to delete (every user playlist whose name is \"$(esc "$1")\")" >/dev/null 2>&1 || true
 }
 
-list_owned_containers() {
-    osascript -e 'tell application "Music" to return name of every user playlist' 2>/dev/null \
-        | tr ',' '\n' | sed 's/^ *//' | grep -E '^__temp__|^__album__ ' || true
+# Returns the raw playlist-name list on stdout and PROPAGATES osascript's exit
+# status. It deliberately does NOT swallow errors: a probe that fails must be
+# distinguishable from a probe that found nothing, or the preflight reports a
+# state it never measured — the exact defect class this gate exists to catch.
+read_playlist_names() {
+    osascript -e 'tell application "Music" to return name of every user playlist' 2>&1
 }
 
 NAMES=()
@@ -81,10 +88,19 @@ echo "binary under test: $MUSIC_BIN"
 echo "version: $("$MUSIC_BIN" --version)"
 
 echo "-- preflight: the fixture must already be clean of owned containers --"
-preexisting=$(list_owned_containers)
+if ! all_names=$(read_playlist_names); then
+    echo "✗ PREFLIGHT ABORTED: could not read the playlist list, so the fixture" >&2
+    echo "  could NOT be confirmed clean. Refusing to run a broad cleanup against" >&2
+    echo "  a library this gate never actually read. osascript said:" >&2
+    echo "    $all_names" >&2
+    exit 1
+fi
+preexisting=$(printf '%s' "$all_names" | tr ',' '\n' | sed 's/^ *//' | grep -E "$OWNED_RE" || true)
 if [ -n "$preexisting" ]; then
     echo "✗ PREFLIGHT REFUSED: owned temp container(s) already exist:" >&2
-    printf '    %s\n' $preexisting >&2
+    # Quoted + sed rather than unquoted printf: every `__album__ ` name
+    # contains a space, which word-splitting would tear across lines.
+    echo "$preexisting" | sed 's/^/    /' >&2
     echo "  This gate invokes a BROAD cleanup, which would delete these too and make" >&2
     echo "  its net-effect assertions meaningless (and could red-flag a clean tree)." >&2
     echo "  Remove or let them settle first, then re-run." >&2

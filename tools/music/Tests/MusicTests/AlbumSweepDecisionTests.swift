@@ -164,9 +164,31 @@ final class AlbumSweepDecisionTests: XCTestCase {
     /// `keepName` must be checked in the same `if` that appends to
     /// `eligibleNames`, not in a separate later step.
     func testKeepNameIsExcludedAtCaptureTimeNotFilteredLater() {
-        let script = albumSweepGuardedScript(prefixes: ["x"], deferReturn: "return", countDeleted: false)
-        XCTAssertTrue(script.contains("(nm is not keepName) and (eligibleNames does not contain nm)"),
-                      "keepName exclusion must gate the append into eligibleNames")
+        let uncounted = albumSweepGuardedScript(prefixes: ["x"], deferReturn: "return", countDeleted: false)
+        XCTAssertTrue(uncounted.contains("(nm is not keepName) and (eligibleNames does not contain nm)"),
+                      "uncounted: keepName exclusion must gate the append into eligibleNames")
+
+        // §20.6 split this capture body per variant so the counted one could
+        // record `protectedMatch`. That split removed this property's only
+        // coverage for the counted variant: the shared template used to make
+        // one assertion pin both. A mutation making the counted append
+        // UNCONDITIONAL — which deletes the container the user is listening
+        // to — passed every other test in the suite.
+        //
+        // The counted gate is an if/else-if rather than a conjunction, so the
+        // ELSE is the load-bearing token: it is the only thing keeping the
+        // append conditional on nm NOT being keepName.
+        let counted = albumSweepGuardedScript(prefixes: ["x"], deferReturn: "return \"deferred\"", countDeleted: true)
+        XCTAssertTrue(counted.contains("else if (eligibleNames does not contain nm) then"),
+                      "counted: the append must sit on the ELSE branch of the keepName test")
+        XCTAssertEqual(counted.components(separatedBy: "set end of eligibleNames to nm").count - 1, 1,
+                       "counted: exactly one append path into eligibleNames")
+        guard let keepTest = counted.range(of: "if (nm is keepName) then")?.lowerBound,
+              let append = counted.range(of: "set end of eligibleNames to nm")?.lowerBound else {
+            return XCTFail("counted: expected a keepName test and an append")
+        }
+        XCTAssertLessThan(keepTest, append,
+                          "counted: the append must be unreachable without passing the keepName test")
     }
 
     /// §20.6: the counted variant must distinguish FOUR outcomes, and each
@@ -200,24 +222,7 @@ final class AlbumSweepDecisionTests: XCTestCase {
         XCTAssertFalse(script.contains("\"none\""))
         XCTAssertFalse(script.contains("\"spared\""))
     }
-
-    /// §20.3: count actual playlist OBJECTS removed, not unique names
-    /// processed — exact-name deletion removes every duplicate sharing a
-    /// captured name, so the counted delete loop must sum the actual object
-    /// count per name rather than incrementing by one per name.
-    ///
-    /// Coordinator review caught a regression in an earlier draft: the count
-    /// was taken and folded into `deleted` BEFORE `delete` ran, both inside
-    /// the same `try` — so a `delete` that throws (a Music.app hiccup, a
-    /// transient Apple Event failure) still inflated `deleted` for objects
-    /// that are still there, and the CLI would report "Cleaned up N" for
-    /// playlists the user can still see. The pre-§20 loop never had this bug
-    /// (it did `delete pp` and only then `deleted + 1`, both inside one
-    /// `try`); the fix restores that same delete-before-count order. A
-    /// contains-only check on the count expression passes equally against
-    /// the broken order, so this pins it POSITIONALLY: within the counted
-    /// delete loop's own span, `delete` must appear before the increment.
-     /// §20.6: the reported count is MEASURED, never predicted.
+    /// §20.6: the reported count is MEASURED, never predicted.
     ///
     /// The pre-§20.6 shape took the object count BEFORE deleting and reported
     /// it, so a `delete` that threw (a Music.app hiccup, a transient Apple

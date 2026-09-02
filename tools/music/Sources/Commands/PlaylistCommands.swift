@@ -353,14 +353,18 @@ func playlistCleanupScript() -> String {
 /// misreport §16.5 fixed for the deferred/exception case, just from a
 /// garbled-return-value cause instead of a caught AppleScript exception.
 ///
-/// §20.3: FOUR outcomes, not two. Before this, `.collected(0)` was printed
-/// as "Cleaned up 0 temp playlist(s)." for BOTH "nothing existed" and
-/// "candidates existed but were spared" — observed live 2026-09-02, where a
-/// correctly spared paused container printed exactly that, indistinguishable
-/// from "there was nothing to clean". `.nothingExisted` and
-/// `.sparedCandidates` are now separate cases so neither can misreport as
-/// the other, and `.removed` carries the actual object count (never a
-/// unique-name count — see `albumSweepGuardedScript`). Pure → tested.
+/// §20.3: `.collected(0)` was printed as "Cleaned up 0 temp playlist(s)."
+/// for BOTH "nothing existed" and "candidates existed but were spared" —
+/// observed live 2026-09-02, where a correctly spared paused container
+/// printed exactly that, indistinguishable from "there was nothing to
+/// clean". `.nothingExisted` and `.sparedCandidates` became separate cases
+/// so neither can misreport as the other.
+///
+/// §20.6 added `.partiallyRemoved` and changed what `.removed` MEANS: it now
+/// carries a MEASURED delta (objects present for the captured names before
+/// the delete, minus those still present after), never a count taken before
+/// deleting and reported as though it had succeeded. Six cases in total, and
+/// the CLI prints a distinct message for every one of them. Pure → tested.
 enum PlaylistCleanupResult: Equatable {
     /// No playlist matched a swept prefix at all — genuinely nothing to do.
     case nothingExisted
