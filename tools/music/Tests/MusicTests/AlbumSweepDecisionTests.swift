@@ -109,10 +109,10 @@ final class AlbumSweepDecisionTests: XCTestCase {
     func testCountDeletedSelectsTheCountingDeleteLoop() {
         let counted = albumSweepGuardedScript(prefixes: ["x"], deferReturn: "return", countDeleted: true)
         let uncounted = albumSweepGuardedScript(prefixes: ["x"], deferReturn: "return", countDeleted: false)
-        XCTAssertTrue(counted.contains("set deleted to 0"))
-        XCTAssertTrue(counted.contains("return deleted"))
-        XCTAssertFalse(uncounted.contains("set deleted to 0"))
-        XCTAssertFalse(uncounted.contains("return deleted"))
+        XCTAssertTrue(counted.contains("set beforeCount to 0"))
+        XCTAssertTrue(counted.contains("return removedCount"))
+        XCTAssertFalse(uncounted.contains("set beforeCount to 0"))
+        XCTAssertFalse(uncounted.contains("return removedCount"))
     }
 
     /// Containers only, whatever prefixes are supplied: the shared generator
@@ -169,19 +169,27 @@ final class AlbumSweepDecisionTests: XCTestCase {
                       "keepName exclusion must gate the append into eligibleNames")
     }
 
-    /// §20.3: the counted variant must distinguish "nothing existed" from
-    /// "something existed but was entirely spared" — collapsing both into
-    /// "0" was the exact live-measured misreport (a correctly spared paused
-    /// container printed "Cleaned up 0 temp playlist(s)."). `matchedAny`
-    /// tracks whether ANY playlist matched the prefix, spared one included,
-    /// independent of whether anything ended up eligible for deletion.
-    func testCountedVariantReturnsThreeDistinctOutcomesNotJustACount() {
+    /// §20.6: the counted variant must distinguish FOUR outcomes, and each
+    /// must be reachable only from measured state.
+    ///
+    /// The original §20.3 shape had three and used `matchedAny` ("some
+    /// playlist matched a prefix") as the evidence for sparing. That was
+    /// wrong: a name captured into the snapshot also matched a prefix, so a
+    /// non-empty snapshot that removed nothing reported "spared" and the CLI
+    /// told the user a container was playing when nothing was. Sparing is now
+    /// gated on `protectedMatch` — the match that IS the active container —
+    /// and a fourth outcome carries a measured partial deletion.
+    func testCountedVariantReturnsFourMeasuredOutcomes() {
         let script = albumSweepGuardedScript(prefixes: ["x"], deferReturn: "return \"deferred\"", countDeleted: true)
-        XCTAssertTrue(script.contains("set matchedAny to false"))
-        XCTAssertTrue(script.contains("set matchedAny to true"))
-        XCTAssertTrue(script.contains("return \"none\""), "nothing matched at all")
-        XCTAssertTrue(script.contains("return \"spared\""), "something matched but all of it was spared")
-        XCTAssertTrue(script.contains("return deleted"), "one or more objects were actually removed")
+        XCTAssertFalse(script.contains("matchedAny"),
+                       "matchedAny conflated a prefix match with sparing")
+        XCTAssertTrue(script.contains("set protectedMatch to false"))
+        XCTAssertTrue(script.contains("set protectedMatch to true"))
+        XCTAssertTrue(script.contains("return \"none\""), "nothing matched, or nothing was removed")
+        XCTAssertTrue(script.contains("return \"spared\""), "the only match was the protected container")
+        XCTAssertTrue(script.contains("return removedCount"), "objects were measurably removed")
+        XCTAssertTrue(script.contains("return \"partial:\" & removedCount & \":\" & afterCount"),
+                      "some captured names still resolve to live objects")
     }
 
     /// The uncounted stale-sweep variant has no outcome to report — it runs
@@ -209,24 +217,31 @@ final class AlbumSweepDecisionTests: XCTestCase {
     /// contains-only check on the count expression passes equally against
     /// the broken order, so this pins it POSITIONALLY: within the counted
     /// delete loop's own span, `delete` must appear before the increment.
-    func testCountedDeleteLoopCountsObjectsOnlyAfterTheDeleteSucceeds() {
+     /// §20.6: the reported count is MEASURED, never predicted.
+    ///
+    /// The pre-§20.6 shape took the object count BEFORE deleting and reported
+    /// it, so a `delete` that threw (a Music.app hiccup, a transient Apple
+    /// Event failure) still reported objects the user can still see. Counting
+    /// after the delete and subtracting is correct whatever the plural-delete
+    /// semantics turn out to be, so it removes an unmeasured premise rather
+    /// than betting on one. Pinned POSITIONALLY: a contains-only check passes
+    /// equally against a script that measures the after-count too early.
+    func testReportedCountIsMeasuredAfterDeletionNotPredictedBeforeIt() {
         let script = albumSweepGuardedScript(prefixes: ["x"], deferReturn: "return \"deferred\"", countDeleted: true)
-        XCTAssertTrue(script.contains("count of (every user playlist whose name is nm)"),
-                      "must count the actual object count per captured name")
-        XCTAssertFalse(script.contains("set deleted to deleted + 1"),
-                       "must never count names processed as a proxy for objects removed")
+        XCTAssertFalse(script.contains("set deleted to deleted +"),
+                       "must not fold a pre-delete count into the reported total")
+        XCTAssertTrue(script.contains("set removedCount to beforeCount - afterCount"),
+                      "removed is a measured delta, not a prediction")
+        XCTAssertTrue(script.contains("if removedCount < 0 then set removedCount to 0"),
+                      "clamped defensively at zero")
 
-        guard let loopStart = script.range(of: "repeat with nm in eligibleNames")?.lowerBound,
-              let loopEnd = script.range(of: "end repeat", range: loopStart..<script.endIndex)?.upperBound else {
-            return XCTFail("expected the counted delete loop over eligibleNames")
+        guard let before = script.range(of: "set beforeCount to beforeCount +")?.lowerBound,
+              let delete = script.range(of: "delete (every user playlist whose name is nm)")?.lowerBound,
+              let after = script.range(of: "set afterCount to afterCount +")?.lowerBound else {
+            return XCTFail("expected a before-count, a delete pass and an after-count")
         }
-        let loop = script[loopStart..<loopEnd]
-        guard let deleteIndex = loop.range(of: "delete (every user playlist whose name is nm)")?.lowerBound,
-              let incrementIndex = loop.range(of: "set deleted to deleted +")?.lowerBound else {
-            return XCTFail("expected both the delete statement and the increment inside the loop")
-        }
-        XCTAssertLessThan(deleteIndex, incrementIndex,
-                          "delete must happen before the count is folded into deleted, or a throwing delete inflates the count")
+        XCTAssertLessThan(before, delete, "the before-count precedes the delete pass")
+        XCTAssertLessThan(delete, after, "the after-count FOLLOWS the delete pass")
     }
 
     /// Both variants delete via the same exact-name reference form

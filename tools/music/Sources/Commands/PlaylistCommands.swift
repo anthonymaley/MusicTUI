@@ -372,9 +372,16 @@ enum PlaylistCleanupResult: Equatable {
     /// identified, or the state itself was unrecognised: aborted before any
     /// enumeration, nothing deleted, nothing known about what exists.
     case deferred
-    /// One or more playlist OBJECTS were removed (exact-name deletion can
-    /// remove more than one object per captured name).
+    /// One or more playlist OBJECTS were removed, MEASURED as the drop in the
+    /// object count for exactly the names this invocation captured
+    /// (`before - after`), never predicted from a pre-delete count.
     case removed(Int)
+    /// Deletion was attempted over a non-empty snapshot and some captured
+    /// names still resolve to live objects afterwards. Carries the MEASURED
+    /// removed and remaining object counts. This is a partial failure, NOT
+    /// sparing: it says nothing about playback, and the CLI must not imply
+    /// that anything is playing.
+    case partiallyRemoved(removed: Int, remaining: Int)
     /// The script's raw return value parsed as none of the above.
     case unreadable
 }
@@ -386,6 +393,17 @@ func parsePlaylistCleanupResult(_ raw: String) -> PlaylistCleanupResult {
     case "none": return .nothingExisted
     case "spared": return .sparedCandidates
     default:
+        // `partial:<removed>:<remaining>` — both counts MEASURED after the
+        // delete pass. Rejected unless remaining > 0, because a partial with
+        // nothing remaining is a contradiction the script cannot emit.
+        if trimmed.hasPrefix("partial:") {
+            let parts = trimmed.split(separator: ":", omittingEmptySubsequences: false)
+            guard parts.count == 3,
+                  let removed = Int(parts[1]), removed >= 0,
+                  let remaining = Int(parts[2]), remaining > 0
+            else { return .unreadable }
+            return .partiallyRemoved(removed: removed, remaining: remaining)
+        }
         guard let count = Int(trimmed), count > 0 else { return .unreadable }
         return .removed(count)
     }
@@ -513,25 +531,36 @@ func albumSweepDecision(playerState: String?, contextReadable: Bool) -> AlbumSwe
 ///    (an active/paused container is excluded from the snapshot, never
 ///    captured, never deleted). Only the name (a string) is kept; the live
 ///    playlist reference `pp` is never retained past its own iteration.
-///    `matchedAny` separately records whether ANY playlist matched a prefix
-///    at all, including the spared one — this is what lets the counted
-///    variant tell "nothing existed" apart from "something existed but was
-///    spared" once every eligible name has been captured.
+///    `protectedMatch` separately records whether the ACTIVE/paused
+///    container itself matched a prefix. It is deliberately NOT "did any
+///    playlist match": a name captured into the snapshot matched one too, so
+///    using that as evidence of sparing reported "spared" for a non-empty
+///    snapshot that removed nothing, and the CLI then told the user a
+///    container was playing when nothing was.
 /// 2. AFTER that enumeration finishes, delete each captured name using the
 ///    same exact-name reference form `playlistDeleteScript` already uses
 ///    (`every user playlist whose name is "..."`) — proven live, and immune
 ///    to the mutate-while-enumerating defect because it re-resolves the
 ///    reference fresh per name rather than walking a live collection.
-///    Exact-name deletion intentionally removes ALL playlist objects sharing
-///    a captured name (this is what makes the legacy same-second `__temp__`
-///    collision deterministic), so the counted variant sums
-///    `count of (every user playlist whose name is nm)` per name rather than
-///    counting names processed — one captured name can remove more than one
-///    object. The count is taken and added to `deleted` only AFTER `delete`
-///    itself succeeds, both inside the same `try`: counting first and
-///    deleting second would let a `delete` that throws (a Music.app hiccup,
-///    a transient Apple Event failure) still inflate `deleted` for objects
-///    that are still there, reporting a removal that did not happen.
+/// 3. §20.6 — CLASSIFY FROM MEASURED STATE, never from a prediction:
+///    - empty snapshot + `protectedMatch`            -> "spared"
+///    - empty snapshot, no protected match           -> "none"
+///    - otherwise count the objects for exactly the captured names BEFORE
+///      the delete pass, delete, then RE-COUNT the same names afterwards;
+///      `removedCount = beforeCount - afterCount`, clamped at zero.
+///    - `afterCount > 0`  -> "partial:<removed>:<remaining>", an explicit
+///      partial failure that says nothing about playback.
+///    - `afterCount == 0` and `removedCount == 0` (a watcher won the race
+///      and removed them first) -> "none", NEVER "spared".
+///    - otherwise -> the measured `removedCount`.
+///
+///    Counting only the deduplicated names this invocation captured means an
+///    unrelated concurrent playlist creation cannot distort the result. The
+///    earlier shape took the count BEFORE deleting and reported it, which
+///    assumed, without measurement, that a plural exact-name delete always
+///    removes every object it matches — the same "precedent, not
+///    measurement" reasoning that produced the original §20 defect one layer
+///    down. Measuring the after-count is correct under either semantics.
 func albumSweepGuardedScript(prefixes: [String], deferReturn: String, countDeleted: Bool) -> String {
     let inUse = albumInUsePlayerStates
         .map { "playerStateText is \"\($0)\"" }
@@ -539,26 +568,66 @@ func albumSweepGuardedScript(prefixes: [String], deferReturn: String, countDelet
     let prefixTest = prefixes
         .map { "(nm starts with \"\($0)\")" }
         .joined(separator: " or ")
+    // The capture loop tracks the PROTECTED match (a prefix match that IS the
+    // active/paused container) separately, and only when the caller needs an
+    // outcome. "Something matched a prefix" is NOT evidence of sparing: a name
+    // captured into the snapshot also matched one.
+    let captureBody: String
     let deleteBody: String
     if countDeleted {
+        captureBody = """
+                if (nm is keepName) then
+                        set protectedMatch to true
+                    else if (eligibleNames does not contain nm) then
+                        set end of eligibleNames to nm
+                    end if
+        """
+        // Outcomes are MEASURED, never predicted. The object counts are taken
+        // over exactly the deduplicated names this invocation captured, so a
+        // concurrent unrelated playlist creation cannot distort them, and the
+        // after-count is read AFTER the delete pass rather than inferred from
+        // the before-count.
         deleteBody = """
-        set deleted to 0
+        if (count of eligibleNames) is 0 then
+            if protectedMatch then
+                return "spared"
+            else
+                return "none"
+            end if
+        end if
+        set beforeCount to 0
         repeat with nm in eligibleNames
             try
-                set n to count of (every user playlist whose name is nm)
-                delete (every user playlist whose name is nm)
-                set deleted to deleted + n
+                set beforeCount to beforeCount + (count of (every user playlist whose name is nm))
             end try
         end repeat
-        if deleted > 0 then
-            return deleted
-        else if matchedAny then
-            return "spared"
-        else
+        repeat with nm in eligibleNames
+            try
+                delete (every user playlist whose name is nm)
+            end try
+        end repeat
+        set afterCount to 0
+        repeat with nm in eligibleNames
+            try
+                set afterCount to afterCount + (count of (every user playlist whose name is nm))
+            end try
+        end repeat
+        set removedCount to beforeCount - afterCount
+        if removedCount < 0 then set removedCount to 0
+        if afterCount > 0 then
+            return "partial:" & removedCount & ":" & afterCount
+        end if
+        if removedCount is 0 then
             return "none"
         end if
+        return removedCount
         """
     } else {
+        captureBody = """
+                if (nm is not keepName) and (eligibleNames does not contain nm) then
+                        set end of eligibleNames to nm
+                    end if
+        """
         deleteBody = """
         repeat with nm in eligibleNames
             try
@@ -567,6 +636,7 @@ func albumSweepGuardedScript(prefixes: [String], deferReturn: String, countDelet
         end repeat
         """
     }
+    let protectedInit = countDeleted ? "\nset protectedMatch to false" : ""
     return """
     set keepName to ""
     set playerStateText to "\(unreadablePlayerStateFallback)"
@@ -584,16 +654,12 @@ func albumSweepGuardedScript(prefixes: [String], deferReturn: String, countDelet
         end try
     end if
     if not contextReadable then \(deferReturn)
-    set eligibleNames to {}
-    set matchedAny to false
+    set eligibleNames to {}\(protectedInit)
     repeat with pp in (every user playlist)
         try
             set nm to name of pp
             if (\(prefixTest)) then
-                set matchedAny to true
-                if (nm is not keepName) and (eligibleNames does not contain nm) then
-                    set end of eligibleNames to nm
-                end if
+        \(captureBody)
             end if
         end try
     end repeat
@@ -1085,6 +1151,14 @@ struct PlaylistCleanup: ParsableCommand {
         switch parsePlaylistCleanupResult(result) {
         case .removed(let count):
             print("Cleaned up \(count) temp playlist(s).")
+        case .partiallyRemoved(let removed, let remaining):
+            // Deliberately says NOTHING about playback: this outcome is
+            // reached by measuring live objects after the delete pass, and
+            // carries no evidence about player state. Claiming "it's playing"
+            // here would be the §20.3 misreport in a new place.
+            print("Cleanup incomplete: removed \(removed) temp playlist(s), "
+                + "but \(remaining) still present. Re-run cleanup; if this repeats, "
+                + "check Music for a playlist that refuses to delete.")
         case .nothingExisted:
             print("No temp playlists to clean up.")
         case .sparedCandidates:
