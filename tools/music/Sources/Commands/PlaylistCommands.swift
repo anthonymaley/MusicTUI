@@ -311,11 +311,17 @@ func playlistDeleteScript(name: String) -> String {
 ///
 /// An unreadable playlist context aborts the sweep: if the player is in an
 /// in-use state but `current playlist` throws, we cannot identify which
-/// container to spare. The script returns 0 without deleting. This conforms
-/// to design spec §6.1: a readable context is a precondition for collecting.
-/// An unreadable context is never grounds to collect, because leaving orphans
-/// is the cheap failure; deleting live playback is the expensive one. Genuine
-/// orphans are collected by the next album invocation or the next cleanup run.
+/// container to spare. The script returns the text "deferred" without
+/// deleting anything (§16.5, corrects §11: it used to return 0, which the CLI
+/// printed as "Cleaned up 0 temp playlist(s)." — indistinguishable from
+/// "nothing to clean", even though this unreadable-context state is exactly
+/// the measured Autoplay-bleed signature, so it is reachable precisely when a
+/// user is hunting an orphan). This conforms to design spec §6.1: a readable
+/// context is a precondition for collecting. An unreadable context is never
+/// grounds to collect, because leaving orphans is the cheap failure; deleting
+/// live playback is the expensive one. Genuine orphans are collected by the
+/// next album invocation (§16.1's `albumStaleSweepScript`) or the next
+/// cleanup run.
 func playlistCleanupScript() -> String {
     let inUse = albumInUsePlayerStates
         .map { "playerStateText is \"\($0)\"" }
@@ -334,7 +340,7 @@ func playlistCleanupScript() -> String {
             set contextReadable to true
         end try
     end if
-    if not contextReadable then return 0
+    if not contextReadable then return "deferred"
     set deleted to 0
     repeat with pp in (every user playlist)
         try
@@ -346,6 +352,74 @@ func playlistCleanupScript() -> String {
         end try
     end repeat
     return deleted
+    """
+}
+
+/// §16.5: the honest outcome of `playlistCleanupScript()`. `.deferred` is the
+/// unreadable-context case (§6.1/§16.5): the player is in an in-use state but
+/// `current playlist` couldn't be read, so cleanup aborted without deleting
+/// anything, rather than the vacuous "there was nothing to clean" `.collected(0)`
+/// would otherwise imply. Pure → tested.
+enum PlaylistCleanupResult: Equatable {
+    case collected(Int)
+    case deferred
+}
+
+func parsePlaylistCleanupResult(_ raw: String) -> PlaylistCleanupResult {
+    let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+    if trimmed == "deferred" { return .deferred }
+    return .collected(Int(trimmed) ?? 0)
+}
+
+/// The §16.1 next-invocation recovery sweep, run at the START of every
+/// bounded album play, BEFORE that play's own container is created. This is
+/// design §6.2's path 2 — a crashed or killed watcher's orphan is recovered
+/// the next time the user plays an album — which three shipped code comments
+/// asserted existed before this function was written to make it true.
+///
+/// Deliberately narrower than `playlistCleanupScript()`:
+///
+/// - Sweeps `\(albumPlaylistPrefix)` containers ONLY. It must never touch
+///   `__temp__`, `__discover__`, or `__queue__` — a user may be relying on a
+///   `__temp__` playlist, and this runs on every single album play, not on an
+///   explicit user command.
+/// - Spares the current container while the player is in
+///   `albumInUsePlayerStates` (playing, paused, fast forwarding, rewinding —
+///   an album container is resumable while paused, same rule as
+///   `playlistCleanupScript`, NOT the Discover sweep's `sweepablePlayerStates`).
+/// - Unknown state or an unreadable context both fail toward sparing: on the
+///   same asymmetry used throughout this feature, a wrongly spared orphan
+///   costs one row a later sweep collects; a wrongly collected one destroys
+///   live playback. This script aborts the ENTIRE sweep (deletes nothing) if
+///   the in-use context can't be read, same shape as `playlistCleanupScript`.
+///
+/// Containers only: never names a `track` or a `song`, so it cannot reach a
+/// library row. A test pins that, same as the other two sweeps in this file.
+func albumStaleSweepScript() -> String {
+    let inUse = albumInUsePlayerStates
+        .map { "playerStateText is \"\($0)\"" }
+        .joined(separator: " or ")
+    return """
+    set keepName to ""
+    set playerStateText to "\(unreadablePlayerStateFallback)"
+    try
+        set playerStateText to player state as text
+    end try
+    set contextReadable to true
+    if \(inUse) then
+        set contextReadable to false
+        try
+            set keepName to name of current playlist
+            set contextReadable to true
+        end try
+    end if
+    if not contextReadable then return
+    repeat with pp in (every user playlist)
+        try
+            set nm to name of pp
+            if (nm starts with "\(albumPlaylistPrefix)") and (nm is not keepName) then delete pp
+        end try
+    end repeat
     """
 }
 
@@ -830,8 +904,17 @@ struct PlaylistCleanup: ParsableCommand {
         let result = try syncRun {
             try await backend.runMusic(playlistCleanupScript())
         }
-        let count = result.trimmingCharacters(in: .whitespacesAndNewlines)
-        print("Cleaned up \(count) temp playlist(s).")
+        switch parsePlaylistCleanupResult(result) {
+        case .collected(let count):
+            print("Cleaned up \(count) temp playlist(s).")
+        case .deferred:
+            // §16.5: never say "Cleaned up 0" here — that reads as "nothing to
+            // clean", but this path means playback is active and its context
+            // couldn't be read, so cleanup COULD NOT tell what's safe to
+            // delete and deleted nothing.
+            print("Cleanup deferred: playback is active and its container couldn't be identified, "
+                + "so nothing was deleted. Try again once playback settles, or after it stops.")
+        }
     }
 }
 

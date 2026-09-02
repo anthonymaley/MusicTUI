@@ -5,6 +5,9 @@ enum BoundedAlbumOutcome: Equatable {
     case playing
     case notFound
     case nonePlayable(matched: Int)
+    /// §16.6: the query matched more than one distinct album with no unique
+    /// exact match — nothing is built, nothing is played.
+    case ambiguous(albums: [String])
     /// Container creation or seeding failed. `containerRemoved` is false when
     /// the rollback delete ALSO failed, so a partial container may remain in
     /// the user's library and the caller must not claim otherwise.
@@ -31,11 +34,21 @@ func playBoundedAlbum(title: String,
                       launch: @escaping ProcessLauncher = detachedLaunch)
     -> BoundedAlbumOutcome {
 
-    switch decideAlbumPlay(rows) {
+    // §16.1: sweep stale __album__ containers a crashed or killed watcher
+    // left behind, BEFORE this play creates its own — design §6.2 path 2,
+    // the recovery this comment used to promise without anything building it.
+    // Spares anything in use and spares on any unreadable signal, so a failed
+    // or inconclusive sweep must never block THIS play from starting; its
+    // result is intentionally discarded.
+    _ = run(albumStaleSweepScript())
+
+    switch decideAlbumPlay(rows, query: title) {
     case .notFound:
         return .notFound
     case .nonePlayable(let matched):
         return .nonePlayable(matched: matched)
+    case .ambiguous(let albums):
+        return .ambiguous(albums: albums)
     case .play:
         break
     }
@@ -83,6 +96,14 @@ func playBoundedAlbum(title: String,
         // action that ends the promise and leaves the player recoverable.
         _ = run("pause")
         let removed = run(playlistDeleteScript(name: name)) != nil
+        // Belt and braces alongside spawnAlbumWatcher's own cleanup: if a
+        // manifest was written for this uuid (large album) and the watcher
+        // never started, nobody else will ever own or remove it.
+        // `removeAlbumManifest` is a silent no-op when there is nothing at
+        // the path, so this is safe to call unconditionally.
+        if let manifestPath = albumManifestPath(uuid: uuid) {
+            removeAlbumManifest(path: manifestPath)
+        }
         return .watcherFailed(containerRemoved: removed)
     }
 
@@ -103,6 +124,12 @@ func albumOutcomeMessage(_ outcome: BoundedAlbumOutcome, title: String) -> Strin
         return "No albums found matching '\(title)'"
     case .nonePlayable(let matched):
         return "Found \(matched) track(s) matching '\(title)', but none are playable yet (pre-release or removed)."
+    case .ambiguous(let albums):
+        let shown = albums.prefix(8).map { $0.isEmpty ? "(untitled album)" : $0 }
+        let list = shown.joined(separator: ", ")
+        let more = albums.count > shown.count ? ", and \(albums.count - shown.count) more" : ""
+        return "'\(title)' matches \(albums.count) different albums: \(list)\(more). "
+            + "Be more specific, or add --artist."
     case .buildFailed(let containerRemoved):
         if containerRemoved {
             return "Couldn't build the temporary album container for '\(title)'. Nothing was played."

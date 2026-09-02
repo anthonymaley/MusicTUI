@@ -54,19 +54,42 @@ final class PlaylistCleanupScriptTests: XCTestCase {
                       "fallback must be in-use so a thrown read spares, not deletes")
     }
 
-    /// When the player is in an in-use state but the context read throws,
-    /// the script must return 0 without deleting. We cannot identify which
-    /// container to spare, so we spare them all.
-    func testUnreadableContextAbortsTheSweep() {
+    /// When the player is in an in-use state but the context read throws, the
+    /// script must return the text "deferred" without deleting. We cannot
+    /// identify which container to spare, so we spare them all. §16.5
+    /// (corrects §11): this used to `return 0`, which the CLI printed as
+    /// "Cleaned up 0 temp playlist(s)." — indistinguishable from "there was
+    /// nothing to clean" — even though this is precisely the Autoplay-bleed
+    /// signature a user hunting an orphan is likely to hit.
+    func testUnreadableContextDefersTheSweep() {
         let s = playlistCleanupScript()
         XCTAssertTrue(s.contains("contextReadable"))
         XCTAssertTrue(s.contains("set contextReadable to false"))
-        XCTAssertTrue(s.contains("if not contextReadable then return 0"),
-                      "must abort before the repeat loop if context is not readable")
+        XCTAssertTrue(s.contains("if not contextReadable then return \"deferred\""),
+                      "must abort before the repeat loop if context is not readable, and say so honestly")
         // Verify the guard precedes the loop
         let repeatIndex = s.range(of: "repeat with pp")?.lowerBound ?? s.startIndex
-        let guardIndex = s.range(of: "if not contextReadable then return 0")?.lowerBound ?? s.endIndex
+        let guardIndex = s.range(of: "if not contextReadable then return \"deferred\"")?.lowerBound ?? s.endIndex
         XCTAssertTrue(guardIndex < repeatIndex, "guard must precede the repeat loop")
+    }
+
+    // MARK: - §16.5: honest deferred result
+
+    func testParsePlaylistCleanupResultRecognisesDeferred() {
+        XCTAssertEqual(parsePlaylistCleanupResult("deferred"), .deferred)
+        XCTAssertEqual(parsePlaylistCleanupResult("  deferred\n"), .deferred)
+    }
+
+    func testParsePlaylistCleanupResultParsesACollectedCount() {
+        XCTAssertEqual(parsePlaylistCleanupResult("0"), .collected(0))
+        XCTAssertEqual(parsePlaylistCleanupResult("3"), .collected(3))
+        XCTAssertEqual(parsePlaylistCleanupResult(" 2 \n"), .collected(2))
+    }
+
+    /// Mutation-adjacent: garbage must never be silently read as "0 deleted",
+    /// which would look identical to a real empty sweep.
+    func testParsePlaylistCleanupResultTreatsGarbageAsZeroNotACrash() {
+        XCTAssertEqual(parsePlaylistCleanupResult("garbage"), .collected(0))
     }
 
     /// When the player is not in an in-use state, contextReadable stays true,

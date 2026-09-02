@@ -181,4 +181,96 @@ final class BoundedAlbumPlayTests: XCTestCase {
         XCTAssertTrue(scripts.contains { $0.trimmingCharacters(in: .whitespaces) == "pause" })
         XCTAssertEqual(idsArgument(launchedArgs ?? []), "A,B")
     }
+
+    // MARK: - §16.1: the next-invocation stale sweep
+
+    /// The sweep must run BEFORE the container is built — it is the whole
+    /// point of "next invocation recovery": a crashed watcher's orphan from a
+    /// PREVIOUS play is collected before THIS play creates its own container.
+    func testSweepsStaleAlbumContainersBeforeBuildingANewOne() {
+        var scripts: [String] = []
+        _ = playBoundedAlbum(title: "Moon Safari", rows: rows(3), uuid: "U",
+                             run: { s in
+                                 scripts.append(s)
+                                 if s.contains("set ids to persistent ID") { return "A\u{1F}B\u{1F}C" }
+                                 if s.contains("count of tracks") { return "3" }
+                                 return ""
+                             },
+                             launch: { _, _ in true })
+        XCTAssertEqual(scripts.first, albumStaleSweepScript(),
+                       "the stale sweep must be the very first script run, before any container is built")
+        XCTAssertFalse(scripts.first?.contains("make new playlist") ?? true)
+    }
+
+    /// The sweep's own result must never gate this play: even if the sweep
+    /// script itself fails outright (e.g. a genuine AppleScript error), the
+    /// play must still proceed and succeed.
+    func testASweepFailureDoesNotBlockThisPlayFromStarting() {
+        let out = playBoundedAlbum(title: "Moon Safari", rows: rows(3), uuid: "U",
+                                   run: { s in
+                                       if s == albumStaleSweepScript() { return nil }
+                                       if s.contains("set ids to persistent ID") { return "A\u{1F}B\u{1F}C" }
+                                       if s.contains("count of tracks") { return "3" }
+                                       return ""
+                                   },
+                                   launch: { _, _ in true })
+        XCTAssertEqual(out, .playing)
+    }
+
+    // MARK: - §16.6: bounded album resolution
+
+    /// The broad-query regression at the `playBoundedAlbum` level: rows
+    /// spanning more than one distinct album must never be built into one
+    /// container. Nothing is played.
+    func testAmbiguousAlbumMatchPlaysNothing() {
+        let spanning = [
+            LibraryAlbumRow(index: 1, name: "T1", artist: "A", albumArtist: "A",
+                            cloudStatus: "subscription", disc: 1, track: 1, album: "Live in NYC"),
+            LibraryAlbumRow(index: 2, name: "T2", artist: "B", albumArtist: "B",
+                            cloudStatus: "subscription", disc: 1, track: 1, album: "Live from Tokyo"),
+        ]
+        var scripts: [String] = []
+        let out = playBoundedAlbum(title: "live", rows: spanning, uuid: "U",
+                                   run: { s in scripts.append(s); return "" },
+                                   launch: { _, _ in true })
+        guard case .ambiguous(let albums) = out else {
+            return XCTFail("expected .ambiguous, got \(out)")
+        }
+        XCTAssertEqual(Set(albums), Set(["Live in NYC", "Live from Tokyo"]))
+        XCTAssertFalse(scripts.contains { $0.contains("make new playlist") },
+                       "an ambiguous match must never build a container")
+    }
+
+    // MARK: - "Also fix while in these files": manifest left behind on watcher failure
+
+    /// A large album (manifest path, since ids exceed the inline limit) whose
+    /// watcher fails to spawn must not leave its manifest behind, even though
+    /// `spawnAlbumWatcher` already tries to clean it up itself — this is the
+    /// caller-level belt-and-braces cleanup named in the task brief.
+    func testWatcherLaunchFailureForALargeAlbumRemovesTheManifest() {
+        let bigIDs = (1...(albumWatcherInlineIDLimit + 10)).map { "ID\($0)" }
+        let bigRows = bigIDs.enumerated().map { i, _ in
+            LibraryAlbumRow(index: i + 1, name: "T\(i)", artist: "A", albumArtist: "A",
+                            cloudStatus: "subscription", disc: 1, track: i + 1)
+        }
+        let uuid = "TEST-\(UUID().uuidString)"
+        let manifestPath = albumManifestPath(uuid: uuid)!
+        defer { removeAlbumManifest(path: manifestPath) }
+
+        let out = playBoundedAlbum(title: "Big Album", rows: bigRows, uuid: uuid,
+                                   run: { s in
+                                       if s.contains("set ids to persistent ID") {
+                                           return bigIDs.joined(separator: "\u{1F}")
+                                       }
+                                       if s.contains("count of tracks") { return "\(bigIDs.count)" }
+                                       return ""
+                                   },
+                                   launch: { _, _ in false })
+
+        guard case .watcherFailed = out else {
+            return XCTFail("expected .watcherFailed, got \(out)")
+        }
+        XCTAssertNil(readAlbumManifest(path: manifestPath),
+                     "a large album's manifest must not survive a watcher launch failure")
+    }
 }
