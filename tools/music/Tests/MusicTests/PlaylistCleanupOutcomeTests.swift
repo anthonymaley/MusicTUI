@@ -72,8 +72,9 @@ final class PlaylistCleanupOutcomeTests: XCTestCase {
     func testEverySparedReturnIsGuardedByTheProtectedMatch() {
         let s = script
         let occurrences = s.components(separatedBy: "return \"spared\"").count - 1
-        XCTAssertEqual(occurrences, 2,
-                       "one spared return per protected path: empty snapshot, and race to zero")
+        XCTAssertEqual(occurrences, 1,
+                       "§20.10: ONE classification site — the empty-snapshot early return was "
+                       + "the same rule written twice, and two copies is how guards drift apart")
         var searchStart = s.startIndex
         var checked = 0
         while let r = s.range(of: "return \"spared\"", range: searchStart..<s.endIndex) {
@@ -84,7 +85,7 @@ final class PlaylistCleanupOutcomeTests: XCTestCase {
             checked += 1
             searchStart = r.upperBound
         }
-        XCTAssertEqual(checked, 2, "both occurrences were inspected")
+        XCTAssertEqual(checked, 1, "the single occurrence was inspected")
     }
 
     /// True sparing additionally requires the PROTECTED match, not merely that
@@ -100,16 +101,29 @@ final class PlaylistCleanupOutcomeTests: XCTestCase {
                           "protectedMatch may only be set on the keepName branch")
     }
 
-    /// RACE TO ZERO: a non-empty snapshot whose objects vanished before the
-    /// delete (a watcher won the race) removes nothing, but must report
-    /// "none" — never "spared", which would claim playback that isn't there.
-    func testRaceToZeroReportsNothingNeverSpared() {
+    /// RACE TO ZERO, when NOTHING was protected: a non-empty snapshot whose
+    /// objects vanished before the delete removes nothing, and must report
+    /// "none".
+    ///
+    /// §20.9 narrowed this deliberately, and the old name and doc here said
+    /// the opposite of the shipped rule: "never spared" is true only when no
+    /// container was protected. With `protectedMatch` set, that same path
+    /// returns "spared", because a container genuinely was current and
+    /// genuinely was kept — reporting "none" there printed "No temp playlists
+    /// to clean up." while an `__album__` container was audibly playing.
+    ///
+    /// The executed proof of both halves is in `SweepScriptExecutionTests`.
+    func testRaceToZeroReportsNoneWhenNothingWasProtected() {
         let s = script
         let delete = index("delete (every user playlist whose name is nm)", s)
         let zeroPath = index("if removedCount is 0 then", s)
-        let none = s.range(of: "return \"none\"", range: zeroPath..<s.endIndex)
         XCTAssertLessThan(delete, zeroPath, "the zero-removal path is post-delete")
-        XCTAssertNotNil(none, "a post-delete zero removal returns none")
+        // The none arm is the ELSE of the protected test, so it cannot fire
+        // while a container was spared.
+        let guardIdx = index("if protectedMatch then", s)
+        let noneIdx = index("return \"none\"", s)
+        XCTAssertLessThan(zeroPath, guardIdx, "the protected test gates the zero path")
+        XCTAssertLessThan(guardIdx, noneIdx, "none is the else branch of the protected test")
     }
 
     /// The after-count is READ after the delete pass, not inferred from the
@@ -153,7 +167,8 @@ final class PlaylistCleanupOutcomeTests: XCTestCase {
     func testUncountedVariantEmitsNoOutcomeBookkeeping() {
         let s = albumStaleSweepScript()
         for token in ["protectedMatch", "matchedAny", "\"spared\"", "\"none\"",
-                      "beforeCount", "afterCount", "removedCount", "partial:"] {
+                      "beforeCount", "afterCount", "removedCount", "partial:",
+                      "countFailed", "\"unknown\""] {
             XCTAssertFalse(s.contains(token), "uncounted variant must not emit \(token)")
         }
     }

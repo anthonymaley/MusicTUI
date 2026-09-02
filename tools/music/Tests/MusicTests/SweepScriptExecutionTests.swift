@@ -43,7 +43,10 @@ final class SweepScriptExecutionTests: XCTestCase {
 
     /// `.alwaysZero` models the RACE TO ZERO: the snapshot is non-empty but the
     /// objects are already gone by the time the counts are taken, because a
-    /// watcher won the race. That arm must report "none" and never "spared".
+    /// watcher won the race. That arm reports "none" when nothing was
+    /// protected, and "spared" when a container genuinely was (§20.9).
+    /// `.fails` models a count read that THROWS, which must report "unknown"
+    /// rather than claiming nothing existed.
     enum CountMode: String { case real, alwaysZero, fails }
 
     func run(_ script0: String,
@@ -116,7 +119,7 @@ final class SweepScriptExecutionTests: XCTestCase {
         // pairs, and the post-condition below is the real guard: if any quote
         // survives, stripping desynchronised and the token scan is meaningless.
         let literalsStripped = script.replacingOccurrences(
-            of: "\"(\\\\.|[^\"\\\\])*\"", with: "", options: .regularExpression)
+            of: "\"(\\\\.|[^\"\\\\])*\"", with: " ", options: .regularExpression)
         guard !literalsStripped.contains("\"") else {
             XCTFail("literal stripping desynchronised — token scan cannot be trusted",
                     file: file, line: line)
@@ -306,12 +309,12 @@ final class SweepScriptExecutionTests: XCTestCase {
     func testHarnessCatchesPostLoopCaptureOfKeepName() {
         guard let r = run(cleanup, library: [playing, orphan], context: playing, mutate: {
             $0.replacingOccurrences(
-                of: "if (count of eligibleNames) is 0 then",
+                of: "set beforeCount to 0",
                 with: """
                 if keepName is not "" then
                     if (eligibleNames does not contain keepName) then set end of eligibleNames to keepName
                 end if
-                if (count of eligibleNames) is 0 then
+                set beforeCount to 0
                 """)
         }) else { return }
         XCTAssertFalse(r.surviving.contains(playing),
@@ -322,12 +325,12 @@ final class SweepScriptExecutionTests: XCTestCase {
     func testHarnessCatchesPostLoopDeleteOfKeepName() {
         guard let r = run(cleanup, library: [playing, orphan], context: playing, mutate: {
             $0.replacingOccurrences(
-                of: "if (count of eligibleNames) is 0 then",
+                of: "set beforeCount to 0",
                 with: """
                 try
                     delete (every user playlist whose name is keepName)
                 end try
-                if (count of eligibleNames) is 0 then
+                set beforeCount to 0
                 """)
         }) else { return }
         XCTAssertFalse(r.surviving.contains(playing),
@@ -446,5 +449,31 @@ final class SweepScriptExecutionTests: XCTestCase {
         XCTAssertTrue(msg.contains("unknown"), "the user is told the count is unknown")
         XCTAssertNotEqual(msg, "No temp playlists to clean up.")
         XCTAssertTrue(r.surviving.contains(orphan), "and nothing was actually removed")
+    }
+
+    /// §20.10: an unmeasured count OUTRANKS a spare it already knows about.
+    ///
+    /// Found by the independent reviewer, and reproduced before fixing: with
+    /// the guard moved below the zero-removal branch the whole suite stayed
+    /// green, because no test combined a protected container WITH a failing
+    /// count. `testCountFailureReportsUnknownNotNothing` has nothing
+    /// protected; `testRaceToZeroStillReportsSparedWhenAContainerWasProtected`
+    /// never fails a count.
+    ///
+    /// Note what is deliberately NOT asserted: that the orphan survived. The
+    /// delete pass runs BETWEEN the two failed counts, so what happened to the
+    /// other captured names is precisely the thing that is unknown — and
+    /// "spared" would have claimed "Nothing was deleted", which is exactly the
+    /// unjustified claim this precedence exists to avoid.
+    func testCountFailureOutranksAKnownSpare() {
+        guard let r = run(cleanup, library: [playing, orphan, unrelated], context: playing,
+                          state: "playing", deleteMode: .all, countMode: .fails) else { return }
+        XCTAssertEqual(r.result, "unknown",
+                       "an unmeasured removal count outranks a spare it already knows about")
+        XCTAssertNotEqual(r.result, "spared",
+                          "spared asserts 'Nothing was deleted', which the failed counts cannot support")
+        XCTAssertTrue(r.surviving.contains(playing),
+                      "the protected container is still spared in fact, whatever is reported")
+        XCTAssertTrue(r.surviving.contains(unrelated), "unrelated playlists are never touched")
     }
 }

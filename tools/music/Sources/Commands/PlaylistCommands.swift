@@ -386,7 +386,11 @@ enum PlaylistCleanupResult: Equatable {
     /// sparing: it says nothing about playback, and the CLI must not imply
     /// that anything is playing.
     case partiallyRemoved(removed: Int, remaining: Int)
-    /// The script's raw return value parsed as none of the above.
+    /// The removal count is UNMEASURED. Two routes reach it: a raw return
+    /// value that parsed as none of the above, and the generator's explicit
+    /// `"unknown"`, emitted when a count read threw (§20.9). Both mean the
+    /// same thing to the user — how many were removed is not known — which is
+    /// why they share a case rather than pretending to more precision.
     case unreadable
 }
 
@@ -586,6 +590,22 @@ func albumSweepDecision(playerState: String?, contextReadable: Bool) -> AlbumSwe
 ///      accumulated inside `try`, so a library-side failure on every name
 ///      previously yielded 0 and 0 and was reported as "none" — claiming
 ///      nothing existed on the strength of a read that did not happen.
+///      **This outranks a known spare, deliberately.** `protectedMatch` is
+///      settled before either count loop, so a count failure can suppress a
+///      spare it already knows about. Accepted, and the reason is sharper than
+///      "unknown denies nothing": the delete pass runs BETWEEN the two count
+///      passes, so returning "spared" would additionally assert its message's
+///      "Nothing was deleted" — unjustified, because deletion may have removed
+///      some or all of the eligible names. A known spare establishes only that
+///      the CURRENT container was excluded, never what happened to the others.
+///      "unknown" discards one known fact and makes no false claim; "spared"
+///      would keep that fact and add a false one. §20.10.
+///    - §20.10: there is ONE classification site, not two. An empty snapshot
+///      used to return early with the identical `protectedMatch ? spared :
+///      none`, which is the same rule written twice — and this repo has twice
+///      shipped a bug from two copies of one guard drifting apart. With no
+///      eligible names the fall-through yields beforeCount 0, no deletes,
+///      afterCount 0, removedCount 0, and reaches exactly that expression.
 ///    - otherwise -> the measured `removedCount`.
 ///
 ///    Counting only the deduplicated names this invocation captured means an
@@ -622,13 +642,6 @@ func albumSweepGuardedScript(prefixes: [String], deferReturn: String, countDelet
         // after-count is read AFTER the delete pass rather than inferred from
         // the before-count.
         deleteBody = """
-        if (count of eligibleNames) is 0 then
-            if protectedMatch then
-                return "spared"
-            else
-                return "none"
-            end if
-        end if
         set beforeCount to 0
         set countFailed to false
         repeat with nm in eligibleNames
