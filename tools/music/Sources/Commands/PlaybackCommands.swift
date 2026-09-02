@@ -31,6 +31,12 @@ struct Play: ParsableCommand {
         }
 
         if let album = album {
+            // §16.6: reject an empty/whitespace query BEFORE any library read
+            // — `album contains ""` matches the entire library.
+            if isBlankAlbumQuery(album) {
+                print("Album name can't be empty.")
+                throw ExitCode.failure
+            }
             // Bounded album play: build a temp container and play it with the
             // bounded `play playlist` form, then let a detached one shot watcher
             // remove the container. Fail closed: no fallback to the unbounded
@@ -217,7 +223,11 @@ struct Play: ParsableCommand {
                         let playlistPlayed = (playlistResult?
                             .trimmingCharacters(in: .whitespacesAndNewlines) == "PLAYED")
 
-                        let albumRows = playlistPlayed ? [] : fetchLibraryAlbumRows(
+                        // §16.6: same empty-query guard as `--album`, applied
+                        // defensively here too — belt and braces, since the
+                        // positional parser should never hand this an empty
+                        // query, but the two album routes must not diverge.
+                        let albumRows = (playlistPlayed || isBlankAlbumQuery(query)) ? [] : fetchLibraryAlbumRows(
                             backend: backend,
                             whereClause: albumWhereClause(query: query, artist: nil))
 
@@ -306,11 +316,32 @@ enum AlbumPlayDecision: Equatable {
     case play(position: Int, playable: Int, matched: Int)
     case notFound
     case nonePlayable(matched: Int)
+    /// §16.6: the query matched more than one distinct album, and none of
+    /// them is a unique exact normalised match, so nothing plays rather than
+    /// guessing — and a container is never seeded from more than one album.
+    case ambiguous(albums: [String])
 }
 
-func decideAlbumPlay(_ rows: [LibraryAlbumRow]) -> AlbumPlayDecision {
+/// §16.6: `rows` may span more than one album — `whereClause` is a bare
+/// `album contains "<query>"`, which is not scoped to one album. Group first
+/// (`groupRowsByAlbum`), then decide which single group to play: a unique
+/// exact normalised match to `query` wins outright; failing that, the query
+/// is accepted only when it resolves to exactly one distinct album; anything
+/// else is `.ambiguous` rather than a container spanning several albums.
+func decideAlbumPlay(_ rows: [LibraryAlbumRow], query: String) -> AlbumPlayDecision {
     guard !rows.isEmpty else { return .notFound }
-    let res = orderedPlayableAlbumTracks(rows)
+    let groups = groupRowsByAlbum(rows)
+    let normalizedQuery = normalizeAlbumTitle(query)
+    let exact = groups.filter { normalizeAlbumTitle($0.displayName) == normalizedQuery }
+    let chosen: [LibraryAlbumRow]
+    if exact.count == 1 {
+        chosen = exact[0].rows
+    } else if groups.count == 1 {
+        chosen = groups[0].rows
+    } else {
+        return .ambiguous(albums: groups.map { $0.displayName })
+    }
+    let res = orderedPlayableAlbumTracks(chosen)
     guard let first = res.tracks.first else { return .nonePlayable(matched: res.matched) }
     return .play(position: first.index, playable: res.tracks.count, matched: res.matched)
 }

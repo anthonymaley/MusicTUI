@@ -19,7 +19,7 @@ final class CliPlayDecisionTests: XCTestCase {
             row(51, name: "D1T2", disc: 1, track: 2),
             row(52, name: "D1T1", disc: 1, track: 1),
         ]
-        XCTAssertEqual(decideAlbumPlay(rows), .play(position: 52, playable: 3, matched: 3))
+        XCTAssertEqual(decideAlbumPlay(rows, query: "Anything"), .play(position: 52, playable: 3, matched: 3))
     }
 
     /// The bug: an unplayable first track (prerelease) made `play` silently
@@ -29,11 +29,11 @@ final class CliPlayDecisionTests: XCTestCase {
             row(10, name: "T1", cloud: "prerelease", disc: 1, track: 1),
             row(11, name: "T2", disc: 1, track: 2),
         ]
-        XCTAssertEqual(decideAlbumPlay(rows), .play(position: 11, playable: 1, matched: 2))
+        XCTAssertEqual(decideAlbumPlay(rows, query: "Anything"), .play(position: 11, playable: 1, matched: 2))
     }
 
     func testNoMatchesIsNotFound() {
-        XCTAssertEqual(decideAlbumPlay([]), .notFound)
+        XCTAssertEqual(decideAlbumPlay([], query: "Anything"), .notFound)
     }
 
     func testAllUnplayableIsNonePlayable() {
@@ -41,7 +41,118 @@ final class CliPlayDecisionTests: XCTestCase {
             row(10, cloud: "prerelease", disc: 1, track: 1),
             row(11, cloud: "removed", disc: 1, track: 2),
         ]
-        XCTAssertEqual(decideAlbumPlay(rows), .nonePlayable(matched: 2))
+        XCTAssertEqual(decideAlbumPlay(rows, query: "Anything"), .nonePlayable(matched: 2))
+    }
+
+    // MARK: §16.6 — bounded album resolution: grouping and the broad-query regression
+
+    func testIsBlankAlbumQueryRejectsEmptyAndWhitespace() {
+        XCTAssertTrue(isBlankAlbumQuery(""))
+        XCTAssertTrue(isBlankAlbumQuery("   "))
+        XCTAssertTrue(isBlankAlbumQuery("\n\t "))
+        XCTAssertFalse(isBlankAlbumQuery("Moon Safari"))
+        XCTAssertFalse(isBlankAlbumQuery(" x "))
+    }
+
+    private func albumRow(_ index: Int, artist: String = "A", album: String,
+                          disc: Int = 1, track: Int = 1, cloud: String = "subscription") -> LibraryAlbumRow {
+        LibraryAlbumRow(index: index, name: "T\(index)", artist: artist, albumArtist: artist,
+                        cloudStatus: cloud, disc: disc, track: track, album: album)
+    }
+
+    func testGroupRowsByAlbumGroupsCaseAndWhitespaceDriftTogether() {
+        let rows = [
+            albumRow(1, album: "Moon Safari"),
+            albumRow(2, album: "  moon   safari "),   // same album, drifted casing/whitespace
+            albumRow(3, album: "Moon Safari Live"),   // a genuinely different album
+        ]
+        let groups = groupRowsByAlbum(rows)
+        XCTAssertEqual(groups.count, 2)
+        XCTAssertEqual(groups[0].rows.map(\.index), [1, 2])
+        XCTAssertEqual(groups[1].rows.map(\.index), [3])
+    }
+
+    /// Two different artists' albums that merely share a title must never be
+    /// merged into one container.
+    func testGroupRowsByAlbumKeepsSameTitledAlbumsByDifferentArtistsSeparate() {
+        let rows = [
+            albumRow(1, artist: "Artist A", album: "Greatest Hits"),
+            albumRow(2, artist: "Artist B", album: "Greatest Hits"),
+        ]
+        XCTAssertEqual(groupRowsByAlbum(rows).count, 2)
+    }
+
+    /// §16.6's broad-query regression: `music play --album "live"` runs a
+    /// bare `album contains "live"` fetch that can match many distinct
+    /// albums. Before this fix every matched row became one flat set and one
+    /// container was built spanning all of them. Now it must refuse.
+    func testDecideAlbumPlayRefusesABroadQueryThatSpansMultipleAlbums() {
+        let rows = [
+            albumRow(1, artist: "A", album: "Live in NYC"),
+            albumRow(2, artist: "B", album: "Live from Tokyo"),
+            albumRow(3, artist: "C", album: "Alive"),
+        ]
+        switch decideAlbumPlay(rows, query: "live") {
+        case .ambiguous(let albums):
+            XCTAssertEqual(Set(albums), Set(["Live in NYC", "Live from Tokyo", "Alive"]))
+        default:
+            XCTFail("a broad query spanning multiple distinct albums must be refused, not merged into one container")
+        }
+    }
+
+    /// A unique exact normalised match wins even when a loose match also
+    /// exists — and, critically, the loose match's rows must never leak in.
+    func testDecideAlbumPlayPrefersAUniqueExactNormalisedMatch() {
+        let rows = [
+            albumRow(1, artist: "Air", album: "Moon Safari"),
+            albumRow(2, artist: "X", album: "Moon Safari Live"),
+        ]
+        switch decideAlbumPlay(rows, query: "Moon Safari") {
+        case .play(let position, let playable, let matched):
+            XCTAssertEqual(position, 1)
+            XCTAssertEqual(playable, 1)
+            XCTAssertEqual(matched, 1, "only the exact match's own row may be used")
+        default:
+            XCTFail("a unique exact normalised match must resolve, not fail ambiguous")
+        }
+    }
+
+    /// No exact match, but the query resolves to exactly one distinct album:
+    /// it plays.
+    func testDecideAlbumPlayResolvesWhenQueryLooselyMatchesExactlyOneDistinctAlbum() {
+        let rows = [
+            albumRow(1, artist: "Air", album: "Moon Safari", track: 1),
+            albumRow(2, artist: "Air", album: "Moon Safari", track: 2),
+        ]
+        switch decideAlbumPlay(rows, query: "moon") {
+        case .play(let position, let playable, let matched):
+            XCTAssertEqual(position, 1)
+            XCTAssertEqual(playable, 2)
+            XCTAssertEqual(matched, 2)
+        default:
+            XCTFail("a loose query resolving to exactly one distinct album must play it")
+        }
+    }
+
+    /// A container must never be seeded from more than one album, even
+    /// indirectly: this asserts that the `matched`/`playable` counts on a
+    /// `.play` outcome trace back to ONE group's rows only, never the sum
+    /// across groups.
+    func testDecideAlbumPlayNeverCountsTracksFromMoreThanOneAlbum() {
+        let rows = [
+            albumRow(1, artist: "Air", album: "Moon Safari", track: 1),
+            albumRow(2, artist: "Air", album: "Moon Safari", track: 2),
+            albumRow(3, artist: "X", album: "Moon Safari Deluxe", track: 1),
+            albumRow(4, artist: "X", album: "Moon Safari Deluxe", track: 2),
+            albumRow(5, artist: "X", album: "Moon Safari Deluxe", track: 3),
+        ]
+        switch decideAlbumPlay(rows, query: "Moon Safari") {
+        case .play(_, let playable, let matched):
+            XCTAssertEqual(playable, 2, "must be the exact match's own 2 tracks, not all 5")
+            XCTAssertEqual(matched, 2)
+        default:
+            XCTFail("a unique exact normalised match must resolve")
+        }
     }
 
     // MARK: firstPlayablePosition — `playLocalSong` twin of the same filter

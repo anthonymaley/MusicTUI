@@ -161,10 +161,18 @@ func fetchLibraryTracksWithPositions(backend: AppleScriptBackend, whereClause: S
 
 /// A library track row carrying the album artist (to disambiguate a same-titled
 /// album once the strict `whose` clause has missed), the cloud status (to drop
-/// tracks Music can't play yet), and the disc/track numbers (to play in album
+/// tracks Music can't play yet), the disc/track numbers (to play in album
 /// order — the `whose` fetch yields Library position order, which can start an
-/// album mid-way). Parsed from the 7-field album fetch below. 0 for disc/track
-/// means Music has no number set.
+/// album mid-way), and the track's own album title. Parsed from the 8-field
+/// album fetch below. 0 for disc/track means Music has no number set.
+///
+/// `album` exists ONLY to group rows by album identity (§16.6,
+/// `groupRowsByAlbum`) before an album resolution decides which single album
+/// to play — a bare `album contains "<query>"` where-clause can match many
+/// distinct albums, and every matched row must never be treated as one flat
+/// set. It defaults to `""` for the song/artist fetches that don't need it,
+/// which is indistinguishable from "no album" and therefore always groups as
+/// one bucket — exactly today's un-grouped behaviour for those call sites.
 struct LibraryAlbumRow: Equatable {
     let index: Int
     let name: String
@@ -173,9 +181,10 @@ struct LibraryAlbumRow: Equatable {
     let cloudStatus: String
     let disc: Int
     let track: Int
+    let album: String
 
     init(index: Int, name: String, artist: String, albumArtist: String, cloudStatus: String,
-         disc: Int = 0, track: Int = 0) {
+         disc: Int = 0, track: Int = 0, album: String = "") {
         self.index = index
         self.name = name
         self.artist = artist
@@ -183,21 +192,22 @@ struct LibraryAlbumRow: Equatable {
         self.cloudStatus = cloudStatus
         self.disc = disc
         self.track = track
+        self.album = album
     }
 }
 
-/// Parse "index<FS>name<FS>artist<FS>albumArtist<FS>cloudStatus<FS>disc<FS>track"
+/// Parse "index<FS>name<FS>artist<FS>albumArtist<FS>cloudStatus<FS>disc<FS>track<FS>album"
 /// lines (the album fetch output) into rows. Empty fields are preserved (a track
-/// with no album artist keeps its column) so the seven fields stay aligned;
-/// malformed lines (non-numeric index/disc/track or wrong field count) are
-/// dropped. Pure → unit-tested.
+/// with no album artist keeps its column) so the eight fields stay aligned;
+/// malformed lines (non-numeric index/disc/track or wrong field count — including
+/// the pre-§16.6 seven-field shape, now rejected) are dropped. Pure → unit-tested.
 func parseLibraryAlbumRows(_ raw: String) -> [LibraryAlbumRow] {
     var out: [LibraryAlbumRow] = []
     for line in raw.components(separatedBy: "\n") where !line.isEmpty {
-        let f = line.split(separator: asFieldSep, maxSplits: 6, omittingEmptySubsequences: false).map(String.init)
-        guard f.count == 7, let idx = Int(f[0]), let disc = Int(f[5]), let track = Int(f[6]) else { continue }
+        let f = line.split(separator: asFieldSep, maxSplits: 7, omittingEmptySubsequences: false).map(String.init)
+        guard f.count == 8, let idx = Int(f[0]), let disc = Int(f[5]), let track = Int(f[6]) else { continue }
         out.append(LibraryAlbumRow(index: idx, name: f[1], artist: f[2], albumArtist: f[3], cloudStatus: f[4],
-                                   disc: disc, track: track))
+                                   disc: disc, track: track, album: f[7]))
     }
     return out
 }
@@ -236,6 +246,52 @@ func normalizeCredit(_ s: String) -> String {
         .replacingOccurrences(of: "&", with: " ")
         .replacingOccurrences(of: ",", with: " ")
     return swapped.split(whereSeparator: { $0 == " " || $0 == "\t" || $0 == "\n" }).joined(separator: " ")
+}
+
+/// Fold an album title for exact-match comparison: lowercase, trim, collapse
+/// internal whitespace. Deliberately simpler than `normalizeCredit` — an album
+/// title's punctuation ("Rock & Roll") is part of its identity, unlike a
+/// multi-artist credit string, so it is not folded away here. Pure → tested.
+func normalizeAlbumTitle(_ s: String) -> String {
+    s.lowercased()
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+        .split(whereSeparator: { $0 == " " || $0 == "\t" || $0 == "\n" })
+        .joined(separator: " ")
+}
+
+/// One distinct album within a set of matched rows, identified by its
+/// normalised (album title, album artist) pair. `displayName` keeps the
+/// first UN-normalised album title seen, for an honest ambiguity message.
+struct AlbumGroup: Equatable {
+    let displayName: String
+    let rows: [LibraryAlbumRow]
+}
+
+/// Group library rows by album identity — normalised album title AND
+/// normalised album artist, so two genuinely different albums that merely
+/// share a title (by different artists) are never merged, while punctuation
+/// drift in the album-artist credit (the same drift `normalizeCredit`
+/// tolerates everywhere else in this file) never splits one album in two.
+///
+/// §16.6: `music play --album "live"` runs a bare `album contains "live"`
+/// fetch, which can and does match many distinct albums. This is what makes
+/// that fact visible to `decideAlbumPlay` BEFORE a container is built from
+/// the flattened row set — the bug this exists to close. Order-preserving,
+/// so an ambiguity error message lists albums in a stable, deterministic
+/// order. Pure → unit-tested.
+func groupRowsByAlbum(_ rows: [LibraryAlbumRow]) -> [AlbumGroup] {
+    var order: [String] = []
+    var buckets: [String: [LibraryAlbumRow]] = [:]
+    var display: [String: String] = [:]
+    for r in rows {
+        let key = normalizeAlbumTitle(r.album) + "\u{1}" + normalizeCredit(r.albumArtist)
+        if buckets[key] == nil {
+            order.append(key)
+            display[key] = r.album
+        }
+        buckets[key, default: []].append(r)
+    }
+    return order.map { AlbumGroup(displayName: display[$0] ?? "", rows: buckets[$0] ?? []) }
 }
 
 /// Pick an album's tracks from a title-only library fetch, resolving the artist in
@@ -355,7 +411,11 @@ func fetchLibraryAlbumRows(backend: AppleScriptBackend, whereClause: String) -> 
                 try
                     set tn to (track number of t)
                 end try
-                set out to out & (index of t) & fs & (name of t) & fs & (artist of t) & fs & (album artist of t) & fs & cs & fs & dn & fs & tn & linefeed
+                set al to ""
+                try
+                    set al to (album of t)
+                end try
+                set out to out & (index of t) & fs & (name of t) & fs & (artist of t) & fs & (album artist of t) & fs & cs & fs & dn & fs & tn & fs & al & linefeed
             end repeat
             return out
         """, timeout: 30)

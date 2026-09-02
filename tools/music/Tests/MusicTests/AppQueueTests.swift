@@ -101,8 +101,8 @@ final class AppQueueTests: XCTestCase {
 
     func testParseLibraryAlbumRowsReadsAlbumArtistAndCloudStatus() {
         let fs = String(asFieldSep)
-        let raw = "3\(fs)Movement 1 - Fire\(fs)Floating Points & SF Ballet\(fs)Floating Points & San Francisco Ballet Orchestra\(fs)prerelease\(fs)1\(fs)2\n"
-                + "4\(fs)Movement 5 - Pandora’s Creation\(fs)FP\(fs)Floating Points & San Francisco Ballet Orchestra\(fs)subscription\(fs)1\(fs)6"
+        let raw = "3\(fs)Movement 1 - Fire\(fs)Floating Points & SF Ballet\(fs)Floating Points & San Francisco Ballet Orchestra\(fs)prerelease\(fs)1\(fs)2\(fs)Elaenia\n"
+                + "4\(fs)Movement 5 - Pandora’s Creation\(fs)FP\(fs)Floating Points & San Francisco Ballet Orchestra\(fs)subscription\(fs)1\(fs)6\(fs)Elaenia"
         let rows = parseLibraryAlbumRows(raw)
         XCTAssertEqual(rows.map(\.index), [3, 4])
         XCTAssertEqual(rows[1].name, "Movement 5 - Pandora’s Creation")
@@ -111,15 +111,19 @@ final class AppQueueTests: XCTestCase {
         XCTAssertEqual(rows[1].cloudStatus, "subscription")
         XCTAssertEqual(rows.map(\.disc), [1, 1])
         XCTAssertEqual(rows.map(\.track), [2, 6])
+        XCTAssertEqual(rows.map(\.album), ["Elaenia", "Elaenia"])
     }
 
     func testParseLibraryAlbumRowsSkipsMalformed() {
         let fs = String(asFieldSep)
         // non-numeric index, blank line, a 5-field line (the pre-3.8.2 shape with
-        // no disc/track), and non-numeric disc/track are all dropped
-        let raw = "x\(fs)a\(fs)b\(fs)c\(fs)d\(fs)1\(fs)1\n\n7\(fs)five\(fs)field\(fs)line\(fs)subscription\n"
-                + "8\(fs)a\(fs)b\(fs)c\(fs)subscription\(fs)one\(fs)two\n"
-                + "9\(fs)Fire\(fs)FP\(fs)FP & SFBO\(fs)subscription\(fs)1\(fs)3"
+        // no disc/track), a 7-field line (the pre-§16.6 shape with no album — now
+        // ALSO rejected, since the field count moved from 7 to 8), and non-numeric
+        // disc/track are all dropped
+        let raw = "x\(fs)a\(fs)b\(fs)c\(fs)d\(fs)1\(fs)1\(fs)e\n\n7\(fs)five\(fs)field\(fs)line\(fs)subscription\n"
+                + "8\(fs)a\(fs)b\(fs)c\(fs)subscription\(fs)one\(fs)two\(fs)alb\n"
+                + "11\(fs)Fire\(fs)FP\(fs)FP & SFBO\(fs)subscription\(fs)1\(fs)3\n"
+                + "9\(fs)Fire\(fs)FP\(fs)FP & SFBO\(fs)subscription\(fs)1\(fs)3\(fs)Elaenia"
         XCTAssertEqual(parseLibraryAlbumRows(raw).map(\.index), [9])
     }
 

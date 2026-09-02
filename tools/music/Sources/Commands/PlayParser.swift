@@ -99,6 +99,14 @@ func albumArtistFilter(artist: String?) -> String {
     return " and (artist contains \"\(esc)\" or album artist contains \"\(esc)\")"
 }
 
+/// True when an album query is empty or only whitespace. Must be rejected
+/// BEFORE any library read: `album contains ""` matches every track in the
+/// library (measured 2026-09-01, §16.6), so an unguarded `music play --album
+/// ""` would build a container spanning the whole library. Pure → tested.
+func isBlankAlbumQuery(_ query: String) -> Bool {
+    query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+}
+
 /// The single album lookup clause, used by BOTH album-intent routes (the
 /// `--album` flag and the positional `playlistAlbumSong` fallback).
 ///

@@ -145,4 +145,21 @@ final class PlayParserTests: XCTestCase {
             albumWhereClause(query: title, artist: nil),
             independentlyBuiltAlbumFlagClause)
     }
+
+    /// §16.7: the test above reconstructs with `albumArtistFilter(artist: nil)`,
+    /// which returns `""`, so it reduces to a literal already asserted by
+    /// `testAlbumWhereClauseNilArtistIsBareClause` and never exercises artist
+    /// handling at all. This is the `artist:` case that closes that gap: it
+    /// reconstructs the SAME independent formula with a real artist, so a
+    /// future change that touches only one of `--album`'s and positional's
+    /// artist wiring would fail here.
+    func testAlbumWhereClauseMatchesIndependentlyBuiltAlbumFlagClauseWithArtist() {
+        let title = "Moon Safari"
+        let artist = "Air"
+        let independentlyBuiltAlbumFlagClause =
+            "album contains \"\(escapeAppleScriptString(title))\"\(albumArtistFilter(artist: artist))"
+        XCTAssertEqual(
+            albumWhereClause(query: title, artist: artist),
+            independentlyBuiltAlbumFlagClause)
+    }
 }
