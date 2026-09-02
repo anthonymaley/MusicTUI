@@ -339,9 +339,17 @@ func collapseCompatibleAlbumArtistGroups(_ groups: [AlbumGroup]) -> [AlbumGroup]
 }
 
 /// Whether every pair of these groups' album-artist credits is compatible:
-/// one's normalised credit tokens are a subset of the other's (the subset
-/// arm, unchanged from §17.3 — "Queen" folding into "Queen & David Bowie" is
-/// overwhelmingly a drifted credit for one album). Each group here is
+/// their `effectiveAlbumArtistCredit`s are strictly EQUAL after the §18.3
+/// track-artist fallback runs (§19; corrects §17.3's/§18.3's subset arm,
+/// which is now closed). Containment used to pass a pair when one credit's
+/// tokens were a subset of the other's, on the reasoning that "Queen"
+/// folding into "Queen & David Bowie" is overwhelmingly a drifted
+/// collaboration credit — but the predicate cannot distinguish that shape
+/// from two different artists whose names happen to be token-prefixes of
+/// one another ("Queen" vs. "Queen Latifah"), so containment is rejected:
+/// it is not identity. The accepted cost is the collaboration case itself —
+/// "Queen" against "Queen & David Bowie" now produces an `.ambiguous`
+/// prompt instead of a merge, resolvable with `--artist`. Each group here is
 /// already homogeneous on `normalizeCredit(albumArtist)` (that's what
 /// fine-grained grouping partitioned on), so `effectiveAlbumArtistCredit`
 /// represents the whole group.
