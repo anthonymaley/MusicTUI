@@ -188,31 +188,56 @@ final class PlaylistCleanupOutcomeTests: XCTestCase {
 
     func testPartialMessageStatesRemovedAndRemaining() {
         let msg = playlistCleanupMessage(.partiallyRemoved(removed: 3, remaining: 2))
-        XCTAssertTrue(msg.contains("3"), "the removed count must appear")
-        XCTAssertTrue(msg.contains("2"), "the remaining count must appear")
+        // LABELLED, not merely present. Containment alone passed against a
+        // message with the two counts TRANSPOSED — which reads as a
+        // near-complete cleanup when almost nothing was removed, destroying
+        // the exact distinction the two counts exist to give.
+        XCTAssertTrue(msg.contains("removed 3 temp playlist(s)"), "removed count must be labelled: \(msg)")
+        XCTAssertTrue(msg.contains("2 still present"), "remaining count must be labelled: \(msg)")
         XCTAssertFalse(msg.lowercased().contains("playing"),
                        "a partial failure carries no evidence about playback")
         XCTAssertFalse(msg.contains("Cleaned up 0"))
     }
 
-    /// Distinct counts must both survive, so a message that printed one number
-    /// twice cannot pass.
-    func testPartialMessageDoesNotConflateTheTwoCounts() {
-        let msg = playlistCleanupMessage(.partiallyRemoved(removed: 7, remaining: 5))
-        XCTAssertTrue(msg.contains("7") && msg.contains("5"))
-        let a = playlistCleanupMessage(.partiallyRemoved(removed: 1, remaining: 9))
-        let b = playlistCleanupMessage(.partiallyRemoved(removed: 9, remaining: 1))
-        XCTAssertNotEqual(a, b, "removed and remaining are not interchangeable")
+    /// Transposing the counts must fail, not merely change the string.
+    func testPartialMessageCannotTransposeTheCounts() {
+        let msg = playlistCleanupMessage(.partiallyRemoved(removed: 1, remaining: 8))
+        XCTAssertTrue(msg.contains("removed 1 temp playlist(s)"),
+                      "1 was removed, so 1 must be the removed count: \(msg)")
+        XCTAssertTrue(msg.contains("8 still present"),
+                      "8 remain, so 8 must be the remaining count: \(msg)")
+        XCTAssertFalse(msg.contains("removed 8"), "8 is not the removed count")
+        XCTAssertFalse(msg.contains("1 still present"), "1 is not the remaining count")
     }
 
     /// No outcome may print a bare "Cleaned up 0".
     func testNoOutcomeEverPrintsCleanedUpZero() {
+        // Includes .removed(0) deliberately. The parser cannot construct it
+        // (strictCountField requires count > 0), but the enum can, and the
+        // protection belongs where this test says it does rather than only
+        // upstream in the parser.
         let all: [PlaylistCleanupResult] = [
             .nothingExisted, .sparedCandidates, .deferred, .unreadable,
-            .removed(1), .partiallyRemoved(removed: 0, remaining: 3),
+            .removed(1), .removed(0), .partiallyRemoved(removed: 0, remaining: 3),
         ]
         for r in all {
             XCTAssertFalse(playlistCleanupMessage(r).contains("Cleaned up 0"), "\(r)")
         }
+    }
+
+    /// A zero removal is a contradiction, so it reports UNKNOWN — never
+    /// "nothing to clean", which would be a positive claim it cannot support.
+    func testZeroRemovalReportsUnknownNotNothing() {
+        let msg = playlistCleanupMessage(.removed(0))
+        XCTAssertEqual(msg, playlistCleanupMessage(.unreadable))
+        XCTAssertFalse(msg.contains("No temp playlists to clean up."))
+    }
+
+    /// Leading zeros are not a shape the generator emits.
+    func testPaddedCountsAreUnreadable() {
+        XCTAssertEqual(parsePlaylistCleanupResult("007"), .unreadable)
+        XCTAssertEqual(parsePlaylistCleanupResult("partial:007:1"), .unreadable)
+        XCTAssertEqual(parsePlaylistCleanupResult("partial:0:1"),
+                       .partiallyRemoved(removed: 0, remaining: 1), "a bare 0 field is still valid")
     }
 }

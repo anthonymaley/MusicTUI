@@ -41,11 +41,17 @@ final class SweepScriptExecutionTests: XCTestCase {
     /// measured-after branches (`partial:`, race-to-zero) reachable.
     enum DeleteMode: String { case all, none, firstOnly }
 
+    /// `.alwaysZero` models the RACE TO ZERO: the snapshot is non-empty but the
+    /// objects are already gone by the time the counts are taken, because a
+    /// watcher won the race. That arm must report "none" and never "spared".
+    enum CountMode: String { case real, alwaysZero }
+
     func run(_ script0: String,
              library: [String],
              context: String?,
              state: String = "playing",
              deleteMode: DeleteMode = .all,
+             countMode: CountMode = .real,
              mutate: ((String) -> String)? = nil,
              file: StaticString = #filePath, line: UInt = #line) -> Outcome? {
         var script = script0
@@ -86,23 +92,44 @@ final class SweepScriptExecutionTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(applied, 5, "too few substitutions applied — harness is stale",
                                     file: file, line: line)
 
-        // WHITELIST, not blacklist. Denying a list of known spellings misses a
-        // one-word drift: `user playlists whose name is ...` (plural, no
-        // `every`) slipped every previous check and reached the real library
-        // with the suite green. Assert instead that NO application vocabulary
-        // survives, with word boundaries so `playerStateText` is not a match.
-        for pattern in ["\\btell\\b", "\\bapplication\\b", "\\bplaylists?\\b",
-                        "\\btracks?\\b", "\\bplayer\\b"] {
-            if let r = script.range(of: pattern, options: .regularExpression) {
-                XCTFail("application vocabulary survived substitution: \(script[r])",
-                        file: file, line: line)
-                return nil
-            }
+        // A REAL whitelist. The previous check denied five known spellings,
+        // which is the same KIND of check the round before it failed on: a
+        // denylist is only as complete as the drift you imagined. `do shell
+        // script`, raw chevron codes (`«class cUsP»`), `every song` and
+        // `sound volume` all slipped it, and one of them executed a side
+        // effect. So: strip string literals, tokenise, and require EVERY
+        // identifier to be one the substituted script is known to contain.
+        // Unknown token means fail — a new application term cannot be
+        // unlisted, because nothing is listed as bad in the first place.
+        let permitted: Set<String> = [
+            "afterCount", "and", "as", "beforeCount", "contain", "contextReadable",
+            "count", "countOf", "ctxRead", "deleteAll", "does", "eligibleNames",
+            "else", "end", "false", "if", "in", "is", "keepName", "libNames",
+            "my", "nm", "not", "of", "or", "playerStateText", "pp",
+            "protectedMatch", "recognised", "removedCount", "repeat", "return",
+            "set", "starts", "stateRead", "text", "then", "to", "true", "try", "with",
+        ]
+        let literalsStripped = script.replacingOccurrences(
+            of: "\"[^\"]*\"", with: "\"\"", options: .regularExpression)
+        var seen = Set<String>()
+        literalsStripped.enumerateSubstrings(in: literalsStripped.startIndex...,
+                                             options: [.byWords]) { w, _, _, _ in
+            if let w, w.first?.isLetter == true || w.first == "_" { seen.insert(w) }
+        }
+        let unexpected = seen.subtracting(permitted).sorted()
+        guard unexpected.isEmpty else {
+            XCTFail("""
+                unexpected identifier(s) survived substitution: \(unexpected)
+                Either an application term reached the harness, or the generator \
+                gained a legitimate new token — in which case add it to `permitted` \
+                deliberately, after checking it is not an application term.
+                """, file: file, line: line)
+            return nil
         }
 
         let libLiteral = "{" + library.map { "\"\(esc($0))\"" }.joined(separator: ", ") + "}"
         let harness = """
-        global libNames, ctxValue, ctxThrows, stateValue, deleteMode
+        global libNames, ctxValue, ctxThrows, stateValue, deleteMode, countMode
         on stateRead()
             global stateValue
             return stateValue
@@ -113,7 +140,8 @@ final class SweepScriptExecutionTests: XCTestCase {
             return ctxValue
         end ctxRead
         on countOf(n)
-            global libNames
+            global libNames, countMode
+            if countMode is "alwaysZero" then return 0
             set c to 0
             repeat with x in libNames
                 if (x as text) is n then set c to c + 1
@@ -143,6 +171,7 @@ final class SweepScriptExecutionTests: XCTestCase {
         set ctxThrows to \(context == nil ? "true" : "false")
         set stateValue to "\(esc(state))"
         set deleteMode to "\(deleteMode.rawValue)"
+        set countMode to "\(countMode.rawValue)"
         on runScript()
             global libNames
         \(script)
@@ -164,9 +193,12 @@ final class SweepScriptExecutionTests: XCTestCase {
         // hang here must fail the test rather than hang CI indefinitely.
         let watchdog = DispatchWorkItem { if p.isRunning { p.terminate() } }
         DispatchQueue.global().asyncAfter(deadline: .now() + 20, execute: watchdog)
-        // Drain stderr on a background queue: draining both to EOF in sequence
-        // deadlocks if the child ever fills the stderr buffer while the parent
-        // blocks on stdout.
+        // Two distinct hazards, both avoided. Read BEFORE waiting, or a child
+        // whose output exceeds the pipe buffer blocks on write while we block
+        // on exit (the rule `AppleScriptBackend.run` documents). AND drain
+        // stderr concurrently rather than after stdout, or a child that fills
+        // the stderr buffer blocks while we are still draining stdout —
+        // a case sequential draining does not cover.
         var errData = Data()
         let errDone = DispatchSemaphore(value: 0)
         DispatchQueue.global().async {
@@ -175,7 +207,10 @@ final class SweepScriptExecutionTests: XCTestCase {
         }
         let data = out.fileHandleForReading.readDataToEndOfFile()
         p.waitUntilExit()
-        _ = errDone.wait(timeout: .now() + 5)
+        // Unconditional: the child has exited, so stderr is at EOF and the
+        // drain terminates. A timeout here would let the main thread read
+        // `errData` while the background write was still in flight.
+        errDone.wait()
         watchdog.cancel()
         guard p.terminationStatus == 0 else {
             XCTFail("osascript exit \(p.terminationStatus): \(String(data: errData, encoding: .utf8) ?? "")",
@@ -356,5 +391,17 @@ final class SweepScriptExecutionTests: XCTestCase {
         XCTAssertEqual(r.result, "partial:1:1",
                        "measured: one object gone, one still present — never the pre-delete count of 2")
         XCTAssertEqual(r.surviving.sorted(), [orphan, unrelated].sorted())
+    }
+
+    /// RACE TO ZERO, executed at last. The snapshot is non-empty but the
+    /// objects are already gone when the counts are taken — a watcher won the
+    /// race. Nothing was removed BY THIS INVOCATION, so the honest report is
+    /// "none". Reporting "spared" here would claim playback that is not
+    /// happening, which is the §20.3 misreport this series began with.
+    func testRaceToZeroReportsNoneNeverSpared() {
+        guard let r = run(cleanup, library: [orphan, unrelated], context: nil,
+                          state: "stopped", deleteMode: .none, countMode: .alwaysZero) else { return }
+        XCTAssertEqual(r.result, "none", "a race to zero reports nothing, never spared")
+        XCTAssertNotEqual(r.result, "spared")
     }
 }

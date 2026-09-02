@@ -399,6 +399,9 @@ enum PlaylistCleanupResult: Equatable {
 /// and never "spared".
 func strictCountField(_ s: Substring) -> Int? {
     guard !s.isEmpty, s.allSatisfy({ $0.isASCII && $0.isNumber }) else { return nil }
+    // AppleScript renders integers unpadded, so "007" is not a shape the
+    // generator can emit either. `Int` still gates overflow.
+    guard s == "0" || s.first != "0" else { return nil }
     return Int(s)
 }
 
@@ -415,7 +418,7 @@ func parsePlaylistCleanupResult(_ raw: String) -> PlaylistCleanupResult {
         if trimmed.hasPrefix("partial:") {
             let parts = trimmed.split(separator: ":", omittingEmptySubsequences: false)
             guard parts.count == 3,
-                  let removed = strictCountField(parts[1]), removed >= 0,
+                  let removed = strictCountField(parts[1]),
                   let remaining = strictCountField(parts[2]), remaining > 0
             else { return .unreadable }
             return .partiallyRemoved(removed: removed, remaining: remaining)
@@ -1165,8 +1168,17 @@ struct PlaylistCreateFrom: ParsableCommand {
 /// that a partial failure keeps BOTH measured counts, or that no arm ever
 /// prints a bare "Cleaned up 0".
 func playlistCleanupMessage(_ result: PlaylistCleanupResult) -> String {
+    // The unknown-outcome text, shared so `.removed(0)` cannot fall through to
+    // the one string every other arm exists to avoid.
+    let unknown = "Cleanup ran, but its result couldn't be read, so it's unknown how many temp playlists "
+        + "were removed. Run `music playlist cleanup` again, or check your library for a leftover "
+        + "__temp__ or \(albumPlaylistPrefix.trimmingCharacters(in: .whitespaces)) playlist."
     switch result {
     case .removed(let count):
+        // A removal of zero is a contradiction the parser cannot produce
+        // (`strictCountField` requires count > 0). Defensive rather than
+        // impossible: report unknown, never "Cleaned up 0".
+        guard count > 0 else { return unknown }
         return "Cleaned up \(count) temp playlist(s)."
     case .partiallyRemoved(let removed, let remaining):
         // Deliberately says NOTHING about playback: this outcome is reached by
@@ -1195,9 +1207,7 @@ func playlistCleanupMessage(_ result: PlaylistCleanupResult) -> String {
         // §17.4/§20.8: the script's result didn't parse, so whether anything
         // was deleted is genuinely UNKNOWN. Never "nothing", never "spared" —
         // both are positive claims an unreadable payload cannot support.
-        return "Cleanup ran, but its result couldn't be read, so it's unknown how many temp playlists "
-            + "were removed. Run `music playlist cleanup` again, or check your library for a leftover "
-            + "__temp__ or \(albumPlaylistPrefix.trimmingCharacters(in: .whitespaces)) playlist."
+        return unknown
     }
 }
 
