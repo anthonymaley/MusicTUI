@@ -123,4 +123,99 @@ final class AlbumSweepDecisionTests: XCTestCase {
         XCTAssertFalse(script.contains("track"), "must never name a track")
         XCTAssertFalse(script.contains("song"), "must never name a song")
     }
+
+    // MARK: - §20: snapshot, then delete
+
+    /// The defect: both loops used to delete `pp` from inside the very loop
+    /// enumerating `every user playlist`, which shifts the live collection's
+    /// indices and skips the element right after the one just deleted —
+    /// measured live 2026-09-02, one cleanup invocation collected 2 of 4
+    /// stale containers. The fix is two strictly ordered phases: enumerate
+    /// read-only into `eligibleNames`, then delete from that captured list
+    /// in a second loop that runs only after the first is done.
+    func testEnumerationPhaseNeverDeletesAndPrecedesTheDeletePhase() {
+        for countDeleted in [true, false] {
+            let script = albumSweepGuardedScript(prefixes: ["x"], deferReturn: "return", countDeleted: countDeleted)
+            guard let enumStart = script.range(of: "repeat with pp in (every user playlist)")?.lowerBound,
+                  let enumEnd = script.range(of: "end repeat", range: enumStart..<script.endIndex)?.upperBound else {
+                return XCTFail("expected a bounded enumeration loop (countDeleted=\(countDeleted))")
+            }
+            XCTAssertFalse(script[enumStart..<enumEnd].contains("delete"),
+                           "enumeration loop must never delete (countDeleted=\(countDeleted))")
+            guard let deleteStart = script.range(of: "repeat with nm in eligibleNames")?.lowerBound else {
+                return XCTFail("expected a second loop over eligibleNames (countDeleted=\(countDeleted))")
+            }
+            XCTAssertLessThan(enumEnd, deleteStart,
+                              "delete-by-name loop must start after enumeration ends (countDeleted=\(countDeleted))")
+        }
+    }
+
+    /// §20.2: the snapshot is a DEDUPLICATED list of exact owned names — this
+    /// is what makes the legacy same-second `__temp__` collision
+    /// deterministic (one captured name, not one entry per duplicate).
+    func testEnumerationDeduplicatesCapturedNames() {
+        let script = albumSweepGuardedScript(prefixes: ["x"], deferReturn: "return", countDeleted: false)
+        XCTAssertTrue(script.contains("eligibleNames does not contain nm"),
+                      "capture must check for an existing entry before appending")
+    }
+
+    /// §20.3: an active/paused container is excluded from the SNAPSHOT
+    /// itself — never captured — not merely filtered out at delete time.
+    /// `keepName` must be checked in the same `if` that appends to
+    /// `eligibleNames`, not in a separate later step.
+    func testKeepNameIsExcludedAtCaptureTimeNotFilteredLater() {
+        let script = albumSweepGuardedScript(prefixes: ["x"], deferReturn: "return", countDeleted: false)
+        XCTAssertTrue(script.contains("(nm is not keepName) and (eligibleNames does not contain nm)"),
+                      "keepName exclusion must gate the append into eligibleNames")
+    }
+
+    /// §20.3: the counted variant must distinguish "nothing existed" from
+    /// "something existed but was entirely spared" — collapsing both into
+    /// "0" was the exact live-measured misreport (a correctly spared paused
+    /// container printed "Cleaned up 0 temp playlist(s)."). `matchedAny`
+    /// tracks whether ANY playlist matched the prefix, spared one included,
+    /// independent of whether anything ended up eligible for deletion.
+    func testCountedVariantReturnsThreeDistinctOutcomesNotJustACount() {
+        let script = albumSweepGuardedScript(prefixes: ["x"], deferReturn: "return \"deferred\"", countDeleted: true)
+        XCTAssertTrue(script.contains("set matchedAny to false"))
+        XCTAssertTrue(script.contains("set matchedAny to true"))
+        XCTAssertTrue(script.contains("return \"none\""), "nothing matched at all")
+        XCTAssertTrue(script.contains("return \"spared\""), "something matched but all of it was spared")
+        XCTAssertTrue(script.contains("return deleted"), "one or more objects were actually removed")
+    }
+
+    /// The uncounted stale-sweep variant has no outcome to report — it runs
+    /// silently on every album play — so it must not carry the counted
+    /// variant's bookkeeping.
+    func testUncountedVariantCarriesNoOutcomeBookkeeping() {
+        let script = albumSweepGuardedScript(prefixes: ["x"], deferReturn: "return", countDeleted: false)
+        XCTAssertFalse(script.contains("\"none\""))
+        XCTAssertFalse(script.contains("\"spared\""))
+    }
+
+    /// §20.3: count actual playlist OBJECTS removed, not unique names
+    /// processed — exact-name deletion removes every duplicate sharing a
+    /// captured name, so the counted delete loop must sum
+    /// `count of (every user playlist whose name is nm)` per name rather
+    /// than incrementing by one per name.
+    func testCountedDeleteLoopSumsObjectCountsPerNameNotOnePerName() {
+        let script = albumSweepGuardedScript(prefixes: ["x"], deferReturn: "return \"deferred\"", countDeleted: true)
+        XCTAssertTrue(script.contains("set deleted to deleted + (count of (every user playlist whose name is nm))"),
+                      "must sum the actual object count per captured name")
+        XCTAssertFalse(script.contains("set deleted to deleted + 1"),
+                       "must never count names processed as a proxy for objects removed")
+    }
+
+    /// Both variants delete via the same exact-name reference form
+    /// `playlistDeleteScript` already uses — proven live against a
+    /// REST-created playlist — applied to the CAPTURED name, never to a
+    /// live `pp` reference from the enumeration loop.
+    func testBothVariantsDeleteByExactCapturedNameNeverByLiveReference() {
+        for countDeleted in [true, false] {
+            let script = albumSweepGuardedScript(prefixes: ["x"], deferReturn: "return", countDeleted: countDeleted)
+            XCTAssertTrue(script.contains("delete (every user playlist whose name is nm)"),
+                          "countDeleted=\(countDeleted)")
+            XCTAssertFalse(script.contains("delete pp"), "countDeleted=\(countDeleted)")
+        }
+    }
 }

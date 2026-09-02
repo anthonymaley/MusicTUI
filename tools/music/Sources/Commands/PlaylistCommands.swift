@@ -346,23 +346,49 @@ func playlistCleanupScript() -> String {
 /// anything, rather than the vacuous "there was nothing to clean" `.collected(0)`
 /// would otherwise imply.
 ///
-/// `.unreadable` (§17.4) is a THIRD, distinct degradation: the script's raw
-/// return value parsed as neither "deferred" nor an integer count. This is
-/// not "0 deleted" — the previous shape (`Int(trimmed) ?? 0`) collapsed this
-/// into `.collected(0)`, the exact same misreport §16.5 fixed for the
-/// deferred/exception case, just from a garbled-return-value cause instead
-/// of a caught AppleScript exception. Pure → tested.
+/// `.unreadable` (§17.4) is a further, distinct degradation: the script's raw
+/// return value parsed as neither "deferred" nor one of the recognised
+/// outcome literals. This is not "0 deleted" — the previous shape
+/// (`Int(trimmed) ?? 0`) collapsed this into `.collected(0)`, the exact same
+/// misreport §16.5 fixed for the deferred/exception case, just from a
+/// garbled-return-value cause instead of a caught AppleScript exception.
+///
+/// §20.3: FOUR outcomes, not two. Before this, `.collected(0)` was printed
+/// as "Cleaned up 0 temp playlist(s)." for BOTH "nothing existed" and
+/// "candidates existed but were spared" — observed live 2026-09-02, where a
+/// correctly spared paused container printed exactly that, indistinguishable
+/// from "there was nothing to clean". `.nothingExisted` and
+/// `.sparedCandidates` are now separate cases so neither can misreport as
+/// the other, and `.removed` carries the actual object count (never a
+/// unique-name count — see `albumSweepGuardedScript`). Pure → tested.
 enum PlaylistCleanupResult: Equatable {
-    case collected(Int)
+    /// No playlist matched a swept prefix at all — genuinely nothing to do.
+    case nothingExisted
+    /// At least one playlist matched a swept prefix, but every match was the
+    /// active/paused container — spared, not deleted. Distinct from
+    /// `.nothingExisted` so the CLI never prints "Cleaned up 0" for this case.
+    case sparedCandidates
+    /// The player was in an in-use state but its container couldn't be
+    /// identified, or the state itself was unrecognised: aborted before any
+    /// enumeration, nothing deleted, nothing known about what exists.
     case deferred
+    /// One or more playlist OBJECTS were removed (exact-name deletion can
+    /// remove more than one object per captured name).
+    case removed(Int)
+    /// The script's raw return value parsed as none of the above.
     case unreadable
 }
 
 func parsePlaylistCleanupResult(_ raw: String) -> PlaylistCleanupResult {
     let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-    if trimmed == "deferred" { return .deferred }
-    guard let count = Int(trimmed) else { return .unreadable }
-    return .collected(count)
+    switch trimmed {
+    case "deferred": return .deferred
+    case "none": return .nothingExisted
+    case "spared": return .sparedCandidates
+    default:
+        guard let count = Int(trimmed), count > 0 else { return .unreadable }
+        return .removed(count)
+    }
 }
 
 /// The §16.1 next-invocation recovery sweep, run at the START of every
@@ -468,8 +494,40 @@ func albumSweepDecision(playerState: String?, contextReadable: Bool) -> AlbumSwe
 /// when they defer: `return "deferred"` for the cleanup command (which
 /// reports an honest outcome), a bare `return` for the stale sweep (which
 /// has no result to report and runs silently on every album play).
-/// `countDeleted` selects the cleanup command's counted, `return`-a-count
-/// delete loop versus the stale sweep's uncounted one.
+/// `countDeleted` selects the cleanup command's counted, four-outcome delete
+/// phase versus the stale sweep's uncounted one.
+///
+/// §20: snapshot, then delete. Both prior loops here deleted `pp` while
+/// iterating `every user playlist`, the same live collection the deletion
+/// mutated — AppleScript enumeration semantics then skip the element right
+/// after the one just deleted, so one cleanup invocation collected roughly
+/// half of N stale containers (measured live 2026-09-02: 4 left 2, 2 left 1).
+/// Four whole-branch text reviews reasoned about this loop without executing
+/// it and missed it; only a live measurement caught it.
+///
+/// The fix is two strictly-ordered phases:
+///
+/// 1. Enumerate `every user playlist` ONCE, read-only — no delete anywhere
+///    in this loop — and build `eligibleNames`, a deduplicated list of exact
+///    names matching a given prefix, EXCLUDING `keepName` at capture time
+///    (an active/paused container is excluded from the snapshot, never
+///    captured, never deleted). Only the name (a string) is kept; the live
+///    playlist reference `pp` is never retained past its own iteration.
+///    `matchedAny` separately records whether ANY playlist matched a prefix
+///    at all, including the spared one — this is what lets the counted
+///    variant tell "nothing existed" apart from "something existed but was
+///    spared" once every eligible name has been captured.
+/// 2. AFTER that enumeration finishes, delete each captured name using the
+///    same exact-name reference form `playlistDeleteScript` already uses
+///    (`every user playlist whose name is "..."`) — proven live, and immune
+///    to the mutate-while-enumerating defect because it re-resolves the
+///    reference fresh per name rather than walking a live collection.
+///    Exact-name deletion intentionally removes ALL playlist objects sharing
+///    a captured name (this is what makes the legacy same-second `__temp__`
+///    collision deterministic), so the counted variant sums
+///    `count of (every user playlist whose name is nm)` per name rather than
+///    counting names processed — one captured name can remove more than one
+///    object.
 func albumSweepGuardedScript(prefixes: [String], deferReturn: String, countDeleted: Bool) -> String {
     let inUse = albumInUsePlayerStates
         .map { "playerStateText is \"\($0)\"" }
@@ -481,23 +539,25 @@ func albumSweepGuardedScript(prefixes: [String], deferReturn: String, countDelet
     if countDeleted {
         deleteBody = """
         set deleted to 0
-        repeat with pp in (every user playlist)
+        repeat with nm in eligibleNames
             try
-                set nm to name of pp
-                if (\(prefixTest)) and (nm is not keepName) then
-                    delete pp
-                    set deleted to deleted + 1
-                end if
+                set deleted to deleted + (count of (every user playlist whose name is nm))
+                delete (every user playlist whose name is nm)
             end try
         end repeat
-        return deleted
+        if deleted > 0 then
+            return deleted
+        else if matchedAny then
+            return "spared"
+        else
+            return "none"
+        end if
         """
     } else {
         deleteBody = """
-        repeat with pp in (every user playlist)
+        repeat with nm in eligibleNames
             try
-                set nm to name of pp
-                if (\(prefixTest)) and (nm is not keepName) then delete pp
+                delete (every user playlist whose name is nm)
             end try
         end repeat
         """
@@ -519,6 +579,19 @@ func albumSweepGuardedScript(prefixes: [String], deferReturn: String, countDelet
         end try
     end if
     if not contextReadable then \(deferReturn)
+    set eligibleNames to {}
+    set matchedAny to false
+    repeat with pp in (every user playlist)
+        try
+            set nm to name of pp
+            if (\(prefixTest)) then
+                set matchedAny to true
+                if (nm is not keepName) and (eligibleNames does not contain nm) then
+                    set end of eligibleNames to nm
+                end if
+            end if
+        end try
+    end repeat
     \(deleteBody)
     """
 }
@@ -1005,8 +1078,16 @@ struct PlaylistCleanup: ParsableCommand {
             try await backend.runMusic(playlistCleanupScript())
         }
         switch parsePlaylistCleanupResult(result) {
-        case .collected(let count):
+        case .removed(let count):
             print("Cleaned up \(count) temp playlist(s).")
+        case .nothingExisted:
+            print("No temp playlists to clean up.")
+        case .sparedCandidates:
+            // §20.3: never say "Cleaned up 0" here — that reads as "nothing to
+            // clean", but a matching container DID exist; it was correctly
+            // spared because it's the one currently playing or paused.
+            print("Found a temp playlist, but it's currently playing or paused, so it was spared. "
+                + "Nothing was deleted. Try again once playback settles, or after it stops.")
         case .deferred:
             // §16.5: never say "Cleaned up 0" here — that reads as "nothing to
             // clean", but this path means playback is active and its context

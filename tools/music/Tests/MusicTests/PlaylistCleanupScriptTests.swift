@@ -111,10 +111,28 @@ final class PlaylistCleanupScriptTests: XCTestCase {
         XCTAssertEqual(parsePlaylistCleanupResult("  deferred\n"), .deferred)
     }
 
-    func testParsePlaylistCleanupResultParsesACollectedCount() {
-        XCTAssertEqual(parsePlaylistCleanupResult("0"), .collected(0))
-        XCTAssertEqual(parsePlaylistCleanupResult("3"), .collected(3))
-        XCTAssertEqual(parsePlaylistCleanupResult(" 2 \n"), .collected(2))
+    func testParsePlaylistCleanupResultParsesARemovedCount() {
+        XCTAssertEqual(parsePlaylistCleanupResult("3"), .removed(3))
+        XCTAssertEqual(parsePlaylistCleanupResult(" 2 \n"), .removed(2))
+    }
+
+    /// §20.3: four outcomes, not two. "none" and "spared" are distinct
+    /// literals the script returns so the CLI can tell "nothing existed"
+    /// apart from "something existed but was correctly spared" — collapsing
+    /// both into "Cleaned up 0" was the exact live-measured misreport §20
+    /// fixes (a paused container spared correctly still printed
+    /// "Cleaned up 0 temp playlist(s).").
+    func testParsePlaylistCleanupResultDistinguishesNothingFromSpared() {
+        XCTAssertEqual(parsePlaylistCleanupResult("none"), .nothingExisted)
+        XCTAssertEqual(parsePlaylistCleanupResult("spared"), .sparedCandidates)
+        XCTAssertNotEqual(PlaylistCleanupResult.nothingExisted, .sparedCandidates)
+    }
+
+    /// A literal "0" is never emitted by the script (it always resolves to
+    /// "none" or "spared" instead), so if one ever showed up it must be
+    /// treated as unreadable, not silently accepted as a valid zero-count.
+    func testParsePlaylistCleanupResultTreatsLiteralZeroAsUnreadable() {
+        XCTAssertEqual(parsePlaylistCleanupResult("0"), .unreadable)
     }
 
     /// §17.4 (corrects this test's own prior expectation): garbage must never
