@@ -336,38 +336,8 @@ func playlistDeleteScript(name: String) -> String {
 /// costs one leftover row a later sweep collects, a wrongly collected one
 /// destroys live playback.
 func playlistCleanupScript() -> String {
-    let inUse = albumInUsePlayerStates
-        .map { "playerStateText is \"\($0)\"" }
-        .joined(separator: " or ")
-    return """
-    set keepName to ""
-    set playerStateText to "\(unreadablePlayerStateFallback)"
-    try
-        set playerStateText to player state as text
-    end try
-    set recognised to (\(inUse) or playerStateText is "stopped")
-    if not recognised then return "deferred"
-    set contextReadable to true
-    if \(inUse) then
-        set contextReadable to false
-        try
-            set keepName to name of current playlist
-            set contextReadable to true
-        end try
-    end if
-    if not contextReadable then return "deferred"
-    set deleted to 0
-    repeat with pp in (every user playlist)
-        try
-            set nm to name of pp
-            if ((nm starts with "__temp__") or (nm starts with "\(albumPlaylistPrefix)")) and (nm is not keepName) then
-                delete pp
-                set deleted to deleted + 1
-            end if
-        end try
-    end repeat
-    return deleted
-    """
+    albumSweepGuardedScript(prefixes: ["__temp__", albumPlaylistPrefix],
+                            deferReturn: "return \"deferred\"", countDeleted: true)
 }
 
 /// §16.5: the honest outcome of `playlistCleanupScript()`. `.deferred` is the
@@ -427,9 +397,111 @@ func parsePlaylistCleanupResult(_ raw: String) -> PlaylistCleanupResult {
 /// Containers only: never names a `track` or a `song`, so it cannot reach a
 /// library row. A test pins that, same as the other two sweeps in this file.
 func albumStaleSweepScript() -> String {
+    albumSweepGuardedScript(prefixes: [albumPlaylistPrefix], deferReturn: "return", countDeleted: false)
+}
+
+// MARK: - §18.4: one classification, one preamble
+
+/// §18.4: `albumStaleSweepScript` and `playlistCleanupScript` used to carry
+/// the same twelve-line guard preamble near-verbatim. §17.2's defect — a
+/// guard nested inside a branch that never executed — existed in BOTH
+/// copies and had to be fixed in both, which is the duplication already
+/// costing once. `PlaylistDataSources.swift` names this shape for the
+/// Discover sweep (`shouldSpareCurrentPlaylist` as the Swift twin of
+/// `discoverSweepScript`'s guard, "the shape adopted after twin-drift
+/// produced two shipped bugs"). This is the same idea applied to the two
+/// ALBUM sweeps — which, unlike Discover, already share one in-use set
+/// (`albumInUsePlayerStates`), so one Swift decision function covers both.
+///
+/// Unlike `shouldSpareCurrentPlaylist` (a single readable/unreadable
+/// player-state question), this preamble has TWO guards in sequence — an
+/// unrecognised state defers before context is even consulted, and an
+/// unreadable context defers separately — so the pure twin needs both
+/// inputs to be a faithful mirror rather than a partial one.
+enum AlbumSweepDecision: Equatable {
+    /// Player state unrecognised, or (while in an in-use state) the current
+    /// playlist could not be read: abort, delete nothing.
+    case deferSweep
+    /// Safe to run the delete loop, sparing whichever playlist name the
+    /// script resolved as `keepName` (empty when the state is "stopped" —
+    /// nothing needs sparing then).
+    case sweepSparingCurrent
+}
+
+/// Pure twin of the two-guard AppleScript preamble `albumSweepGuardedScript`
+/// emits, over the SAME literals (`albumInUsePlayerStates`,
+/// `unreadablePlayerStateFallback`) the generator uses — so the two can
+/// never drift the way the two scripts already drifted from each other once
+/// (§17.2). Unit-tested over a full truth table, the same shape
+/// `AlbumWatcherDecisionTests` uses for `albumWatcherDecision`, rather than
+/// the string-containment-only pins the two scripts had before: a pin can
+/// see that a guard's literal text exists somewhere in the script, but it
+/// cannot see that the guard is reachable, which is exactly what §17.2's
+/// defect broke.
+///
+/// `playerState` is the resolved state text — nil exactly where the
+/// generated script's own `try` would have failed and fallen back to
+/// `unreadablePlayerStateFallback` (itself an in-use state), so nil here
+/// resolves identically to passing `unreadablePlayerStateFallback` would.
+/// `contextReadable` mirrors the script's own `contextReadable` variable —
+/// only consulted when the state is in-use; irrelevant for "stopped"
+/// (nothing to spare) and for an unrecognised state (already deferred
+/// before context is ever read).
+func albumSweepDecision(playerState: String?, contextReadable: Bool) -> AlbumSweepDecision {
+    let state = playerState ?? unreadablePlayerStateFallback
+    let recognised = albumInUsePlayerStates.contains(state) || state == "stopped"
+    guard recognised else { return .deferSweep }
+    if albumInUsePlayerStates.contains(state) {
+        guard contextReadable else { return .deferSweep }
+    }
+    return .sweepSparingCurrent
+}
+
+/// The shared two-guard preamble both album sweep scripts emit, derived
+/// from the exact literals `albumSweepDecision` above tests against, plus
+/// each generator's own delete loop.
+///
+/// `prefixes` is the set of temp-playlist prefixes the delete loop matches —
+/// `[albumPlaylistPrefix]` alone for the narrower, automatic stale sweep;
+/// `["__temp__", albumPlaylistPrefix]` for the user-invoked general cleanup.
+/// `deferReturn` is the AppleScript `return` statement text BOTH guards emit
+/// when they defer: `return "deferred"` for the cleanup command (which
+/// reports an honest outcome), a bare `return` for the stale sweep (which
+/// has no result to report and runs silently on every album play).
+/// `countDeleted` selects the cleanup command's counted, `return`-a-count
+/// delete loop versus the stale sweep's uncounted one.
+func albumSweepGuardedScript(prefixes: [String], deferReturn: String, countDeleted: Bool) -> String {
     let inUse = albumInUsePlayerStates
         .map { "playerStateText is \"\($0)\"" }
         .joined(separator: " or ")
+    let prefixTest = prefixes
+        .map { "(nm starts with \"\($0)\")" }
+        .joined(separator: " or ")
+    let deleteBody: String
+    if countDeleted {
+        deleteBody = """
+        set deleted to 0
+        repeat with pp in (every user playlist)
+            try
+                set nm to name of pp
+                if (\(prefixTest)) and (nm is not keepName) then
+                    delete pp
+                    set deleted to deleted + 1
+                end if
+            end try
+        end repeat
+        return deleted
+        """
+    } else {
+        deleteBody = """
+        repeat with pp in (every user playlist)
+            try
+                set nm to name of pp
+                if (\(prefixTest)) and (nm is not keepName) then delete pp
+            end try
+        end repeat
+        """
+    }
     return """
     set keepName to ""
     set playerStateText to "\(unreadablePlayerStateFallback)"
@@ -437,7 +509,7 @@ func albumStaleSweepScript() -> String {
         set playerStateText to player state as text
     end try
     set recognised to (\(inUse) or playerStateText is "stopped")
-    if not recognised then return
+    if not recognised then \(deferReturn)
     set contextReadable to true
     if \(inUse) then
         set contextReadable to false
@@ -446,13 +518,8 @@ func albumStaleSweepScript() -> String {
             set contextReadable to true
         end try
     end if
-    if not contextReadable then return
-    repeat with pp in (every user playlist)
-        try
-            set nm to name of pp
-            if (nm starts with "\(albumPlaylistPrefix)") and (nm is not keepName) then delete pp
-        end try
-    end repeat
+    if not contextReadable then \(deferReturn)
+    \(deleteBody)
     """
 }
 
