@@ -241,6 +241,63 @@ final class BoundedAlbumPlayTests: XCTestCase {
                        "an ambiguous match must never build a container")
     }
 
+    // MARK: - §18.5: the container is named after the resolved album title
+
+    /// `--album "moon"` must show "Moon Safari" in Music's sidebar and Now
+    /// Playing, not the raw fragment the user actually typed.
+    func testContainerIsNamedAfterTheResolvedAlbumTitleNotTheRawQuery() {
+        let matched = [
+            LibraryAlbumRow(index: 1, name: "T1", artist: "Air", albumArtist: "Air",
+                            cloudStatus: "subscription", disc: 1, track: 1, album: "Moon Safari"),
+            LibraryAlbumRow(index: 2, name: "T2", artist: "Air", albumArtist: "Air",
+                            cloudStatus: "subscription", disc: 1, track: 2, album: "Moon Safari"),
+        ]
+        var scripts: [String] = []
+        let out = playBoundedAlbum(title: "moon", rows: matched, uuid: "U",
+                                   run: { s in
+                                       scripts.append(s)
+                                       if s.contains("set ids to persistent ID") { return "A\u{1F}B" }
+                                       if s.contains("count of tracks") { return "2" }
+                                       return ""
+                                   },
+                                   launch: { _, _ in true })
+        XCTAssertEqual(out, .playing)
+        guard let buildScript = scripts.first(where: { $0.contains("make new playlist") }) else {
+            return XCTFail("no build script was ever sent")
+        }
+        XCTAssertTrue(buildScript.contains("Moon Safari"),
+                      "the container must be named after the resolved album title")
+        XCTAssertFalse(buildScript.contains("name:\"moon\""),
+                       "the container must never be named after the raw query alone")
+    }
+
+    /// Defensive fallback: if the matched rows' own album tag is itself
+    /// blank, the resolved display name is empty — the container name must
+    /// fall back to the raw query rather than build a blank-titled
+    /// container (which `isOwnedAlbumContainerName` would then reject as
+    /// having an empty title).
+    func testContainerNameFallsBackToTheRawQueryWhenTheResolvedTitleIsBlank() {
+        let matched = [
+            LibraryAlbumRow(index: 1, name: "T1", artist: "A", albumArtist: "A",
+                            cloudStatus: "subscription", disc: 1, track: 1, album: ""),
+        ]
+        var scripts: [String] = []
+        let out = playBoundedAlbum(title: "Untitled Rip", rows: matched, uuid: "U",
+                                   run: { s in
+                                       scripts.append(s)
+                                       if s.contains("set ids to persistent ID") { return "A" }
+                                       if s.contains("count of tracks") { return "1" }
+                                       return ""
+                                   },
+                                   launch: { _, _ in true })
+        XCTAssertEqual(out, .playing)
+        guard let buildScript = scripts.first(where: { $0.contains("make new playlist") }) else {
+            return XCTFail("no build script was ever sent")
+        }
+        XCTAssertTrue(buildScript.contains("Untitled Rip"),
+                      "must fall back to the raw query when the resolved title is blank")
+    }
+
     // MARK: - §17.1: the chosen album must actually reach the container
 
     /// The core §17.1 defect: `decideAlbumPlay` groups rows and picks one

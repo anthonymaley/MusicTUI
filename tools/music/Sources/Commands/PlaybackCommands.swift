@@ -318,7 +318,13 @@ enum AlbumPlayDecision: Equatable {
     /// `matched` describe that same chosen album; they are informational
     /// (the CLI's own message text) and are never used to reconstruct which
     /// rows to seed — `playBoundedAlbum` seeds from `rows` directly.
-    case play(rows: [LibraryAlbumRow], position: Int, playable: Int, matched: Int)
+    ///
+    /// §18.5: `displayName` is the chosen `AlbumGroup`'s resolved title
+    /// (e.g. "Moon Safari"), distinct from the raw user query (e.g. "moon")
+    /// that resolved to it — `playBoundedAlbum` uses it to name the
+    /// container so Music's sidebar and Now Playing show the album, not
+    /// whatever fragment the user typed.
+    case play(rows: [LibraryAlbumRow], displayName: String, position: Int, playable: Int, matched: Int)
     case notFound
     case nonePlayable(matched: Int)
     /// §16.6: the query matched more than one distinct album, and none of
@@ -338,17 +344,19 @@ func decideAlbumPlay(_ rows: [LibraryAlbumRow], query: String) -> AlbumPlayDecis
     let groups = groupRowsByAlbum(rows)
     let normalizedQuery = normalizeAlbumTitle(query)
     let exact = groups.filter { normalizeAlbumTitle($0.displayName) == normalizedQuery }
-    let chosen: [LibraryAlbumRow]
+    let chosenGroup: AlbumGroup
     if exact.count == 1 {
-        chosen = exact[0].rows
+        chosenGroup = exact[0]
     } else if groups.count == 1 {
-        chosen = groups[0].rows
+        chosenGroup = groups[0]
     } else {
         return .ambiguous(albums: groups.map { $0.displayName })
     }
+    let chosen = chosenGroup.rows
     let res = orderedPlayableAlbumTracks(chosen)
     guard let first = res.tracks.first else { return .nonePlayable(matched: res.matched) }
-    return .play(rows: chosen, position: first.index, playable: res.tracks.count, matched: res.matched)
+    return .play(rows: chosen, displayName: chosenGroup.displayName, position: first.index,
+                playable: res.tracks.count, matched: res.matched)
 }
 
 /// First track (source-playlist position) that Music can actually play, in

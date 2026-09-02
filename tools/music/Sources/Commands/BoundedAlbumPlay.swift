@@ -43,6 +43,7 @@ func playBoundedAlbum(title: String,
     _ = run(albumStaleSweepScript())
 
     let albumRows: [LibraryAlbumRow]
+    var resolvedTitle = title
     switch decideAlbumPlay(rows, query: title) {
     case .notFound:
         return .notFound
@@ -50,17 +51,25 @@ func playBoundedAlbum(title: String,
         return .nonePlayable(matched: matched)
     case .ambiguous(let albums):
         return .ambiguous(albums: albums)
-    case .play(let chosenRows, _, _, _):
+    case .play(let chosenRows, let displayName, _, _, _):
         // §17.1: the container must be seeded from the CHOSEN album's own
         // rows, never the full (possibly multi-album) `rows` parameter — that
         // was the defect this fix wave exists to close. `position` is not
         // used on this path: it names a Library index for the pre-Task-6
         // single-track play, which this bounded path never issues.
         albumRows = chosenRows
+        // §18.5: name the container after the RESOLVED album title, not the
+        // raw query — `--album "moon"` should show "Moon Safari" in Music's
+        // sidebar and Now Playing, not "moon". `displayName` comes from a
+        // real library row's `album` field, but falls back to the query on
+        // the (untested-in-the-wild) chance a matching row's own album tag
+        // is itself blank, so the container is never named with an empty
+        // title.
+        if !displayName.isEmpty { resolvedTitle = displayName }
     }
 
     let indices = orderedPlayableAlbumTracks(albumRows).tracks.map { $0.index }
-    let name = albumContainerName(title: title, uuid: uuid)
+    let name = albumContainerName(title: resolvedTitle, uuid: uuid)
 
     switch buildAlbumContainer(name: name, indices: indices, run: run) {
     case .built:
@@ -70,8 +79,15 @@ func playBoundedAlbum(title: String,
         // playable row. Handle it rather than crashing — nothing was built,
         // so there is nothing to roll back.
         return .buildFailed(containerRemoved: true)
-    case .createFailed, .seedMismatch:
-        // buildAlbumContainer already rolled back successfully in these cases.
+    case .createFailed:
+        // buildAlbumContainer already rolled back successfully in this case.
+        return .buildFailed(containerRemoved: true)
+    case .seedMismatch(let expected, let got):
+        // §18.5: this diagnostic used to be computed and discarded — a
+        // required test case (§12) produced no diagnostic at all. The
+        // rollback already ran successfully (same as `.createFailed`); only
+        // the logging is new.
+        verbose("album container \(name): seed mismatch (expected \(expected), got \(got)); rolled back")
         return .buildFailed(containerRemoved: true)
     case .cleanupFailed:
         // The build failed AND its own rollback delete also failed.

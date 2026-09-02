@@ -50,6 +50,7 @@ music play --playlist "Working Vibes"         # explicit playlist flag
 music play "Gypsy Woman (Quarantine Sessions)" # play matching local Library album/song
 music play --album "Kid A" --artist "Radiohead" # explicit local Library album + artist; also `music play "X"` when X resolves to an album
                                                 # creates temp playlist, bounded only when Autoplay off; see TUI Autoplay note
+                                                # if the name matches more than one distinct album, nothing plays; add --artist or a more specific name
 music play --song "Get It Done" --artist "Fouk"  # search library + play
 music play --verbose                          # diagnostic output on stderr
 music pause
