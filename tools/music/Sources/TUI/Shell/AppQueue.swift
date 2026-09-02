@@ -386,16 +386,33 @@ func effectiveAlbumArtistCredit(_ group: AlbumGroup) -> String {
     return only
 }
 
-/// §18.3 (corrects §17.3): an empty credit is no longer automatically
-/// compatible with everything — `effectiveAlbumArtistCredit` above is where
-/// "empty" now gets one real chance to resolve to actual evidence (the
-/// group's track artist); once a credit reaches here still empty, that
-/// really is no evidence, and no evidence must not merge two albums.
+/// §19 (corrects §18.3's and §17.3's subset arm): two nonempty effective
+/// credits are compatible only when they are strictly EQUAL. §18.3 already
+/// closed the empty-credit arm here — an empty credit is no longer
+/// automatically compatible with everything; `effectiveAlbumArtistCredit`
+/// above is where "empty" gets its one real chance to resolve to actual
+/// evidence (the group's track artist), and a credit that reaches this
+/// function still empty stays incompatible.
+///
+/// The subset arm used to pass a pair when one credit's tokens were a subset
+/// of the other's, on the reasoning that "Queen" folding into "Queen & David
+/// Bowie" is overwhelmingly a drifted credit for one collaborative album.
+/// That reasoning covers collaboration drift, but the predicate cannot tell
+/// it apart from a token-prefix pair of two genuinely different single
+/// artists: `{"queen"}` is a subset of `{"queen", "latifah"}`, so *Greatest
+/// Hits* by Queen and *Greatest Hits* by Queen Latifah collapsed into one
+/// group and seeded one container with both albums — bounded and silent,
+/// with no ambiguity prompt, violating the hard invariant that a container
+/// must never silently hold more than one album. Containment is not
+/// identity, so it is rejected here for the same reason §18.3 rejected
+/// "empty means compatible": absence of a distinguishing signal is not
+/// evidence of sameness. The accepted cost is that genuine collaboration
+/// drift now surfaces as `.ambiguous` too, resolvable with `--artist` — a
+/// prompt the user can act on beats a container holding an album they did
+/// not ask for.
 private func creditsAreCompatible(_ a: String, _ b: String) -> Bool {
     guard !a.isEmpty, !b.isEmpty else { return false }
-    let tokensA = Set(a.split(separator: " "))
-    let tokensB = Set(b.split(separator: " "))
-    return tokensA.isSubset(of: tokensB) || tokensB.isSubset(of: tokensA)
+    return a == b
 }
 
 /// Pick an album's tracks from a title-only library fetch, resolving the artist in

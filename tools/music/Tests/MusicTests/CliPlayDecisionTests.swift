@@ -206,37 +206,87 @@ final class CliPlayDecisionTests: XCTestCase {
                        "a blank group whose own rows disagree on track artist carries no single usable signal")
     }
 
-    // MARK: §17.3/§18.5 — the subset arm, previously untested
+    // MARK: §19 — containment is not identity (corrects §17.3/§18.3's subset arm)
 
-    /// The subset arm was documented and implemented in §17.3 but never
-    /// exercised by a test: "Queen" folding into "Queen & David Bowie" is
-    /// overwhelmingly a drifted credit for one collaborative album.
-    func testGroupRowsByAlbumCollapsesASubsetCreditIntoTheFullerOne() {
+    /// Inverts former `testGroupRowsByAlbumCollapsesASubsetCreditIntoTheFullerOne`
+    /// (§17.3/§18.5): the subset arm used to collapse "Queen" into "Queen &
+    /// David Bowie" on the reasoning that it is overwhelmingly a drifted
+    /// collaboration credit. §19 closes that arm because the same shape
+    /// ("Queen" token-prefixing "Queen & David Bowie") is indistinguishable
+    /// from two different single artists whose names happen to share a
+    /// token — see the Queen/Queen Latifah regression below. A subset credit
+    /// must now stay split, same as a genuinely different one.
+    func testGroupRowsByAlbumKeepsASubsetCreditSplitFromTheFullerOne() {
         let rows = [
             albumRow(1, artist: "Queen", albumArtist: "Queen", album: "Under Pressure"),
             albumRow(2, artist: "David Bowie", albumArtist: "Queen & David Bowie", album: "Under Pressure"),
         ]
         let groups = groupRowsByAlbum(rows)
+        XCTAssertEqual(groups.count, 2,
+                       "a subset credit (\"Queen\") is not identical to the fuller one (\"Queen & David Bowie\") and must stay split")
+    }
+
+    /// THE regression §19 exists to close: two credits that merely share a
+    /// leading token must never silently collapse into one container. Before
+    /// this fix, `{"queen"}` being a subset of `{"queen", "latifah"}` merged
+    /// *Greatest Hits* by Queen and *Greatest Hits* by Queen Latifah into one
+    /// group, `exact.count == 1`, and one container was seeded with both
+    /// albums — bounded and silent, no ambiguity prompt. Asserting the
+    /// decision is `.ambiguous`, not just that the groups stayed separate,
+    /// because the user-visible outcome (a resolvable prompt vs. a silent
+    /// wrong-album container) is the point.
+    func testDecideAlbumPlayStaysAmbiguousForATokenPrefixCreditPair() {
+        let rows = [
+            albumRow(1, artist: "Queen", albumArtist: "Queen", album: "Greatest Hits"),
+            albumRow(2, artist: "Queen Latifah", albumArtist: "Queen Latifah", album: "Greatest Hits"),
+        ]
+        switch decideAlbumPlay(rows, query: "Greatest Hits") {
+        case .ambiguous:
+            break
+        default:
+            XCTFail("\"Queen\" being a token-subset of \"Queen Latifah\" must not silently merge two different artists' albums into one container")
+        }
+    }
+
+    /// Genuine equality still collapses even when the two raw credit strings
+    /// differ only by the punctuation `normalizeCredit` folds. This exercises
+    /// the fallback path specifically: a blank-credit group's rows agree on
+    /// one track artist written with "&", and the other group's own credit is
+    /// the same artists written with a comma — different raw strings, equal
+    /// after normalization, so they still collapse. (Two groups whose raw,
+    /// unfolded album-artist credits are literally identical never reach this
+    /// predicate at all — `groupRowsByAlbum`'s fine-grained key is already
+    /// `normalizeCredit(albumArtist)`, so they land in the same group before
+    /// the collapse step ever runs.)
+    func testGroupRowsByAlbumCollapsesWhenEffectiveCreditsAreEqualOnlyAfterPunctuationNormalizes() {
+        let rows = [
+            albumRow(1, artist: "Queen & David Bowie", albumArtist: "", album: "Under Pressure"),
+            albumRow(2, artist: "David Bowie", albumArtist: "Queen, David Bowie", album: "Under Pressure"),
+        ]
+        let groups = groupRowsByAlbum(rows)
         XCTAssertEqual(groups.count, 1,
-                       "a subset credit (\"Queen\") must collapse into the fuller one (\"Queen & David Bowie\")")
+                       "credits equal only after normalizeCredit folds punctuation must still collapse")
         XCTAssertEqual(Set(groups[0].rows.map(\.index)), [1, 2])
     }
 
     // MARK: §17.3/§18.5 — a three-group bucket, previously untested
 
-    /// A three-group bucket where every pair is compatible (a classical-style
-    /// credit chain, each superseding the last with an added performer) must
-    /// collapse entirely into one group, not just a compatible pair of the
-    /// three.
-    func testGroupRowsByAlbumCollapsesAThreeGroupBucketWhenEveryPairIsCompatible() {
+    /// Inverts former `testGroupRowsByAlbumCollapsesAThreeGroupBucketWhenEveryPairIsCompatible`
+    /// (§17.3/§18.5): this was a classical-style credit chain, each credit
+    /// superseding the last with an added performer, compatible only under
+    /// the now-closed subset arm. Under §19's strict equality none of the
+    /// three pairs are equal, so the all-or-nothing rule
+    /// (`collapseCompatibleAlbumArtistGroups`) now keeps the whole bucket
+    /// split rather than collapsing it.
+    func testGroupRowsByAlbumKeepsAThreeGroupSubsetChainSplit() {
         let rows = [
             albumRow(1, artist: "Karajan", albumArtist: "Karajan", album: "Symphony No. 9"),
             albumRow(2, artist: "Karajan", albumArtist: "Karajan Berlin Philharmonic", album: "Symphony No. 9"),
             albumRow(3, artist: "Karajan", albumArtist: "Karajan Berlin Philharmonic Chorus", album: "Symphony No. 9"),
         ]
         let groups = groupRowsByAlbum(rows)
-        XCTAssertEqual(groups.count, 1, "every pair in the bucket is compatible, so all three must collapse")
-        XCTAssertEqual(Set(groups[0].rows.map(\.index)), [1, 2, 3])
+        XCTAssertEqual(groups.count, 3,
+                       "none of the three credits are strictly equal, so the bucket must stay split")
     }
 
     /// A three-group bucket where one pair is genuinely incompatible must
