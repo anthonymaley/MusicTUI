@@ -57,6 +57,45 @@ final class AlbumStaleSweepScriptTests: XCTestCase {
         XCTAssertTrue(guardIndex < repeatIndex, "guard must precede the repeat loop")
     }
 
+    // MARK: - §17.2: an unrecognised player state must abort, not sweep everything
+
+    /// §17.2 (corrects §16.1): the old shape tested positively for the four
+    /// in-use states with an IMPLICIT ELSE — so any `player state` value that
+    /// is neither in-use nor "stopped" fell through to the delete loop with
+    /// `keepName` empty, deleting every `__album__` container including one
+    /// currently in use. This is the same negative-allowlist shape §16.2
+    /// removed from `albumWatcherDecision`, reintroduced here on the
+    /// automatic sweep. The script must instead compute a positive
+    /// `recognised` flag (mirroring `albumWatcherDecision`'s idiom) and abort
+    /// the ENTIRE sweep — deleting nothing — when the state is neither a
+    /// recognised in-use state nor "stopped".
+    func testUnrecognisedPlayerStateAbortsTheSweep() {
+        let s = albumStaleSweepScript()
+        XCTAssertTrue(s.contains("set recognised to"), "must compute a positive recognised flag")
+        for state in albumInUsePlayerStates {
+            XCTAssertTrue(s.contains("playerStateText is \"\(state)\""),
+                          "recognised must test the in-use state \(state)")
+        }
+        XCTAssertTrue(s.contains("playerStateText is \"stopped\""), "recognised must test \"stopped\"")
+        XCTAssertTrue(s.contains("if not recognised then return"),
+                      "must abort before the repeat loop on an unrecognised state")
+        let repeatIndex = s.range(of: "repeat with pp")?.lowerBound ?? s.startIndex
+        let guardIndex = s.range(of: "if not recognised then return")?.lowerBound ?? s.endIndex
+        XCTAssertTrue(guardIndex < repeatIndex, "the recognised guard must precede the repeat loop")
+    }
+
+    /// The recognised guard must run BEFORE the context-readable guard —
+    /// both must abort the sweep, but an unrecognised state can't even be
+    /// classified as in-use or not, so it must never reach the context check.
+    func testUnrecognisedGuardPrecedesTheContextGuard() {
+        let s = albumStaleSweepScript()
+        guard let recognisedIndex = s.range(of: "if not recognised then return")?.lowerBound,
+              let contextIndex = s.range(of: "if not contextReadable then return")?.lowerBound else {
+            return XCTFail("expected both guards to be present")
+        }
+        XCTAssertLessThan(recognisedIndex, contextIndex, "recognised guard must precede the context guard")
+    }
+
     func testNeverPrefixWideBeyondAlbumPrefix() {
         let s = albumStaleSweepScript()
         // Only one "starts with" test, and it must be the album prefix.

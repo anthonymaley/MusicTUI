@@ -73,6 +73,37 @@ final class PlaylistCleanupScriptTests: XCTestCase {
         XCTAssertTrue(guardIndex < repeatIndex, "guard must precede the repeat loop")
     }
 
+    // MARK: - §17.2: an unrecognised player state must abort, not sweep everything
+
+    /// Same defect as `albumStaleSweepScript` (§17.2, corrects §16.1): an
+    /// implicit else on the old positive-in-use test let any unrecognised
+    /// `player state` fall through with `keepName` empty and delete
+    /// everything, including `__temp__` playlists a user may be relying on.
+    /// `playlistCleanupScript` must agree with the stale sweep's fix.
+    func testUnrecognisedPlayerStateAbortsTheSweep() {
+        let s = playlistCleanupScript()
+        XCTAssertTrue(s.contains("set recognised to"), "must compute a positive recognised flag")
+        for state in albumInUsePlayerStates {
+            XCTAssertTrue(s.contains("playerStateText is \"\(state)\""),
+                          "recognised must test the in-use state \(state)")
+        }
+        XCTAssertTrue(s.contains("playerStateText is \"stopped\""), "recognised must test \"stopped\"")
+        XCTAssertTrue(s.contains("if not recognised then return \"deferred\""),
+                      "must abort (honestly, not as a silent 0) before the repeat loop on an unrecognised state")
+        let repeatIndex = s.range(of: "repeat with pp")?.lowerBound ?? s.startIndex
+        let guardIndex = s.range(of: "if not recognised then return \"deferred\"")?.lowerBound ?? s.endIndex
+        XCTAssertTrue(guardIndex < repeatIndex, "the recognised guard must precede the repeat loop")
+    }
+
+    func testUnrecognisedGuardPrecedesTheContextGuard() {
+        let s = playlistCleanupScript()
+        guard let recognisedIndex = s.range(of: "if not recognised then return \"deferred\"")?.lowerBound,
+              let contextIndex = s.range(of: "if not contextReadable then return \"deferred\"")?.lowerBound else {
+            return XCTFail("expected both guards to be present")
+        }
+        XCTAssertLessThan(recognisedIndex, contextIndex, "recognised guard must precede the context guard")
+    }
+
     // MARK: - §16.5: honest deferred result
 
     func testParsePlaylistCleanupResultRecognisesDeferred() {

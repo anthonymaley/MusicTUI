@@ -322,6 +322,19 @@ func playlistDeleteScript(name: String) -> String {
 /// live playback is the expensive one. Genuine orphans are collected by the
 /// next album invocation (§16.1's `albumStaleSweepScript`) or the next
 /// cleanup run.
+///
+/// An UNRECOGNISED player state also aborts the sweep (§17.2, corrects
+/// §16.1): the old shape tested positively for the four in-use states with
+/// an implicit else, so any value that was neither in-use nor "stopped" fell
+/// through with `keepName` empty and the loop deleted every owned temp
+/// playlist, including one currently in use. `recognised` is now a positive
+/// test — mirroring `albumWatcherDecision`'s idiom, and the naming
+/// `sweepablePlayerStates` documents (name the states you act on, so
+/// anything Apple adds later lands on the spare side by construction) — and
+/// an unrecognised state returns "deferred" before the context check even
+/// runs, on the same asymmetry as the rest of this file: a spared container
+/// costs one leftover row a later sweep collects, a wrongly collected one
+/// destroys live playback.
 func playlistCleanupScript() -> String {
     let inUse = albumInUsePlayerStates
         .map { "playerStateText is \"\($0)\"" }
@@ -332,6 +345,8 @@ func playlistCleanupScript() -> String {
     try
         set playerStateText to player state as text
     end try
+    set recognised to (\(inUse) or playerStateText is "stopped")
+    if not recognised then return "deferred"
     set contextReadable to true
     if \(inUse) then
         set contextReadable to false
@@ -392,6 +407,13 @@ func parsePlaylistCleanupResult(_ raw: String) -> PlaylistCleanupResult {
 ///   costs one row a later sweep collects; a wrongly collected one destroys
 ///   live playback. This script aborts the ENTIRE sweep (deletes nothing) if
 ///   the in-use context can't be read, same shape as `playlistCleanupScript`.
+///   §17.2 (corrects §16.1): "unknown state" was promised here but not
+///   actually built — the original shape tested positively for the four
+///   in-use states with an implicit else, so any OTHER state (not in-use,
+///   not "stopped") fell through with `keepName` empty and deleted every
+///   `__album__` container, including one in use. `recognised` is now an
+///   explicit positive test (mirroring `albumWatcherDecision`), checked and
+///   aborted on BEFORE the context-readable guard even runs.
 ///
 /// Containers only: never names a `track` or a `song`, so it cannot reach a
 /// library row. A test pins that, same as the other two sweeps in this file.
@@ -405,6 +427,8 @@ func albumStaleSweepScript() -> String {
     try
         set playerStateText to player state as text
     end try
+    set recognised to (\(inUse) or playerStateText is "stopped")
+    if not recognised then return
     set contextReadable to true
     if \(inUse) then
         set contextReadable to false
