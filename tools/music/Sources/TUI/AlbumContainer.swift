@@ -16,8 +16,19 @@ let albumPlaylistPrefix = "__album__ "
 /// would rewrite a user's own playlist name that happened to match.
 let uuidCarryingPlaylistPrefixes = [discoverPlaylistPrefix, albumPlaylistPrefix]
 
+/// §17.4: the title is trimmed here, at the one place the container name is
+/// built. `parseWatcherObservation` trims every field it reads back from
+/// AppleScript, so `name of current playlist` comes back trimmed — an
+/// untrimmed title (e.g. a stray trailing space from `--album "X "`) would
+/// build a name that can never equal what the watcher observes, so it would
+/// never arm and would exit on the arm timeout every time: fail-safe, but a
+/// deterministic, silent leak from a plausible typo. Trimming on write here
+/// (rather than comparing trimmed on both sides in the watcher) is the
+/// chosen fix: one call site, and the container's real, visible name in
+/// Music.app is the one the user actually meant.
 func albumContainerName(title: String, uuid: String) -> String {
-    albumPlaylistPrefix + uuid + discoverPlaylistNameSeparator + title
+    let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+    return albumPlaylistPrefix + uuid + discoverPlaylistNameSeparator + trimmedTitle
 }
 
 // MARK: - Lifecycle constants

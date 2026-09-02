@@ -41,6 +41,20 @@ final class AlbumContainerTests: XCTestCase {
                        "__album__x no space prefix")
     }
 
+    /// §17.4: `parseWatcherObservation` trims every field it reads back from
+    /// AppleScript, so `name of current playlist` comes back trimmed. A
+    /// container built from an UNTRIMMED title (e.g. a user typo,
+    /// `--album "Moon Safari "`) would never equal what the watcher observes,
+    /// so it would never arm and would always exit on the arm timeout without
+    /// deleting — a deterministic, silent leak. Trimming the title here, at
+    /// the one place the name is built, closes it.
+    func testTitleWhitespaceIsTrimmedFromTheContainerName() {
+        XCTAssertEqual(albumContainerName(title: "  Moon Safari  ", uuid: "ABC-123"),
+                       "__album__ ABC-123 — Moon Safari")
+        XCTAssertEqual(albumContainerName(title: "\tMoon Safari\n", uuid: "ABC-123"),
+                       "__album__ ABC-123 — Moon Safari")
+    }
+
     func testDiscoverFormStillWorks() {
         let name = discoverPlaylistPrefix + "U-1" + discoverPlaylistNameSeparator + "Rail Pick"
         XCTAssertEqual(cleanContextName(name), "Rail Pick")

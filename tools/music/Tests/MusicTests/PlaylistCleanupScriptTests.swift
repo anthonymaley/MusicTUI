@@ -117,10 +117,15 @@ final class PlaylistCleanupScriptTests: XCTestCase {
         XCTAssertEqual(parsePlaylistCleanupResult(" 2 \n"), .collected(2))
     }
 
-    /// Mutation-adjacent: garbage must never be silently read as "0 deleted",
-    /// which would look identical to a real empty sweep.
-    func testParsePlaylistCleanupResultTreatsGarbageAsZeroNotACrash() {
-        XCTAssertEqual(parsePlaylistCleanupResult("garbage"), .collected(0))
+    /// §17.4 (corrects this test's own prior expectation): garbage must never
+    /// be silently read as "0 deleted" — that is the same misreport §16.5
+    /// fixed for the deferred case (a caught AppleScript exception), in a
+    /// different degradation (a garbled or unexpected return value). It gets
+    /// its own honest outcome, `.unreadable`, distinguishable from a genuine
+    /// empty sweep.
+    func testParsePlaylistCleanupResultTreatsGarbageAsUnreadableNotZero() {
+        XCTAssertEqual(parsePlaylistCleanupResult("garbage"), .unreadable)
+        XCTAssertEqual(parsePlaylistCleanupResult(""), .unreadable)
     }
 
     /// When the player is not in an in-use state, contextReadable stays true,

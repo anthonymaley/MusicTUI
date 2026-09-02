@@ -374,16 +374,25 @@ func playlistCleanupScript() -> String {
 /// unreadable-context case (§6.1/§16.5): the player is in an in-use state but
 /// `current playlist` couldn't be read, so cleanup aborted without deleting
 /// anything, rather than the vacuous "there was nothing to clean" `.collected(0)`
-/// would otherwise imply. Pure → tested.
+/// would otherwise imply.
+///
+/// `.unreadable` (§17.4) is a THIRD, distinct degradation: the script's raw
+/// return value parsed as neither "deferred" nor an integer count. This is
+/// not "0 deleted" — the previous shape (`Int(trimmed) ?? 0`) collapsed this
+/// into `.collected(0)`, the exact same misreport §16.5 fixed for the
+/// deferred/exception case, just from a garbled-return-value cause instead
+/// of a caught AppleScript exception. Pure → tested.
 enum PlaylistCleanupResult: Equatable {
     case collected(Int)
     case deferred
+    case unreadable
 }
 
 func parsePlaylistCleanupResult(_ raw: String) -> PlaylistCleanupResult {
     let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
     if trimmed == "deferred" { return .deferred }
-    return .collected(Int(trimmed) ?? 0)
+    guard let count = Int(trimmed) else { return .unreadable }
+    return .collected(count)
 }
 
 /// The §16.1 next-invocation recovery sweep, run at the START of every
@@ -938,6 +947,14 @@ struct PlaylistCleanup: ParsableCommand {
             // delete and deleted nothing.
             print("Cleanup deferred: playback is active and its container couldn't be identified, "
                 + "so nothing was deleted. Try again once playback settles, or after it stops.")
+        case .unreadable:
+            // §17.4: never say "Cleaned up 0" here either — the script's
+            // result didn't parse, so whether anything was deleted is
+            // genuinely unknown; claiming 0 would misreport a non-empty
+            // sweep as an empty one just as surely as the deferred case did.
+            print("Cleanup ran, but its result couldn't be read, so it's unknown how many temp playlists "
+                + "were removed. Run `music playlist cleanup` again, or check your library for a leftover "
+                + "__temp__ or \(albumPlaylistPrefix.trimmingCharacters(in: .whitespaces)) playlist.")
         }
     }
 }
