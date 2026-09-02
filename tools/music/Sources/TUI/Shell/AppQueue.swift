@@ -339,12 +339,14 @@ func collapseCompatibleAlbumArtistGroups(_ groups: [AlbumGroup]) -> [AlbumGroup]
 }
 
 /// Whether every pair of these groups' album-artist credits is compatible:
-/// one is empty, or one's normalised credit tokens are a subset of the
-/// other's. Each group here is already homogeneous on `normalizeCredit(albumArtist)`
-/// (that's what fine-grained grouping partitioned on), so its first row's
-/// credit represents the whole group.
+/// one's normalised credit tokens are a subset of the other's (the subset
+/// arm, unchanged from §17.3 — "Queen" folding into "Queen & David Bowie" is
+/// overwhelmingly a drifted credit for one album). Each group here is
+/// already homogeneous on `normalizeCredit(albumArtist)` (that's what
+/// fine-grained grouping partitioned on), so `effectiveAlbumArtistCredit`
+/// represents the whole group.
 func albumArtistCreditsAreCompatible(_ groups: [AlbumGroup]) -> Bool {
-    let credits = groups.map { normalizeCredit($0.rows.first?.albumArtist ?? "") }
+    let credits = groups.map(effectiveAlbumArtistCredit)
     guard credits.count > 1 else { return true }
     for i in 0..<(credits.count - 1) {
         for j in (i + 1)..<credits.count where !creditsAreCompatible(credits[i], credits[j]) {
@@ -354,8 +356,43 @@ func albumArtistCreditsAreCompatible(_ groups: [AlbumGroup]) -> Bool {
     return true
 }
 
+/// §18.3 (corrects §17.3's empty arm): a group's own album-artist credit,
+/// falling back to its rows' TRACK artist when that credit is empty — the
+/// idiom `selectArtistTracks` already uses when matching on either credit.
+///
+/// §17.3 treated an empty album-artist credit as compatible with anything,
+/// on the reasoning that a locally added track commonly has no album-artist
+/// tag. That reasoning holds for the collapse itself, but the compatibility
+/// TEST it fed read absence of evidence as evidence of sameness: in a
+/// two-group title bucket the empty group is the only counterparty, so
+/// nothing could ever contradict it, and a locally ripped *Greatest Hits*
+/// with a blank album artist would merge with ANY other *Greatest Hits*,
+/// including one by an entirely different artist.
+///
+/// The fix keeps the same reasoning but demands it point at real evidence: a
+/// blank album-artist tag is not itself proof of a match, but the row's
+/// track-artist tag usually still is — a locally ripped *Moon Safari* keeps
+/// "Air" in its track artist even with a blank album artist. If every row in
+/// the group agrees on one normalised track artist, that becomes the
+/// group's effective credit; if the group's rows disagree (or are also
+/// blank), there is genuinely no evidence, and this returns "" — which,
+/// after this fix, `creditsAreCompatible` no longer treats as compatible
+/// with everything. Pure → tested.
+func effectiveAlbumArtistCredit(_ group: AlbumGroup) -> String {
+    let ownCredit = normalizeCredit(group.rows.first?.albumArtist ?? "")
+    guard ownCredit.isEmpty else { return ownCredit }
+    let trackArtists = Set(group.rows.map { normalizeCredit($0.artist) }.filter { !$0.isEmpty })
+    guard trackArtists.count == 1, let only = trackArtists.first else { return "" }
+    return only
+}
+
+/// §18.3 (corrects §17.3): an empty credit is no longer automatically
+/// compatible with everything — `effectiveAlbumArtistCredit` above is where
+/// "empty" now gets one real chance to resolve to actual evidence (the
+/// group's track artist); once a credit reaches here still empty, that
+/// really is no evidence, and no evidence must not merge two albums.
 private func creditsAreCompatible(_ a: String, _ b: String) -> Bool {
-    if a.isEmpty || b.isEmpty { return true }
+    guard !a.isEmpty, !b.isEmpty else { return false }
     let tokensA = Set(a.split(separator: " "))
     let tokensB = Set(b.split(separator: " "))
     return tokensA.isSubset(of: tokensB) || tokensB.isSubset(of: tokensA)
