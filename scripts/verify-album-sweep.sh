@@ -13,11 +13,14 @@
 # (`__temp__` and `__album__ `), not only this script's four. That is why the
 # preflight below FAILS CLOSED four ways: if any owned container already
 # exists, if the probe cannot be read, if normalising its output fails, or if
-# the filter over it fails. Each stage is checked separately, because under
-# pipefail a later stage's "no match" would otherwise mask an earlier failure. The broad cleanup is only exercised in a fixture positively confirmed
-# clean, so its
-# measured effect is exactly the four this run created and the net-effect
-# assertions below are meaningful rather than accidental.
+# the filter over it fails. The grep is run SEPARATELY from the normalisation
+# because grep is the only stage with a legitimate non-zero status (exit 1,
+# "no match"); collapsed into one pipeline, pipefail reports the rightmost
+# non-zero and that "no match" masks an earlier stage's real failure.
+# The broad cleanup is therefore only exercised in a fixture positively
+# confirmed clean, so its measured effect is exactly the four containers this
+# run created, and the net-effect assertions below are meaningful rather than
+# accidental.
 #
 # Run BY HAND against a real, ALREADY-RUNNING Music.app. Never launches
 # Music.app, never starts playback, never touches a library track.
@@ -104,9 +107,11 @@ fi
 # probe above: grep exit 1 means "no match" (genuinely clean), but exit 2 means
 # the filter FAILED — an unbalanced bracket in an OWNED_PREFIXES entry, say —
 # and collapsing the two reports a clean fixture that was never established.
-# Split the stages. Under pipefail a pipeline reports the RIGHTMOST non-zero
-# status, so grep's exit 1 ("no match" — the clean case) would mask a failure in
-# tr or sed and read as a clean fixture. Each stage is checked on its own.
+# Under pipefail a pipeline reports the RIGHTMOST non-zero status, so grep's
+# exit 1 ("no match" — the clean case) masked a failure in tr or sed and read as
+# a clean fixture. The grep is therefore separated from the normalisation: it is
+# the only stage with a legitimate non-zero, so any non-zero from the
+# normalisation pipeline is a real failure.
 set +e
 stripped=$(printf '%s' "$all_names" | tr ',' '\n' | sed 's/^ *//')
 strip_rc=$?
