@@ -36,6 +36,12 @@ enum KeyPress: Equatable {
     case shiftTab
     case f7, f9
     case enter, space, escape
+    /// A typed Ctrl-C. Raw mode clears `ISIG`, so the terminal delivers it as
+    /// byte `0x03` rather than a signal; named here so the shell can route it
+    /// to quit ahead of every scene, including the ones capturing raw text.
+    /// An externally delivered SIGINT is a different path (the handler in
+    /// `enterRawMode`) and is unchanged by this.
+    case ctrlC
     case char(Character)
 
     /// How long to wait for a follow-up byte after a bare ESC (0x1B) before
@@ -161,6 +167,7 @@ enum KeyPress: Equatable {
         }
 
         switch byte {
+        case 0x03: return .ctrlC
         case 0x0A, 0x0D: return .enter
         case 0x20: return .space
         default:

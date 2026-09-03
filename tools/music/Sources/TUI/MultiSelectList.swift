@@ -160,7 +160,9 @@ func runMultiSelectList(
             if let onAdjust = onAdjust {
                 items[cursor].sublabel = onAdjust(cursor, 5)
             }
-        case .char("q"), .escape:
+        case .char("q"), .escape, .ctrlC:
+            // Ctrl-C cancels like `q`: before it was named it fell through as a
+            // dead control byte that matched no action.
             return .cancelled
         case .enter:
             let sel = selectedIndices()

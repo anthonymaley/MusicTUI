@@ -28,4 +28,37 @@ final class SceneInputModeTests: XCTestCase {
         let s = StubScene(); s.capturing = true
         XCTAssertFalse(shellShouldResolveGlobals(forSceneCapturing: s.capturesAllInput))
     }
+
+    // MARK: - Routing order (design 2026-09-03 §7, B(i))
+
+    /// Typed Ctrl-C quits from a CAPTURING scene. This is the case a global
+    /// keymap entry alone cannot cover: the capture branch consumes every key
+    /// before the resolver runs, so the route must be decided ahead of it.
+    func testControlCQuitsWhileASceneIsCapturingInput() {
+        let s = StubScene(); s.capturing = true
+        XCTAssertTrue(s.capturesAllInput)
+        XCTAssertEqual(shellRoute(for: .ctrlC, sceneCapturing: s.capturesAllInput), .quit)
+    }
+
+    func testControlCQuitsWhileASceneIsNotCapturing() {
+        let s = StubScene()
+        XCTAssertEqual(shellRoute(for: .ctrlC, sceneCapturing: s.capturesAllInput), .quit)
+    }
+
+    /// `q` is NOT hoisted the same way: typed into a search field it is a
+    /// letter, and only the global resolver turns it into quit when no scene
+    /// is capturing. Ctrl-C is the one key that outranks capture.
+    func testQStillGoesToACapturingSceneAndToGlobalsOtherwise() {
+        XCTAssertEqual(shellRoute(for: .char("q"), sceneCapturing: true), .scene)
+        XCTAssertEqual(shellRoute(for: .char("q"), sceneCapturing: false), .globals)
+        XCTAssertEqual(resolveGlobalKey(.char("q")), .quit)
+    }
+
+    /// Ordinary keys are unchanged by the new first decision.
+    func testOtherKeysRouteAsBefore() {
+        XCTAssertEqual(shellRoute(for: .char("x"), sceneCapturing: true), .scene)
+        XCTAssertEqual(shellRoute(for: .char("x"), sceneCapturing: false), .globals)
+        XCTAssertEqual(shellRoute(for: .escape, sceneCapturing: true), .scene)
+        XCTAssertEqual(shellRoute(for: .space, sceneCapturing: false), .globals)
+    }
 }

@@ -37,6 +37,21 @@ final class KeyParseTests: XCTestCase {
         KeyPress.input = KeyPress.ByteInput(next: scripted.next, nextWithin: scripted.nextWithin)
     }
 
+    /// Raw mode clears `ISIG`, so a typed Ctrl-C is byte 3, not a signal. It
+    /// is a named key so the shell can route it ahead of every scene.
+    func testControlCByteIsANamedKey() {
+        script([0x03])
+        XCTAssertEqual(KeyPress.read(), .ctrlC)
+    }
+
+    /// The neighbouring control bytes stay plain chars: ctrl-d/ctrl-u are the
+    /// vim half-page aliases and match on `.char`.
+    func testOtherControlBytesRemainChars() {
+        script([0x04, 0x15])
+        XCTAssertEqual(KeyPress.read(), .char("\u{04}"))
+        XCTAssertEqual(KeyPress.read(), .char("\u{15}"))
+    }
+
     func testLoneEscapeReturnsEscape() {
         // ESC, then a timeout standing in for "no follow-up byte arrived".
         script([0x1B, nil])

@@ -387,6 +387,7 @@ Run bare `music` in a real terminal (not inside Claude Code; the TUI requires a 
 | `z` | Shuffle-play the current context |
 | `+`/`-` | Master volume ±5 |
 | `q` | Quit |
+| `Ctrl-C` | Quit, the same clean exit as `q` (also inside a search or filter field) |
 
 **Now tab:**
 

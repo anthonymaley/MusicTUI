@@ -239,8 +239,14 @@ func runShell() {
         guard let key = KeyPress.read(timeout: 0.1) else { continue }
         needsRender = true
 
-        // Raw-input scenes (filter/search) get every key, unmediated.
-        if !shellShouldResolveGlobals(forSceneCapturing: scene.capturesAllInput) {
+        // First decision, before anything else sees the key: typed Ctrl-C
+        // quits from every scene through the same `return` as `q`, so the
+        // exit `defer` runs once; raw-input scenes (filter/search) otherwise
+        // get every key, unmediated.
+        switch shellRoute(for: key, sceneCapturing: scene.capturesAllInput) {
+        case .quit:
+            return
+        case .scene:
             switch scene.handle(key) {
             case .none, .redraw: break
             case .push(let id): router.push(id); invalidateArtOnSwitch()
@@ -248,6 +254,8 @@ func runShell() {
             case .quit: return
             }
             continue
+        case .globals:
+            break
         }
 
         // 1) Globals (work in every non-capturing scene). Each runs on the serial

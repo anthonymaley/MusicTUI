@@ -61,3 +61,26 @@ extension Scene {
 func shellShouldResolveGlobals(forSceneCapturing capturing: Bool) -> Bool {
     !capturing
 }
+
+/// Where the shell sends a key, in the order the input loop applies it.
+enum ShellRoute: Equatable {
+    /// Leave the loop through the same path as `q`, so the exit `defer`
+    /// (admission close, poller stop, Discover exit sweep) runs exactly once.
+    case quit
+    /// The active scene gets the key unmediated (it is capturing raw text).
+    case scene
+    /// Globals, then Tab/Shift-Tab, then the scene.
+    case globals
+}
+
+/// The shell's FIRST decision on every key. Typed Ctrl-C quits from every
+/// scene, including the four that capture all input while searching,
+/// filtering or showing a menu: a mapping in the global keymap alone would
+/// leave it dead inside those states, because the capture branch runs before
+/// the global resolver (design 2026-09-03 §7, option B(i); Codex I3). The
+/// named loss: Ctrl-C typed to abandon a search or filter field quits the app
+/// instead, where before this it did nothing at all.
+func shellRoute(for key: KeyPress, sceneCapturing capturing: Bool) -> ShellRoute {
+    if key == .ctrlC { return .quit }
+    return shellShouldResolveGlobals(forSceneCapturing: capturing) ? .globals : .scene
+}
