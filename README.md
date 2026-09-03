@@ -253,7 +253,7 @@ Apple's station search is shallow (5-7 results, no pagination) and misses real s
 | `music playlist share "Mix" --imessage "+1234567890"` | Share via iMessage |
 | `music playlist share "Mix" --email "a@b.com"` | Share via email |
 | `music playlist create-from "Song" "Artist" ... --name "Mix"` | Create + populate from title/artist pairs |
-| `music playlist temp "Song" "Artist" ...` | Temp playlist, auto-cleanup |
+| `music playlist temp "Song" "Artist" ...` | Temp playlist, plays it; hidden from the Playlists rail, run `music playlist cleanup` when done |
 
 ### Library
 
