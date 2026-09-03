@@ -7,11 +7,20 @@
 import Foundation
 
 /// Normalize an artist name for cross-list matching (album.artist ↔ artist.name).
-/// Lowercase + trim only — a deliberately shallow heuristic; compilation credits
-/// ("Various Artists") and "feat." strings can still miss, which is why the
-/// album-artists filter is opt-in and defaults off.
+/// Lowercase, then split on the full `Character.isWhitespace` class and rejoin,
+/// which trims the edges and collapses internal runs in one step. Still a
+/// deliberately shallow heuristic; compilation credits ("Various Artists") and
+/// "feat." strings can still miss, which is why the album-artists filter is
+/// opt-in and defaults off.
+///
+/// It used to lowercase and trim only, so "A  Tribe  Called  Quest" kept its
+/// double spaces and did not match the single-spaced form. The consequence is
+/// specific: internal spacing differences made the artist-list row miss the
+/// album-credit tier set, hiding that artist from a filtered tier. It never
+/// grouped or merged artist rows, and still does not. Measured 2026-09-02
+/// (axis 1 of three); corrected 2026-09-03 alongside the whitespace class.
 func normalizeArtist(_ s: String) -> String {
-    s.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+    s.lowercased().split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
 }
 
 /// Which track-count tier the Artists list is filtered to. `a` cycles All → 12"/EP

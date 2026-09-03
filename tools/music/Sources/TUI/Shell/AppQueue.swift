@@ -241,21 +241,31 @@ func isPlayableCloudStatus(_ status: String) -> Bool {
 /// equal: lowercase, turn "&"/"," into spaces, collapse whitespace. Deliberately
 /// does NOT fold the word "and" — it appears inside real titles and single names,
 /// so folding it would over-match. Pure → unit-tested.
+///
+/// Whitespace means EVERY `Character.isWhitespace`, not the three ASCII ones
+/// this used to split on. Anthony, 2026-09-03: the whole class is intentionally
+/// equivalent. A no-break space, a narrow no-break space and an ideographic
+/// space all occur in real music metadata, and a carriage return was not
+/// handled either. §19's credit rule is untouched: this widens what counts as a
+/// separator and changes nothing about the `&`/`,` folding or the literal
+/// string equality the rule rests on.
 func normalizeCredit(_ s: String) -> String {
     let swapped = s.lowercased()
         .replacingOccurrences(of: "&", with: " ")
         .replacingOccurrences(of: ",", with: " ")
-    return swapped.split(whereSeparator: { $0 == " " || $0 == "\t" || $0 == "\n" }).joined(separator: " ")
+    return swapped.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
 }
 
 /// Fold an album title for exact-match comparison: lowercase, trim, collapse
 /// internal whitespace. Deliberately simpler than `normalizeCredit` — an album
 /// title's punctuation ("Rock & Roll") is part of its identity, unlike a
 /// multi-artist credit string, so it is not folded away here. Pure → tested.
+/// Splits on the full `Character.isWhitespace` class, as `normalizeCredit`
+/// does; that asymmetry with punctuation is the deliberate part.
 func normalizeAlbumTitle(_ s: String) -> String {
     s.lowercased()
         .trimmingCharacters(in: .whitespacesAndNewlines)
-        .split(whereSeparator: { $0 == " " || $0 == "\t" || $0 == "\n" })
+        .split(whereSeparator: { $0.isWhitespace })
         .joined(separator: " ")
 }
 
