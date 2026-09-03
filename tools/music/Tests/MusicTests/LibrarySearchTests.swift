@@ -158,6 +158,27 @@ final class LibrarySearchTests: XCTestCase {
         XCTAssertEqual(results.playlists.map { $0.id }, results.playlists.map { $0.name })
     }
 
+    /// The SEARCH boundary, pinned discriminatingly. The older
+    /// `...AndDropTemp` case above passes for the wrong reason: its temp name
+    /// (`__queue__ x`) does not match the term `house`, so the term filter
+    /// removes it and the test stays green with the temp filter deleted
+    /// entirely. Found by Codex, 2026-09-03, and reproduced: removing
+    /// `.filter { !isTempPlaylistName($0) }` from `groupLibrarySearch` left
+    /// all 965 tests green.
+    ///
+    /// Here BOTH names match the term, so only the temp filter can separate
+    /// them. It pins two things at once: that `groupLibrarySearch` actually
+    /// calls the predicate, and that the predicate is prefix-based, so a user
+    /// playlist merely containing the token survives.
+    func testSearchDropsTempPlaylistsButKeepsNamesMerelyContainingTheToken() {
+        let results = groupLibrarySearch(rows: [],
+                                         playlistNames: ["__temp__1756789012", "my __temp__ mix"],
+                                         term: "__temp__",
+                                         types: [.playlists], limit: 10)
+        XCTAssertEqual(results.playlists.map { $0.name }, ["my __temp__ mix"],
+                       "plumbing must be dropped and the user's own name kept")
+    }
+
     func testEmptyTermMatchesNoPlaylists() {
         let results = groupLibrarySearch(rows: groupingRows, playlistNames: groupingPlaylistNames, term: "",
                                           types: [.playlists], limit: 10)

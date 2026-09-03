@@ -1088,7 +1088,7 @@ struct PlaylistTemp: ParsableCommand {
         }
 
         let timestamp = Int(Date().timeIntervalSince1970)
-        let name = "__temp__\(timestamp)"
+        let name = tempPlaylistCreationPrefix + "\(timestamp)"
         let backend = AppleScriptBackend()
 
         _ = try syncRun {

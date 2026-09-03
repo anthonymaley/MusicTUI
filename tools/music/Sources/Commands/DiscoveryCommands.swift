@@ -315,7 +315,7 @@ func handleSongAction(_ action: MultiSelectAction, songs: [CatalogSong], api: RE
             print("No tracks selected.")
             return
         }
-        let name = "__temp__\(Int(Date().timeIntervalSince1970))"
+        let name = tempPlaylistCreationPrefix + "\(Int(Date().timeIntervalSince1970))"
         // Create + populate server-side, then wait (bounded poll, not a blind
         // sleep) for the playlist to sync locally — AppleScript can only play
         // what the local Music.app can see.

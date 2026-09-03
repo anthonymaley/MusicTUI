@@ -248,11 +248,36 @@ func sweepDiscoverPlaylists(backend: AppleScriptBackend) {
     }
 }
 
+/// The `__temp__` prefix as EMITTED by the two creation sites
+/// (`DiscoveryCommands.swift`, `PlaylistCommands.swift`) and MATCHED by the
+/// display sites below.
+///
+/// Named for creation deliberately, because it is NOT the single owner of this
+/// string. The sweep scripts still carry their own literal `"__temp__"` in
+/// their prefix lists (`PlaylistCommands.swift`, the `albumSweepGuardedScript`
+/// callers), because those govern DELETION and were out of scope for the
+/// display change that introduced this constant.
+///
+/// **Changing this value does not update the sweep matchers. Changing it alone
+/// therefore BREAKS cleanup ownership**: newly created containers would no
+/// longer match the old literal and would stop being collected. The
+/// independent literals must remain byte-identical until the backlog
+/// consolidation lands. (Sharpened by Codex, 2026-09-03: the earlier wording,
+/// "does not change what gets swept", was mechanically true of the generated
+/// script text and read as though editing this were safe.)
+let tempPlaylistCreationPrefix = "__temp__"
+
+/// Now Playing's stable label for a `__temp__` container. Anthony, 2026-09-03:
+/// do not expose `__temp__<timestamp>` and do not reduce it to a meaningless
+/// timestamp. The raw name is kept everywhere identity and cleanup need it.
+let temporaryPlaylistLabel = "Temporary playlist"
+
 /// Temp playlists this app creates and later sweeps. Hidden from the Playlists
 /// rail and stripped from Now Playing, so the user never sees the plumbing.
 /// A list rather than a constant: a third temp kind should be a one-line change,
 /// not a third copy of the same two call sites.
-let tempPlaylistPrefixes = ["__queue__ ", discoverPlaylistPrefix, albumPlaylistPrefix]
+let tempPlaylistPrefixes = ["__queue__ ", discoverPlaylistPrefix, albumPlaylistPrefix,
+                            tempPlaylistCreationPrefix]
 
 func isTempPlaylistName(_ name: String) -> Bool {
     tempPlaylistPrefixes.contains { name.hasPrefix($0) }

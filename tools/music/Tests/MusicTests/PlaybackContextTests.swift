@@ -44,6 +44,40 @@ final class PlaybackContextTests: XCTestCase {
     func testCleanContextNameDegradesWhenSeparatorIsMissing() {
         XCTAssertEqual(cleanContextName("__discover__ 8B1F"), "8B1F")
     }
+
+    /// A `__temp__` container is playback plumbing, so Now Playing shows a
+    /// stable label rather than the raw name. Anthony, 2026-09-03: do not
+    /// expose `__temp__<timestamp>` and do not reduce it to a meaningless
+    /// timestamp.
+    func testCleanContextNameLabelsTempContainer() {
+        XCTAssertEqual(cleanContextName("__temp__1756789012"), "Temporary playlist")
+        XCTAssertEqual(cleanContextName("__temp__"), "Temporary playlist")
+    }
+
+    /// PRECEDENCE, and it is load-bearing. `tempPlaylistCreationPrefix` is in
+    /// `tempPlaylistPrefixes` so the rail hides it, which means the generic
+    /// strip loop would ALSO match a `__temp__` name and return the bare
+    /// timestamp. The label branch must be reached first.
+    ///
+    /// This pins the precedence BEHAVIOUR rather than source order, which is
+    /// the stronger property: another implementation could preserve the result
+    /// without this literal branch layout. It fails if the two branches are
+    /// swapped, because the generic loop's answer for this input is the
+    /// digits. A test that only checked "not the raw name" would pass against
+    /// the broken order.
+    func testTempLabelBranchPrecedesGenericPrefixStrip() {
+        let out = cleanContextName("__temp__1756789012")
+        XCTAssertEqual(out, "Temporary playlist")
+        XCTAssertNotEqual(out, "1756789012",
+                          "generic strip loop won the race; the label branch must precede it")
+    }
+
+    /// A user's own playlist that merely CONTAINS the token is not plumbing.
+    /// Matching is by prefix, so it is untouched in Now Playing.
+    func testCleanContextNameLeavesNonPrefixedUserPlaylistAlone() {
+        XCTAssertEqual(cleanContextName("my __temp__ mix"), "my __temp__ mix")
+        XCTAssertEqual(cleanContextName("Best of __temp__"), "Best of __temp__")
+    }
     func testGeniusClearsWhenRealPlaylistTakesOver() {
         // Within the grace window: keep it (post-trigger lag still shows old ctx).
         XCTAssertFalse(geniusShouldClear(elapsedSinceTrigger: 1, hasAppQueue: false, contextName: "Friday Mix"))

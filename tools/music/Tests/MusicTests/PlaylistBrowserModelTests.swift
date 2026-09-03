@@ -46,6 +46,33 @@ final class PlaylistBrowserModelTests: XCTestCase {
         XCTAssertEqual(parseRailPlaylistNames(raw).names, ["My Mix", "Chill"])
     }
 
+    /// `__temp__` containers are playback plumbing and are hidden from the
+    /// rail too. Anthony's product call, 2026-09-03: they are ephemeral,
+    /// cleanup-eligible, and Music.app still exposes them for inspection.
+    func testRailNamesHideTempPlaylists() {
+        let raw = "U\u{1F}My Mix\nU\u{1F}__temp__1756789012\nU\u{1F}Chill"
+        XCTAssertEqual(parseRailPlaylistNames(raw).names, ["My Mix", "Chill"])
+    }
+
+    /// The boundary: matching is by PREFIX, so a user's own playlist that
+    /// merely contains the token stays visible and unchanged. Hiding it would
+    /// be deleting a name the user chose, from their view, on a substring.
+    func testRailNamesKeepNonPrefixedPlaylistContainingTheToken() {
+        let raw = "U\u{1F}my __temp__ mix\nU\u{1F}Best of __temp__\nU\u{1F}__temp__9\nU\u{1F}Chill"
+        XCTAssertEqual(parseRailPlaylistNames(raw).names,
+                       ["my __temp__ mix", "Best of __temp__", "Chill"])
+    }
+
+    /// The same three boundaries at the predicate the search filter uses
+    /// (`LibrarySearch.swift` filters playlist hits through this).
+    func testIsTempPlaylistNameCoversTempAndRespectsPrefixBoundary() {
+        XCTAssertTrue(isTempPlaylistName("__temp__1756789012"))
+        XCTAssertTrue(isTempPlaylistName("__temp__"))
+        XCTAssertFalse(isTempPlaylistName("my __temp__ mix"))
+        XCTAssertFalse(isTempPlaylistName("Best of __temp__"))
+        XCTAssertFalse(isTempPlaylistName("My Mix"))
+    }
+
     // duration formatting
     func testFormatDurationHoursAndMinutes() {
         XCTAssertEqual(formatPlaylistDuration(15132), "4h 12m")
