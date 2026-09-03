@@ -206,11 +206,31 @@ func discoverConfirmationScript(playlistName: String) -> String {
         """
 }
 
-/// Maps a thrown create to the outcome the user sees. An expired user token
-/// is the sign-in toast, exactly as before; anything else is the create
-/// failure with its message.
+/// Maps a thrown create to the outcome the user sees. A missing or expired
+/// user token is the sign-in toast, exactly as before; anything else is the
+/// create failure with its message.
 func discoverCreateFailureOutcome(_ error: Error) -> DiscoverPlayOutcome {
-    isExpiredToken(error) ? .needsSignIn : .createFailed(error.localizedDescription)
+    if isExpiredToken(error) { return .needsSignIn }
+    if let auth = error as? AuthError, case .userTokenRequired = auth { return .needsSignIn }
+    return .createFailed(error.localizedDescription)
+}
+
+/// The one honest toast each outcome earns. Never a success message for
+/// anything but `.playing`: the point of resolving the outcome first is to
+/// not claim playback started when it did not.
+func discoverToastMessage(for outcome: DiscoverPlayOutcome, title: String) -> (text: String, isError: Bool) {
+    switch outcome {
+    case .playing(let playedTitle):
+        return ("Playing \(playedTitle)", false)
+    case .needsSignIn:
+        return ("Sign in to play Discover music (music auth setup).", true)
+    case .notReady:
+        return ("'\(title)' is still loading — try again in a moment.", true)
+    case .createFailed(let message):
+        return ("Couldn't start '\(title)': \(message)", true)
+    case .playFailed(let message):
+        return ("Couldn't play '\(title)': \(message)", true)
+    }
 }
 
 // MARK: - Outcomes
@@ -483,4 +503,57 @@ final class DiscoverLifecycleCoordinator {
         try? seams.runSweep(discoverSweepScript(protectedNames: protected))
         return .swept(protected: protected)
     }
+}
+
+// MARK: - Production wiring
+
+/// Track count of a (possibly not-yet-visible) playlist, read through
+/// AppleScript. A failed script or a playlist AppleScript can't see yet both
+/// read as 0, which is safe: `discoverReadiness` treats 0 as "not ready" and
+/// keeps polling until the timeout, never falsely claiming readiness.
+func discoverReadPlaylistTrackCount(name: String, backend: AppleScriptBackend) -> Int {
+    let esc = escapeAppleScriptString(name)
+    guard let raw = try? syncRun({ try await backend.runMusic("return (count of tracks of playlist \"\(esc)\") as text") })
+    else { return 0 }
+    return Int(raw.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
+}
+
+/// The coordinator with its live seams. Every seam runs on whichever thread
+/// calls it (the action queue for a play, a global queue for the launch
+/// sweep, the main thread for the exit sweep) and blocks it with `syncRun`,
+/// exactly as the code it replaces did. The REST backend is resolved per
+/// create rather than held, because it is per-token and the tokens can
+/// change under a running TUI; without both tokens the create refuses with
+/// the sign-in outcome, the same gate `DiscoverScene` applies before asking.
+func makeDiscoverLifecycleCoordinator(backend: AppleScriptBackend, status: StatusStore) -> DiscoverLifecycleCoordinator {
+    let seams = DiscoverLifecycleCoordinator.Seams(
+        runSweep: { script in
+            _ = try syncRun { try await backend.runMusic(script) }
+        },
+        create: { name, ids in
+            guard let api = makeArtworkAPI(), api.userToken != nil else { throw AuthError.userTokenRequired }
+            _ = try syncRun { try await api.createPlaylist(name: name, songIDs: ids) }
+        },
+        readCount: { name in discoverReadPlaylistTrackCount(name: name, backend: backend) },
+        play: { scripts in
+            for script in scripts {
+                _ = try syncRun { try await backend.runMusic(script) }
+            }
+        },
+        confirmRead: { name in
+            let script = discoverConfirmationScript(playlistName: name)
+            let raw = try? syncRun { try await backend.runMusic(script, timeout: discoverConfirmationReadTimeout) }
+            return raw?.trimmingCharacters(in: .whitespacesAndNewlines) ?? discoverNotYetToken
+        },
+        post: { toast in
+            switch toast {
+            case .startupCleanup:
+                status.post(discoverStartupCleanupToastText)
+            case .outcome(let outcome, let title):
+                let m = discoverToastMessage(for: outcome, title: title)
+                status.post(m.text, error: m.isError)
+            }
+        },
+        scheduler: .live)
+    return DiscoverLifecycleCoordinator(seams: seams)
 }

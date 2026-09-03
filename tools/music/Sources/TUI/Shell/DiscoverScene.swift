@@ -14,12 +14,12 @@ import Foundation
 //
 // Catalog albums and playlists cannot be played without first adding them to the
 // library: music:// does nothing on a non-station URL, and the REST API has no
-// play verb. So `p` on an album/playlist row creates a temp playlist
-// (playDiscoverContainer, DiscoverPlay.swift) and plays it, bounded, from the
-// top — the songs stay in the library permanently (no per-track authorship is
-// exposed to sweep them back out); only the temp playlist CONTAINER is ever
-// swept, and only by the name this app gave it (sweepDiscoverPlaylists,
-// PlaylistDataSources.swift). `→` still never plays — see
+// play verb. So `p` on an album/playlist row creates a temp playlist and plays
+// it, bounded, from the top, through `DiscoverLifecycleCoordinator`
+// (DiscoverLifecycle.swift), which also owns both sweeps — the songs stay in
+// the library permanently (no per-track authorship is exposed to sweep them
+// back out); only the temp playlist CONTAINER is ever swept, and only by the
+// name this app gave it. `→` still never plays — see
 // discoverRightArrowActivates.
 //
 // "Play from here" (2026-08-30) is the SAME transaction over a shorter id
@@ -37,15 +37,15 @@ final class DiscoverScene: Scene {
     private let feed: DiscoverFeed?
     private let status: StatusStore
     private let opener: Opener
-    // The play transaction's dependencies (Task 6, DiscoverPlay.swift). nil
-    // `api` means no dev+user token pair, same gate makeDiscoverFeed() and
+    // nil `api` means no dev+user token pair, same gate makeDiscoverFeed() and
     // makeArtworkAPI() already use — in practice `feed` is also nil whenever
     // `api` is, since both require the same two tokens, but each play path
     // guards `api` independently rather than assuming that correlation holds.
+    // The play itself goes through the shell's one lifecycle coordinator, so
+    // it is admitted only after the launch sweep and protected at exit.
     private let actions: ActionRunner
     private let api: RESTAPIBackend?
-    private let backend: AppleScriptBackend
-    private let storefront: String
+    private let lifecycle: DiscoverLifecycleCoordinator
 
     private var stack: [DiscoverFrameState] = [DiscoverFrameState(level: .root, cursor: DiscoverCursor())]
     private var rails: [DiscoverRail] = []
@@ -129,14 +129,13 @@ final class DiscoverScene: Scene {
     private var lastPlaced: ArtPlacement? = nil
 
     init(feed: DiscoverFeed?, status: StatusStore, actions: ActionRunner, api: RESTAPIBackend?,
-         backend: AppleScriptBackend, storefront: String, opener: Opener = SystemOpener(),
+         lifecycle: DiscoverLifecycleCoordinator, opener: Opener = SystemOpener(),
          kittyEnabled: Bool = false) {
         self.feed = feed
         self.status = status
         self.actions = actions
         self.api = api
-        self.backend = backend
-        self.storefront = storefront
+        self.lifecycle = lifecycle
         self.opener = opener
         self.kittyEnabled = kittyEnabled
     }
@@ -336,7 +335,7 @@ final class DiscoverScene: Scene {
     /// `→` deliberately does not reach here (`discoverRightArrowActivates`).
     private func playFromHere() -> SceneAction {
         guard case .tracks(let container) = current.level else { return .none }
-        guard let api else {
+        guard api != nil else {
             status.post("Sign in to play Discover music (music auth setup).", error: true)
             return .redraw
         }
@@ -350,64 +349,35 @@ final class DiscoverScene: Scene {
             return .redraw
         }
         let title = container.name
-        let backend = self.backend
-        let storefront = self.storefront
-        let status = self.status
+        let lifecycle = self.lifecycle
+        // The coordinator posts every toast itself, including "Playing X" the
+        // moment the play returns; a `.refused(.exiting)` earns none, because
+        // the user asked to leave and nothing was created.
         actions.run("Play") {
-            let outcome = try syncRun {
-                await playDiscoverContainer(title: title, catalogIDs: ids,
-                                            api: api, backend: backend, storefront: storefront,
-                                            disableShuffle: true)
-            }
-            DiscoverScene.toast(for: outcome, title: title, status: status)
+            _ = lifecycle.requestPlay(title: title, catalogIDs: ids, disableShuffle: true)
         }
         return .push(.nowPlaying)
-    }
-
-    /// Maps a resolved DiscoverPlayOutcome to the one honest toast it earns.
-    /// Never posts a success toast for anything but `.playing` — the whole
-    /// point of resolving the outcome first is to not claim playback started
-    /// when it did not.
-    private static func toast(for outcome: DiscoverPlayOutcome, title: String, status: StatusStore) {
-        switch outcome {
-        case .playing(let playedTitle):
-            status.post("Playing \(playedTitle)")
-        case .needsSignIn:
-            status.post("Sign in to play Discover music (music auth setup).", error: true)
-        case .notReady:
-            status.post("'\(title)' is still loading — try again in a moment.", error: true)
-        case .createFailed(let message):
-            status.post("Couldn't start '\(title)': \(message)", error: true)
-        case .playFailed(let message):
-            status.post("Couldn't play '\(title)': \(message)", error: true)
-        }
     }
 
     /// `p` on an album/playlist rail row: there is no cached track list yet —
     /// only a drill-in populates `trackRows`, and a track row inside a
     /// drill-in has no play action of its own (see the module doc) — so this
     /// fetches the container's own tracks first, off the input loop, then
-    /// hands off to playDiscoverContainer the same way `refresh`/`drillIn`
+    /// hands off to the lifecycle coordinator the same way `refresh`/`drillIn`
     /// dispatch off the input loop for their own fetches.
     private func playAllFromRail(_ item: DiscoverItem) {
         guard let feed else { return }
-        guard let api else {
+        guard api != nil else {
             status.post("Sign in to play Discover music (music auth setup).", error: true)
             return
         }
-        let backend = self.backend
-        let storefront = self.storefront
-        let status = self.status
+        let lifecycle = self.lifecycle
         let title = item.name
         actions.run("Play") {
             let tracks = try feed.tracks(for: item)
             let catalogIDs = tracks.map { $0.id }
             try require(!catalogIDs.isEmpty, "'\(title)': no tracks to play.")
-            let outcome = try syncRun {
-                await playDiscoverContainer(title: title, catalogIDs: catalogIDs,
-                                            api: api, backend: backend, storefront: storefront)
-            }
-            DiscoverScene.toast(for: outcome, title: title, status: status)
+            _ = lifecycle.requestPlay(title: title, catalogIDs: catalogIDs, disableShuffle: false)
         }
     }
 

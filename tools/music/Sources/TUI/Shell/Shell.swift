@@ -24,6 +24,10 @@ func runShell() {
     let actions = ActionRunner(status: status)
     let volumeDelta = DeltaAccumulator()
     let poller = PlaybackPoller(store: store, backend: backend, appQueue: appQueue, queueStore: queueStore)
+    // One owner for Discover containers: admission after the launch sweep,
+    // protection at exit, confirmation of ownership in between
+    // (docs/plans/2026-09-03-discover-lifecycle-design.md).
+    let discoverLifecycle = makeDiscoverLifecycleCoordinator(backend: backend, status: status)
     let terminal = TerminalState.shared
     // Computed once (env-based, no stdin response parsing — design doc sharp
     // edge #5) and threaded into every art-rendering scene.
@@ -101,8 +105,8 @@ func runShell() {
             // fallback uses — makeArtworkAPI() nil means no dev token, same gate
             // makeDiscoverFeed() applies to `feed`.
             let scene = DiscoverScene(feed: makeDiscoverFeed(), status: status, actions: actions,
-                                      api: makeArtworkAPI(), backend: backend,
-                                      storefront: AuthManager().storefront(), kittyEnabled: kittyEnabled)
+                                      api: makeArtworkAPI(), lifecycle: discoverLifecycle,
+                                      kittyEnabled: kittyEnabled)
             scenes[id] = scene
             return scene
         case .radio:
@@ -133,17 +137,25 @@ func runShell() {
     // Sweep temp queue playlists left by a prior session (sparing the one still
     // playing). Off-main so a slow Music doesn't delay first paint.
     DispatchQueue.global().async { sweepQueuePlaylists(backend: backend) }
-    // Same sweep for Discover's temp playlists, containers only (see
-    // sweepDiscoverPlaylists' doc). Off-main for the same reason.
-    DispatchQueue.global().async { sweepDiscoverPlaylists(backend: backend) }
+    // Same sweep for Discover's temp playlists, containers only, owned by the
+    // lifecycle coordinator: it marks the sweep running BEFORE returning, so a
+    // Discover play requested from here on waits for it to finish rather than
+    // racing it (Rule 1). The body still runs off-main for the same reason.
+    discoverLifecycle.startLaunchSweep()
     defer {
+        // Rule 2, phase 1, FIRST: close admission before the poller's bounded
+        // wait, so nothing queued behind `q` can mint a name and start a
+        // create after the user asked to leave. Synchronous, no waiting.
+        discoverLifecycle.closeAdmission()
         poller.stop()
-        // Sweep Discover temp playlists now that the poller is confirmed
-        // stopped, i.e. this is a genuine exit — never on a mid-session stop
-        // event: the poller tolerates four consecutive stopped polls because
-        // inter-track gaps look like stops, and sweeping on a false stop would
-        // churn a live queue.
-        sweepDiscoverPlaylists(backend: backend)
+        // Rule 2, phase 2: sweep Discover temp playlists now that the poller
+        // is confirmed stopped, i.e. this is a genuine exit — never on a
+        // mid-session stop event: the poller tolerates four consecutive
+        // stopped polls because inter-track gaps look like stops, and
+        // sweeping on a false stop would churn a live queue. The names of
+        // every transaction this session could not confirm as its own travel
+        // into the script as protected.
+        discoverLifecycle.finishExit()
         // Delete this session's per-album art temp files (/tmp/music-now-art-*.dat)
         // now that the poller thread is confirmed stopped — a graceful exit
         // shouldn't leak one file per distinct album played.

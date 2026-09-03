@@ -56,9 +56,8 @@ func discoverPlaySlice(catalogIDs: [String], from index: Int) -> [String] {
 
 /// The ordered AppleScript commands one Discover play emits.
 ///
-/// Kept pure and separate because `playDiscoverContainer` takes a concrete
-/// `AppleScriptBackend`, so the emission itself cannot be asserted in a unit
-/// test — the ORDER can, and the order is the part that carries the promise.
+/// Kept pure and separate so the ORDER can be asserted in a unit test; the
+/// order is the part that carries the promise.
 ///
 /// Two commands, never one block: combining a `set` with a `play` in a single
 /// script is what produced parameter error -50 in the shipped playlist code
@@ -77,15 +76,21 @@ func discoverPlayScripts(playlistName: String, disableShuffle: Bool) -> [String]
     return scripts
 }
 
-// MARK: - The transaction
+// MARK: - The transaction's outcome
 
-/// What a play attempt resolved to. The caller (Task 7, `DiscoverScene`) turns
-/// this into a toast or a push to Now Playing; nothing here owns UI.
+/// What a play attempt resolved to, for the toast. The transaction itself is
+/// `DiscoverLifecycleCoordinator` (DiscoverLifecycle.swift), which owns the
+/// create, readiness, play and confirmation stages so that it can record
+/// each transition around the real side effect; nothing here owns UI.
 enum DiscoverPlayOutcome: Equatable {
     case playing(title: String)
     case needsSignIn
-    /// The create request failed outright (nothing was created, there is no
-    /// residue).
+    /// The create request threw. This does NOT mean nothing was created:
+    /// `createPlaylist` throws `noData` after a successful HTTP response whose
+    /// body lacks the expected id, and a transport failure is ambiguous about
+    /// server acceptance, so a container may exist. No play follows, so no
+    /// deletion can interrupt playback, and a later sweep collects whatever
+    /// did land.
     case createFailed(String)
     case notReady                  // materialization timed out; playlist left behind
     case playFailed(String)
@@ -95,98 +100,4 @@ func isExpiredToken(_ error: Error) -> Bool {
     guard let authError = error as? AuthError else { return false }
     if case .userTokenExpired = authError { return true }
     return false
-}
-
-/// Track count of a (possibly not-yet-visible) playlist, read through
-/// AppleScript. A failed script or a playlist AppleScript can't see yet both
-/// read as 0, which is safe: `discoverReadiness` treats 0 as "not ready" and
-/// keeps polling until the timeout, never falsely claiming readiness.
-private func discoverReadPlaylistTrackCount(name: String, backend: AppleScriptBackend) async -> Int {
-    let esc = escapeAppleScriptString(name)
-    guard let raw = try? await backend.runMusic("return (count of tracks of playlist \"\(esc)\") as text")
-    else { return 0 }
-    return Int(raw.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
-}
-
-/// The single entry point for playing a Discover album or playlist. Creates a
-/// temp playlist, waits for it to materialize, and plays it — the whole
-/// container, from the top, bounded to its own tracks. It never deletes a
-/// playlist or a library row, on any path — see the module doc for why.
-///
-/// - Parameters:
-///   - title: folded into the playlist name (after `discoverPlaylistNameSeparator`)
-///     so Now Playing can show it — NEVER used as an identifier.
-///   - catalogIDs: every track in the container, in catalog order — or, for
-///     track-level `Enter`, the slice of it from the selected row onward
-///     (`discoverPlaySlice`).
-///   - disableShuffle: turns Music's shuffle off immediately before the play.
-///     Track-level `Enter` passes true, because it promises the SELECTED track
-///     starts and `play playlist` honours `shuffle enabled` (measured
-///     2026-08-30). `p` passes false by default and is unchanged: the producer
-///     scoped this guard to Enter alone rather than have "play all" reach out
-///     and clear a setting the user turned on elsewhere.
-func playDiscoverContainer(title: String,
-                           catalogIDs: [String],
-                           api: RESTAPIBackend,
-                           backend: AppleScriptBackend,
-                           storefront: String,
-                           disableShuffle: Bool = false,
-                           now: @escaping () -> Date = Date.init,
-                           pollInterval: TimeInterval = 0.5,
-                           readinessTimeout: TimeInterval = 20) async -> DiscoverPlayOutcome {
-    // Step 1: guard a user token. No token, no library to add to.
-    guard api.userToken != nil else { return .needsSignIn }
-
-    // Step 2: mint the playlist name. The uuid keeps two plays of same-titled
-    // albums from colliding on the playlist name; the title after the
-    // separator is display only, read back out by `cleanContextName`.
-    let txID = UUID().uuidString
-    let name = discoverPlaylistPrefix + txID + discoverPlaylistNameSeparator + title
-
-    // Step 3: create and seed the playlist in one request. The returned id
-    // is not needed after this: readiness below polls by NAME through
-    // AppleScript, and playback plays the playlist by name too.
-    do {
-        _ = try await api.createPlaylist(name: name, songIDs: catalogIDs)
-    } catch {
-        if isExpiredToken(error) { return .needsSignIn }
-        return .createFailed(error.localizedDescription)
-    }
-
-    // Step 4: poll readiness against the playlist's AppleScript track count. On
-    // timeout, return without playing; the playlist is left behind.
-    let start = now()
-    pollLoop: while true {
-        let observed = await discoverReadPlaylistTrackCount(name: name, backend: backend)
-        let elapsed = now().timeIntervalSince(start)
-        switch discoverReadiness(observed: observed, expected: catalogIDs.count,
-                                 elapsed: elapsed, timeout: readinessTimeout) {
-        case .ready:
-            break pollLoop
-        case .timedOut:
-            return .notReady
-        case .wait:
-            try? await Task.sleep(nanoseconds: UInt64(pollInterval * 1_000_000_000))
-        }
-    }
-
-    // Step 5: play the playlist itself, not a track position within it.
-    // `play track N of playlist "X"` is a track-play command that merely
-    // NAMES a playlist — Music.app discards the playlist as context and
-    // roots the queue in the library, so playback runs past the end of the
-    // album into unrelated artists instead of stopping. `play playlist "X"`
-    // establishes the playlist as `current playlist`, which plays every
-    // track and then stops. Measured live 2026-08-25; `set current playlist`
-    // is not writable (-10006), so this is the only lever. Reuses the
-    // codebase's existing AppleScript string escaping rather than writing a
-    // second one.
-    do {
-        for script in discoverPlayScripts(playlistName: name, disableShuffle: disableShuffle) {
-            _ = try await backend.runMusic(script)
-        }
-    } catch {
-        return .playFailed(error.localizedDescription)
-    }
-
-    return .playing(title: title)
 }

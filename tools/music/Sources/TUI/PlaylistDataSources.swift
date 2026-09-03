@@ -80,7 +80,7 @@ func parsePlaylistTracksResult(_ result: String) -> (count: Int, lines: [String]
 ///
 /// Legacy cleanup, deliberately left on the old SPARE RULE: nothing in Sources/
 /// creates a `__queue__ ` playlist any more, so this collects containers from
-/// versions that did. The paused-container leak fixed in sweepDiscoverPlaylists
+/// versions that did. The paused-container leak fixed in `discoverSweepScript`
 /// below is not worth porting here, because no path feeds this prefix.
 ///
 /// §20.12: the ENUMERATION is another matter and is now fixed. This was still a
@@ -180,6 +180,20 @@ private func discoverProtectedNamesClause(_ names: [String]) -> String {
 }
 
 /// The Discover container sweep, as text. Pure, so it can be pinned by tests.
+/// Run at TUI launch and exit by `DiscoverLifecycleCoordinator`, sparing the
+/// current playlist only while playback is actually active — playing,
+/// scrubbing, or in a state we could not read. A paused or stopped container
+/// is collected, which is the whole point: `current playlist` outlives a
+/// pause, so the old spare-the-current rule never released one.
+///
+/// Containers only, by design: this script never says `track` or `song` and
+/// never can reach a library row — it enumerates `every user playlist` and
+/// `delete`s whichever ones it named, nothing else. See DiscoverPlay.swift's
+/// module doc for why a sweep that could reach a track is unsafe: Apple
+/// exposes no authorship for a library row, so any such cleanup risks deleting
+/// music the user added themselves. The songs a Discover play adds stay,
+/// permanently — only the container it created is ever removed, and only by
+/// the name this app gave it. A test pins that invariant.
 ///
 /// `current playlist` outlives both a pause and a Music.app restart (measured
 /// 2026-08-31), so reading it unconditionally — as this script used to — spared
@@ -263,26 +277,6 @@ func discoverSweepScript(protectedNames: [String] = []) -> String {
             end try
         end repeat
         """
-}
-
-/// Delete leftover "__discover__ …" temp playlists, sparing the current
-/// playlist only while playback is actually active — playing, scrubbing, or in
-/// a state we could not read. A paused or stopped container is collected, which
-/// is the whole point: `current playlist` outlives a pause, so the old
-/// spare-the-current rule never released one.
-///
-/// Containers only, by design: this script never says `track` or `song` and
-/// never can reach a library row — it enumerates `every user playlist` and
-/// `delete`s whichever ones it named, nothing else. See DiscoverPlay.swift's
-/// module doc for why a sweep that could reach a track is unsafe: Apple
-/// exposes no authorship for a library row, so any such cleanup risks deleting
-/// music the user added themselves. The songs a Discover play adds stay,
-/// permanently — only the container it created is ever removed, and only by
-/// the name this app gave it. A test pins that invariant.
-func sweepDiscoverPlaylists(backend: AppleScriptBackend) {
-    _ = try? syncRun {
-        try await backend.runMusic(discoverSweepScript())
-    }
 }
 
 /// The `__temp__` prefix as EMITTED by the two creation sites
