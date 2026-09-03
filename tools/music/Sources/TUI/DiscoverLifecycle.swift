@@ -276,6 +276,10 @@ final class DiscoverLifecycleCoordinator {
         /// the wait, which is what makes "woken by the broadcast" provable
         /// rather than assumed. Production leaves it nil.
         var onAdmissionWait: (() -> Void)? = nil
+        /// The same ordering hook for Rule 2: called under the lock immediately
+        /// before `finishExit()` waits on a running launch sweep. Production
+        /// leaves it nil.
+        var onExitWait: (() -> Void)? = nil
         /// Where the launch sweep body runs. Production: a global queue.
         var launchExecutor: (@escaping () -> Void) -> Void = { DispatchQueue.global().async(execute: $0) }
     }
@@ -485,10 +489,14 @@ final class DiscoverLifecycleCoordinator {
     @discardableResult
     func finishExit() -> DiscoverExitOutcome {
         condition.lock()
-        // Defensive: phase 1 should already have run. Idempotent.
+        // Defensive: phase 1 should already have run. Idempotent, and it
+        // broadcasts too, so a request waiting in Rule 1 is released even if
+        // a caller skipped `closeAdmission()` (Codex M1).
         admissionState = .closed
+        condition.broadcast()
         let deadline = seams.scheduler.deadline(.exitLaunchSweep)
         while launchSweepState.isRunning {
+            seams.onExitWait?()
             let woke = condition.wait(until: deadline)
             if !woke && launchSweepState.isRunning {
                 condition.unlock()

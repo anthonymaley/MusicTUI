@@ -82,6 +82,7 @@ final class DiscoverLifecycleTests: XCTestCase {
         var confirmResponder: (String) -> String = { _ in discoverConfirmedToken }
         var onToast: ((DiscoverToast) -> Void)?
         var onAdmissionWait: (() -> Void)?
+        var onExitWait: (() -> Void)?
 
         private let lock = NSLock()
         private(set) var exitScripts: [String] = []
@@ -135,6 +136,7 @@ final class DiscoverLifecycleTests: XCTestCase {
                     }
                 },
                 onAdmissionWait: { [self] in self.onAdmissionWait?() },
+                onExitWait: { [self] in self.onExitWait?() },
                 launchExecutor: { body in Thread(block: body).start() })
             coordinator = DiscoverLifecycleCoordinator(seams: seams)
         }
@@ -265,18 +267,28 @@ final class DiscoverLifecycleTests: XCTestCase {
     // MARK: - §6.2 barrier tests
 
     /// B1, the lemma: no transaction exists while the launch sweep runs.
+    ///
+    /// The request is observed AT its wait, not merely started: the under-lock
+    /// hook fires when T1 has seen the running sweep and is about to wait, so
+    /// the assertions that follow are about a request that attempted
+    /// admission and was held. The first cut asserted straight after starting
+    /// T1, which a coordinator admitting during the sweep could still pass if
+    /// T1 was simply not scheduled yet (Codex I1 on the implementation).
     func testB1_RequestWaitsForTheLaunchSweepBeforeMinting() {
         let f = Fixture()
         f.launchGate = Gate()
+        let waiting = expectation(description: "T1 saw the running sweep and is about to wait")
+        waiting.assertForOverFulfill = false
+        f.onAdmissionWait = { waiting.fulfill() }
         f.coordinator.startLaunchSweep()
         XCTAssertTrue(f.launchGate!.awaitArrival())
         let t1 = Async("play") { f.requestPlay() }
-        // The sweep is held; nothing may have been minted or created. A spin
-        // on the recorder would be a sleep in disguise, so the assertion is
-        // on state that cannot regress: the table and the create event.
+        wait(for: [waiting], timeout: 2)
+        // T1 attempted admission while the sweep is held: nothing minted.
         XCTAssertTrue(f.coordinator.transactions.isEmpty)
         XCTAssertFalse(f.rec.all.contains("create"))
         XCTAssertFalse(f.rec.all.contains("minted"))
+        XCTAssertEqual(f.coordinator.launchSweep, .running)
         f.launchGate!.open()
         wait(for: [t1.done], timeout: 2)
         let events = f.rec.all
@@ -308,13 +320,24 @@ final class DiscoverLifecycleTests: XCTestCase {
     /// broadcast well before its ten-second deadline. Removing that broadcast
     /// makes this fail on the two-second expectation. This is the test that
     /// would have caught the deadlocking protocol.
+    ///
+    /// The exit thread is observed AT its wait before the sweep is released:
+    /// `onExitWait` fires under the lock just before `wait(until:)`, so the
+    /// completion that follows can only end the wait through its broadcast.
+    /// The first cut released the sweep straight after starting the exit
+    /// thread, so completion could win and the exit never wait at all, and
+    /// the test would pass with the broadcast deleted (Codex I2).
     func testB16_FastQuitIsWokenByTheLaunchSweepCompletingAndRunsOneExitSweep() {
         let f = Fixture()
         f.launchGate = Gate()
+        let waiting = expectation(description: "exit is about to wait on the running sweep")
+        waiting.assertForOverFulfill = false
+        f.onExitWait = { waiting.fulfill() }
         f.coordinator.startLaunchSweep()
         XCTAssertTrue(f.launchGate!.awaitArrival())
         f.coordinator.closeAdmission()
         let t1 = Async("exit") { f.coordinator.finishExit() }
+        wait(for: [waiting], timeout: 2)
         f.launchGate!.open()
         wait(for: [t1.done], timeout: 2)
         XCTAssertEqual(t1.result, .swept(protected: []))
