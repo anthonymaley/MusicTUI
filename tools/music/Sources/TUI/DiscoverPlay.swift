@@ -91,7 +91,7 @@ enum DiscoverPlayOutcome: Equatable {
     case playFailed(String)
 }
 
-private func isExpiredToken(_ error: Error) -> Bool {
+func isExpiredToken(_ error: Error) -> Bool {
     guard let authError = error as? AuthError else { return false }
     if case .userTokenExpired = authError { return true }
     return false
