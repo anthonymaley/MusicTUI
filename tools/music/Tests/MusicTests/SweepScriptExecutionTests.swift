@@ -118,7 +118,7 @@ final class SweepScriptExecutionTests: XCTestCase {
             "eligibleNames", "error", "on",
             "else", "end", "false", "if", "in", "is", "keepName", "libNames",
             "my", "nm", "not", "of", "or", "playerStateText", "pp",
-            "protectedMatch", "recognised", "removedCount", "repeat", "return",
+            "protectedMatch", "protectedNames", "recognised", "removedCount", "repeat", "return",
             "set", "starts", "stateRead", "text", "then", "to", "true", "try", "with",
         ]
         // `"[^"]*"` pairs quotes POSITIONALLY, so a single escaped quote inside
@@ -586,5 +586,63 @@ final class SweepScriptExecutionTests: XCTestCase {
                           context: nil, state: "stopped") else { return }
         XCTAssertEqual(r.surviving, [unrelated],
                        "all four legacy orphans go in one pass, not roughly half")
+    }
+    // MARK: - Protected names (Discover lifecycle design §6.3)
+
+    /// The exit sweep carries the names of this session's unconfirmed
+    /// transactions as protected. A protected name survives even in a state
+    /// that would otherwise release it, with no current playlist at all.
+    func testProtectedNameSurvivesWhenStoppedWithNoContext() {
+        guard let r = run(discoverSweepScript(protectedNames: [discoverA]),
+                          library: [discoverA, discoverB, unrelated],
+                          context: nil, state: "stopped") else { return }
+        XCTAssertTrue(r.surviving.contains(discoverA), "protected survives")
+        XCTAssertFalse(r.surviving.contains(discoverB), "an unprotected sibling is still collected")
+        XCTAssertTrue(r.surviving.contains(unrelated))
+    }
+
+    /// Paused releases the current playlist in this lifecycle (the deliberate
+    /// rule), but protection is orthogonal to that rule: a protected name
+    /// survives while its unprotected sibling with the same prefix goes, in
+    /// the same run.
+    func testProtectedNameSurvivesWhenPausedWhileSiblingIsCollected() {
+        guard let r = run(discoverSweepScript(protectedNames: [discoverA]),
+                          library: [discoverA, discoverB, unrelated],
+                          context: unrelated, state: "paused") else { return }
+        XCTAssertTrue(r.surviving.contains(discoverA))
+        XCTAssertFalse(r.surviving.contains(discoverB))
+        XCTAssertEqual(r.surviving.count, 2)
+    }
+
+    /// Names carry user-controlled titles. A quote and a backslash must round
+    /// trip through the preamble literal and still match the library entry.
+    func testProtectedNameWithQuoteAndBackslashSurvives() {
+        let awkward = "\(discoverPlaylistPrefix)He said \"hi\" \\ twice"
+        guard let r = run(discoverSweepScript(protectedNames: [awkward]),
+                          library: [awkward, discoverB, unrelated],
+                          context: nil, state: "stopped") else { return }
+        XCTAssertTrue(r.surviving.contains(awkward), "escaped name must still match: \(r.surviving)")
+        XCTAssertFalse(r.surviving.contains(discoverB))
+    }
+
+    /// The clause is load-bearing: strip it from the emitted text and the
+    /// protected name is deleted. A pin that cannot fail proves nothing.
+    func testHarnessCatchesRemovalOfTheProtectedClause() {
+        guard let r = run(discoverSweepScript(protectedNames: [discoverA]),
+                          library: [discoverA, discoverB, unrelated],
+                          context: nil, state: "stopped",
+                          mutate: { $0.replacingOccurrences(of: " and (protectedNames does not contain nm)", with: "") })
+        else { return }
+        XCTAssertFalse(r.surviving.contains(discoverA),
+                       "with the clause removed the protected name must be deleted, or the clause was never what protected it")
+    }
+
+    /// The empty list is TODAY'S script through the harness: same outcome,
+    /// same survivors, for the case the existing tests already pin.
+    func testEmptyProtectedListBehavesExactlyAsBefore() {
+        guard let r = run(discoverSweepScript(protectedNames: []),
+                          library: [discoverA, discoverB, unrelated],
+                          context: discoverA, state: "playing") else { return }
+        XCTAssertEqual(Set(r.surviving), [discoverA, unrelated])
     }
 }

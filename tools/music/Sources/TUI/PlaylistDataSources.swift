@@ -150,6 +150,35 @@ func shouldSpareCurrentPlaylist(playerState: String?) -> Bool {
     return !sweepablePlayerStates.contains(state)
 }
 
+/// The capture condition of `discoverSweepScript`, as a pure decision: a
+/// name is captured for deletion when it carries the Discover prefix, is not
+/// the kept (current, active) playlist, and is not protected by this session.
+///
+/// NOT the live path, and deliberately a twin of the CAPTURE CONDITION ONLY.
+/// The preamble's state read and unreadable-context deferral are pinned by the
+/// whole-script execution tests, which remain the authority for that
+/// behaviour; mirroring them here would be a second copy of a guard, which is
+/// the drift shape this repo has shipped two bugs from. A test asserts the
+/// emitted script keys on the same prefix and the same escaped list.
+func discoverCaptureDecision(name: String, keepName: String, protected: [String]) -> Bool {
+    name.hasPrefix(discoverPlaylistPrefix) && name != keepName && !protected.contains(name)
+}
+
+/// The names this session is still bringing up, or could not confirm as its
+/// own, baked into the sweep as a literal list (Discover lifecycle design
+/// §3.5). An EMPTY list emits today's script byte for byte: no variable line,
+/// no empty list, no extra clause. That exact form is the regression pin, so
+/// a syntactically equivalent empty-list form would break it on purpose.
+private func discoverProtectedNamesPreamble(_ names: [String]) -> String {
+    guard !names.isEmpty else { return "" }
+    let list = names.map { "\"\(escapeAppleScriptString($0))\"" }.joined(separator: ", ")
+    return "set protectedNames to {\(list)}\n"
+}
+
+private func discoverProtectedNamesClause(_ names: [String]) -> String {
+    names.isEmpty ? "" : " and (protectedNames does not contain nm)"
+}
+
 /// The Discover container sweep, as text. Pure, so it can be pinned by tests.
 ///
 /// `current playlist` outlives both a pause and a Music.app restart (measured
@@ -192,12 +221,20 @@ func shouldSpareCurrentPlaylist(playerState: String?) -> Bool {
 /// — only the enumeration is fixed. `keepName` is still set solely in a
 /// non-sweepable state, so the paused-collect behaviour is preserved, and the
 /// nine tests pinning the sparing truth table still hold.
-func discoverSweepScript() -> String {
+///
+/// Discover lifecycle design §3.5: `protectedNames` are this session's own
+/// in-flight or unconfirmed containers, which the exit sweep must never
+/// collect whatever state Music reports. They are excluded in the capture
+/// condition, alongside `keepName`; an empty list emits the pre-existing
+/// script unchanged, byte for byte.
+func discoverSweepScript(protectedNames: [String] = []) -> String {
     let activeGuard = sweepablePlayerStates
         .map { "playerStateText is not \"\($0)\"" }
         .joined(separator: " and ")
+    let protectedPreamble = discoverProtectedNamesPreamble(protectedNames)
+    let protectedClause = discoverProtectedNamesClause(protectedNames)
     return """
-        set keepName to ""
+        \(protectedPreamble)set keepName to ""
         set contextReadable to true
         set playerStateText to "\(unreadablePlayerStateFallback)"
         try
@@ -215,7 +252,7 @@ func discoverSweepScript() -> String {
         repeat with pp in (every user playlist)
             try
                 set nm to name of pp
-                if (nm starts with "\(discoverPlaylistPrefix)") and (nm is not keepName) and (eligibleNames does not contain nm) then
+                if (nm starts with "\(discoverPlaylistPrefix)") and (nm is not keepName)\(protectedClause) and (eligibleNames does not contain nm) then
                     set end of eligibleNames to nm
                 end if
             end try
