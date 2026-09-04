@@ -432,7 +432,7 @@ func libraryRowsMatchingTitle(backend: AppleScriptBackend, title: String) -> [Li
     set out to ((count of matches) as text) & rs
     repeat with t in matches
         try
-            set out to out & (persistent ID of t) & fs & (name of t) & fs & (artist of t) & fs & (album of t) & rs
+            set out to out & (persistent ID of t) & fs & (name of t) & fs & (artist of t) & fs & (album of t) & fs & (cloud status of t as text) & rs
         end try
     end repeat
     return out
@@ -443,8 +443,9 @@ func libraryRowsMatchingTitle(backend: AppleScriptBackend, title: String) -> [Li
     else { return nil }
     let rows: [LibraryRowIdentity] = records.compactMap { record in
         let f = record.split(separator: "\u{1F}", omittingEmptySubsequences: false).map(String.init)
-        guard f.count >= 4 else { return nil }
-        return LibraryRowIdentity(persistentID: f[0], name: f[1], artist: f[2], album: f[3])
+        guard f.count >= 5 else { return nil }
+        return LibraryRowIdentity(persistentID: f[0], name: f[1], artist: f[2], album: f[3],
+                                  cloudStatus: f[4])
     }
     // A row the script could not describe is a row we cannot reason about.
     guard rows.count == expected else {
@@ -486,10 +487,14 @@ func addCatalogRowAndPlayBounded(backend: AppleScriptBackend,
             })
     }
 
-    guard case .resolved(let identifier) = resolution else {
+    guard case .resolved(let identifier, let viaPreExisting) = resolution else {
         if let message = catalogRowResolutionMessage(resolution, title: title) { print(message) }
         throw ExitCode.failure
     }
+    // Say what kind of match this was. Choosing a row the user already owned is
+    // metadata resolution, not catalog identity, and the difference is theirs
+    // to know rather than ours to smooth over.
+    if viaPreExisting { print(preExistingResolutionNote(title: title)) }
 
     let outcome = playBoundedSongByIdentifier(
         title: title, identifier: identifier,

@@ -9,9 +9,10 @@ import XCTest
 /// persistent ID forward without another name lookup."
 final class CatalogRowResolutionTests: XCTestCase {
 
-    private func row(_ pid: String, _ name: String, _ artist: String, _ album: String = "A")
-        -> LibraryRowIdentity {
-        LibraryRowIdentity(persistentID: pid, name: name, artist: artist, album: album)
+    private func row(_ pid: String, _ name: String, _ artist: String, _ album: String = "A",
+                     _ cloud: String = "subscribed") -> LibraryRowIdentity {
+        LibraryRowIdentity(persistentID: pid, name: name, artist: artist, album: album,
+                           cloudStatus: cloud)
     }
 
     private var existing: LibraryRowIdentity {
@@ -30,8 +31,9 @@ final class CatalogRowResolutionTests: XCTestCase {
             idsBefore: ["OLD1"],
             readRows: { [self.existing, self.row("NEW1", "Teardrop", "Massive Attack")] },
             wait: { _ in waits += 1 })
-        XCTAssertEqual(out, .resolved(persistentID: "NEW1"))
-        XCTAssertEqual(waits, 0, "it resolved on the first look, so it must not sleep")
+        XCTAssertEqual(out, .resolved(persistentID: "NEW1", viaPreExisting: false))
+        // Two consecutive sightings are required now, so exactly one wait.
+        XCTAssertEqual(waits, 1, "one wait between the two confirming observations, no more")
     }
 
     // MARK: - Name alone is not enough
@@ -45,7 +47,7 @@ final class CatalogRowResolutionTests: XCTestCase {
             readRows: { [self.row("N1", "Teardrop", "Newton Faulkner"),
                          self.row("N2", "Teardrop", "Massive Attack")] },
             wait: { _ in })
-        XCTAssertEqual(out, .resolved(persistentID: "N2"))
+        XCTAssertEqual(out, .resolved(persistentID: "N2", viaPreExisting: false))
     }
 
     func testAlbumSeparatesTwoNewRowsSharingTitleAndArtist() {
@@ -55,7 +57,7 @@ final class CatalogRowResolutionTests: XCTestCase {
             readRows: { [self.row("N1", "Teardrop", "Massive Attack", "Singles"),
                          self.row("N2", "Teardrop", "Massive Attack", "Mezzanine")] },
             wait: { _ in })
-        XCTAssertEqual(out, .resolved(persistentID: "N2"))
+        XCTAssertEqual(out, .resolved(persistentID: "N2", viaPreExisting: false))
     }
 
     // MARK: - Fail closed on real ambiguity
@@ -68,7 +70,7 @@ final class CatalogRowResolutionTests: XCTestCase {
             readRows: { [self.row("N1", "Teardrop", "Massive Attack", "Mezzanine"),
                          self.row("N2", "Teardrop", "Massive Attack", "Mezzanine")] },
             wait: { _ in waits += 1 })
-        XCTAssertEqual(out, .ambiguous(count: 2))
+        XCTAssertEqual(out, .ambiguous(count: 2, amongPreExisting: false))
         XCTAssertEqual(waits, 0, "waiting cannot disambiguate what is already ambiguous")
     }
 
@@ -88,9 +90,9 @@ final class CatalogRowResolutionTests: XCTestCase {
                 return look < 4 ? [] : [self.row("NEW1", "Teardrop", "Massive Attack")]
             },
             wait: { _ in waits += 1 })
-        XCTAssertEqual(out, .resolved(persistentID: "NEW1"))
-        XCTAssertEqual(look, 4)
-        XCTAssertEqual(waits, 3, "one wait between each look, none after the last")
+        XCTAssertEqual(out, .resolved(persistentID: "NEW1", viaPreExisting: false))
+        XCTAssertEqual(look, 5, "the fourth look sees it, the fifth confirms it")
+        XCTAssertEqual(waits, 4)
     }
 
     func testItGivesUpHonestlyRatherThanPlayingSomethingElse() {
@@ -107,9 +109,9 @@ final class CatalogRowResolutionTests: XCTestCase {
     // MARK: - Messages
 
     func testEachUnresolvedStateSaysWhatHappenedToTheLibrary() {
-        XCTAssertNil(catalogRowResolutionMessage(.resolved(persistentID: "X"), title: "T"))
+        XCTAssertNil(catalogRowResolutionMessage(.resolved(persistentID: "X", viaPreExisting: false), title: "T"))
         let notYet = catalogRowResolutionMessage(.notYetVisible(attempts: 20), title: "T") ?? ""
-        let ambiguous = catalogRowResolutionMessage(.ambiguous(count: 2), title: "T") ?? ""
+        let ambiguous = catalogRowResolutionMessage(.ambiguous(count: 2, amongPreExisting: false), title: "T") ?? ""
         XCTAssertNotEqual(notYet, ambiguous)
         // The add already happened, so both must say so rather than implying
         // nothing changed.
@@ -125,19 +127,57 @@ final class CatalogRowResolutionTests: XCTestCase {
 /// defects are demonstrated rather than argued.
 extension CatalogRowResolutionTests {
 
-    /// Important 1: an idempotent add. The song is already in the library, so
-    /// `addToLibrary` creates no new row and the set difference stays empty
-    /// forever. The old code played the pre-existing row; this reports that the
-    /// track never showed up, which is false.
-    func testReproIdempotentAddFindsNothingAlthoughTheRowIsRightThere() {
+    /// Important 1, fixed (Anthony, 2026-09-04): an idempotent add. The song is
+    /// already in the library, so `addToLibrary` creates no new row and the set
+    /// difference stays empty. After the budget, a unique PLAYABLE metadata
+    /// match is played, and the caller says out loud that this was metadata
+    /// resolution rather than catalog identity.
+    func testAnIdempotentAddPlaysTheRowTheUserAlreadyOwns() {
         let owned = row("OWNED", "Teardrop", "Massive Attack", "Mezzanine")
         let out = resolveAddedCatalogRow(
             title: "Teardrop", artist: "Massive Attack", album: "Mezzanine",
             idsBefore: ["OWNED"], attempts: 3,
             readRows: { [owned] },
             wait: { _ in })
-        XCTAssertEqual(out, .notYetVisible(attempts: 3),
-                       "REPRO: the row is present and playable, and we report it never appeared")
+        XCTAssertEqual(out, .resolved(persistentID: "OWNED", viaPreExisting: true))
+        XCTAssertTrue(preExistingResolutionNote(title: "Teardrop").contains("rather than"),
+                      "the weaker claim must be stated, not implied")
+    }
+
+    func testAnUnplayablePreExistingRowIsNotPlayed() {
+        let owned = row("OWNED", "Teardrop", "Massive Attack", "Mezzanine", "prerelease")
+        let out = resolveAddedCatalogRow(
+            title: "Teardrop", artist: "Massive Attack", album: "Mezzanine",
+            idsBefore: ["OWNED"], attempts: 2,
+            readRows: { [owned] },
+            wait: { _ in })
+        XCTAssertEqual(out, .notYetVisible(attempts: 2),
+                       "a pre-release row satisfies every metadata check and then silently no-ops")
+    }
+
+    func testTwoIndistinguishablePreExistingRowsRefuse() {
+        let out = resolveAddedCatalogRow(
+            title: "Teardrop", artist: "Massive Attack", album: "Mezzanine",
+            idsBefore: ["O1", "O2"], attempts: 2,
+            readRows: { [self.row("O1", "Teardrop", "Massive Attack", "Mezzanine"),
+                         self.row("O2", "Teardrop", "Massive Attack", "Mezzanine")] },
+            wait: { _ in })
+        XCTAssertEqual(out, .ambiguous(count: 2, amongPreExisting: true))
+    }
+
+    /// The two-observation rule, and what it does and does not buy. A candidate
+    /// that appears once and is gone on the next look is not played.
+    func testACandidateThatDoesNotSurviveASecondLookIsNotPlayed() {
+        var look = 0
+        let out = resolveAddedCatalogRow(
+            title: "Teardrop", artist: "Massive Attack", album: "Mezzanine",
+            idsBefore: [], attempts: 3,
+            readRows: {
+                look += 1
+                return look == 1 ? [self.row("GHOST", "Teardrop", "Massive Attack", "Mezzanine")] : []
+            },
+            wait: { _ in })
+        XCTAssertEqual(out, .notYetVisible(attempts: 3))
     }
 
     /// Important 2, fixed: an unreadable library is its own state, never an
@@ -174,6 +214,6 @@ extension CatalogRowResolutionTests {
                         self.row("NEW1", "Teardrop", "Massive Attack", "Mezzanine")]
             },
             wait: { _ in })
-        XCTAssertEqual(out, .resolved(persistentID: "NEW1"))
+        XCTAssertEqual(out, .resolved(persistentID: "NEW1", viaPreExisting: false))
     }
 }
