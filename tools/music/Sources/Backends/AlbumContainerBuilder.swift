@@ -16,6 +16,41 @@ typealias ScriptRunner = (String) -> String?
 ///
 /// Indices are positions in the `Library` playlist, already disc/track ordered
 /// and playability filtered by `orderedPlayableAlbumTracks`.
+/// What seeds a bounded-playback container.
+///
+/// The album path seeds by Library index and is unchanged by the extraction
+/// that introduced this type; `testAlbumSeedScriptIsByteIdenticalToItsPre\
+/// ExtractionForm` pins that as a whole string rather than by `contains`.
+///
+/// The song path seeds by `persistent ID` instead, because a single song is
+/// often played immediately after being added from the catalog, and a freshly
+/// synced row's Library index is the least trustworthy handle available at
+/// that moment (measured 2026-09-03: the row was not resolvable at all until
+/// t+3s, one second inside the shipped 4s sleep). The identifier is also what
+/// makes the built container confirmable by identity rather than by count.
+enum ContainerSeed: Equatable {
+    /// Positions in the `Library` playlist, already disc/track ordered and
+    /// playability filtered by `orderedPlayableAlbumTracks`.
+    case libraryIndices([Int])
+    /// One track's `persistent ID`. Exactly one track is expected to match;
+    /// the caller confirms that from the container's own read-back.
+    case persistentID(String)
+}
+
+extension ContainerSeed {
+    /// How many tracks the seed should put in the container.
+    var expectedCount: Int {
+        switch self {
+        case .libraryIndices(let indices): return indices.count
+        case .persistentID: return 1
+        }
+    }
+
+    var isEmpty: Bool { expectedCount == 0 }
+}
+
+/// Album seeding, unchanged. Kept as its own entry point so the byte-identical
+/// pin keeps testing the thing the album path actually calls.
 func albumContainerBuildScript(name: String, indices: [Int]) -> String {
     let esc = escapeAppleScriptString(name)
     let dups = indices
@@ -26,6 +61,34 @@ func albumContainerBuildScript(name: String, indices: [Int]) -> String {
     \(dups)
     return (count of tracks of playlist "\(esc)") as text
     """
+}
+
+/// Song seeding: address the source row by identifier, never by index.
+///
+/// `whose persistent ID is` is an exact match, so a missing row duplicates
+/// nothing and the container comes back with zero tracks, which the caller
+/// treats as a failure and rolls back. That is the fail-closed direction: a
+/// wrong or absent id must never fall through to the library-rooted play this
+/// work exists to remove.
+func songContainerBuildScript(name: String, persistentID: String) -> String {
+    let esc = escapeAppleScriptString(name)
+    let escID = escapeAppleScriptString(persistentID)
+    return """
+    make new playlist with properties {name:"\(esc)"}
+    repeat with t in (every track of playlist "Library" whose persistent ID is "\(escID)")
+        duplicate t to playlist "\(esc)"
+    end repeat
+    return (count of tracks of playlist "\(esc)") as text
+    """
+}
+
+func containerBuildScript(name: String, seed: ContainerSeed) -> String {
+    switch seed {
+    case .libraryIndices(let indices):
+        return albumContainerBuildScript(name: name, indices: indices)
+    case .persistentID(let pid):
+        return songContainerBuildScript(name: name, persistentID: pid)
+    }
 }
 
 /// Bulk read the container's own persistent IDs.
@@ -76,9 +139,21 @@ enum AlbumContainerBuildResult: Equatable {
 /// the sidebar.
 func buildAlbumContainer(name: String, indices: [Int], run: ScriptRunner)
     -> AlbumContainerBuildResult {
-    guard !indices.isEmpty else { return .noTracks }
+    buildContainer(name: name, seed: .libraryIndices(indices), run: run)
+}
 
-    guard let raw = run(albumContainerBuildScript(name: name, indices: indices)) else {
+/// Build a bounded-playback container from either seed.
+///
+/// Behaviour for `.libraryIndices` is exactly what `buildAlbumContainer` did
+/// before the extraction: same script, same rollback on every failure, same
+/// seed-count check. `.persistentID` reuses all of it with an expected count
+/// of one, so a missing or duplicated id lands in `.seedMismatch` and is
+/// rolled back rather than played.
+func buildContainer(name: String, seed: ContainerSeed, run: ScriptRunner)
+    -> AlbumContainerBuildResult {
+    guard !seed.isEmpty else { return .noTracks }
+
+    guard let raw = run(containerBuildScript(name: name, seed: seed)) else {
         if run(playlistDeleteScript(name: name)) == nil {
             verbose("album container \(name): build failed and cleanup also failed (container may remain)")
             return .cleanupFailed
@@ -86,12 +161,12 @@ func buildAlbumContainer(name: String, indices: [Int], run: ScriptRunner)
         return .createFailed
     }
     let got = Int(raw.trimmingCharacters(in: .whitespacesAndNewlines)) ?? -1
-    guard got == indices.count else {
+    guard got == seed.expectedCount else {
         if run(playlistDeleteScript(name: name)) == nil {
-            verbose("album container \(name): seed mismatch (expected \(indices.count), got \(got)) and cleanup also failed (container may remain)")
+            verbose("album container \(name): seed mismatch (expected \(seed.expectedCount), got \(got)) and cleanup also failed (container may remain)")
             return .cleanupFailed
         }
-        return .seedMismatch(expected: indices.count, got: got)
+        return .seedMismatch(expected: seed.expectedCount, got: got)
     }
     return .built
 }

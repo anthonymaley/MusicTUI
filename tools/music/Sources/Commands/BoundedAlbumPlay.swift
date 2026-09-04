@@ -16,6 +16,111 @@ enum BoundedAlbumOutcome: Equatable {
     case watcherFailed(containerRemoved: Bool)
 }
 
+/// What the container layer alone can produce. The album layer's own outcomes
+/// (`notFound`, `nonePlayable`, `ambiguous`) are decisions about which rows to
+/// seed with and stay above this.
+enum ContainerPlayOutcome: Equatable {
+    case playing
+    case buildFailed(containerRemoved: Bool)
+    case playFailed(containerRemoved: Bool)
+    case watcherFailed(containerRemoved: Bool)
+}
+
+/// Build a container, play it bounded, and hand it to the detached watcher.
+///
+/// Lifted out from under `playBoundedAlbum` so a single song reuses the same
+/// mechanism instead of growing a second one (Anthony, 2026-09-03). Behaviour
+/// for the album path is unchanged: the same build, the same id read, the same
+/// `play playlist` form, the same watcher spawn, and the same rollback at every
+/// failure.
+///
+/// The stale sweep is deliberately NOT here. In `playBoundedAlbum` it runs
+/// before album resolution, so folding it in would move it after, and it would
+/// stop running when a query matches no album. Each caller runs it at its own
+/// correct point.
+///
+/// `confirm` is the fail-closed hook the song path needs and the album path
+/// does not use: it sees the ids read back from the container itself and can
+/// reject the build before a note is played. Returning false rolls the
+/// container back and reports `.buildFailed`.
+func playBoundedContainer(name: String,
+                          seed: ContainerSeed,
+                          uuid: String,
+                          run: ScriptRunner,
+                          launch: @escaping ProcessLauncher = detachedLaunch,
+                          confirm: (Set<String>) -> Bool = { _ in true })
+    -> ContainerPlayOutcome {
+
+    switch buildContainer(name: name, seed: seed, run: run) {
+    case .built:
+        break
+    case .noTracks:
+        // Unreachable from the album path, which screens for a playable row in
+        // `decideAlbumPlay` first. Reachable from the song path, where an empty
+        // seed means the caller resolved nothing. Nothing was built, so there
+        // is nothing to roll back.
+        return .buildFailed(containerRemoved: true)
+    case .createFailed:
+        // buildContainer already rolled back successfully in this case.
+        return .buildFailed(containerRemoved: true)
+    case .seedMismatch(let expected, let got):
+        // §18.5: this diagnostic used to be computed and discarded, so a
+        // required test case produced no diagnostic at all. The rollback
+        // already ran successfully (same as `.createFailed`).
+        //
+        // For a `.persistentID` seed this is also the fail-closed path for an
+        // id that matched nothing (got 0) or matched more than one row
+        // (got > 1), both of which roll back rather than play.
+        verbose("container \(name): seed mismatch (expected \(expected), got \(got)); rolled back")
+        return .buildFailed(containerRemoved: true)
+    case .cleanupFailed:
+        // The build failed AND its own rollback delete also failed.
+        return .buildFailed(containerRemoved: false)
+    }
+
+    // Read identity from the container itself, before playing.
+    let idsRaw = run(containerTrackIDsScript(name: name))
+    if idsRaw == nil {
+        // A genuine AppleScript failure, not "no tracks". Safe to continue for
+        // the album path: since Task 6 an empty id set makes the watcher run
+        // context-only rather than delete. That degradation happens silently in
+        // a subsystem whose stdout and stderr both go to /dev/null, so it is
+        // worth a diagnostic even though the control flow does not change.
+        // A caller that passes `confirm` turns this into a refusal instead,
+        // because an unreadable id set cannot confirm anything.
+        verbose("container \(name): could not read track ids; watcher will run context-only")
+    }
+    let ids = parseContainerTrackIDs(idsRaw ?? "")
+
+    // Fail closed BEFORE playing. A caller that cannot confirm what it built
+    // must not fall through to playing something else.
+    guard confirm(ids) else {
+        let removed = run(playlistDeleteScript(name: name)) != nil
+        verbose("container \(name): identity confirmation failed; rolled back")
+        return .buildFailed(containerRemoved: removed)
+    }
+
+    let esc = escapeAppleScriptString(name)
+    guard run("play playlist \"\(esc)\"") != nil else {
+        let removed = run(playlistDeleteScript(name: name)) != nil
+        return .playFailed(containerRemoved: removed)
+    }
+
+    guard spawnAlbumWatcher(name: name, uuid: uuid, ids: ids, launch: launch) else {
+        // Audio is already running, so ending the promise means stopping it.
+        // Pausing rather than stopping is deliberate: it is the smallest
+        // action that ends the promise and leaves the player recoverable.
+        _ = run("pause")
+        let removed = run(playlistDeleteScript(name: name)) != nil
+        if let manifestPath = albumManifestPath(uuid: uuid) {
+            removeAlbumManifest(path: manifestPath)
+        }
+        return .watcherFailed(containerRemoved: removed)
+    }
+
+    return .playing
+}
+
 /// The ONE bounded album implementation. Both `--album` and positional album
 /// resolution call this, so equivalent album requests cannot diverge.
 ///
@@ -71,65 +176,17 @@ func playBoundedAlbum(title: String,
     let indices = orderedPlayableAlbumTracks(albumRows).tracks.map { $0.index }
     let name = albumContainerName(title: resolvedTitle, uuid: uuid)
 
-    switch buildAlbumContainer(name: name, indices: indices, run: run) {
-    case .built:
-        break
-    case .noTracks:
-        // Unreachable in practice: decideAlbumPlay already screened for a
-        // playable row. Handle it rather than crashing — nothing was built,
-        // so there is nothing to roll back.
-        return .buildFailed(containerRemoved: true)
-    case .createFailed:
-        // buildAlbumContainer already rolled back successfully in this case.
-        return .buildFailed(containerRemoved: true)
-    case .seedMismatch(let expected, let got):
-        // §18.5: this diagnostic used to be computed and discarded — a
-        // required test case (§12) produced no diagnostic at all. The
-        // rollback already ran successfully (same as `.createFailed`); only
-        // the logging is new.
-        verbose("album container \(name): seed mismatch (expected \(expected), got \(got)); rolled back")
-        return .buildFailed(containerRemoved: true)
-    case .cleanupFailed:
-        // The build failed AND its own rollback delete also failed.
-        return .buildFailed(containerRemoved: false)
-    }
-
-    // Read identity from the container itself, before playing.
-    let idsRaw = run(containerTrackIDsScript(name: name))
-    if idsRaw == nil {
-        // A genuine AppleScript failure, not "no tracks". Safe to continue:
-        // since Task 6 an empty id set makes the watcher run context-only
-        // rather than delete, but that degradation happens silently in a
-        // subsystem whose stdout/stderr both go to /dev/null, so it is worth
-        // a diagnostic even though the control flow does not change.
-        verbose("album container \(name): could not read track ids; watcher will run context-only")
-    }
-    let ids = parseContainerTrackIDs(idsRaw ?? "")
-
-    let esc = escapeAppleScriptString(name)
-    guard run("play playlist \"\(esc)\"") != nil else {
-        let removed = run(playlistDeleteScript(name: name)) != nil
+    switch playBoundedContainer(name: name, seed: .libraryIndices(indices),
+                                uuid: uuid, run: run, launch: launch) {
+    case .playing:
+        return .playing
+    case .buildFailed(let removed):
+        return .buildFailed(containerRemoved: removed)
+    case .playFailed(let removed):
         return .playFailed(containerRemoved: removed)
-    }
-
-    guard spawnAlbumWatcher(name: name, uuid: uuid, ids: ids, launch: launch) else {
-        // Audio is already running, so ending the promise means stopping it.
-        // Pausing rather than stopping is deliberate: it is the smallest
-        // action that ends the promise and leaves the player recoverable.
-        _ = run("pause")
-        let removed = run(playlistDeleteScript(name: name)) != nil
-        // Belt and braces alongside spawnAlbumWatcher's own cleanup: if a
-        // manifest was written for this uuid (large album) and the watcher
-        // never started, nobody else will ever own or remove it.
-        // `removeAlbumManifest` is a silent no-op when there is nothing at
-        // the path, so this is safe to call unconditionally.
-        if let manifestPath = albumManifestPath(uuid: uuid) {
-            removeAlbumManifest(path: manifestPath)
-        }
+    case .watcherFailed(let removed):
         return .watcherFailed(containerRemoved: removed)
     }
-
-    return .playing
 }
 
 /// User facing text for an outcome, or nil when there is nothing to say because

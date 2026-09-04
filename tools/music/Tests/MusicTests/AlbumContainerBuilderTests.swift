@@ -5,6 +5,27 @@ final class AlbumContainerBuilderTests: XCTestCase {
 
     private let containerName = "__album__ U — Moon Safari"
 
+    // MARK: - Behaviour-preserving pin for the phase-1 extraction
+
+    /// Byte-for-byte pin on the ALBUM seed. The container layer was lifted out
+    /// from under the album layer so a single song could reuse it (Anthony,
+    /// 2026-09-03: "do not silently change album seeding while extracting the
+    /// shared layer"). A `contains` assertion cannot see a reordered or
+    /// re-indented script, so this compares the whole string. If the album
+    /// script must genuinely change, change this fixture in the same commit
+    /// and say why.
+    func testAlbumSeedScriptIsByteIdenticalToItsPreExtractionForm() {
+        let s = albumContainerBuildScript(name: "__album__ U — Moon Safari", indices: [3, 7, 11])
+        let expected = """
+        make new playlist with properties {name:"__album__ U — Moon Safari"}
+            duplicate track 3 of playlist "Library" to playlist "__album__ U — Moon Safari"
+            duplicate track 7 of playlist "Library" to playlist "__album__ U — Moon Safari"
+            duplicate track 11 of playlist "Library" to playlist "__album__ U — Moon Safari"
+        return (count of tracks of playlist "__album__ U — Moon Safari") as text
+        """
+        XCTAssertEqual(s, expected)
+    }
+
     // MARK: - Script shape
 
     func testBuildScriptCreatesThenDuplicatesEachIndexInOneScript() {
