@@ -79,6 +79,24 @@ func playBoundedSong(title: String,
     let identifier = rawID.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !identifier.isEmpty else { return .identifierUnreadable }
 
+    return playBoundedSongByIdentifier(title: title, identifier: identifier,
+                                       uuid: uuid, run: run, launch: launch)
+}
+
+/// Play one song whose identifier is already known.
+///
+/// The catalog path resolves its row once, by set difference plus attributes,
+/// and carries that identifier straight here (Anthony, 2026-09-03: "once
+/// resolved, carry that persistent ID forward without another name lookup").
+/// A second lookup would reintroduce exactly the ambiguity the resolution just
+/// settled.
+func playBoundedSongByIdentifier(title: String,
+                                 identifier: String,
+                                 uuid: String = UUID().uuidString,
+                                 run: ScriptRunner,
+                                 launch: @escaping ProcessLauncher = detachedLaunch)
+    -> SongPlayOutcome {
+
     // Same recovery the album path gets, at the same point in the sequence:
     // collect containers a crashed or killed watcher left behind BEFORE this
     // play creates its own. Its result is intentionally discarded, so a failed

@@ -342,20 +342,19 @@ func playSongBoundedOrReportFailure(backend: AppleScriptBackend,
     throw ExitCode.failure
 }
 
-func playLocalSong(backend: AppleScriptBackend, title: String, artist: String?) throws -> Bool {
-    let escapedTitle = escapeAppleScriptString(title)
-    let artistFilter = artist.map {
-        " and artist contains \"\(escapeAppleScriptString($0))\""
-    } ?? ""
-    // Fetch rows (with cloud status) and pick in Swift: `play` silently no-ops
-    // on prerelease/removed tracks, so "item 1 of results" could do nothing
-    // while the CLI reported the still-playing old track as success.
-    let rows = fetchLibraryAlbumRows(
-        backend: backend,
-        whereClause: "name contains \"\(escapedTitle)\"\(artistFilter)")
-    guard let position = firstPlayablePosition(rows) else { return false }
-    return playQueueTrack(backend: backend, playlist: "Library", position: position)
-}
+// `playLocalSong` was deleted here in 3.12.x. It selected a song exactly as
+// `localSongWhereClause` plus `firstPlayablePosition` still do, and then played
+// it with `playQueueTrack(playlist: "Library", position:)`, which left the rest
+// of the library queued behind a single requested song. Every entry now routes
+// through `playBoundedSongLive`, and the function is gone rather than merely
+// unused so the COMPILER is the gate: nothing can call the library-rooted form
+// back into existence by accident. The same technique retired
+// `playDiscoverContainer` and `sweepDiscoverPlaylists` earlier the same day.
+//
+// Fetching rows and picking in Swift is still deliberate, and the reason is
+// still worth knowing: `play` silently no-ops on pre-release or removed tracks,
+// so "item 1 of results" could do nothing while the CLI reported the
+// still-playing old track as success.
 
 /// The CLI `play --album` outcome, decided in Swift over fetched rows so the
 /// disc-aware order and the playability filter (both live in
@@ -413,6 +412,71 @@ func firstPlayablePosition(_ rows: [LibraryAlbumRow]) -> Int? {
     rows.first(where: { isPlayableCloudStatus($0.cloudStatus) })?.index
 }
 
+/// Read the identity of every library row whose name contains `title`.
+///
+/// Scoped to the title rather than the whole library because this is called in
+/// a poll loop: a full four-property read of 14k rows costs about 1.5s, while a
+/// `whose name contains` query is a fraction of that, and the row we are
+/// looking for matches the title by construction.
+func libraryRowsMatchingTitle(backend: AppleScriptBackend, title: String) -> [LibraryRowIdentity] {
+    let esc = escapeAppleScriptString(title)
+    let script = """
+    set fs to (ASCII character 31)
+    set rs to (ASCII character 30)
+    set out to ""
+    repeat with t in (every track of playlist "Library" whose name contains "\(esc)")
+        try
+            set out to out & (persistent ID of t) & fs & (name of t) & fs & (artist of t) & fs & (album of t) & rs
+        end try
+    end repeat
+    return out
+    """
+    guard let raw = try? syncRun({ try await backend.runMusic(script) }) else { return [] }
+    return raw.split(separator: "\u{1E}").compactMap { record in
+        let f = record.split(separator: "\u{1F}", omittingEmptySubsequences: false).map(String.init)
+        guard f.count >= 4 else { return nil }
+        return LibraryRowIdentity(persistentID: f[0], name: f[1], artist: f[2], album: f[3])
+    }
+}
+
+/// Add a catalog song, find the row it created, and play exactly that row.
+///
+/// Replaces a fixed four-second sleep followed by a name lookup. The sleep was
+/// measured at one second of margin on 2026-09-03 (the row appeared at t+3),
+/// and a name lookup after an add cannot tell a new row from a copy the user
+/// already owned. This snapshots the matching rows BEFORE the add, so the row
+/// that appears is identified by set difference and then narrowed by artist and
+/// album, and refuses rather than guessing when two new rows remain plausible.
+func addCatalogRowAndPlayBounded(backend: AppleScriptBackend,
+                                 title: String,
+                                 artist: String,
+                                 album: String,
+                                 addToLibrary: () throws -> Void) throws -> Bool {
+    let before = Set(libraryRowsMatchingTitle(backend: backend, title: title).map { $0.persistentID })
+    try addToLibrary()
+
+    let resolution = withStatus("Syncing library...") {
+        resolveAddedCatalogRow(
+            title: title, artist: artist, album: album, idsBefore: before,
+            readRows: { libraryRowsMatchingTitle(backend: backend, title: title) },
+            wait: { seconds in
+                try? syncRun { try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000)) }
+            })
+    }
+
+    guard case .resolved(let identifier) = resolution else {
+        if let message = catalogRowResolutionMessage(resolution, title: title) { print(message) }
+        throw ExitCode.failure
+    }
+
+    let outcome = playBoundedSongByIdentifier(
+        title: title, identifier: identifier,
+        run: { script in try? syncRun { try await backend.runMusic(script) } })
+    if outcome == .playing { return true }
+    if let message = songOutcomeMessage(outcome, title: title) { print(message) }
+    throw ExitCode.failure
+}
+
 func addCatalogSongAndPlay(
     backend: AppleScriptBackend,
     query: String,
@@ -450,12 +514,9 @@ func addCatalogSongAndPlay(
     } ?? songs[0]
 
     verbose("catalog fallback matched \"\(selected.title)\" by \"\(selected.artist)\"")
-    try syncRun { try await api.addToLibrary(songIDs: [selected.id]) }
-    withStatus("Syncing library...") {
-        try! syncRun { try await Task.sleep(nanoseconds: 4_000_000_000) }
-    }
-
-    return try playLocalSong(backend: backend, title: selected.title, artist: selected.artist)
+    return try addCatalogRowAndPlayBounded(
+        backend: backend, title: selected.title, artist: selected.artist, album: selected.album,
+        addToLibrary: { try syncRun { try await api.addToLibrary(songIDs: [selected.id]) } })
 }
 
 func addCatalogSongIDAndPlay(backend: AppleScriptBackend, id: String) throws -> Bool {
@@ -476,12 +537,9 @@ func addCatalogSongIDAndPlay(backend: AppleScriptBackend, id: String) throws -> 
     let api = RESTAPIBackend(developerToken: devToken, userToken: userToken, storefront: auth.storefront())
     let song = try syncRun { try await api.song(id: id) }
     verbose("catalog URL matched \"\(song.title)\" by \"\(song.artist)\"")
-    try syncRun { try await api.addToLibrary(songIDs: [song.id]) }
-    withStatus("Syncing library...") {
-        try! syncRun { try await Task.sleep(nanoseconds: 4_000_000_000) }
-    }
-
-    return try playLocalSong(backend: backend, title: song.title, artist: song.artist)
+    return try addCatalogRowAndPlayBounded(
+        backend: backend, title: song.title, artist: song.artist, album: song.album,
+        addToLibrary: { try syncRun { try await api.addToLibrary(songIDs: [song.id]) } })
 }
 
 func appleMusicSongID(from value: String) -> String? {
