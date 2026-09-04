@@ -162,6 +162,10 @@ chmod 600 ~/.config/music/config.json ~/.config/music/user-token ~/.config/music
 | `music seek +30` / `music seek 1:30` | Seek within the current track (relative or absolute) |
 | `music love` / `music unlove` | Favorite / unfavorite the current track |
 
+Single-song playback is bounded the same way, and it stops when the song ends. `music play --song`, `music play "Song" "Artist"`, `music play <N>` from a search listing, and a bare `music play "X"` that resolves to a song all play exactly that one song and then stop, rather than continuing into the rest of your library. As with albums, that boundary holds only if Autoplay is off.
+
+When a song is not in your library, playing it still adds it from the catalog first. MusicTUI identifies the track that add created by comparing your library before and after, then by title, artist and album. If two tracks it cannot tell apart appear, it stops and says so rather than playing a guess.
+
 Album playback creates a temporary playlist visible in Music's sidebar and removes it when playback leaves. The album stops at its end only if Autoplay is off (see Autoplay callout below). If the name matches more than one distinct album, nothing plays; the CLI lists what it found and asks you to narrow the query or add `--artist`.
 
 Naming speakers in `music play` routes playback to **exactly those speakers**: it selects the ones you name and deselects the rest, then verifies each route is actually carrying a session (network-truth, not the AppleScript `selected` claim, which can lie) and prints `✓ <speaker> verified (…)`. If a route doesn't establish, an automatic heal runs (an away-and-back reroute, then a transport-cycle reset) before an honest failure message names the manual fix. Routing to the Mac's own output is never "verified": local output has no AirPlay session to check.

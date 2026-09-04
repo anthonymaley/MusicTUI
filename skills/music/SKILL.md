@@ -206,6 +206,9 @@ music playlist delete "Old Playlist"          # delete (via AppleScript)
 music playlist remove "Playlist" "Song"       # remove track
 music playlist share "Playlist" --imessage "+1234567890"  # share via iMessage
 music playlist share "Playlist" --email "a@b.com"         # share via email
+music play --song "Teardrop"                 # plays exactly that song, then stops
+music play "Teardrop" "Massive Attack"       # same, title + artist
+
 music playlist temp "Song1" "Artist1" "Song2" "Artist2"   # temp playlist, play; hidden from the rail, cleanup is manual
 music playlist create-from "Song1" "Artist1" "Song2" "Artist2" --name "My Mix"  # create + populate
 music playlist cleanup                        # delete unused __temp__ and __album__ playlists; spares one in active playback
