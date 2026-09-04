@@ -48,7 +48,7 @@ func playBoundedContainer(name: String,
                           uuid: String,
                           run: ScriptRunner,
                           launch: @escaping ProcessLauncher = detachedLaunch,
-                          confirm: (Set<String>) -> Bool = { _ in true })
+                          confirm: (Set<String>?) -> Bool = { _ in true })
     -> ContainerPlayOutcome {
 
     switch buildContainer(name: name, seed: seed, run: run) {
@@ -93,8 +93,10 @@ func playBoundedContainer(name: String,
     let ids = parseContainerTrackIDs(idsRaw ?? "")
 
     // Fail closed BEFORE playing. A caller that cannot confirm what it built
-    // must not fall through to playing something else.
-    guard confirm(ids) else {
+    // must not fall through to playing something else. `confirm` sees nil when
+    // the read itself failed, so it can tell "unknown" from "wrong" — those are
+    // different states with different messages.
+    guard confirm(idsRaw == nil ? nil : ids) else {
         let removed = run(playlistDeleteScript(name: name)) != nil
         verbose("container \(name): identity confirmation failed; rolled back")
         return .buildFailed(containerRemoved: removed)
