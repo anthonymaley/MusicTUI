@@ -119,3 +119,61 @@ final class CatalogRowResolutionTests: XCTestCase {
         XCTAssertTrue(ambiguous.contains("nothing was played"))
     }
 }
+
+/// Reproductions of the two Important findings from Codex's review of
+/// fcda0cf..d157c53. Written to FAIL against the code as reviewed, so the
+/// defects are demonstrated rather than argued.
+extension CatalogRowResolutionTests {
+
+    /// Important 1: an idempotent add. The song is already in the library, so
+    /// `addToLibrary` creates no new row and the set difference stays empty
+    /// forever. The old code played the pre-existing row; this reports that the
+    /// track never showed up, which is false.
+    func testReproIdempotentAddFindsNothingAlthoughTheRowIsRightThere() {
+        let owned = row("OWNED", "Teardrop", "Massive Attack", "Mezzanine")
+        let out = resolveAddedCatalogRow(
+            title: "Teardrop", artist: "Massive Attack", album: "Mezzanine",
+            idsBefore: ["OWNED"], attempts: 3,
+            readRows: { [owned] },
+            wait: { _ in })
+        XCTAssertEqual(out, .notYetVisible(attempts: 3),
+                       "REPRO: the row is present and playable, and we report it never appeared")
+    }
+
+    /// Important 2, fixed: an unreadable library is its own state, never an
+    /// empty one. The repo's recorded "unknown is never nothing" class
+    /// (CONTEXT, §20.6), which Codex found this code had reproduced.
+    ///
+    /// The caller-side half of the same fix is that a baseline which cannot be
+    /// read refuses BEFORE the irreversible add, so the empty-set case this
+    /// test used to exercise can no longer be constructed by the live path.
+    func testAnUnreadableLibraryIsNotAnEmptyOne() {
+        var waits = 0
+        let out = resolveAddedCatalogRow(
+            title: "Teardrop", artist: "Massive Attack", album: "Mezzanine",
+            idsBefore: ["OWNED"], attempts: 3,
+            readRows: { nil },
+            wait: { _ in waits += 1 })
+        XCTAssertEqual(out, .unreadable)
+        XCTAssertNotEqual(out, .notYetVisible(attempts: 3),
+                          "not knowing what is there is not the same as knowing nothing arrived")
+        XCTAssertEqual(waits, 2, "it keeps looking rather than giving up on the first failure")
+    }
+
+    /// A read that fails once and then succeeds must still resolve. A transient
+    /// AppleScript failure is not a verdict.
+    func testATransientReadFailureDoesNotEndTheSearch() {
+        var look = 0
+        let out = resolveAddedCatalogRow(
+            title: "Teardrop", artist: "Massive Attack", album: "Mezzanine",
+            idsBefore: ["OWNED"], attempts: 5,
+            readRows: {
+                look += 1
+                if look < 3 { return nil }
+                return [self.row("OWNED", "Teardrop", "Massive Attack", "Mezzanine"),
+                        self.row("NEW1", "Teardrop", "Massive Attack", "Mezzanine")]
+            },
+            wait: { _ in })
+        XCTAssertEqual(out, .resolved(persistentID: "NEW1"))
+    }
+}

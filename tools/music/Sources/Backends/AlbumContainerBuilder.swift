@@ -93,10 +93,16 @@ func containerBuildScript(name: String, seed: ContainerSeed) -> String {
 
 /// Bulk read the container's own persistent IDs.
 ///
-/// Read from the CONTAINER, never from the source library rows: whether a
-/// duplicated playlist track shares its source's persistent ID is unverified,
-/// and reading the container sidesteps the question entirely, since what plays
-/// is what we read.
+/// Read from the CONTAINER, never from the source library rows: what plays is
+/// what we read.
+///
+/// This comment used to add that whether a duplicated track shares its source's
+/// persistent ID was unverified, and that reading the container sidestepped the
+/// question. It no longer sidesteps it. The song path compares this read
+/// against the source row's id to confirm the container holds the track it
+/// asked for, so preservation is load-bearing, and it was measured before that
+/// was relied on: four observations across two albums on 2026-09-03, every one
+/// preserving the id. Codex flagged the stale wording in the range review.
 func containerTrackIDsScript(name: String) -> String {
     let esc = escapeAppleScriptString(name)
     return """

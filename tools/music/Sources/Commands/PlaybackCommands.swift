@@ -418,25 +418,40 @@ func firstPlayablePosition(_ rows: [LibraryAlbumRow]) -> Int? {
 /// a poll loop: a full four-property read of 14k rows costs about 1.5s, while a
 /// `whose name contains` query is a fraction of that, and the row we are
 /// looking for matches the title by construction.
-func libraryRowsMatchingTitle(backend: AppleScriptBackend, title: String) -> [LibraryRowIdentity] {
+func libraryRowsMatchingTitle(backend: AppleScriptBackend, title: String) -> [LibraryRowIdentity]? {
     let esc = escapeAppleScriptString(title)
+    // The row count is emitted alongside the records so an incomplete read is
+    // detectable. A per-row `try` that swallowed a property error used to drop
+    // that row silently, which would let it reappear later and be classified as
+    // newly added. Completeness is now proven rather than assumed; anything
+    // short of it is `nil`, meaning unknown.
     let script = """
     set fs to (ASCII character 31)
     set rs to (ASCII character 30)
-    set out to ""
-    repeat with t in (every track of playlist "Library" whose name contains "\(esc)")
+    set matches to (every track of playlist "Library" whose name contains "\(esc)")
+    set out to ((count of matches) as text) & rs
+    repeat with t in matches
         try
             set out to out & (persistent ID of t) & fs & (name of t) & fs & (artist of t) & fs & (album of t) & rs
         end try
     end repeat
     return out
     """
-    guard let raw = try? syncRun({ try await backend.runMusic(script) }) else { return [] }
-    return raw.split(separator: "\u{1E}").compactMap { record in
+    guard let raw = try? syncRun({ try await backend.runMusic(script) }) else { return nil }
+    var records = raw.split(separator: "\u{1E}", omittingEmptySubsequences: true).map(String.init)
+    guard !records.isEmpty, let expected = Int(records.removeFirst().trimmingCharacters(in: .whitespacesAndNewlines))
+    else { return nil }
+    let rows: [LibraryRowIdentity] = records.compactMap { record in
         let f = record.split(separator: "\u{1F}", omittingEmptySubsequences: false).map(String.init)
         guard f.count >= 4 else { return nil }
         return LibraryRowIdentity(persistentID: f[0], name: f[1], artist: f[2], album: f[3])
     }
+    // A row the script could not describe is a row we cannot reason about.
+    guard rows.count == expected else {
+        verbose("library read for \"\(title)\": \(rows.count) of \(expected) rows readable; treating as unknown")
+        return nil
+    }
+    return rows
 }
 
 /// Add a catalog song, find the row it created, and play exactly that row.
@@ -452,7 +467,14 @@ func addCatalogRowAndPlayBounded(backend: AppleScriptBackend,
                                  artist: String,
                                  album: String,
                                  addToLibrary: () throws -> Void) throws -> Bool {
-    let before = Set(libraryRowsMatchingTitle(backend: backend, title: title).map { $0.persistentID })
+    // Refuse BEFORE the irreversible add. A baseline we could not read is not
+    // an empty baseline, and adding on top of one would let a pre-existing row
+    // be classified as the one the add created.
+    guard let baseline = libraryRowsMatchingTitle(backend: backend, title: title) else {
+        print("Could not read your library, so '\(title)' was not added and nothing was played.")
+        throw ExitCode.failure
+    }
+    let before = Set(baseline.map { $0.persistentID })
     try addToLibrary()
 
     let resolution = withStatus("Syncing library...") {

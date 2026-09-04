@@ -19,6 +19,11 @@ enum CatalogRowResolution: Equatable {
     /// More than one new row is plausible, so we do not know which one was
     /// asked for. Fail closed: playing a coin flip is worse than not playing.
     case ambiguous(count: Int)
+    /// The library could not be read. Distinct from "no new row": we do not
+    /// know what is there, rather than knowing nothing new is. §20.6's rule,
+    /// applied here after Codex found the baseline treating a failed read as
+    /// an empty library.
+    case unreadable
 }
 
 /// Find the library row a catalog add just created.
@@ -49,15 +54,23 @@ func resolveAddedCatalogRow(title: String,
                             album: String,
                             idsBefore: Set<String>,
                             attempts: Int = 20,
-                            readRows: () -> [LibraryRowIdentity],
+                            readRows: () -> [LibraryRowIdentity]?,
                             wait: (Double) -> Void,
                             interval: Double = 0.5) -> CatalogRowResolution {
     let wantTitle = normalizeAlbumTitle(title)
     let wantArtist = normalizeCredit(artist)
     let wantAlbum = normalizeAlbumTitle(album)
 
+    var everyReadFailed = true
     for attempt in 1...max(1, attempts) {
-        let candidates = readRows().filter { !idsBefore.contains($0.persistentID) }
+        guard let rows = readRows() else {
+            // Unknown, not empty. Keep looking: a transient AppleScript failure
+            // should not be reported as "the track never arrived".
+            if attempt < max(1, attempts) { wait(interval) }
+            continue
+        }
+        everyReadFailed = false
+        let candidates = rows.filter { !idsBefore.contains($0.persistentID) }
 
         // Narrow by every attribute we have. Album is only used when the
         // catalog gave us one AND the row carries one, so a row with a blank
@@ -80,7 +93,7 @@ func resolveAddedCatalogRow(title: String,
         }
         if attempt < max(1, attempts) { wait(interval) }
     }
-    return .notYetVisible(attempts: max(1, attempts))
+    return everyReadFailed ? .unreadable : .notYetVisible(attempts: max(1, attempts))
 }
 
 /// User facing text for a resolution that did not resolve.
@@ -94,5 +107,8 @@ func catalogRowResolutionMessage(_ resolution: CatalogRowResolution, title: Stri
     case .ambiguous(let count):
         return "Added '\(title)' to your library, but \(count) new tracks match it, "
             + "so it is not clear which one you meant and nothing was played."
+    case .unreadable:
+        return "Added '\(title)' to your library, but your library could not be read afterwards, "
+            + "so nothing was played. Nothing else was changed."
     }
 }
