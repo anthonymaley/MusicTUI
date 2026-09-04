@@ -164,3 +164,56 @@ func songOutcomeMessage(_ outcome: SongPlayOutcome, title: String) -> String? {
                 + "Run: music playlist cleanup"
     }
 }
+
+/// The library query that selects a song, lifted out of `playLocalSong`
+/// unchanged so routing cannot alter selection.
+///
+/// Deliberately loose: `contains` on the title, artist optional and also
+/// `contains`. That is the CLI's long-standing matching semantic (the 3.8.3
+/// decision moved SELECTION into Swift while keeping MATCHING loose), and
+/// bounding playback is not the moment to tighten it. Pinned by
+/// `testTheSelectionQueryIsUnchangedByRouting`.
+func localSongWhereClause(title: String, artist: String?) -> String {
+    let escapedTitle = escapeAppleScriptString(title)
+    let artistFilter = artist.map {
+        " and artist contains \"\(escapeAppleScriptString($0))\""
+    } ?? ""
+    return "name contains \"\(escapedTitle)\"\(artistFilter)"
+}
+
+/// Select a local song exactly as `playLocalSong` did, then play it bounded.
+///
+/// Selection is unchanged on purpose: the same where clause, the same
+/// `firstPlayablePosition` over the rows it returns. Only what happens after
+/// selection changes, from an unbounded library-rooted play to a bounded
+/// container.
+///
+/// `.notFound` and `.nonePlayable` are the two outcomes that mean "not here",
+/// and callers may fall through to the catalog on them exactly as they did
+/// when this returned false. Every other outcome means we selected a track and
+/// then failed, and those must NOT fall through: adding a catalog copy because
+/// an internal step failed would duplicate a track the user already owns.
+func playBoundedLocalSong(title: String,
+                          artist: String?,
+                          fetchRows: (String) -> [LibraryAlbumRow],
+                          readIdentifier: (Int) -> String?,
+                          uuid: String = UUID().uuidString,
+                          run: ScriptRunner,
+                          launch: @escaping ProcessLauncher = detachedLaunch)
+    -> SongPlayOutcome {
+    let rows = fetchRows(localSongWhereClause(title: title, artist: artist))
+    return playBoundedSong(title: title, rows: rows, readIdentifier: readIdentifier,
+                           uuid: uuid, run: run, launch: launch)
+}
+
+extension SongPlayOutcome {
+    /// True when the track is not in the library in a playable form, which is
+    /// the only condition under which a caller may try the catalog. Every other
+    /// failure is a failure of ours and stops here.
+    var mayFallBackToCatalog: Bool {
+        switch self {
+        case .notFound, .nonePlayable: return true
+        default: return false
+        }
+    }
+}

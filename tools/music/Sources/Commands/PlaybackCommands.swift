@@ -56,7 +56,7 @@ struct Play: ParsableCommand {
         }
 
         if let song = song {
-            if try playLocalSong(backend: backend, title: song, artist: artist) {
+            if try playSongBoundedOrReportFailure(backend: backend, title: song, artist: artist) {
                 showNowPlaying(json: json, waitForPlay: true)
                 return
             }
@@ -77,7 +77,7 @@ struct Play: ParsableCommand {
 
         func playSongArtist(title: String, artist: String) throws -> Bool {
             verbose("treating two quoted args as song + artist")
-            if try playLocalSong(backend: backend, title: title, artist: artist) {
+            if try playSongBoundedOrReportFailure(backend: backend, title: title, artist: artist) {
                 return true
             }
             return try addCatalogSongAndPlay(
@@ -104,7 +104,7 @@ struct Play: ParsableCommand {
             if args.count == 1, let index = Int(args[0]) {
                 let cache = ResultCache()
                 let song = try cache.lookupSong(index: index)
-                if try !playLocalSong(backend: backend, title: song.title, artist: song.artist) {
+                if try !playSongBoundedOrReportFailure(backend: backend, title: song.title, artist: song.artist) {
                     if try !addCatalogSongAndPlay(backend: backend, query: "\(song.title) \(song.artist)", title: song.title, artist: song.artist) {
                         print("'\(song.title)' not in library. Run: music add \(index)")
                         throw ExitCode.failure
@@ -250,12 +250,15 @@ struct Play: ParsableCommand {
                             }
                             played = true
                         case .song:
-                            // playLocalSong applies the playability filter
-                            // (firstPlayablePosition), where the old inline
-                            // script played "item 1 of songMatches"
-                            // unconditionally — a prerelease/removed track is
-                            // now skipped rather than silently no-oping.
-                            played = try playLocalSong(backend: backend, title: query, artist: nil)
+                            // The playability filter (firstPlayablePosition)
+                            // still applies, where the old inline script played
+                            // "item 1 of songMatches" unconditionally, so a
+                            // prerelease or removed track is skipped rather
+                            // than silently no-oping. Since 3.12.x the selected
+                            // track is played bounded: false here still means
+                            // "not in the library", so the catalog fallback
+                            // below is reached exactly as before.
+                            played = try playSongBoundedOrReportFailure(backend: backend, title: query, artist: nil)
                         }
                     case .songArtist(let title, let artist):
                         played = try playSongArtist(title: title, artist: artist)
@@ -292,6 +295,51 @@ struct Play: ParsableCommand {
         }
         showNowPlaying(json: json, waitForPlay: true)
     }
+}
+
+/// Bounded single-song play against the real backend.
+///
+/// Selection is `playLocalSong`'s, unchanged: the same where clause and the
+/// same `firstPlayablePosition`. What changed is that the selected track is
+/// played inside its own container and playback stops when it ends, instead of
+/// being played at a Library index with the rest of the library behind it.
+///
+/// The identifier read is a separate one-line script rather than a new column
+/// on `LibraryAlbumRow`: adding one would ripple into the shared bulk fetch the
+/// album path also uses, and this path needs exactly one id.
+func playBoundedSongLive(backend: AppleScriptBackend, title: String, artist: String?) -> SongPlayOutcome {
+    playBoundedLocalSong(
+        title: title,
+        artist: artist,
+        fetchRows: { whereClause in
+            fetchLibraryAlbumRows(backend: backend, whereClause: whereClause)
+        },
+        readIdentifier: { index in
+            let raw = try? syncRun {
+                try await backend.runMusic(
+                    "return persistent ID of track \(index) of playlist \"Library\"")
+            }
+            let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines)
+            return (trimmed?.isEmpty ?? true) ? nil : trimmed
+        },
+        run: { script in try? syncRun { try await backend.runMusic(script) } })
+}
+
+/// Play a song and report whether the caller may still try the catalog.
+///
+/// Returns true when playback started. Returns false ONLY when the track is
+/// not in the library in playable form, which is what `playLocalSong` used to
+/// mean by false. Any other failure prints its own message and throws, because
+/// falling through to the catalog after an internal failure would add a copy of
+/// a track the user already owns.
+func playSongBoundedOrReportFailure(backend: AppleScriptBackend,
+                                    title: String,
+                                    artist: String?) throws -> Bool {
+    let outcome = playBoundedSongLive(backend: backend, title: title, artist: artist)
+    if outcome == .playing { return true }
+    if outcome.mayFallBackToCatalog { return false }
+    if let message = songOutcomeMessage(outcome, title: title) { print(message) }
+    throw ExitCode.failure
 }
 
 func playLocalSong(backend: AppleScriptBackend, title: String, artist: String?) throws -> Bool {
