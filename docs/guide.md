@@ -363,7 +363,7 @@ All three are written owner-only: files `0600` in a `0700` directory (since 3.7.
 
 ## Version
 
-Current version: v3.12.0. All five locations stay in sync:
+Current version: v3.13.0. All five locations stay in sync:
 - `.claude-plugin/plugin.json` → `version`
 - `.claude-plugin/marketplace.json` → `metadata.version`
 - `.claude-plugin/marketplace.json` → `plugins[0].version`
