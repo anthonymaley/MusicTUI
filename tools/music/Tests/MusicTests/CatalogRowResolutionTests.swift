@@ -369,3 +369,43 @@ extension CatalogRowResolutionTests {
         XCTAssertFalse(m.contains("had not appeared"))
     }
 }
+
+/// Codex's focused review of 1c57377: the new-row path had no playability
+/// check, so a sole pre-release arrival could be confirmed twice and handed to
+/// the builder, where Music silently refuses to play it. Reproduced against
+/// 1c57377 (failing) before the fix.
+extension CatalogRowResolutionTests {
+
+    func testASoleNewRowThatIsUnplayableIsNotPlayedEvenWhenSeenTwice() {
+        let out = resolveAddedCatalogRow(
+            title: "Teardrop", artist: "Massive Attack", album: "Mezzanine",
+            idsBefore: [], attempts: 3,
+            readRows: { [self.row("NEW", "Teardrop", "Massive Attack", "Mezzanine", "prerelease")] },
+            wait: { _ in })
+        XCTAssertNotEqual(out, .resolved(persistentID: "NEW", viaPreExisting: false),
+                          "an unplayable row must never reach the builder")
+        XCTAssertEqual(out, .newRowUnplayable)
+        let m = catalogRowResolutionMessage(.newRowUnplayable, title: "Teardrop") ?? ""
+        XCTAssertTrue(m.contains("not playable"))
+        XCTAssertFalse(m.contains("had not appeared"))
+    }
+
+    /// A new row that is unplayable on one look and playable on the next is
+    /// one playable sighting, not two: confirmation counts playable
+    /// observations only.
+    func testAnUnplayableSightingDoesNotCountTowardsConfirmation() {
+        var look = 0
+        let out = resolveAddedCatalogRow(
+            title: "Teardrop", artist: "Massive Attack", album: "Mezzanine",
+            idsBefore: [], attempts: 2,
+            readRows: {
+                look += 1
+                let status = look == 1 ? "prerelease" : "subscribed"
+                return look <= 2 ? [self.row("NEW", "Teardrop", "Massive Attack", "Mezzanine", status)] : []
+            },
+            wait: { _ in })
+        XCTAssertNotEqual(out, .resolved(persistentID: "NEW", viaPreExisting: false),
+                          "look 2 is the first PLAYABLE sighting; the final read is empty")
+        XCTAssertEqual(out, .newRowUnconfirmed)
+    }
+}

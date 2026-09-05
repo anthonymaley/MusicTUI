@@ -39,10 +39,15 @@ enum CatalogRowResolution: Equatable {
     /// for. Fail closed: playing a coin flip is worse than not playing.
     case ambiguous(count: Int, amongPreExisting: Bool)
     /// A new plausible row was observed at least once but never confirmed
-    /// twice running. The add evidently created something, so the idempotent
-    /// fallback does not apply: playing the copy the user already had would be
-    /// the wrong track. Codex, on 9ccb333.
+    /// twice running. Idempotence therefore cannot be established (whether the
+    /// add caused the arrival is not claimed; the accepted residual allows an
+    /// unrelated one), so the owned fallback does not apply: playing the copy
+    /// the user already had could be the wrong track. Codex, on 9ccb333.
     case newRowUnconfirmed
+    /// The new row is there and matches, and it is the sole arrival, but it is
+    /// not playable (pre-release or removed). Playing it would be the silent
+    /// no-op `firstPlayablePosition` exists to prevent. Codex, on 1c57377.
+    case newRowUnplayable
     /// The unique owned copy is there and matches, but is not playable
     /// (pre-release or removed). Distinct from "not yet visible", which would
     /// be a false diagnosis: the track appeared, it was already there.
@@ -114,8 +119,8 @@ func resolveAddedCatalogRow(title: String,
     // winning a single look). This narrows that residual; it does not close it.
     var confirmedOnce: String?
     // Whether ANY successful read, scheduled or final, showed a plausible new
-    // row. A new row seen even once is evidence the add was not idempotent, so
-    // the owned fallback below is available only while this stays false
+    // row. A new row seen even once means idempotence cannot be established,
+    // so the owned fallback below is available only while this stays false
     // (Codex, on 9ccb333: otherwise a transient arrival vanishes and the copy
     // the user already had is played as if nothing new existed).
     var sawNewArrival = false
@@ -142,6 +147,15 @@ func resolveAddedCatalogRow(title: String,
             return .ambiguous(count: plausible.count, amongPreExisting: false)
         }
         if let only = plausible.first {
+            // Confirmation counts PLAYABLE sightings only. A pre-release or
+            // removed row would pass identity confirmation and then no-op
+            // silently on play, the exact failure `firstPlayablePosition`
+            // exists to prevent on the local path (Codex, on 1c57377).
+            guard isPlayableCloudStatus(only.cloudStatus) else {
+                confirmedOnce = nil
+                if attempt < budget { wait(interval) }
+                continue
+            }
             if confirmedOnce == only.persistentID {
                 return .resolved(persistentID: only.persistentID, viaPreExisting: false)
             }
@@ -168,12 +182,19 @@ func resolveAddedCatalogRow(title: String,
     if arrived.count > 1 {
         return .ambiguous(count: arrived.count, amongPreExisting: false)
     }
-    if let only = arrived.first, confirmedOnce == only.persistentID {
-        return .resolved(persistentID: only.persistentID, viaPreExisting: false)
+    if let only = arrived.first {
+        // It is there and it is the sole arrival. If it cannot play, say that;
+        // do not confirm it, and do not call it "not yet visible".
+        guard isPlayableCloudStatus(only.cloudStatus) else { return .newRowUnplayable }
+        if confirmedOnce == only.persistentID {
+            return .resolved(persistentID: only.persistentID, viaPreExisting: false)
+        }
     }
-    // Something new was seen and never confirmed twice running. The add did
-    // create something, so the idempotent fallback does not apply; say so
-    // rather than playing the old copy or claiming nothing appeared.
+    // A plausible new row was observed and never confirmed twice running. That
+    // means idempotence cannot be established (the accepted residual allows
+    // the arrival to be unrelated, so nothing here claims the add caused it),
+    // so the owned fallback does not apply. Say so rather than playing the old
+    // copy or claiming nothing appeared.
     if sawNewArrival { return .newRowUnconfirmed }
 
     // The idempotent add: the track was already in the library, so nothing new
@@ -217,6 +238,9 @@ func catalogRowResolutionMessage(_ resolution: CatalogRowResolution, title: Stri
     case .newRowUnconfirmed:
         return "Added '\(title)' to your library and a new track appeared, but it could not be confirmed "
             + "as the one you asked for before the time ran out, so nothing was played. Try again."
+    case .newRowUnplayable:
+        return "Added '\(title)' to your library and it appeared, but it is not playable yet "
+            + "(pre-release or removed), so nothing was played."
     case .ownedUnplayable(let matched):
         return "'\(title)' is already in your library (\(matched) matching track(s)), but none of them is "
             + "playable yet (pre-release or removed), so nothing was played."
