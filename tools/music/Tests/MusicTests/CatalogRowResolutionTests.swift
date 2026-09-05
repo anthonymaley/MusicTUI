@@ -151,8 +151,8 @@ extension CatalogRowResolutionTests {
             idsBefore: ["OWNED"], attempts: 2,
             readRows: { [owned] },
             wait: { _ in })
-        XCTAssertEqual(out, .notYetVisible(attempts: 2),
-                       "a pre-release row satisfies every metadata check and then silently no-ops")
+        XCTAssertEqual(out, .ownedUnplayable(matched: 1),
+                       "a pre-release row satisfies every metadata check and then silently no-ops; say that, not 'not yet visible'")
     }
 
     func testTwoIndistinguishablePreExistingRowsRefuse() {
@@ -177,7 +177,7 @@ extension CatalogRowResolutionTests {
                 return look == 1 ? [self.row("GHOST", "Teardrop", "Massive Attack", "Mezzanine")] : []
             },
             wait: { _ in })
-        XCTAssertEqual(out, .notYetVisible(attempts: 3))
+        XCTAssertEqual(out, .newRowUnconfirmed, "seen once is not confirmed, and it is not 'never appeared' either")
     }
 
     /// Important 2, fixed: an unreadable library is its own state, never an
@@ -237,7 +237,7 @@ extension CatalogRowResolutionTests {
                 return look <= 2 ? [] : [self.row("NEW", "Teardrop", "Massive Attack", "Mezzanine")]
             },
             wait: { _ in })
-        XCTAssertEqual(out, .notYetVisible(attempts: 2),
+        XCTAssertEqual(out, .newRowUnconfirmed,
                        "one sighting is not two, and a new row is not a pre-existing one")
     }
 
@@ -293,7 +293,7 @@ extension CatalogRowResolutionTests {
                 }
             },
             wait: { _ in })
-        XCTAssertEqual(out, .notYetVisible(attempts: 3),
+        XCTAssertEqual(out, .newRowUnconfirmed,
                        "look 3 must start a new run, and the confirming read is empty")
     }
 
@@ -303,5 +303,69 @@ extension CatalogRowResolutionTests {
         XCTAssertFalse(m.contains("Nothing else was changed"),
                        "the add already ran; the code cannot know what it changed")
         XCTAssertTrue(m.contains("nothing was played"))
+    }
+}
+
+/// Codex's scoped review of 9ccb333 found one adjacent ordering and one false
+/// diagnosis. Both reproduced against 9ccb333 (failing) before the fix.
+extension CatalogRowResolutionTests {
+
+    /// Important 1: a new row seen once is evidence the add was NOT idempotent.
+    /// The owned fallback exists for the idempotent case only, so once any new
+    /// plausible row has been observed, an unconfirmed resolution must not fall
+    /// back to the row the user already had. Same shape as the ghost test, with
+    /// the owned copy present, which is the detail that made 9ccb333 fail.
+    func testATransientNewArrivalDisablesTheOwnedFallback() {
+        var look = 0
+        let out = resolveAddedCatalogRow(
+            title: "Teardrop", artist: "Massive Attack", album: "Mezzanine",
+            idsBefore: ["OWNED"], attempts: 3,
+            readRows: {
+                look += 1
+                let owned = self.row("OWNED", "Teardrop", "Massive Attack", "Mezzanine")
+                return look == 2
+                    ? [owned, self.row("NEW", "Teardrop", "Massive Attack", "Mezzanine")]
+                    : [owned]
+            },
+            wait: { _ in })
+        XCTAssertNotEqual(out, .resolved(persistentID: "OWNED", viaPreExisting: true),
+                          "the add created something; playing the old copy is the wrong track")
+        XCTAssertEqual(out, .newRowUnconfirmed)
+    }
+
+    /// The variant: one new id on the last scheduled attempt, a DIFFERENT new
+    /// id on the final read. Neither confirmed; the owned row still must not win.
+    func testTwoDifferentUnconfirmedArrivalsDoNotEnableTheOwnedFallback() {
+        var look = 0
+        let out = resolveAddedCatalogRow(
+            title: "Teardrop", artist: "Massive Attack", album: "Mezzanine",
+            idsBefore: ["OWNED"], attempts: 2,
+            readRows: {
+                look += 1
+                let owned = self.row("OWNED", "Teardrop", "Massive Attack", "Mezzanine")
+                switch look {
+                case 2: return [owned, self.row("NEW-A", "Teardrop", "Massive Attack", "Mezzanine")]
+                case 3: return [owned, self.row("NEW-B", "Teardrop", "Massive Attack", "Mezzanine")]
+                default: return [owned]
+                }
+            },
+            wait: { _ in })
+        XCTAssertEqual(out, .newRowUnconfirmed)
+    }
+
+    /// Important 2: the unique owned copy IS there; it is just not playable.
+    /// "Had not appeared" is a false diagnosis for that, and it is the likely
+    /// case for a pre-release catalog URL.
+    func testTheOnlyOwnedCopyBeingUnplayableIsSaidPlainly() {
+        let owned = row("OWNED", "Teardrop", "Massive Attack", "Mezzanine", "prerelease")
+        let out = resolveAddedCatalogRow(
+            title: "Teardrop", artist: "Massive Attack", album: "Mezzanine",
+            idsBefore: ["OWNED"], attempts: 2,
+            readRows: { [owned] },
+            wait: { _ in })
+        XCTAssertEqual(out, .ownedUnplayable(matched: 1))
+        let m = catalogRowResolutionMessage(.ownedUnplayable(matched: 1), title: "Teardrop") ?? ""
+        XCTAssertTrue(m.contains("already in your library"))
+        XCTAssertFalse(m.contains("had not appeared"))
     }
 }

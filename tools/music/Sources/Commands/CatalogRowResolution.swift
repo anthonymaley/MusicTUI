@@ -38,6 +38,15 @@ enum CatalogRowResolution: Equatable {
     /// More than one row is plausible, so we do not know which one was asked
     /// for. Fail closed: playing a coin flip is worse than not playing.
     case ambiguous(count: Int, amongPreExisting: Bool)
+    /// A new plausible row was observed at least once but never confirmed
+    /// twice running. The add evidently created something, so the idempotent
+    /// fallback does not apply: playing the copy the user already had would be
+    /// the wrong track. Codex, on 9ccb333.
+    case newRowUnconfirmed
+    /// The unique owned copy is there and matches, but is not playable
+    /// (pre-release or removed). Distinct from "not yet visible", which would
+    /// be a false diagnosis: the track appeared, it was already there.
+    case ownedUnplayable(matched: Int)
     /// The library could not be read. Distinct from "no new row": we do not
     /// know what is there, rather than knowing nothing new is. §20.6's rule,
     /// applied here after Codex found the baseline treating a failed read as
@@ -104,6 +113,12 @@ func resolveAddedCatalogRow(title: String,
     // (Anthony, 2026-09-04, as cheap hardening against a coincidental arrival
     // winning a single look). This narrows that residual; it does not close it.
     var confirmedOnce: String?
+    // Whether ANY successful read, scheduled or final, showed a plausible new
+    // row. A new row seen even once is evidence the add was not idempotent, so
+    // the owned fallback below is available only while this stays false
+    // (Codex, on 9ccb333: otherwise a transient arrival vanishes and the copy
+    // the user already had is played as if nothing new existed).
+    var sawNewArrival = false
 
     func newPlausible(in rows: [LibraryRowIdentity]) -> [LibraryRowIdentity] {
         rows.filter { !idsBefore.contains($0.persistentID) }.filter(matches)
@@ -121,6 +136,7 @@ func resolveAddedCatalogRow(title: String,
             continue
         }
         let plausible = newPlausible(in: rows)
+        if !plausible.isEmpty { sawNewArrival = true }
         if plausible.count > 1 {
             // Waiting cannot disambiguate what is already ambiguous.
             return .ambiguous(count: plausible.count, amongPreExisting: false)
@@ -148,12 +164,17 @@ func resolveAddedCatalogRow(title: String,
     guard let current = readRows() else { return .unreadable }
 
     let arrived = newPlausible(in: current)
+    if !arrived.isEmpty { sawNewArrival = true }
     if arrived.count > 1 {
         return .ambiguous(count: arrived.count, amongPreExisting: false)
     }
     if let only = arrived.first, confirmedOnce == only.persistentID {
         return .resolved(persistentID: only.persistentID, viaPreExisting: false)
     }
+    // Something new was seen and never confirmed twice running. The add did
+    // create something, so the idempotent fallback does not apply; say so
+    // rather than playing the old copy or claiming nothing appeared.
+    if sawNewArrival { return .newRowUnconfirmed }
 
     // The idempotent add: the track was already in the library, so nothing new
     // ever appeared. Fall back to a row that WAS there before the add, by the
@@ -161,15 +182,20 @@ func resolveAddedCatalogRow(title: String,
     // row that can actually play. A new row seen once is not pre-existing and
     // must never be described to the user as if it were. This is a weaker
     // claim than the set difference and the message says so.
-    let owned = current
+    let ownedMatches = current
         .filter { idsBefore.contains($0.persistentID) }
         .filter(matches)
-        .filter { isPlayableCloudStatus($0.cloudStatus) }
-    if owned.count == 1, let only = owned.first {
+    let playable = ownedMatches.filter { isPlayableCloudStatus($0.cloudStatus) }
+    if playable.count == 1, let only = playable.first {
         return .resolved(persistentID: only.persistentID, viaPreExisting: true)
     }
-    if owned.count > 1 {
-        return .ambiguous(count: owned.count, amongPreExisting: true)
+    if playable.count > 1 {
+        return .ambiguous(count: playable.count, amongPreExisting: true)
+    }
+    if !ownedMatches.isEmpty {
+        // It is there. It is just not playable. "Not yet visible" would be a
+        // false diagnosis for the likeliest case, a pre-release catalog URL.
+        return .ownedUnplayable(matched: ownedMatches.count)
     }
     return .notYetVisible(attempts: budget)
 }
@@ -188,6 +214,12 @@ func catalogRowResolutionMessage(_ resolution: CatalogRowResolution, title: Stri
                 + "title, artist and album, so nothing was played."
             : "Added '\(title)' to your library, but \(count) new tracks match it, "
                 + "so it is not clear which one you meant and nothing was played."
+    case .newRowUnconfirmed:
+        return "Added '\(title)' to your library and a new track appeared, but it could not be confirmed "
+            + "as the one you asked for before the time ran out, so nothing was played. Try again."
+    case .ownedUnplayable(let matched):
+        return "'\(title)' is already in your library (\(matched) matching track(s)), but none of them is "
+            + "playable yet (pre-release or removed), so nothing was played."
     case .unreadable:
         // Only what is known: the add ran, so what the library holds now
         // cannot be claimed either way; no container was built and nothing
