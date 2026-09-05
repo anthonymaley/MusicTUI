@@ -62,6 +62,13 @@ enum CatalogRowResolution: Equatable {
 /// user's own pre-existing copy of the same song is not a source of ambiguity:
 /// it was there before, so it is not new.
 ///
+/// The scheduled attempts are followed by exactly one more read, which both
+/// confirms a candidate first seen on the last attempt and is the only
+/// snapshot the pre-existing fallback consults. So the effective deadline for
+/// a new row's FIRST sighting is the last scheduled attempt, about
+/// `(attempts - 1) * interval` seconds; a row that first appears later than
+/// that is reported as not yet visible rather than played on one look.
+///
 /// Polling exists because the row is not there immediately. Measured
 /// 2026-09-03: an added track was not resolvable at t+0, t+1 or t+2 and
 /// appeared at t+3, one second inside the fixed four-second sleep this
@@ -92,26 +99,28 @@ func resolveAddedCatalogRow(title: String,
     }
 
     let budget = max(1, attempts)
-    var everyReadFailed = true
-    var lastRows: [LibraryRowIdentity]?
-    // The candidate seen alone in the PREVIOUS observation. A new row must be
-    // the sole plausible arrival twice running before it is played (Anthony,
-    // 2026-09-04, as cheap hardening against a coincidental arrival winning a
-    // single look). This does not close that residual; it narrows it.
+    // The candidate seen alone in the PREVIOUS successful observation. A new
+    // row must be the sole plausible arrival twice running before it is played
+    // (Anthony, 2026-09-04, as cheap hardening against a coincidental arrival
+    // winning a single look). This narrows that residual; it does not close it.
     var confirmedOnce: String?
+
+    func newPlausible(in rows: [LibraryRowIdentity]) -> [LibraryRowIdentity] {
+        rows.filter { !idsBefore.contains($0.persistentID) }.filter(matches)
+    }
 
     for attempt in 1...budget {
         guard let rows = readRows() else {
             // Unknown, not empty. Keep looking: a transient AppleScript failure
-            // should not be reported as "the track never arrived".
+            // should not be reported as "the track never arrived". But an
+            // unreadable observation is no evidence the candidate survived, so
+            // it breaks the consecutive run (Codex, on 9773068: seen, unknown,
+            // seen is not two in a row).
+            confirmedOnce = nil
             if attempt < budget { wait(interval) }
             continue
         }
-        everyReadFailed = false
-        lastRows = rows
-
-        let plausible = rows.filter { !idsBefore.contains($0.persistentID) }.filter(matches)
-
+        let plausible = newPlausible(in: rows)
         if plausible.count > 1 {
             // Waiting cannot disambiguate what is already ambiguous.
             return .ambiguous(count: plausible.count, amongPreExisting: false)
@@ -122,20 +131,40 @@ func resolveAddedCatalogRow(title: String,
             }
             confirmedOnce = only.persistentID
         } else {
-            // It vanished, so any earlier sighting does not count towards the
-            // two consecutive observations.
+            // It vanished, so any earlier sighting does not count.
             confirmedOnce = nil
         }
         if attempt < budget { wait(interval) }
     }
 
-    if everyReadFailed { return .unreadable }
+    // One fresh read after the budget, and it does two jobs. It is the
+    // confirming observation for a candidate first seen on the final scheduled
+    // attempt, so the budget does not starve a legitimate late arrival. And it
+    // is the ONLY snapshot the pre-existing fallback may use: an earlier read
+    // that happened to succeed is stale by now, and acting on it would turn
+    // "the library is unreadable" into a positive selection (Codex, on
+    // 9773068). If this read fails, we do not know what is there.
+    wait(interval)
+    guard let current = readRows() else { return .unreadable }
+
+    let arrived = newPlausible(in: current)
+    if arrived.count > 1 {
+        return .ambiguous(count: arrived.count, amongPreExisting: false)
+    }
+    if let only = arrived.first, confirmedOnce == only.persistentID {
+        return .resolved(persistentID: only.persistentID, viaPreExisting: false)
+    }
 
     // The idempotent add: the track was already in the library, so nothing new
-    // ever appeared. Fall back to metadata alone, and only to a row that can
-    // actually play. This is a weaker claim than the set difference and the
-    // message says so.
-    let owned = (lastRows ?? []).filter(matches).filter { isPlayableCloudStatus($0.cloudStatus) }
+    // ever appeared. Fall back to a row that WAS there before the add, by the
+    // identity fact `idsBefore` already holds, then by metadata, and only to a
+    // row that can actually play. A new row seen once is not pre-existing and
+    // must never be described to the user as if it were. This is a weaker
+    // claim than the set difference and the message says so.
+    let owned = current
+        .filter { idsBefore.contains($0.persistentID) }
+        .filter(matches)
+        .filter { isPlayableCloudStatus($0.cloudStatus) }
     if owned.count == 1, let only = owned.first {
         return .resolved(persistentID: only.persistentID, viaPreExisting: true)
     }
@@ -160,8 +189,11 @@ func catalogRowResolutionMessage(_ resolution: CatalogRowResolution, title: Stri
             : "Added '\(title)' to your library, but \(count) new tracks match it, "
                 + "so it is not clear which one you meant and nothing was played."
     case .unreadable:
+        // Only what is known: the add ran, so what the library holds now
+        // cannot be claimed either way; no container was built and nothing
+        // played.
         return "Added '\(title)' to your library, but your library could not be read afterwards, "
-            + "so nothing was played. Nothing else was changed."
+            + "so nothing was played and no temporary playlist was created."
     }
 }
 

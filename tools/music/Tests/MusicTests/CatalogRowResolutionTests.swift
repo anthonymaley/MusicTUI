@@ -103,7 +103,7 @@ final class CatalogRowResolutionTests: XCTestCase {
             readRows: { [] },
             wait: { _ in waits += 1 })
         XCTAssertEqual(out, .notYetVisible(attempts: 5))
-        XCTAssertEqual(waits, 4)
+        XCTAssertEqual(waits, 5, "four between the scheduled looks, one before the final read")
     }
 
     // MARK: - Messages
@@ -197,7 +197,7 @@ extension CatalogRowResolutionTests {
         XCTAssertEqual(out, .unreadable)
         XCTAssertNotEqual(out, .notYetVisible(attempts: 3),
                           "not knowing what is there is not the same as knowing nothing arrived")
-        XCTAssertEqual(waits, 2, "it keeps looking rather than giving up on the first failure")
+        XCTAssertEqual(waits, 3, "it keeps looking rather than giving up on the first failure")
     }
 
     /// A read that fails once and then succeeds must still resolve. A transient
@@ -215,5 +215,93 @@ extension CatalogRowResolutionTests {
             },
             wait: { _ in })
         XCTAssertEqual(out, .resolved(persistentID: "NEW1", viaPreExisting: false))
+    }
+}
+
+/// Codex's scoped re-review of e4f4bc5..9773068 found three orderings in the
+/// fallback that select the wrong track. Each test below reproduced its finding
+/// against 9773068 (failing) before the fix landed.
+extension CatalogRowResolutionTests {
+
+    /// Important 1: "pre-existing" is an identity fact the function already
+    /// holds (`idsBefore`), not a metadata description. A new row seen only by
+    /// the read after the budget must not be played as if it were already
+    /// owned, and must not be described to the user that way.
+    func testANewRowSeenOnlyByTheFinalReadIsNotPlayedAsPreExisting() {
+        var look = 0
+        let out = resolveAddedCatalogRow(
+            title: "Teardrop", artist: "Massive Attack", album: "Mezzanine",
+            idsBefore: [], attempts: 2,
+            readRows: {
+                look += 1
+                return look <= 2 ? [] : [self.row("NEW", "Teardrop", "Massive Attack", "Mezzanine")]
+            },
+            wait: { _ in })
+        XCTAssertEqual(out, .notYetVisible(attempts: 2),
+                       "one sighting is not two, and a new row is not a pre-existing one")
+    }
+
+    /// The same boundary, the legitimate way round: a row first seen on the
+    /// final scheduled attempt gets exactly one confirming read rather than
+    /// being starved by the budget.
+    func testANewRowFirstSeenOnTheFinalAttemptGetsOneConfirmingRead() {
+        var look = 0
+        let out = resolveAddedCatalogRow(
+            title: "Teardrop", artist: "Massive Attack", album: "Mezzanine",
+            idsBefore: [], attempts: 3,
+            readRows: {
+                look += 1
+                return look < 3 ? [] : [self.row("NEW", "Teardrop", "Massive Attack", "Mezzanine")]
+            },
+            wait: { _ in })
+        XCTAssertEqual(out, .resolved(persistentID: "NEW", viaPreExisting: false))
+        XCTAssertEqual(look, 4, "three scheduled looks, then one confirming read")
+    }
+
+    /// Important 2: the fallback must read the library NOW, not reuse the last
+    /// read that happened to succeed. A success followed by nothing but
+    /// failures is an unreadable library, and an unreadable library is not a
+    /// positive selection.
+    func testAStaleSuccessfulReadIsNotUsedOnceLaterReadsFail() {
+        var look = 0
+        let out = resolveAddedCatalogRow(
+            title: "Teardrop", artist: "Massive Attack", album: "Mezzanine",
+            idsBefore: ["OWNED"], attempts: 3,
+            readRows: {
+                look += 1
+                return look == 1 ? [self.row("OWNED", "Teardrop", "Massive Attack", "Mezzanine")] : nil
+            },
+            wait: { _ in })
+        XCTAssertEqual(out, .unreadable,
+                       "the one good read is stale by the time the fallback runs")
+    }
+
+    /// Important 3: an unreadable observation is no evidence the candidate
+    /// survived, so it breaks the consecutive run. Seen, unknown, seen is one
+    /// sighting followed by one sighting, not two in a row.
+    func testAnUnreadableObservationBreaksTheConsecutiveRun() {
+        var look = 0
+        let out = resolveAddedCatalogRow(
+            title: "Teardrop", artist: "Massive Attack", album: "Mezzanine",
+            idsBefore: [], attempts: 3,
+            readRows: {
+                look += 1
+                switch look {
+                case 1, 3: return [self.row("C", "Teardrop", "Massive Attack", "Mezzanine")]
+                case 2: return nil
+                default: return []
+                }
+            },
+            wait: { _ in })
+        XCTAssertEqual(out, .notYetVisible(attempts: 3),
+                       "look 3 must start a new run, and the confirming read is empty")
+    }
+
+    /// The `.unreadable` message may only state what the code knows.
+    func testTheUnreadableMessageClaimsOnlyWhatIsKnown() {
+        let m = catalogRowResolutionMessage(.unreadable, title: "T") ?? ""
+        XCTAssertFalse(m.contains("Nothing else was changed"),
+                       "the add already ran; the code cannot know what it changed")
+        XCTAssertTrue(m.contains("nothing was played"))
     }
 }
