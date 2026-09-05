@@ -239,8 +239,11 @@ func catalogRowResolutionMessage(_ resolution: CatalogRowResolution, title: Stri
         return "Added '\(title)' to your library and a new track appeared, but it could not be confirmed "
             + "as the one you asked for before the time ran out, so nothing was played. Try again."
     case .newRowUnplayable:
-        return "Added '\(title)' to your library and it appeared, but it is not playable yet "
-            + "(pre-release or removed), so nothing was played."
+        // "A new matching track", not "it": the resolver knows a new row with
+        // matching metadata appeared, never that it is the song the add asked
+        // for. Same residual the comments above describe.
+        return "Added '\(title)' to your library and a new matching track appeared, but it is not "
+            + "playable yet (pre-release or removed), so nothing was played."
     case .ownedUnplayable(let matched):
         return "'\(title)' is already in your library (\(matched) matching track(s)), but none of them is "
             + "playable yet (pre-release or removed), so nothing was played."

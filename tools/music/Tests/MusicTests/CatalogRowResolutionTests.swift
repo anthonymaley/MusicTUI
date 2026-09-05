@@ -388,6 +388,9 @@ extension CatalogRowResolutionTests {
         let m = catalogRowResolutionMessage(.newRowUnplayable, title: "Teardrop") ?? ""
         XCTAssertTrue(m.contains("not playable"))
         XCTAssertFalse(m.contains("had not appeared"))
+        // Identity is not established, so the message may not say "it appeared".
+        XCTAssertTrue(m.contains("a new matching track appeared"))
+        XCTAssertFalse(m.contains("and it appeared"))
     }
 
     /// A new row that is unplayable on one look and playable on the next is
