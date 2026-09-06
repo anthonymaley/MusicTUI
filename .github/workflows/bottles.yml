@@ -279,7 +279,7 @@ jobs:
           ls -la
 
       - name: Upload the bottle and its JSON
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: bottle-${{ matrix.bottle_tag }}
           path: |
@@ -296,7 +296,7 @@ jobs:
       contents: read
     steps:
       - name: Download every bottle artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: bottle-*
           path: bottles
@@ -386,7 +386,7 @@ jobs:
           cat block.md
 
       - name: Upload the bottle block
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: bottle-block
           path: bottles/block.md
@@ -401,7 +401,7 @@ jobs:
       contents: write
     steps:
       - name: Download every bottle artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: bottle-*
           path: bottles
