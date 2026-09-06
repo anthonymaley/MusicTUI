@@ -651,6 +651,92 @@ release keep working, but every new release needs its own, so a tag whose runner
 has been retired quietly stops being covered at the next version bump rather
 than at the retirement date.
 
+## Music reports the delivered sample rate over AppleScript, and did not move the device to match
+
+Measured 2026-09-05 on one Mac Studio running macOS 26, with an SSL 2+ USB
+interface, and Lossless set to Hi-Res in Music's settings for the lossless
+runs. Twenty-seven plays across nine tracks, each read at least once during
+playback and most of them twice.
+
+At rest, `sample rate` on a library track did not expose the hi-res variant:
+across a 14,271 row library it was 44100 on 14,093 rows and never above
+48000, although 779 of those rows have a hi-res lossless variant in the
+catalog. During playback
+the same property on `current track` reports the stream Music is actually
+delivering: 96000 while a hi-res lossless stream played, 48000 for a Dolby
+Atmos or 48 kHz AAC stream, 44100 for 44.1 kHz content of either codec. It
+stayed at the content rate when the output device's rate was switched under
+it. Two neighbouring properties do not follow the stream: `kind` kept
+reporting "Apple Music AAC audio file" while ALAC played, and `bit rate`
+reported 256 during lossless playback. So the rate is readable and the codec
+is not, and 44.1 kHz AAC and 44.1 kHz ALAC read the same.
+
+The output device's nominal rate did not follow the content by itself in any
+run. With a 96 kHz or a 192 kHz stream playing, the interface stayed at 48
+kHz until something set it. Setting `kAudioDevicePropertyNominalSampleRate`
+on the interface, to a value inside its advertised ranges, read back within
+0.6 to 0.75 s in seven switches, the interface's physical format followed,
+and Music kept playing with its position advancing across every switch.
+Music's own audio queue for a lossless play was created with a 96 kHz ALAC
+source format, its decoder logged 24-bit LPCM at 96 kHz, both with the
+device still at 48 kHz, and the queue was not recreated when the device
+rate changed. What that queue presents to Music's output unit, and where a
+48 kHz device gets reconciled with 96 kHz content, is not exposed by Music's
+log or the audio daemon's, so nothing here says whether Music itself
+converts. Changing the system default
+output device mid-play was followed live too. Whether a switch is audible was
+not measured.
+
+Music's own log, at debug level in a live `/usr/bin/log stream --process
+Music` only, names the HLS alternates it chooses (`audio-alac-stereo-96000-24`,
+`audio-alac-stereo-192000-24`, `audio-stereo-256`) and logs
+`SetStreamedLosslessLimits 0` with Lossless off and `2` with Hi-Res on.
+Albums that carry a Dolby Atmos mix played as Atmos, 16 channels at 48 kHz,
+both on the Studio Display speakers and through a two-channel USB interface
+while Music's Atmos setting was Automatic. With that setting Off, the same
+album streamed its 192 kHz 24-bit ALAC alternate, Music logged "alac, high
+res lossless, 24 bit, 192.0 kHz", the AppleScript rate read 192000, and the
+interface switched 48 to 192 kHz and back under it with playback continuing.
+
+## Music's Lossless setting was neither writable nor readable from an SSH-spawned shell
+
+Measured 2026-09-05 from a shell whose responsible process was an SSH login.
+Music reads a `losslessEnabled` key and a
+`preferredStreamPlaybackAudioQuality` key from its preferences (its own
+lookups are logged), but writing them with `defaults`, as a boolean, as the
+integers 2 to 5, or as the strings `HLSLossless` and
+`HLSHighResolutionLossless`, with or without relaunching Music, never changed
+what it streamed. The checkbox in Music's Settings did. After that toggle,
+`defaults read com.apple.Music` reported the domain did not exist and
+`defaults export` returned an empty plist, while the plist file itself had
+grown and could not be opened directly. A Terminal-spawned shell and a signed
+app are untried. From that shell, Lossless mode was visible only through the
+delivered stream: the AppleScript rate shows a hi-res stream, and at 44.1
+kHz only Music's live log separates ALAC from AAC, since both read 44100.
+
+## A process tap on Music delivered silence without a privacy grant, and an SSH-responsible process could not request it
+
+Measured 2026-09-05 on one Mac. `AudioHardwareCreateProcessTap` on Music's process
+object succeeded, the aggregate device started, and every capture was all
+zeros, for a FairPlay stream and for an unprotected local file alike. The
+privacy daemon's log said why: "Policy disallows prompt for
+Sub:{/usr/libexec/sshd-keygen-wrapper} ... access to kTCCServiceAudioCapture
+denied". The responsible process for a shell reached over SSH cannot show the
+system-audio-recording prompt, so the tap is created and then muted. The
+tap's format was also 48000 Hz while the device ran at 96000; it does not
+follow the device.
+
+## `current AirPlay devices` is empty when only the computer is selected
+
+Measured 2026-09-05. With the Mac itself as the only selected output,
+`current AirPlay devices` returns an empty list. `every AirPlay device whose
+selected is true` returns the computer device, and `set current AirPlay
+devices to {...}` by name restores a route. Inside a `tell application
+"Music"` block, a variable named `names` resolves to Music terminology and
+fails with -1727, `first` is a reserved word, and `AppleScript's text item
+delimiters` resolves to a Music constant and fails with -10003; build strings
+by concatenation and split outside the block.
+
 ## Corrections
 
 If any of this is wrong or has changed in a later macOS release, please open an issue.
