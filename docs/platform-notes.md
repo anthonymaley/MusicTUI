@@ -478,6 +478,9 @@ Library state was unchanged across all runs: 14,251 tracks before and after,
 user playlists returned to their starting count once the container was deleted
 by exact name, and both seed tracks remained in the library exactly once.
 `duplicate` into a playlist adds no library rows.
+Measured again on 2026-09-03, four times across two albums: the row that
+`duplicate` creates in a playlist keeps the source track's `persistent ID`, which
+is what lets a temporary container be confirmed by identity rather than by count.
 
 **Autoplay is absent from the scripting interface and from preferences.** The
 string does not appear anywhere in Music.app's `sdef` output, a 608 line dump
