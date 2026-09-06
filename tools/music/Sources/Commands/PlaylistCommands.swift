@@ -336,7 +336,7 @@ func playlistDeleteScript(name: String) -> String {
 /// costs one leftover row a later sweep collects, a wrongly collected one
 /// destroys live playback.
 func playlistCleanupScript() -> String {
-    albumSweepGuardedScript(prefixes: ["__temp__", albumPlaylistPrefix],
+    albumSweepGuardedScript(prefixes: [manualTempPlaylistPrefix, albumPlaylistPrefix],
                             deferReturn: "return \"deferred\"", countDeleted: true)
 }
 
@@ -534,7 +534,7 @@ func albumSweepDecision(playerState: String?, contextReadable: Bool) -> AlbumSwe
 ///
 /// `prefixes` is the set of temp-playlist prefixes the delete loop matches —
 /// `[albumPlaylistPrefix]` alone for the narrower, automatic stale sweep;
-/// `["__temp__", albumPlaylistPrefix]` for the user-invoked general cleanup.
+/// `[manualTempPlaylistPrefix, albumPlaylistPrefix]` for the user-invoked general cleanup.
 /// `deferReturn` is the AppleScript `return` statement text BOTH guards emit
 /// when they defer: `return "deferred"` for the cleanup command (which
 /// reports an honest outcome), a bare `return` for the stale sweep (which
@@ -1088,7 +1088,7 @@ struct PlaylistTemp: ParsableCommand {
         }
 
         let timestamp = Int(Date().timeIntervalSince1970)
-        let name = tempPlaylistCreationPrefix + "\(timestamp)"
+        let name = manualTempPlaylistPrefix + "\(timestamp)"
         let backend = AppleScriptBackend()
 
         _ = try syncRun {
@@ -1210,7 +1210,7 @@ func playlistCleanupMessage(_ result: PlaylistCleanupResult) -> String {
     // the one string every other arm exists to avoid.
     let unknown = "Cleanup ran, but its result couldn't be read, so it's unknown how many temp playlists "
         + "were removed. Run `music playlist cleanup` again, or check your library for a leftover "
-        + "__temp__ or \(albumPlaylistPrefix.trimmingCharacters(in: .whitespaces)) playlist."
+        + "\(manualTempPlaylistPrefix) or \(albumPlaylistPrefix.trimmingCharacters(in: .whitespaces)) playlist."
     switch result {
     case .removed(let count):
         // A removal of zero is a contradiction the parser cannot produce

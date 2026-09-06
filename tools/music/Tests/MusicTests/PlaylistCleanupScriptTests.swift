@@ -9,6 +9,23 @@ final class PlaylistCleanupScriptTests: XCTestCase {
         XCTAssertTrue(s.contains(albumPlaylistPrefix))
     }
 
+    /// The cleanup sweep reads the same constant the creation sites emit, so
+    /// the two can no longer drift apart. The literal assertion above is kept
+    /// on purpose: together they say two distinct things, that cleanup is
+    /// generated from the shared prefix, and that the prefix is still
+    /// byte-for-byte `__temp__`, so containers from earlier versions stay
+    /// collectable. Mutation-checked on the full suite 2026-09-06 with the
+    /// constant set to `__tempX__`: this test and the whole-script equality in
+    /// `AlbumSweepDecisionTests` passed, while the literal pins failed
+    /// (`testCollectsBothOwnedPrefixes`, the `__temp__`-named fixture in
+    /// `SweepScriptExecutionTests`, and the display tests that hide `__temp__`
+    /// rows), so the sweep follows the constant and nothing else does.
+    func testCleanupPrefixIsTheSharedConstant() {
+        let s = playlistCleanupScript()
+        XCTAssertTrue(s.contains("(nm starts with \"\(manualTempPlaylistPrefix)\")"),
+                      "cleanup must match the prefix the creation sites emit")
+    }
+
     /// The command is user invoked. Deleting a container someone is audibly
     /// listening to is worse than leaving a row behind, whatever its prefix.
     func testSparesEveryInUsePlayerState() {

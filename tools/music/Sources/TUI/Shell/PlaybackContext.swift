@@ -104,12 +104,12 @@ func cleanContextName(_ name: String) -> String {
         return rest
     }
     // PRECEDENCE, load-bearing: this must precede the generic strip loop.
-    // `tempPlaylistCreationPrefix` is in `tempPlaylistPrefixes` so the rail
+    // `manualTempPlaylistPrefix` is in `tempPlaylistPrefixes` so the rail
     // hides it, which means the loop below would otherwise match a `__temp__`
     // name and return the bare timestamp. Pinned by
     // `testTempLabelBranchPrecedesGenericPrefixStrip`, which fails if the two
     // are swapped rather than merely checking the output.
-    if name.hasPrefix(tempPlaylistCreationPrefix) { return temporaryPlaylistLabel }
+    if name.hasPrefix(manualTempPlaylistPrefix) { return temporaryPlaylistLabel }
     for p in tempPlaylistPrefixes where name.hasPrefix(p) {
         return String(name.dropFirst(p.count))
     }

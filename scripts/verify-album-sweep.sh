@@ -10,13 +10,14 @@
 #
 # It DOES invoke `music playlist cleanup` once, as the behaviour under test,
 # and that command deletes EVERY owned temp container in the library
-# (`__temp__` and `__album__ `), not only this script's four. That is why the
-# preflight below FAILS CLOSED four ways: if any owned container already
-# exists, if the probe cannot be read, if normalising its output fails, or if
-# the filter over it fails. The grep is run SEPARATELY from the normalisation
-# because grep is the only stage with a legitimate non-zero status (exit 1,
-# "no match"); collapsed into one pipeline, pipefail reports the rightmost
-# non-zero and that "no match" masks an earlier stage's real failure.
+# (the `manualTempPlaylistPrefix` and `albumPlaylistPrefix` values, read from
+# source below), not only this script's four. That is why the
+# preflight below FAILS CLOSED five ways: if either prefix cannot be read from
+# source, if the checkout does not build, if the probe cannot be read, if
+# normalising its output fails, or if any owned container already exists.
+# Ownership is a LITERAL prefix comparison per name, never a regex built from
+# the values, so a value that happens to contain a metacharacter cannot
+# silently change what counts as owned.
 # The broad cleanup is therefore only exercised in a fixture positively
 # confirmed clean, so its measured effect is exactly the four containers this
 # run created, and the net-effect assertions below are meaningful rather than
@@ -25,21 +26,71 @@
 # Run BY HAND against a real, ALREADY-RUNNING Music.app. Never launches
 # Music.app, never starts playback, never touches a library track.
 #
-# Usage: scripts/verify-album-sweep.sh [path-to-music-binary]
-#   (default: $HOME/.local/bin/music)
+# Usage: scripts/verify-album-sweep.sh
+#   No arguments. The binary under test is BUILT from this checkout
+#   (`swift build -c release` in tools/music) and run from its build product,
+#   because the owned prefixes are read from this checkout's source and a
+#   binary from anywhere else could carry different ones (Codex, 2026-09-06).
 #
 # Exits non-zero on any assertion failure or on a dirty preflight. The trap
 # never references a relative path, so teardown is safe regardless of cwd.
 set -euo pipefail
 
-MUSIC_BIN="${1:-$HOME/.local/bin/music}"
-OWNED_PREFIXES=('__temp__' '__album__ ')
-# Single source of truth: the preflight regex is BUILT from OWNED_PREFIXES, so
-# a prefix added to the array cannot fail to reach the filter. Entries are used
-# as ERE fragments, so an entry containing a metacharacter would break the
-# filter — which is why the filter's exit status is checked below rather than
-# being swallowed.
-OWNED_RE=$(printf '^%s|' "${OWNED_PREFIXES[@]}"); OWNED_RE=${OWNED_RE%|}
+if [ "$#" -ne 0 ]; then
+    echo "✗ this gate takes no arguments: the binary under test is built from this checkout" >&2
+    exit 2
+fi
+# The two owned prefixes are READ FROM SOURCE, never copied here: the cleanup
+# under test matches `manualTempPlaylistPrefix` and `albumPlaylistPrefix`, and a
+# gate carrying its own copies would stop protecting pre-existing containers the
+# moment either value moved (found by Codex, 2026-09-06). The binary under test
+# is built from the same checkout below, so the two cannot come from different
+# sources. Fails closed if either constant cannot be read.
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+read_swift_string_constant() {
+    # $1 = Swift file, $2 = top-level `let` name. Prints the literal's contents;
+    # a trailing space inside the literal (`__album__ `) is preserved. Accepts
+    # exactly ONE simple quoted literal: a second definition or a backslash
+    # escape in the value is refused rather than guessed at.
+    local matches
+    matches=$(sed -n "s/^let $2 = \"\(.*\)\"\$/\1/p" "$1")
+    [ -n "$matches" ] || return 1
+    [ "$(printf '%s\n' "$matches" | wc -l | tr -d ' ')" -eq 1 ] || return 1
+    case "$matches" in *\\*) return 1 ;; esac
+    printf '%s' "$matches"
+}
+if ! TEMP_PREFIX=$(read_swift_string_constant "$REPO_ROOT/tools/music/Sources/TUI/PlaylistDataSources.swift" manualTempPlaylistPrefix); then
+    echo "✗ could not read manualTempPlaylistPrefix from source; refusing to guess a prefix" >&2
+    exit 1
+fi
+if ! ALBUM_PREFIX=$(read_swift_string_constant "$REPO_ROOT/tools/music/Sources/TUI/AlbumContainer.swift" albumPlaylistPrefix); then
+    echo "✗ could not read albumPlaylistPrefix from source; refusing to guess a prefix" >&2
+    exit 1
+fi
+OWNED_PREFIXES=("$TEMP_PREFIX" "$ALBUM_PREFIX")
+# Ownership is decided by LITERAL prefix comparison, never by a regex built
+# from the values: a value carrying a regex metacharacter (`__temp.+`, say)
+# would compile, return an ordinary status, and silently match a different
+# language than Swift's `starts with` (Codex, 2026-09-06). A quoted pattern in
+# bash's `[[ == ]]` is literal, which is exactly the comparison the sweep makes.
+is_owned_name() {
+    local name="$1" p
+    for p in "${OWNED_PREFIXES[@]}"; do
+        [[ "$name" == "$p"* ]] && return 0
+    done
+    return 1
+}
+
+# Build the binary under test from THIS checkout, so the prefixes read above
+# and the sweep that runs below come from the same source. Same configuration
+# as scripts/install.sh. Fails closed on a failed build; the last lines of the
+# build output are shown either way.
+echo "-- building the binary under test from this checkout --"
+if ! swift build -c release --package-path "$REPO_ROOT/tools/music" 2>&1 | tail -n 20; then
+    echo "✗ swift build failed; refusing to run the gate against any other binary" >&2
+    exit 1
+fi
+MUSIC_BIN="$REPO_ROOT/tools/music/.build/release/music"
 
 if [ ! -x "$MUSIC_BIN" ]; then
     echo "✗ Not executable: $MUSIC_BIN" >&2
@@ -104,14 +155,9 @@ if ! all_names=$(read_playlist_names); then
     exit 1
 fi
 # `|| true` here would defeat pipefail exactly as `2>/dev/null` defeated the
-# probe above: grep exit 1 means "no match" (genuinely clean), but exit 2 means
-# the filter FAILED — an unbalanced bracket in an OWNED_PREFIXES entry, say —
-# and collapsing the two reports a clean fixture that was never established.
-# Under pipefail a pipeline reports the RIGHTMOST non-zero status, so grep's
-# exit 1 ("no match" — the clean case) masked a failure in tr or sed and read as
-# a clean fixture. The grep is therefore separated from the normalisation: it is
-# the only stage with a legitimate non-zero, so any non-zero from the
-# normalisation pipeline is a real failure.
+# probe above. The normalisation pipeline has no legitimate non-zero status,
+# so any non-zero from it is a real failure and aborts the preflight rather
+# than reading as a clean fixture.
 set +e
 stripped=$(printf '%s' "$all_names" | tr ',' '\n' | sed 's/^ *//')
 strip_rc=$?
@@ -121,16 +167,16 @@ if [ "$strip_rc" -ne 0 ]; then
     echo "  Refusing to run a broad cleanup on an unverified fixture." >&2
     exit 1
 fi
-set +e
-preexisting=$(printf '%s' "$stripped" | grep -E "$OWNED_RE")
-filter_rc=$?
-set -e
-if [ "$filter_rc" -gt 1 ]; then
-    echo "✗ PREFLIGHT ABORTED: could not filter the playlist list (exit $filter_rc)." >&2
-    echo "  OWNED_RE was: $OWNED_RE" >&2
-    echo "  Refusing to run a broad cleanup on an unverified fixture." >&2
-    exit 1
-fi
+# The ownership test is a literal comparison per name (is_owned_name above),
+# so there is no filter stage with an exit status to interpret.
+preexisting=""
+while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    if is_owned_name "$line"; then
+        preexisting="${preexisting}${line}"$'\n'
+    fi
+done <<< "$stripped"
+preexisting=${preexisting%$'\n'}
 if [ -n "$preexisting" ]; then
     echo "✗ PREFLIGHT REFUSED: owned temp container(s) already exist:" >&2
     # Quoted + sed rather than unquoted printf: every `__album__ ` name
@@ -141,7 +187,7 @@ if [ -n "$preexisting" ]; then
     echo "  Remove or let them settle first, then re-run." >&2
     exit 1
 fi
-echo "✓ preflight: no pre-existing __temp__ or __album__ containers"
+echo "✓ preflight: no pre-existing owned containers (prefixes read from source: '${TEMP_PREFIX}' '${ALBUM_PREFIX}')"
 
 echo "-- baseline --"
 baseline_playlists=$(count_user_playlists)
@@ -151,7 +197,7 @@ echo "library tracks: $baseline_tracks"
 
 echo "-- creating four throwaway containers --"
 for i in 1 2 3 4; do
-    name="__album__ $(uuidgen) — SWEEP-VERIFY-THROWAWAY"
+    name="${ALBUM_PREFIX}$(uuidgen) — SWEEP-VERIFY-THROWAWAY"
     NAMES+=("$name")
     osascript -e "tell application \"Music\" to make new playlist with properties {name:\"$(esc "$name")\"}" >/dev/null
     echo "  created: $name"

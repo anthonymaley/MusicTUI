@@ -78,7 +78,7 @@ final class AlbumSweepDecisionTests: XCTestCase {
     /// silently diverge in the guard preamble again.
     func testBothSweepScriptsAreBuiltFromTheSharedGuardedGenerator() {
         XCTAssertEqual(playlistCleanupScript(),
-                       albumSweepGuardedScript(prefixes: ["__temp__", albumPlaylistPrefix],
+                       albumSweepGuardedScript(prefixes: [manualTempPlaylistPrefix, albumPlaylistPrefix],
                                                deferReturn: "return \"deferred\"", countDeleted: true))
         XCTAssertEqual(albumStaleSweepScript(),
                        albumSweepGuardedScript(prefixes: [albumPlaylistPrefix],
@@ -118,7 +118,7 @@ final class AlbumSweepDecisionTests: XCTestCase {
     /// Containers only, whatever prefixes are supplied: the shared generator
     /// itself must never be able to reach a library row.
     func testGeneratedScriptCanNeverReachALibraryRow() {
-        let script = albumSweepGuardedScript(prefixes: ["__temp__", albumPlaylistPrefix],
+        let script = albumSweepGuardedScript(prefixes: [manualTempPlaylistPrefix, albumPlaylistPrefix],
                                              deferReturn: "return \"deferred\"", countDeleted: true)
         XCTAssertFalse(script.contains("track"), "must never name a track")
         XCTAssertFalse(script.contains("song"), "must never name a song")

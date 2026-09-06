@@ -54,7 +54,7 @@ final class PlaybackContextTests: XCTestCase {
         XCTAssertEqual(cleanContextName("__temp__"), "Temporary playlist")
     }
 
-    /// PRECEDENCE, and it is load-bearing. `tempPlaylistCreationPrefix` is in
+    /// PRECEDENCE, and it is load-bearing. `manualTempPlaylistPrefix` is in
     /// `tempPlaylistPrefixes` so the rail hides it, which means the generic
     /// strip loop would ALSO match a `__temp__` name and return the bare
     /// timestamp. The label branch must be reached first.
