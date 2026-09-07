@@ -740,6 +740,57 @@ fails with -1727, `first` is a reserved word, and `AppleScript's text item
 delimiters` resolves to a Music constant and fails with -10003; build strings
 by concatenation and split outside the block.
 
+## An open Settings window makes scripted playback a silent no-op
+
+Measured 2026-09-06. With a Settings window open in Music.app, three scripted
+`play` calls across two call forms all returned success and started nothing, over
+about eight minutes. Each command exited 0, `player state` stayed `paused`,
+`current track` kept throwing -1728, and no audio began.
+
+At least one of those plays was deferred rather than dropped. When the window was
+closed at 09:00:58 a play began immediately, at whatever volume the player was
+already holding, and ran until it was stopped. Music's own log matches: the
+blocked minutes carry volume changes and nothing else, with no queue set and no
+item change, and the moment the window closed a `SetPlaybackQueue` command was
+delivered and the now playing item changed. What the log does not show is what
+became of the other two plays, so read this as one command surviving the block
+rather than as a queue that replays everything in order.
+
+Nothing in the log names the window. An `osascript` process could not see it
+either, because the accessibility route is refused to a shell reached over SSH; a
+locally launched or accessibility-authorised process was not tried. From the
+outside this is indistinguishable from a broken track, a broken output device or
+a dead playback engine. Ruled out by evidence before the window was found: the
+track, the play form, the network, the audio device layout, and any logged alert.
+
+Two practical consequences. If a scripted play returns success and nothing
+happens, look at the Mac's screen before debugging anything else. And a command
+sent during the block may still run when it lifts, so set the volume first rather
+than assuming a silent no-op stays silent.
+
+## With nothing loaded Music reports `paused`, and `stop` does not change it
+
+Measured 2026-09-06 and re-observed 2026-09-07 on macOS 26.6.2. A Music.app with
+no track loaded does not report `stopped`. `player state` reads `paused`, and
+both `current track` and `current playlist` throw -1728. Sending `stop` in that
+state returns success and leaves `paused` behind it. Both observations agree, on
+two different days.
+
+One route to a genuine `stopped` was measured: playing a single library track
+with `sound volume` set to 0 and then sending `stop` reached `stopped` with no
+current track, in about half a second (2026-09-06, one observation). Whether any
+other verb reaches it without loading something was not tested.
+
+`set mute to true` is not available as the quiet half of that recipe. It was
+refused with Music error 9038 on both days, once during the Settings-window block
+above and once in an ordinary empty state with no window open, so the refusal is
+not a symptom of that block. Both observations had nothing loaded; whether mute
+is settable with a track loaded was not tested.
+
+This matters to any script that reads `stopped` as the idle state and `paused` as
+a user who is listening and has paused. An idle Music.app reports the second, and
+`stop` will not move it to the first.
+
 ## Corrections
 
 If any of this is wrong or has changed in a later macOS release, please open an issue.
