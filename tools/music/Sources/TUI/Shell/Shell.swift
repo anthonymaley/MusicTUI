@@ -111,7 +111,32 @@ func runShell() {
             return scene
         case .radio:
             // makeCatalog() already returns nil with no developer token.
-            let scene = RadioScene(store: StationStore(), catalog: makeCatalog(), kittyEnabled: kittyEnabled)
+            //
+            // TEMPORARY DOGFOOD OPTION, session-scoped, READ HERE AND NOWHERE
+            // ELSE. `MUSICTUI_SOURCE_APP=1 music` routes Radio's `/` search
+            // through the MusicTUISource app, so it returns stations with no
+            // developer key configured at all.
+            //
+            // Deliberately NOT read inside makeCatalog(), on Anthony's bound
+            // (2026-09-09): that function has four callers and three are CLI
+            // radio commands - RadioCommands.swift:55 (`radio search`), :77
+            // (`radio play` URL resolution) and :90 (`radio add`). Reading the
+            // variable there would reroute those too, which is a provider
+            // precedence decision he reserved to himself.
+            //
+            // Undocumented in docs/guide.md on purpose, also his bound: writing
+            // a throwaway option into the public guide is how it accidentally
+            // becomes a supported interface. Dogfood instructions live in the
+            // private record.
+            //
+            // Only `/` moves. Live, Personal and station resolution keep using
+            // `catalog`, so with no key those stay empty exactly as they do
+            // today and Favorites keep working with no network at all.
+            let sourceApp: (any StationSearching)? =
+                ProcessInfo.processInfo.environment["MUSICTUI_SOURCE_APP"] == "1"
+                ? SourceAppStationSearch() : nil
+            let scene = RadioScene(store: StationStore(), catalog: makeCatalog(),
+                                   stationSearch: sourceApp, kittyEnabled: kittyEnabled)
             scenes[id] = scene
             return scene
         default:

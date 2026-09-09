@@ -11,6 +11,12 @@ final class RadioScene: Scene {
     private var nav = RadioNav.initial
     private let store: StationStore
     private let catalog: RadioCatalog?
+    /// Where `/` gets its stations. Defaults to `catalog`, so with nothing
+    /// injected this scene behaves exactly as it always has. Separate from
+    /// `catalog` on purpose: Live, Personal and `resolve(id:)` keep using the
+    /// REST route regardless, because the slice moves ONE search and widening
+    /// that here would reroute three more paths by accident.
+    private let stationSearch: StationSearching?
     private let opener: Opener
 
     private var live: [Station] = []
@@ -52,7 +58,7 @@ final class RadioScene: Scene {
     // upgrade the existing favorite in place, never duplicate it.
     private var resolveInbox: Station? = nil
     // commitSearch's search path.
-    private var searchInbox: (term: String, hits: [Station], failed: Bool)? = nil
+    private var searchInbox: (term: String, hits: [Station], failure: String?)? = nil
 
     // Real hero covers: store owns fetch/cache/render; onReady sets artDirty
     // under inboxLock (same discipline as the streaming inboxes above) and
@@ -70,10 +76,11 @@ final class RadioScene: Scene {
     // there and 0 is always < any positive railScroll.
     private var railScroll = 0
 
-    init(store: StationStore, catalog: RadioCatalog?, opener: Opener = SystemOpener(),
-         kittyEnabled: Bool = false) {
+    init(store: StationStore, catalog: RadioCatalog?, stationSearch: StationSearching? = nil,
+         opener: Opener = SystemOpener(), kittyEnabled: Bool = false) {
         self.store = store
         self.catalog = catalog
+        self.stationSearch = stationSearch ?? catalog
         self.opener = opener
         self.kittyEnabled = kittyEnabled
     }
@@ -241,16 +248,25 @@ final class RadioScene: Scene {
     private func commitSearch() {
         let input = searchText.trimmingCharacters(in: .whitespaces)
         guard !input.isEmpty else { return }
-        guard let catalog else { message = "✗ Search needs auth (music auth setup)"; return }
+        guard let stationSearch else { message = "✗ Search needs auth (music auth setup)"; return }
         searchInFlight = true
         message = "Searching \u{201C}\(input)\u{201D}\u{2026}"
         let term = input
         Thread.detachNewThread { [weak self] in
             var hits: [Station] = []
-            var failed = false
-            do { hits = try catalog.search(term: term) } catch { failed = true }
+            var failure: String? = nil
+            do {
+                hits = try stationSearch.searchStations(term: term)
+            } catch let sourceApp as SourceAppError {
+                // The source app's refusals say something a person can act on
+                // ("not running"), so they are carried through rather than
+                // flattened into the generic failure the REST route reports.
+                failure = sourceApp.message
+            } catch {
+                failure = "Search failed"
+            }
             guard let self else { return }
-            self.inboxLock.lock(); self.searchInbox = (term, hits, failed); self.inboxLock.unlock()
+            self.inboxLock.lock(); self.searchInbox = (term, hits, failure); self.inboxLock.unlock()
         }
     }
 
@@ -299,11 +315,10 @@ final class RadioScene: Scene {
         if let freshSearch {
             searchInFlight = false
             searchHits = freshSearch.hits
-            message = freshSearch.failed
-                ? "✗ Search failed"
-                : freshSearch.hits.isEmpty
+            message = freshSearch.failure.map { "✗ \($0)" }
+                ?? (freshSearch.hits.isEmpty
                     ? "No stations for \u{201C}\(freshSearch.term)\u{201D} — try pasting the station URL"
-                    : "Search \u{201C}\(freshSearch.term)\u{201D} — \(freshSearch.hits.count) result(s) \u{00B7} f favorite \u{00B7} Esc clear"
+                    : "Search \u{201C}\(freshSearch.term)\u{201D} — \(freshSearch.hits.count) result(s) \u{00B7} f favorite \u{00B7} Esc clear")
             changed = true
         }
         if artLanded { changed = true }
