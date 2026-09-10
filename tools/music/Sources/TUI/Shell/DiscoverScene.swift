@@ -592,8 +592,15 @@ final class DiscoverScene: Scene {
         case .item(let item):    artKey = item.id; artTemplate = item.artworkURL
         case .viewAll(let rail): artKey = rail.id; artTemplate = rail.items.first?.artworkURL
         }
-        let gw = min(24, max(0, w))
-        let gh = min(12, max(0, bottom - y - 8))
+        // Compose the text BEFORE sizing the cover, so the hero is measured
+        // against the rows genuinely left rather than a guessed reserve, and so
+        // the array measured here is the one drawn below. Was `min(24, w)` by
+        // `min(12, ...)`: a fixed box that ignored the pane it sat in, which
+        // showed as a small cover beside full-width text on any wide terminal.
+        let textLines = discoverPanelLines(selection: selection, width: w)
+        let (gw, gh) = discoverHeroBox(panelWidth: w, frameWidth: frame.width,
+                                       availableRows: max(0, bottom - y + 1),
+                                       textRows: textLines.count)
         var artBlock: ArtBlock? = nil
         if let artTemplate {
             artBlock = art.block(key: artKey,
@@ -616,35 +623,13 @@ final class DiscoverScene: Scene {
         y = afterArtY + 1
         lastPlaced = placed
 
-        func line(_ s: String) {
-            guard y <= bottom else { return }
-            out += ANSICode.moveTo(row: y, col: x) + s
+        // The description and everything else wrap beneath the cover, from the
+        // same array that sized it. The bottom guard stays: a pane too short for
+        // its own text clips the tail rather than drawing past the body.
+        for text in textLines {
+            guard y <= bottom else { break }
+            out += ANSICode.moveTo(row: y, col: x) + text
             y += 1
-        }
-
-        switch selection {
-        case .viewAll(let rail):
-            line("\(ANSICode.amber)RAIL\(ANSICode.reset)")
-            line("\(ANSICode.brightWhite)\(truncText(rail.title, to: w))\(ANSICode.reset)")
-            line("")
-            line("\(ANSICode.dim)\(rail.items.count) items\(ANSICode.reset)")
-        case .item(let item):
-            line("\(ANSICode.amber)\(discoverPanelBadge(item.detail))\(ANSICode.reset)")
-            line("\(ANSICode.brightWhite)\(truncText(item.name, to: w))\(ANSICode.reset)")
-            if let subtitle = item.subtitle {
-                line("\(ANSICode.dim)\(truncText(subtitle, to: w))\(ANSICode.reset)")
-            }
-            if let meta = discoverPanelMeta(item.detail) {
-                line("")
-                for chunk in discoverWrapText(meta, to: w, maxLines: 4) {
-                    line("\(ANSICode.dim)\(chunk)\(ANSICode.reset)")
-                }
-            }
-        }
-        let action = discoverPanelAction(selection)
-        if !action.isEmpty {
-            line("")
-            line("\(ANSICode.dim)\(action)\(ANSICode.reset)")
         }
         return out
     }

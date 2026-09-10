@@ -172,3 +172,72 @@ func discoverRowColumns(width: Int, hasSubtitle: Bool) -> (nameW: Int, subW: Int
     let subW = hasSubtitle ? max(0, (width - 8) / 3) : 0
     return (max(12, width - 8 - subW), subW)
 }
+
+// MARK: - Detail panel: text first, then the cover sized against what is left
+
+/// The panel's text, composed once. `renderPanel` measures this array to size
+/// the hero and then draws the very same array, so the space reserved for the
+/// text and the text actually drawn cannot disagree.
+///
+/// Composing before measuring is the point. The previous code reserved a
+/// hard-coded eight rows for text it had not counted, while an album row with a
+/// subtitle and a four-line description draws ten, so the action line was
+/// already being clipped on a short pane. A constant cannot track content.
+func discoverPanelLines(selection: DiscoverSelection, width w: Int) -> [String] {
+    var lines: [String] = []
+    switch selection {
+    case .viewAll(let rail):
+        lines.append("\(ANSICode.amber)RAIL\(ANSICode.reset)")
+        lines.append("\(ANSICode.brightWhite)\(truncText(rail.title, to: w))\(ANSICode.reset)")
+        lines.append("")
+        lines.append("\(ANSICode.dim)\(rail.items.count) items\(ANSICode.reset)")
+    case .item(let item):
+        lines.append("\(ANSICode.amber)\(discoverPanelBadge(item.detail))\(ANSICode.reset)")
+        lines.append("\(ANSICode.brightWhite)\(truncText(item.name, to: w))\(ANSICode.reset)")
+        if let subtitle = item.subtitle {
+            lines.append("\(ANSICode.dim)\(truncText(subtitle, to: w))\(ANSICode.reset)")
+        }
+        if let meta = discoverPanelMeta(item.detail) {
+            lines.append("")
+            for chunk in discoverWrapText(meta, to: w, maxLines: 4) {
+                lines.append("\(ANSICode.dim)\(chunk)\(ANSICode.reset)")
+            }
+        }
+    }
+    let action = discoverPanelAction(selection)
+    if !action.isEmpty {
+        lines.append("")
+        lines.append("\(ANSICode.dim)\(action)\(ANSICode.reset)")
+    }
+    return lines
+}
+
+/// The maximum box the detail panel's cover may occupy, which
+/// `renderArtHero` then clamps to square in pixels via the shared
+/// `kittySquareRect`. Returning a box rather than a final rect is deliberate:
+/// the square clamp stays in one place for every scene.
+///
+/// Width is the Now tab's hero width, `nowPlayingLeftWidth`, bounded by the
+/// pane the cover actually sits in. Anthony at the screen, 2026-09-10: "make
+/// the same size as now playing art".
+///
+/// An earlier revision of this function let the cover take the pane's full
+/// width, reasoning that Discover's panel is the rightmost zone so the browse
+/// screens' uncapped branch was the faithful analogue. That was wrong in
+/// practice: Discover's panel is far wider than a playlist hero on a wide
+/// terminal, so the cover grew past every other tab's and read as oversized.
+/// Calling the Now tab's own function rather than copying its 44...54
+/// interpolation is what stops the two drifting; a second copy of that curve is
+/// the twin-drift shape this repo has already paid for twice.
+///
+/// The `min` is what keeps it responsive downward: a pane narrower than the Now
+/// tab's hero wins, so the cover never overflows the column it is drawn in.
+///
+/// The single reserved row is the blank separator `renderPanel` writes between
+/// the cover and the text; taking it here keeps the off-by-one in the
+/// arithmetic rather than at the bottom of the pane.
+func discoverHeroBox(panelWidth: Int, frameWidth: Int,
+                     availableRows: Int, textRows: Int) -> (gw: Int, gh: Int) {
+    (gw: max(0, min(panelWidth, nowPlayingLeftWidth(frameWidth: frameWidth))),
+     gh: max(0, availableRows - textRows - 1))
+}

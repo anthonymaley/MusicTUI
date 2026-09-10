@@ -248,4 +248,128 @@ final class DiscoverLayoutTests: XCTestCase {
                        "song: already a no-op on Enter")
         XCTAssertFalse(discoverRightArrowActivates(nil))
     }
+
+
+    // MARK: - Panel hero geometry
+    //
+    // Dogfood friction, sitting 2026-09-10: "we use the full width for text but
+    // shrink the art". The panel drew its text across the whole pane while the
+    // cover was pinned to a hard 24x12 box, so a wide pane showed a small cover
+    // beside full-width text.
+
+    /// "Make the same size as now playing art" (dogfood, 2026-09-10, at the
+    /// screen). The first fix let the cover take the whole pane, which on a wide
+    /// terminal grew past every other tab's hero and read as oversized. The
+    /// width rule is now literally the Now tab's own function, so the two cannot
+    /// drift apart.
+    func testHeroWidthIsTheNowTabHeroWidth() {
+        for frameWidth in [92, 120, 180, 240] {
+            XCTAssertEqual(
+                discoverHeroBox(panelWidth: 200, frameWidth: frameWidth,
+                                availableRows: 60, textRows: 10).gw,
+                nowPlayingLeftWidth(frameWidth: frameWidth),
+                "at frame width \(frameWidth)")
+        }
+    }
+
+    /// Responsive downward: a pane narrower than the Now tab's hero wins, so the
+    /// cover never overflows the column it is drawn in.
+    func testHeroNeverOverflowsANarrowPane() {
+        XCTAssertEqual(discoverHeroBox(panelWidth: 30, frameWidth: 180,
+                                       availableRows: 60, textRows: 10).gw, 30)
+    }
+
+    /// The rendered rect on a wide terminal is 54x22, the size CONTEXT records
+    /// as the agreed Now-tab hero.
+    func testRenderedCoverIsNowTabSizedOnAWideTerminal() {
+        let box = discoverHeroBox(panelWidth: 200, frameWidth: 180,
+                                  availableRows: 60, textRows: 10)
+        let (pc, pr) = kittySquareRect(maxCols: box.gw, maxRows: box.gh, cellW: 14, cellH: 34)
+        XCTAssertEqual(pc, 54)
+        XCTAssertEqual(pr, 22)
+    }
+
+    /// The reserve is the text's own measured height rather than a constant.
+    /// The old code guessed 8 while the panel can draw ten lines, so its action
+    /// line was already being clipped on short terminals.
+    func testHeroBoxReservesExactlyTheTextItWasGiven() {
+        XCTAssertEqual(discoverHeroBox(panelWidth: 60, frameWidth: 120,
+                                       availableRows: 40, textRows: 10).gh, 29)
+        XCTAssertEqual(discoverHeroBox(panelWidth: 60, frameWidth: 120,
+                                       availableRows: 40, textRows: 4).gh, 35)
+    }
+
+    /// Responsive on small terminals: the text keeps the rows it needs and the
+    /// cover degrades to nothing rather than going negative, which renderArtHero
+    /// treats as degenerate geometry and skips.
+    func testHeroBoxDegradesRatherThanGoingNegative() {
+        let tight = discoverHeroBox(panelWidth: 30, frameWidth: 100,
+                                    availableRows: 6, textRows: 10)
+        XCTAssertEqual(tight.gh, 0)
+        XCTAssertTrue(tight.gw >= 0)
+    }
+
+    /// The square clamp stays the shared one. A short pane yields a cover
+    /// bounded by rows, so it stays square in pixels rather than stretching.
+    func testHeroStaysSquareThroughTheSharedClamp() {
+        let box = discoverHeroBox(panelWidth: 200, frameWidth: 180,
+                                  availableRows: 20, textRows: 10)
+        let (pc, pr) = kittySquareRect(maxCols: box.gw, maxRows: box.gh, cellW: 14, cellH: 34)
+        XCTAssertEqual(pr, box.gh, "rows bind on a short pane")
+        XCTAssertTrue(pc < box.gw, "stays square rather than filling the width; got \(pc)")
+    }
+
+    /// Still comfortably larger than the fixed 24x12 the friction report was
+    /// about, measured through the same clamp the renderer uses.
+    func testHeroIsLargerThanTheOldFixedCap() {
+        let box = discoverHeroBox(panelWidth: 54, frameWidth: 138,
+                                  availableRows: 34, textRows: 10)
+        let (pc, pr) = kittySquareRect(maxCols: box.gw, maxRows: box.gh, cellW: 14, cellH: 34)
+        let (oldC, oldR) = kittySquareRect(maxCols: 24, maxRows: 12, cellW: 14, cellH: 34)
+        XCTAssertTrue(pc > oldC && pr > oldR, "got \(pc)x\(pr), old fixed box gave \(oldC)x\(oldR)")
+    }
+
+    /// The cover no longer changes size as the cursor moves between rows. Width
+    /// binds through the clamp, so a four-line rail summary and a ten-line album
+    /// panel draw the same rect. Under the uncapped revision the cover was
+    /// height-bound and visibly jumped between rows, which is part of what read
+    /// as wrong at the screen and is not something a still screenshot shows.
+    func testCoverSizeIsStableAcrossSelectionsWithDifferentTextHeights() {
+        let rich = discoverHeroBox(panelWidth: 94, frameWidth: 187, availableRows: 39, textRows: 10)
+        let bare = discoverHeroBox(panelWidth: 94, frameWidth: 187, availableRows: 39, textRows: 6)
+        let a = kittySquareRect(maxCols: rich.gw, maxRows: rich.gh, cellW: 14, cellH: 34)
+        let b = kittySquareRect(maxCols: bare.gw, maxRows: bare.gh, cellW: 14, cellH: 34)
+        XCTAssertEqual(a.cols, b.cols, "same width regardless of how much text is beneath")
+        XCTAssertEqual(a.rows, b.rows, "and the same height")
+    }
+
+    // MARK: - Panel text as one producer
+
+    /// The reserve above is measured from the SAME array the renderer draws, so
+    /// the two cannot drift. This repo has twice shipped a defect from two
+    /// copies of one rule diverging, which is why the count is derived rather
+    /// than restated.
+    func testPanelLineCountRespondsToRealContent() {
+        let bare = discoverPanelLines(selection: .item(item(.song, "S")), width: 40)
+        let rich = discoverPanelLines(
+            selection: .item(DiscoverItem(id: "p", name: "P", subtitle: "Curator",
+                                          url: nil, artworkURL: nil,
+                                          detail: .playlist(description: String(repeating: "word ", count: 40)))),
+            width: 40)
+        XCTAssertTrue(rich.count > bare.count,
+                      "the reserve tracks content; got \(rich.count) vs \(bare.count)")
+    }
+
+    /// A description wraps beneath the cover rather than being dropped, which is
+    /// the half of the friction report that is easy to lose while making the
+    /// artwork bigger.
+    func testDescriptionSurvivesBeneathTheCover() {
+        let lines = discoverPanelLines(
+            selection: .item(DiscoverItem(id: "p", name: "P", subtitle: nil,
+                                          url: nil, artworkURL: nil,
+                                          detail: .playlist(description: "a distinctive phrase here"))),
+            width: 40)
+        XCTAssertTrue(lines.contains { $0.contains("distinctive") },
+                      "description text is present in the composed lines")
+    }
 }
