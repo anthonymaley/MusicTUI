@@ -33,6 +33,33 @@ func runShell() {
     // edge #5) and threaded into every art-rendering scene.
     let kittyEnabled = kittyGraphicsSupported(env: ProcessInfo.processInfo.environment)
 
+    // TEMPORARY DOGFOOD OPTION, session-scoped, READ HERE AND NOWHERE ELSE.
+    // `music-source` (the alias for `MUSICTUI_SOURCE_APP=1 command music`)
+    // routes two things through the MusicTUISource app: Radio's `/` search, so
+    // it returns stations with no developer key at all, and a Discover
+    // track-level Enter, so the chosen track plays on the source app rather
+    // than in Music.app.
+    //
+    // Read ONCE here and injected into both scenes, which is what keeps this a
+    // single read site (Anthony's bound, 2026-09-09). Deliberately NOT read
+    // inside makeCatalog(): that function has four callers and three are CLI
+    // radio commands - RadioCommands.swift:55 (`radio search`), :77 (`radio
+    // play` URL resolution) and :90 (`radio add`) - so reading it there would
+    // reroute those too, which is a provider precedence decision he reserved to
+    // himself.
+    //
+    // Widened from search to playback on his ruling (2026-09-10): "Widening
+    // MUSICTUI_SOURCE_APP from brokered search to eligible source playback is
+    // sensible. Keep this to the one bridge; no protocol or conformance
+    // detour."
+    //
+    // Undocumented in docs/guide.md on purpose, also his bound: writing a
+    // throwaway option into the public guide is how it accidentally becomes a
+    // supported interface. Dogfood instructions live in the private record.
+    //
+    // With it unset, every path below behaves exactly as it ships.
+    let sourceAppEnabled = ProcessInfo.processInfo.environment["MUSICTUI_SOURCE_APP"] == "1"
+
     // Now's REST artwork fallback, for tracks whose embedded artwork is absent
     // (the Library tab runs the same ladder per focused album). Built
     // once at startup on the same both-tokens gate Playlists' hero covers use;
@@ -104,37 +131,23 @@ func runShell() {
             // Play (Enter/p) needs the same both-tokens REST backend the artwork
             // fallback uses — makeArtworkAPI() nil means no dev token, same gate
             // makeDiscoverFeed() applies to `feed`.
+            // Only a track-level Enter moves. `p` (Play all) keeps building a
+            // container in Music.app, on his ruling: the wire has no queue, so
+            // an album cannot honestly be sent to the source app yet.
             let scene = DiscoverScene(feed: makeDiscoverFeed(), status: status, actions: actions,
                                       api: makeArtworkAPI(), lifecycle: discoverLifecycle,
+                                      sourcePlayback: sourceAppEnabled ? SourceAppPlayback() : nil,
                                       kittyEnabled: kittyEnabled)
             scenes[id] = scene
             return scene
         case .radio:
             // makeCatalog() already returns nil with no developer token.
             //
-            // TEMPORARY DOGFOOD OPTION, session-scoped, READ HERE AND NOWHERE
-            // ELSE. `MUSICTUI_SOURCE_APP=1 music` routes Radio's `/` search
-            // through the MusicTUISource app, so it returns stations with no
-            // developer key configured at all.
-            //
-            // Deliberately NOT read inside makeCatalog(), on Anthony's bound
-            // (2026-09-09): that function has four callers and three are CLI
-            // radio commands - RadioCommands.swift:55 (`radio search`), :77
-            // (`radio play` URL resolution) and :90 (`radio add`). Reading the
-            // variable there would reroute those too, which is a provider
-            // precedence decision he reserved to himself.
-            //
-            // Undocumented in docs/guide.md on purpose, also his bound: writing
-            // a throwaway option into the public guide is how it accidentally
-            // becomes a supported interface. Dogfood instructions live in the
-            // private record.
-            //
             // Only `/` moves. Live, Personal and station resolution keep using
             // `catalog`, so with no key those stay empty exactly as they do
             // today and Favorites keep working with no network at all.
             let sourceApp: (any StationSearching)? =
-                ProcessInfo.processInfo.environment["MUSICTUI_SOURCE_APP"] == "1"
-                ? SourceAppStationSearch() : nil
+                sourceAppEnabled ? SourceAppStationSearch() : nil
             let scene = RadioScene(store: StationStore(), catalog: makeCatalog(),
                                    stationSearch: sourceApp, kittyEnabled: kittyEnabled)
             scenes[id] = scene

@@ -41,7 +41,8 @@ func discoverLeftWidth(frameWidth: Int) -> Int {
 /// back to Discover. The footer must advertise only what the current level will
 /// actually do with the key, so `r Refresh` is appended solely when
 /// `canRefresh` is true.
-func discoverFooterHint(_ selection: DiscoverSelection?, canGoBack: Bool, canRefresh: Bool) -> String {
+func discoverFooterHint(_ selection: DiscoverSelection?, canGoBack: Bool, canRefresh: Bool,
+                        sourceApp: Bool = false) -> String {
     let back = canGoBack ? "  \u{2190} Back" : ""
     let refresh = canRefresh ? "  r Refresh" : ""
     switch selection {
@@ -56,7 +57,12 @@ func discoverFooterHint(_ selection: DiscoverSelection?, canGoBack: Bool, canRef
             // deliberately absent: it acts on a rail row, and a track row is
             // not one — advertising a key the handler ignores is a mistake
             // this footer has already shipped once.
-            return "\u{2191}\u{2193} Move  Enter Play from here" + back
+            // In source-app mode Enter sends ONE track to the MusicTUISource
+            // app, which has no queue on its wire, so "from here" would promise
+            // a remainder that does not exist (Anthony, 2026-09-10).
+            return sourceApp
+                ? "\u{2191}\u{2193} Move  Enter Play" + back
+                : "\u{2191}\u{2193} Move  Enter Play from here" + back
         }
     case .viewAll:
         return "\u{2191}\u{2193} Move  Enter View all" + refresh + back

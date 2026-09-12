@@ -22,6 +22,11 @@ enum SourceAppError: Error, Equatable {
     case notAuthorized
     case refused(String)
     case unreadable
+    /// The source accepted the request and did not end up playing. `ok` answers
+    /// "was the request accepted"; only the status answers "is it playing", and
+    /// the app represents a MusicKit error or its own settle timeout as a failed
+    /// STATE rather than a refusal (Anthony, Blocking, 2026-09-10).
+    case didNotStart(String)
 
     /// Deliberately short: it renders inside Radio's one-line message strip
     /// beside a `✗`, not in a log.
@@ -31,6 +36,7 @@ enum SourceAppError: Error, Equatable {
         case .notAuthorized: return "Source app has no Apple Music access"
         case .refused(let d): return "Source app refused: \(d)"
         case .unreadable:    return "Source app sent an unreadable reply"
+        case .didNotStart(let s): return "Source app did not start playback (\(s))"
         }
     }
 }
@@ -203,5 +209,98 @@ struct SourceAppStationSearch: StationSearching {
             throw SourceAppError.unreadable
         }
         return text
+    }
+}
+
+// MARK: - Playback through the source app
+//
+// The second half of the bridge, in this file rather than its own because it is
+// the SAME disposable debt: it shares the transport and the error vocabulary
+// above, and one file is one deletion when the public contract package lands.
+
+/// Sending a chosen track to the source app to play.
+///
+/// One method, matching `StationSearching`'s discipline. This is not a transport
+/// abstraction and must not grow into one.
+protocol SourcePlaying {
+    func play(catalogID: String) throws
+}
+
+/// TEMPORARY. Hands one catalog id to the MusicTUISource app over the
+/// disposable `slice.*` wire, so a Discover track plays on the source rather
+/// than in Music.app.
+///
+/// **One track, never a queue.** The wire has no queue operation, so this
+/// deliberately cannot express "and then the rest of the album". Discover's
+/// footer drops "from here" in this mode for exactly that reason.
+///
+/// **It fails closed and never falls back.** A refusal is thrown for the caller
+/// to show; silently playing in Music.app instead would be the provider
+/// precedence decision Anthony reserved to himself.
+struct SourceAppPlayback: SourcePlaying {
+
+    private let path: String
+    private let transport: (String, String) throws -> String
+
+    init(path: String = SourceAppStationSearch.socketPath) {
+        self.path = path
+        self.transport = SourceAppStationSearch.sendOverUnixSocket
+    }
+
+    /// Seam for tests: request shaping and reply decoding without a socket,
+    /// which is the part that can be wrong in a way a person notices.
+    init(path: String, transport: @escaping (String, String) throws -> String) {
+        self.path = path
+        self.transport = transport
+    }
+
+    func play(catalogID: String) throws {
+        let request = PlayRequestBody(op: "slice.play", id: catalogID)
+        guard let body = try? JSONEncoder().encode(request),
+              let line = String(data: body, encoding: .utf8) else {
+            throw SourceAppError.unreadable
+        }
+
+        let raw = try transport(path, line)
+
+        guard let data = raw.data(using: .utf8),
+              let reply = try? JSONDecoder().decode(PlayReply.self, from: data) else {
+            throw SourceAppError.unreadable
+        }
+
+        guard reply.ok else {
+            switch reply.error?.kind {
+            case "unauthorized": throw SourceAppError.notAuthorized
+            default:             throw SourceAppError.refused(reply.error?.detail ?? "no detail")
+            }
+        }
+
+        // `ok` is not the answer. The app's play() represents both a MusicKit
+        // error and its own three-second settle timeout by publishing a failed
+        // STATE rather than by refusing, so a client trusting `ok` alone prints
+        // "Playing" over a play that did not happen. The status is what is
+        // checked, and a missing one on an ok reply is a contract violation
+        // rather than a success -- the same rule the station search applies to a
+        // missing array.
+        guard let playback = reply.status?.playback else { throw SourceAppError.unreadable }
+        guard playback == "playing" else { throw SourceAppError.didNotStart(playback) }
+    }
+
+    private struct PlayRequestBody: Encodable {
+        let op: String
+        let id: String
+    }
+
+    private struct PlayReply: Decodable {
+        struct Failure: Decodable {
+            let kind: String
+            let detail: String
+        }
+        struct Status: Decodable {
+            let playback: String
+        }
+        let ok: Bool
+        let status: Status?
+        let error: Failure?
     }
 }

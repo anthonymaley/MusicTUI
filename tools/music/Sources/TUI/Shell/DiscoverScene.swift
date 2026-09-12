@@ -128,9 +128,18 @@ final class DiscoverScene: Scene {
     // geometry change alone is enough to force a delete+redraw.
     private var lastPlaced: ArtPlacement? = nil
 
+    /// TEMPORARY, and nil in every shipping path. When present, a track-level
+    /// Enter sends ONE catalog id to the MusicTUISource app instead of building
+    /// a `__discover__` container in Music.app. Injected rather than read from
+    /// the environment here, so `MUSICTUI_SOURCE_APP` keeps exactly one read
+    /// site in `Shell.swift` (Anthony's bound, 2026-09-09).
+    private let sourcePlayback: (any SourcePlaying)?
+
     init(feed: DiscoverFeed?, status: StatusStore, actions: ActionRunner, api: RESTAPIBackend?,
          lifecycle: DiscoverLifecycleCoordinator, opener: Opener = SystemOpener(),
+         sourcePlayback: (any SourcePlaying)? = nil,
          kittyEnabled: Bool = false) {
+        self.sourcePlayback = sourcePlayback
         self.feed = feed
         self.status = status
         self.actions = actions
@@ -200,7 +209,8 @@ final class DiscoverScene: Scene {
     }
 
     var footerHint: String {
-        discoverFooterHint(selection, canGoBack: canGoBack, canRefresh: canRefresh)
+        discoverFooterHint(selection, canGoBack: canGoBack, canRefresh: canRefresh,
+                           sourceApp: sourcePlayback != nil)
     }
 
     // MARK: - Input
@@ -343,20 +353,50 @@ final class DiscoverScene: Scene {
         // maps trackRows 1:1 with no headers), so the cursor ordinal IS the
         // trackRows index. This is the one level where no header-offset
         // conversion is needed — see clampScroll() for where it is.
-        let ids = discoverPlaySlice(catalogIDs: trackRows.map { $0.id }, from: cursorIndex)
-        guard !ids.isEmpty else {
+        guard let route = discoverPlayRoute(trackIDs: trackRows.map { $0.id },
+                                            from: cursorIndex,
+                                            sourceApp: sourcePlayback != nil) else {
             status.post("Couldn't tell which track to play from.", error: true)
             return .redraw
         }
-        let title = container.name
-        let lifecycle = self.lifecycle
-        // The coordinator posts every toast itself, including "Playing X" the
-        // moment the play returns; a `.refused(.exiting)` earns none, because
-        // the user asked to leave and nothing was created.
-        actions.run("Play") {
-            _ = lifecycle.requestPlay(title: title, catalogIDs: ids, disableShuffle: true)
+
+        switch route {
+        case .sourceApp(let catalogID):
+            // The source app owns playback: no container is created, nothing
+            // has to become ready, and there is nothing to sweep. It FAILS
+            // CLOSED - a refusal is reported and the play stops there, because
+            // quietly playing in Music.app instead would be the provider
+            // precedence decision Anthony reserved to himself.
+            //
+            // Deliberately does NOT push Now Playing: that tab reads Music.app,
+            // which is not what is playing here. The source app's own window is
+            // where this track appears.
+            let source = sourcePlayback
+            let name = trackRows[cursorIndex].name
+            let status = self.status
+            actions.run("Play") {
+                do {
+                    try source?.play(catalogID: catalogID)
+                    status.post("Playing \(name) on the source app.")
+                } catch let error as SourceAppError {
+                    status.post(error.message, error: true)
+                } catch {
+                    status.post("Source app failed: \(error.localizedDescription)", error: true)
+                }
+            }
+            return .redraw
+
+        case .container(let ids):
+            let title = container.name
+            let lifecycle = self.lifecycle
+            // The coordinator posts every toast itself, including "Playing X" the
+            // moment the play returns; a `.refused(.exiting)` earns none, because
+            // the user asked to leave and nothing was created.
+            actions.run("Play") {
+                _ = lifecycle.requestPlay(title: title, catalogIDs: ids, disableShuffle: true)
+            }
+            return .push(.nowPlaying)
         }
-        return .push(.nowPlaying)
     }
 
     /// `p` on an album/playlist rail row: there is no cached track list yet —

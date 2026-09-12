@@ -101,3 +101,35 @@ func isExpiredToken(_ error: Error) -> Bool {
     if case .userTokenExpired = authError { return true }
     return false
 }
+
+// MARK: - Where a track-level Enter sends its play
+
+/// What Enter on a Discover track row should do.
+///
+/// Two genuinely different transactions, not one with a flag. The container
+/// route builds a `__discover__` playlist in Music.app from the selected row to
+/// the container's end and plays that, with the whole lifecycle coordinator
+/// behind it. The source-app route hands ONE catalog id to the MusicTUISource
+/// app, which owns playback itself: no container is created, nothing has to
+/// become ready, and there is nothing to sweep afterwards.
+enum DiscoverPlayRoute: Equatable {
+    /// Exactly one track. The slice has no queue on the wire, so it may not
+    /// promise one; the footer says "Enter Play" rather than "Play from here"
+    /// for the same reason (Anthony, 2026-09-10: "Don't pretend queue semantics
+    /// exist yet").
+    case sourceApp(catalogID: String)
+    /// Today's behaviour, unchanged: this row to the container's end.
+    case container(catalogIDs: [String])
+}
+
+/// Pure, so the decision is testable without a scene, a lifecycle or a socket.
+/// `nil` means the cursor could not be resolved to a track, which the caller
+/// reports rather than guessing at.
+func discoverPlayRoute(trackIDs: [String], from index: Int, sourceApp: Bool) -> DiscoverPlayRoute? {
+    guard index >= 0, index < trackIDs.count else { return nil }
+    if sourceApp {
+        return .sourceApp(catalogID: trackIDs[index])
+    }
+    let ids = discoverPlaySlice(catalogIDs: trackIDs, from: index)
+    return ids.isEmpty ? nil : .container(catalogIDs: ids)
+}
