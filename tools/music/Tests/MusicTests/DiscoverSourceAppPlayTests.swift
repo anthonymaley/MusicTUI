@@ -99,9 +99,11 @@ final class DiscoverSourceAppPlayTests: XCTestCase {
     /// reply whose status is not playing."
     ///
     /// `ok` answers "did the source accept the request". Only the status answers
-    /// "is it playing", and PlaybackOwner.play() represents both MusicKit errors
-    /// and its own three-second timeout by setting `.failed` rather than
-    /// throwing, so an ok-only client prints "Playing" over a failed play.
+    /// "is it playing". The source app used to report MusicKit errors and its own
+    /// three-second timeout as `.failed` on an ok reply; since 2026-09-13 it
+    /// replies `ok:false` with the command's failure and its status never says
+    /// `failed`. `"failed"` stays in this list defensively: the client rejects
+    /// every ok reply that is not playing, whoever sends it.
     func testAnOkReplyThatIsNotPlayingIsRejected() {
         for reported in ["idle", "failed", "paused", "stopped", "loading"] {
             let client = SourceAppPlayback(path: "/nowhere") { _, _ in

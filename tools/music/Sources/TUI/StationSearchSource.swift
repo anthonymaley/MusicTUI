@@ -22,10 +22,12 @@ enum SourceAppError: Error, Equatable {
     case notAuthorized
     case refused(String)
     case unreadable
-    /// The source accepted the request and did not end up playing. `ok` answers
-    /// "was the request accepted"; only the status answers "is it playing", and
-    /// the app represents a MusicKit error or its own settle timeout as a failed
-    /// STATE rather than a refusal (Anthony, Blocking, 2026-09-10).
+    /// The source replied ok and did not end up playing. `ok` answers "was the
+    /// request accepted"; only the status answers "is it playing" (Anthony,
+    /// Blocking, 2026-09-10). A current source app reports a failed play as
+    /// `ok:false` with an error (since 2026-09-13 its status never says
+    /// `failed`), so this is the defensive check on an ok reply that still is
+    /// not playing, kept for any source that says otherwise.
     case didNotStart(String)
 
     /// Deliberately short: it renders inside Radio's one-line message strip
@@ -275,13 +277,14 @@ struct SourceAppPlayback: SourcePlaying {
             }
         }
 
-        // `ok` is not the answer. The app's play() represents both a MusicKit
-        // error and its own three-second settle timeout by publishing a failed
-        // STATE rather than by refusing, so a client trusting `ok` alone prints
-        // "Playing" over a play that did not happen. The status is what is
-        // checked, and a missing one on an ok reply is a contract violation
-        // rather than a success -- the same rule the station search applies to a
-        // missing array.
+        // `ok` alone is not the answer. Before 2026-09-13 the app reported a
+        // MusicKit error or its own settle timeout as a failed STATE on an ok
+        // reply, so a client trusting `ok` printed "Playing" over a play that did
+        // not happen. A current app replies `ok:false` with the command's own
+        // failure instead, but the status is still checked independently: any
+        // ok reply that is not `playing` is rejected, and a missing status is a
+        // contract violation rather than a success -- the same rule the station
+        // search applies to a missing array.
         guard let playback = reply.status?.playback else { throw SourceAppError.unreadable }
         guard playback == "playing" else { throw SourceAppError.didNotStart(playback) }
     }
