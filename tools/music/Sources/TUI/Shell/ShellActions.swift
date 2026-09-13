@@ -38,8 +38,13 @@ final class StatusStore {
 // MARK: - Action queue
 
 /// A failure with a user-facing message; ActionRunner shows it as an error toast.
-struct ActionError: Error {
+///
+/// `LocalizedError` so a CLI command that lets it escape prints `message`:
+/// ArgumentParser renders any other error with `String(describing:)`, which
+/// would print `ActionError(message: "...")`.
+struct ActionError: LocalizedError {
     let message: String
+    var errorDescription: String? { message }
 }
 
 /// Throw an ActionError when a Bool-reporting helper failed.

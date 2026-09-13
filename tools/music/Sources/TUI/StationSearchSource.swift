@@ -304,3 +304,29 @@ struct SourceAppPlayback: SourcePlaying {
         let error: Failure?
     }
 }
+
+// MARK: - The source app, as one peer
+
+/// Everything MusicTUI sends to the source app, reached through one value so the
+/// routing coordinator hands a branch ONE client rather than a loose set.
+///
+/// TEMPORARY, the same slice debt as the rest of this file. It grows source-shaped
+/// methods per surface as the matrix rows are routed. It deliberately holds NO
+/// queue or playback state: the app owns the player, its window mutates it
+/// independently of any client, and a TUI and a CLI process would each hold a
+/// different copy (Codex B3, 2026-09-13).
+struct SourceAppClient {
+    let playback: SourcePlaying
+    let stationSearch: StationSearching
+
+    init(path: String = SourceAppStationSearch.socketPath) {
+        playback = SourceAppPlayback(path: path)
+        stationSearch = SourceAppStationSearch(path: path)
+    }
+
+    /// Seam for tests, matching the two members' own.
+    init(path: String, transport: @escaping (String, String) throws -> String) {
+        playback = SourceAppPlayback(path: path, transport: transport)
+        stationSearch = SourceAppStationSearch(path: path, transport: transport)
+    }
+}

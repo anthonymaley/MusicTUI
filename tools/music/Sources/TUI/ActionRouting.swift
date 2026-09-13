@@ -48,15 +48,21 @@ enum MusicTUIAction: CaseIterable, Equatable {
     case genius, airplayRoute, eq, visualizer, quiet
     case libraryArtistTierFilter, playlistsOpenNowPlaying, libraryRetry
 
+    // MusicTUI's own configuration
+    case auth
+
     /// Whether this action drives a player. Used by the test that proves no
     /// playback action reaches Music.app in Source Mode.
+    ///
+    /// `quiet` is here because it pauses (NowPlayingScene.swift:619), which
+    /// `933e85d` missed by classifying it from its name.
     var touchesPlayback: Bool {
         switch self {
         case .playPause, .next, .previous, .seek, .stop, .queueJump,
              .collectionShuffle, .persistentShuffleMode, .persistentRepeatMode,
              .libraryPlay, .playlistPlay, .discoverTrackPlay, .discoverPlayAll,
              .radioStationPlay, .cliPlayResume, .cliPlayIndex, .cliPlayPlaylist,
-             .cliPlayAlbum, .cliPlaySong, .cliPlayArtist, .playlistTemp:
+             .cliPlayAlbum, .cliPlaySong, .cliPlayArtist, .playlistTemp, .quiet:
             return true
         default:
             return false
@@ -69,8 +75,9 @@ enum ActionRoute: Equatable {
     /// Served by the source app.
     case source
     /// Served by the existing Music.app path. In Source Mode this appears ONLY
-    /// for reads covered by binding rule 9's named carve-out, never for
-    /// playback.
+    /// for rows the spec leaves as they are: the listing reads under binding
+    /// rule 9's carve-out, and the Music.app settings and reads section 6.4
+    /// marks Unaffected (EQ, visualizer, playlist share). Never for playback.
     case musicApp
     /// Neither player is involved: MusicTUI's own local state or navigation.
     case unaffected
@@ -85,8 +92,8 @@ func routeAction(_ action: MusicTUIAction, in mode: PlaybackMode) -> ActionRoute
     // ships. Everything that is not purely local goes to Music.app.
     guard mode == .source else {
         switch action {
-        case .radioFavourite, .radioAddURL, .quiet,
-             .libraryArtistTierFilter, .playlistsOpenNowPlaying, .libraryRetry:
+        case .radioFavourite, .radioAddURL, .auth,
+             .libraryArtistTierFilter, .playlistsOpenNowPlaying:
             return .unaffected
         default:
             return .musicApp
@@ -95,8 +102,10 @@ func routeAction(_ action: MusicTUIAction, in mode: PlaybackMode) -> ActionRoute
 
     switch action {
 
-    // Served by the source.
-    case .playPause, .next, .previous, .seek, .stop, .queueJump,
+    // Served by the source. `quiet` is "stop here", a pause, so it pauses the
+    // source: Anthony's ruling 12.7 (2026-09-13), "playback controls always
+    // target the selected output mode".
+    case .playPause, .next, .previous, .seek, .stop, .queueJump, .quiet,
          .libraryPlay, .playlistPlay, .discoverTrackPlay, .discoverPlayAll,
          .radioStationPlay,
          .cliPlayResume, .cliPlayIndex, .cliPlayPlaylist, .cliPlayAlbum, .cliPlaySong,
@@ -120,15 +129,22 @@ func routeAction(_ action: MusicTUIAction, in mode: PlaybackMode) -> ActionRoute
     // BOTH modes (Anthony's ruling 12.1), so both modes show the same library.
     // A read chosen in advance and identical in both modes is the opposite of a
     // silent fallback, which is what rule 3 forbids.
-    case .libraryListing, .playlistListing, .searchLibrary:
+    // `r` in Library retries that same listing read.
+    case .libraryListing, .playlistListing, .searchLibrary, .libraryRetry:
+        return .musicApp
+
+    // Section 6.4 marks these Unaffected: they run exactly as in Music.app
+    // mode, which means AppleScript. EQ and the visualizer set Music.app state,
+    // and share reads the playlist's tracks (PlaylistCommands.swift:1033) before
+    // sending. Codex B4: `933e85d` refused EQ and visualizer against the spec.
+    case .eq, .visualizer, .playlistShare:
         return .musicApp
 
     // MusicTUI's own state or navigation. Radio favourites write StationStore,
     // not the Apple Music library: refusing them would conflate any local state
-    // with a library write (Codex I4).
-    case .radioFavourite, .radioAddURL, .quiet,
-         .libraryArtistTierFilter, .playlistsOpenNowPlaying, .libraryRetry,
-         .playlistShare:
+    // with a library write (Codex I4). `auth` writes MusicTUI's own config.
+    case .radioFavourite, .radioAddURL, .auth,
+         .libraryArtistTierFilter, .playlistsOpenNowPlaying:
         return .unaffected
 
     // Refused, each with what to do instead.
@@ -146,14 +162,14 @@ func routeAction(_ action: MusicTUIAction, in mode: PlaybackMode) -> ActionRoute
     case .similar, .suggest:
         return .refused("Not available through the source app in this version")
     case .rotation:
-        return .refused("Rotation reads local history, which is Music.app only")
+        // `rotation` calls REST /v1/me/history/heavy-rotation (HistoryCommands.swift:53);
+        // v1 names no brokered MusicKit route for it (Codex, 11:47).
+        return .refused("Heavy rotation has no MusicTUI Source route in this version")
     case .genius:
         return .refused("Genius is a Music.app feature")
     case .airplayRoute:
         // Anthony, 2026-09-13: "airplay stays in TUI. the point of the bridge is
         // DAC not airplay."
         return .refused("AirPlay applies in Music.app mode; the source plays to the Mac's wired output")
-    case .eq, .visualizer:
-        return .refused("EQ and Visualizer are Music.app only")
     }
 }

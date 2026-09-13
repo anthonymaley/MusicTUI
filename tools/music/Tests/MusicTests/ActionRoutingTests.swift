@@ -76,4 +76,99 @@ final class ActionRoutingTests: XCTestCase {
             return XCTFail("mix creates a playlist and must be refused")
         }
     }
+
+    // MARK: - The spec, transcribed independently of routeAction
+
+    /// Only the route's kind; refusal wording is free to change.
+    private enum Kind { case source, musicApp, unaffected, refused }
+
+    private func kind(_ route: ActionRoute) -> Kind {
+        switch route {
+        case .source: return .source
+        case .musicApp: return .musicApp
+        case .unaffected: return .unaffected
+        case .refused: return .refused
+        }
+    }
+
+    /// Source Mode's expected outcome for every action, read row by row from
+    /// section 6 of the revision 5 spec as amended by ruling 12.7, NOT from
+    /// routeAction.
+    ///
+    /// Codex B4 (2026-09-13): the tests above prove every action gets SOME route,
+    /// which let routeAction refuse `eq` and `visualizer` while the spec marks
+    /// them Unaffected. A dispatcher checked against routeAction would inherit
+    /// that error. This table is the independent statement it is checked against.
+    ///
+    /// The spec's "Unaffected" means "runs as it does in Music.app mode", so a
+    /// row that reads or sets Music.app state is `.musicApp` here, and
+    /// `.unaffected` is kept for rows that touch neither player.
+    private let specSourceMode: [MusicTUIAction: Kind] = [
+        // 6.1 global keys
+        .playPause: .source, .next: .source, .previous: .source,
+        .collectionShuffle: .source, .volume: .refused,
+        // 6.2 Now Playing
+        .queueJump: .source, .seek: .source,
+        .persistentShuffleMode: .refused, .persistentRepeatMode: .refused,
+        .loveTrack: .refused, .genius: .refused,
+        // `x` Quiet pauses the player (NowPlayingScene.swift:619). Anthony's
+        // ruling 12.7, amending revision 5's "Unaffected": it pauses the source.
+        .quiet: .source,
+        // 6.3 scenes
+        .libraryPlay: .source, .playlistPlay: .source,
+        .discoverTrackPlay: .source, .discoverPlayAll: .source,
+        .discoverRefresh: .source, .radioStationPlay: .source, .radioSearch: .source,
+        .libraryArtistTierFilter: .unaffected, .playlistsOpenNowPlaying: .unaffected,
+        // `r` retries the Library listing, which stays on AppleScript (rule 9).
+        .libraryRetry: .musicApp,
+        .radioFavourite: .unaffected, .radioAddURL: .unaffected,
+        // 6.4 CLI
+        .cliPlayResume: .source, .cliPlayIndex: .source, .cliPlayPlaylist: .source,
+        .cliPlayAlbum: .source, .cliPlaySong: .source, .cliPlayArtist: .source,
+        .stop: .source, .recent: .source, .newReleases: .source,
+        .catalogSearch: .source, .discoverFeed: .source,
+        .rotation: .refused, .similar: .refused, .suggest: .refused,
+        .searchLibrary: .musicApp, .libraryListing: .musicApp, .playlistListing: .musicApp,
+        .addToLibrary: .refused, .removeFromLibrary: .refused, .playlistWrite: .refused,
+        .playlistTemp: .refused, .cliMix: .refused, .airplayRoute: .refused,
+        // Outward, but it reads the playlist's tracks over AppleScript
+        // (PlaylistCommands.swift:1033).
+        .playlistShare: .musicApp,
+        // Unaffected: EQ and the visualizer set Music.app state; auth writes
+        // MusicTUI's own config.
+        .eq: .musicApp, .visualizer: .musicApp, .auth: .unaffected,
+    ]
+
+    /// The table covers the closed set. Adding an action fails here until its
+    /// spec row is written down, not only until routeAction returns something.
+    func testSpecTableCoversEveryAction() {
+        for action in MusicTUIAction.allCases {
+            XCTAssertNotNil(specSourceMode[action], "\(action) has no spec row in this test")
+        }
+    }
+
+    func testSourceModeRoutesMatchTheSpec() {
+        for action in MusicTUIAction.allCases {
+            guard let expected = specSourceMode[action] else { continue }
+            XCTAssertEqual(kind(routeAction(action, in: .source)), expected,
+                           "\(action) disagrees with spec section 6")
+        }
+    }
+
+    /// Rows that act the same in both modes must route the same in both modes.
+    /// Catches the `playlistShare` shape: `.unaffected` in one mode and
+    /// `.musicApp` in the other for the same AppleScript code.
+    func testRowsNotChangedBySourceModeRouteIdenticallyInBothModes() {
+        for action in MusicTUIAction.allCases {
+            let source = routeAction(action, in: .source)
+            guard source == .musicApp || source == .unaffected else { continue }
+            XCTAssertEqual(routeAction(action, in: .musicApp), source,
+                           "\(action) is unchanged by Source Mode but routes differently")
+        }
+    }
+
+    /// Quiet pauses the player, so it counts as playback for rule 3.
+    func testQuietTouchesPlayback() {
+        XCTAssertTrue(MusicTUIAction.quiet.touchesPlayback)
+    }
 }
