@@ -26,6 +26,9 @@ func speakerRows(from devices: [[String: Any]]) -> [SpeakerRow] {
 /// (Enter toggles on/off), the preset row (Enter expands the picker), and —
 /// when the picker is expanded — one row per preset.
 enum SpeakersDisplayRow: Equatable {
+    /// Output mode first: it is the only control that changes WHERE audio goes,
+    /// so it sits above the speakers it governs (ruling 12.4).
+    case mode(PlaybackMode)
     case speaker(Int)        // index into the SpeakerRow array
     case eqPower
     case eq
@@ -34,8 +37,10 @@ enum SpeakersDisplayRow: Equatable {
 }
 
 func speakersDisplayRows(speakerCount: Int, expanded: Bool,
-                         presetNames: [String]) -> [SpeakersDisplayRow] {
-    var rows: [SpeakersDisplayRow] = (0..<speakerCount).map { .speaker($0) }
+                         presetNames: [String],
+                         showModes: Bool = true) -> [SpeakersDisplayRow] {
+    var rows: [SpeakersDisplayRow] = showModes ? [.mode(.musicApp), .mode(.source)] : []
+    rows += (0..<speakerCount).map { .speaker($0) }
     rows.append(.eqPower)
     rows.append(.eq)
     if expanded { rows += presetNames.map { .preset($0) } }
@@ -45,12 +50,37 @@ func speakersDisplayRows(speakerCount: Int, expanded: Bool,
 
 final class SpeakersScene: Scene {
     let id: SceneID = .speakers
-    let tabTitle = "Speakers"
+    let tabTitle = "Output"
     var footerHint: String { "\u{2191}\u{2193} Move  Enter Toggle/Select  \u{2190}\u{2192} Volume/Preset  e EQ  v Visualizer" }
 
     private let backend: AppleScriptBackend
     private let status: StatusStore
     private let actions: ActionRunner
+    private let routing: RoutingCoordinator
+    /// How the client is built. Injectable so a test can drive readiness without
+    /// a socket; production uses the real one.
+    private let makeSourceClient: () -> SourceAppClient
+
+    /// Bridge's own last-reported state. Owned by the main loop and written ONLY
+    /// in `tick()`; background work posts to `inboxReadiness` instead.
+    private var bridgeReadiness: SourceReadiness = .checking
+    private let readinessLock = NSLock()
+    private var inboxReadiness: SourceReadiness? = nil      // guarded by readinessLock
+    private var readinessInFlight = false
+    /// Counts actual probes, so a test can prove this refreshes on entry and
+    /// does NOT poll while the tab sits open.
+    private(set) var readinessProbeCount = 0
+
+    /// Read-only view for tests. `bridgeReadiness` stays private so nothing but
+    /// `tick()` can write it.
+    var bridgeReadinessForTest: SourceReadiness { bridgeReadiness }
+
+    /// Whether a result has landed in the inbox but not yet been applied. Lets a
+    /// test prove the value changes on the DRAIN rather than on arrival.
+    var hasPendingReadinessForTest: Bool {
+        readinessLock.lock(); defer { readinessLock.unlock() }
+        return inboxReadiness != nil
+    }
     private let speakerTargets = TargetAccumulator()
     private let eqTargetLock = NSLock()
     private var eqTarget: String? = nil
@@ -74,10 +104,91 @@ final class SpeakersScene: Scene {
     private var lastMutation = Date.distantPast       // handle()/tick() thread only
     private var everLoaded = false
 
-    init(backend: AppleScriptBackend, status: StatusStore, actions: ActionRunner) {
+    init(backend: AppleScriptBackend, status: StatusStore, actions: ActionRunner,
+         routing: RoutingCoordinator,
+         makeSourceClient: @escaping () -> SourceAppClient = { SourceAppClient() }) {
         self.backend = backend
         self.status = status
         self.actions = actions
+        self.routing = routing
+        self.makeSourceClient = makeSourceClient
+    }
+
+    /// Ask Bridge how it is, once, off the input thread.
+    ///
+    /// **Called at the activation boundary, never on a timer.** The answer is a
+    /// socket round trip, and the rest of the session should not pay for a status
+    /// a person only reads here.
+    ///
+    /// **The result comes back through the inbox**, not by assignment. The first
+    /// version wrote `bridgeReadiness` directly from `ActionRunner`'s background
+    /// queue while `render` read it on the main loop — a data race that happened
+    /// to be invisible because the write never ran at all.
+    /// The one way a background result reaches `bridgeReadiness`.
+    private func publishReadiness(_ readiness: SourceReadiness) {
+        readinessLock.lock()
+        inboxReadiness = readiness
+        readinessLock.unlock()
+    }
+
+    private func kickReadinessProbe() {
+        guard !readinessInFlight else { return }
+        readinessInFlight = true
+        readinessProbeCount += 1
+        let make = makeSourceClient
+        DispatchQueue.global().async { [weak self] in
+            let readiness = make().readiness()
+            self?.publishReadiness(readiness)
+        }
+    }
+
+    /// Enter on a mode row. Ruling 12.3's transaction lives in the coordinator:
+    /// pause the outgoing player, drop its queue, save, commit — and refuse the
+    /// whole switch if any step cannot be confirmed.
+    private func selectMode(_ target: PlaybackMode) {
+        actions.run("Output") { [weak self] in
+            guard let self else { return }
+            // Through the injected factory, like the probe. Building a real
+            // client here made this path unmockable AND meant a test drove the
+            // live app's socket instead of a stub.
+            let client = self.makeSourceClient()
+            let result = try self.routing.switchMode(
+                to: target,
+                readiness: { client.readiness() },
+                pauseOutgoing: { outgoing in
+                    switch outgoing {
+                    case .musicApp:
+                        _ = try? syncRun { try await self.backend.runMusic("pause") }
+                        return true
+                    case .source:
+                        // Only positive evidence counts: a reported paused or
+                        // stopped status. `notRunning` is NOT that — it also
+                        // covers a failed write to a live app that may still be
+                        // playing, and trusting it could leave both players going
+                        // (rule 4, DoD 8).
+                        try client.control.pause()
+                        let playback = try client.control.status().playback
+                        return playback == "paused" || playback == "stopped" || playback == "idle"
+                    }
+                },
+                dropQueue: { outgoing in
+                    switch outgoing {
+                    case .musicApp: break   // MusicTUI's own queue, cleared below
+                    case .source:   try client.control.stop()
+                    }
+                })
+            switch result {
+            case .alreadyInMode:
+                break
+            case .switched(let mode):
+                // Through the inbox, like every other background result. Writing
+                // `bridgeReadiness` here would reinstate the main-loop/background
+                // race the inbox exists to remove — and this is the path a
+                // successful Enter on Bridge actually takes.
+                self.publishReadiness(client.readiness())
+                self.status.post(mode == .source ? "Output: Bridge" : "Output: Music.app")
+            }
+        }
     }
 
     @discardableResult
@@ -85,6 +196,18 @@ final class SpeakersScene: Scene {
         var changed = false
         // Apply a landed fetch — unless the user mutated state after it started,
         // in which case it's stale and would briefly revert the optimistic UI.
+        // Bridge readiness: drained here so the only writer is the main loop.
+        readinessLock.lock()
+        let freshReadiness = inboxReadiness; inboxReadiness = nil
+        readinessLock.unlock()
+        if let freshReadiness {
+            readinessInFlight = false
+            if freshReadiness != bridgeReadiness {
+                bridgeReadiness = freshReadiness
+                changed = true
+            }
+        }
+
         inboxLock.lock()
         let fresh = inbox; inbox = nil
         let freshEQ = inboxEQ; inboxEQ = nil
@@ -117,6 +240,12 @@ final class SpeakersScene: Scene {
         let now = Date()
         let reentered = now.timeIntervalSince(lastTickAt) > 0.5
         lastTickAt = now
+        // ONE probe per entry. `reentered` is the activation boundary: tick only
+        // runs while this scene is shown, so a gap since the last one means the
+        // person just arrived. Deliberately not tied to the 5s speaker poll
+        // below — readiness is a question you ask on opening the tab, not a
+        // heartbeat against the app's socket.
+        if reentered || bridgeReadiness == .checking { kickReadinessProbe() }
         // A wedged enumeration (osascript hung on a dying device) used to set
         // fetchInFlight forever and kill refreshes for the session; treat a
         // long-overdue fetch as dead and allow a new kickoff. (The backend
@@ -171,6 +300,30 @@ final class SpeakersScene: Scene {
             guard y <= bottom else { break }
             let isCursor = dispIdx == cursor
             switch dispRow {
+            case .mode(let mode):
+                // Ruling 12.15: the user-facing output is Bridge; "MusicTUI
+                // Source" stays internal. Ruling 12.13: ready or unavailable
+                // WITH the reason, on one line a person can act on.
+                out += ANSICode.moveTo(row: y, col: 3)
+                let selected = routing.mode == mode
+                let dot = selected ? "\(ANSICode.lime)\u{25CF}\(ANSICode.reset)"
+                                   : "\(ANSICode.dim)\u{25CB}\(ANSICode.reset)"
+                let title = mode == .musicApp ? "Music.app" : "Bridge"
+                let padTitle = title + String(repeating: " ", count: max(0, nameW - title.count))
+                let titleStr = isCursor ? "\(ANSICode.inverse)\(padTitle)\(ANSICode.reset)"
+                                        : (selected ? "\(ANSICode.brightWhite)\(padTitle)\(ANSICode.reset)"
+                                                    : "\(ANSICode.dim)\(padTitle)\(ANSICode.reset)")
+                // DoD 12: ready OR unavailable-with-reason. Showing a note only
+                // on failure made "ready" and "not asked yet" render identically,
+                // which is exactly the ambiguity that hid the wiring defect.
+                var note = ""
+                if mode == .source {
+                    let text = truncText(bridgeReadiness.label, to: max(0, frame.width - nameW - 12))
+                    note = "  \(ANSICode.dim)\(text)\(ANSICode.reset)"
+                }
+                out += "  \(dot) \(titleStr)\(note)"
+                y += 1
+
             case .speaker(let i):
                 let row = rows[i]
                 out += ANSICode.moveTo(row: y, col: 3)
@@ -329,6 +482,9 @@ final class SpeakersScene: Scene {
         case .enter:
             let currentRow = displayRows.indices.contains(cursor) ? displayRows[cursor] : nil
             switch currentRow {
+            case .mode(let target):
+                selectMode(target)
+                return .redraw
             case .speaker(let i):
                 rows[i].active.toggle()
                 lastMutation = Date()

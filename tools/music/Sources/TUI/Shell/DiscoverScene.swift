@@ -134,12 +134,20 @@ final class DiscoverScene: Scene {
     /// the environment here, so `MUSICTUI_SOURCE_APP` keeps exactly one read
     /// site in `Shell.swift` (Anthony's bound, 2026-09-09).
     private let sourcePlayback: (any SourcePlaying)?
+    /// Whether Bridge is the selected output, asked at the moment of use.
+    ///
+    /// Was `sourcePlayback != nil`, i.e. the `MUSICTUI_SOURCE_APP` env var: the
+    /// dogfood switch. Routing now follows the Output tab, so a person selects
+    /// Bridge and Discover plays there, with no environment variable involved.
+    private let bridgeSelected: () -> Bool
 
     init(feed: DiscoverFeed?, status: StatusStore, actions: ActionRunner, api: RESTAPIBackend?,
          lifecycle: DiscoverLifecycleCoordinator, opener: Opener = SystemOpener(),
          sourcePlayback: (any SourcePlaying)? = nil,
+         bridgeSelected: @escaping () -> Bool = { false },
          kittyEnabled: Bool = false) {
         self.sourcePlayback = sourcePlayback
+        self.bridgeSelected = bridgeSelected
         self.feed = feed
         self.status = status
         self.actions = actions
@@ -210,7 +218,7 @@ final class DiscoverScene: Scene {
 
     var footerHint: String {
         discoverFooterHint(selection, canGoBack: canGoBack, canRefresh: canRefresh,
-                           sourceApp: sourcePlayback != nil)
+                           sourceApp: bridgeSelected())
     }
 
     // MARK: - Input
@@ -355,7 +363,7 @@ final class DiscoverScene: Scene {
         // conversion is needed — see clampScroll() for where it is.
         guard let route = discoverPlayRoute(trackIDs: trackRows.map { $0.id },
                                             from: cursorIndex,
-                                            sourceApp: sourcePlayback != nil) else {
+                                            sourceApp: bridgeSelected()) else {
             status.post("Couldn't tell which track to play from.", error: true)
             return .redraw
         }
@@ -376,12 +384,13 @@ final class DiscoverScene: Scene {
             let status = self.status
             actions.run("Play") {
                 do {
-                    try source?.play(catalogID: catalogID)
-                    status.post("Playing \(name) on the source app.")
+                    guard let source else { throw bridgeNotWiredYet("Bridge playback") }
+                    try source.play(catalogID: catalogID)
+                    status.post("Playing \(name) on Bridge.")
                 } catch let error as SourceAppError {
                     status.post(error.message, error: true)
                 } catch {
-                    status.post("Source app failed: \(error.localizedDescription)", error: true)
+                    status.post("Bridge failed: \(error.localizedDescription)", error: true)
                 }
             }
             return .redraw

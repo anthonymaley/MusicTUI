@@ -115,9 +115,9 @@ final class SourceAppStationSearchTests: XCTestCase {
     // MARK: the messages a person actually reads
 
     func testEveryFailureSaysSomethingActionable() {
-        XCTAssertEqual(SourceAppError.notRunning.message, "Source app is not running")
-        XCTAssertEqual(SourceAppError.notAuthorized.message, "Source app has no Apple Music access")
+        XCTAssertEqual(SourceAppError.notRunning.message, "Bridge is not running")
+        XCTAssertEqual(SourceAppError.notAuthorized.message, "Bridge has no Apple Music access")
         XCTAssertTrue(SourceAppError.refused("boom").message.contains("boom"))
-        XCTAssertEqual(SourceAppError.unreadable.message, "Source app sent an unreadable reply")
+        XCTAssertEqual(SourceAppError.unreadable.message, "Bridge sent an unreadable reply")
     }
 }

@@ -65,13 +65,19 @@ func runShell() {
     // once at startup on the same both-tokens gate Playlists' hero covers use;
     // nil (no token) simply leaves Now on embedded-or-gradient — its exact
     // pre-REST behavior, no error, no dead tab.
+    // Source Mode's routing seam, composed once for this process. `.tui` is the
+    // surface: ruling 12.14 refuses playback-changing CLI verbs while Bridge is
+    // selected, and that distinction is only meaningful if each process says
+    // which one it is.
+    let routing = RoutingCoordinator.live(surface: .tui)
+
     let router = Router(root: .nowPlaying)
     var scenes: [SceneID: Scene] = [.nowPlaying: NowPlayingScene(backend: backend, appQueue: appQueue, status: status, actions: actions, restArtworkAPI: makeArtworkAPI(), kittyEnabled: kittyEnabled,
                                                                   setArtSize: { cols, rows in poller.setDesiredArtSize(cols: cols, rows: rows) })]
     // Declaration order IS the tab strip order and the 1-5 digit shortcuts.
     // Ordered by how often the user reaches for them: Now, then the browse
     // surfaces, then Speakers last (set once, rarely touched mid-session).
-    let tabs: [(id: SceneID, title: String)] = [(.nowPlaying, "Now"), (.discover, "Discover"), (.library, "Library"), (.playlists, "Playlists"), (.radio, "Radio"), (.speakers, "Speakers")]
+    let tabs: [(id: SceneID, title: String)] = [(.nowPlaying, "Now"), (.discover, "Discover"), (.library, "Library"), (.playlists, "Playlists"), (.radio, "Radio"), (.speakers, "Output")]
 
     // Scene switches must delete every kitty placement (data stays
     // transmitted, d=a) and let each built scene reset its own placement-
@@ -108,7 +114,7 @@ func runShell() {
             scenes[id] = scene
             return scene
         case .speakers:
-            let scene = SpeakersScene(backend: backend, status: status, actions: actions)
+            let scene = SpeakersScene(backend: backend, status: status, actions: actions, routing: routing)
             scenes[id] = scene
             return scene
         case .library:
@@ -136,7 +142,10 @@ func runShell() {
             // an album cannot honestly be sent to the source app yet.
             let scene = DiscoverScene(feed: makeDiscoverFeed(), status: status, actions: actions,
                                       api: makeArtworkAPI(), lifecycle: discoverLifecycle,
-                                      sourcePlayback: sourceAppEnabled ? SourceAppPlayback() : nil,
+                                      // Always available; whether it is USED follows
+                                      // the Output tab's selection, not an env var.
+                                      sourcePlayback: SourceAppPlayback(),
+                                      bridgeSelected: { routing.mode == .source },
                                       kittyEnabled: kittyEnabled)
             scenes[id] = scene
             return scene
@@ -302,14 +311,32 @@ func runShell() {
         if let action = resolveGlobalKey(key) {
             switch action {
             case .playPause:
-                actions.run("Play/pause") { _ = try syncRun { try await backend.runMusic("playpause") } }
+                actions.run("Play/pause") {
+                    try routing.perform(.playPause,
+                        musicApp: { _ = try syncRun { try await backend.runMusic("playpause") } },
+                        source: { client in
+                            // The wire has play and pause, not a toggle, so the
+                            // current state decides which one this press means.
+                            if try client.control.status().playback == "playing" {
+                                try client.control.pause()
+                            } else {
+                                try client.control.resume()
+                            }
+                        },
+                        unaffected: {})
+                }
             case .volumeUp, .volumeDown:
                 // Coalesced: holding the key accumulates one delta, applied once.
                 volumeDelta.add(action == .volumeUp ? 5 : -5)
                 actions.run("Volume") {
                     let d = volumeDelta.take()
                     guard d != 0 else { return }
-                    _ = try syncRun { try await backend.runMusic("set sound volume to (sound volume + \(d))") }
+                    // Refused in Source Mode: MusicKit exposes no player volume,
+                    // and the Mac's output level is not the player's to set.
+                    try routing.perform(.volume,
+                        musicApp: { _ = try syncRun { try await backend.runMusic("set sound volume to (sound volume + \(d))") } },
+                        source: { _ in },
+                        unaffected: {})
                 }
             // next/prev drive the app-owned queue when one is active (the poller
             // can't rely on Music's queue post-26.x); otherwise Music's own controls.
@@ -319,7 +346,13 @@ func runShell() {
             // (playQueueTrack is false only on an osascript ERROR, i.e. transient;
             // rolling back keeps the position honest and the next press retries.)
             case .next:
-                if let (pl, pos) = appQueue.step(1) {
+                if routing.mode == .source {
+                    actions.run("Skip") {
+                        try routing.perform(.next, musicApp: {},
+                                            source: { try $0.control.next() },
+                                            unaffected: {})
+                    }
+                } else if let (pl, pos) = appQueue.step(1) {
                     actions.run("Play") {
                         guard playQueueTrack(backend: backend, playlist: pl, position: pos) else {
                             _ = appQueue.step(-1)
@@ -330,7 +363,13 @@ func runShell() {
                     actions.run("Skip") { _ = try syncRun { try await backend.runMusic("next track") } }
                 }
             case .prev:
-                if let (pl, pos) = appQueue.step(-1) {
+                if routing.mode == .source {
+                    actions.run("Back") {
+                        try routing.perform(.previous, musicApp: {},
+                                            source: { try $0.control.previous() },
+                                            unaffected: {})
+                    }
+                } else if let (pl, pos) = appQueue.step(-1) {
                     actions.run("Play") {
                         guard playQueueTrack(backend: backend, playlist: pl, position: pos) else {
                             _ = appQueue.step(1)
@@ -341,7 +380,12 @@ func runShell() {
                     actions.run("Back") { _ = try syncRun { try await backend.runMusic("previous track") } }
                 }
             case .shuffle:
-                actions.run("Shuffle") { try require(shufflePlayCurrent(backend: backend, appQueue: appQueue), "Shuffle failed.") }
+                actions.run("Shuffle") {
+                    try routing.perform(.collectionShuffle,
+                        musicApp: { try require(shufflePlayCurrent(backend: backend, appQueue: appQueue), "Shuffle failed.") },
+                        source: { _ in throw bridgeNotWiredYet("Collection shuffle") },
+                        unaffected: {})
+                }
             case .switchScene(let n):
                 if n >= 1 && n <= tabs.count { switchOrExplain(tabs[n - 1].id) }
             case .quit:       return

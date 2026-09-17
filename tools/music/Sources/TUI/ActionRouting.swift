@@ -34,11 +34,24 @@ enum MusicTUIAction: CaseIterable, Equatable {
 
     // Reads
     case libraryListing, playlistListing, discoverFeed, discoverRefresh
-    case catalogSearch, searchLibrary, radioSearch, recent, rotation, newReleases
-    case similar, suggest
+    case catalogSearch, searchLibrary, radioSearch, recent, rotation
+    // Each of these three is two verbs wearing one name: an explicit target, or
+    // Music.app's current track when none is given (DiscoveryCommands.swift:20,
+    // :123, :214). They are split because Anthony's 2026-09-16 ruling treats the
+    // two halves differently.
+    case newReleases, newReleasesLikeCurrentTrack
+    case similar, similarToCurrentTrack
+    case suggest, suggestFromCurrentTrack
 
-    // Writes, and things that look like writes but are not
-    case loveTrack, addToLibrary, removeFromLibrary
+    // Writes, and things that look like writes but are not.
+    //
+    // `addToLibrary` is the EXPLICIT variant (`music add <query|index|id>`);
+    // `addCurrentTrackToPlaylist` is `music add --to X` with no song named
+    // (AddCommand.swift:128-138). `removeCurrentTrackFromPlaylist` is
+    // `music remove`, which was called `removeFromLibrary` until 2026-09-16:
+    // it removes the CURRENT track from a playlist and never touches the
+    // library, which is why a survey could find no library-level delete for it.
+    case loveTrack, addToLibrary, addCurrentTrackToPlaylist, removeCurrentTrackFromPlaylist
     case playlistWrite              // create/delete/add/remove/create-from/cleanup
     case playlistTemp, playlistShare
     case cliMix
@@ -70,6 +83,40 @@ enum MusicTUIAction: CaseIterable, Equatable {
     }
 }
 
+extension MusicTUIAction {
+
+    /// Whether this action resolves its target by reading **Music.app's**
+    /// `current track`.
+    ///
+    /// Anthony, 2026-09-16 13:36: "Bridge selection should not disable unrelated
+    /// library management, but nothing may silently interpret 'current track' as
+    /// Music.app's stale track." While Bridge is playing, Music.app is paused on
+    /// whatever it was left on, so these verbs would favourite, delete from a
+    /// playlist, or seed recommendations from the WRONG song — silently, with a
+    /// plausible-looking result.
+    ///
+    /// This is a different failure from `touchesPlayback`. A playback verb is
+    /// deferred because v1 does not route the CLI (12.13/12.14); these are
+    /// refused because their answer would be wrong. They need separate wording,
+    /// so a person is told which problem they have hit.
+    ///
+    /// Decided from the code: every `current track` read under `Commands/` was
+    /// enumerated, not inferred from verb names.
+    var readsMusicAppCurrentTrack: Bool {
+        switch self {
+        case .loveTrack,                      // LoveCommands.swift:31
+             .removeCurrentTrackFromPlaylist, // RemoveCommand.swift:13
+             .addCurrentTrackToPlaylist,      // AddCommand.swift:131
+             .similarToCurrentTrack,          // DiscoveryCommands.swift:26
+             .suggestFromCurrentTrack,        // DiscoveryCommands.swift:126
+             .newReleasesLikeCurrentTrack:    // DiscoveryCommands.swift:219
+            return true
+        default:
+            return false
+        }
+    }
+}
+
 /// Where an action goes.
 enum ActionRoute: Equatable {
     /// Served by the source app.
@@ -86,8 +133,116 @@ enum ActionRoute: Equatable {
     case refused(String)
 }
 
+/// Where an action was invoked from. Ruling 12.14 requires that, while Bridge is
+/// selected, a playback-changing CLI command refuses while the same action from
+/// the TUI is served — so the route cannot be a function of the action and the
+/// mode alone.
+///
+/// **Why a parameter and not more cases.** Twin `cliNext`, `cliStop`, `cliSeek`
+/// cases would double the transport rows and model "where it was invoked from"
+/// as though it were "what it is". The surface is orthogonal to the action.
+///
+/// A process is ONE surface, so `RoutingCoordinator` holds it rather than taking
+/// it per call: a TUI call site cannot then accidentally claim to be the CLI.
+enum InvocationSurface: String, CaseIterable, Equatable {
+    case tui, cli
+}
+
+extension MusicTUIAction {
+
+    /// The surfaces that can actually invoke this action, decided from the key
+    /// maps and the subcommand list on 2026-09-16 — never from the case name.
+    /// That rule is why `libraryArtistTierFilter` is TUI-only (`a` cycles a
+    /// filter, it does not add to the library) and why `catalogSearch` is
+    /// CLI-only (Library's `/` filters rows already loaded, it does not search).
+    ///
+    /// An EMPTY set means no invoker exists anywhere in the tree. It is not a
+    /// placeholder: `ActionRoutingTests` names every such row, so a new one
+    /// cannot appear without being noticed.
+    var surfaces: Set<InvocationSurface> {
+        switch self {
+
+        // Both. Transport reachable from a key and a verb.
+        case .playPause,            // Shell.swift:304 space / PlaybackCommands.swift:582 pause
+             .next,                 // Shell.swift:321 > . F9 / PlaybackCommands.swift:591 skip
+             .previous,             // Shell.swift:332 < , F7 / PlaybackCommands.swift:601 back
+             .seek,                 // NowPlayingScene.swift:659 [ ] / PlaybackCommands.swift:794
+             .collectionShuffle,    // Shell.swift:343 z, Library/Playlists s / PlayParser.swift:27
+             .persistentShuffleMode,// NowPlayingScene.swift:754 s, :756 m / PlaybackCommands.swift:824
+             .persistentRepeatMode, // NowPlayingScene.swift:758 r / PlaybackCommands.swift:855
+             .volume,               // Shell.swift:306 + - = / VolumeCommands.swift:4
+             .radioStationPlay,     // RadioScene.swift:160, DiscoverScene.swift:290 / RadioCommands.swift:27
+             .radioSearch,          // RadioScene.swift:173 / / RadioCommands.swift:85
+             .radioAddURL,          // RadioScene.swift:174 a / RadioCommands.swift:68
+             .loveTrack,            // NowPlayingScene.swift:732 l / LoveCommands.swift:8
+             .playlistListing,      // Shell.swift:94 / PlaylistCommands.swift:23
+             .discoverFeed,         // DiscoverScene.swift:462 / DiscoverCommands.swift:52
+             .airplayRoute,         // SpeakersScene.swift:332 / SpeakerCommands.swift:48
+             .eq,                   // SpeakersScene.swift:311 e / EQCommands.swift:4
+             .visualizer:           // SpeakersScene.swift:314 v / VisualizerCommands.swift:4
+            return [.tui, .cli]
+
+        // TUI only.
+        case .queueJump,                 // NowPlayingScene.swift:700 enter on Up Next
+             .quiet,                     // NowPlayingScene.swift:21 x
+             .libraryPlay,               // LibraryScene.swift:678 p, :655 enter
+             .playlistPlay,              // PlaylistsScene.swift:358 p, :336 enter
+             .discoverTrackPlay,         // DiscoverScene.swift:243 enter
+             .discoverPlayAll,           // DiscoverScene.swift:245 p
+             .discoverRefresh,           // DiscoverScene.swift:240 r
+             .libraryListing,            // LibraryScene.swift:331, :375; no `music library` verb
+             .libraryArtistTierFilter,   // LibraryScene.swift:685 a — a FILTER, not "add"
+             .playlistsOpenNowPlaying,   // PlaylistsScene.swift:362 b — navigation
+             .libraryRetry,              // LibraryScene.swift:667 r, only while a read failed
+             .radioFavourite,            // RadioScene.swift:172 f — toggles an existing row
+             .genius:                    // NowPlayingScene.swift:760 g; no CLI verb
+            return [.tui]
+
+        // CLI only.
+        case .stop,              // PlaybackCommands.swift:611; the TUI's x is quiet, a pause
+             .cliPlayResume,     // PlaybackCommands.swift:292 bare `music play`
+             .cliPlayIndex,      // PlaybackCommands.swift:103
+             .cliPlayPlaylist,   // PlaybackCommands.swift:21
+             .cliPlayAlbum,      // PlaybackCommands.swift:33
+             .cliPlaySong,       // PlaybackCommands.swift:58
+             .cliPlayArtist,     // PlaybackCommands.swift:11 — DECLARED, see below
+             .catalogSearch,     // SearchCommand.swift:33
+             .searchLibrary,     // SearchCommand.swift:18
+             .recent,            // HistoryCommands.swift:22
+             .rotation,          // HistoryCommands.swift:46
+             .newReleases,       // DiscoveryCommands.swift:199
+             .similar,           // DiscoveryCommands.swift:4
+             .suggest,           // DiscoveryCommands.swift:90
+             .addToLibrary,      // AddCommand.swift:42, with a query or an id
+             .addCurrentTrackToPlaylist,      // AddCommand.swift:128, --to with no song
+             .removeCurrentTrackFromPlaylist, // RemoveCommand.swift:4
+             .similarToCurrentTrack,          // DiscoveryCommands.swift:8, query omitted
+             .suggestFromCurrentTrack,        // DiscoveryCommands.swift:123
+             .newReleasesLikeCurrentTrack,    // DiscoveryCommands.swift:201, --like-current
+             .playlistWrite,     // PlaylistCommands.swift:734 and the other five verbs
+             .playlistTemp,      // PlaylistCommands.swift:1081
+             .playlistShare,     // PlaylistCommands.swift:1027
+             .cliMix,            // MixCommand.swift:4
+             .auth:              // AuthCommands.swift:4
+            return [.cli]
+
+        }
+    }
+}
+
+/// Ruling 12.14, verbatim from the spec.
+let cliPlaybackDeferredInV1 =
+    "Bridge output is selected, but CLI playback is not supported in v1. Use MusicTUI or switch Output to Music.app."
+
+/// Anthony's ruling of 2026-09-16. Deliberately NOT the 12.14 wording: the verb
+/// is not deferred, its target is unresolvable, and naming a song fixes it.
+let currentTrackIsStaleInBridge =
+    "Bridge output is selected, so Music.app's current track is not what you are hearing. Name the song explicitly, or switch Output to Music.app."
+
 /// The matrix. Every case decided; nothing defaults.
-func routeAction(_ action: MusicTUIAction, in mode: PlaybackMode) -> ActionRoute {
+func routeAction(_ action: MusicTUIAction,
+                 in mode: PlaybackMode,
+                 from surface: InvocationSurface) -> ActionRoute {
     // Binding rule 1: an install that never opens Output behaves exactly as it
     // ships. Everything that is not purely local goes to Music.app.
     guard mode == .source else {
@@ -100,12 +255,32 @@ func routeAction(_ action: MusicTUIAction, in mode: PlaybackMode) -> ActionRoute
         }
     }
 
+    // Ruling 12.14, and ruling 12.13's deferral of section 6.4. CLI ROUTING IS
+    // NOT IN v1: a playback-changing verb refuses explicitly and never falls
+    // back, and everything else behaves exactly as it ships.
+    //
+    // One clause rather than a dozen twin rows, because `touchesPlayback` is
+    // already the set 12.14 names, and it was decided from the code rather than
+    // from verb names — which is what caught `quiet` being a pause.
+    //
+    // Anthony's ruling of 2026-09-16 13:36 adds the second clause: explicit
+    // library management keeps working, and a verb that would resolve its
+    // target through Music.app's stale `current track` refuses instead, with
+    // its own reason. Playback is checked first because `playlist temp` is both
+    // a write and a way to start Music.app playing, and it is the playback that
+    // defers it.
+    if surface == .cli {
+        if action.touchesPlayback { return .refused(cliPlaybackDeferredInV1) }
+        if action.readsMusicAppCurrentTrack { return .refused(currentTrackIsStaleInBridge) }
+        return routeAction(action, in: .musicApp, from: surface)
+    }
+
     switch action {
 
     // Served by the source. `quiet` is "stop here", a pause, so it pauses the
     // source: Anthony's ruling 12.7 (2026-09-13), "playback controls always
     // target the selected output mode".
-    case .playPause, .next, .previous, .seek, .stop, .queueJump, .quiet,
+    case .playPause, .next, .previous, .seek, .stop, .quiet,
          .libraryPlay, .playlistPlay, .discoverTrackPlay, .discoverPlayAll,
          .radioStationPlay,
          .cliPlayResume, .cliPlayIndex, .cliPlayPlaylist, .cliPlayAlbum, .cliPlaySong,
@@ -152,19 +327,33 @@ func routeAction(_ action: MusicTUIAction, in mode: PlaybackMode) -> ActionRoute
         return .refused("Shuffle and repeat modes are Music.app only for now")
     case .volume:
         return .refused("Volume is Music.app only; the source plays at the Mac's output level")
-    case .loveTrack, .addToLibrary, .removeFromLibrary, .playlistWrite:
+    case .loveTrack, .addToLibrary, .addCurrentTrackToPlaylist,
+         .removeCurrentTrackFromPlaylist, .playlistWrite:
         return .refused("Library changes are Music.app only in this version")
     case .cliMix:
         // Codex B1: mix calls api.createPlaylist and populates it.
         return .refused("mix creates a playlist, which is Music.app only in this version")
     case .playlistTemp:
         return .refused("Temporary playlists exist to bound Music.app; the source builds its own queue")
-    case .similar, .suggest:
+    case .similar, .similarToCurrentTrack, .suggest, .suggestFromCurrentTrack:
         return .refused("Not available through the source app in this version")
+
+    /// `new-releases` itself is brokered and served; the `--like-current`
+    /// variant is not, because its SEED is Music.app's current track and Bridge
+    /// is what is playing. Refused for the target, not for the capability.
+    case .newReleasesLikeCurrentTrack:
+        return .refused(currentTrackIsStaleInBridge)
     case .rotation:
         // `rotation` calls REST /v1/me/history/heavy-rotation (HistoryCommands.swift:53);
         // v1 names no brokered MusicKit route for it (Codex, 11:47).
         return .refused("Heavy rotation has no MusicTUI Source route in this version")
+    /// Ruling 12.13 (2026-09-15) deferred the queue-row jump from v1. Spec 6.2
+    /// and DoD 3 require a VISIBLE refusal: `933e85d` predates the narrowing and
+    /// routed it to the source, which would have shipped a jump that silently
+    /// did the wrong thing against a queue the TUI cannot address yet.
+    case .queueJump:
+        return .refused("Jumping to a queue row is Music.app only in this version")
+
     case .genius:
         return .refused("Genius is a Music.app feature")
     case .airplayRoute:

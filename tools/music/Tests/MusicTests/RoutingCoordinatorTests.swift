@@ -36,10 +36,11 @@ final class RoutingCoordinatorTests: XCTestCase {
     }
 
     private func coordinator(mode: PlaybackMode, recorder: Recorder,
-                             path: String? = nil) -> RoutingCoordinator {
+                             path: String? = nil,
+                             surface: InvocationSurface = .tui) -> RoutingCoordinator {
         let store = PlaybackModeStore(path: path ?? tempPath())
         store.set(mode)
-        return RoutingCoordinator(store: store, makeSource: {
+        return RoutingCoordinator(store: store, surface: surface, makeSource: {
             recorder.madeSource()
             return self.fakeClient()
         })
@@ -94,7 +95,7 @@ final class RoutingCoordinatorTests: XCTestCase {
     func testRefusalRunsNeitherBackendAndKeepsItsReason() {
         let r = Recorder()
         let c = coordinator(mode: .source, recorder: r)
-        guard case .refused(let reason) = routeAction(.volume, in: .source) else {
+        guard case .refused(let reason) = routeAction(.volume, in: .source, from: .tui) else {
             return XCTFail("volume should be refused in Source Mode")
         }
         XCTAssertThrowsError(try run(c, .volume, r)) { error in
@@ -181,7 +182,7 @@ final class RoutingCoordinatorTests: XCTestCase {
         let path = tempPath()
         let r = Recorder()
         let c = coordinator(mode: .musicApp, recorder: r, path: path)
-        XCTAssertThrowsError(try c.switchMode(to: .source, readiness: { .disconnected },
+        XCTAssertThrowsError(try c.switchMode(to: .source, readiness: { .notRunning },
                                               pauseOutgoing: { _ in r.append("paused"); return true },
                                               dropQueue: { _ in r.append("dropped") }))
         XCTAssertEqual(r.log, [], "readiness is checked before anything is touched")
@@ -212,7 +213,7 @@ final class RoutingCoordinatorTests: XCTestCase {
     func testModeUnchangedWhenTheSelectionCannotBeSaved() {
         let r = Recorder()
         let store = PlaybackModeStore(path: "/dev/null/cannot/mode.json")
-        let c = RoutingCoordinator(store: store, makeSource: { r.madeSource(); return self.fakeClient() })
+        let c = RoutingCoordinator(store: store, surface: .tui, makeSource: { r.madeSource(); return self.fakeClient() })
         XCTAssertThrowsError(try c.switchMode(to: .source, readiness: { .ready },
                                               pauseOutgoing: { _ in true },
                                               dropQueue: { _ in r.append("dropped") })) { error in
@@ -275,7 +276,7 @@ final class RoutingCoordinatorTests: XCTestCase {
         let path = tempPath()
         PlaybackModeStore(path: path).set(.source)
         var c: RoutingCoordinator!
-        c = RoutingCoordinator(store: PlaybackModeStore(path: path),
+        c = RoutingCoordinator(store: PlaybackModeStore(path: path), surface: .tui,
                                makeSource: { _ = c.mode; return self.fakeClient() })
         let done = DispatchSemaphore(value: 0)
         DispatchQueue.global().async {
@@ -298,7 +299,7 @@ final class RoutingCoordinatorTests: XCTestCase {
     func testSwitchingToTheCurrentModeTouchesNothing() throws {
         let r = Recorder()
         let c = coordinator(mode: .source, recorder: r)
-        let result = try c.switchMode(to: .source, readiness: { .disconnected },
+        let result = try c.switchMode(to: .source, readiness: { .notRunning },
                                       pauseOutgoing: { _ in r.append("paused"); return true },
                                       dropQueue: { _ in r.append("dropped") })
         XCTAssertEqual(result, .alreadyInMode)
@@ -309,7 +310,7 @@ final class RoutingCoordinatorTests: XCTestCase {
     /// waits on its readiness.
     func testSwitchToMusicAppIgnoresSourceReadiness() throws {
         let c = coordinator(mode: .source, recorder: Recorder())
-        _ = try c.switchMode(to: .musicApp, readiness: { .disconnected },
+        _ = try c.switchMode(to: .musicApp, readiness: { .notRunning },
                              pauseOutgoing: { _ in true }, dropQueue: { _ in })
         XCTAssertEqual(c.mode, .musicApp)
     }
@@ -335,17 +336,45 @@ final class RoutingCoordinatorTests: XCTestCase {
     /// A CLI command that lets a refusal escape prints the matrix's reason, not
     /// `ActionError(message: ...)`, because ArgumentParser renders a
     /// `LocalizedError` by its description.
+    ///
+    /// The subject is `stop`, a playback-changing CLI verb, so this also proves
+    /// ruling 12.14's message reaches a person at the terminal. `volume` was the
+    /// old subject and is no longer refused from the CLI: it does not change
+    /// playback, so 12.13's deferral leaves it exactly as it ships.
     func testCLIPrintsARefusalsReason() {
-        let c = coordinator(mode: .source, recorder: Recorder())
-        guard case .refused(let reason) = routeAction(.volume, in: .source) else {
-            return XCTFail("volume should be refused in Source Mode")
+        let c = coordinator(mode: .source, recorder: Recorder(), surface: .cli)
+        guard case .refused(let reason) = routeAction(.stop, in: .source, from: .cli) else {
+            return XCTFail("a playback-changing CLI verb must refuse in Source Mode")
         }
+        XCTAssertEqual(reason, cliPlaybackDeferredInV1)
         do {
-            try c.perform(.volume, musicApp: {}, source: { _ in }, unaffected: {})
+            try c.perform(.stop, musicApp: {}, source: { _ in }, unaffected: {})
             XCTFail("expected a refusal")
         } catch {
             XCTAssertEqual(Music.message(for: error), reason)
         }
+    }
+
+    /// The coordinator's surface is the process's, so the SAME action through
+    /// the same API refuses in a CLI process and is served in a TUI one. This is
+    /// the execution-side half of 12.14; ActionRoutingTests holds the policy half.
+    func testTheSameTransportActionSplitsByProcessSurface() throws {
+        let tuiLog = Recorder()
+        let tui = coordinator(mode: .source, recorder: tuiLog, surface: .tui)
+        try tui.perform(.seek, musicApp: { tuiLog.append("musicApp") },
+                        source: { _ in tuiLog.append("source") },
+                        unaffected: { tuiLog.append("unaffected") })
+        XCTAssertEqual(tuiLog.log, ["source"], "the TUI's seek must reach Bridge")
+
+        let cliLog = Recorder()
+        let cli = coordinator(mode: .source, recorder: cliLog, surface: .cli)
+        XCTAssertThrowsError(try cli.perform(.seek, musicApp: { cliLog.append("musicApp") },
+                                             source: { _ in cliLog.append("source") },
+                                             unaffected: { cliLog.append("unaffected") })) { error in
+            XCTAssertEqual((error as? ActionError)?.message, cliPlaybackDeferredInV1)
+        }
+        XCTAssertEqual(cliLog.log, [], "a refused CLI verb must never fall back")
+        XCTAssertEqual(cliLog.factoryCalls, 0, "a refused CLI verb must not build a source client")
     }
 
     // MARK: composition (B2)
@@ -355,7 +384,44 @@ final class RoutingCoordinatorTests: XCTestCase {
     func testLiveCompositionReadsThePersistedSelection() {
         let path = tempPath()
         PlaybackModeStore(path: path).set(.source)
-        XCTAssertEqual(RoutingCoordinator.live(store: PlaybackModeStore(path: path)).mode, .source)
-        XCTAssertEqual(RoutingCoordinator.live(store: PlaybackModeStore(path: tempPath())).mode, .musicApp)
+        XCTAssertEqual(RoutingCoordinator.live(store: PlaybackModeStore(path: path), surface: .tui).mode, .source)
+        XCTAssertEqual(RoutingCoordinator.live(store: PlaybackModeStore(path: tempPath()), surface: .tui).mode, .musicApp)
+    }
+
+    // MARK: ruling 12.15, the user-facing name
+
+    /// The user-facing output is **Bridge**; the app and internal components
+    /// keep the name MusicTUI Source. This pins the STRINGS a person reads on
+    /// the footer, not the type names, so renaming a type cannot satisfy it and
+    /// leaving a message behind cannot pass it.
+    func testSwitchFailuresNameBridgeAndNotTheInternalName() {
+        let r = Recorder()
+        let c = coordinator(mode: .musicApp, recorder: r)
+        for (label, readiness, pause) in [
+            ("not ready", SourceReadiness.notRunning, true),
+            ("pause unconfirmed", SourceReadiness.ready, false),
+        ] as [(String, SourceReadiness, Bool)] {
+            XCTAssertThrowsError(try c.switchMode(to: .source, readiness: { readiness },
+                                                  pauseOutgoing: { _ in pause },
+                                                  dropQueue: { _ in })) { error in
+                let message = (error as? ActionError)?.message ?? ""
+                XCTAssertFalse(message.contains("MusicTUI Source"),
+                               "\(label): the internal name reached a person: \(message)")
+            }
+        }
+    }
+
+    /// The outgoing player's name in a failed switch OUT of Source Mode is the
+    /// one a person chose on the Output tab.
+    func testSwitchOutOfSourceModeNamesBridgeAsTheOutgoingPlayer() {
+        let r = Recorder()
+        let c = coordinator(mode: .source, recorder: r)
+        XCTAssertThrowsError(try c.switchMode(to: .musicApp, readiness: { .ready },
+                                              pauseOutgoing: { _ in false },
+                                              dropQueue: { _ in })) { error in
+            let message = (error as? ActionError)?.message ?? ""
+            XCTAssertTrue(message.contains("Bridge"),
+                          "the outgoing player is not named Bridge: \(message)")
+        }
     }
 }

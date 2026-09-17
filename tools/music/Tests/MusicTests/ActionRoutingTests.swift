@@ -15,7 +15,7 @@ final class ActionRoutingTests: XCTestCase {
     func testEveryActionHasADefinedRouteInBothModes() {
         for action in MusicTUIAction.allCases {
             for mode in [PlaybackMode.musicApp, .source] {
-                let route = routeAction(action, in: mode)
+                let route = routeAction(action, in: mode, from: .tui)
                 if case .refused(let reason) = route {
                     XCTAssertFalse(reason.isEmpty,
                                    "\(action) refused in \(mode) with no reason")
@@ -28,7 +28,7 @@ final class ActionRoutingTests: XCTestCase {
     /// ships. So nothing is refused in Music.app mode.
     func testNothingIsRefusedInMusicAppMode() {
         for action in MusicTUIAction.allCases {
-            if case .refused(let reason) = routeAction(action, in: .musicApp) {
+            if case .refused(let reason) = routeAction(action, in: .musicApp, from: .tui) {
                 XCTFail("\(action) refused in Music.app mode: \(reason)")
             }
         }
@@ -38,7 +38,7 @@ final class ActionRoutingTests: XCTestCase {
     /// Mode. It is either served by the source or refused.
     func testNoPlaybackActionReachesMusicAppInSourceMode() {
         for action in MusicTUIAction.allCases where action.touchesPlayback {
-            let route = routeAction(action, in: .source)
+            let route = routeAction(action, in: .source, from: .tui)
             XCTAssertNotEqual(route, .musicApp,
                               "\(action) would reach Music.app in Source Mode")
         }
@@ -47,33 +47,46 @@ final class ActionRoutingTests: XCTestCase {
     /// Anthony's rulings, spot-checked so a later edit cannot quietly reverse
     /// one. Each of these was decided rather than defaulted.
     func testAnthonysRulingsHold() {
-        // 12.2: artist expands to songs, so it is served rather than blocked.
-        XCTAssertEqual(routeAction(.cliPlayArtist, in: .source), .source)
+        // 12.2: an artist expands to SONGS rather than being blocked as
+        // unplayable. Under 12.14 the CLI verb refuses in Source Mode, so the
+        // ruling is pinned where it still decides the outcome: Music.app mode,
+        // where `--artist` is served rather than refused.
+        XCTAssertEqual(routeAction(.cliPlayArtist, in: .musicApp, from: .cli), .musicApp)
         // 6.5: collection shuffle is served; persistent mode is refused.
-        XCTAssertEqual(routeAction(.collectionShuffle, in: .source), .source)
-        guard case .refused = routeAction(.persistentShuffleMode, in: .source) else {
+        XCTAssertEqual(routeAction(.collectionShuffle, in: .source, from: .tui), .source)
+        guard case .refused = routeAction(.persistentShuffleMode, in: .source, from: .tui) else {
             return XCTFail("persistent shuffle mode must be refused in v1")
         }
+        // 12.13: the queue-row jump is deferred from v1 and must refuse visibly.
+        guard case .refused = routeAction(.queueJump, in: .source, from: .tui) else {
+            return XCTFail("queue-row jump is deferred from v1 and must refuse")
+        }
         // 12.1 + rule 9: the Library LISTING stays on AppleScript in both modes.
-        XCTAssertEqual(routeAction(.libraryListing, in: .source), .musicApp)
-        XCTAssertEqual(routeAction(.searchLibrary, in: .source), .musicApp)
+        XCTAssertEqual(routeAction(.libraryListing, in: .source, from: .tui), .musicApp)
+        XCTAssertEqual(routeAction(.searchLibrary, in: .source, from: .tui), .musicApp)
         // AirPlay stays MusicTUI's, and does not act in Source Mode.
-        guard case .refused = routeAction(.airplayRoute, in: .source) else {
+        guard case .refused = routeAction(.airplayRoute, in: .source, from: .tui) else {
             return XCTFail("AirPlay must not act in Source Mode")
         }
         // Library writes are refused; MusicTUI's own favourites are not.
-        guard case .refused = routeAction(.loveTrack, in: .source) else {
+        guard case .refused = routeAction(.loveTrack, in: .source, from: .tui) else {
             return XCTFail("love is an Apple Music library write")
         }
-        XCTAssertEqual(routeAction(.radioFavourite, in: .source), .unaffected,
+        XCTAssertEqual(routeAction(.radioFavourite, in: .source, from: .tui), .unaffected,
                        "radio favourites write MusicTUI's own StationStore")
     }
 
     /// `mix` creates and populates a playlist, which Codex reproduced at
-    /// MixCommand.swift. It is a write, not a brokered read.
-    func testMixIsAWriteNotARead() {
-        guard case .refused = routeAction(.cliMix, in: .source) else {
-            return XCTFail("mix creates a playlist and must be refused")
+    /// MixCommand.swift. It is a write, not a brokered read — so it must never
+    /// reach the source, from any surface, in any mode. Stated this way rather
+    /// than as "refused", because 12.13 defers CLI routing and a deferred verb
+    /// behaves as it ships instead of being refused.
+    func testMixNeverReachesTheSource() {
+        for mode in [PlaybackMode.musicApp, .source] {
+            for surface in InvocationSurface.allCases {
+                XCTAssertNotEqual(routeAction(.cliMix, in: mode, from: surface), .source,
+                                  "mix creates a playlist and must never be brokered")
+            }
         }
     }
 
@@ -108,7 +121,10 @@ final class ActionRoutingTests: XCTestCase {
         .playPause: .source, .next: .source, .previous: .source,
         .collectionShuffle: .source, .volume: .refused,
         // 6.2 Now Playing
-        .queueJump: .source, .seek: .source,
+        // Ruling 12.13 deferred the queue-row jump from v1: spec 6.2 and DoD 3
+        // require a VISIBLE refusal, not a source route. 933e85d predates the
+        // narrowing and routed it to the source.
+        .queueJump: .refused, .seek: .source,
         .persistentShuffleMode: .refused, .persistentRepeatMode: .refused,
         .loveTrack: .refused, .genius: .refused,
         // `x` Quiet pauses the player (NowPlayingScene.swift:619). Anthony's
@@ -129,7 +145,15 @@ final class ActionRoutingTests: XCTestCase {
         .catalogSearch: .source, .discoverFeed: .source,
         .rotation: .refused, .similar: .refused, .suggest: .refused,
         .searchLibrary: .musicApp, .libraryListing: .musicApp, .playlistListing: .musicApp,
-        .addToLibrary: .refused, .removeFromLibrary: .refused, .playlistWrite: .refused,
+        // Anthony, 2026-09-16 13:36. Explicit library management keeps working;
+        // anything reading Music.app's current track refuses. These are the TUI
+        // column: every one of them is CLI-only, so the CLI clause decides the
+        // reachable case and these rows pin the unreachable one.
+        .addToLibrary: .refused, .playlistWrite: .refused,
+        .addCurrentTrackToPlaylist: .refused,
+        .removeCurrentTrackFromPlaylist: .refused,
+        .similarToCurrentTrack: .refused, .suggestFromCurrentTrack: .refused,
+        .newReleasesLikeCurrentTrack: .refused,
         .playlistTemp: .refused, .cliMix: .refused, .airplayRoute: .refused,
         // Outward, but it reads the playlist's tracks over AppleScript
         // (PlaylistCommands.swift:1033).
@@ -150,7 +174,7 @@ final class ActionRoutingTests: XCTestCase {
     func testSourceModeRoutesMatchTheSpec() {
         for action in MusicTUIAction.allCases {
             guard let expected = specSourceMode[action] else { continue }
-            XCTAssertEqual(kind(routeAction(action, in: .source)), expected,
+            XCTAssertEqual(kind(routeAction(action, in: .source, from: .tui)), expected,
                            "\(action) disagrees with spec section 6")
         }
     }
@@ -160,9 +184,9 @@ final class ActionRoutingTests: XCTestCase {
     /// `.musicApp` in the other for the same AppleScript code.
     func testRowsNotChangedBySourceModeRouteIdenticallyInBothModes() {
         for action in MusicTUIAction.allCases {
-            let source = routeAction(action, in: .source)
+            let source = routeAction(action, in: .source, from: .tui)
             guard source == .musicApp || source == .unaffected else { continue }
-            XCTAssertEqual(routeAction(action, in: .musicApp), source,
+            XCTAssertEqual(routeAction(action, in: .musicApp, from: .tui), source,
                            "\(action) is unchanged by Source Mode but routes differently")
         }
     }
@@ -170,5 +194,168 @@ final class ActionRoutingTests: XCTestCase {
     /// Quiet pauses the player, so it counts as playback for rule 3.
     func testQuietTouchesPlayback() {
         XCTAssertTrue(MusicTUIAction.quiet.touchesPlayback)
+    }
+
+    // MARK: - Ruling 12.14: the TUI/CLI distinction
+
+    /// Rows with no invoker anywhere in the tree, named so a new one cannot
+    /// appear silently. Currently EMPTY: the 2026-09-16 survey flagged
+    /// `removeFromLibrary` as having none, and the row turned out to be
+    /// `music remove` under a wrong name — it removes the CURRENT track from a
+    /// playlist, not anything from the library. It is now
+    /// `removeCurrentTrackFromPlaylist`.
+    private let actionsWithNoInvoker: Set<MusicTUIAction> = []
+
+    /// The closed set now has a second axis. An action with no declared surface
+    /// cannot be reasoned about: it would silently escape both the CLI refusal
+    /// gate below and the TUI coverage gate above.
+    func testEveryActionDeclaresItsSurfacesOrIsAKnownPhantom() {
+        for action in MusicTUIAction.allCases {
+            if action.surfaces.isEmpty {
+                XCTAssertTrue(actionsWithNoInvoker.contains(action),
+                              "\(action) has no invoking surface and is not a recorded phantom")
+            } else {
+                XCTAssertFalse(actionsWithNoInvoker.contains(action),
+                               "\(action) is recorded as having no invoker but declares \(action.surfaces)")
+            }
+        }
+    }
+
+    /// DoD 13 and ruling 12.14. Every playback-changing CLI verb refuses while
+    /// Bridge is selected, with EXACTLY the ruled message, and none falls back.
+    func testEveryPlaybackChangingCliCommandRefusesInSourceMode() {
+        let ruled = "Bridge output is selected, but CLI playback is not supported in v1. Use MusicTUI or switch Output to Music.app."
+        for action in MusicTUIAction.allCases
+        where action.surfaces.contains(.cli) && action.touchesPlayback {
+            guard case .refused(let reason) = routeAction(action, in: .source, from: .cli) else {
+                XCTFail("\(action) is a playback-changing CLI verb and must refuse in Source Mode")
+                continue
+            }
+            XCTAssertEqual(reason, ruled, "\(action) refused with unruled wording")
+        }
+    }
+
+    /// The other half of 12.14: non-playback CLI commands are UNCHANGED. Section
+    /// 6.4 defers CLI routing entirely and keeps its brokered-read table "as the
+    /// plan for when it returns", so unchanged means "as they ship", not
+    /// "brokered but not playback".
+    ///
+    /// NOTE, for Anthony. 12.14 names two categories, playback-changing and
+    /// read-only, and the CLI has a third: non-playback WRITES (`mix`, `add`,
+    /// `remove`, `playlist create/delete/...`, `love`). This test puts them with
+    /// the reads, "unchanged", because 12.13 defers CLI routing entirely. The
+    /// alternative reading refuses them and changes ten shipping verbs.
+    func testNonPlaybackCliCommandsAreUnchangedInSourceMode() {
+        for action in MusicTUIAction.allCases
+        where action.surfaces.contains(.cli)
+            && !action.touchesPlayback
+            && !action.readsMusicAppCurrentTrack {
+            XCTAssertEqual(routeAction(action, in: .source, from: .cli),
+                           routeAction(action, in: .musicApp, from: .cli),
+                           "\(action) neither plays nor reads the current track: it must ship unchanged")
+        }
+    }
+
+    /// The distinction has to BITE, not merely exist. For an action reachable
+    /// from both surfaces that drives a player, the key is served and the verb
+    /// refuses. Without this, a routeAction that ignored `surface` would pass
+    /// every test above.
+    func testTheSameActionIsServedFromTheTuiAndRefusedFromTheCli() {
+        let dual = MusicTUIAction.allCases.filter {
+            $0.surfaces.contains(.tui) && $0.surfaces.contains(.cli) && $0.touchesPlayback
+        }
+        XCTAssertFalse(dual.isEmpty, "no dual-surface playback action: the test proves nothing")
+        var served = 0
+        for action in dual {
+            let fromCLI = routeAction(action, in: .source, from: .cli)
+            guard case .refused = fromCLI else {
+                XCTFail("\(action) from the CLI must refuse in Source Mode")
+                continue
+            }
+            if routeAction(action, in: .source, from: .tui) == .source { served += 1 }
+        }
+        XCTAssertGreaterThan(served, 0,
+                             "every dual-surface playback row refuses from the TUI too: 12.14 has over-reached")
+    }
+
+    /// Music.app mode is untouched by the surface (binding rule 1): an install
+    /// that never opens Output behaves exactly as it ships, from either surface.
+    func testSurfaceDoesNotChangeMusicAppMode() {
+        for action in MusicTUIAction.allCases {
+            XCTAssertEqual(routeAction(action, in: .musicApp, from: .tui),
+                           routeAction(action, in: .musicApp, from: .cli),
+                           "\(action) routes differently by surface in Music.app mode")
+        }
+    }
+
+    // MARK: - Anthony's ruling, 2026-09-16 13:36: the stale current track
+
+    /// "Bridge selection should not disable unrelated library management, but
+    /// nothing may silently interpret 'current track' as Music.app's stale
+    /// track." While Bridge plays, Music.app's `current track` is whatever it
+    /// was left on, so a verb that reads it would mutate or seed from the wrong
+    /// song.
+    func testEveryCurrentTrackReaderRefusesInSourceMode() {
+        let expected: Set<MusicTUIAction> = [
+            .loveTrack,                      // LoveCommands.swift:31, sets favorited of current track
+            .removeCurrentTrackFromPlaylist, // RemoveCommand.swift:13
+            .addCurrentTrackToPlaylist,      // AddCommand.swift:131
+            .similarToCurrentTrack,          // DiscoveryCommands.swift:26
+            .suggestFromCurrentTrack,        // DiscoveryCommands.swift:126
+            .newReleasesLikeCurrentTrack,    // DiscoveryCommands.swift:219
+        ]
+        XCTAssertEqual(Set(MusicTUIAction.allCases.filter { $0.readsMusicAppCurrentTrack }),
+                       expected,
+                       "the set of current-track readers changed without a ruling")
+
+        for action in expected where action.surfaces.contains(.cli) {
+            guard case .refused(let reason) = routeAction(action, in: .source, from: .cli) else {
+                return XCTFail("\(action) reads Music.app's current track and must refuse")
+            }
+            XCTAssertEqual(reason, currentTrackIsStaleInBridge,
+                           "\(action) refused without saying why the track is wrong")
+        }
+    }
+
+    /// The other half of the same ruling: explicit library management KEEPS
+    /// WORKING. These name their target, so nothing can resolve to a stale
+    /// track. A regression here would disable exactly what Anthony ruled must
+    /// stay available.
+    func testExplicitLibraryManagementKeepsWorkingFromTheCli() {
+        for action in [MusicTUIAction.addToLibrary, .playlistWrite, .cliMix,
+                       .similar, .suggest, .newReleases] {
+            XCTAssertFalse(action.readsMusicAppCurrentTrack,
+                           "\(action) is the EXPLICIT variant and must not read the current track")
+            XCTAssertEqual(routeAction(action, in: .source, from: .cli),
+                           routeAction(action, in: .musicApp, from: .cli),
+                           "\(action) names its own target and must ship unchanged")
+        }
+    }
+
+    /// `playlist temp` is refused already, and for its own reason: it exists to
+    /// start Music.app playback, so it is playback-changing rather than
+    /// current-track-dependent. Pinned so a later edit cannot reclassify it.
+    func testPlaylistTempRefusesAsPlaybackNotAsCurrentTrack() {
+        XCTAssertTrue(MusicTUIAction.playlistTemp.touchesPlayback)
+        XCTAssertFalse(MusicTUIAction.playlistTemp.readsMusicAppCurrentTrack)
+        guard case .refused(let reason) = routeAction(.playlistTemp, in: .source, from: .cli) else {
+            return XCTFail("playlist temp starts Music.app playback and must refuse")
+        }
+        XCTAssertEqual(reason, cliPlaybackDeferredInV1)
+    }
+
+    /// A split variant pair must not both claim the same behaviour: the point of
+    /// splitting was that one names its target and the other does not.
+    func testSplitVariantsDisagreeAboutTheCurrentTrack() {
+        for (explicit, current) in [
+            (MusicTUIAction.addToLibrary, MusicTUIAction.addCurrentTrackToPlaylist),
+            (.similar, .similarToCurrentTrack),
+            (.suggest, .suggestFromCurrentTrack),
+            (.newReleases, .newReleasesLikeCurrentTrack),
+        ] {
+            XCTAssertNotEqual(explicit.readsMusicAppCurrentTrack,
+                              current.readsMusicAppCurrentTrack,
+                              "\(explicit) and \(current) were split but classify identically")
+        }
     }
 }

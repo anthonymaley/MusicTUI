@@ -44,26 +44,31 @@ final class OutputTabTests: XCTestCase {
         XCTAssertTrue(airPlayActs(in: .musicApp))
     }
 
-    /// Codex M2: connected is not ready. Four states, so a person can tell a
-    /// source that is merely reachable from one that can actually serve.
-    func testReadinessHasFourDistinctStates() {
-        let all: [SourceReadiness] = [.disconnected, .unauthorized, .incompatible, .ready]
-        XCTAssertEqual(Set(all.map(\.label)).count, 4, "each state must read differently")
+    /// Ruling 12.13 collapsed four states to two. The property that survives is
+    /// the one that mattered: only a Bridge that can actually serve is
+    /// selectable, and every refusal says WHY.
+    func testOnlyAReadyBridgeIsSelectableAndEveryRefusalSaysWhy() {
         XCTAssertTrue(SourceReadiness.ready.canSelect)
-        XCTAssertFalse(SourceReadiness.disconnected.canSelect)
-        XCTAssertFalse(SourceReadiness.unauthorized.canSelect)
-        XCTAssertFalse(SourceReadiness.incompatible.canSelect)
+        XCTAssertEqual(SourceReadiness.ready.label, "ready")
+
+        let reasons = ["Bridge is not running",
+                       "Bridge was denied Apple Music access",
+                       "Apple Music access is restricted on this Mac",
+                       "Bridge speaks a different version (2); update one of them"]
+        for reason in reasons {
+            let state = SourceReadiness.unavailable(reason)
+            XCTAssertFalse(state.canSelect, "\(reason) must not be selectable")
+            XCTAssertEqual(state.label, reason, "the Output tab must show the reason itself")
+            XCTAssertFalse(state.label.isEmpty)
+        }
     }
 
     /// Codex I5: require the incoming source to be READY before the switch
     /// begins, so a failed selection cannot interrupt working playback.
     func testANonReadySourceCannotBeSelected() {
-        for state: SourceReadiness in [.disconnected, .unauthorized, .incompatible] {
-            XCTAssertFalse(outputModeSelectable(.source, readiness: state),
-                           "\(state.label) must not be selectable")
-        }
+        XCTAssertFalse(outputModeSelectable(.source, readiness: .notRunning))
         XCTAssertTrue(outputModeSelectable(.source, readiness: .ready))
         // Music.app is always selectable: it needs nothing to be reachable.
-        XCTAssertTrue(outputModeSelectable(.musicApp, readiness: .disconnected))
+        XCTAssertTrue(outputModeSelectable(.musicApp, readiness: .notRunning))
     }
 }

@@ -22,6 +22,14 @@ enum SourceAppError: Error, Equatable {
     case notAuthorized
     case refused(String)
     case unreadable
+    /// The socket exists and the app is presumably alive, but it did not answer
+    /// inside the read timeout. Distinct from `unreadable`: nothing arrived at
+    /// all, rather than something arriving that could not be parsed.
+    case timedOut
+    /// The socket is there and cannot be used — wrong permissions, a stale path
+    /// owned by another user. Distinct from `notRunning`, because opening the
+    /// app will not fix it.
+    case socketUnavailable(String)
     /// The source replied ok and did not end up playing. `ok` answers "was the
     /// request accepted"; only the status answers "is it playing" (Anthony,
     /// Blocking, 2026-09-10). A current source app reports a failed play as
@@ -34,11 +42,13 @@ enum SourceAppError: Error, Equatable {
     /// beside a `✗`, not in a log.
     var message: String {
         switch self {
-        case .notRunning:    return "Source app is not running"
-        case .notAuthorized: return "Source app has no Apple Music access"
-        case .refused(let d): return "Source app refused: \(d)"
-        case .unreadable:    return "Source app sent an unreadable reply"
-        case .didNotStart(let s): return "Source app did not start playback (\(s))"
+        case .notRunning:    return "Bridge is not running"
+        case .notAuthorized: return "Bridge has no Apple Music access"
+        case .refused(let d): return "Bridge refused: \(d)"
+        case .unreadable:    return "Bridge sent an unreadable reply"
+        case .timedOut:      return "Bridge did not answer in time"
+        case .socketUnavailable(let d): return "Bridge's control socket is unusable: \(d)"
+        case .didNotStart(let s): return "Bridge did not start playback (\(s))"
         }
     }
 }
@@ -175,16 +185,30 @@ struct SourceAppStationSearch: StationSearching {
         setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
         setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
 
-        // Any connect failure is reported as "not running". A refused or absent
-        // socket is by far the likeliest case and is the one a person can act
-        // on; distinguishing ECONNREFUSED from ENOENT would add words without
-        // adding an action.
+        // A connect failure is classified rather than flattened. The earlier
+        // comment here argued that ECONNREFUSED and ENOENT "would add words
+        // without adding an action" — true when the only consumer was Radio's
+        // one-line search message, false for a readiness indicator, whose entire
+        // job is to say WHICH failure this is. EACCES in particular is not fixed
+        // by opening the app, so reporting it as "not running" sends a person
+        // after the wrong thing.
         let connected = withUnsafePointer(to: &addr) { ptr in
             ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
                 connect(fd, sa, socklen_t(MemoryLayout<sockaddr_un>.size))
             }
         }
-        guard connected == 0 else { throw SourceAppError.notRunning }
+        if connected != 0 {
+            switch errno {
+            case ENOENT, ECONNREFUSED:
+                throw SourceAppError.notRunning
+            case EACCES, EPERM:
+                throw SourceAppError.socketUnavailable("permission denied")
+            case ETIMEDOUT:
+                throw SourceAppError.timedOut
+            default:
+                throw SourceAppError.socketUnavailable("connect failed (errno \(errno))")
+            }
+        }
 
         let payload = Array((line + "\n").utf8)
         var sent = 0
@@ -200,6 +224,10 @@ struct SourceAppStationSearch: StationSearching {
         var buf = [UInt8](repeating: 0, count: 4096)
         while true {
             let n = read(fd, &buf, buf.count)
+            // A timed-out read and a truncated reply used to be one outcome, so a
+            // wedged app and a broken one read identically. SO_RCVTIMEO surfaces
+            // as EAGAIN/EWOULDBLOCK.
+            if n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK) { throw SourceAppError.timedOut }
             if n <= 0 { break }
             out.append(contentsOf: buf[0..<n])
             if out.last == UInt8(ascii: "\n") { break }
@@ -321,15 +349,190 @@ struct SourceAppPlayback: SourcePlaying {
 struct SourceAppClient {
     let playback: SourcePlaying
     let stationSearch: StationSearching
+    let control: SourceControlling
 
     init(path: String = SourceAppStationSearch.socketPath) {
         playback = SourceAppPlayback(path: path)
         stationSearch = SourceAppStationSearch(path: path)
+        control = SourceAppControl(path: path)
     }
 
-    /// Seam for tests, matching the two members' own.
+    /// Seam for tests, matching the members' own.
     init(path: String, transport: @escaping (String, String) throws -> String) {
         playback = SourceAppPlayback(path: path, transport: transport)
         stationSearch = SourceAppStationSearch(path: path, transport: transport)
+        control = SourceAppControl(path: path, transport: transport)
+    }
+
+    /// Bridge's readiness for the Output tab. Never throws: a tab that cannot
+    /// render its own status is worse than one showing why.
+    ///
+    /// **Every failure keeps its own words.** This was `(try?  …) ?? .notRunning`,
+    /// which turned a permission error, a timeout, a malformed reply and a
+    /// missing app into one sentence — and printed "Bridge is not running" over a
+    /// running Bridge on 2026-09-16. A `try?` here is not a shortcut; it is the
+    /// defect.
+    func readiness() -> SourceReadiness {
+        do {
+            return try control.status().readiness
+        } catch {
+            return SourceReadiness.from(error)
+        }
     }
 }
+
+/// A Bridge row the matrix routes to the source but nothing has wired yet.
+///
+/// Deliberately explicit and greppable: during dogfood these are the rows still
+/// to come, and a person meets a clear sentence instead of silence or a crash.
+/// Every one of these must be gone before v1 is done.
+func bridgeNotWiredYet(_ what: String) -> ActionError {
+    ActionError(message: "\(what) is not wired to Bridge yet")
+}
+
+// MARK: - Control: status, transport and queue
+//
+// The rest of the bridge, in this file for the same reason as the play path: it
+// is the same disposable slice debt and one file is one deletion.
+
+/// What Bridge reports about itself. `readiness` answers the Output tab's
+/// question (ruling 12.13, DoD 12); the rest is what Now needs later.
+struct SourceStatus: Equatable {
+    let playback: String
+    let title: String?
+    let artist: String?
+    let readiness: SourceReadiness
+    let queuePhase: String?
+    let queueRequested: Int?
+    let queuePresent: Int?
+}
+
+/// One Library or Playlist row, by the triple the app joins on.
+///
+/// No id: MusicTUI's persistent id means nothing to the app, and the app's
+/// library ids are a different namespace from the catalogue ids `slice.play`
+/// takes (probe 4). The triple is the only identity both sides share.
+struct SourceLibraryRow: Equatable {
+    let title: String
+    let artist: String
+    let album: String
+}
+
+/// Everything MusicTUI asks Bridge to do beyond playing one catalogue id.
+protocol SourceControlling {
+    func status() throws -> SourceStatus
+    func resume() throws
+    func pause() throws
+    func next() throws
+    func previous() throws
+    func stop() throws
+    func seek(toSeconds seconds: Double) throws
+    func queue(rows: [SourceLibraryRow]) throws
+}
+
+struct SourceAppControl: SourceControlling {
+
+    /// The frame the app will read. A request over this is refused HERE, with a
+    /// reason naming the operation, rather than being sent to be rejected as an
+    /// unparseable frame with no op attached.
+    static let maximumRequestBytes = 64 * 1024
+
+    private let path: String
+    private let transport: (String, String) throws -> String
+
+    init(path: String = SourceAppStationSearch.socketPath) {
+        self.path = path
+        self.transport = SourceAppStationSearch.sendOverUnixSocket
+    }
+
+    init(path: String, transport: @escaping (String, String) throws -> String) {
+        self.path = path
+        self.transport = transport
+    }
+
+    func status() throws -> SourceStatus {
+        let reply = try send(["op": "slice.status"])
+        guard let status = reply["status"] as? [String: Any],
+              let playback = status["playback"] as? String else {
+            throw SourceAppError.unreadable
+        }
+        let queue = status["queue"] as? [String: Any]
+        return SourceStatus(playback: playback,
+                            title: status["title"] as? String,
+                            artist: status["artist"] as? String,
+                            readiness: readiness(from: status),
+                            queuePhase: queue?["phase"] as? String,
+                            queueRequested: queue?["requested"] as? Int,
+                            queuePresent: queue?["present"] as? Int)
+    }
+
+    func resume() throws   { _ = try send(["op": "slice.play"]) }
+    func pause() throws    { _ = try send(["op": "slice.pause"]) }
+    func next() throws     { _ = try send(["op": "slice.next"]) }
+    func previous() throws { _ = try send(["op": "slice.previous"]) }
+    func stop() throws     { _ = try send(["op": "slice.stop"]) }
+
+    func seek(toSeconds seconds: Double) throws {
+        _ = try send(["op": "slice.seek", "position": seconds])
+    }
+
+    /// Hands the selected rows over for the app to resolve and play.
+    ///
+    /// **It never splits.** A queue is one request: chunking it would silently
+    /// change what plays, which is the same class of defect as auto-picking an
+    /// ambiguous row. Over budget is a refusal (Anthony, 2026-09-16 16:07).
+    func queue(rows: [SourceLibraryRow]) throws {
+        let body: [String: Any] = [
+            "op": "slice.queue",
+            "rows": rows.map { ["title": $0.title, "artist": $0.artist, "album": $0.album] },
+        ]
+        _ = try send(body)
+    }
+
+    // MARK: - private
+
+    /// Ready only when the app says it is authorised AND speaks a contract this
+    /// build knows. Anything else carries the reason a person reads on Output.
+    private func readiness(from status: [String: Any]) -> SourceReadiness {
+        if let contract = status["contract"] as? Int, contract != sourceContractVersion {
+            return .unavailable("Bridge speaks a different version (\(contract)); update one of them")
+        }
+        switch status["authorization"] as? String {
+        case "authorized":     return .ready
+        case "not_determined": return .unavailable("Bridge has not been granted Apple Music access yet")
+        case "denied":         return .unavailable("Bridge was denied Apple Music access")
+        case "restricted":     return .unavailable("Apple Music access is restricted on this Mac")
+        default:               return .unavailable("Bridge could not read its Apple Music access")
+        }
+    }
+
+    private func send(_ body: [String: Any]) throws -> [String: Any] {
+        guard let data = try? JSONSerialization.data(withJSONObject: body),
+              let line = String(data: data, encoding: .utf8) else {
+            throw SourceAppError.unreadable
+        }
+        let op = body["op"] as? String ?? "slice"
+        guard line.utf8.count <= Self.maximumRequestBytes else {
+            throw SourceAppError.refused(
+                "\(op) is too large to send (\(line.utf8.count) bytes, limit \(Self.maximumRequestBytes))")
+        }
+
+        let raw = try transport(path, line)
+        guard let replyData = raw.data(using: .utf8),
+              let reply = try? JSONSerialization.jsonObject(with: replyData) as? [String: Any],
+              let ok = reply["ok"] as? Bool else {
+            throw SourceAppError.unreadable
+        }
+        guard ok else {
+            let error = reply["error"] as? [String: Any]
+            let detail = error?["detail"] as? String ?? "no detail"
+            if error?["kind"] as? String == "unauthorized" { throw SourceAppError.notAuthorized }
+            throw SourceAppError.refused(detail)
+        }
+        return reply
+    }
+}
+
+/// The `slice.*` contract this build speaks. Must match the app's
+/// `sliceContractVersion`; a mismatch is reported, never worked around.
+let sourceContractVersion = 1

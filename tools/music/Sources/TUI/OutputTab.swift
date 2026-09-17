@@ -10,33 +10,64 @@
 // TUI use. The `music eq` and `music visualizer` CLI verbs remain.
 import Foundation
 
-/// Whether the source app can actually serve, which is four states rather than
-/// two (Codex M2). `connected` is not `ready`: two independently released
-/// binaries can be connected and authorised while one lacks an operation the
-/// other needs. This is a product-level status, not capability negotiation.
+/// Whether Bridge can serve, and if not, why.
+///
+/// **Two states, not four** (ruling 12.13, 2026-09-15; DoD 12). Revision 5 had
+/// `disconnected`, `unauthorized`, `incompatible` and `ready`, and nothing could
+/// produce the middle two: the wire carried no authorization and no contract
+/// version, so a client could only ever tell "answered" from "did not answer".
+/// Those fields exist now, and what the Output tab actually needs is one line a
+/// person can act on.
 enum SourceReadiness: Equatable {
-    /// No socket, or nothing listening on it.
-    case disconnected
-    /// Reachable, but the app has no Apple Music access.
-    case unauthorized
-    /// Reachable and authorised, but missing an operation this build requires.
-    case incompatible
-    /// Reachable, authorised, and able to serve.
+    /// Nothing has asked Bridge yet.
+    ///
+    /// **Its own state, not a pessimistic guess.** The first version of this tab
+    /// initialised to "not running" and never refreshed, so it reported Bridge
+    /// down while Bridge was up and answering (2026-09-16 gate). A value meaning
+    /// "unknown" that reads as a diagnosis is how that became invisible: the
+    /// screen looked like a finding instead of an unfilled field.
+    case checking
     case ready
+    /// Why not, in words for the Output tab. Never empty.
+    case unavailable(String)
 
     var label: String {
         switch self {
-        case .disconnected: return "not running"
-        case .unauthorized: return "no Apple Music access"
-        case .incompatible: return "version mismatch"
-        case .ready:        return "ready"
+        case .checking: return "checking…"
+        case .ready: return "ready"
+        case .unavailable(let reason): return reason
         }
     }
 
-    /// Only a ready source may be selected. Codex I5: requiring readiness
-    /// BEFORE the switch begins is what stops a failed selection interrupting
-    /// playback that was working.
+    /// Only a ready Bridge may be selected. Codex I5: requiring readiness BEFORE
+    /// the switch begins is what stops a failed selection interrupting playback
+    /// that was working.
     var canSelect: Bool { self == .ready }
+
+    /// The app is not answering at all. Distinguished from every other reason
+    /// because it is the one a person fixes by opening the app.
+    static let notRunning = SourceReadiness.unavailable("Bridge is not running")
+
+    /// Every way asking Bridge can fail, kept apart.
+    ///
+    /// They all render as one `unavailable` line, but they are DIFFERENT lines:
+    /// collapsing them is what hid the wiring defect, because a client bug and a
+    /// missing app produced identical words. The UI shape is one row; the
+    /// diagnosis is not.
+    static func from(_ error: Error) -> SourceReadiness {
+        guard let error = error as? SourceAppError else {
+            return .unavailable("Bridge could not be reached: \(error.localizedDescription)")
+        }
+        switch error {
+        case .notRunning:        return .notRunning
+        case .notAuthorized:     return .unavailable("Bridge has no Apple Music access")
+        case .refused(let why):  return .unavailable("Bridge refused: \(why)")
+        case .timedOut:          return .unavailable("Bridge did not answer in time")
+        case .socketUnavailable(let why): return .unavailable("Bridge's control socket is unusable: \(why)")
+        case .unreadable:        return .unavailable("Bridge sent a reply this build could not read")
+        case .didNotStart(let s): return .unavailable("Bridge did not start playback (\(s))")
+        }
+    }
 }
 
 /// What the Output tab displays, in order.

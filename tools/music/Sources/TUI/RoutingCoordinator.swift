@@ -33,6 +33,10 @@ final class RoutingCoordinator {
     private let store: PlaybackModeStore
     private let makeSource: () -> SourceAppClient
 
+    /// Which surface this process IS. One per process, set at composition, so a
+    /// TUI call site cannot claim to be the CLI and vice versa (ruling 12.14).
+    private let surface: InvocationSurface
+
     /// Held for the whole of an action or a switch: the ordering boundary.
     private let order = NSLock()
     /// Guards `current` and `source` only, so reading `mode` never waits for a
@@ -48,17 +52,22 @@ final class RoutingCoordinator {
 
     /// Reads the persisted selection ONCE. From here on the in-memory mode is
     /// the truth for the life of the process, and only a switch changes it.
-    init(store: PlaybackModeStore, makeSource: @escaping () -> SourceAppClient) {
+    init(store: PlaybackModeStore,
+         surface: InvocationSurface,
+         makeSource: @escaping () -> SourceAppClient) {
         self.store = store
+        self.surface = surface
         self.makeSource = makeSource
         self.current = store.mode()
     }
 
-    /// The composition both processes use: the TUI once at launch, each CLI
-    /// command once per invocation, so the CLI obeys the same selection the
-    /// Output tab made (Codex B2).
-    static func live(store: PlaybackModeStore = PlaybackModeStore()) -> RoutingCoordinator {
-        RoutingCoordinator(store: store, makeSource: { SourceAppClient() })
+    /// The composition both processes use: the TUI once at launch with `.tui`,
+    /// each CLI command once per invocation with `.cli`, so the CLI obeys the
+    /// same selection the Output tab made (Codex B2) while 12.14 still tells the
+    /// two surfaces apart.
+    static func live(store: PlaybackModeStore = PlaybackModeStore(),
+                     surface: InvocationSurface) -> RoutingCoordinator {
+        RoutingCoordinator(store: store, surface: surface, makeSource: { SourceAppClient() })
     }
 
     var mode: PlaybackMode {
@@ -85,7 +94,7 @@ final class RoutingCoordinator {
                  source: (SourceAppClient) throws -> Void,
                  unaffected: () throws -> Void) throws {
         try exclusively {
-            switch routeAction(action, in: mode) {
+            switch routeAction(action, in: mode, from: surface) {
             case .musicApp:        try musicApp()
             case .unaffected:      try unaffected()
             case .source:          try source(sourceClient())
@@ -133,7 +142,7 @@ final class RoutingCoordinator {
 
             let ready = target == .source ? readiness() : .ready
             guard outputModeSelectable(target, readiness: ready) else {
-                throw ActionError(message: "MusicTUI Source is \(ready.label); still using \(name(outgoing))")
+                throw ActionError(message: "Bridge is \(ready.label); still using \(name(outgoing))")
             }
 
             let paused = (try? pauseOutgoing(outgoing)) ?? false
@@ -177,10 +186,13 @@ final class RoutingCoordinator {
         state.lock(); reachedBoundary = hook; state.unlock()
     }
 
+    /// The name a PERSON reads. Ruling 12.15 (2026-09-15): the user-facing
+    /// output is **Bridge**; the app and the internal components keep the name
+    /// MusicTUI Source. Type names are deliberately not renamed with it.
     private func name(_ mode: PlaybackMode) -> String {
         switch mode {
         case .musicApp: return "Music.app"
-        case .source:   return "MusicTUI Source"
+        case .source:   return "Bridge"
         }
     }
 

@@ -63,7 +63,7 @@ final class RadioSourceAppRoutingTests: XCTestCase {
     /// Bounded, and a timeout is reported as FAILURE rather than read as
     /// success - this repo has already shipped an instrument that treated a
     /// timeout as an unchanged pass.
-    func testSourceAppFailureNamesTheSourceApp() throws {
+    func testSourceAppFailureNamesBridge() throws {
         let scene = makeScene(stationSearch: StubStationSearch(result: .failure(SourceAppError.notRunning)))
         commitSearch(scene, "jazz")
 
@@ -72,11 +72,11 @@ final class RadioSourceAppRoutingTests: XCTestCase {
         while Date() < deadline {
             _ = scene.tick(snapshot: snapshot)
             out = scene.render(frame: frame, snapshot: snapshot)
-            if out.contains("Source app") { break }
+            if out.contains("Bridge") { break }
             usleep(20_000)
         }
-        XCTAssertTrue(out.contains("Source app is not running"),
-                      "expected the source app's own refusal on the message line within 5s, got: \(out)")
+        XCTAssertTrue(out.contains("Bridge is not running"),
+                      "expected Bridge's own refusal on the message line within 5s, got: \(out)")
     }
 
     /// Results from the source app land in the SAME list the REST route fills,
