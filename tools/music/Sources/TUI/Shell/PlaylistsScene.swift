@@ -13,6 +13,7 @@ final class PlaylistsScene: Scene {
     }
 
     private let backend: AppleScriptBackend
+    private let routing: RoutingCoordinator
     private let playlists: [String]
     private let subscriptionNames: Set<String>
     private let sources: PlaylistDataSources
@@ -69,10 +70,12 @@ final class PlaylistsScene: Scene {
 
     private let metaCol = 6
 
-    init(backend: AppleScriptBackend, playlists: [String], subscriptionNames: Set<String> = [],
+    init(backend: AppleScriptBackend,
+         routing: RoutingCoordinator, playlists: [String], subscriptionNames: Set<String> = [],
          sources: PlaylistDataSources,
          appQueue: AppQueueStore, status: StatusStore, actions: ActionRunner,
          kittyEnabled: Bool = false) {
+        self.routing = routing
         self.backend = backend
         self.playlists = playlists
         self.subscriptionNames = subscriptionNames
@@ -368,6 +371,41 @@ final class PlaylistsScene: Scene {
 
     // MARK: playback (user-initiated; brief inline stall acceptable)
 
+
+    /// The rows Bridge resolves against its library.
+    ///
+    /// A track with no album is DROPPED here rather than sent: the join needs the
+    /// whole triple, and sending two fields out of three invites a wrong match.
+    /// Dropping changes the count, so the caller compares and refuses instead of
+    /// quietly playing a shorter playlist.
+    private static func bridgeRows(_ tracks: [TrackListEntry]) -> [SourceLibraryRow] {
+        tracks.compactMap { track in
+            guard let album = track.album else { return nil }
+            return SourceLibraryRow(title: track.name, artist: track.artist, album: album)
+        }
+    }
+
+    /// Hand a whole selection to Bridge, or refuse with a reason.
+    ///
+    /// Never partial. The app refuses the queue if any row cannot be resolved
+    /// uniquely; this refuses first if any row could not even be described.
+    private func playOnBridge(_ tracks: [TrackListEntry], named name: String) throws {
+        let rows = Self.bridgeRows(tracks)
+        guard rows.count == tracks.count else {
+            throw ActionError(message: "\(tracks.count - rows.count) of \(tracks.count) tracks in '\(name)' have no album, so Bridge cannot identify them")
+        }
+        do {
+            try routing.perform(.playlistPlay, musicApp: {},
+                                source: { try $0.control.queue(rows: rows) },
+                                unaffected: {})
+        } catch let error as SourceAppError {
+            // ActionRunner reduces anything that is not an ActionError to
+            // "<label> failed.", which would hide the 100-song bound, the
+            // repeated-title refusal and "no unique match" alike.
+            throw ActionError(message: error.message)
+        }
+    }
+
     private func playTrack(_ trackIndex: Int) {
         // App-owned queue (see AppQueue.swift). macOS 26.x broke `play track N of
         // playlist X`, so instead of leaning on Music's queue we hold the playlist
@@ -380,10 +418,17 @@ final class PlaylistsScene: Scene {
         let pos = trackIndex + 1
         let store = self.appQueue
         let backend = self.backend
-        actions.run("Play") {
+        actions.run("Play") { [routing] in
             let tracks = fetchPlaylistTracks(backend: backend, playlist: name)
             try require(!tracks.isEmpty, "Couldn't load tracks for '\(name)'.")
             try require(pos >= 1 && pos <= tracks.count, "Track \(pos) is out of range.")
+            if routing.mode == .source {
+                // One track, from its position to the end: the same thing the
+                // Music.app path queues, so the two modes agree about what Enter
+                // on a row means.
+                try self.playOnBridge(Array(tracks[(pos - 1)...]), named: name)
+                return
+            }
             store.set(AppQueue(playlistName: name, tracks: tracks, currentIndex: pos))
             try require(playQueueTrack(backend: backend, playlist: name, position: pos), "Couldn't play '\(name)'.")
         }
@@ -394,7 +439,16 @@ final class PlaylistsScene: Scene {
         appQueue.clear()
         let esc = escapeAppleScriptString(playlists[plCursor])
         let name = playlists[plCursor]
-        actions.run("Play") {
+        actions.run("Play") { [routing] in
+            if routing.mode == .source {
+                let tracks = fetchPlaylistTracks(backend: self.backend, playlist: name)
+                try require(!tracks.isEmpty, "Couldn't load tracks for '\(name)'.")
+                // Collection shuffle is "play this set in random order" (6.5):
+                // randomise the rows before building, which needs no MusicKit
+                // shuffle mode.
+                try self.playOnBridge(shuffle ? tracks.shuffled() : tracks, named: name)
+                return
+            }
             try require((try? syncRun { try await self.backend.runMusic("set shuffle enabled to \(shuffle)") }) != nil,
                         "Couldn't set shuffle for '\(name)'.")
             try require((try? syncRun { try await self.backend.runMusic("play playlist \"\(esc)\"") }) != nil,

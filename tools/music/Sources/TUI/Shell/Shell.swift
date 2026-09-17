@@ -103,7 +103,7 @@ func runShell() {
                 status.post("No playlists found.", error: true)
                 return nil
             }
-            let scene = PlaylistsScene(backend: backend,
+            let scene = PlaylistsScene(backend: backend, routing: routing,
                                        playlists: names,
                                        subscriptionNames: fetched.subscription,
                                        sources: makePlaylistDataSources(backend: backend, names: names, artworkAPI: makeArtworkAPI()),
