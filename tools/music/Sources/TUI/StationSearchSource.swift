@@ -427,6 +427,9 @@ protocol SourceControlling {
     func previous() throws
     func stop() throws
     func seek(toSeconds seconds: Double) throws
+    /// Relative seek. The TUI's `[` and `]` are ±30s, and `slice.seek` already
+    /// takes `offset` as the alternative to `position`.
+    func seek(byOffset seconds: Double) throws
     func queue(rows: [SourceLibraryRow]) throws
 }
 
@@ -474,6 +477,10 @@ struct SourceAppControl: SourceControlling {
 
     func seek(toSeconds seconds: Double) throws {
         _ = try send(["op": "slice.seek", "position": seconds])
+    }
+
+    func seek(byOffset seconds: Double) throws {
+        _ = try send(["op": "slice.seek", "offset": seconds])
     }
 
     /// Hands the selected rows over for the app to resolve and play.

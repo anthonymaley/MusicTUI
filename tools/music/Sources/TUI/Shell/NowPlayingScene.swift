@@ -150,8 +150,10 @@ final class NowPlayingScene: Scene {
     private var artDirty = false
 
     init(backend: AppleScriptBackend, appQueue: AppQueueStore, status: StatusStore, actions: ActionRunner,
+         routing: RoutingCoordinator,
          restArtworkAPI: RESTAPIBackend? = nil, kittyEnabled: Bool = false,
          setArtSize: @escaping (Int, Int) -> Void = { _, _ in }) {
+        self.routing = routing
         self.backend = backend
         self.appQueue = appQueue
         self.status = status
@@ -160,6 +162,8 @@ final class NowPlayingScene: Scene {
         self.kittyEnabled = kittyEnabled
         self.setArtSize = setArtSize
     }
+
+    private let routing: RoutingCoordinator
 
     func artPlacementsInvalidated() { lastPlaced = nil }
 
@@ -617,7 +621,31 @@ final class NowPlayingScene: Scene {
             wantsPlaylists = true
         case .quiet:
             appQueue.clear()
-            actions.run("Pause") { _ = try syncRun { try await self.backend.runMusic("pause") } }
+            actions.run("Pause") { [routing] in
+                try routing.perform(.quiet,
+                    musicApp: { _ = try syncRun { try await self.backend.runMusic("pause") } },
+                    // Ruling 12.7: Quiet pauses the SELECTED output, not
+                    // Music.app. Taken literally the old line paused Music.app
+                    // from Bridge, against rule 3.
+                    source: { try $0.control.pause() },
+                    unaffected: {})
+            }
+        }
+    }
+
+    /// Seek on whichever player is selected. `slice.seek` refuses a forward seek
+    /// past the end, or when the track's length is unknown, with its own reason
+    /// — the TUI shows that rather than a generic failure.
+    private func seek(by offset: Double) {
+        actions.run("Seek") { [routing, backend] in
+            try routing.perform(.seek,
+                musicApp: {
+                    _ = try syncRun {
+                        try await backend.runMusic("set player position to (player position \(offset < 0 ? "-" : "+") \(abs(offset)))")
+                    }
+                },
+                source: { try $0.control.seek(byOffset: offset) },
+                unaffected: {})
         }
     }
 
@@ -657,10 +685,10 @@ final class NowPlayingScene: Scene {
         case .left:  gridFocused = true; return .redraw
         case .right: gridFocused = false; return .redraw
         case .char("["):
-            actions.run("Seek") { _ = try syncRun { try await self.backend.runMusic("set player position to (player position - 30)") } }
+            seek(by: -30)
             return .redraw
         case .char("]"):
-            actions.run("Seek") { _ = try syncRun { try await self.backend.runMusic("set player position to (player position + 30)") } }
+            seek(by: 30)
             return .redraw
         default:
             break

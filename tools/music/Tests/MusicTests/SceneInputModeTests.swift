@@ -15,8 +15,11 @@ final class SceneInputModeTests: XCTestCase {
     func testDefaultIsFalse() {
         // NowPlayingScene does not override capturesAllInput.
         let status = StatusStore()
+        let store = PlaybackModeStore(path: NSTemporaryDirectory() + "mode-\(UUID().uuidString).json")
         let s = NowPlayingScene(backend: AppleScriptBackend(), appQueue: AppQueueStore(),
-                                status: status, actions: ActionRunner(status: status))
+                                status: status, actions: ActionRunner(status: status),
+                                routing: RoutingCoordinator(store: store, surface: .tui,
+                                                            makeSource: { SourceAppClient() }))
         XCTAssertFalse(s.capturesAllInput)
     }
     func testShellRoutesGlobalsWhenNotCapturing() {
