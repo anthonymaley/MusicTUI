@@ -295,6 +295,10 @@ final class DiscoverScene: Scene {
                     return .redraw
                 }
                 do {
+                    if bridgeSelected() {
+                        status.post(bridgeNotWiredYet("Radio stations").message, error: true)
+                        return .redraw
+                    }
                     try playStation(Station(id: item.id, name: item.name, url: url,
                                             isLive: nil, artworkURL: item.artworkURL),
                                     via: opener)
@@ -396,6 +400,14 @@ final class DiscoverScene: Scene {
             return .redraw
 
         case .container(let ids):
+            // Reached in Bridge mode whenever the route is not a single track:
+            // play-all, and a selected row that should play through the
+            // container's tail. Both would build a Music.app container and play
+            // it while Bridge is selected (rule 3).
+            if bridgeSelected() {
+                status.post(bridgeNotWiredYet("Playing a whole rail").message, error: true)
+                return .redraw
+            }
             let title = container.name
             let lifecycle = self.lifecycle
             // The coordinator posts every toast itself, including "Playing X" the
@@ -416,6 +428,12 @@ final class DiscoverScene: Scene {
     /// dispatch off the input loop for their own fetches.
     private func playAllFromRail(_ item: DiscoverItem) {
         guard let feed else { return }
+        // `p` on a rail row: the same Music.app container as the route above,
+        // reached by a different key (rule 3).
+        if bridgeSelected() {
+            status.post(bridgeNotWiredYet("Playing a whole rail").message, error: true)
+            return
+        }
         guard api != nil else {
             status.post("Sign in to play Discover music (music auth setup).", error: true)
             return

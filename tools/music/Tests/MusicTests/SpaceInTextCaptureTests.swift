@@ -25,7 +25,7 @@ final class SpaceInTextCaptureTests: XCTestCase {
     func testRadioAddCaptureSpace() {
         let tmpPath = NSTemporaryDirectory() + "music-test-stations-\(UUID().uuidString).json"
         let store = StationStore(path: tmpPath)
-        let scene = RadioScene(store: store, catalog: nil)
+        let scene = RadioScene(routing: RoutingCoordinator(store: PlaybackModeStore(path: NSTemporaryDirectory() + "m-\(UUID().uuidString).json"), surface: .tui, makeSource: { SourceAppClient() }), store: store, catalog: nil)
 
         _ = scene.handle(.char("a"))               // enter add-by-URL mode
         type("radio", into: scene.handle)
@@ -41,7 +41,7 @@ final class SpaceInTextCaptureTests: XCTestCase {
     func testRadioSearchCaptureSpace() {
         let tmpPath = NSTemporaryDirectory() + "music-test-stations-\(UUID().uuidString).json"
         let store = StationStore(path: tmpPath)
-        let scene = RadioScene(store: store, catalog: nil)
+        let scene = RadioScene(routing: RoutingCoordinator(store: PlaybackModeStore(path: NSTemporaryDirectory() + "m-\(UUID().uuidString).json"), surface: .tui, makeSource: { SourceAppClient() }), store: store, catalog: nil)
 
         _ = scene.handle(.char("/"))                // enter search mode
         type("deep", into: scene.handle)

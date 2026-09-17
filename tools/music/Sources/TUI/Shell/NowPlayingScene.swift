@@ -611,7 +611,12 @@ final class NowPlayingScene: Scene {
             let source = continuationSourceNow()
             let backend = self.backend
             let appQueue = self.appQueue
+            let routing = self.routing
             actions.run("Shuffle") {
+                // Collection shuffle is Served in Source Mode (6.5) but not yet
+                // built on the Bridge collection paths, so it refuses rather
+                // than shuffling Music.app underneath a playing Bridge.
+                if routing.mode == .source { throw bridgeNotWiredYet("Collection shuffle") }
                 let ok: Bool
                 switch source {
                 case .bounded(let label, let src, let tracks):
@@ -638,6 +643,23 @@ final class NowPlayingScene: Scene {
                     unaffected: {})
             }
         }
+    }
+
+    /// Ask the routing matrix whether this key may act, and post the refusal if
+    /// not. Returns false when the caller must not proceed.
+    ///
+    /// The matrix has always decided these rows; the KEYS never asked it. In
+    /// Bridge mode `s`, `m`, `r`, `g` and the control grid drove Music.app —
+    /// and `l` wrote `favorited of current track`, which is Anthony's ruling of
+    /// 2026-09-16 exactly: while Bridge plays, Music.app's current track is
+    /// whatever it was left on, so the favourite lands on the wrong song.
+    /// Silent and plausible, which is the worst shape for this defect.
+    private func askMatrix(_ action: MusicTUIAction) -> Bool {
+        if case .refused(let why) = routeAction(action, in: routing.mode, from: .tui) {
+            status.post(why, error: true)
+            return false
+        }
+        return true
     }
 
     /// Seek on whichever player is selected. `slice.seek` refuses a forward seek
@@ -708,7 +730,10 @@ final class NowPlayingScene: Scene {
             case .down:  gridRow = min(ControlGrid.rowCount - 1, gridRow + 1); return .redraw
             case .home:  gridRow = 0; return .redraw
             case .end:   gridRow = ControlGrid.rowCount - 1; return .redraw
-            case .enter: applyControlRow(); return .redraw
+            case .enter:
+                // The grid sets the same persistent modes as s/m/r, plus Genius.
+                guard askMatrix(.persistentShuffleMode) else { return .redraw }
+                applyControlRow(); return .redraw
             default: break   // s/m/r/g/l fall through below
             }
         }
@@ -734,6 +759,7 @@ final class NowPlayingScene: Scene {
             cursor = rows.count - 1; return .redraw
         case .enter:
             guard cursor < rows.count else { return .none }
+            guard askMatrix(.queueJump) else { return .redraw }
             // Jump within the app-owned queue by the row's play-order position.
             let backend = self.backend
             if let (pl, pos) = appQueue.jump(to: rows[cursor].index) {
@@ -765,6 +791,7 @@ final class NowPlayingScene: Scene {
             }
             return .redraw
         case .char("l"):
+            guard askMatrix(.loveTrack) else { return .redraw }
             // Toggle favorite on the current track (macOS 26: `favorited`, the
             // old `loved` property errors). State isn't polled — the toast IS
             // the feedback.
@@ -787,12 +814,16 @@ final class NowPlayingScene: Scene {
             }
             return .redraw
         case .char("s"), .char("S"):
+            guard askMatrix(.persistentShuffleMode) else { return .redraw }
             toggleShuffle(); return .redraw
         case .char("m"), .char("M"):
+            guard askMatrix(.persistentShuffleMode) else { return .redraw }
             cycleShuffleMode(); return .redraw
         case .char("r"), .char("R"):
+            guard askMatrix(.persistentRepeatMode) else { return .redraw }
             cycleRepeat(); return .redraw
         case .char("g"), .char("G"):
+            guard askMatrix(.genius) else { return .redraw }
             triggerGenius(); return .redraw
         default:
             return .none

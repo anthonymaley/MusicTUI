@@ -10,6 +10,7 @@ final class RadioScene: Scene {
 
     private var nav = RadioNav.initial
     private let store: StationStore
+    private let routing: RoutingCoordinator
     private let catalog: RadioCatalog?
     /// Where `/` gets its stations. Defaults to `catalog`, so with nothing
     /// injected this scene behaves exactly as it always has. Separate from
@@ -76,8 +77,10 @@ final class RadioScene: Scene {
     // there and 0 is always < any positive railScroll.
     private var railScroll = 0
 
-    init(store: StationStore, catalog: RadioCatalog?, stationSearch: StationSearching? = nil,
+    init(routing: RoutingCoordinator,
+store: StationStore, catalog: RadioCatalog?, stationSearch: StationSearching? = nil,
          opener: Opener = SystemOpener(), kittyEnabled: Bool = false) {
+        self.routing = routing
         self.store = store
         self.catalog = catalog
         self.stationSearch = stationSearch ?? catalog
@@ -186,8 +189,16 @@ final class RadioScene: Scene {
         case .none:
             break
         case .play(let s):
-            do { try playStation(s, via: opener); message = "▶ \(s.name)" }
-            catch { message = "✗ Couldn't start \(s.name)" }
+            // Spec 6.3 marks Radio Enter Served natively, but slice.play
+            // resolves Song only (PlaybackOwner.swift:941) — there is no station
+            // operation on the wire. Refused visibly rather than played on
+            // Music.app while Bridge is selected.
+            if routing.mode == .source {
+                message = "✗ " + bridgeNotWiredYet("Radio stations").message
+            } else {
+                do { try playStation(s, via: opener); message = "▶ \(s.name)" }
+                catch { message = "✗ Couldn't start \(s.name)" }
+            }
         case .toggleFavorite(let s):
             do { try store.toggle(s) } catch { message = "✗ Couldn't save favorite" }
         }

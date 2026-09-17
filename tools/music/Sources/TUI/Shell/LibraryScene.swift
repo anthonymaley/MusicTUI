@@ -772,8 +772,16 @@ final class LibraryScene: Scene {
     private func playAlbum(title: String, artist: String, shuffle: Bool, startAt: Int = 1) {
         let backend = self.backend
         let store = self.appQueue
+        let routing = self.routing
         let status = self.status
         actions.run("Play") {
+            // Rule 3: no playback action reaches Music.app in Source Mode. The
+            // matrix said so from the start; this call site never asked it.
+            // Refused visibly until the Bridge collection paths exist — a
+            // temporary refusal is spec-incomplete but SAFE, where silently
+            // driving the other player is neither.
+            if routing.mode == .source { throw bridgeNotWiredYet("Album play") }
+
             // resolveAlbumPlaybackTracks tries the strict album+artist clause first
             // (remix/compilation albums credit each track to the remixer, so
             // `album artist` catches those, and the artist clause disambiguates
@@ -853,8 +861,16 @@ final class LibraryScene: Scene {
     private func playArtist(name: String, shuffle: Bool) {
         let backend = self.backend
         let store = self.appQueue
+        let routing = self.routing
         let status = self.status
         actions.run("Play") {
+            // Rule 3: no playback action reaches Music.app in Source Mode. The
+            // matrix said so from the start; this call site never asked it.
+            // Refused visibly until the Bridge collection paths exist — a
+            // temporary refusal is spec-incomplete but SAFE, where silently
+            // driving the other player is neither.
+            if routing.mode == .source { throw bridgeNotWiredYet("Artist play") }
+
             // `name` is the library credit (album artist, else artist), so the
             // strict `artist is` clause now usually hits. The loose fallback stays
             // for per-track soloist credits: on the live repro ("Floating Points,

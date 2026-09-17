@@ -16,7 +16,7 @@ final class RadioSearchAddTests: XCTestCase {
 
     private func makeScene(catalog: RadioCatalog? = nil) -> RadioScene {
         let tmpPath = NSTemporaryDirectory() + "music-test-stations-\(UUID().uuidString).json"
-        return RadioScene(store: StationStore(path: tmpPath), catalog: catalog)
+        return RadioScene(routing: RoutingCoordinator(store: PlaybackModeStore(path: NSTemporaryDirectory() + "m-\(UUID().uuidString).json"), surface: .tui, makeSource: { SourceAppClient() }), store: StationStore(path: tmpPath), catalog: catalog)
     }
 
     private func type(_ s: String, into handle: (KeyPress) -> SceneAction) {

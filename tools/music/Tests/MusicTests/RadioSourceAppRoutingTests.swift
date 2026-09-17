@@ -22,7 +22,7 @@ final class RadioSourceAppRoutingTests: XCTestCase {
         let tmpPath = NSTemporaryDirectory() + "music-test-stations-\(UUID().uuidString).json"
         // catalog deliberately nil: this is the no-developer-key shape, which is
         // exactly the state the dogfood option has to work in.
-        return RadioScene(store: StationStore(path: tmpPath), catalog: nil, stationSearch: stationSearch)
+        return RadioScene(routing: RoutingCoordinator(store: PlaybackModeStore(path: NSTemporaryDirectory() + "m-\(UUID().uuidString).json"), surface: .tui, makeSource: { SourceAppClient() }), store: StationStore(path: tmpPath), catalog: nil, stationSearch: stationSearch)
     }
 
     private func commitSearch(_ scene: RadioScene, _ term: String) {

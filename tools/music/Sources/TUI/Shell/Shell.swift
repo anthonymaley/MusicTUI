@@ -158,7 +158,7 @@ func runShell() {
             // today and Favorites keep working with no network at all.
             let sourceApp: (any StationSearching)? =
                 sourceAppEnabled ? SourceAppStationSearch() : nil
-            let scene = RadioScene(store: StationStore(), catalog: makeCatalog(),
+            let scene = RadioScene(routing: routing, store: StationStore(), catalog: makeCatalog(),
                                    stationSearch: sourceApp, kittyEnabled: kittyEnabled)
             scenes[id] = scene
             return scene
