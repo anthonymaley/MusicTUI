@@ -166,13 +166,58 @@ final class PlaybackPoller {
         }
     }
 
+    /// Which player to read. Nil means Music.app, which is what every existing
+    /// caller and test means.
+    private let routing: RoutingCoordinator?
+    private let makeSourceClient: () -> SourceAppClient
+
     init(store: NowPlayingStore, backend: AppleScriptBackend, appQueue: AppQueueStore,
-         queueStore: QueueStore = QueueStore(), intervalMs: UInt32 = 1000) {
+         queueStore: QueueStore = QueueStore(), intervalMs: UInt32 = 1000,
+         routing: RoutingCoordinator? = nil,
+         makeSourceClient: @escaping () -> SourceAppClient = { SourceAppClient() }) {
+        self.routing = routing
+        self.makeSourceClient = makeSourceClient
         self.store = store
         self.backend = backend
         self.appQueue = appQueue
         self.queueStore = queueStore
         self.intervalMs = intervalMs
+    }
+
+    /// Now, read from Bridge.
+    ///
+    /// Deliberately none of the Music.app machinery below: no artwork ladder, no
+    /// AppleScript queue sync, no history capture. Those read a player that is
+    /// not the one making sound, and running them here would put a paused
+    /// Music.app's track on screen beside Bridge's.
+    ///
+    /// **What Bridge does not report, this does not invent.** `slice.status`
+    /// carries no album, no artwork and no position, so those stay empty rather
+    /// than being filled from Music.app or guessed. A zero duration is the
+    /// honest reading, and the screen shows no progress.
+    private func tickFromBridge() {
+        guard let status = try? makeSourceClient().control.status() else {
+            store.write(snapshot(outcome: .stopped))
+            return
+        }
+        let state: String
+        switch status.playback {
+        case "playing": state = "playing"
+        case "paused":  state = "paused"
+        // `loading` is the settle window after a command. It is neither playing
+        // nor stopped, and the TUI has no third word for it; reporting stopped
+        // for a moment is better than claiming playback that has not started.
+        default:        state = "stopped"
+        }
+        guard state != "stopped" else {
+            store.write(snapshot(outcome: .stopped))
+            return
+        }
+        var np = NowPlayingState()
+        np.track = status.title ?? ""
+        np.artist = status.artist ?? ""
+        np.state = state
+        store.write(snapshot(outcome: .active(np)))
     }
 
     func start() {
@@ -267,6 +312,13 @@ final class PlaybackPoller {
     }
 
     func tick() {
+        // Bridge owns playback in Source Mode, so Now must read IT. Until this,
+        // the screen said "Nothing playing" while Bridge played — the poller was
+        // faithfully reporting Music.app, which was paused and correct to be.
+        if routing?.mode == .source {
+            tickFromBridge()
+            return
+        }
         defer { syncQueuePersistence() }
         switch pollNowPlaying(backend: backend) {
         case .active(let np):

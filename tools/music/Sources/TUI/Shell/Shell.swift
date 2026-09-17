@@ -23,7 +23,14 @@ func runShell() {
     let status = StatusStore()
     let actions = ActionRunner(status: status)
     let volumeDelta = DeltaAccumulator()
-    let poller = PlaybackPoller(store: store, backend: backend, appQueue: appQueue, queueStore: queueStore)
+    // Source Mode's routing seam, composed once for this process. `.tui` is the
+    // surface: ruling 12.14 refuses playback-changing CLI verbs while Bridge is
+    // selected, and that distinction is only meaningful if each process says
+    // which one it is.
+    let routing = RoutingCoordinator.live(surface: .tui)
+
+    let poller = PlaybackPoller(store: store, backend: backend, appQueue: appQueue, queueStore: queueStore,
+                                routing: routing)
     // One owner for Discover containers: admission after the launch sweep,
     // protection at exit, confirmation of ownership in between
     // (docs/plans/2026-09-03-discover-lifecycle-design.md).
@@ -65,12 +72,6 @@ func runShell() {
     // once at startup on the same both-tokens gate Playlists' hero covers use;
     // nil (no token) simply leaves Now on embedded-or-gradient — its exact
     // pre-REST behavior, no error, no dead tab.
-    // Source Mode's routing seam, composed once for this process. `.tui` is the
-    // surface: ruling 12.14 refuses playback-changing CLI verbs while Bridge is
-    // selected, and that distinction is only meaningful if each process says
-    // which one it is.
-    let routing = RoutingCoordinator.live(surface: .tui)
-
     let router = Router(root: .nowPlaying)
     var scenes: [SceneID: Scene] = [.nowPlaying: NowPlayingScene(backend: backend, appQueue: appQueue, status: status, actions: actions, routing: routing, restArtworkAPI: makeArtworkAPI(), kittyEnabled: kittyEnabled,
                                                                   setArtSize: { cols, rows in poller.setDesiredArtSize(cols: cols, rows: rows) })]

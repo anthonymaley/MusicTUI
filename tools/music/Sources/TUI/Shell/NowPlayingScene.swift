@@ -440,14 +440,21 @@ final class NowPlayingScene: Scene {
         my += 1
         out += ANSICode.moveTo(row: my, col: leftX) + "\(ANSICode.dim)\(truncText(np.album, to: metaW))\(ANSICode.reset)"
         my += 2
-        let elapsed = formatTime(np.position)
-        let total = formatTime(np.duration)
-        let ratio = np.duration > 0 ? Double(np.position) / Double(np.duration) : 0
-        let pbW = min(28, max(8, metaW - 14))
-        let knob = max(0, min(pbW - 1, Int(ratio * Double(pbW - 1))))
-        var bar = ""
-        for i in 0..<pbW { bar += i == knob ? "\(ANSICode.bold)\u{25CF}\(ANSICode.reset)" : "\(ANSICode.dim)\u{2500}\(ANSICode.reset)" }
-        out += ANSICode.moveTo(row: my, col: leftX) + "\(elapsed) \(bar) \(total)"
+        // No duration means no progress is KNOWN, which is not the same as a
+        // zero-length track at position zero. Bridge reports no position, and the
+        // old bar rendered "0:00 ●──── 0:00" over a playing song and never moved
+        // — a reading invented by the renderer rather than reported by anything.
+        // Radio already refuses to draw one for live stations, for this reason.
+        if np.duration > 0 {
+            let elapsed = formatTime(np.position)
+            let total = formatTime(np.duration)
+            let ratio = Double(np.position) / Double(np.duration)
+            let pbW = min(28, max(8, metaW - 14))
+            let knob = max(0, min(pbW - 1, Int(ratio * Double(pbW - 1))))
+            var bar = ""
+            for i in 0..<pbW { bar += i == knob ? "\(ANSICode.bold)\u{25CF}\(ANSICode.reset)" : "\(ANSICode.dim)\u{2500}\(ANSICode.reset)" }
+            out += ANSICode.moveTo(row: my, col: leftX) + "\(elapsed) \(bar) \(total)"
+        }
         my += 2
         if geniusActive {
             out += ANSICode.moveTo(row: my, col: leftX) + "\(ANSICode.cyan)\u{2726} \(ANSICode.reset)\(ANSICode.bold)\(ANSICode.brightWhite)Genius Shuffle Active\(ANSICode.reset)"
