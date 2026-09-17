@@ -19,6 +19,14 @@ struct TrackListEntry: Codable, Equatable {
     let name: String
     let artist: String
     let isCurrent: Bool
+    /// The album, for Bridge's library join, which matches on the exact
+    /// `(title, artist, album)` triple (spec 5.1).
+    ///
+    /// **Optional, and absent is not empty.** A queue.json written before this
+    /// field existed decodes with `nil`, and a row whose album is unknown cannot
+    /// be resolved — so it is refused rather than matched on two fields out of
+    /// three, which would be the wrong-track defect wearing a smaller hat.
+    var album: String? = nil
 }
 
 /// Result of a single poll. Distinguishes a genuine stop (player reported
@@ -84,9 +92,9 @@ func pollSurroundingTracks(backend: AppleScriptBackend = AppleScriptBackend()) -
                     set t to track i of cp
                     if output is not "" then set output to output & linefeed
                     if i = idx then
-                        set output to output & ">" & i & fs & name of t & fs & artist of t
+                        set output to output & ">" & i & fs & name of t & fs & artist of t & fs & album of t
                     else
-                        set output to output & " " & i & fs & name of t & fs & artist of t
+                        set output to output & " " & i & fs & name of t & fs & artist of t & fs & album of t
                     end if
                 end repeat
                 return output
@@ -101,9 +109,10 @@ func pollSurroundingTracks(backend: AppleScriptBackend = AppleScriptBackend()) -
     return trimmed.components(separatedBy: "\n").compactMap { line in
         let isCurrent = line.hasPrefix(">")
         let clean = String(line.dropFirst()) // drop > or space
-        let parts = clean.split(separator: asFieldSep, maxSplits: 2).map(String.init)
+        let parts = clean.split(separator: asFieldSep, maxSplits: 3).map(String.init)
         guard parts.count >= 3, let idx = Int(parts[0]) else { return nil }
-        return TrackListEntry(index: idx, name: parts[1], artist: parts[2], isCurrent: isCurrent)
+        return TrackListEntry(index: idx, name: parts[1], artist: parts[2], isCurrent: isCurrent,
+                              album: parts.count >= 4 ? parts[3] : nil)
     }
 }
 
@@ -138,7 +147,7 @@ func pollAlbumTracks(for np: NowPlayingState, backend: AppleScriptBackend = Appl
                     try
                         set tn to track number of t
                     end try
-                    set output to output & tn & fs & name of t & fs & artist of t
+                    set output to output & tn & fs & name of t & fs & artist of t & fs & album of t
                 end repeat
                 return output
             end try
@@ -150,7 +159,7 @@ func pollAlbumTracks(for np: NowPlayingState, backend: AppleScriptBackend = Appl
     guard !trimmed.isEmpty else { return pollSurroundingTracks(backend: backend) }
 
     let sorted: [TrackListEntry] = trimmed.components(separatedBy: "\n").compactMap { line -> TrackListEntry? in
-        let parts = line.split(separator: asFieldSep, maxSplits: 2).map(String.init)
+        let parts = line.split(separator: asFieldSep, maxSplits: 3).map(String.init)
         guard parts.count >= 3 else { return nil }
         let idx = Int(parts[0]) ?? 0
         let name = parts[1]
@@ -159,7 +168,8 @@ func pollAlbumTracks(for np: NowPlayingState, backend: AppleScriptBackend = Appl
             index: idx,
             name: name,
             artist: artist,
-            isCurrent: name == currentTitle && artist == currentArtist
+            isCurrent: name == currentTitle && artist == currentArtist,
+            album: parts.count >= 4 ? parts[3] : nil
         )
     }
     .sorted {
@@ -183,7 +193,8 @@ func pollAlbumTracks(for np: NowPlayingState, backend: AppleScriptBackend = Appl
             index: offset + 1,
             name: entry.name,
             artist: entry.artist,
-            isCurrent: entry.isCurrent
+            isCurrent: entry.isCurrent,
+            album: entry.album
         )
     }
 }

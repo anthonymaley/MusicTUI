@@ -119,6 +119,7 @@ final class LibraryScene: Scene {
     }
 
     private let backend: AppleScriptBackend
+    private let routing: RoutingCoordinator
     private let sources: LibraryDataSources
     private let appQueue: AppQueueStore
     private let status: StatusStore
@@ -227,9 +228,11 @@ final class LibraryScene: Scene {
     // changed one deletes the old placement before drawing the new one.
     private var lastPlaced: (id: UInt32, row: Int, col: Int, cols: Int, rows: Int)? = nil
 
-    init(backend: AppleScriptBackend, sources: LibraryDataSources,
+    init(backend: AppleScriptBackend,
+         routing: RoutingCoordinator, sources: LibraryDataSources,
          appQueue: AppQueueStore, status: StatusStore, actions: ActionRunner,
          kittyEnabled: Bool = false) {
+        self.routing = routing
         self.backend = backend
         self.sources = sources
         self.appQueue = appQueue
@@ -745,10 +748,10 @@ final class LibraryScene: Scene {
                       startAt: isTracksLevel ? nav.cursor + 1 : 1)
         case .shuffle(.album(_, let title, let artist)):
             playAlbum(title: title, artist: artist, shuffle: true)
-        case .play(.song(_, let title, let artist)):
-            playSong(title: title, artist: artist, shuffle: false)
-        case .shuffle(.song(_, let title, let artist)):
-            playSong(title: title, artist: artist, shuffle: true)
+        case .play(.song(let id, let title, let artist)):
+            playSong(title: title, artist: artist, album: albumForSong(id: id), shuffle: false)
+        case .shuffle(.song(let id, let title, let artist)):
+            playSong(title: title, artist: artist, album: albumForSong(id: id), shuffle: true)
         case .play(.artist(_, let name)):
             playArtist(name: name, shuffle: false)
         case .shuffle(.artist(_, let name)):
@@ -800,10 +803,35 @@ final class LibraryScene: Scene {
     /// instead of the old native `play some track` that dropped into the whole
     /// library and bled into Autoplay. Autoplay (∞) must be OFF. Shuffle is a
     /// no-op for a single track (the param stays for a uniform call site).
-    private func playSong(title: String, artist: String, shuffle: Bool) {
+    /// The album for a song row, by its persistent id.
+    ///
+    /// Bridge joins on the exact `(title, artist, album)` triple and MusicTUI's
+    /// persistent id means nothing to it, so the album has to travel. It lives on
+    /// the row already; `LibrarySelection` just does not carry it.
+    private func albumForSong(id: String) -> String? {
+        songs.first(where: { $0.id == id })?.album
+    }
+
+    private func playSong(title: String, artist: String, album: String?, shuffle: Bool) {
         let backend = self.backend
         let store = self.appQueue
+        let routing = self.routing
         actions.run("Play") {
+            if routing.mode == .source {
+                guard let album else { throw ActionError(message: "'\(title)' has no album, so Bridge cannot identify it") }
+                do {
+                    try routing.perform(.libraryPlay, musicApp: {},
+                        source: { try $0.control.queue(rows: [SourceLibraryRow(title: title, artist: artist, album: album)]) },
+                        unaffected: {})
+                } catch let error as SourceAppError {
+                    // ActionRunner prints an ActionError's message and reduces
+                    // anything else to "Play failed." — which is how a real
+                    // refusal ("no unique match", "not authorized") reached the
+                    // footer as four useless words.
+                    throw ActionError(message: error.message)
+                }
+                return
+            }
             // Same credit drift as playAlbum: the song row's artist is the library
             // credit and can differ from the stored credit (comma vs ampersand,
             // per-track soloists), so the strict name+artist clause matches nothing.

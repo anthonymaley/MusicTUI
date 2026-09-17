@@ -109,8 +109,9 @@ func fetchPlaylistTracks(backend: AppleScriptBackend, playlist: String) -> [Trac
             if total > 0 then
                 set ns to name of tracks 1 thru total of playlist "\(esc)"
                 set ars to artist of tracks 1 thru total of playlist "\(esc)"
+                set als to album of tracks 1 thru total of playlist "\(esc)"
                 repeat with i from 1 to total
-                    set output to output & i & fs & (item i of ns) & fs & (item i of ars)
+                    set output to output & i & fs & (item i of ns) & fs & (item i of ars) & fs & (item i of als)
                     if i < total then set output to output & linefeed
                 end repeat
             end if
@@ -119,9 +120,10 @@ func fetchPlaylistTracks(backend: AppleScriptBackend, playlist: String) -> [Trac
     }) else { return [] }
     var out: [TrackListEntry] = []
     for line in raw.components(separatedBy: "\n") where !line.isEmpty {
-        let f = line.split(separator: asFieldSep, maxSplits: 2).map(String.init)
-        guard f.count == 3, let idx = Int(f[0]) else { continue }
-        out.append(TrackListEntry(index: idx, name: f[1], artist: f[2], isCurrent: false))
+        let f = line.split(separator: asFieldSep, maxSplits: 3).map(String.init)
+        guard f.count >= 3, let idx = Int(f[0]) else { continue }
+        out.append(TrackListEntry(index: idx, name: f[1], artist: f[2], isCurrent: false,
+                                  album: f.count >= 4 ? f[3] : nil))
     }
     return out
 }
@@ -131,9 +133,10 @@ func fetchPlaylistTracks(backend: AppleScriptBackend, playlist: String) -> [Trac
 func parseLibraryTrackPositions(_ raw: String) -> [TrackListEntry] {
     var out: [TrackListEntry] = []
     for line in raw.components(separatedBy: "\n") where !line.isEmpty {
-        let f = line.split(separator: asFieldSep, maxSplits: 2).map(String.init)
-        guard f.count == 3, let idx = Int(f[0]) else { continue }
-        out.append(TrackListEntry(index: idx, name: f[1], artist: f[2], isCurrent: false))
+        let f = line.split(separator: asFieldSep, maxSplits: 3).map(String.init)
+        guard f.count >= 3, let idx = Int(f[0]) else { continue }
+        out.append(TrackListEntry(index: idx, name: f[1], artist: f[2], isCurrent: false,
+                                  album: f.count >= 4 ? f[3] : nil))
     }
     return out
 }
@@ -151,7 +154,7 @@ func fetchLibraryTracksWithPositions(backend: AppleScriptBackend, whereClause: S
             set fs to (ASCII character 31)
             set out to ""
             repeat with t in (every track of playlist "Library" whose \(whereClause))
-                set out to out & (index of t) & fs & (name of t) & fs & (artist of t) & linefeed
+                set out to out & (index of t) & fs & (name of t) & fs & (artist of t) & fs & (album of t) & linefeed
             end repeat
             return out
         """, timeout: 30)
@@ -515,7 +518,8 @@ func resolveArtistPlaybackTracks(backend: AppleScriptBackend, artist: String) ->
         }
     }
     let playable = matched.filter { isPlayableCloudStatus($0.cloudStatus) }
-        .map { TrackListEntry(index: $0.index, name: $0.name, artist: $0.artist, isCurrent: false) }
+        .map { TrackListEntry(index: $0.index, name: $0.name, artist: $0.artist, isCurrent: false,
+                              album: $0.album) }
     return AlbumResolution(tracks: playable, matched: matched.count)
 }
 
@@ -531,7 +535,8 @@ func resolveSongPlaybackTrack(backend: AppleScriptBackend, title: String, artist
                            requestedArtist: artist)
     guard let hit = row else { return AlbumResolution(tracks: [], matched: 0) }
     let playable = isPlayableCloudStatus(hit.cloudStatus)
-        ? [TrackListEntry(index: hit.index, name: hit.name, artist: hit.artist, isCurrent: false)]
+        ? [TrackListEntry(index: hit.index, name: hit.name, artist: hit.artist, isCurrent: false,
+                          album: hit.album)]
         : []
     return AlbumResolution(tracks: playable, matched: 1)
 }
@@ -612,7 +617,8 @@ func resolveAlbumPlaybackTracks(backend: AppleScriptBackend, title: String, arti
 /// `matched` keeps the pre-filter count so "Playing N of M" is unaffected.
 func orderedPlayableAlbumTracks(_ matched: [LibraryAlbumRow]) -> AlbumResolution {
     let playable = sortRowsByAlbumOrder(matched).filter { isPlayableCloudStatus($0.cloudStatus) }
-        .map { TrackListEntry(index: $0.index, name: $0.name, artist: $0.artist, isCurrent: false) }
+        .map { TrackListEntry(index: $0.index, name: $0.name, artist: $0.artist, isCurrent: false,
+                              album: $0.album) }
     return AlbumResolution(tracks: playable, matched: matched.count)
 }
 

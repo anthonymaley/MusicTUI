@@ -122,7 +122,7 @@ func runShell() {
             // "Library" (0.85s for 14k tracks, measured 2026-08-28). makeArtworkAPI()
             // is nil without both tokens and only feeds the cover ladder's REST
             // fallback; nil leaves covers on embedded-or-gradient, never a dead tab.
-            let scene = LibraryScene(backend: backend,
+            let scene = LibraryScene(backend: backend, routing: routing,
                                      sources: makeLibraryDataSources(backend: backend, artworkAPI: makeArtworkAPI()),
                                      appQueue: appQueue, status: status, actions: actions, kittyEnabled: kittyEnabled)
             scenes[id] = scene

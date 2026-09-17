@@ -64,7 +64,8 @@ final class SpaceInTextCaptureTests: XCTestCase {
             onArtistAlbums: { _ in [] },
             onAlbumCover: { _ in nil }
         )
-        let scene = LibraryScene(backend: AppleScriptBackend(), sources: sources,
+        let scene = LibraryScene(backend: AppleScriptBackend(),
+                                 routing: RoutingCoordinator(store: PlaybackModeStore(path: NSTemporaryDirectory() + "m-\(UUID().uuidString).json"), surface: .tui, makeSource: { SourceAppClient() }), sources: sources,
                                   appQueue: AppQueueStore(), status: status,
                                   actions: ActionRunner(status: status))
 
