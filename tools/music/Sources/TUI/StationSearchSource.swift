@@ -418,6 +418,49 @@ struct SourceLibraryRow: Equatable {
     let album: String
 }
 
+/// Library or Playlist tracks as Bridge rows, or a refusal naming how many
+/// could not be described.
+///
+/// **Whole or nothing.** A row whose album is unknown cannot be resolved, and
+/// matching on two fields out of three is the wrong-track defect wearing a
+/// smaller hat — so the SET is refused rather than quietly shortened. The app
+/// refuses again if any row has no UNIQUE match; this refuses first if any row
+/// could not even be described.
+///
+/// Lifted out of `PlaylistsScene` at step 2, unchanged including its wording, so
+/// the Library and Playlist paths cannot drift apart on the rule.
+func bridgeRows(from tracks: [TrackListEntry], named name: String) throws -> [SourceLibraryRow] {
+    let rows = tracks.compactMap { track -> SourceLibraryRow? in
+        guard let album = track.album else { return nil }
+        return SourceLibraryRow(title: track.name, artist: track.artist, album: album)
+    }
+    guard rows.count == tracks.count else {
+        throw ActionError(
+            message: "\(tracks.count - rows.count) of \(tracks.count) tracks in '\(name)' have no album, so Bridge cannot identify them")
+    }
+    return rows
+}
+
+/// A Library collection as Bridge rows: the shuffle order and the start row
+/// resolved the same way the Music.app branch resolves them.
+///
+/// **Why the start row becomes a slice.** `slice.queue` plays `ids[0]` first and
+/// takes no start index, so "start at row N" can only mean "send N to the end".
+/// That loses the earlier tracks from Up Next, which the Music.app branch keeps
+/// — a real difference, and the same one the shipped Playlist path already
+/// accepted for Enter. Shuffling ignores the start row, exactly as the
+/// Music.app branch does when it resets its index to 1.
+///
+/// The slice is taken BEFORE the whole-or-nothing album check, so a track the
+/// user did not ask to play cannot veto the play.
+func bridgeCollectionRows(tracks: [TrackListEntry], shuffle: Bool, startAt: Int,
+                          named name: String) throws -> [SourceLibraryRow] {
+    if shuffle { return try bridgeRows(from: tracks.shuffled(), named: name) }
+    guard !tracks.isEmpty else { return try bridgeRows(from: tracks, named: name) }
+    let start = min(max(1, startAt), tracks.count)
+    return try bridgeRows(from: Array(tracks[(start - 1)...]), named: name)
+}
+
 /// Everything MusicTUI asks Bridge to do beyond playing one catalogue id.
 protocol SourceControlling {
     func status() throws -> SourceStatus
@@ -431,6 +474,7 @@ protocol SourceControlling {
     /// takes `offset` as the alternative to `position`.
     func seek(byOffset seconds: Double) throws
     func queue(rows: [SourceLibraryRow]) throws
+    func queue(catalogIDs: [String]) throws
 }
 
 struct SourceAppControl: SourceControlling {
@@ -494,6 +538,19 @@ struct SourceAppControl: SourceControlling {
             "rows": rows.map { ["title": $0.title, "artist": $0.artist, "album": $0.album] },
         ]
         _ = try send(body)
+    }
+
+    /// Hands an ordered list of catalogue songs over for the app to resolve and
+    /// play. The ALTERNATIVE to `rows`, never both: the app's decoder takes
+    /// exactly one of `ids` or `rows` and fails the whole request otherwise.
+    ///
+    /// **It never splits**, for the same reason `queue(rows:)` does not, and the
+    /// bounds are deliberately not duplicated here: the app owns the 100-song
+    /// limit, the repeated-title rule and the unresolvable-id count, and a
+    /// second copy of those numbers on this side would drift from the ones
+    /// actually enforced.
+    func queue(catalogIDs: [String]) throws {
+        _ = try send(["op": "slice.queue", "ids": catalogIDs])
     }
 
     // MARK: - private

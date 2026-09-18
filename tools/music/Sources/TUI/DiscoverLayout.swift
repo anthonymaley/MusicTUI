@@ -57,12 +57,11 @@ func discoverFooterHint(_ selection: DiscoverSelection?, canGoBack: Bool, canRef
             // deliberately absent: it acts on a rail row, and a track row is
             // not one — advertising a key the handler ignores is a mistake
             // this footer has already shipped once.
-            // In source-app mode Enter sends ONE track to the MusicTUISource
-            // app, which has no queue on its wire, so "from here" would promise
-            // a remainder that does not exist (Anthony, 2026-09-10).
-            return sourceApp
-                ? "\u{2191}\u{2193} Move  Enter Play" + back
-                : "\u{2191}\u{2193} Move  Enter Play from here" + back
+            // Both modes now play from here: `slice.queue` takes the same
+            // slice the Music.app container does. Anthony's 2026-09-10 ruling
+            // made the shorter promise explicitly TEMPORARY, pending exactly
+            // that queue ("Don't pretend queue semantics exist yet").
+            return "\u{2191}\u{2193} Move  Enter Play from here" + back
         }
     case .viewAll:
         return "\u{2191}\u{2193} Move  Enter View all" + refresh + back

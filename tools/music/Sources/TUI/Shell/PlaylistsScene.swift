@@ -378,22 +378,12 @@ final class PlaylistsScene: Scene {
     /// whole triple, and sending two fields out of three invites a wrong match.
     /// Dropping changes the count, so the caller compares and refuses instead of
     /// quietly playing a shorter playlist.
-    private static func bridgeRows(_ tracks: [TrackListEntry]) -> [SourceLibraryRow] {
-        tracks.compactMap { track in
-            guard let album = track.album else { return nil }
-            return SourceLibraryRow(title: track.name, artist: track.artist, album: album)
-        }
-    }
-
     /// Hand a whole selection to Bridge, or refuse with a reason.
     ///
     /// Never partial. The app refuses the queue if any row cannot be resolved
     /// uniquely; this refuses first if any row could not even be described.
     private func playOnBridge(_ tracks: [TrackListEntry], named name: String) throws {
-        let rows = Self.bridgeRows(tracks)
-        guard rows.count == tracks.count else {
-            throw ActionError(message: "\(tracks.count - rows.count) of \(tracks.count) tracks in '\(name)' have no album, so Bridge cannot identify them")
-        }
+        let rows = try bridgeRows(from: tracks, named: name)
         do {
             try routing.perform(.playlistPlay, musicApp: {},
                                 source: { try $0.control.queue(rows: rows) },

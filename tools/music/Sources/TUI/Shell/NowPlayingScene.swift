@@ -613,9 +613,23 @@ final class NowPlayingScene: Scene {
             let appQueue = self.appQueue
             let routing = self.routing
             actions.run("Shuffle") {
-                // Collection shuffle is Served in Source Mode (6.5) but not yet
-                // built on the Bridge collection paths, so it refuses rather
-                // than shuffling Music.app underneath a playing Bridge.
+                // STAYS REFUSED after step 2, for a different reason than
+                // before: not "unbuilt", but unanswerable.
+                //
+                // This shuffles the CURRENT collection, and in Bridge mode
+                // nothing on this side knows what that is. `continuationSourceNow()`
+                // reads `appQueue`, which no Bridge branch ever writes, and
+                // `contextNameNow`, which comes from the Music.app poller — so
+                // both name whatever Music.app was last left on. `slice.status`
+                // returns queue COUNTS (phase/requested/present) and the playing
+                // title, never the track list, so the set cannot be recovered
+                // from Bridge either.
+                //
+                // Shuffling the stale Music.app queue onto Bridge would play a
+                // different set than the one on screen, silently and plausibly:
+                // the exact defect class the fail-closed sweep removed. Giving
+                // Bridge a remembered collection is new state and its own
+                // decision, so it is not taken here.
                 if routing.mode == .source { throw bridgeNotWiredYet("Collection shuffle") }
                 let ok: Bool
                 switch source {

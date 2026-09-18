@@ -133,20 +133,22 @@ final class DiscoverScene: Scene {
     /// a `__discover__` container in Music.app. Injected rather than read from
     /// the environment here, so `MUSICTUI_SOURCE_APP` keeps exactly one read
     /// site in `Shell.swift` (Anthony's bound, 2026-09-09).
-    private let sourcePlayback: (any SourcePlaying)?
     /// Whether Bridge is the selected output, asked at the moment of use.
     ///
     /// Was `sourcePlayback != nil`, i.e. the `MUSICTUI_SOURCE_APP` env var: the
     /// dogfood switch. Routing now follows the Output tab, so a person selects
     /// Bridge and Discover plays there, with no environment variable involved.
     private let bridgeSelected: () -> Bool
+    /// Where a play goes, decided inside the coordinator's own lock rather than
+    /// by reading `bridgeSelected()` and hoping the mode holds still.
+    private let routing: RoutingCoordinator
 
     init(feed: DiscoverFeed?, status: StatusStore, actions: ActionRunner, api: RESTAPIBackend?,
-         lifecycle: DiscoverLifecycleCoordinator, opener: Opener = SystemOpener(),
-         sourcePlayback: (any SourcePlaying)? = nil,
+         lifecycle: DiscoverLifecycleCoordinator, routing: RoutingCoordinator,
+         opener: Opener = SystemOpener(),
          bridgeSelected: @escaping () -> Bool = { false },
          kittyEnabled: Bool = false) {
-        self.sourcePlayback = sourcePlayback
+        self.routing = routing
         self.bridgeSelected = bridgeSelected
         self.feed = feed
         self.status = status
@@ -365,59 +367,19 @@ final class DiscoverScene: Scene {
         // maps trackRows 1:1 with no headers), so the cursor ordinal IS the
         // trackRows index. This is the one level where no header-offset
         // conversion is needed — see clampScroll() for where it is.
-        guard let route = discoverPlayRoute(trackIDs: trackRows.map { $0.id },
-                                            from: cursorIndex,
-                                            sourceApp: bridgeSelected()) else {
+        //
+        // The slice is the same in both modes; WHERE it plays is the
+        // coordinator's decision, not this call site's. An out-of-range cursor
+        // yields an empty slice rather than clamping, because clamping would
+        // play a DIFFERENT song than the one pointed at.
+        let ids = discoverPlaySlice(catalogIDs: trackRows.map { $0.id }, from: cursorIndex)
+        guard !ids.isEmpty else {
             status.post("Couldn't tell which track to play from.", error: true)
             return .redraw
         }
-
-        switch route {
-        case .sourceApp(let catalogID):
-            // The source app owns playback: no container is created, nothing
-            // has to become ready, and there is nothing to sweep. It FAILS
-            // CLOSED - a refusal is reported and the play stops there, because
-            // quietly playing in Music.app instead would be the provider
-            // precedence decision Anthony reserved to himself.
-            //
-            // Deliberately does NOT push Now Playing: that tab reads Music.app,
-            // which is not what is playing here. The source app's own window is
-            // where this track appears.
-            let source = sourcePlayback
-            let name = trackRows[cursorIndex].name
-            let status = self.status
-            actions.run("Play") {
-                do {
-                    guard let source else { throw bridgeNotWiredYet("Bridge playback") }
-                    try source.play(catalogID: catalogID)
-                    status.post("Playing \(name) on Bridge.")
-                } catch let error as SourceAppError {
-                    status.post(error.message, error: true)
-                } catch {
-                    status.post("Bridge failed: \(error.localizedDescription)", error: true)
-                }
-            }
-            return .redraw
-
-        case .container(let ids):
-            // Reached in Bridge mode whenever the route is not a single track:
-            // play-all, and a selected row that should play through the
-            // container's tail. Both would build a Music.app container and play
-            // it while Bridge is selected (rule 3).
-            if bridgeSelected() {
-                status.post(bridgeNotWiredYet("Playing a whole rail").message, error: true)
-                return .redraw
-            }
-            let title = container.name
-            let lifecycle = self.lifecycle
-            // The coordinator posts every toast itself, including "Playing X" the
-            // moment the play returns; a `.refused(.exiting)` earns none, because
-            // the user asked to leave and nothing was created.
-            actions.run("Play") {
-                _ = lifecycle.requestPlay(title: title, catalogIDs: ids, disableShuffle: true)
-            }
-            return .push(.nowPlaying)
-        }
+        playCatalogSlice(catalogIDs: ids, containerTitle: container.name,
+                         trackName: trackRows[cursorIndex].name)
+        return .push(.nowPlaying)
     }
 
     /// `p` on an album/playlist rail row: there is no cached track list yet —
@@ -426,25 +388,67 @@ final class DiscoverScene: Scene {
     /// fetches the container's own tracks first, off the input loop, then
     /// hands off to the lifecycle coordinator the same way `refresh`/`drillIn`
     /// dispatch off the input loop for their own fetches.
-    private func playAllFromRail(_ item: DiscoverItem) {
+    // Internal, not private, so the routing binding is reachable from a test.
+    func playAllFromRail(_ item: DiscoverItem) {
         guard let feed else { return }
-        // `p` on a rail row: the same Music.app container as the route above,
-        // reached by a different key (rule 3).
-        if bridgeSelected() {
-            status.post(bridgeNotWiredYet("Playing a whole rail").message, error: true)
-            return
-        }
         guard api != nil else {
             status.post("Sign in to play Discover music (music auth setup).", error: true)
             return
         }
-        let lifecycle = self.lifecycle
         let title = item.name
         actions.run("Play") {
+            // The catalogue READ is the same in both modes; only the
+            // destination differs.
             let tracks = try feed.tracks(for: item)
             let catalogIDs = tracks.map { $0.id }
             try require(!catalogIDs.isEmpty, "'\(title)': no tracks to play.")
-            _ = lifecycle.requestPlay(title: title, catalogIDs: catalogIDs, disableShuffle: false)
+            try self.route(.discoverPlayAll, catalogIDs: catalogIDs, disableShuffle: false,
+                       musicAppTitle: title,
+                       bridgeToast: "Playing '\(title)' on Bridge — \(catalogIDs.count) tracks.")
+        }
+    }
+
+    /// Play a catalogue slice: the selected Discover row through the container's
+    /// tail. Internal, not private, so the routing binding is reachable from a
+    /// test.
+    func playCatalogSlice(catalogIDs: [String], containerTitle: String, trackName: String) {
+        actions.run("Play") {
+            try self.route(.discoverTrackPlay, catalogIDs: catalogIDs, disableShuffle: true,
+                       musicAppTitle: containerTitle,
+                       bridgeToast: catalogIDs.count == 1
+                           ? "Playing \(trackName) on Bridge."
+                           : "Playing \(trackName) on Bridge — \(catalogIDs.count) tracks.")
+        }
+    }
+
+    /// The one place a Discover play chooses its destination.
+    ///
+    /// Both branches are real, so there is deliberately no `if bridgeSelected()`
+    /// here: the coordinator reads the mode inside its own lock, which is what
+    /// stops a switch that commits mid-action from driving the wrong player.
+    /// Reading `bridgeSelected()` and then acting is the race the coordinator
+    /// exists to close.
+    private func route(_ action: MusicTUIAction, catalogIDs: [String], disableShuffle: Bool,
+                       musicAppTitle: String, bridgeToast: String) throws {
+        let lifecycle = self.lifecycle
+        let routing = self.routing
+        let status = self.status
+        do {
+            try routing.perform(action,
+                musicApp: {
+                    _ = lifecycle.requestPlay(title: musicAppTitle, catalogIDs: catalogIDs,
+                                              disableShuffle: disableShuffle)
+                },
+                source: {
+                    try $0.control.queue(catalogIDs: catalogIDs)
+                    status.post(bridgeToast)
+                },
+                unaffected: {})
+        } catch let error as SourceAppError {
+            // ActionRunner reduces anything that is not an ActionError to
+            // "Play failed.", which would hide the 100-song bound and
+            // "unresolvable" alike.
+            throw ActionError(message: error.message)
         }
     }
 

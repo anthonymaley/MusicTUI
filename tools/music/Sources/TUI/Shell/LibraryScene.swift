@@ -228,10 +228,22 @@ final class LibraryScene: Scene {
     // changed one deletes the old placement before drawing the new one.
     private var lastPlaced: (id: UInt32, row: Int, col: Int, cols: Int, rows: Int)? = nil
 
+    /// Seams for the collection reads, so a test can prove the routing binding
+    /// without `swift test` running AppleScript against the user's Music.app.
+    /// Live by default: no call site passes them.
+    private let resolveAlbum: (AppleScriptBackend, String, String) -> AlbumResolution
+    private let resolveArtist: (AppleScriptBackend, String) -> AlbumResolution
+
     init(backend: AppleScriptBackend,
          routing: RoutingCoordinator, sources: LibraryDataSources,
          appQueue: AppQueueStore, status: StatusStore, actions: ActionRunner,
-         kittyEnabled: Bool = false) {
+         kittyEnabled: Bool = false,
+         resolveAlbum: @escaping (AppleScriptBackend, String, String) -> AlbumResolution
+             = { resolveAlbumPlaybackTracks(backend: $0, title: $1, artist: $2) },
+         resolveArtist: @escaping (AppleScriptBackend, String) -> AlbumResolution
+             = { resolveArtistPlaybackTracks(backend: $0, artist: $1) }) {
+        self.resolveAlbum = resolveAlbum
+        self.resolveArtist = resolveArtist
         self.routing = routing
         self.backend = backend
         self.sources = sources
@@ -769,19 +781,19 @@ final class LibraryScene: Scene {
     /// navigable, stops at the album's end. Autoplay (∞) must be OFF. Track-by-
     /// track, so not gapless — the accepted trade-off. On the action queue; the
     /// bulk fetch never freezes the UI and failures toast.
-    private func playAlbum(title: String, artist: String, shuffle: Bool, startAt: Int = 1) {
+    // Internal, not private, so the routing binding is reachable from a test.
+    func playAlbum(title: String, artist: String, shuffle: Bool, startAt: Int = 1) {
         let backend = self.backend
         let store = self.appQueue
         let routing = self.routing
         let status = self.status
+        let resolve = self.resolveAlbum
         actions.run("Play") {
-            // Rule 3: no playback action reaches Music.app in Source Mode. The
-            // matrix said so from the start; this call site never asked it.
-            // Refused visibly until the Bridge collection paths exist — a
-            // temporary refusal is spec-incomplete but SAFE, where silently
-            // driving the other player is neither.
-            if routing.mode == .source { throw bridgeNotWiredYet("Album play") }
-
+            // Binding rule 9's named exception: the library READ stays on
+            // AppleScript in BOTH modes, so the two branches resolve from the
+            // same rows and cannot play a different album than the one listed.
+            // A read is not a playback action, so rule 3 is untouched.
+            //
             // resolveAlbumPlaybackTracks tries the strict album+artist clause first
             // (remix/compilation albums credit each track to the remixer, so
             // `album artist` catches those, and the artist clause disambiguates
@@ -790,19 +802,43 @@ final class LibraryScene: Scene {
             // the pre-release "Mere Mortals" case, where the exact clause
             // matched 0 of 14 tracks. It also drops tracks Music can't play yet
             // (pre-release/removed), on which `play track` would silently no-op.
-            let res = resolveAlbumPlaybackTracks(backend: backend, title: title, artist: artist)
+            let res = resolve(backend, title, artist)
             try require(!res.tracks.isEmpty, res.matched > 0
                 ? "'\(title)': no tracks available to play yet."
                 : "Couldn't load '\(title)'.")
-            let ordered = shuffle ? res.tracks.shuffled() : res.tracks
-            let idx = shuffle ? 1 : min(max(1, startAt), ordered.count)
-            store.set(AppQueue(playlistName: "Library", tracks: ordered, currentIndex: idx, displayName: title))
-            try require(playQueueTrack(backend: backend, playlist: "Library", position: ordered[idx - 1].index),
-                        "Couldn't play '\(title)'.")
-            // Pre-release albums surface every planned track but only stream some;
-            // say so rather than silently playing a partial album.
-            if res.matched > ordered.count {
-                status.post("Playing \(ordered.count) of \(res.matched) — the rest aren't available yet.")
+            do {
+                // Both branches are real, so there is deliberately no
+                // `if routing.mode == .source` above: the coordinator picks the
+                // destination inside its own lock. An outer check would leave a
+                // no-op Music.app branch for a switch that commits mid-action.
+                try routing.perform(.libraryPlay,
+                    musicApp: {
+                        let ordered = shuffle ? res.tracks.shuffled() : res.tracks
+                        let idx = shuffle ? 1 : min(max(1, startAt), ordered.count)
+                        store.set(AppQueue(playlistName: "Library", tracks: ordered, currentIndex: idx, displayName: title))
+                        try require(playQueueTrack(backend: backend, playlist: "Library", position: ordered[idx - 1].index),
+                                    "Couldn't play '\(title)'.")
+                        // Pre-release albums surface every planned track but only stream some;
+                        // say so rather than silently playing a partial album.
+                        if res.matched > ordered.count {
+                            status.post("Playing \(ordered.count) of \(res.matched) — the rest aren't available yet.")
+                        }
+                    },
+                    source: {
+                        let rows = try bridgeCollectionRows(tracks: res.tracks, shuffle: shuffle,
+                                                            startAt: startAt, named: title)
+                        try $0.control.queue(rows: rows)
+                        status.post("Playing '\(title)' on Bridge — \(rows.count) tracks.")
+                        if res.matched > res.tracks.count {
+                            status.post("\(res.tracks.count) of \(res.matched) — the rest aren't available yet.")
+                        }
+                    },
+                    unaffected: {})
+            } catch let error as SourceAppError {
+                // ActionRunner prints an ActionError's message and reduces
+                // anything else to "Play failed.", which would hide the
+                // 100-song bound and "no unique match" alike.
+                throw ActionError(message: error.message)
             }
         }
     }
@@ -858,19 +894,16 @@ final class LibraryScene: Scene {
 
     /// Play every library track by one artist as an app-owned queue (scoped,
     /// navigable, stops at the end — same rationale as playAlbum). Autoplay OFF.
-    private func playArtist(name: String, shuffle: Bool) {
+    // Internal, not private, so the routing binding is reachable from a test.
+    func playArtist(name: String, shuffle: Bool) {
         let backend = self.backend
         let store = self.appQueue
         let routing = self.routing
         let status = self.status
+        let resolve = self.resolveArtist
         actions.run("Play") {
-            // Rule 3: no playback action reaches Music.app in Source Mode. The
-            // matrix said so from the start; this call site never asked it.
-            // Refused visibly until the Bridge collection paths exist — a
-            // temporary refusal is spec-incomplete but SAFE, where silently
-            // driving the other player is neither.
-            if routing.mode == .source { throw bridgeNotWiredYet("Artist play") }
-
+            // Rule 9's named exception again: the read runs in both modes.
+            //
             // `name` is the library credit (album artist, else artist), so the
             // strict `artist is` clause now usually hits. The loose fallback stays
             // for per-track soloist credits: on the live repro ("Floating Points,
@@ -879,16 +912,36 @@ final class LibraryScene: Scene {
             // clause matched nothing there. The resolver keeps that strict clause
             // as the fast path, then falls back to a loose fetch on the primary
             // credit narrowed in Swift, and drops tracks Music silently refuses to play.
-            let res = resolveArtistPlaybackTracks(backend: backend, artist: name)
+            let res = resolve(backend, name)
             try require(!res.tracks.isEmpty, res.matched > 0
                 ? "'\(name)': no tracks available to play yet."
                 : "Couldn't load '\(name)'.")
-            let ordered = shuffle ? res.tracks.shuffled() : res.tracks
-            store.set(AppQueue(playlistName: "Library", tracks: ordered, currentIndex: 1, displayName: name))
-            try require(playQueueTrack(backend: backend, playlist: "Library", position: ordered[0].index),
-                        "Couldn't play '\(name)'.")
-            if res.matched > ordered.count {
-                status.post("Playing \(ordered.count) of \(res.matched) — the rest aren't available yet.")
+            do {
+                try routing.perform(.libraryPlay,
+                    musicApp: {
+                        let ordered = shuffle ? res.tracks.shuffled() : res.tracks
+                        store.set(AppQueue(playlistName: "Library", tracks: ordered, currentIndex: 1, displayName: name))
+                        try require(playQueueTrack(backend: backend, playlist: "Library", position: ordered[0].index),
+                                    "Couldn't play '\(name)'.")
+                        if res.matched > ordered.count {
+                            status.post("Playing \(ordered.count) of \(res.matched) — the rest aren't available yet.")
+                        }
+                    },
+                    source: {
+                        // Ruling 12.2: an artist expands to that artist's SONGS.
+                        // startAt is 1 because an artist rail row has no track
+                        // cursor to start from, matching the Music.app branch.
+                        let rows = try bridgeCollectionRows(tracks: res.tracks, shuffle: shuffle,
+                                                            startAt: 1, named: name)
+                        try $0.control.queue(rows: rows)
+                        status.post("Playing '\(name)' on Bridge — \(rows.count) tracks.")
+                        if res.matched > res.tracks.count {
+                            status.post("\(res.tracks.count) of \(res.matched) — the rest aren't available yet.")
+                        }
+                    },
+                    unaffected: {})
+            } catch let error as SourceAppError {
+                throw ActionError(message: error.message)
             }
         }
     }

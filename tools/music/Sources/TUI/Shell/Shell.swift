@@ -145,7 +145,7 @@ func runShell() {
                                       api: makeArtworkAPI(), lifecycle: discoverLifecycle,
                                       // Always available; whether it is USED follows
                                       // the Output tab's selection, not an env var.
-                                      sourcePlayback: SourceAppPlayback(),
+                                      routing: routing,
                                       bridgeSelected: { routing.mode == .source },
                                       kittyEnabled: kittyEnabled)
             scenes[id] = scene
@@ -382,6 +382,11 @@ func runShell() {
                 }
             case .shuffle:
                 actions.run("Shuffle") {
+                    // The global `z` shuffles the CURRENT collection, which in
+                    // Bridge mode nothing here can name: `shufflePlayCurrent`
+                    // reads `appQueue`, and no Bridge branch writes it. See the
+                    // long note at NowPlayingScene's `.shuffle` case — same
+                    // reason, same decision, deliberately still refused.
                     try routing.perform(.collectionShuffle,
                         musicApp: { try require(shufflePlayCurrent(backend: backend, appQueue: appQueue), "Shuffle failed.") },
                         source: { _ in throw bridgeNotWiredYet("Collection shuffle") },
