@@ -34,7 +34,8 @@ final class RadioScene: Scene {
     private var searchText = ""
     private var adding = false
     private var addText = ""
-    private var message: String?
+    // Internal, not private, so a test can read the refusal a person sees.
+    var message: String?
     private var searchInFlight = false
 
     // Off-thread catalog fetches — mirrors LibraryScene's `Thread.detachNewThread`
@@ -184,20 +185,31 @@ store: StationStore, catalog: RadioCatalog?, stationSearch: StationSearching? = 
         return .redraw
     }
 
-    private func execute(_ action: RadioAction) {
+    // Internal, not private, so the routing binding is reachable from a test.
+    func execute(_ action: RadioAction) {
         switch action {
         case .none:
             break
         case .play(let s):
-            // Spec 6.3 marks Radio Enter Served natively, but slice.play
-            // resolves Song only (PlaybackOwner.swift:941) — there is no station
-            // operation on the wire. Refused visibly rather than played on
-            // Music.app while Bridge is selected.
-            if routing.mode == .source {
-                message = "✗ " + bridgeNotWiredYet("Radio stations").message
-            } else {
-                do { try playStation(s, via: opener); message = "▶ \(s.name)" }
-                catch { message = "✗ Couldn't start \(s.name)" }
+            // Spec 6.3: Radio Enter is Served natively. Both branches are real,
+            // so the coordinator picks inside its own lock rather than this call
+            // site reading the mode and hoping it holds still.
+            //
+            // A station Apple's catalogue does not carry refuses here and is
+            // never played on Music.app instead (ruling 17). The refusal says so
+            // in its own words, which is why they are not replaced with a label.
+            do {
+                try routing.perform(.radioStationPlay,
+                    musicApp: { try playStation(s, via: opener) },
+                    source: { try $0.control.playStation(id: s.id, named: s.name) },
+                    unaffected: {})
+                message = "▶ \(s.name)"
+            } catch let error as SourceAppError {
+                message = "✗ " + error.message
+            } catch let error as ActionError {
+                message = "✗ " + error.message
+            } catch {
+                message = "✗ Couldn't start \(s.name)"
             }
         case .toggleFavorite(let s):
             do { try store.toggle(s) } catch { message = "✗ Couldn't save favorite" }

@@ -475,6 +475,7 @@ protocol SourceControlling {
     func seek(byOffset seconds: Double) throws
     func queue(rows: [SourceLibraryRow]) throws
     func queue(catalogIDs: [String]) throws
+    func playStation(id: String, named name: String) throws
 }
 
 struct SourceAppControl: SourceControlling {
@@ -551,6 +552,21 @@ struct SourceAppControl: SourceControlling {
     /// actually enforced.
     func queue(catalogIDs: [String]) throws {
         _ = try send(["op": "slice.queue", "ids": catalogIDs])
+    }
+
+    /// Play ONE station natively on Bridge.
+    ///
+    /// Its own op, not a widening of `slice.play`: that op's contract is one
+    /// catalogue SONG, and a station is a different item kind - endless, with no
+    /// queue, confirmed by a rule of its own because it plays tracks rather than
+    /// itself.
+    ///
+    /// **`name` travels for the refusal, not for playback.** A station Apple's
+    /// catalogue does not carry (BBC Radio 1 is the known case) cannot have its
+    /// name learned by the app, and that is precisely the station whose refusal
+    /// has to name it. Ruling 17: refused, never fallen back.
+    func playStation(id: String, named name: String) throws {
+        _ = try send(["op": "slice.playStation", "id": id, "name": name])
     }
 
     // MARK: - private

@@ -296,15 +296,20 @@ final class DiscoverScene: Scene {
                     status.post("That station has no play URL.", error: true)
                     return .redraw
                 }
+                let station = Station(id: item.id, name: item.name, url: url,
+                                      isLive: nil, artworkURL: item.artworkURL)
                 do {
-                    if bridgeSelected() {
-                        status.post(bridgeNotWiredYet("Radio stations").message, error: true)
-                        return .redraw
-                    }
-                    try playStation(Station(id: item.id, name: item.name, url: url,
-                                            isLive: nil, artworkURL: item.artworkURL),
-                                    via: opener)
+                    // The same station row, routed: `p` on a Radio favourite and
+                    // Enter on a Discover station row reach the same op.
+                    try routing.perform(.radioStationPlay,
+                        musicApp: { try playStation(station, via: opener) },
+                        source: { try $0.control.playStation(id: station.id, named: station.name) },
+                        unaffected: {})
                     status.post("Playing \(item.name)")
+                } catch let error as SourceAppError {
+                    status.post(error.message, error: true)
+                } catch let error as ActionError {
+                    status.post(error.message, error: true)
                 } catch {
                     status.post("Could not play \(item.name).", error: true)
                 }
