@@ -17,7 +17,6 @@ final class RadioScene: Scene {
     /// `catalog` on purpose: Live, Personal and `resolve(id:)` keep using the
     /// REST route regardless, because the slice moves ONE search and widening
     /// that here would reroute three more paths by accident.
-    private let stationSearch: StationSearching?
     private let opener: Opener
 
     private var live: [Station] = []
@@ -79,12 +78,11 @@ final class RadioScene: Scene {
     private var railScroll = 0
 
     init(routing: RoutingCoordinator,
-store: StationStore, catalog: RadioCatalog?, stationSearch: StationSearching? = nil,
+store: StationStore, catalog: RadioCatalog?,
          opener: Opener = SystemOpener(), kittyEnabled: Bool = false) {
         self.routing = routing
         self.store = store
         self.catalog = catalog
-        self.stationSearch = stationSearch ?? catalog
         self.opener = opener
         self.kittyEnabled = kittyEnabled
     }
@@ -271,7 +269,34 @@ store: StationStore, catalog: RadioCatalog?, stationSearch: StationSearching? = 
     private func commitSearch() {
         let input = searchText.trimmingCharacters(in: .whitespaces)
         guard !input.isEmpty else { return }
-        guard let stationSearch else { message = "✗ Search needs auth (music auth setup)"; return }
+        // WHERE the search goes is the coordinator's decision, asked here rather
+        // than inferred from an environment variable read at launch (step 3).
+        //
+        // **Only the CHOICE happens inside the lock; the round trip does not.**
+        // Holding the ordering lock across a network call would let a slow
+        // search block a mode switch. A read can safely use the provider chosen
+        // a moment ago - the worst case is results from the output you just left
+        // - and that is what makes this different from a playback action, where
+        // acting on a stale decision means driving the wrong player.
+        var chosen: StationSearching?
+        do {
+            try routing.perform(.radioSearch,
+                                musicApp: { chosen = self.catalog },
+                                source: { chosen = $0.stationSearch },
+                                unaffected: {})
+        } catch let error as ActionError {
+            message = "✗ " + error.message
+            return
+        } catch {
+            message = "✗ Search failed"
+            return
+        }
+        // Music.app mode with no developer key: unchanged, and the only state
+        // that still refuses here.
+        guard let stationSearch = chosen else {
+            message = "✗ Search needs auth (music auth setup)"
+            return
+        }
         searchInFlight = true
         message = "Searching \u{201C}\(input)\u{201D}\u{2026}"
         let term = input

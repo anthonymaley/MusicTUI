@@ -40,32 +40,16 @@ func runShell() {
     // edge #5) and threaded into every art-rendering scene.
     let kittyEnabled = kittyGraphicsSupported(env: ProcessInfo.processInfo.environment)
 
-    // TEMPORARY DOGFOOD OPTION, session-scoped, READ HERE AND NOWHERE ELSE.
-    // `music-source` (the alias for `MUSICTUI_SOURCE_APP=1 command music`)
-    // routes two things through the MusicTUISource app: Radio's `/` search, so
-    // it returns stations with no developer key at all, and a Discover
-    // track-level Enter, so the chosen track plays on the source app rather
-    // than in Music.app.
+    // `MUSICTUI_SOURCE_APP` IS GONE FROM THE CODE (step 3, 2026-09-18). It was a
+    // session-scoped dogfood option routing two things through the source app:
+    // Radio's `/` search and a Discover track-level Enter. Both now follow the
+    // OUTPUT TAB instead, decided per action by the routing coordinator, so the
+    // variable decided nothing and reading it here would have been a comment
+    // that lied.
     //
-    // Read ONCE here and injected into both scenes, which is what keeps this a
-    // single read site (Anthony's bound, 2026-09-09). Deliberately NOT read
-    // inside makeCatalog(): that function has four callers and three are CLI
-    // radio commands - RadioCommands.swift:55 (`radio search`), :77 (`radio
-    // play` URL resolution) and :90 (`radio add`) - so reading it there would
-    // reroute those too, which is a provider precedence decision he reserved to
-    // himself.
-    //
-    // Widened from search to playback on his ruling (2026-09-10): "Widening
-    // MUSICTUI_SOURCE_APP from brokered search to eligible source playback is
-    // sensible. Keep this to the one bridge; no protocol or conformance
-    // detour."
-    //
-    // Undocumented in docs/guide.md on purpose, also his bound: writing a
-    // throwaway option into the public guide is how it accidentally becomes a
-    // supported interface. Dogfood instructions live in the private record.
-    //
-    // With it unset, every path below behaves exactly as it ships.
-    let sourceAppEnabled = ProcessInfo.processInfo.environment["MUSICTUI_SOURCE_APP"] == "1"
+    // The `music-source` shell alias and the dogfood section of the private
+    // record are what remain of step 6; the alias is now a no-op.
+
 
     // Now's REST artwork fallback, for tracks whose embedded artwork is absent
     // (the Library tab runs the same ladder per focused album). Built
@@ -156,10 +140,8 @@ func runShell() {
             // Only `/` moves. Live, Personal and station resolution keep using
             // `catalog`, so with no key those stay empty exactly as they do
             // today and Favorites keep working with no network at all.
-            let sourceApp: (any StationSearching)? =
-                sourceAppEnabled ? SourceAppStationSearch() : nil
             let scene = RadioScene(routing: routing, store: StationStore(), catalog: makeCatalog(),
-                                   stationSearch: sourceApp, kittyEnabled: kittyEnabled)
+                                   kittyEnabled: kittyEnabled)
             scenes[id] = scene
             return scene
         default:

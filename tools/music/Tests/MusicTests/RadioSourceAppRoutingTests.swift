@@ -1,28 +1,40 @@
 // tools/music/Tests/MusicTests/RadioSourceAppRoutingTests.swift
 //
-// Radio's `/` search routed through an injected station source. Proves the two
-// properties that matter for the temporary dogfood option: the guard now
-// consults the SEARCH SOURCE rather than the REST catalog, and a source-app
+// Radio's `/` search, routed by the SELECTED OUTPUT rather than by an
+// environment variable (step 3). Proves the properties that matter: with Bridge
+// selected the search runs keyless - which is DoD 6's Radio half - with
+// Music.app selected a keyless run refuses exactly as it ships, and a Bridge
 // failure reaches the message line in words a person can act on.
 //
-// TEMPORARY, with the adapter it exercises.
+// The searcher is no longer injected. It comes from the coordinator's source
+// client, so these tests drive the mode and let the routing decide, which is the
+// only shape that can catch a call site that stopped asking.
 import XCTest
 @testable import music
-
-private struct StubStationSearch: StationSearching {
-    let result: Result<[Station], Error>
-    func searchStations(term: String) throws -> [Station] { try result.get() }
-}
 
 final class RadioSourceAppRoutingTests: XCTestCase {
     private let frame = shellLayout(width: 80, height: 24)
     private let snapshot = NowPlayingSnapshot(outcome: .unavailable, history: [], surrounding: [])
 
-    private func makeScene(stationSearch: StationSearching?) -> RadioScene {
+    /// catalog deliberately nil throughout: this is the no-developer-key shape,
+    /// which is exactly the state DoD 6's rename-away control puts the app in.
+    private func makeScene(mode: PlaybackMode,
+                           transport: @escaping (String, String) throws -> String) -> RadioScene {
         let tmpPath = NSTemporaryDirectory() + "music-test-stations-\(UUID().uuidString).json"
-        // catalog deliberately nil: this is the no-developer-key shape, which is
-        // exactly the state the dogfood option has to work in.
-        return RadioScene(routing: RoutingCoordinator(store: PlaybackModeStore(path: NSTemporaryDirectory() + "m-\(UUID().uuidString).json"), surface: .tui, makeSource: { SourceAppClient() }), store: StationStore(path: tmpPath), catalog: nil, stationSearch: stationSearch)
+        let modeStore = PlaybackModeStore(path: NSTemporaryDirectory() + "m-\(UUID().uuidString).json")
+        modeStore.set(mode)
+        let routing = RoutingCoordinator(store: modeStore, surface: .tui,
+                                         makeSource: { SourceAppClient(path: "/nonexistent",
+                                                                       transport: transport) })
+        return RadioScene(routing: routing, store: StationStore(path: tmpPath), catalog: nil)
+    }
+
+    private func stationsReply(_ stations: String) -> (String, String) throws -> String {
+        { _, _ in #"{"ok":true,"op":"slice.searchStations","stations":[\#(stations)]}"# }
+    }
+
+    private var appleMusic1JSON: String {
+        #"{"id":"ra.978194965","name":"Apple Music 1","url":"https://music.apple.com/us/station/apple-music-1/ra.978194965","is_live":true,"artwork_url":null}"#
     }
 
     private func commitSearch(_ scene: RadioScene, _ term: String) {
@@ -34,26 +46,26 @@ final class RadioSourceAppRoutingTests: XCTestCase {
     /// Synchronous and deterministic: with a source injected and NO catalog, the
     /// commit must get past the auth guard. Before this change the guard tested
     /// `catalog`, so a keyless run refused here no matter what was injected.
-    func testAnInjectedSourceGetsPastTheNoKeyGuard() {
-        let scene = makeScene(stationSearch: StubStationSearch(result: .success([])))
+    func testBridgeSelectedGetsPastTheNoKeyGuard() {
+        let scene = makeScene(mode: .source, transport: stationsReply(""))
         commitSearch(scene, "jazz")
 
         let out = scene.render(frame: frame, snapshot: snapshot)
         XCTAssertFalse(out.contains("Search needs auth"),
-                       "with a station source injected the search must run even with no developer key: \(out)")
+                       "with Bridge selected the search must run with no developer key: \(out)")
         XCTAssertTrue(out.contains("Searching"),
                       "expected the in-flight message, got: \(out)")
     }
 
     /// And the inverse, so the test above cannot pass for the wrong reason:
     /// nothing injected and no catalog still refuses exactly as it does today.
-    func testNoSourceAndNoCatalogStillRefuses() {
-        let scene = makeScene(stationSearch: nil)
+    func testMusicAppModeWithNoCatalogStillRefuses() {
+        let scene = makeScene(mode: .musicApp, transport: stationsReply(""))
         commitSearch(scene, "jazz")
 
         let out = scene.render(frame: frame, snapshot: snapshot)
         XCTAssertTrue(out.contains("Search needs auth"),
-                      "unset option with no key must behave exactly as before: \(out)")
+                      "Music.app mode with no key must behave exactly as it ships: \(out)")
     }
 
     /// A source-app failure must SAY the source app is the problem. The generic
@@ -64,7 +76,7 @@ final class RadioSourceAppRoutingTests: XCTestCase {
     /// success - this repo has already shipped an instrument that treated a
     /// timeout as an unchanged pass.
     func testSourceAppFailureNamesBridge() throws {
-        let scene = makeScene(stationSearch: StubStationSearch(result: .failure(SourceAppError.notRunning)))
+        let scene = makeScene(mode: .source, transport: { _, _ in throw SourceAppError.notRunning })
         commitSearch(scene, "jazz")
 
         let deadline = Date().addingTimeInterval(5)
@@ -82,10 +94,7 @@ final class RadioSourceAppRoutingTests: XCTestCase {
     /// Results from the source app land in the SAME list the REST route fills,
     /// which is what "display results using the existing Radio UI" means.
     func testResultsFromTheSourceAppRenderInTheExistingList() throws {
-        let station = Station(id: "ra.978194965", name: "Apple Music 1",
-                              url: "https://music.apple.com/us/station/apple-music-1/ra.978194965",
-                              isLive: true, artworkURL: nil)
-        let scene = makeScene(stationSearch: StubStationSearch(result: .success([station])))
+        let scene = makeScene(mode: .source, transport: stationsReply(appleMusic1JSON))
         commitSearch(scene, "apple")
 
         let deadline = Date().addingTimeInterval(5)
