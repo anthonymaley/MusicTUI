@@ -5,7 +5,7 @@ import XCTest
 /// reporting "Bridge is not running" while Bridge was running and answering.
 ///
 /// The defect was not protocol drift: a direct `slice.status` returned
-/// `authorization:"authorized"`, `contract:1`. `refreshBridgeReadiness()` was
+/// `authorization:"authorized"`, `contract:2`. `refreshBridgeReadiness()` was
 /// declared and never called, so the field never left its initialiser — and the
 /// initialiser was a diagnosis rather than "not asked yet", which is what made
 /// an unfilled field look like a finding.
@@ -31,7 +31,7 @@ final class BridgeReadinessTests: XCTestCase {
         }
     }
 
-    private let authorized = #"{"ok":true,"op":"slice.status","status":{"playback":"idle","contract":1,"authorization":"authorized"}}"#
+    private let authorized = #"{"ok":true,"op":"slice.status","status":{"playback":"idle","contract":2,"authorization":"authorized"}}"#
 
     /// The initial state is "not asked", and it is not selectable. This is the
     /// state whose absence caused the gate failure.
@@ -101,6 +101,20 @@ final class BridgeReadinessTests: XCTestCase {
         }
     }
 
+    /// The pairing Codex B1 named: this build against the contract-1 app that
+    /// reads every container as an album. It must read as incompatible, never as
+    /// ready - ready is what let a playlist be answered as a missing album.
+    func testTheContractOneAppIsIncompatibleWithThisBuild() {
+        let old = #"{"ok":true,"op":"slice.status","status":{"playback":"idle","contract":1,"authorization":"authorized"}}"#
+        let s = scene(reply: { _, _ in old })
+        _ = s.tick(snapshot: NowPlayingSnapshot(outcome: .stopped, history: [], surrounding: []))
+        settle(s)
+        guard case .unavailable(let reason) = s.bridgeReadinessForTest else {
+            return XCTFail("a contract-1 app must not read as ready")
+        }
+        XCTAssertTrue(reason.contains("(1)"), "the reason must name the version it saw: \(reason)")
+    }
+
     /// A contract mismatch is not an error path — the app answers fine, it just
     /// answers a version this build does not know.
     func testAContractMismatchIsReportedAsIncompatibleNotAsAFailure() {
@@ -116,7 +130,7 @@ final class BridgeReadinessTests: XCTestCase {
 
     /// An unauthorised Bridge is reachable but cannot serve, and says so.
     func testAnUnauthorizedBridgeIsNotReady() {
-        let denied = #"{"ok":true,"op":"slice.status","status":{"playback":"idle","contract":1,"authorization":"denied"}}"#
+        let denied = #"{"ok":true,"op":"slice.status","status":{"playback":"idle","contract":2,"authorization":"denied"}}"#
         let s = scene(reply: { _, _ in denied })
         _ = s.tick(snapshot: NowPlayingSnapshot(outcome: .stopped, history: [], surrounding: []))
         settle(s)
@@ -174,7 +188,7 @@ final class BridgeReadinessTests: XCTestCase {
         let store = PlaybackModeStore(path: path)
         store.set(.source)
         let client = { SourceAppClient(path: "/nonexistent", transport: { _, _ in
-            #"{"ok":true,"op":"slice.status","status":{"playback":"idle","contract":1,"authorization":"denied"}}"#
+            #"{"ok":true,"op":"slice.status","status":{"playback":"idle","contract":2,"authorization":"denied"}}"#
         }) }
         let scene = SpeakersScene(backend: AppleScriptBackend(),
                                   status: StatusStore(),

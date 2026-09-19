@@ -182,7 +182,16 @@ func discoverSelection(rows: [DiscoverDisplayRow], cursor: Int) -> DiscoverSelec
     }
 }
 
-final class DiscoverFeed {
+/// What `DiscoverScene` reads a feed through. Two providers stand behind it:
+/// `DiscoverFeed` (Apple's web service, needs both tokens) and
+/// `BridgeDiscoverFeed` (the Bridge app, needs neither). WHICH one a read uses
+/// is the routing coordinator's decision, made per read.
+protocol DiscoverFeedReading {
+    func rails(limit: Int) throws -> [DiscoverRail]
+    func tracks(for item: DiscoverItem) throws -> [DiscoverItem]
+}
+
+final class DiscoverFeed: DiscoverFeedReading {
     private let storefront: String
     private let token: () -> String?
     private let fetch: (String) -> Data?
@@ -297,4 +306,17 @@ func makeDiscoverFeed() -> DiscoverFeed? {
             _ = sem.wait(timeout: .now() + 20)
             return out
         })
+}
+
+/// Whether the Discover tab opens at all.
+///
+/// The WEB SERVICE needs a user token (both its endpoints are /v1/me/), so with
+/// Music.app selected no sign-in means no tab, exactly as before. Bridge reads
+/// the feed with no keys (DoD 6), so with Bridge selected the door is open. A
+/// switch to Music.app after that is answered by the scene itself, in words.
+///
+/// Pure and out here so the door is testable: as a guard inside the shell it
+/// could be reverted with every scene-level test still green (Codex S2).
+func discoverTabAdmitted(mode: PlaybackMode, hasUserToken: Bool) -> Bool {
+    mode == .source || hasUserToken
 }

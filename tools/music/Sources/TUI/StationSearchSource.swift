@@ -350,11 +350,13 @@ struct SourceAppClient {
     let playback: SourcePlaying
     let stationSearch: StationSearching
     let control: SourceControlling
+    let discover: DiscoverFeedReading
 
     init(path: String = SourceAppStationSearch.socketPath) {
         playback = SourceAppPlayback(path: path)
         stationSearch = SourceAppStationSearch(path: path)
         control = SourceAppControl(path: path)
+        discover = BridgeDiscoverFeed(path: path)
     }
 
     /// Seam for tests, matching the members' own.
@@ -362,6 +364,7 @@ struct SourceAppClient {
         playback = SourceAppPlayback(path: path, transport: transport)
         stationSearch = SourceAppStationSearch(path: path, transport: transport)
         control = SourceAppControl(path: path, transport: transport)
+        discover = BridgeDiscoverFeed(path: path, transport: transport)
     }
 
     /// Bridge's readiness for the Output tab. Never throws: a tab that cannot
@@ -586,7 +589,9 @@ struct SourceAppControl: SourceControlling {
         }
     }
 
-    private func send(_ body: [String: Any]) throws -> [String: Any] {
+    // Internal, not private: `BridgeDiscoverFeed` sends through it rather than
+    // carrying a third copy of the frame limit and the refusal decoding.
+    func send(_ body: [String: Any]) throws -> [String: Any] {
         guard let data = try? JSONSerialization.data(withJSONObject: body),
               let line = String(data: data, encoding: .utf8) else {
             throw SourceAppError.unreadable
@@ -615,4 +620,8 @@ struct SourceAppControl: SourceControlling {
 
 /// The `slice.*` contract this build speaks. Must match the app's
 /// `sliceContractVersion`; a mismatch is reported, never worked around.
-let sourceContractVersion = 1
+///
+/// 2: `slice.containerTracks` carries `kind`. A contract-1 app ignores it and
+/// answers a playlist as a missing album, so that pairing must read as
+/// incompatible rather than ready (Codex B1, 2026-09-19).
+let sourceContractVersion = 2

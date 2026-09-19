@@ -19,8 +19,21 @@ final class DiscoverBridgeCollectionTests: XCTestCase {
         private(set) var lines: [String] = []
         var reply = #"{"ok":true,"op":"slice.queue","status":{"playback":"playing","title":"S1","artist":"A"}}"#
 
+        /// Step 3: in Bridge mode the container's tracks are READ over the wire
+        /// too, so one `p` spends two requests. The track read always answers;
+        /// `reply` stays the answer to everything else, which is the queue.
+        static let tracksReply = """
+        {"ok":true,"op":"slice.containerTracks","items":[
+          {"id":"801","kind":"song","name":"S1","subtitle":"A"},
+          {"id":"802","kind":"song","name":"S2","subtitle":"A"},
+          {"id":"803","kind":"song","name":"S3","subtitle":"A"}]}
+        """
+
         var transport: (String, String) throws -> String {
-            { [self] _, line in lines.append(line); return reply }
+            { [self] _, line in
+                lines.append(line)
+                return line.contains("slice.containerTracks") ? Self.tracksReply : reply
+            }
         }
 
         var queued: [[String: Any]] {

@@ -113,10 +113,10 @@ func runShell() {
             scenes[id] = scene
             return scene
         case .discover:
-            // Discover needs a user token (both its endpoints are /v1/me/). Refuse
-            // with a toast rather than an empty tab when there isn't one.
-            guard AuthManager().userToken() != nil else {
-                status.post("Sign in to see your Discover feed (music auth setup).", error: true)
+            // Why the door follows the mode: `discoverTabAdmitted`.
+            guard discoverTabAdmitted(mode: routing.mode,
+                                      hasUserToken: AuthManager().userToken() != nil) else {
+                status.post(DiscoverScene.signInToBrowse, error: true)
                 return nil
             }
             // Play (Enter/p) needs the same both-tokens REST backend the artwork

@@ -34,7 +34,7 @@ final class DiscoverScene: Scene {
     let id: SceneID = .discover
     let tabTitle = "Discover"
 
-    private let feed: DiscoverFeed?
+    private let feed: DiscoverFeedReading?
     private let status: StatusStore
     private let opener: Opener
     // nil `api` means no dev+user token pair, same gate makeDiscoverFeed() and
@@ -48,8 +48,12 @@ final class DiscoverScene: Scene {
     private let lifecycle: DiscoverLifecycleCoordinator
 
     private var stack: [DiscoverFrameState] = [DiscoverFrameState(level: .root, cursor: DiscoverCursor())]
-    private var rails: [DiscoverRail] = []
-    private var trackRows: [DiscoverItem] = []
+    // Readable, not private, so the feed binding is observable from a test.
+    private(set) var rails: [DiscoverRail] = []
+    private(set) var trackRows: [DiscoverItem] = []
+    /// Why the rails did not load, in words for the person. nil while loading,
+    /// after a success, and for a web-service failure, which keeps its old line.
+    private(set) var loadFailure: String?
     private var loaded = false
     private var failed = false
     private var lastBodyHeight = 1
@@ -105,6 +109,8 @@ final class DiscoverScene: Scene {
     private var fetchStarted = false
     private var railsInbox: [DiscoverRail]?      // guarded by inboxLock
     private var railsFailed = false          // guarded by inboxLock
+    private var railsFailure: String?        // guarded by inboxLock
+    private var tracksFailure: String?       // guarded by inboxLock
     private var tracksInbox: [DiscoverItem]?     // guarded by inboxLock
     private var tracksInFlight = false       // tick()/handle() thread only
 
@@ -143,7 +149,7 @@ final class DiscoverScene: Scene {
     /// by reading `bridgeSelected()` and hoping the mode holds still.
     private let routing: RoutingCoordinator
 
-    init(feed: DiscoverFeed?, status: StatusStore, actions: ActionRunner, api: RESTAPIBackend?,
+    init(feed: DiscoverFeedReading?, status: StatusStore, actions: ActionRunner, api: RESTAPIBackend?,
          lifecycle: DiscoverLifecycleCoordinator, routing: RoutingCoordinator,
          opener: Opener = SystemOpener(),
          bridgeSelected: @escaping () -> Bool = { false },
@@ -292,18 +298,24 @@ final class DiscoverScene: Scene {
         case .item(let item):
             switch item.detail {
             case .station:
-                guard let url = item.url else {
-                    status.post("That station has no play URL.", error: true)
-                    return .redraw
-                }
-                let station = Station(id: item.id, name: item.name, url: url,
-                                      isLive: nil, artworkURL: item.artworkURL)
                 do {
                     // The same station row, routed: `p` on a Radio favourite and
                     // Enter on a Discover station row reach the same op.
+                    //
+                    // The share URL is how MUSIC.APP plays a station, so needing
+                    // one is that branch's precondition. A row Bridge sent
+                    // carries none, and checked out here it refused every such
+                    // row before the coordinator was ever asked.
                     try routing.perform(.radioStationPlay,
-                        musicApp: { try playStation(station, via: opener) },
-                        source: { try $0.control.playStation(id: station.id, named: station.name) },
+                        musicApp: {
+                            guard let url = item.url else {
+                                throw ActionError(message: "That station has no play URL.")
+                            }
+                            try playStation(Station(id: item.id, name: item.name, url: url,
+                                                    isLive: nil, artworkURL: item.artworkURL),
+                                            via: opener)
+                        },
+                        source: { try $0.control.playStation(id: item.id, named: item.name) },
                         unaffected: {})
                     status.post("Playing \(item.name)")
                 } catch let error as SourceAppError {
@@ -364,8 +376,11 @@ final class DiscoverScene: Scene {
     /// `→` deliberately does not reach here (`discoverRightArrowActivates`).
     private func playFromHere() -> SceneAction {
         guard case .tracks(let container) = current.level else { return .none }
-        guard api != nil else {
-            status.post("Sign in to play Discover music (music auth setup).", error: true)
+        // A Music.app precondition: Bridge plays with no keys. Read here only to
+        // keep Music.app's immediate refusal exactly as it was; `route` checks
+        // again inside the Music.app branch, where the mode cannot move.
+        guard api != nil || bridgeSelected() else {
+            status.post(Self.signInToPlay, error: true)
             return .redraw
         }
         // At the tracks level every display row is a selectable item (`rows`
@@ -395,16 +410,23 @@ final class DiscoverScene: Scene {
     /// dispatch off the input loop for their own fetches.
     // Internal, not private, so the routing binding is reachable from a test.
     func playAllFromRail(_ item: DiscoverItem) {
-        guard let feed else { return }
-        guard api != nil else {
-            status.post("Sign in to play Discover music (music auth setup).", error: true)
+        // See `playFromHere` for why this door reads the mode.
+        guard api != nil || bridgeSelected() else {
+            status.post(Self.signInToPlay, error: true)
             return
         }
         let title = item.name
         actions.run("Play") {
-            // The catalogue READ is the same in both modes; only the
-            // destination differs.
-            let tracks = try feed.tracks(for: item)
+            // Two decisions, in order, neither nested in the other: which feed
+            // to READ the tracks from, then where to PLAY them. A TUI mode
+            // switch runs on this same serial queue, so none can land between
+            // them; and both feeds yield catalogue ids either way.
+            let tracks: [DiscoverItem]
+            do {
+                tracks = try self.chooseFeed(.discoverFeed).tracks(for: item)
+            } catch let error as SourceAppError {
+                throw ActionError(message: error.message)
+            }
             let catalogIDs = tracks.map { $0.id }
             try require(!catalogIDs.isEmpty, "'\(title)': no tracks to play.")
             try self.route(.discoverPlayAll, catalogIDs: catalogIDs, disableShuffle: false,
@@ -438,9 +460,11 @@ final class DiscoverScene: Scene {
         let lifecycle = self.lifecycle
         let routing = self.routing
         let status = self.status
+        let hasAPI = api != nil
         do {
             try routing.perform(action,
                 musicApp: {
+                    try require(hasAPI, Self.signInToPlay)
                     _ = lifecycle.requestPlay(title: musicAppTitle, catalogIDs: catalogIDs,
                                               disableShuffle: disableShuffle)
                 },
@@ -459,16 +483,54 @@ final class DiscoverScene: Scene {
 
     // MARK: - Fetching
 
+    static let signInToPlay = "Sign in to play Discover music (music auth setup)."
+    static let signInToBrowse = "Sign in to see your Discover feed (music auth setup)."
+
+    /// Which feed THIS read uses, asked of the coordinator rather than fixed at
+    /// construction (step 3).
+    ///
+    /// **Only the CHOICE happens inside the lock; the round trip does not**, the
+    /// same rule Radio's `/` search follows and for the same reason: a slow read
+    /// held across the ordering lock would block a mode switch. A read can
+    /// safely use the feed chosen a moment ago - the worst case is rails from
+    /// the output you just left, and `r` re-reads them.
+    ///
+    /// **Call this OFF the main thread.** It waits behind any playback action in
+    /// flight, and a 20-track Bridge queue holds the lock for about four seconds.
+    ///
+    /// No fallback in either direction: Bridge selected means Bridge is read,
+    /// whether or not a web-service feed exists.
+    private func chooseFeed(_ action: MusicTUIAction) throws -> DiscoverFeedReading {
+        var chosen: DiscoverFeedReading?
+        try routing.perform(action,
+                            musicApp: { chosen = self.feed },
+                            source: { chosen = $0.discover },
+                            unaffected: {})
+        // Music.app mode with no sign-in: the only state with no feed at all.
+        guard let chosen else { throw ActionError(message: Self.signInToBrowse) }
+        return chosen
+    }
+
+    /// A failure in words for the person, or nil for one that has none of its
+    /// own. Bridge's refusals and the coordinator's are sentences; a web-service
+    /// failure is not, and keeps the line it always had.
+    private static func words(for error: Error) -> String? {
+        if let error = error as? SourceAppError { return error.message }
+        if let error = error as? ActionError { return error.message }
+        return nil
+    }
+
     private func refresh() {
         loaded = false
         failed = false
+        loadFailure = nil
         fetchStarted = false
         stack = [DiscoverFrameState(level: .root, cursor: DiscoverCursor())]
         status.post("Refreshing Discover\u{2026}")
     }
 
-    private func drillIn(_ item: DiscoverItem) {
-        guard let feed else { return }
+    // Internal, not private, so the feed binding is reachable from a test.
+    func drillIn(_ item: DiscoverItem) {
         guard !tracksInFlight else { return }
         stack = pushLevel(stack, .tracks(item))
         trackRows = []
@@ -481,25 +543,44 @@ final class DiscoverScene: Scene {
         feedVersion += 1
         tracksInFlight = true
         DispatchQueue.global().async { [weak self] in
-            let fetched = (try? feed.tracks(for: item)) ?? []
             guard let self else { return }
-            self.inboxLock.lock(); self.tracksInbox = fetched; self.inboxLock.unlock()
+            var fetched: [DiscoverItem] = []
+            var failure: String? = nil
+            do {
+                fetched = try self.chooseFeed(.discoverFeed).tracks(for: item)
+            } catch {
+                // This was `try?`, which turned every refusal into an empty list
+                // that rendered as "No tracks." A web-service failure still does;
+                // a failure with words of its own now keeps them.
+                failure = Self.words(for: error)
+            }
+            self.inboxLock.lock()
+            self.tracksInbox = fetched
+            self.tracksFailure = failure
+            self.inboxLock.unlock()
         }
     }
 
     func tick(snapshot: NowPlayingSnapshot) -> Bool {
         var changed = false
 
-        if !fetchStarted, let feed {
+        if !fetchStarted {
             fetchStarted = true
             DispatchQueue.global().async { [weak self] in
+                guard let self else { return }
                 var fetched: [DiscoverRail] = []
                 var failed = false
-                do { fetched = try feed.rails() } catch { failed = true }
-                guard let self else { return }
+                var failure: String? = nil
+                do {
+                    fetched = try self.chooseFeed(.discoverFeed).rails(limit: 30)
+                } catch {
+                    failed = true
+                    failure = Self.words(for: error)
+                }
                 self.inboxLock.lock()
                 self.railsInbox = fetched
                 self.railsFailed = failed
+                self.railsFailure = failure
                 self.inboxLock.unlock()
             }
         }
@@ -507,9 +588,12 @@ final class DiscoverScene: Scene {
         inboxLock.lock()
         let incomingRails = railsInbox
         let incomingFailed = railsFailed
+        let incomingFailure = railsFailure
         railsInbox = nil
         let incomingTracks = tracksInbox
+        let incomingTracksFailure = tracksFailure
         tracksInbox = nil
+        tracksFailure = nil
         let artLanded = artDirty
         artDirty = false
         inboxLock.unlock()
@@ -519,6 +603,7 @@ final class DiscoverScene: Scene {
             feedVersion += 1
             loaded = true
             failed = incomingFailed || incomingRails.isEmpty
+            loadFailure = incomingFailure
             cursorIndex = min(cursorIndex, max(0, selectableDiscoverIndices(rows).count - 1))
             changed = true
         }
@@ -526,6 +611,8 @@ final class DiscoverScene: Scene {
             trackRows = incomingTracks
             feedVersion += 1
             tracksInFlight = false
+            // A refusal to open goes where every other Discover refusal goes.
+            if let incomingTracksFailure { status.post(incomingTracksFailure, error: true) }
             changed = true
         }
         if artLanded { changed = true }
@@ -594,6 +681,12 @@ final class DiscoverScene: Scene {
         }
         if failed || rails.isEmpty {
             out += ANSICode.moveTo(row: y, col: 3)
+            // A failure with words of its own says them. No automatic fallback
+            // means the person has to be able to read WHY.
+            if let loadFailure {
+                let why = loadFailure.hasSuffix(".") ? String(loadFailure.dropLast()) : loadFailure
+                return out + "\(ANSICode.dim)\u{2717} \(why). r to retry.\(ANSICode.reset)"
+            }
             return out + "\(ANSICode.dim)No recommendations right now. r to retry.\(ANSICode.reset)"
         }
         if case .tracks = current.level, trackRows.isEmpty {
