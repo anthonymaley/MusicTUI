@@ -70,7 +70,7 @@ func runShell() {
     let router = Router(root: .nowPlaying)
     var scenes: [SceneID: Scene] = [.nowPlaying: NowPlayingScene(backend: backend, appQueue: appQueue, status: status, actions: actions, routing: routing, restArtworkAPI: makeArtworkAPI(), kittyEnabled: kittyEnabled,
                                                                   setArtSize: { cols, rows in poller.setDesiredArtSize(cols: cols, rows: rows) })]
-    // Declaration order IS the tab strip order and the 1-5 digit shortcuts.
+    // Declaration order IS the tab strip order and the 1-6 digit shortcuts.
     // Ordered by how often the user reaches for them: Now, then the browse
     // surfaces, then Speakers last (set once, rarely touched mid-session).
     let tabs: [(id: SceneID, title: String)] = [(.nowPlaying, "Now"), (.discover, "Discover"), (.library, "Library"), (.playlists, "Playlists"), (.radio, "Radio"), (.speakers, "Output")]

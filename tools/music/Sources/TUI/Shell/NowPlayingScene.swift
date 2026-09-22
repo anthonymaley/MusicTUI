@@ -363,7 +363,7 @@ final class NowPlayingScene: Scene {
             }
             // The empty state is the on-ramp, not a dead end.
             out += ANSICode.moveTo(row: frame.bodyY + 1, col: 3)
-            out += "\(ANSICode.dim)Nothing playing \u{2014} press \(ANSICode.reset)2\(ANSICode.dim) to browse playlists, \(ANSICode.reset)z\(ANSICode.dim) to shuffle.\(ANSICode.reset)"
+            out += "\(ANSICode.dim)Nothing playing \u{2014} press \(ANSICode.reset)4\(ANSICode.dim) to browse playlists, \(ANSICode.reset)z\(ANSICode.dim) to shuffle.\(ANSICode.reset)"
             return out
         }
 

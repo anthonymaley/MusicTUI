@@ -212,7 +212,7 @@ final class BridgeNowTests: XCTestCase {
     func testMusicAppEmptyStateAndFooterAreUnchanged() {
         let s = scene(mode: .musicApp)
         let out = s.render(frame: frame, snapshot: NowPlayingSnapshot(outcome: .stopped, history: [], surrounding: []))
-        XCTAssertTrue(out.contains("\(ANSICode.dim)Nothing playing \u{2014} press \(ANSICode.reset)2\(ANSICode.dim) to browse playlists, \(ANSICode.reset)z\(ANSICode.dim) to shuffle.\(ANSICode.reset)"))
+        XCTAssertTrue(out.contains("\(ANSICode.dim)Nothing playing \u{2014} press \(ANSICode.reset)4\(ANSICode.dim) to browse playlists, \(ANSICode.reset)z\(ANSICode.dim) to shuffle.\(ANSICode.reset)"))
         XCTAssertEqual(s.footerHint,
                        "\u{2191}\u{2193} Browse  \u{2190} Controls  Enter Jump  [ ] Seek  l \u{2665}")
         _ = s.handle(.left)

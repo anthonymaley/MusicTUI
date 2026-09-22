@@ -238,3 +238,51 @@ func albumOutcomeMessage(_ outcome: BoundedAlbumOutcome, title: String) -> Strin
             + "may remain in your library; run `music playlist cleanup` to collect it."
     }
 }
+
+/// `music play --artist "X"` with nothing else named: that artist's SONGS,
+/// bounded, the way the Library tab's `p` plays an artist row.
+///
+/// **It used to resume.** No branch handled `--artist` alone, so the option
+/// fell through to the bare-`play` resume at the end of `Play.run` and the CLI
+/// silently played whatever was already loaded (found 2026-09-22, open since at
+/// least 3.12). Ruling 12.2 is that an artist expands to songs, so it does.
+///
+/// The track set comes from the SAME resolver the TUI uses
+/// (`resolveArtistPlaybackTracks`), strict `artist is` first and a loose
+/// primary-credit fetch narrowed in Swift after it, so a per-track soloist
+/// credit still plays. The container is an `__album__` one, which is what the
+/// existing sweep and the one-shot watcher already collect.
+func playBoundedArtist(name: String,
+                       tracks: [TrackListEntry],
+                       uuid: String = UUID().uuidString,
+                       run: ScriptRunner,
+                       launch: @escaping ProcessLauncher = detachedLaunch)
+    -> ContainerPlayOutcome {
+
+    _ = run(albumStaleSweepScript())
+    return playBoundedContainer(name: albumContainerName(title: name, uuid: uuid),
+                                seed: .libraryIndices(tracks.map { $0.index }),
+                                uuid: uuid, run: run, launch: launch)
+}
+
+/// What to say when an artist could not be played, or nil when playback started.
+/// `matched > 0` with no playable track is the pre-release/removed case the
+/// album path words the same way.
+func artistOutcomeMessage(_ outcome: ContainerPlayOutcome, name: String) -> String? {
+    switch outcome {
+    case .playing:
+        return nil
+    case .buildFailed(let removed), .playFailed(let removed), .watcherFailed(let removed):
+        let stage: String
+        switch outcome {
+        case .buildFailed: stage = "build the temporary playlist for"
+        case .playFailed:  stage = "start bounded playback for"
+        default:           stage = "start the cleanup watcher for"
+        }
+        if removed {
+            return "Couldn't \(stage) '\(name)'. The container was removed."
+        }
+        return "Couldn't \(stage) '\(name)'. A temporary playlist may remain in your library; "
+            + "run `music playlist cleanup` to collect it."
+    }
+}

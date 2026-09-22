@@ -1,6 +1,29 @@
 import ArgumentParser
 import Foundation
 
+/// `--artist` alongside loose words: refused, with the spellings that work.
+///
+/// **It used to be ignored.** With positional args present, the play path passes
+/// `artist: nil` to every branch, so `music play "Teardrop" --artist "Massive
+/// Attack"` played whatever "Teardrop" matched and never mentioned the artist
+/// (Codex, 2026-09-22; Anthony ruled refuse the same day). The words can also
+/// name speakers, a volume or `shuffle`, and "play this artist in the kitchen"
+/// is a feature with its own decisions — so it is named as not supported yet
+/// rather than implied to be wrong.
+///
+/// nil means the invocation is none of that and proceeds. Pure.
+func artistWithLooseWordsRefusal(artist: String?, args: [String],
+                                 song: String?, album: String?, playlist: String?) -> String? {
+    guard artist != nil, !args.isEmpty, song == nil, album == nil, playlist == nil else { return nil }
+    return """
+        --artist can't be combined with other words. To play one song by an artist:
+          music play --song "Title" --artist "Name"
+          music play "Title" "Name"
+        To play everything by an artist: music play --artist "Name".
+        Naming speakers or a volume together with --artist is not supported yet.
+        """
+}
+
 struct Play: ParsableCommand {
     static let configuration = CommandConfiguration(abstract: "Play or resume music.")
 
@@ -74,6 +97,37 @@ struct Play: ParsableCommand {
                 print("No local or catalog tracks found matching '\(song)'")
             }
             throw ExitCode.failure
+        }
+
+        if let refusal = artistWithLooseWordsRefusal(artist: artist, args: args,
+                                                     song: song, album: album, playlist: playlist) {
+            print(refusal)
+            throw ExitCode.failure
+        }
+
+        // `--artist` with nothing else named: ruling 12.2, the artist's SONGS.
+        // Before this it fell through to the resume at the end of this method,
+        // so the CLI played whatever was already loaded and said nothing.
+        if let artist, playlist == nil, album == nil, song == nil, args.isEmpty {
+            let resolution = resolveArtistPlaybackTracks(backend: backend, artist: artist)
+            guard !resolution.tracks.isEmpty else {
+                print(resolution.matched > 0
+                    ? "Found \(resolution.matched) track(s) by '\(artist)', but none are playable yet (pre-release or removed)."
+                    : "No tracks found by '\(artist)'")
+                throw ExitCode.failure
+            }
+            let outcome = playBoundedArtist(name: artist, tracks: resolution.tracks) { script in
+                try? syncRun { try await backend.runMusic(script) }
+            }
+            if let message = artistOutcomeMessage(outcome, name: artist) {
+                print(message)
+                throw ExitCode.failure
+            }
+            if resolution.matched > resolution.tracks.count {
+                print("Playing \(resolution.tracks.count) of \(resolution.matched) — the rest aren't available yet.")
+            }
+            showNowPlaying(json: json, waitForPlay: true)
+            return
         }
 
         func playSongArtist(title: String, artist: String) throws -> Bool {
