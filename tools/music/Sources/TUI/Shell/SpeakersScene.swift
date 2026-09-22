@@ -161,14 +161,7 @@ final class SpeakersScene: Scene {
                         _ = try? syncRun { try await self.backend.runMusic("pause") }
                         return true
                     case .source:
-                        // Only positive evidence counts: a reported paused or
-                        // stopped status. `notRunning` is NOT that — it also
-                        // covers a failed write to a live app that may still be
-                        // playing, and trusting it could leave both players going
-                        // (rule 4, DoD 8).
-                        try client.control.pause()
-                        let playback = try client.control.status().playback
-                        return playback == "paused" || playback == "stopped" || playback == "idle"
+                        return try confirmBridgeNotPlaying(client.control)
                     }
                 },
                 dropQueue: { outgoing in
@@ -650,4 +643,23 @@ final class SpeakersScene: Scene {
                         "Couldn't enable EQ.")
         }
     }
+}
+
+/// Pause Bridge and confirm, from its own status, that it is not playing.
+///
+/// **Only positive evidence counts:** a reported paused, stopped or idle
+/// status. `notRunning` is NOT that — it also covers a failed write to a live
+/// app that may still be playing, and trusting it could leave both players
+/// going (rule 4, DoD 8).
+///
+/// **A refused pause is not itself a verdict.** An idle Bridge answers
+/// `slice.pause` with "did not reach paused within 3s", because there is
+/// nothing to pause (found 2026-09-22: the Output tab could not get back to
+/// Music.app after any stop or a fresh launch). So the status is read whatever
+/// the pause said, and that reading decides. A status read that fails still
+/// throws, and the switch still refuses.
+func confirmBridgeNotPlaying(_ control: SourceControlling) throws -> Bool {
+    try? control.pause()
+    let playback = try control.status().playback
+    return playback == "paused" || playback == "stopped" || playback == "idle"
 }
