@@ -408,6 +408,15 @@ struct SourceStatus: Equatable {
     let queuePhase: String?
     let queueRequested: Int?
     let queuePresent: Int?
+    /// Why an `invalid` queue stopped, in the app's words.
+    var queueReason: String? = nil
+    /// How many songs were ready before an `invalid` queue failed. **Not
+    /// `queuePresent`:** on invalid the app sends `present` as nil, and this is
+    /// the history that remains.
+    var queueBuiltBeforeFailure: Int? = nil
+    /// Playback position, 0-based within the PRESENT entries. A different
+    /// quantity from `queuePresent`, which counts songs ready while building.
+    var queueIndex: Int? = nil
 }
 
 /// One Library or Playlist row, by the triple the app joins on.
@@ -514,7 +523,10 @@ struct SourceAppControl: SourceControlling {
                             readiness: readiness(from: status),
                             queuePhase: queue?["phase"] as? String,
                             queueRequested: queue?["requested"] as? Int,
-                            queuePresent: queue?["present"] as? Int)
+                            queuePresent: queue?["present"] as? Int,
+                            queueReason: queue?["reason"] as? String,
+                            queueBuiltBeforeFailure: queue?["built_before_failure"] as? Int,
+                            queueIndex: queue?["index"] as? Int)
     }
 
     func resume() throws   { _ = try send(["op": "slice.play"]) }

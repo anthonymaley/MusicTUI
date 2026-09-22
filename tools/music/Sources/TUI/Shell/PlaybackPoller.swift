@@ -194,12 +194,40 @@ final class PlaybackPoller {
     /// **What Bridge does not report, this does not invent.** `slice.status`
     /// carries no album, no artwork and no position, so those stay empty rather
     /// than being filled from Music.app or guessed. A zero duration is the
-    /// honest reading, and the screen shows no progress.
+    /// honest reading, and the screen shows no progress. What it DOES report —
+    /// queue phase and counts, position, readiness — travels in
+    /// `snapshot.bridge` for the Now tab to draw.
     private func tickFromBridge() {
-        guard let status = try? makeSourceClient().control.status() else {
-            store.write(snapshot(outcome: .stopped))
-            return
+        let result: Result<SourceStatus, Error>
+        do { result = .success(try makeSourceClient().control.status()) }
+        catch { result = .failure(error) }
+        let bridge = bridgeLink.record(result)
+
+        let outcome: PollOutcome
+        switch result {
+        case .success(let status):
+            outcome = bridgeOutcome(status)
+        case .failure:
+            // One miss is absorbed: the screen keeps what it showed, exactly as
+            // the Music.app path keeps its snapshot on `.unavailable`. A second
+            // consecutive miss is reported as the stop it probably is.
+            outcome = bridgeLink.inGrace ? lastBridgeOutcome : .stopped
         }
+        lastBridgeOutcome = outcome
+
+        // Built fresh rather than from `snapshot(outcome:)`: context, Up Next,
+        // artwork and the queue-ended menu all describe Music.app, and carrying
+        // them here would put the paused player's state beside Bridge's.
+        var snap = NowPlayingSnapshot(outcome: outcome, history: [], surrounding: [])
+        snap.bridge = bridge
+        store.write(snap)
+    }
+
+    /// Bridge's thread-confined working state (poller thread only).
+    private var bridgeLink = BridgeLinkTracker()
+    private var lastBridgeOutcome: PollOutcome = .stopped
+
+    private func bridgeOutcome(_ status: SourceStatus) -> PollOutcome {
         let state: String
         switch status.playback {
         case "playing": state = "playing"
@@ -207,17 +235,14 @@ final class PlaybackPoller {
         // `loading` is the settle window after a command. It is neither playing
         // nor stopped, and the TUI has no third word for it; reporting stopped
         // for a moment is better than claiming playback that has not started.
-        default:        state = "stopped"
-        }
-        guard state != "stopped" else {
-            store.write(snapshot(outcome: .stopped))
-            return
+        // The Now tab says "Loading…" from `snapshot.bridge` meanwhile.
+        default:        return .stopped
         }
         var np = NowPlayingState()
         np.track = status.title ?? ""
         np.artist = status.artist ?? ""
         np.state = state
-        store.write(snapshot(outcome: .active(np)))
+        return .active(np)
     }
 
     func start() {

@@ -23,6 +23,16 @@ func continuationAction(for key: KeyPress) -> ContinuationAction? {
     }
 }
 
+/// The continuation menu's entries for the selected output (spec 6.2's `n` row).
+///
+/// **Bridge offers no Shuffle.** It would shuffle "the current collection", and
+/// in Bridge mode nothing on this side knows what that is (see `act(on:)`): the
+/// entry could only name Music.app's last context and then refuse. Playlist is
+/// navigation and Quiet pauses Bridge, so both stay.
+func continuationOptions(bridge: Bool) -> [ContinuationAction] {
+    bridge ? [.playlist, .quiet] : [.shuffle, .playlist, .quiet]
+}
+
 /// Width of the Now tab's two-pane left column (art + metadata + control
 /// grid), in columns. Floors at 44 — the pre-existing width at the twoPane
 /// threshold (frameWidth 92), so a narrow-but-two-pane terminal doesn't lose
@@ -54,7 +64,11 @@ final class NowPlayingScene: Scene {
     let id: SceneID = .nowPlaying
     let tabTitle = "Now"
     var footerHint: String {
-        gridFocused
+        // Bridge has no control grid and no Up Next list, so only seek is left.
+        // `x Quiet` is deliberately absent: `x` acts only inside the
+        // continuation menu, and advertising it here would name a dead key.
+        if routing.mode == .source { return "[ ] Seek" }
+        return gridFocused
             ? "\u{2191}\u{2193} Row  Enter Set  \u{2192} Up Next  [ ] Seek  \u{2014} controls"
             : "\u{2191}\u{2193} Browse  \u{2190} Controls  Enter Jump  [ ] Seek  l \u{2665}"
     }
@@ -297,7 +311,9 @@ final class NowPlayingScene: Scene {
             changed = true
         }
         let now = Date()
-        if !modesFetchInFlight, now.timeIntervalSince(lastModesKick) > 2 {
+        // Not in Bridge mode: these are Music.app's modes, and Bridge draws no
+        // grid to show them in.
+        if snapshot.bridge == nil, !modesFetchInFlight, now.timeIntervalSince(lastModesKick) > 2 {
             modesFetchInFlight = true
             modesFetchStartedAt = now
             lastModesKick = now
@@ -342,6 +358,9 @@ final class NowPlayingScene: Scene {
 
         guard case .active(let np) = snapshot.outcome else {
             if let last = lastPlaced { out += kittyDeleteEscape(id: last.id); lastPlaced = nil }
+            if let bridge = snapshot.bridge {
+                return renderBridgeEmpty(bridge, frame: frame, into: out)
+            }
             // The empty state is the on-ramp, not a dead end.
             out += ANSICode.moveTo(row: frame.bodyY + 1, col: 3)
             out += "\(ANSICode.dim)Nothing playing \u{2014} press \(ANSICode.reset)2\(ANSICode.dim) to browse playlists, \(ANSICode.reset)z\(ANSICode.dim) to shuffle.\(ANSICode.reset)"
@@ -462,6 +481,12 @@ final class NowPlayingScene: Scene {
             out += ANSICode.moveTo(row: my, col: leftX) + "\(ANSICode.cyan)\u{266A} \(ANSICode.reset)\(ANSICode.brightWhite)\(truncText(cleanContextName(snapshot.contextName), to: metaW - 3))\(ANSICode.reset)"
         }
 
+        if let bridge = snapshot.bridge {
+            let hasContextLine = geniusActive || !snapshot.contextName.isEmpty
+            return renderBridgeActive(bridge, startY: hasContextLine ? my + 1 : my, x: leftX, width: metaW,
+                                      bottom: frame.bodyY + frame.bodyHeight - 1, into: out)
+        }
+
         // Playback-control grid (shuffle/order/repeat/genius). Always shows live
         // active state; `c` focuses it for arrow-navigation + Enter.
         out += renderControlGrid(startY: my + 2, x: leftX, bottom: frame.bodyY + frame.bodyHeight - 1)
@@ -501,6 +526,43 @@ final class NowPlayingScene: Scene {
                 cursorIndex: cursor,
                 scrollOffset: &scroll
             )
+        }
+        return out
+    }
+
+    /// Bridge's empty state: what Bridge is doing, then the way in.
+    ///
+    /// The digits are the tab strip's real ones (`tabs` in Shell.swift: 3 is
+    /// Library, 4 is Playlists). `z` is not offered: collection shuffle is
+    /// refused on Bridge.
+    private func renderBridgeEmpty(_ bridge: BridgeNow, frame: ShellFrame, into base: String) -> String {
+        var out = base
+        out += ANSICode.moveTo(row: frame.bodyY + 1, col: 3)
+        out += truncText(bridgeStatusLine(bridge) ?? "Nothing playing on Bridge.", to: frame.width - 6)
+        out += ANSICode.moveTo(row: frame.bodyY + 2, col: 3)
+        out += "\(ANSICode.dim)Press \(ANSICode.reset)4\(ANSICode.dim) to browse playlists, \(ANSICode.reset)3\(ANSICode.dim) for Library.\(ANSICode.reset)"
+        return out
+    }
+
+    /// Bridge's lines below the track metadata, in place of the control grid
+    /// and Up Next.
+    ///
+    /// **No Up Next.** `slice.status` carries counts and a position, never the
+    /// track list, so the position line is all that can honestly be said about
+    /// what comes next. Shuffle and repeat are not on the wire at all.
+    private func renderBridgeActive(_ bridge: BridgeNow, startY: Int, x: Int, width: Int,
+                                    bottom: Int, into base: String) -> String {
+        var out = base
+        var y = startY
+        for line in [bridgeStatusLine(bridge), bridgePositionLine(bridge)].compactMap({ $0 }) {
+            guard y <= bottom else { return out }
+            out += ANSICode.moveTo(row: y, col: x) + "\(ANSICode.dim)\(truncText(line, to: width))\(ANSICode.reset)"
+            y += 1
+        }
+        y += 1
+        if y <= bottom {
+            out += ANSICode.moveTo(row: y, col: x)
+                + "\(ANSICode.dim)\(truncText("Shuffle and repeat are not available on Bridge.", to: width))\(ANSICode.reset)"
         }
         return out
     }
@@ -575,12 +637,17 @@ final class NowPlayingScene: Scene {
         // The label is the queue's human-facing name ("Moon Safari"), never its
         // addressable source ("Library") — that distinction is the whole point
         // of ContinuationSource.
-        let shuffleTarget = continuationSourceNow()?.label ?? seedTitle
-        let opts: [(String, String)] = [
-            ("[S]", "Shuffle  \(ANSICode.dim)\(truncText(shuffleTarget, to: 28))\(ANSICode.reset)"),
-            ("[P]", "Playlist  \(ANSICode.dim)browse\(ANSICode.reset)"),
-            ("[X]", "Quiet  \(ANSICode.dim)stop here\(ANSICode.reset)"),
-        ]
+        let opts: [(String, String)] = continuationOptions(bridge: routing.mode == .source).map { action in
+            switch action {
+            case .shuffle:
+                let shuffleTarget = continuationSourceNow()?.label ?? seedTitle
+                return ("[S]", "Shuffle  \(ANSICode.dim)\(truncText(shuffleTarget, to: 28))\(ANSICode.reset)")
+            case .playlist:
+                return ("[P]", "Playlist  \(ANSICode.dim)browse\(ANSICode.reset)")
+            case .quiet:
+                return ("[X]", "Quiet  \(ANSICode.dim)stop here\(ANSICode.reset)")
+            }
+        }
         for (key, label) in opts {
             out += ANSICode.moveTo(row: ly, col: lx) + "\(ANSICode.lime)\(key)\(ANSICode.reset)  \(label)"
             ly += 1
@@ -698,13 +765,18 @@ final class NowPlayingScene: Scene {
         let key = vimAlias(key, listScene: false)
         // Continuation menu intercepts its keys when active.
         if menuShownLastFrame {
-            if let action = continuationAction(for: key) {
+            if let action = continuationAction(for: key),
+               continuationOptions(bridge: routing.mode == .source).contains(action) {
                 act(on: action)
                 manualMenu = false
                 dismissedSeed = pendingSeedTitle   // don't re-show this queue-end's menu
                 if wantsPlaylists { wantsPlaylists = false; return .push(.playlists) }
                 return .redraw
             }
+            // A menu key this output does not offer (Bridge's `s`) is swallowed,
+            // not passed on to the tab's own `s`, which would answer a menu the
+            // person never saw with a refusal.
+            if continuationAction(for: key) != nil { return .none }
             // The menu captures all input, so quit must be honored here — `q` at
             // a queue-ended TUI means "leave the app", never a menu action.
             if case .char("q") = key { return .quit }
@@ -719,6 +791,13 @@ final class NowPlayingScene: Scene {
         // Manual open: 'n' (next-options) when no menu is up.
         if case .char("n") = key, !menuShownLastFrame {
             manualMenu = true; return .redraw
+        }
+
+        // Bridge draws no grid, so nothing may focus it: the grid keys become
+        // no-ops, and a focus left over from Music.app mode is dropped.
+        if routing.mode == .source {
+            gridFocused = false
+            if case .left = key { return .none }
         }
 
         // Focus model: ← focuses the control grid (left pane), → the Up Next

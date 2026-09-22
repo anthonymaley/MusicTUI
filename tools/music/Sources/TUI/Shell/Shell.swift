@@ -15,6 +15,17 @@ func makeArtworkAPI() -> RESTAPIBackend? {
     return RESTAPIBackend(developerToken: devToken, userToken: userToken, storefront: auth.storefront())
 }
 
+/// The always-on playback keys in the footer, for the selected output.
+///
+/// **Bridge drops `z` and `+/−`.** Both are refused there (spec 6.1: collection
+/// shuffle has no set to shuffle, and MusicKit exposes no player volume), so
+/// listing them would advertise keys that only ever answer with a refusal.
+func shellFooterGlobals(mode: PlaybackMode) -> String {
+    mode == .source
+        ? "Space \u{23EF}  < > Skip"
+        : "Space \u{23EF}  < > Skip  z Reshuffle  +/\u{2212} Vol"
+}
+
 func runShell() {
     let backend = AppleScriptBackend()
     let store = NowPlayingStore()
@@ -256,7 +267,7 @@ func runShell() {
                 let color = t.isError ? ANSICode.red : ANSICode.amber
                 out += "\(color)\(truncText(t.text, to: max(1, frame.width - 4)))\(ANSICode.reset)"
             } else {
-                let globals = "Space \u{23EF}  < > Skip  z Reshuffle  +/\u{2212} Vol"
+                let globals = shellFooterGlobals(mode: routing.mode)
                 out += "\(ANSICode.dim)1-\(tabs.count) Tabs   \(scene.footerHint)   \(globals)  q Quit\(ANSICode.reset)"
             }
             // Synchronized output (terminals that don't support it ignore the

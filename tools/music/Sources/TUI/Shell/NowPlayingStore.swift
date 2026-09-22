@@ -16,6 +16,10 @@ struct NowPlayingSnapshot {
     var endedTrack: String = ""            // last context track title (seed for Radio/Similar)
     var endedArtist: String = ""           // last context track artist
     var endedArtLines: [String] = []       // last context track album art (captured at detection)
+    /// Bridge's own state while Bridge is selected. **nil means Music.app mode**,
+    /// and the Music.app path never sets it, so a nil here is also the promise
+    /// that the Now tab renders exactly as it did before Bridge existed.
+    var bridge: BridgeNow? = nil
 }
 
 /// Thread-safe box around the latest snapshot. The poller calls `write`; the
