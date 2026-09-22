@@ -141,3 +141,31 @@ func detectQueueEnd(prevWasRealPlaylist: Bool, prevAtLastTrack: Bool,
                     prevNaturalEnd: Bool, nowIsLibraryAutoplay: Bool) -> Bool {
     prevWasRealPlaylist && prevAtLastTrack && prevNaturalEnd && nowIsLibraryAutoplay
 }
+
+/// Where the playing track sits in a list of rows, or nil when it is not there.
+///
+/// Matching is `trackKey`'s, the same normalisation Now's Up Next uses, so a
+/// list and the Now tab agree about what "this row is playing" means. Pure.
+func indexOfPlayingRow(_ rows: [(title: String, artist: String)],
+                       track: String, artist: String) -> Int? {
+    guard !track.isEmpty else { return nil }
+    let wanted = trackKey(title: track, artist: artist)
+    return rows.firstIndex { trackKey(title: $0.title, artist: $0.artist) == wanted }
+}
+
+/// Where a playlist named like the current playback context sits in a rail of
+/// playlist names, or nil. The context name is cleaned first, because Now shows
+/// a container's label rather than its raw name.
+///
+/// **Ambiguity refuses.** Playlist names are not unique and the context carries
+/// a NAME, not an identity, so two playlists called "Chill" cannot be told
+/// apart here (Codex, 2026-09-22). Focusing the first of them would put the
+/// cursor on a row the person did not play, and their next Enter would act on
+/// it. A cursor left where it was is a smaller wrong than a cursor moved to the
+/// wrong row. Pure.
+func indexOfPlayingPlaylist(_ names: [String], contextName: String) -> Int? {
+    let wanted = cleanContextName(contextName).lowercased()
+    guard !wanted.isEmpty else { return nil }
+    let matches = names.indices.filter { names[$0].lowercased() == wanted }
+    return matches.count == 1 ? matches[0] : nil
+}

@@ -47,12 +47,19 @@ protocol Scene: AnyObject {
     /// assuming a placement the shell just deleted is still on screen. Default
     /// no-op for scenes with no art.
     func artPlacementsInvalidated()
+
+    /// Called when this scene becomes the active tab, after the switch.
+    /// A list that can show what is playing uses it to put its cursor there
+    /// once, on arrival — never while the person is already browsing it.
+    /// Default no-op.
+    func becameActive()
 }
 
 extension Scene {
     var capturesAllInput: Bool { false }
     var footerHint: String { "" }
     func artPlacementsInvalidated() {}
+    func becameActive() {}
 }
 
 /// Pure decision: should the shell resolve global/navigation keys for the

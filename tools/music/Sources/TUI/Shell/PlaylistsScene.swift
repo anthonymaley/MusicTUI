@@ -24,6 +24,10 @@ final class PlaylistsScene: Scene {
     private var focus: BrowserFocus = .playlists
     private var plCursor = 0
     private var plScroll = 0
+    private var snapToPlayingPending = false
+
+    /// Rail cursor, an index into the whole playlist list, for tests.
+    var railCursorForTest: Int { plCursor }
     private var trCursor = 0
     private var trScroll = 0
     private var meta: [PlaylistMeta]
@@ -197,8 +201,24 @@ final class PlaylistsScene: Scene {
     // MARK: Scene
 
     @discardableResult
+    /// Put the rail on the playlist that is playing when the tab is opened —
+    /// once, on arrival, never while the person is browsing (2026-09-22).
+    func becameActive() { snapToPlayingPending = true }
+
     func tick(snapshot: NowPlayingSnapshot) -> Bool {
         var changed = false
+        if snapToPlayingPending, !snapshot.contextName.isEmpty {
+            snapToPlayingPending = false
+            // `plCursor` indexes the WHOLE list, not the filtered view (see
+            // clampCursorToFilter), so the match is mapped back through `vis`.
+            let vis = visibleIndices()
+            if let row = indexOfPlayingPlaylist(vis.map { playlists[$0] },
+                                                contextName: snapshot.contextName),
+               vis[row] != plCursor {
+                plCursor = vis[row]   // renderRail moves `plScroll` to follow it
+                changed = true
+            }
+        }
         if !artMapStarted, let load = sources.onArtworkMap {
             artMapStarted = true
             Thread.detachNewThread { [weak self] in

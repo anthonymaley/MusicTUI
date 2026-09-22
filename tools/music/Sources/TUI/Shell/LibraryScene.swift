@@ -162,6 +162,13 @@ final class LibraryScene: Scene {
     private var filter = ""
     private var capturing = false
     private var railScroll = 0
+    private var snapToPlayingPending = false
+
+    /// Cursor position within the visible rows, for tests.
+    var navCursorForTest: Int { nav.cursor }
+
+    /// Which of artists / albums / songs is showing, for tests.
+    var subViewForTest: LibrarySubView { nav.subView }
     private var trackScroll = 0
 
     // One track cache keyed by album id, shared by the right-pane preview (album
@@ -459,8 +466,25 @@ final class LibraryScene: Scene {
     // MARK: Scene
 
     @discardableResult
+    /// Put the cursor on the playing song when the tab is opened — once, on
+    /// arrival, never while the person is browsing (2026-09-22, from the
+    /// competitor scan's "scroll/focus to the currently playing row"). Held as
+    /// a flag because the songs may not have streamed in yet at the moment of
+    /// arrival; `tick` spends it on the first snapshot that can answer.
+    func becameActive() { snapToPlayingPending = true }
+
     func tick(snapshot: NowPlayingSnapshot) -> Bool {
         var changed = false
+        if snapToPlayingPending, case .songList = nav.current,
+           case .active(let np) = snapshot.outcome, !songs.isEmpty {
+            snapToPlayingPending = false
+            let vis = visibleSongIndices()
+            let rows = vis.map { (title: songs[$0].title, artist: songs[$0].artist) }
+            if let row = indexOfPlayingRow(rows, track: np.track, artist: np.artist), row != nav.cursor {
+                nav.cursor = row   // renderSongList moves `railScroll` to follow it
+                changed = true
+            }
+        }
         inboxLock.lock()
         let newAlbums = albumsPending; albumsPending = []
         let albumsWalkDone = albumsDone

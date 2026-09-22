@@ -68,6 +68,7 @@ func runShell() {
     // nil (no token) simply leaves Now on embedded-or-gradient — its exact
     // pre-REST behavior, no error, no dead tab.
     let router = Router(root: .nowPlaying)
+    var lastActiveScene = router.active
     var scenes: [SceneID: Scene] = [.nowPlaying: NowPlayingScene(backend: backend, appQueue: appQueue, status: status, actions: actions, routing: routing, restArtworkAPI: makeArtworkAPI(), kittyEnabled: kittyEnabled,
                                                                   setArtSize: { cols, rows in poller.setDesiredArtSize(cols: cols, rows: rows) })]
     // Declaration order IS the tab strip order and the 1-6 digit shortcuts.
@@ -248,6 +249,13 @@ func runShell() {
         let screen = dims()
         let frame = shellLayout(width: screen.width, height: screen.height, cellW: screen.cellW, cellH: screen.cellH)
         guard let scene = ensureScene(router.active) ?? scenes[.nowPlaying] else { continue }
+        // One place catches every arrival, however the tab changed — a digit, Tab,
+        // a `.push` from a scene, a `.pop` back. Before `tick`, so a scene can set
+        // its cursor and have that same tick publish it.
+        if router.active != lastActiveScene {
+            lastActiveScene = router.active
+            scene.becameActive()
+        }
         // tick runs every iteration (it drains inboxes and kicks off background
         // fetches) even when the frame isn't repainted.
         if scene.tick(snapshot: snap) { needsRender = true }
