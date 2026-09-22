@@ -224,9 +224,9 @@ final class BridgeNowTests: XCTestCase {
 
     func testBridgeFooterAndGridKeys() {
         let s = scene(mode: .source)
-        XCTAssertEqual(s.footerHint, "[ ] Seek")
+        XCTAssertEqual(s.footerHint, "[ ] Seek  x Quiet")
         XCTAssertEqual(s.handle(.left), .none, "← must not focus a grid Bridge does not draw")
-        XCTAssertEqual(s.footerHint, "[ ] Seek")
+        XCTAssertEqual(s.footerHint, "[ ] Seek  x Quiet")
         XCTAssertEqual(shellFooterGlobals(mode: .source), "Space \u{23EF}  < > Skip")
     }
 
@@ -340,5 +340,93 @@ final class BridgeNowTests: XCTestCase {
 
     func testMusicAppSnapshotHasNoBridge() {
         XCTAssertNil(NowPlayingSnapshot(outcome: .stopped, history: [], surrounding: []).bridge)
+    }
+}
+
+/// Spec 6.2 lists `x` as Quiet on the Now tab, but until 2026-09-22 the key
+/// only acted inside the "What next?" card, so the documented key did nothing
+/// on the screen that documents it.
+///
+/// **Bridge mode only, deliberately.** Quiet in Music.app mode runs a real
+/// `pause` through AppleScript, so a test pressing `x` there would pause the
+/// machine's Music.app while the suite ran. The Bridge branch talks to a dead
+/// socket and touches nothing. Where the key ROUTES in each mode is already
+/// pinned by `ActionRoutingTests`; what is new here is that the key arrives.
+final class NowQuietKeyTests: XCTestCase {
+
+    private func scene() -> NowPlayingScene {
+        let store = PlaybackModeStore(path: NSTemporaryDirectory() + "mode-\(UUID().uuidString).json")
+        store.set(.source)
+        let status = StatusStore()
+        return NowPlayingScene(backend: AppleScriptBackend(), appQueue: AppQueueStore(),
+                               status: status, actions: ActionRunner(status: status),
+                               routing: RoutingCoordinator(store: store, surface: .tui,
+                                                           makeSource: { SourceAppClient(path: "/nonexistent") }))
+    }
+
+    func testBothSpellingsAreConsumedOnTheNowTab() {
+        for key in [KeyPress.char("x"), .char("X")] {
+            XCTAssertEqual(scene().handle(key), .redraw, "\(key) must run Quiet, not fall through")
+        }
+    }
+
+    /// The menu keeps its own entry, and `x` there still means that entry.
+    func testTheMenuEntryIsUnchanged() {
+        XCTAssertEqual(continuationAction(for: .char("x")), .quiet)
+        XCTAssertEqual(continuationAction(for: .char("X")), .quiet)
+        XCTAssertTrue(continuationOptions(bridge: true).contains(.quiet))
+    }
+
+    func testBridgeFooterNowOffersQuiet() {
+        XCTAssertEqual(scene().footerHint, "[ ] Seek  x Quiet")
+    }
+
+    // MARK: - Quiet on a Bridge that is already quiet
+
+    private func scene(status: StatusStore, reply: @escaping (String, String) throws -> String) -> NowPlayingScene {
+        let store = PlaybackModeStore(path: NSTemporaryDirectory() + "mode-\(UUID().uuidString).json")
+        store.set(.source)
+        return NowPlayingScene(backend: AppleScriptBackend(), appQueue: AppQueueStore(),
+                               status: status, actions: ActionRunner(status: status),
+                               routing: RoutingCoordinator(store: store, surface: .tui,
+                                                           makeSource: { SourceAppClient(path: "/nonexistent",
+                                                                                         transport: reply) }))
+    }
+
+    private func settle(_ status: StatusStore, seconds: Double = 2.0) -> StatusToast? {
+        let deadline = Date().addingTimeInterval(seconds)
+        while Date() < deadline {
+            if let toast = status.current() { return toast }
+            usleep(20_000)
+        }
+        return nil
+    }
+
+    private func reply(playback: String) -> (String, String) throws -> String {
+        { _, line in
+            if line.contains("slice.pause") {
+                // What the real app answers with nothing to pause.
+                return #"{"ok":false,"op":"slice.pause","error":{"kind":"bad_request","detail":"did not reach paused within 3s"}}"#
+            }
+            return #"{"ok":true,"op":"slice.status","status":{"playback":"\#(playback)","contract":2,"authorization":"authorized"}}"#
+        }
+    }
+
+    /// The defect: `x` on an idle Bridge said "Pause failed." (seen live
+    /// 2026-09-22). Nothing was playing, so there was nothing to fail.
+    func testQuietOnAnIdleBridgeSaysNothing() {
+        let status = StatusStore()
+        _ = scene(status: status, reply: reply(playback: "idle")).handle(.char("x"))
+        XCTAssertNil(settle(status), "Quiet on a quiet player must not post an error")
+    }
+
+    /// Still an error when Bridge says it is playing after the attempt: a pause
+    /// that did not take is a real failure, and rule 4's positive evidence holds.
+    func testQuietStillReportsAPlayerThatKeepsGoing() {
+        let status = StatusStore()
+        _ = scene(status: status, reply: reply(playback: "playing")).handle(.char("x"))
+        let toast = settle(status)
+        XCTAssertEqual(toast?.text, "Couldn't pause Bridge.")
+        XCTAssertTrue(toast?.isError ?? false)
     }
 }

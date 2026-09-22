@@ -64,10 +64,10 @@ final class NowPlayingScene: Scene {
     let id: SceneID = .nowPlaying
     let tabTitle = "Now"
     var footerHint: String {
-        // Bridge has no control grid and no Up Next list, so only seek is left.
-        // `x Quiet` is deliberately absent: `x` acts only inside the
-        // continuation menu, and advertising it here would name a dead key.
-        if routing.mode == .source { return "[ ] Seek" }
+        // Bridge has no control grid and no Up Next list, so seek and Quiet are
+        // what remain. `x` became a Now key in its own right on 2026-09-22
+        // (spec 6.2's row); it pauses Bridge, never Music.app (ruling 12.7).
+        if routing.mode == .source { return "[ ] Seek  x Quiet" }
         return gridFocused
             ? "\u{2191}\u{2193} Row  Enter Set  \u{2192} Up Next  [ ] Seek  \u{2014} controls"
             : "\u{2191}\u{2193} Browse  \u{2190} Controls  Enter Jump  [ ] Seek  l \u{2665}"
@@ -720,7 +720,14 @@ final class NowPlayingScene: Scene {
                     // Ruling 12.7: Quiet pauses the SELECTED output, not
                     // Music.app. Taken literally the old line paused Music.app
                     // from Bridge, against rule 3.
-                    source: { try $0.control.pause() },
+                    // An idle Bridge refuses `slice.pause` ("did not reach
+                    // paused within 3s"), and Quiet on a quiet player is not a
+                    // failure — it showed "Pause failed." until 2026-09-22.
+                    // Same positive-evidence check as leaving Bridge for
+                    // Music.app: the pause is attempted, then its own status
+                    // decides, and only a player still going is an error.
+                    source: { try require(try confirmBridgeNotPlaying($0.control),
+                                          "Couldn't pause Bridge.") },
                     unaffected: {})
             }
         }
@@ -788,6 +795,14 @@ final class NowPlayingScene: Scene {
                 return .redraw
             }
         }
+        // Spec 6.2's own row: `x` is Quiet on Now, not only inside the menu.
+        // It was reachable only from the "What next?" card until 2026-09-22,
+        // so the documented key did nothing on the screen that documents it.
+        // Quiet is "stop here": it drops the queue and pauses the SELECTED
+        // output (ruling 12.7), which is why it is not a second `space`.
+        if case .char("x") = key { act(on: .quiet); return .redraw }
+        if case .char("X") = key { act(on: .quiet); return .redraw }
+
         // Manual open: 'n' (next-options) when no menu is up.
         if case .char("n") = key, !menuShownLastFrame {
             manualMenu = true; return .redraw
