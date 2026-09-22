@@ -13,6 +13,7 @@ struct Play: ParsableCommand {
     @Flag(name: [.customShort("v"), .customLong("verbose")], help: "Show diagnostic output") var verboseFlag = false
 
     func run() throws {
+        try refuseInBridge(.cliPlayResume, json: json)   // every `play` form changes playback (12.14)
         Music.verbose = verboseFlag
         Music.isJSON = json
         let backend = AppleScriptBackend()
@@ -582,6 +583,7 @@ func appleMusicSongID(from value: String) -> String? {
 struct Pause: ParsableCommand {
     static let configuration = CommandConfiguration(abstract: "Pause playback.")
     func run() throws {
+        try refuseInBridge(.playPause)
         let backend = AppleScriptBackend()
         _ = try syncRun { try await backend.runMusic("pause") }
         print("Paused.")
@@ -592,6 +594,7 @@ struct Skip: ParsableCommand {
     static let configuration = CommandConfiguration(abstract: "Skip to next track.")
     @Flag(name: .long, help: "Output JSON") var json = false
     func run() throws {
+        try refuseInBridge(.next, json: json)
         let backend = AppleScriptBackend()
         _ = try syncRun { try await backend.runMusic("next track") }
         showNowPlaying(json: json, waitForPlay: true)
@@ -602,6 +605,7 @@ struct Back: ParsableCommand {
     static let configuration = CommandConfiguration(abstract: "Go to previous track.")
     @Flag(name: .long, help: "Output JSON") var json = false
     func run() throws {
+        try refuseInBridge(.previous, json: json)
         let backend = AppleScriptBackend()
         _ = try syncRun { try await backend.runMusic("previous track") }
         showNowPlaying(json: json, waitForPlay: true)
@@ -611,6 +615,7 @@ struct Back: ParsableCommand {
 struct Stop: ParsableCommand {
     static let configuration = CommandConfiguration(abstract: "Stop playback.")
     func run() throws {
+        try refuseInBridge(.stop)
         let backend = AppleScriptBackend()
         _ = try syncRun { try await backend.runMusic("stop") }
         print("Stopped.")
@@ -796,6 +801,7 @@ struct Seek: ParsableCommand {
     @Argument(help: "+30 / -30 (relative seconds), 90 (seconds), or 1:30") var position: String
     @Flag(name: .long, help: "Output JSON") var json = false
     func run() throws {
+        try refuseInBridge(.seek, json: json)
         guard let target = parseSeekTarget(position) else {
             throw ValidationError("Position must be +N / -N, seconds, or m:ss (e.g. +30, 90, 1:30).")
         }
@@ -826,6 +832,7 @@ struct Shuffle: ParsableCommand {
     @Argument(help: "on or off (omit to toggle)") var state: String?
     @Flag(name: .long, help: "Output JSON") var json = false
     func run() throws {
+        try refuseInBridge(.persistentShuffleMode, json: json)
         let backend = AppleScriptBackend()
         let newState: String
         if let state = state {
@@ -856,6 +863,7 @@ struct Repeat_: ParsableCommand {
     static let configuration = CommandConfiguration(commandName: "repeat", abstract: "Set repeat mode.")
     @Argument(help: "off, one, or all") var mode: String
     func run() throws {
+        try refuseInBridge(.persistentRepeatMode)
         let m = mode.lowercased()
         guard ["off", "one", "all"].contains(m) else {
             throw ValidationError("Repeat mode must be off, one, or all.")

@@ -7,6 +7,7 @@ struct Remove: ParsableCommand {
     @Flag(name: .long, help: "Output JSON") var json = false
 
     func run() throws {
+        try refuseInBridge(.removeCurrentTrackFromPlaylist, json: json)
         let backend = AppleScriptBackend()
 
         let trackResult = try syncRun {

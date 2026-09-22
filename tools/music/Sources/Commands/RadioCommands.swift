@@ -29,6 +29,7 @@ struct RadioPlay: ParsableCommand {
     @Argument(help: "Favorite name, search term, or station URL") var query: [String]
 
     func run() throws {
+        try refuseInBridge(.radioStationPlay)   // plays via `open music://`, not AppleScript
         let input = query.joined(separator: " ").trimmingCharacters(in: .whitespaces)
         guard !input.isEmpty else { throw ValidationError("Name or URL required.") }
 

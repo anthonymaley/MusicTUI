@@ -9,6 +9,7 @@ struct Love: ParsableCommand {
     static let configuration = CommandConfiguration(abstract: "Favorite the current track.")
     @Flag(name: .long, help: "Output JSON") var json = false
     func run() throws {
+        try refuseInBridge(.loveTrack, json: json)
         try setFavorited(true, json: json)
     }
 }
@@ -17,6 +18,7 @@ struct Unlove: ParsableCommand {
     static let configuration = CommandConfiguration(abstract: "Unfavorite the current track.")
     @Flag(name: .long, help: "Output JSON") var json = false
     func run() throws {
+        try refuseInBridge(.loveTrack, json: json)
         try setFavorited(false, json: json)
     }
 }

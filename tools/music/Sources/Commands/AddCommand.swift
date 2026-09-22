@@ -47,6 +47,7 @@ struct Add: ParsableCommand {
     @Flag(name: .long, help: "Output JSON") var json = false
 
     func run() throws {
+        try refuseInBridge(addAction(query: query, id: id, to: to), json: json)
         // A library row needs no token for anything, so it is handled before
         // the token reads below, the same way `search --library` branches
         // before requireDeveloperToken().

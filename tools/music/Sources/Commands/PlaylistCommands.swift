@@ -1082,6 +1082,7 @@ struct PlaylistTemp: ParsableCommand {
     static let configuration = CommandConfiguration(commandName: "temp", abstract: "Create a temporary playlist, play it, auto-delete on cleanup.")
     @Argument(help: "Alternating title artist pairs: \"Song1\" \"Artist1\" \"Song2\" \"Artist2\"") var items: [String]
     func run() throws {
+        try refuseInBridge(.playlistTemp)
         guard items.count >= 2, items.count % 2 == 0 else {
             print("Provide alternating title artist pairs: temp \"Song\" \"Artist\" \"Song2\" \"Artist2\"")
             throw ExitCode.failure

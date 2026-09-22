@@ -11,6 +11,7 @@ struct Similar: ParsableCommand {
     @Flag(name: .long, help: "Output JSON") var json = false
 
     func run() throws {
+        try refuseInBridge(similarAction(query: query), json: json)
         let auth = AuthManager()
         let devToken = try auth.requireDeveloperToken()
         let userToken = try auth.requireUserToken()
@@ -94,6 +95,7 @@ struct Suggest: ParsableCommand {
     @Flag(name: .long, help: "Output JSON") var json = false
 
     func run() throws {
+        try refuseInBridge(suggestAction(from: from), json: json)
         let auth = AuthManager()
         let devToken = try auth.requireDeveloperToken()
         let userToken = try auth.requireUserToken()
@@ -204,6 +206,7 @@ struct NewReleases: ParsableCommand {
     @Flag(name: .long, help: "Output JSON") var json = false
 
     func run() throws {
+        try refuseInBridge(newReleasesAction(artist: artist, likeCurrent: likeCurrent), json: json)
         let auth = AuthManager()
         let devToken = try auth.requireDeveloperToken()
         let userToken = try auth.requireUserToken()
