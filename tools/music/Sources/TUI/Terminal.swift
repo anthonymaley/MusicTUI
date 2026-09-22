@@ -192,6 +192,35 @@ enum KeyPress: Equatable {
 /// Global flag set by SIGWINCH handler — check and reset in render loops.
 var terminalResized = false
 
+// MARK: - What a signal handler is allowed to touch
+//
+// **Raw storage, allocated once, never freed** (Codex, 2026-09-22). A handler
+// may only use async-signal-safe calls, and a Swift `Optional<termios>` global
+// or an `Array` is not that: reading one can involve the runtime, and clearing
+// it from `exitRawMode` would race the handler. These three are a C pointer, a
+// byte buffer and an integer flag — plain loads and stores, nothing retained,
+// nothing deallocated, so a handler that fires mid-teardown still reads memory
+// that is valid. They are deliberately never freed: the process is ending.
+//
+// `enterRawMode` touches all three BEFORE installing any handler, which forces
+// their lazy initialisation off the signal path.
+
+/// The terminal settings a handler puts back.
+let terminalRestoreTermios = UnsafeMutablePointer<termios>.allocate(capacity: 1)
+
+/// Show the cursor, leave the alternate screen: the bytes a dying process
+/// writes to hand the screen back.
+let terminalRestoreBytes: (base: UnsafeMutableRawPointer, count: Int) = {
+    let bytes = Array((ANSICode.showCursor + ANSICode.altScreenOff).utf8)
+    let buffer = UnsafeMutableRawPointer.allocate(byteCount: bytes.count, alignment: 1)
+    bytes.withUnsafeBytes { buffer.copyMemory(from: $0.baseAddress!, byteCount: bytes.count) }
+    return (buffer, bytes.count)
+}()
+
+/// 1 while `terminalRestoreTermios` holds settings worth restoring. `sig_atomic_t`
+/// is the one type a handler and its interrupted code may share by definition.
+var terminalRestoreArmed: sig_atomic_t = 0
+
 class TerminalState {
     private var originalTermios: termios?
     private var isRaw = false
@@ -214,9 +243,35 @@ class TerminalState {
         print(ANSICode.altScreenOn + ANSICode.hideCursor, terminator: "")
         fflush(stdout)
 
-        signal(SIGINT) { _ in
-            TerminalState.shared.exitRawMode()
-            exit(0)
+        // Fill the handler's storage and force its lazy initialisation here,
+        // never from the handler itself.
+        if let saved = originalTermios { terminalRestoreTermios.pointee = saved }
+        _ = terminalRestoreBytes.count
+        terminalRestoreArmed = 1
+        // SIGINT keeps its existing meaning. SIGTERM and SIGHUP took the
+        // DEFAULT disposition until 2026-09-22, so `kill` and — the common
+        // case — CLOSING THE TERMINAL WINDOW killed the process with the
+        // terminal still in raw mode and the alternate screen still up: no
+        // echo, no cursor, in whatever shell survived. A closing terminal
+        // sends SIGHUP to the foreground process group, not SIGINT, which is
+        // why the SIGINT handler never covered it.
+        //
+        // **Restoring only.** These handlers do not sweep containers or art
+        // files; that remainder is deliberately deferred (Anthony, 2026-09-07,
+        // "do not set the exit-sweep timeout by intuition") and needs the
+        // self-pipe design, not a handler. A handler that cannot sweep can
+        // still hand the terminal back.
+        for sig in [SIGINT, SIGTERM, SIGHUP] {
+            signal(sig) { received in
+                // Async-signal-safe only: `tcsetattr`, `write`, `_exit`. No
+                // Swift object method, no `print`, no allocation. The termios
+                // lives in a plain global for exactly this reason.
+                if terminalRestoreArmed != 0 {
+                    tcsetattr(STDIN_FILENO, TCSAFLUSH, terminalRestoreTermios)
+                    _ = write(STDOUT_FILENO, terminalRestoreBytes.base, terminalRestoreBytes.count)
+                }
+                _exit(128 + received)
+            }
         }
         signal(SIGWINCH) { _ in
             terminalResized = true
@@ -229,8 +284,9 @@ class TerminalState {
         tcsetattr(STDIN_FILENO, TCSAFLUSH, &original)
         print(ANSICode.showCursor + ANSICode.altScreenOff, terminator: "")
         fflush(stdout)
-        signal(SIGINT, SIG_DFL)
-        signal(SIGWINCH, SIG_DFL)
+        for sig in [SIGINT, SIGTERM, SIGHUP, SIGWINCH] { signal(sig, SIG_DFL) }
+        // Disarm rather than free: a handler may already be running.
+        terminalRestoreArmed = 0
     }
 }
 

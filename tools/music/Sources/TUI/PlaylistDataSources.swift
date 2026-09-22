@@ -305,6 +305,24 @@ func discoverSweepScript(protectedNames: [String] = []) -> String {
 /// a delete-path change, not a rename.
 let manualTempPlaylistPrefix = "__temp__"
 
+/// A `__temp__` container's name: the prefix, the second it was made, and a
+/// short unique tail.
+///
+/// **The second alone collided.** Both creators named by
+/// `Int(Date().timeIntervalSince1970)`, so two invocations inside one second
+/// produced the same name (`music temp` twice, or a `similar`/`suggest` shuffle
+/// beside one). §20's deduplicated snapshot and exact-name deletion had already
+/// closed the dangerous half — a collision could no longer leave an
+/// uncollectable orphan — but two different sets still shared one identity, so
+/// cleanup of either took both.
+///
+/// The timestamp stays FIRST and readable: it is what a person scanning their
+/// sidebar reads, and nothing parses it. Cleanup matches on the prefix, so the
+/// tail costs it nothing. Pure.
+func manualTempPlaylistName(now: Date = Date(), uuid: String = UUID().uuidString) -> String {
+    manualTempPlaylistPrefix + "\(Int(now.timeIntervalSince1970))-" + uuid.prefix(8).lowercased()
+}
+
 /// Now Playing's stable label for a `__temp__` container. Anthony, 2026-09-03:
 /// do not expose `__temp__<timestamp>` and do not reduce it to a meaningless
 /// timestamp. The raw name is kept everywhere identity and cleanup need it.
