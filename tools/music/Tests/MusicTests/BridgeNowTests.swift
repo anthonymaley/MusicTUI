@@ -171,7 +171,7 @@ final class BridgeNowTests: XCTestCase {
     // MARK: - The wire
 
     func testStatusDecodesReasonBuiltAndIndex() throws {
-        let reply = #"{"ok":true,"op":"slice.status","status":{"playback":"stopped","contract":2,"authorization":"authorized","title":"T","artist":"A","queue":{"phase":"invalid","requested":12,"present":null,"reason":"a song was removed","built_before_failure":7,"index":3}}}"#
+        let reply = #"{"ok":true,"op":"slice.status","status":{"playback":"stopped","contract":3,"authorization":"authorized","title":"T","artist":"A","queue":{"phase":"invalid","requested":12,"present":null,"reason":"a song was removed","built_before_failure":7,"index":3}}}"#
         let control = SourceAppControl(path: "/nonexistent", transport: { _, _ in reply })
         let s = try control.status()
         XCTAssertEqual(s.queuePhase, "invalid")
@@ -183,7 +183,7 @@ final class BridgeNowTests: XCTestCase {
     }
 
     func testStatusWithoutTheNewFieldsDecodesThemAsNil() throws {
-        let reply = #"{"ok":true,"op":"slice.status","status":{"playback":"playing","contract":2,"authorization":"authorized","queue":{"phase":"building","requested":5,"present":2}}}"#
+        let reply = #"{"ok":true,"op":"slice.status","status":{"playback":"playing","contract":3,"authorization":"authorized","queue":{"phase":"building","requested":5,"present":2}}}"#
         let s = try SourceAppControl(path: "/nonexistent", transport: { _, _ in reply }).status()
         XCTAssertEqual(s.queuePresent, 2)
         XCTAssertNil(s.queueReason)
@@ -310,7 +310,7 @@ final class BridgeNowTests: XCTestCase {
     }
 
     func testPollerCarriesBridgeAndKeepsTheOutcomeThroughOneMiss() {
-        let playing = #"{"ok":true,"op":"slice.status","status":{"playback":"playing","contract":2,"authorization":"authorized","title":"Teardrop","artist":"Massive Attack","queue":{"phase":"complete","requested":3,"present":3,"index":0}}}"#
+        let playing = #"{"ok":true,"op":"slice.status","status":{"playback":"playing","contract":3,"authorization":"authorized","title":"Teardrop","artist":"Massive Attack","queue":{"phase":"complete","requested":3,"present":3,"index":0}}}"#
         var fail = false
         let store = NowPlayingStore()
         let p = poller(mode: .source, store: store, reply: {
@@ -408,7 +408,7 @@ final class NowQuietKeyTests: XCTestCase {
                 // What the real app answers with nothing to pause.
                 return #"{"ok":false,"op":"slice.pause","error":{"kind":"bad_request","detail":"did not reach paused within 3s"}}"#
             }
-            return #"{"ok":true,"op":"slice.status","status":{"playback":"\#(playback)","contract":2,"authorization":"authorized"}}"#
+            return #"{"ok":true,"op":"slice.status","status":{"playback":"\#(playback)","contract":3,"authorization":"authorized"}}"#
         }
     }
 

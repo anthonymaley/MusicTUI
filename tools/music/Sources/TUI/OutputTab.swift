@@ -60,6 +60,14 @@ enum SourceReadiness: Equatable {
         }
         switch error {
         case .notRunning:        return .notRunning
+        // Running, reachable, and not ready for THIS op yet. The Output tab
+        // asks about status, which no snapshot gates, so this should not reach
+        // here; if it ever does, it says what it is rather than "not running".
+        case .warming(let why, _): return .unavailable("Bridge is preparing: \(why)")
+        // Only a paged read can see this, and the Output tab does not make one;
+        // it says what it is rather than being folded into a generic refusal.
+        case .staleGeneration(let why): return .unavailable("Bridge's library changed mid-read: \(why)")
+        case .malformedReply(let what): return .unavailable(what)
         case .notAuthorized:     return .unavailable("Bridge has no Apple Music access")
         case .refused(let why):  return .unavailable("Bridge refused: \(why)")
         case .timedOut:          return .unavailable("Bridge did not answer in time")

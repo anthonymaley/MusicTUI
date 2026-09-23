@@ -119,9 +119,19 @@ func runShell() {
             // "Library" (0.85s for 14k tracks, measured 2026-08-28). makeArtworkAPI()
             // is nil without both tokens and only feeds the cover ladder's REST
             // fallback; nil leaves covers on embedded-or-gradient, never a dead tab.
+            // The Songs list follows the Output tab: with Bridge selected it is
+            // Bridge's own MusicKit library, read and played by Bridge's ids
+            // ("two modes, two libraries", 2026-09-23). The factory is asked
+            // fresh at each load and each play, so a mid-session switch is
+            // honoured; nil is Music.app mode and the AppleScript path.
             let scene = LibraryScene(backend: backend, routing: routing,
                                      sources: makeLibraryDataSources(backend: backend, artworkAPI: makeArtworkAPI()),
-                                     appQueue: appQueue, status: status, actions: actions, kittyEnabled: kittyEnabled)
+                                     appQueue: appQueue, status: status, actions: actions, kittyEnabled: kittyEnabled,
+                                     makeProvider: {
+                                         routing.mode == .source
+                                             ? BridgeMusicProvider(control: SourceAppClient().control)
+                                             : nil
+                                     })
             scenes[id] = scene
             return scene
         case .discover:

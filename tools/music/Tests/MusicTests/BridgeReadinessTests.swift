@@ -31,7 +31,7 @@ final class BridgeReadinessTests: XCTestCase {
         }
     }
 
-    private let authorized = #"{"ok":true,"op":"slice.status","status":{"playback":"idle","contract":2,"authorization":"authorized"}}"#
+    private let authorized = #"{"ok":true,"op":"slice.status","status":{"playback":"idle","contract":3,"authorization":"authorized"}}"#
 
     /// The initial state is "not asked", and it is not selectable. This is the
     /// state whose absence caused the gate failure.
@@ -130,7 +130,7 @@ final class BridgeReadinessTests: XCTestCase {
 
     /// An unauthorised Bridge is reachable but cannot serve, and says so.
     func testAnUnauthorizedBridgeIsNotReady() {
-        let denied = #"{"ok":true,"op":"slice.status","status":{"playback":"idle","contract":2,"authorization":"denied"}}"#
+        let denied = #"{"ok":true,"op":"slice.status","status":{"playback":"idle","contract":3,"authorization":"denied"}}"#
         let s = scene(reply: { _, _ in denied })
         _ = s.tick(snapshot: NowPlayingSnapshot(outcome: .stopped, history: [], surrounding: []))
         settle(s)
@@ -188,7 +188,7 @@ final class BridgeReadinessTests: XCTestCase {
         let store = PlaybackModeStore(path: path)
         store.set(.source)
         let client = { SourceAppClient(path: "/nonexistent", transport: { _, _ in
-            #"{"ok":true,"op":"slice.status","status":{"playback":"idle","contract":2,"authorization":"denied"}}"#
+            #"{"ok":true,"op":"slice.status","status":{"playback":"idle","contract":3,"authorization":"denied"}}"#
         }) }
         let scene = SpeakersScene(backend: AppleScriptBackend(),
                                   status: StatusStore(),

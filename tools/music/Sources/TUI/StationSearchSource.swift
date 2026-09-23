@@ -37,11 +37,42 @@ enum SourceAppError: Error, Equatable {
     /// `failed`), so this is the defensive check on an ok reply that still is
     /// not playing, kept for any source that says otherwise.
     case didNotStart(String)
+    /// Not ready YET, and saying when to ask again. A cold Bridge with no
+    /// snapshot of the library answers this in milliseconds rather than making
+    /// a caller wait out a drain on the socket timeout. It is a transient, not
+    /// a refusal: a caller that treats it as one shows an empty library.
+    case warming(String, retryAfter: TimeInterval)
+    /// The library changed underneath a paged read. **A restart, not a
+    /// refusal** — the caller starts the list again rather than telling the
+    /// person their library could not be read.
+    ///
+    /// It is its own case because that difference drives BEHAVIOUR. It used to
+    /// be recovered by matching Bridge's sentence ("the library changed while
+    /// you were reading it") inside a `refused` detail, which meant a wording
+    /// change on the app side would silently turn a restart into a hard error
+    /// and show a person a failure where they should have got their library
+    /// back. The sentence is still carried, for display only.
+    case staleGeneration(String)
+    /// The reply parsed as JSON, said `ok`, and does not satisfy the contract.
+    ///
+    /// Distinct from `unreadable`, which means nothing usable arrived at all.
+    /// This is a peer that answered successfully and sent something a client
+    /// must NOT treat as data — a page missing a required field, or carrying a
+    /// row it cannot read. It carries what was wrong, because "Bridge sent
+    /// something odd" is not something a person can act on.
+    case malformedReply(String)
 
     /// Deliberately short: it renders inside Radio's one-line message strip
     /// beside a `✗`, not in a log.
     var message: String {
         switch self {
+        // Op-neutral on purpose: `send` decodes this kind for EVERY op, and only
+        // the library read knows it is about a library. A surface with something
+        // better to say says it from the detail this case still carries.
+        case .warming:       return "Bridge is not ready yet"
+        case .staleGeneration: return "Your library changed while it was being read"
+        // The detail is already a whole sentence naming Bridge and the fault.
+        case .malformedReply(let d): return d
         case .notRunning:    return "Bridge is not running"
         case .notAuthorized: return "Bridge has no Apple Music access"
         case .refused(let d): return "Bridge refused: \(d)"
@@ -81,7 +112,18 @@ struct SourceAppStationSearch: StationSearching {
     /// Bounded so a wedged app cannot hang the search thread indefinitely.
     /// A catalogue round trip is normally well under a second; this is a
     /// backstop, not a tuned value, and it is UNMEASURED as a choice.
-    private static let timeoutSeconds: Int = 10
+    static let timeoutSeconds: Int = 10
+
+    /// A sender with a different read/write timeout, for the one op that
+    /// legitimately takes longer than a transport command does.
+    ///
+    /// The timeout is a property of the REQUEST, not of the socket, so it is
+    /// bound here into the closure rather than added to the transport
+    /// signature: every existing call site keeps `sendOverUnixSocket` and its
+    /// 10s unchanged, and only a caller that asks gets something else.
+    static func sender(timeoutSeconds: Int) -> (String, String) throws -> String {
+        { path, line in try send(path: path, line: line, timeoutSeconds: timeoutSeconds) }
+    }
 
     private let path: String
     private let transport: (String, String) throws -> String
@@ -165,6 +207,10 @@ struct SourceAppStationSearch: StationSearching {
     /// design: the only caller already runs on a detached thread, matching the
     /// discipline the REST catalog reads use.
     static func sendOverUnixSocket(path: String, line: String) throws -> String {
+        try send(path: path, line: line, timeoutSeconds: timeoutSeconds)
+    }
+
+    private static func send(path: String, line: String, timeoutSeconds: Int) throws -> String {
         var addr = sockaddr_un()
         addr.sun_family = sa_family_t(AF_UNIX)
         let bytes = Array(path.utf8)
@@ -488,6 +534,12 @@ protocol SourceControlling {
     func queue(rows: [SourceLibraryRow]) throws
     func queue(catalogIDs: [String]) throws
     func playStation(id: String, named name: String) throws
+    /// One page of the app's own MusicKit library (contract 3). `cursor` nil
+    /// starts at the beginning; the cursor that comes back is opaque and goes
+    /// back unread.
+    func librarySongs(cursor: String?, limit: Int) throws -> MusicPage
+    /// Queue exactly these library rows, by the ids a Bridge page gave us.
+    func queue(libraryIDs: [String]) throws
 }
 
 struct SourceAppControl: SourceControlling {
@@ -497,17 +549,45 @@ struct SourceAppControl: SourceControlling {
     /// unparseable frame with no op attached.
     static let maximumRequestBytes = 64 * 1024
 
+    /// How long a LIBRARY read may take, and nothing else.
+    ///
+    /// Measured 2026-09-23: Bridge drains its MusicKit library in ~6.4s and
+    /// caches it. With the cache expired, the first page paid for that drain
+    /// inline and blew the shared 10s timeout, and a person opening the Library
+    /// tab saw "Bridge did not answer in time" over an empty list. Bridge now
+    /// serves the last snapshot immediately and refreshes behind it, so this is
+    /// a SAFETY MARGIN rather than the fix — a cold start with no snapshot at
+    /// all answers `warming` in milliseconds and is retried on its own hint,
+    /// not waited out on this timeout. The transport ops keep 10s, where it is
+    /// generous.
+    static let libraryReadTimeoutSeconds: Int = 30
+
     private let path: String
     private let transport: (String, String) throws -> String
+    /// The same transport with a longer timeout, used only by `librarySongs`.
+    private let libraryTransport: (String, String) throws -> String
 
     init(path: String = SourceAppStationSearch.socketPath) {
         self.path = path
         self.transport = SourceAppStationSearch.sendOverUnixSocket
+        self.libraryTransport = SourceAppStationSearch.sender(
+            timeoutSeconds: SourceAppControl.libraryReadTimeoutSeconds)
     }
 
     init(path: String, transport: @escaping (String, String) throws -> String) {
         self.path = path
         self.transport = transport
+        self.libraryTransport = transport
+    }
+
+    /// Seam for the one test that has to tell the two transports apart: which
+    /// op goes down which socket is the part that can be wrong in a way a
+    /// person notices.
+    init(path: String, transport: @escaping (String, String) throws -> String,
+         libraryTransport: @escaping (String, String) throws -> String) {
+        self.path = path
+        self.transport = transport
+        self.libraryTransport = libraryTransport
     }
 
     func status() throws -> SourceStatus {
@@ -527,6 +607,86 @@ struct SourceAppControl: SourceControlling {
                             queueReason: queue?["reason"] as? String,
                             queueBuiltBeforeFailure: queue?["built_before_failure"] as? Int,
                             queueIndex: queue?["index"] as? Int)
+    }
+
+    /// Contract 3. The reply's rows carry MusicKit LIBRARY ids, which is the
+    /// whole point: a row played by its own id needs no `(title, artist, album)`
+    /// join, so the 338 rows that join could not resolve stop being a category.
+    func librarySongs(cursor: String?, limit: Int = 100) throws -> MusicPage {
+        var body: [String: Any] = ["op": "slice.librarySongs", "limit": limit]
+        if let cursor { body["cursor"] = cursor }
+        let reply = try send(body, over: libraryTransport)
+
+        // FAIL CLOSED. Every field the contract requires is required here, and
+        // a page that does not satisfy it is refused rather than read as a
+        // SHORTER LIBRARY. That is the whole risk on this op: a truncated or
+        // half-written page is indistinguishable from a genuine last page
+        // unless the client insists on the contract, and a person would be
+        // shown a library missing songs with nothing to tell them so. It
+        // matters more the moment these frames cross a network to an iPad.
+        guard let items = reply["items"] as? [[String: Any]] else {
+            throw SourceAppError.malformedReply("Bridge's library page is missing items")
+        }
+        guard let generation = reply["generation"] as? Int else {
+            throw SourceAppError.malformedReply("Bridge's library page is missing generation")
+        }
+        guard let total = reply["total"] as? Int else {
+            throw SourceAppError.malformedReply("Bridge's library page is missing total")
+        }
+        // A MISSING key and an explicit null are different claims: null says
+        // "this is the last page", absent says nothing at all. Read as one they
+        // were the same thing, so a page that lost its cursor ended the walk
+        // and the rest of the library silently did not exist. `JSONSerialization`
+        // gives `NSNull` for an explicit null and nothing for an absent key,
+        // which is exactly the distinction needed.
+        guard let cursorValue = reply["next_cursor"] else {
+            throw SourceAppError.malformedReply("Bridge's library page is missing next_cursor")
+        }
+        let nextCursor: String?
+        switch cursorValue {
+        case is NSNull:            nextCursor = nil          // terminal, and says so
+        case let text as String:   nextCursor = text
+        default:
+            throw SourceAppError.malformedReply(
+                "Bridge's library page has a next_cursor that is neither text nor null")
+        }
+
+        // A row this build cannot READ makes the whole page unreadable. A row
+        // that merely names a kind this build does not SERVE is dropped, which
+        // is the Discover precedent and is a different fact about the page.
+        var rows: [MusicRow] = []
+        for item in items {
+            switch readMusicRow(item) {
+            case .row(let row):     rows.append(row)
+            case .unknownKind:      continue
+            case .malformed(let what):
+                throw SourceAppError.malformedReply("Bridge's library page contains \(what)")
+            }
+        }
+
+        // `clamped` is deliberately not read: a page carries the rows it
+        // carries, and the walk follows `next_cursor`, never the limit it sent,
+        // so a clamped page needs no special case. `stale` and `refreshing`
+        // describe the SNAPSHOT this page came from — information about
+        // freshness, not a failure, and never a reason to refuse a page. They
+        // are the one pair NOT required here: absent means "not stated", they
+        // drive no behaviour, and a wrong default cannot produce a wrong
+        // library.
+        return MusicPage(rows: rows,
+                         nextCursor: nextCursor,
+                         total: total,
+                         generation: generation,
+                         stale: reply["stale"] as? Bool ?? false,
+                         refreshing: reply["refreshing"] as? Bool ?? false)
+    }
+
+    /// Contract 3. **The point of the whole seam:** a row Bridge served is
+    /// played back by the id Bridge gave it, so nothing is matched on
+    /// `(title, artist, album)` and the 338 rows that join could not resolve
+    /// stop being a category. An id the app no longer holds refuses the WHOLE
+    /// queue rather than shortening it.
+    func queue(libraryIDs: [String]) throws {
+        _ = try send(["op": "slice.queue", "library_ids": libraryIDs])
     }
 
     func resume() throws   { _ = try send(["op": "slice.play"]) }
@@ -604,6 +764,11 @@ struct SourceAppControl: SourceControlling {
     // Internal, not private: `BridgeDiscoverFeed` sends through it rather than
     // carrying a third copy of the frame limit and the refusal decoding.
     func send(_ body: [String: Any]) throws -> [String: Any] {
+        try send(body, over: transport)
+    }
+
+    func send(_ body: [String: Any],
+              over transport: (String, String) throws -> String) throws -> [String: Any] {
         guard let data = try? JSONSerialization.data(withJSONObject: body),
               let line = String(data: data, encoding: .utf8) else {
             throw SourceAppError.unreadable
@@ -623,8 +788,23 @@ struct SourceAppControl: SourceControlling {
         guard ok else {
             let error = reply["error"] as? [String: Any]
             let detail = error?["detail"] as? String ?? "no detail"
-            if error?["kind"] as? String == "unauthorized" { throw SourceAppError.notAuthorized }
-            throw SourceAppError.refused(detail)
+            switch error?["kind"] as? String {
+            case "unauthorized":
+                throw SourceAppError.notAuthorized
+            case "warming":
+                // The ONE refusal that carries a number, so it cannot survive as
+                // a detail string. `retry_after` is the app's own hint; a reply
+                // that omits it still means "ask again", so a default stands in
+                // rather than turning a transient into a hard failure.
+                throw SourceAppError.warming(detail,
+                                             retryAfter: (error?["retry_after"] as? Double) ?? 1.0)
+            case "stale_generation":
+                // Decoded on the KIND. The detail travels for display; nothing
+                // decides anything by reading it.
+                throw SourceAppError.staleGeneration(detail)
+            default:
+                throw SourceAppError.refused(detail)
+            }
         }
         return reply
     }
@@ -636,4 +816,10 @@ struct SourceAppControl: SourceControlling {
 /// 2: `slice.containerTracks` carries `kind`. A contract-1 app ignores it and
 /// answers a playlist as a missing album, so that pairing must read as
 /// incompatible rather than ready (Codex B1, 2026-09-19).
-let sourceContractVersion = 2
+///
+/// 3: paged library reads (`slice.librarySongs`) and a `capabilities` array in
+/// status, for "two modes, two libraries" (2026-09-23). A contract-2 app cannot
+/// serve a Bridge-mode Library at all, so that pairing must read as incompatible
+/// rather than fall back to AppleScript rows — which is the join this version
+/// exists to delete.
+let sourceContractVersion = 3

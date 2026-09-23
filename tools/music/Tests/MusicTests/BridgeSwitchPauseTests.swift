@@ -19,7 +19,7 @@ final class BridgeSwitchPauseTests: XCTestCase {
     }
 
     private func statusReply(_ playback: String) -> String {
-        #"{"ok":true,"op":"slice.status","status":{"playback":"\#(playback)","contract":2,"authorization":"authorized"}}"#
+        #"{"ok":true,"op":"slice.status","status":{"playback":"\#(playback)","contract":3,"authorization":"authorized"}}"#
     }
 
     private let refusedPause = #"{"ok":false,"op":"slice.pause","error":{"kind":"bad_request","detail":"did not reach paused within 3s"}}"#
