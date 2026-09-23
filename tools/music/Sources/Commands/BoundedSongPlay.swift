@@ -10,6 +10,10 @@ import Foundation
 /// messages, while both remain fail-closed.
 enum SongPlayOutcome: Equatable {
     case playing
+    /// The library read did not answer (script error or timeout), so we do not
+    /// know whether the song is there. Fail closed: NOT a catalog fallback,
+    /// which could add a copy of a track the user already owns.
+    case libraryReadFailed
     /// No library row matched the query.
     case notFound
     /// Rows matched, but every one of them is pre-release or removed.
@@ -152,6 +156,8 @@ func songOutcomeMessage(_ outcome: SongPlayOutcome, title: String) -> String? {
     switch outcome {
     case .playing:
         return nil
+    case .libraryReadFailed:
+        return libraryReadFailedMessage(title)
     case .notFound:
         return "No tracks found matching '\(title)'"
     case .nonePlayable(let matched):
@@ -211,15 +217,19 @@ func localSongWhereClause(title: String, artist: String?) -> String {
 /// when this returned false. Every other outcome means we selected a track and
 /// then failed, and those must NOT fall through: adding a catalog copy because
 /// an internal step failed would duplicate a track the user already owns.
+/// `fetchRows` returning nil is a read that did not answer: `.libraryReadFailed`,
+/// which does not fall through either.
 func playBoundedLocalSong(title: String,
                           artist: String?,
-                          fetchRows: (String) -> [LibraryAlbumRow],
+                          fetchRows: (String) -> [LibraryAlbumRow]?,
                           readIdentifier: (Int) -> String?,
                           uuid: String = UUID().uuidString,
                           run: ScriptRunner,
                           launch: @escaping ProcessLauncher = detachedLaunch)
     -> SongPlayOutcome {
-    let rows = fetchRows(localSongWhereClause(title: title, artist: artist))
+    guard let rows = fetchRows(localSongWhereClause(title: title, artist: artist)) else {
+        return .libraryReadFailed
+    }
     return playBoundedSong(title: title, rows: rows, readIdentifier: readIdentifier,
                            uuid: uuid, run: run, launch: launch)
 }

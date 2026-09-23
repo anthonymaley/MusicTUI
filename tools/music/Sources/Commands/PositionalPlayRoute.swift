@@ -13,10 +13,16 @@ enum PositionalRoute: Equatable {
     case playlistAlreadyPlaying
     case boundedAlbum
     case song
+    /// The album probe did not answer. Fail closed: routing on to the song
+    /// branch could play a same-named song instead of the album asked for.
+    case albumReadFailed
 }
 
 /// Pure. Precedence is playlist, then album, then song, exactly as before.
-func positionalRoute(playlistPlayed: Bool, albumRowCount: Int) -> PositionalRoute {
+/// `albumRowCount` nil means the album read failed, which stops the route
+/// rather than counting as zero rows.
+func positionalRoute(playlistPlayed: Bool, albumRowCount: Int?) -> PositionalRoute {
     if playlistPlayed { return .playlistAlreadyPlaying }
+    guard let albumRowCount else { return .albumReadFailed }
     return albumRowCount > 0 ? .boundedAlbum : .song
 }

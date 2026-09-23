@@ -1086,9 +1086,9 @@ final class LibraryScene: Scene {
             // matched 0 of 14 tracks. It also drops tracks Music can't play yet
             // (pre-release/removed), on which `play track` would silently no-op.
             let res = resolve(backend, title, artist)
-            try require(!res.tracks.isEmpty, res.matched > 0
-                ? "'\(title)': no tracks available to play yet."
-                : "Couldn't load '\(title)'.")
+            try require(!res.tracks.isEmpty, emptyResolutionMessage(res, name: title,
+                unavailable: "'\(title)': no tracks available to play yet.",
+                notFound: "Couldn't load '\(title)'."))
             do {
                 // Both branches are real, so there is deliberately no
                 // `if routing.mode == .source` above: the coordinator picks the
@@ -1214,9 +1214,9 @@ final class LibraryScene: Scene {
             // Falls back to a title-only fetch resolved in Swift, and refuses
             // rather than guesses when nothing folds.
             let res = resolveSongPlaybackTrack(backend: backend, title: title, artist: artist)
-            try require(!res.tracks.isEmpty, res.matched > 0
-                ? "'\(title)' isn't available to play yet."
-                : "Couldn't play '\(title)'.")
+            try require(!res.tracks.isEmpty, emptyResolutionMessage(res, name: title,
+                unavailable: "'\(title)' isn't available to play yet.",
+                notFound: "Couldn't play '\(title)'."))
             let one = Array(res.tracks.prefix(1))
             store.set(AppQueue(playlistName: "Library", tracks: one, currentIndex: 1, displayName: title))
             try require(playQueueTrack(backend: backend, playlist: "Library", position: one[0].index),
@@ -1245,9 +1245,9 @@ final class LibraryScene: Scene {
             // as the fast path, then falls back to a loose fetch on the primary
             // credit narrowed in Swift, and drops tracks Music silently refuses to play.
             let res = resolve(backend, name)
-            try require(!res.tracks.isEmpty, res.matched > 0
-                ? "'\(name)': no tracks available to play yet."
-                : "Couldn't load '\(name)'.")
+            try require(!res.tracks.isEmpty, emptyResolutionMessage(res, name: name,
+                unavailable: "'\(name)': no tracks available to play yet.",
+                notFound: "Couldn't load '\(name)'."))
             do {
                 try routing.perform(.libraryPlay,
                     musicApp: {

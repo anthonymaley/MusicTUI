@@ -207,12 +207,35 @@ final class BoundedSongPlayTests: XCTestCase {
         XCTAssertTrue(SongPlayOutcome.notFound.mayFallBackToCatalog)
         XCTAssertTrue(SongPlayOutcome.nonePlayable(matched: 2).mayFallBackToCatalog)
         XCTAssertFalse(SongPlayOutcome.identifierUnreadable.mayFallBackToCatalog)
+        XCTAssertFalse(SongPlayOutcome.libraryReadFailed.mayFallBackToCatalog)
         XCTAssertFalse(SongPlayOutcome.containerReadFailed.mayFallBackToCatalog)
         XCTAssertFalse(SongPlayOutcome.containerIdentityMismatch(expected: "X").mayFallBackToCatalog)
         XCTAssertFalse(SongPlayOutcome.buildFailed(containerRemoved: true).mayFallBackToCatalog)
         XCTAssertFalse(SongPlayOutcome.playFailed(containerRemoved: true).mayFallBackToCatalog)
         XCTAssertFalse(SongPlayOutcome.watcherFailed(containerRemoved: true).mayFallBackToCatalog)
         XCTAssertFalse(SongPlayOutcome.playing.mayFallBackToCatalog)
+    }
+
+    /// A read that did not answer is not "not in the library": it stops here
+    /// with its own outcome, builds nothing, and never reaches the catalog,
+    /// where it could add a copy of a song the user already owns.
+    func testAFailedLibraryReadFailsClosedAndBuildsNothing() {
+        var scripts: [String] = []
+        var identifierReads = 0
+        let out = playBoundedLocalSong(
+            title: "Reckoner", artist: "Radiohead",
+            fetchRows: { _ in nil },
+            readIdentifier: { _ in identifierReads += 1; return "AAAAAAAAAAAAAAAA" },
+            uuid: "U",
+            run: { s in scripts.append(s); return "" },
+            launch: { _, _ in XCTFail("nothing may launch"); return true })
+
+        XCTAssertEqual(out, .libraryReadFailed)
+        XCTAssertFalse(out.mayFallBackToCatalog)
+        XCTAssertTrue(scripts.isEmpty, "a failed read must not sweep, build or play")
+        XCTAssertEqual(identifierReads, 0)
+        XCTAssertEqual(songOutcomeMessage(out, title: "Reckoner"),
+                       "Music didn't answer while reading 'Reckoner'. Try again.")
     }
 
     // MARK: - Messages
@@ -222,6 +245,7 @@ final class BoundedSongPlayTests: XCTestCase {
             songOutcomeMessage(.notFound, title: "X"),
             songOutcomeMessage(.nonePlayable(matched: 2), title: "X"),
             songOutcomeMessage(.identifierUnreadable, title: "X"),
+            songOutcomeMessage(.libraryReadFailed, title: "X"),
             songOutcomeMessage(.containerReadFailed, title: "X"),
             songOutcomeMessage(.containerIdentityMismatch(expected: pid), title: "X"),
         ].map { $0 ?? "" }

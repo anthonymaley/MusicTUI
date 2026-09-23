@@ -65,9 +65,14 @@ struct Play: ParsableCommand {
             // bounded `play playlist` form, then let a detached one shot watcher
             // remove the container. Fail closed: no fallback to the unbounded
             // `play track N of playlist "Library"` this replaces.
-            let rows = fetchLibraryAlbumRows(
+            // nil is a read that did not answer, not an album that isn't
+            // there: say so rather than "No albums found".
+            guard let rows = fetchLibraryAlbumRows(
                 backend: backend,
-                whereClause: albumWhereClause(query: album, artist: artist))
+                whereClause: albumWhereClause(query: album, artist: artist)) else {
+                print(libraryReadFailedMessage(album))
+                throw ExitCode.failure
+            }
             let outcome = playBoundedAlbum(title: album, rows: rows) { script in
                 try? syncRun { try await backend.runMusic(script) }
             }
@@ -111,7 +116,7 @@ struct Play: ParsableCommand {
         if let artist, playlist == nil, album == nil, song == nil, args.isEmpty {
             let resolution = resolveArtistPlaybackTracks(backend: backend, artist: artist)
             guard !resolution.tracks.isEmpty else {
-                print(resolution.matched > 0
+                print(resolution.readFailed ? libraryReadFailedMessage(artist) : resolution.matched > 0
                     ? "Found \(resolution.matched) track(s) by '\(artist)', but none are playable yet (pre-release or removed)."
                     : "No tracks found by '\(artist)'")
                 throw ExitCode.failure
@@ -282,21 +287,26 @@ struct Play: ParsableCommand {
                         // defensively here too — belt and braces, since the
                         // positional parser should never hand this an empty
                         // query, but the two album routes must not diverge.
+                        // nil is an album read that did not answer; the
+                        // route stops on it rather than trying the song branch.
                         let albumRows = (playlistPlayed || isBlankAlbumQuery(query)) ? [] : fetchLibraryAlbumRows(
                             backend: backend,
                             whereClause: albumWhereClause(query: query, artist: nil))
 
                         switch positionalRoute(playlistPlayed: playlistPlayed,
-                                               albumRowCount: albumRows.count) {
+                                               albumRowCount: albumRows?.count) {
                         case .playlistAlreadyPlaying:
                             played = true
+                        case .albumReadFailed:
+                            print(libraryReadFailedMessage(query))
+                            throw ExitCode.failure
                         case .boundedAlbum:
                             // Starts at the first playable track in disc/track
                             // order (via the shared bounded path), not at
                             // "item 1 of albumMatches" (Library index order)
                             // as the old inline script did. Intentional: this
                             // is what makes positional match `--album`.
-                            let outcome = playBoundedAlbum(title: query, rows: albumRows) { s in
+                            let outcome = playBoundedAlbum(title: query, rows: albumRows ?? []) { s in
                                 try? syncRun { try await backend.runMusic(s) }
                             }
                             if let message = albumOutcomeMessage(outcome, title: query) {
@@ -367,6 +377,7 @@ func playBoundedSongLive(backend: AppleScriptBackend, title: String, artist: Str
         title: title,
         artist: artist,
         fetchRows: { whereClause in
+            // nil (the read did not answer) becomes `.libraryReadFailed`.
             fetchLibraryAlbumRows(backend: backend, whereClause: whereClause)
         },
         readIdentifier: { index in

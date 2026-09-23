@@ -502,18 +502,23 @@ func selectSongTrack(_ rows: [LibraryAlbumRow], requestedArtist: String) -> Libr
 /// `artist is` first (unchanged fast path, so nothing that plays today can regress),
 /// then a loose `contains` fetch on the primary credit component narrowed in Swift.
 /// Drops tracks Music silently refuses to play — the pre-release layer of the same
-/// bug, which bites here exactly as it did for albums.
+/// bug, which bites here exactly as it did for albums. A read that fails at either
+/// step is reported as `.readFailure`: a strict read that did not answer is not an
+/// empty one, so it never falls through to the loose fetch.
 func resolveArtistPlaybackTracks(backend: AppleScriptBackend, artist: String) -> AlbumResolution {
     let escArtist = escapeAppleScriptString(artist)
-    let strict = fetchLibraryAlbumRows(backend: backend, whereClause: "artist is \"\(escArtist)\"")
+    guard let strict = fetchLibraryAlbumRows(backend: backend, whereClause: "artist is \"\(escArtist)\"") else {
+        return .readFailure
+    }
     var matched = strict
     if matched.isEmpty {
         let primary = primaryCreditComponent(artist)
         if !primary.isEmpty {
             let escPrimary = escapeAppleScriptString(primary)
-            let loose = fetchLibraryAlbumRows(
+            guard let loose = fetchLibraryAlbumRows(
                 backend: backend,
                 whereClause: "artist contains \"\(escPrimary)\" or album artist contains \"\(escPrimary)\"")
+            else { return .readFailure }
             matched = selectArtistTracks(loose, requestedArtist: artist)
         }
     }
@@ -524,15 +529,20 @@ func resolveArtistPlaybackTracks(backend: AppleScriptBackend, artist: String) ->
 }
 
 /// Resolve a single library song the same way: strict title+artist first, then a
-/// title-only fetch disambiguated in Swift.
+/// title-only fetch disambiguated in Swift. A failed read at either step is
+/// `.readFailure`, never a fall-through.
 func resolveSongPlaybackTrack(backend: AppleScriptBackend, title: String, artist: String) -> AlbumResolution {
     let escTitle = escapeAppleScriptString(title)
     let escArtist = escapeAppleScriptString(artist)
-    let strict = fetchLibraryAlbumRows(
+    guard let strict = fetchLibraryAlbumRows(
         backend: backend, whereClause: "name is \"\(escTitle)\" and artist is \"\(escArtist)\"")
-    let row = strict.first
-        ?? selectSongTrack(fetchLibraryAlbumRows(backend: backend, whereClause: "name is \"\(escTitle)\""),
-                           requestedArtist: artist)
+    else { return .readFailure }
+    var row = strict.first
+    if row == nil {
+        guard let byTitle = fetchLibraryAlbumRows(backend: backend, whereClause: "name is \"\(escTitle)\"")
+        else { return .readFailure }
+        row = selectSongTrack(byTitle, requestedArtist: artist)
+    }
     guard let hit = row else { return AlbumResolution(tracks: [], matched: 0) }
     let playable = isPlayableCloudStatus(hit.cloudStatus)
         ? [TrackListEntry(index: hit.index, name: hit.name, artist: hit.artist, isCurrent: false,
@@ -544,48 +554,141 @@ func resolveSongPlaybackTrack(backend: AppleScriptBackend, title: String, artist
 /// Fetch library tracks matching a `whose` clause, WITH each track's play-order
 /// position, album artist, cloud status, and disc/track numbers — the richer read
 /// the album resolver needs to disambiguate a drifted artist credit, drop tracks
-/// Music can't play, and queue in album order. `cloud status` is guarded per
-/// track (it can throw on some local files); an unreadable status defaults to
-/// "unknown", which stays playable. Disc/track reads are guarded the same way and
-/// default to 0 = no number set. Same per-element read shape as
-/// fetchLibraryTracksWithPositions (album track counts are small).
-func fetchLibraryAlbumRows(backend: AppleScriptBackend, whereClause: String) -> [LibraryAlbumRow] {
-    let raw = (try? syncRun {
-        try await backend.runMusic("""
-            set fs to (ASCII character 31)
-            set out to ""
-            repeat with t in (every track of playlist "Library" whose \(whereClause))
-                set cs to "unknown"
-                try
-                    set cs to (cloud status of t as text)
-                end try
-                set dn to 0
-                try
-                    set dn to (disc number of t)
-                end try
-                set tn to 0
-                try
-                    set tn to (track number of t)
-                end try
-                set al to ""
-                try
-                    set al to (album of t)
-                end try
-                set out to out & (index of t) & fs & (name of t) & fs & (artist of t) & fs & (album artist of t) & fs & cs & fs & dn & fs & tn & fs & al & linefeed
-            end repeat
-            return out
-        """, timeout: 30)
-    }) ?? ""
+/// Music can't play, and queue in album order.
+///
+/// Returns nil when the read FAILED (script error or watchdog timeout) and [] when
+/// Music answered with no matches. Those are different answers: collapsing them
+/// with `try? ... ?? ""` is what made a timed-out Radiohead read say "Couldn't
+/// load" as if the artist were not in the library (2026-09-23).
+///
+/// The script is `libraryAlbumRowsScript`, a bulk read. The per-element shape it
+/// replaced (one Apple Event per property per track) was justified by "album
+/// track counts are small", which is false for an artist: 295 Radiohead rows
+/// took 46.5s against the 30s watchdog. See that function for the measurements.
+/// The watchdog stays at 30s: the bulk read measured 0.3s.
+func fetchLibraryAlbumRows(backend: AppleScriptBackend, whereClause: String) -> [LibraryAlbumRow]? {
+    guard let raw = try? syncRun({
+        try await backend.runMusic(libraryAlbumRowsScript(whereClause: whereClause), timeout: 30)
+    }) else { return nil }
     return parseLibraryAlbumRows(raw)
+}
+
+/// The album-rows read as COLUMNS: each property is one bulk get of
+/// `<prop> of every track of playlist "Library" whose <clause>` (one Apple Event
+/// per column, the LibraryIndex idiom), and the eight-field line format
+/// `parseLibraryAlbumRows` reads is assembled in AppleScript by indexing the
+/// in-memory lists, which sends no Apple Events.
+///
+/// Field semantics match the per-track loop it replaced, byte for byte (diffed
+/// live 2026-09-23 on `album is "In Rainbows"` and `artist is "Radiohead"`):
+/// cloud status is coerced to text per row and defaults to "unknown" when that
+/// fails; disc and track default to 0 and album to "" only in the per-track
+/// fallback. Cloud status, disc, track and album can throw on some local files,
+/// so each of those bulk reads is guarded, and if one throws THAT column alone
+/// falls back to the old guarded per-track read. Columns of different lengths
+/// (the library changed between gets, or a fallback saw a different set) raise
+/// an error, which the caller reports as a failed read: a misaligned row would
+/// pair one track's index with another's name, and play the wrong thing.
+///
+/// Equal lengths are not enough: every column re-evaluates the `whose`, so a
+/// change that keeps the count (a replace or reorder during a cloud sync) would
+/// still misalign rows. So the set's `database ID`s are read in bulk before the
+/// first column and again after the last one (after any per-column fallback),
+/// and anything but an identical list raises the same kind of error. Capturing
+/// the track list once instead does not work: a bulk property get on a captured
+/// list fails in Music ("Can't get name of {shared track id ...}"), and per-item
+/// reads are the slow path this replaces. The ids are not part of the output.
+///
+/// The `count` guard comes first because a bulk property get of an EMPTY `whose`
+/// set is not an empty list: Music raises -1728 ("Can't get index of every
+/// track ... whose ..."), probed live 2026-09-23. Without the guard every "no
+/// match" would read as a failure and the strict-then-loose fallbacks would stop
+/// falling back. `count` of the same set answers 0. A single match still comes
+/// back as a one-item list.
+///
+/// Measured 2026-09-23 via osascript on this library: `artist is "Radiohead"`
+/// (295 rows) 0.32s, against 46.5s for the per-track loop, which is past the 30s
+/// watchdog; `album is "In Rainbows"` (19 rows) 0.33s against 2.9s.
+func libraryAlbumRowsScript(whereClause: String) -> String {
+    let hits = "every track of playlist \"Library\" whose \(whereClause)"
+    func guarded(_ list: String, _ prop: String, _ item: String, _ fallback: String, _ read: String) -> String {
+        """
+        set \(list) to missing value
+        try
+            set \(list) to (\(prop) of \(hits))
+        end try
+        if \(list) is missing value then
+            set \(list) to {}
+            repeat with t in (\(hits))
+                set \(item) to \(fallback)
+                try
+                    set \(item) to \(read)
+                end try
+                set end of \(list) to \(item)
+            end repeat
+        end if
+        """
+    }
+    return """
+        set fs to (ASCII character 31)
+        if (count of (\(hits))) is 0 then return ""
+        set idsBefore to (database ID of \(hits))
+        set ixs to (index of \(hits))
+        set ns to (name of \(hits))
+        set ars to (artist of \(hits))
+        set aas to (album artist of \(hits))
+        set n to (count of ixs)
+        \(guarded("css", "cloud status", "cs", "\"unknown\"", "(cloud status of t as text)"))
+        \(guarded("dns", "disc number", "dn", "0", "(disc number of t)"))
+        \(guarded("tns", "track number", "tn", "0", "(track number of t)"))
+        \(guarded("als", "album", "al", "\"\"", "(album of t)"))
+        set idsAfter to (database ID of \(hits))
+        if idsAfter is not idsBefore then error "album rows: the matching tracks changed during the read" number 1002
+        if (count of ns) is not n or (count of ars) is not n or (count of aas) is not n or (count of css) is not n or (count of dns) is not n or (count of tns) is not n or (count of als) is not n then error "album rows: column lengths differ" number 1001
+        set outLines to {}
+        repeat with i from 1 to n
+            set cs to "unknown"
+            try
+                set cs to ((item i of css) as text)
+            end try
+            set end of outLines to "" & (item i of ixs) & fs & (item i of ns) & fs & (item i of ars) & fs & (item i of aas) & fs & cs & fs & (item i of dns) & fs & (item i of tns) & fs & (item i of als) & linefeed
+        end repeat
+        set astid to AppleScript's text item delimiters
+        set AppleScript's text item delimiters to ""
+        set out to outLines as text
+        set AppleScript's text item delimiters to astid
+        return out
+        """
 }
 
 /// The outcome of resolving an album for playback: the ordered tracks that can
 /// actually play, plus how many tracks the album matched before the playability
 /// filter — so the caller can report "playing N of M" when a pre-release album has
 /// only some of its movements available yet.
+///
+/// `readFailed` is true when the library read itself did not answer (script error
+/// or timeout). It is not "matched nothing": the caller says Music didn't answer,
+/// not that the item is missing.
 struct AlbumResolution: Equatable {
     let tracks: [TrackListEntry]
     let matched: Int
+    var readFailed: Bool = false
+
+    static let readFailure = AlbumResolution(tracks: [], matched: 0, readFailed: true)
+}
+
+/// What to say when a library read did not answer. Shared by the TUI and CLI.
+func libraryReadFailedMessage(_ name: String) -> String {
+    "Music didn't answer while reading '\(name)'. Try again."
+}
+
+/// The footer message for a resolution with nothing to play: the read-failure
+/// message when the read failed, else `unavailable` when tracks matched but none
+/// can play yet, else `notFound`. Pure → unit-tested.
+func emptyResolutionMessage(_ res: AlbumResolution, name: String,
+                            unavailable: String, notFound: String) -> String {
+    if res.readFailed { return libraryReadFailedMessage(name) }
+    return res.matched > 0 ? unavailable : notFound
 }
 
 /// Resolve an album for playback (shared with the tracklist preview so the two never
@@ -599,16 +702,16 @@ struct AlbumResolution: Equatable {
 func resolveAlbumPlaybackTracks(backend: AppleScriptBackend, title: String, artist: String) -> AlbumResolution {
     let escTitle = escapeAppleScriptString(title)
     let escArtist = escapeAppleScriptString(artist)
-    let strict = fetchLibraryAlbumRows(
+    guard let strict = fetchLibraryAlbumRows(
         backend: backend,
         whereClause: "album is \"\(escTitle)\" and (artist is \"\(escArtist)\" or album artist is \"\(escArtist)\")")
+    else { return .readFailure }
     // Strict is already artist-scoped by the clause; only the title-only fallback
-    // needs Swift-side disambiguation.
-    let matched = strict.isEmpty
-        ? selectAlbumTracks(fetchLibraryAlbumRows(backend: backend, whereClause: "album is \"\(escTitle)\""),
-                            requestedArtist: artist)
-        : strict
-    return orderedPlayableAlbumTracks(matched)
+    // needs Swift-side disambiguation. A failed strict read never reaches it.
+    if !strict.isEmpty { return orderedPlayableAlbumTracks(strict) }
+    guard let byTitle = fetchLibraryAlbumRows(backend: backend, whereClause: "album is \"\(escTitle)\"")
+    else { return .readFailure }
+    return orderedPlayableAlbumTracks(selectAlbumTracks(byTitle, requestedArtist: artist))
 }
 
 /// The album resolver's single exit, shared by the strict and fallback paths:
