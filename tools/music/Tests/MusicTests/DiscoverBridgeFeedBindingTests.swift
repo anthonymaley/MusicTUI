@@ -90,6 +90,32 @@ final class DiscoverBridgeFeedBindingTests: XCTestCase {
 
     private let idle = NowPlayingSnapshot(outcome: .stopped, history: [], surrounding: [])
 
+    /// DoD 6's rename-away control, 2026-09-22: with `config.json` and
+    /// `user-token` moved aside and Bridge selected, the tab rendered "Sign in
+    /// to see your Discover feed" over rails the app was serving perfectly well.
+    /// The tab's own door already followed the mode (`discoverTabAdmitted`);
+    /// this second, render-time door did not — a fourth Music.app precondition
+    /// checked outside the Music.app branch, after the three step 3 removed.
+    func testBridgeModeNeverShowsTheSignInLineWithNoWebFeed() {
+        let wire = Wire()
+        let s = scene(mode: .source, wire: wire, feed: nil, api: nil)
+        settle(s, until: { !s.render(frame: shellLayout(width: 120, height: 40), snapshot: self.idle)
+            .contains("Loading") })
+        let out = s.render(frame: shellLayout(width: 120, height: 40), snapshot: idle)
+        XCTAssertFalse(out.contains("Sign in to see your Discover feed"),
+                       "Bridge serves this feed with no key at all")
+        XCTAssertTrue(out.contains("Stations For You"), "the app's rails must render: \(out.prefix(300))")
+    }
+
+    /// The line still belongs to Music.app mode with no sign-in, which is the
+    /// only state with no feed at all.
+    func testMusicAppModeWithNoFeedStillSaysSignIn() {
+        let s = scene(mode: .musicApp, wire: Wire(), feed: nil, api: nil)
+        _ = s.tick(snapshot: idle)
+        XCTAssertTrue(s.render(frame: shellLayout(width: 120, height: 40), snapshot: idle)
+            .contains("Sign in to see your Discover feed"))
+    }
+
     /// Ticks while it waits: the scene only drains its inbox inside `tick`.
     private func settle(_ s: DiscoverScene, seconds: Double = 2.0, until check: @escaping () -> Bool) {
         let deadline = Date().addingTimeInterval(seconds)
