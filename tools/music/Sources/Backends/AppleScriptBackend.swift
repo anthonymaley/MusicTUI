@@ -10,6 +10,13 @@ final class TimeoutFlag: @unchecked Sendable {
 }
 
 struct AppleScriptBackend {
+    /// The interpreter every script runs through. Production never changes it.
+    /// A test that drives a Music.app-mode play path points it at something
+    /// inert, because the real one plays the person's library out loud: on
+    /// 2026-09-23 two call-site tests played a library track through the
+    /// speakers on every suite run, from 13:55 until it was traced at 17:55.
+    var executable = "/usr/bin/osascript"
+
     enum ScriptError: Error, LocalizedError {
         case executionFailed(String)
         case speakerNotFound(name: String, available: [String])
@@ -42,7 +49,7 @@ struct AppleScriptBackend {
         verbose("osascript: \(script.prefix(200))")
 
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = ["-e", script]
 
         let stdout = Pipe()

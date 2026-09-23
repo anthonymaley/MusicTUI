@@ -50,7 +50,10 @@ final class BridgeCollectionCallSiteTests: XCTestCase {
     }
 
     /// A LibraryScene whose mode, wire and collection reads are all controlled.
-    /// `backend` is never exercised: both injected resolvers ignore it.
+    /// The injected resolvers ignore `backend`, but the Music.app branch of a
+    /// play does NOT: it sends `play track N of playlist "Library"`. With the
+    /// real interpreter the two Music.app-mode tests below played a real library
+    /// track aloud on every run (2026-09-23), so the backend here is inert.
     private func scene(mode: PlaybackMode, wire: Wire, status: StatusStore,
                        resolved: AlbumResolution) -> LibraryScene {
         let store = PlaybackModeStore(path: NSTemporaryDirectory() + "mode-\(UUID().uuidString).json")
@@ -58,7 +61,7 @@ final class BridgeCollectionCallSiteTests: XCTestCase {
         let routing = RoutingCoordinator(store: store, surface: .tui,
                                          makeSource: { SourceAppClient(path: "/nonexistent",
                                                                        transport: wire.transport) })
-        return LibraryScene(backend: AppleScriptBackend(), routing: routing,
+        return LibraryScene(backend: AppleScriptBackend(executable: "/usr/bin/true"), routing: routing,
                             sources: emptySources(), appQueue: AppQueueStore(),
                             status: status, actions: ActionRunner(status: status),
                             resolveAlbum: { _, _, _ in resolved },
