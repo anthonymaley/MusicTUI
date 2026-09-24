@@ -549,7 +549,25 @@ protocol SourceControlling {
     /// back unread.
     func librarySongs(cursor: String?, limit: Int) throws -> MusicPage
     /// Queue exactly these library rows, by the ids a Bridge page gave us.
-    func queue(libraryIDs: [String]) throws
+    /// Returns `skipped_unavailable` (Addendum U, U-R5): how many of the
+    /// requested songs Bridge silently dropped because it could not
+    /// establish they are playable, 0 included. 0 on every reply from an
+    /// older Bridge that predates the field (D6 holds).
+    ///
+    /// `startRequired` (Addendum U, Bridge-as-built): `true` when the person
+    /// picked a specific row to start from — Enter on a track row — `false`
+    /// for a whole-collection play (`p`/`s`). Sent as an explicit
+    /// `"start_required": <bool>` on EVERY call, never omitted: Codex's
+    /// review (f70150a0) reports Bridge now treats an ABSENT field as a
+    /// legacy request and refuses it, so the client can no longer rely on
+    /// omission meaning `false` (defaulted `false` only so the one existing
+    /// direct call in `BridgeMusicProviderTests`, which predates this field,
+    /// keeps compiling — it still sends the key, just with `false`).
+    func queue(libraryIDs: [String], startRequired: Bool) throws -> Int
+    // NOTE: `SourceAppControl`'s own declaration below defaults `startRequired`
+    // to `false`; a protocol requirement's default only applies to callers
+    // holding a `SourceControlling`-typed value, so `BridgeMusicProviderTests`'
+    // one direct, concrete-typed call needs the concrete default, not this one.
     /// One page of the app's own MusicKit albums (D1, contract 3 additive).
     func libraryAlbums(cursor: String?, limit: Int) throws -> MusicPage
     /// One page of the app's own MusicKit artists (D1).
@@ -560,6 +578,14 @@ protocol SourceControlling {
     func libraryArtistAlbums(artistID: String) throws -> MusicList
     /// One artist's songs (D2): what an artist PLAYS.
     func libraryArtistSongs(artistID: String) throws -> MusicList
+    /// One page of the app's own MusicKit playlists (D1, contract 3 additive).
+    func libraryPlaylists(cursor: String?, limit: Int) throws -> MusicPage
+    /// One page of one playlist's tracks: paged, stateless and fingerprinted
+    /// (D4) — every page re-validates the WHOLE playlist against the
+    /// snapshot, so a refusal always arrives on the first page, and a
+    /// generation or membership change mid-walk restarts the read rather
+    /// than stitching two observations together.
+    func libraryPlaylistTracks(playlistID: String, cursor: String?, limit: Int) throws -> MusicPage
 }
 
 struct SourceAppControl: SourceControlling {
@@ -672,6 +698,25 @@ struct SourceAppControl: SourceControlling {
                              id: artistID, rows: .exactly(.song))
     }
 
+    /// D1: MusicKit's own playlist entities, alphabetical (SourceCore's own
+    /// order, not Music.app's).
+    func libraryPlaylists(cursor: String?, limit: Int = 100) throws -> MusicPage {
+        try libraryPage(op: "slice.libraryPlaylists", opName: "playlist", limit: limit, cursor: cursor,
+                        rows: .exactly(.playlist))
+    }
+
+    /// D4: paged and STATELESS — Bridge re-reads and re-validates the whole
+    /// playlist on every page, so a `stale_generation` can arrive on any page,
+    /// not only the first. Rows are byte-for-byte the `slice.librarySongs`
+    /// row shape, in the playlist's own order, with repeats kept; a row of
+    /// any other kind is `malformedReply`, never dropped, for the same
+    /// fail-closed reason as the container reads.
+    func libraryPlaylistTracks(playlistID: String, cursor: String?, limit: Int = 500) throws -> MusicPage {
+        try libraryPage(op: "slice.libraryPlaylistTracks", opName: "playlist tracks", limit: limit,
+                        cursor: cursor, id: playlistID, rows: .exactly(.song),
+                        readsSkippedVideos: true)
+    }
+
     /// Which row kinds a paged list or a container read accepts, and what it
     /// does with anything else.
     ///
@@ -718,9 +763,11 @@ struct SourceAppControl: SourceControlling {
     /// person would be shown a library missing rows with nothing to tell them
     /// so. It matters more the moment these frames cross a network to an iPad.
     private func libraryPage(op: String, opName: String, limit: Int, cursor: String?,
-                             rows policy: LibraryRowPolicy) throws -> MusicPage {
+                             id: String? = nil, rows policy: LibraryRowPolicy,
+                             readsSkippedVideos: Bool = false) throws -> MusicPage {
         var body: [String: Any] = ["op": op, "limit": limit]
         if let cursor { body["cursor"] = cursor }
+        if let id { body["id"] = id }
         let reply = try send(body, over: libraryTransport)
 
         guard let items = reply["items"] as? [[String: Any]] else {
@@ -755,6 +802,23 @@ struct SourceAppControl: SourceControlling {
             if let row = try libraryRow(item, opName: opName, policy: policy) { rows.append(row) }
         }
 
+        // C1a (D9/D11): ONLY `slice.libraryPlaylistTracks` carries this field,
+        // and only that op requires it. An absent or negative count is a
+        // malformed reply rather than a silent 0, because a missing count
+        // would hide a skip from the person — the whole reason Revision 3
+        // exists is that a skip must always be STATED.
+        var skippedVideos = 0
+        if readsSkippedVideos {
+            guard let raw = reply["skipped_videos"] else {
+                throw SourceAppError.malformedReply("Bridge's \(opName) page is missing skipped_videos")
+            }
+            guard let skipped = raw as? Int, skipped >= 0 else {
+                throw SourceAppError.malformedReply(
+                    "Bridge's \(opName) page has a skipped_videos that is not a count")
+            }
+            skippedVideos = skipped
+        }
+
         // `clamped` is deliberately not read: a page carries the rows it
         // carries, and the walk follows `next_cursor`, never the limit it sent,
         // so a clamped page needs no special case. `stale` and `refreshing`
@@ -768,7 +832,8 @@ struct SourceAppControl: SourceControlling {
                          total: total,
                          generation: generation,
                          stale: reply["stale"] as? Bool ?? false,
-                         refreshing: reply["refreshing"] as? Bool ?? false)
+                         refreshing: reply["refreshing"] as? Bool ?? false,
+                         skippedVideos: skippedVideos)
     }
 
     /// Shared by the three container reads. Complete or refused — `generation`
@@ -798,8 +863,43 @@ struct SourceAppControl: SourceControlling {
     /// `(title, artist, album)` and the 338 rows that join could not resolve
     /// stop being a category. An id the app no longer holds refuses the WHOLE
     /// queue rather than shortening it.
-    func queue(libraryIDs: [String]) throws {
-        _ = try send(["op": "slice.queue", "library_ids": libraryIDs])
+    ///
+    /// Addendum U (U-R5/U-R6): decodes `skipped_unavailable` from a
+    /// SUCCESSFUL reply — absent (an older Bridge) reads 0, exactly like a
+    /// field this build has never required; present but not a non-negative
+    /// Int STRICTLY LESS than the number of ids sent is malformed, the same
+    /// "unreadable" discipline every other required-on-success field in this
+    /// file follows.
+    ///
+    /// **Booleans are rejected, not silently accepted as 0/1.** `JSONSerialization`
+    /// bridges a JSON `true`/`false` to an `NSNumber` that `as? Int` happily
+    /// unwraps (Codex's review, f2ac2693) — `CFGetTypeID` is the reliable way
+    /// to tell a genuine CFBoolean apart from a CFNumber that merely bridges
+    /// to one; `as? Int` alone cannot.
+    ///
+    /// **The count is bounded by what was sent.** A successful, non-empty
+    /// queue keeps at least one song (an all-unavailable request refuses
+    /// instead — U-R4), so `skipped_unavailable` equal to or greater than
+    /// `libraryIDs.count` is not a count Bridge could honestly have sent.
+    ///
+    /// `startRequired` defaults to `false` so the one direct call in
+    /// `BridgeMusicProviderTests` — a transport-wiring test unconcerned with
+    /// Addendum U — keeps compiling; the default still sends the key, it
+    /// just sends `false`.
+    ///
+    /// `start_required` is sent EXPLICITLY on every call, never omitted:
+    /// Codex's review (f70150a0) reports Bridge now treats an ABSENT field as
+    /// a legacy request and refuses it, so omission-means-false no longer
+    /// holds.
+    func queue(libraryIDs: [String], startRequired: Bool = false) throws -> Int {
+        let body: [String: Any] = ["op": "slice.queue", "library_ids": libraryIDs, "start_required": startRequired]
+        let reply = try send(body)
+        guard let raw = reply["skipped_unavailable"] else { return 0 }
+        guard CFGetTypeID(raw as CFTypeRef) != CFBooleanGetTypeID(),
+              let skipped = raw as? Int, skipped >= 0, skipped < libraryIDs.count else {
+            throw SourceAppError.malformedReply("Bridge's queue reply has a skipped_unavailable that is not a count")
+        }
+        return skipped
     }
 
     func resume() throws   { _ = try send(["op": "slice.play"]) }
@@ -920,6 +1020,15 @@ struct SourceAppControl: SourceControlling {
                 // Carries the op name, not the prose, so the caller can say
                 // which capability is missing rather than "Bridge refused".
                 throw SourceAppError.unsupported(op)
+            case "unavailable":
+                // Addendum U (U-R4): "None of those songs are available to
+                // Bridge." and "'<title>' isn't available to Bridge." —
+                // decoded on the kind explicitly (not left to fall into
+                // `default` unnoticed) so the mapping is intentional and its
+                // own test pins it, even though the outcome is the same as
+                // `default`'s: the detail shown verbatim, never reduced to a
+                // generic failure.
+                throw SourceAppError.refused(detail)
             // `too_large`, `not_in_library` and `library_changed` (D2/D4) are
             // not decoded on their kind: each already carries the sentence a
             // person should read verbatim (section 2), and none of them

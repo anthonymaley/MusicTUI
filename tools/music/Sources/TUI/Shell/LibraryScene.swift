@@ -1535,10 +1535,18 @@ final class LibraryScene: Scene {
         case .play(.album(let id, let title, let artist)):
             // Enter on a row in the album tracklist starts the queue AT that track
             // (nav.cursor is the track index there); elsewhere it's whole-album.
+            // Addendum U: the SAME `isTracksLevel` check also decides
+            // `startRequired` — a track-level `.play` (Enter, or `p` pressed
+            // while browsing that row) is the person choosing exactly where
+            // to start, whether `nav.cursor` happens to be 0 or not; at the
+            // rail level `.play` always starts the whole album from track 1,
+            // never a chosen row.
             dispatchAlbumPlay(id: id, title: title, artist: artist, shuffle: false,
-                              startAt: isTracksLevel ? nav.cursor + 1 : 1)
+                              startAt: isTracksLevel ? nav.cursor + 1 : 1, startRequired: isTracksLevel)
         case .shuffle(.album(let id, let title, let artist)):
-            dispatchAlbumPlay(id: id, title: title, artist: artist, shuffle: true, startAt: 1)
+            // Shuffle always plays the whole set in random order (D3/6.5) —
+            // never a chosen start song, so never `startRequired`.
+            dispatchAlbumPlay(id: id, title: title, artist: artist, shuffle: true, startAt: 1, startRequired: false)
         case .play(.song(let id, let title, let artist)):
             dispatchSongPlay(id: id, title: title, artist: artist, shuffle: false)
         case .shuffle(.song(let id, let title, let artist)):
@@ -1556,9 +1564,11 @@ final class LibraryScene: Scene {
     /// by the live output alone — a stale Music.app-sourced list played while
     /// Bridge is now selected refuses, exactly as a stale Bridge-sourced one
     /// played after switching to Music.app does (rule 3, both directions).
-    private func dispatchAlbumPlay(id: String, title: String, artist: String, shuffle: Bool, startAt: Int) {
+    private func dispatchAlbumPlay(id: String, title: String, artist: String, shuffle: Bool, startAt: Int,
+                                   startRequired: Bool) {
         if currentAlbumSource == .bridge {
-            playBridgeAlbum(albumID: id, title: title, shuffle: shuffle, startAt: startAt, rows: bridgeTracks[id])
+            playBridgeAlbum(albumID: id, title: title, shuffle: shuffle, startAt: startAt,
+                            startRequired: startRequired, rows: bridgeTracks[id])
         } else if makeProvider() != nil {
             actions.run("Play") { throw ActionError(message: LibraryProvenance.bridgeSelectedMusicAppList) }
         } else {
@@ -1813,7 +1823,8 @@ final class LibraryScene: Scene {
     /// it is exactly the list `nav.cursor` indexed; a fresh read only happens
     /// when nothing is cached yet.
     // Internal, not private, so it is reachable from a test.
-    func playBridgeAlbum(albumID: String, title: String, shuffle: Bool, startAt: Int, rows: [MusicRow]?) {
+    func playBridgeAlbum(albumID: String, title: String, shuffle: Bool, startAt: Int, startRequired: Bool,
+                         rows: [MusicRow]?) {
         let routing = self.routing
         let status = self.status
         let makeProvider = self.makeProvider
@@ -1837,16 +1848,25 @@ final class LibraryScene: Scene {
                 }.rows
                 try require(!trackRows.isEmpty, "'\(title)' has no songs Bridge can play.")
                 let ids = bridgeQueueIDs(trackRows, shuffle: shuffle, startAt: startAt)
+                // Addendum U: how many of `ids` Bridge dropped as unavailable,
+                // set only on the attempt that actually succeeds (U-R5/U-R6).
+                var skippedUnavailable = 0
                 try retryingWhileWarming(budget: budget, onWarming: onWarming, sleep: sleep) {
                     try routing.perform(.libraryPlay,
                         musicApp: {
                             throw ActionError(message:
                                 "Output changed to Music.app before '\(title)' could play on Bridge; nothing was played.")
                         },
-                        source: { _ in _ = try provider.play(ids: ids) },
+                        source: { _ in
+                            skippedUnavailable = try provider.playReportingSkips(
+                                ids: ids, startRequired: startRequired).skippedUnavailable
+                        },
                         unaffected: {})
                 }
-                status.post("Playing '\(title)' on Bridge \u{2014} \(ids.count) tracks.")
+                let queuedCount = ids.count - skippedUnavailable
+                var footer = "Playing '\(title)' on Bridge \u{2014} \(queuedCount) tracks."
+                if skippedUnavailable > 0 { footer += " " + bridgeUnavailableSongsNotice(skippedUnavailable) }
+                status.post(footer)
             } catch let error as MusicProviderError {
                 throw ActionError(message: error.errorDescription ?? "Couldn't play '\(title)' on Bridge.")
             } catch let error as SourceAppError {
@@ -1879,16 +1899,26 @@ final class LibraryScene: Scene {
                 }.rows
                 try require(!songRows.isEmpty, "'\(name)' has no songs Bridge can play.")
                 let ids = bridgeQueueIDs(songRows, shuffle: shuffle, startAt: 1)
+                // Addendum U: same as playBridgeAlbum above. An artist play is
+                // always whole-collection — there is no track-level entry for
+                // an artist, so `startRequired` is always false.
+                var skippedUnavailable = 0
                 try retryingWhileWarming(budget: budget, onWarming: onWarming, sleep: sleep) {
                     try routing.perform(.libraryPlay,
                         musicApp: {
                             throw ActionError(message:
                                 "Output changed to Music.app before '\(name)' could play on Bridge; nothing was played.")
                         },
-                        source: { _ in _ = try provider.play(ids: ids) },
+                        source: { _ in
+                            skippedUnavailable = try provider.playReportingSkips(
+                                ids: ids, startRequired: false).skippedUnavailable
+                        },
                         unaffected: {})
                 }
-                status.post("Playing '\(name)' on Bridge \u{2014} \(ids.count) tracks.")
+                let queuedCount = ids.count - skippedUnavailable
+                var footer = "Playing '\(name)' on Bridge \u{2014} \(queuedCount) tracks."
+                if skippedUnavailable > 0 { footer += " " + bridgeUnavailableSongsNotice(skippedUnavailable) }
+                status.post(footer)
             } catch let error as MusicProviderError {
                 throw ActionError(message: error.errorDescription ?? "Couldn't play '\(name)' on Bridge.")
             } catch let error as SourceAppError {

@@ -26,6 +26,34 @@ func shellFooterGlobals(mode: PlaybackMode) -> String {
         : "Space \u{23EF}  < > Skip  z Reshuffle  +/\u{2212} Vol"
 }
 
+/// Opens the Playlists tab (C2, D7 item 5): which library it opens FROM
+/// follows the selected output, decided here rather than inside
+/// `PlaylistsScene` so the Bridge branch is provable with no AppleScript
+/// reached — module-internal (not `private`) so a test can call it directly.
+///
+/// **Bridge mode never calls `loadMusicAppPlaylists`.** The scene is built
+/// with empty names and no subscription set; it walks `slice.libraryPlaylists`
+/// itself on its first `tick()` (D1).
+///
+/// **Music.app mode is today's behaviour, unchanged.** The names are fetched
+/// synchronously, right here, exactly as `ensureScene`'s `.playlists` case did
+/// before C2; an empty result refuses the tab with "No playlists found."
+/// rather than building a scene with nothing to show.
+func openPlaylistsScene(bridgeSelected: Bool, status: StatusStore,
+                        loadMusicAppPlaylists: () -> (names: [String], subscription: Set<String>),
+                        build: (_ names: [String], _ subscription: Set<String>) -> PlaylistsScene)
+                        -> PlaylistsScene? {
+    if bridgeSelected {
+        return build([], [])
+    }
+    let fetched = loadMusicAppPlaylists()
+    guard !fetched.names.isEmpty else {
+        status.post("No playlists found.", error: true)
+        return nil
+    }
+    return build(fetched.names, fetched.subscription)
+}
+
 func runShell() {
     let backend = AppleScriptBackend()
     let store = NowPlayingStore()
@@ -94,20 +122,27 @@ func runShell() {
         if let s = scenes[id] { return s }
         switch id {
         case .playlists:
-            let fetched = fetchUserPlaylistNames(backend: backend)
-            let names = fetched.names
-            guard !names.isEmpty else {
-                status.post("No playlists found.", error: true)
-                return nil
-            }
-            let scene = PlaylistsScene(backend: backend, routing: routing,
-                                       playlists: names,
-                                       subscriptionNames: fetched.subscription,
-                                       sources: makePlaylistDataSources(backend: backend, names: names, artworkAPI: makeArtworkAPI()),
-                                       appQueue: appQueue,
-                                       status: status,
-                                       actions: actions,
-                                       kittyEnabled: kittyEnabled)
+            // D7/C2: which library the tab opens from follows the selected
+            // output, decided by `openPlaylistsScene` so the Bridge branch is
+            // provable with no AppleScript reached — see its own doc comment.
+            guard let scene = openPlaylistsScene(
+                bridgeSelected: routing.mode == .source, status: status,
+                loadMusicAppPlaylists: { fetchUserPlaylistNames(backend: backend) },
+                build: { names, subscription in
+                    PlaylistsScene(backend: backend, routing: routing,
+                                   playlists: names, subscriptionNames: subscription,
+                                   sources: names.isEmpty
+                                       ? .empty
+                                       : makePlaylistDataSources(backend: backend, names: names, artworkAPI: makeArtworkAPI()),
+                                   appQueue: appQueue, status: status, actions: actions,
+                                   kittyEnabled: kittyEnabled,
+                                   makeProvider: {
+                                       routing.mode == .source ? BridgeMusicProvider(control: SourceAppClient().control) : nil
+                                   },
+                                   loadMusicAppPlaylists: { fetchUserPlaylistNames(backend: backend) },
+                                   makeSources: { makePlaylistDataSources(backend: backend, names: $0, artworkAPI: makeArtworkAPI()) })
+                }
+            ) else { return nil }
             scenes[id] = scene
             return scene
         case .speakers:

@@ -27,6 +27,16 @@ final class BridgeLibraryPlaySceneTests: XCTestCase {
     {"ok":true,"op":"slice.queue","status":{"playback":"playing","title":"T","artist":"A",
      "contract":3,"authorization":"authorized","queue":{"phase":"complete","requested":1,"present":1,"index":0}}}
     """
+    /// Addendum U: the same success reply, with `skipped_unavailable` set.
+    /// `Self.queued` above (no field at all) is the "absent -> 0, older
+    /// Bridge" case, exercised by every test that already uses it unedited.
+    private static func queuedReply(skippedUnavailable: Int) -> String {
+        """
+        {"ok":true,"op":"slice.queue","skipped_unavailable":\(skippedUnavailable),
+         "status":{"playback":"playing","title":"T","artist":"A",
+         "contract":3,"authorization":"authorized","queue":{"phase":"complete","requested":1,"present":1,"index":0}}}
+        """
+    }
 
     private func settleQueued(_ wire: BridgeLibraryReadsWire, seconds: Double = 3.0) -> Bool {
         let deadline = Date().addingTimeInterval(seconds)
@@ -82,6 +92,9 @@ final class BridgeLibraryPlaySceneTests: XCTestCase {
         XCTAssertEqual(req?["library_ids"] as? [String], ["t2", "t3"])
         XCTAssertNil(req?["rows"], "the join's row shape must never be sent")
         XCTAssertNil(req?["ids"], "the catalogue-id shape must never be sent")
+        // Enter on a specific track row is a chosen start point (Codex's
+        // review, Bridge-as-built) — `start_required` must be true.
+        XCTAssertEqual(req?["start_required"] as? Bool, true)
     }
 
     func testPOnTheAlbumRailSendsEveryId() {
@@ -95,7 +108,13 @@ final class BridgeLibraryPlaySceneTests: XCTestCase {
         _ = s.handle(.char("p"))
 
         XCTAssertTrue(settleQueued(wire))
-        XCTAssertEqual(wire.sent("slice.queue").first?["library_ids"] as? [String], ["t1", "t2", "t3"])
+        let req = wire.sent("slice.queue").first
+        XCTAssertEqual(req?["library_ids"] as? [String], ["t1", "t2", "t3"])
+        // `p` on the rail is a whole-collection play, no chosen start row —
+        // `start_required` must be sent explicitly as `false` (Codex's
+        // review f70150a0: an absent field is now treated as legacy and
+        // refused, so omission is no longer valid).
+        XCTAssertEqual(req?["start_required"] as? Bool, false)
     }
 
     func testSOnTheAlbumRailSendsTheSameSetInSomeOrder() {
@@ -109,8 +128,81 @@ final class BridgeLibraryPlaySceneTests: XCTestCase {
         _ = s.handle(.char("s"))
 
         XCTAssertTrue(settleQueued(wire))
-        let ids = wire.sent("slice.queue").first?["library_ids"] as? [String] ?? []
+        let req = wire.sent("slice.queue").first
+        let ids = req?["library_ids"] as? [String] ?? []
         XCTAssertEqual(Set(ids), Set(["t1", "t2", "t3"]))
+        // `s` shuffles the whole rail's collection, no chosen start row —
+        // `start_required` must be sent explicitly as `false`.
+        XCTAssertEqual(req?["start_required"] as? Bool, false)
+    }
+
+    // MARK: - Addendum U: unavailable songs (U-R5/U-R6)
+
+    func testPOnAnAlbumWithOneUnavailableSongReducesTheCountAndAppendsTheSingularNotice() {
+        let wire = BridgeLibraryReadsWire(["slice.libraryAlbums": [albumPage],
+                                          "slice.libraryAlbumTracks": [trackReply(["t1", "t2", "t3"])],
+                                          "slice.queue": [Self.queuedReply(skippedUnavailable: 1)],
+                                          "slice.status": [Self.queued]])
+        let status = StatusStore()
+        let s = libraryTestScene(flag: BridgeSelectedFlag(true), wire: wire, spy: LibraryAppleScriptSpy(), status: status)
+
+        goToSubView(s, .albums)
+        XCTAssertTrue(settleScene(s) { s.render(frame: frame, snapshot: idle).contains("In Rainbows") })
+        _ = s.handle(.char("p"))
+        XCTAssertTrue(settleQueued(wire))
+        // library_ids still carries every row the client sent (U-R3's drop
+        // happens on Bridge, not here) — the client only reduces the COUNT
+        // it displays and appends the notice.
+        XCTAssertEqual(wire.sent("slice.queue").first?["library_ids"] as? [String], ["t1", "t2", "t3"])
+        XCTAssertTrue(settleScene(s) {
+            status.current()?.text == "Playing 'In Rainbows' on Bridge \u{2014} 2 tracks. 1 song isn't available to Bridge."
+        }, "got: \(String(describing: status.current()?.text))")
+    }
+
+    func testPOnAnArtistWithTwoUnavailableSongsAppendsThePluralNotice() {
+        let artistPage = """
+        {"ok":true,"op":"slice.libraryArtists","generation":3,"total":1,
+         "items":[{"id":"ar1","title":"Radiohead","kind":"artist"}],"next_cursor":null}
+        """
+        let songs = trackReply(["t1", "t2", "t3", "t4"]).replacingOccurrences(of: "libraryAlbumTracks", with: "libraryArtistSongs")
+        let wire = BridgeLibraryReadsWire(["slice.libraryArtists": [artistPage],
+                                          "slice.libraryArtistSongs": [songs],
+                                          "slice.queue": [Self.queuedReply(skippedUnavailable: 2)],
+                                          "slice.status": [Self.queued]])
+        let status = StatusStore()
+        let s = libraryTestScene(flag: BridgeSelectedFlag(true), wire: wire, spy: LibraryAppleScriptSpy(), status: status)
+
+        goToSubView(s, .artists)
+        XCTAssertTrue(settleScene(s) { s.render(frame: frame, snapshot: idle).contains("Radiohead") })
+        _ = s.handle(.char("p"))
+        XCTAssertTrue(settleQueued(wire))
+        // Artists have no track-level entry point — `p` here is always a
+        // whole-collection play, so `start_required` must be sent explicitly
+        // as `false`.
+        XCTAssertEqual(wire.sent("slice.queue").first?["start_required"] as? Bool, false)
+        XCTAssertTrue(settleScene(s) {
+            status.current()?.text == "Playing 'Radiohead' on Bridge \u{2014} 2 tracks. 2 songs aren't available to Bridge."
+        }, "got: \(String(describing: status.current()?.text))")
+    }
+
+    /// A reply with NO `skipped_unavailable` field at all (an older Bridge,
+    /// or simply nothing to report) reads 0 — the count and the sentence stay
+    /// exactly what they were before Addendum U.
+    func testAReplyWithNoSkippedUnavailableFieldShowsNoNoticeAndTheFullCount() {
+        let wire = BridgeLibraryReadsWire(["slice.libraryAlbums": [albumPage],
+                                          "slice.libraryAlbumTracks": [trackReply(["t1", "t2", "t3"])],
+                                          "slice.queue": [Self.queued],
+                                          "slice.status": [Self.queued]])
+        let status = StatusStore()
+        let s = libraryTestScene(flag: BridgeSelectedFlag(true), wire: wire, spy: LibraryAppleScriptSpy(), status: status)
+
+        goToSubView(s, .albums)
+        XCTAssertTrue(settleScene(s) { s.render(frame: frame, snapshot: idle).contains("In Rainbows") })
+        _ = s.handle(.char("p"))
+        XCTAssertTrue(settleQueued(wire))
+        XCTAssertTrue(settleScene(s) {
+            status.current()?.text == "Playing 'In Rainbows' on Bridge \u{2014} 3 tracks."
+        }, "got: \(String(describing: status.current()?.text))")
     }
 
     // MARK: - Failures

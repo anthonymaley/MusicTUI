@@ -12,6 +12,12 @@ struct PlaylistDataSources {
     /// Name matching is heuristic (same class as albumArtistSet); built-in smart
     /// playlists aren't API-visible and simply never match.
     let onArtworkMap: (() -> [String: (id: String, url: String)])?
+
+    /// C2: what a Bridge-mode `PlaylistsScene` is built with — there are no
+    /// Music.app names to drive these closures, and Bridge mode never calls
+    /// any of them (rule 13: no AppleScript on a Bridge path).
+    static let empty = PlaylistDataSources(onMeta: { _ in [:] }, onPreview: { _ in nil },
+                                           onTracks: { _ in nil }, onArtworkMap: nil)
 }
 
 /// One playlist's rail metadata, persisted between launches so the browser paints
@@ -24,23 +30,35 @@ struct CachedPlaylistMeta: Codable {
     let specialKind: String
 }
 
-/// On-disk cache of playlist rail metadata at `~/.config/music/playlist-meta.json`
-/// (same dir as ResultCache). Best-effort: any read/write failure is silent and the
-/// browser falls back to a live (background) fetch.
-enum PlaylistMetaCache {
-    static var path: String {
+/// On-disk cache of playlist rail metadata, at `path` (`defaultPath` is
+/// `~/.config/music/playlist-meta.json`, same dir as ResultCache). Best-effort:
+/// any read/write failure is silent and the browser falls back to a live
+/// (background) fetch.
+///
+/// An injectable VALUE (C0), not the static enum this was before: a test
+/// builds one over a temporary path so `PlaylistsScene` never touches the
+/// real file, the same way `ResultCache` is injected for `LibraryScene`.
+struct PlaylistMetaCache {
+    let path: String
+
+    /// The real one: ~/.config/music/playlist-meta.json, exactly as today.
+    init(path: String = PlaylistMetaCache.defaultPath) {
+        self.path = path
+    }
+
+    static var defaultPath: String {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         return "\(home)/.config/music/playlist-meta.json"
     }
 
-    static func load() -> [String: CachedPlaylistMeta] {
+    func load() -> [String: CachedPlaylistMeta] {
         guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
               let dict = try? JSONDecoder().decode([String: CachedPlaylistMeta].self, from: data)
         else { return [:] }
         return dict
     }
 
-    static func save(_ dict: [String: CachedPlaylistMeta]) {
+    func save(_ dict: [String: CachedPlaylistMeta]) {
         let dir = (path as NSString).deletingLastPathComponent
         try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
         guard let data = try? JSONEncoder().encode(dict) else { return }

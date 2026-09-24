@@ -90,10 +90,11 @@ final class SpaceInTextCaptureTests: XCTestCase {
             onTracks: { _ in nil },
             onArtworkMap: nil
         )
-        let scene = PlaylistsScene(backend: AppleScriptBackend(),
+        let scene = PlaylistsScene(backend: AppleScriptBackend(executable: "/usr/bin/true"),
                                    routing: RoutingCoordinator(store: PlaybackModeStore(path: NSTemporaryDirectory() + "m-\(UUID().uuidString).json"), surface: .tui, makeSource: { SourceAppClient() }), playlists: ["Test Playlist"], sources: sources,
                                     appQueue: AppQueueStore(), status: status,
-                                    actions: ActionRunner(status: status))
+                                    actions: ActionRunner(status: status),
+                                    metaCache: temporaryPlaylistMetaCache().cache)
 
         _ = scene.handle(.char("/"))                // enter filter mode
         type("deep", into: scene.handle)

@@ -25,12 +25,23 @@ final class BridgeListFeed<Row> {
         var failure: String?
         var warming: Bool = false
         var done: Bool = false
+        /// C2 (Revision 3, D9/D11): the latest page's `skipped_videos`, level
+        /// state like `total` — read, not cleared, so a tick that lands
+        /// nothing new still sees the current count. nil until a page has
+        /// landed. Albums and Artists never set this above 0 (their pages
+        /// default it); C3's playlist-tracks feed is what actually reads it.
+        var skippedVideos: Int?
     }
 
     private let lock = NSLock()
     private let fetch: (String?, Int) throws -> MusicPage
     private let map: (MusicRow) -> Row
     private let sleep: (TimeInterval) -> Void
+    /// The page size this feed asks for (D4/rule 14: the client states its own
+    /// request size rather than copying Bridge's maximum). Defaulted to 100,
+    /// today's behaviour for Albums and Artists; a playlist's tracks feed
+    /// (C3) passes Bridge's own maximum of 500.
+    private let limit: Int
 
     private var walking = false
     /// Bumped by `reset()`. Every post the walk thread makes is checked
@@ -44,13 +55,16 @@ final class BridgeListFeed<Row> {
     private var pendingFailure: String? = nil
     private var pendingWarming = false
     private var pendingDone = false
+    private var pendingSkippedVideos: Int? = nil
 
     init(fetch: @escaping (String?, Int) throws -> MusicPage,
         map: @escaping (MusicRow) -> Row,
-        sleep: @escaping (TimeInterval) -> Void = { Thread.sleep(forTimeInterval: $0) }) {
+        sleep: @escaping (TimeInterval) -> Void = { Thread.sleep(forTimeInterval: $0) },
+        limit: Int = 100) {
         self.fetch = fetch
         self.map = map
         self.sleep = sleep
+        self.limit = limit
     }
 
     /// Starts one walk unless one is already in flight, and clears the last
@@ -74,10 +88,11 @@ final class BridgeListFeed<Row> {
         let fetch = self.fetch
         let map = self.map
         let sleep = self.sleep
+        let limit = self.limit
         var replacedThisAttempt = false
 
         Thread.detachNewThread { [weak self] in
-            let error = walkLibraryPages(fetch: fetch, onPage: { [weak self] page in
+            let error = walkLibraryPages(fetch: fetch, limit: limit, onPage: { [weak self] page in
                 guard let self else { return false }   // feed gone -> stop the walk
                 self.lock.lock()
                 defer { self.lock.unlock() }
@@ -91,6 +106,7 @@ final class BridgeListFeed<Row> {
                     replacedThisAttempt = true
                 }
                 if let total = page.total { self.pendingTotal = total }
+                self.pendingSkippedVideos = page.skippedVideos
                 self.pendingWarming = false
                 return true
             }, onRestart: { [weak self] in
@@ -105,6 +121,7 @@ final class BridgeListFeed<Row> {
                 self.pendingReplace = nil
                 self.pendingAppend = []
                 self.pendingTotal = nil
+                self.pendingSkippedVideos = nil
             }, onWarming: { [weak self] _ in
                 guard let self else { return }
                 self.lock.lock()
@@ -152,6 +169,7 @@ final class BridgeListFeed<Row> {
         pendingFailure = nil
         pendingWarming = false
         pendingDone = false
+        pendingSkippedVideos = nil
         lock.unlock()
     }
 
@@ -173,7 +191,8 @@ final class BridgeListFeed<Row> {
     func drain() -> Drained {
         lock.lock()
         let out = Drained(replace: pendingReplace, append: pendingAppend, total: pendingTotal,
-                          failure: pendingFailure, warming: pendingWarming, done: pendingDone)
+                          failure: pendingFailure, warming: pendingWarming, done: pendingDone,
+                          skippedVideos: pendingSkippedVideos)
         pendingReplace = nil
         pendingAppend = []
         pendingDone = false

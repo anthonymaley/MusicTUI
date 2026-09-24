@@ -54,11 +54,42 @@ struct BridgeMusicProvider: MusicDataProvider {
         catch let error as SourceAppError { throw Self.translate(error) }
     }
 
-    /// Ids here are Bridge's own LIBRARY ids, from a page this provider served.
-    func play(ids: [String]) throws -> BridgeNow.Queue {
-        do { try control.queue(libraryIDs: ids) }
+    /// D1.
+    func libraryPlaylists(cursor: String?, limit: Int = 100) throws -> MusicPage {
+        do { return try control.libraryPlaylists(cursor: cursor, limit: limit) }
         catch let error as SourceAppError { throw Self.translate(error) }
-        return try bridgeNow(from: nowPlaying()).queue
+    }
+
+    /// D4. Stateless: each page re-reads and re-validates the whole
+    /// playlist, so a `stale_generation` can come back on any page.
+    func playlistTracks(playlistID: String, cursor: String?, limit: Int = 500) throws -> MusicPage {
+        do { return try control.libraryPlaylistTracks(playlistID: playlistID, cursor: cursor, limit: limit) }
+        catch let error as SourceAppError { throw Self.translate(error) }
+    }
+
+    /// Ids here are Bridge's own LIBRARY ids, from a page this provider served.
+    /// Its one remaining caller (`playSong`, a single specific song) always
+    /// picked that exact song, so `startRequired` is hardcoded true here —
+    /// see `playReportingSkips`'s doc comment.
+    func play(ids: [String]) throws -> BridgeNow.Queue {
+        try playReportingSkips(ids: ids, startRequired: true).queue
+    }
+
+    /// Addendum U: the real implementation — `play(ids:)` above is now just
+    /// this, minus the skip count, kept for callers that don't need it.
+    ///
+    /// `startRequired` (Bridge-as-built): true only when the person picked a
+    /// SPECIFIC row to start from (Enter on a track row / track-k) — never
+    /// for a whole-collection `p`/`s`, which starts wherever the list starts
+    /// and has no "the person chose this exact song" claim to make. Each
+    /// caller (`LibraryScene`, `PlaylistsScene`) computes it at the keypress,
+    /// the same way `startAt` itself already is.
+    func playReportingSkips(ids: [String], startRequired: Bool) throws -> (queue: BridgeNow.Queue, skippedUnavailable: Int) {
+        let skipped: Int
+        do { skipped = try control.queue(libraryIDs: ids, startRequired: startRequired) }
+        catch let error as SourceAppError { throw Self.translate(error) }
+        let queue = try bridgeNow(from: nowPlaying()).queue
+        return (queue, skipped)
     }
 
     func nowPlaying() throws -> SourceStatus {
@@ -124,6 +155,10 @@ struct BridgeMusicProvider: MusicDataProvider {
             return "This Bridge build can't list an artist's albums — update Bridge"
         case "slice.libraryArtistSongs":
             return "This Bridge build can't play an artist — update Bridge"
+        case "slice.libraryPlaylists":
+            return "This Bridge build can't list your playlists — update Bridge"
+        case "slice.libraryPlaylistTracks":
+            return "This Bridge build can't list a playlist's tracks — update Bridge"
         default:
             return "Bridge doesn't serve that yet — update Bridge"
         }

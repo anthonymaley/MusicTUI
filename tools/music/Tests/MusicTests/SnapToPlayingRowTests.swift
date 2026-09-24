@@ -120,10 +120,11 @@ final class SnapToPlayingRowTests: XCTestCase {
         let status = StatusStore()
         let sources = PlaylistDataSources(onMeta: { _ in [:] }, onPreview: { _ in nil },
                                           onTracks: { _ in nil }, onArtworkMap: nil)
-        let scene = PlaylistsScene(backend: AppleScriptBackend(), routing: routing(),
+        let scene = PlaylistsScene(backend: AppleScriptBackend(executable: "/usr/bin/true"), routing: routing(),
                                    playlists: ["Chill", "Top 25 Most Played", "Moon Safari"],
                                    sources: sources, appQueue: AppQueueStore(),
-                                   status: status, actions: ActionRunner(status: status))
+                                   status: status, actions: ActionRunner(status: status),
+                                   metaCache: temporaryPlaylistMetaCache().cache)
         XCTAssertEqual(scene.railCursorForTest, 0)
         scene.becameActive()
         _ = scene.tick(snapshot: playing("Dreams", "Fleetwood Mac", context: "Moon Safari"))

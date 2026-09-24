@@ -55,15 +55,21 @@ struct MusicPage: Equatable {
     /// A background refresh is running. Also information: the rows in hand are
     /// good, and better ones may follow under a new generation.
     let refreshing: Bool
+    /// C1a (D9/D11, Revision 3): how many of the WHOLE playlist's members
+    /// `slice.libraryPlaylistTracks` omitted because MusicKit identified them
+    /// exactly as a video. Defaulted to 0 so every op besides playlist tracks
+    /// keeps constructing a `MusicPage` unchanged.
+    let skippedVideos: Int
 
     init(rows: [MusicRow], nextCursor: String?, total: Int?, generation: Int?,
-         stale: Bool = false, refreshing: Bool = false) {
+         stale: Bool = false, refreshing: Bool = false, skippedVideos: Int = 0) {
         self.rows = rows
         self.nextCursor = nextCursor
         self.total = total
         self.generation = generation
         self.stale = stale
         self.refreshing = refreshing
+        self.skippedVideos = skippedVideos
     }
 }
 
@@ -122,9 +128,31 @@ protocol MusicDataProvider {
     func artistAlbums(artistID: String) throws -> MusicList
     /// One artist's songs (D2): what an artist PLAYS, per ruling 12.2.
     func artistSongs(artistID: String) throws -> MusicList
+    /// A page of the library's playlists (D1): MusicKit's own library
+    /// playlist entities, not a rewalk of the songs the way an album's tracks
+    /// are not a filter over the same list.
+    func libraryPlaylists(cursor: String?, limit: Int) throws -> MusicPage
+    /// One page of one playlist's tracks (D4): paged, stateless and
+    /// fingerprinted — every page re-validates the WHOLE playlist, so a
+    /// refusal always arrives on the first page and a mid-walk change
+    /// restarts the read rather than stitching two observations together.
+    /// Rows come in the playlist's own order, with repeats kept.
+    func playlistTracks(playlistID: String, cursor: String?, limit: Int) throws -> MusicPage
     /// Play exactly these ids, in this order, and report the queue that
     /// resulted. Ids are this provider's own.
     func play(ids: [String]) throws -> BridgeNow.Queue
+    /// Addendum U (U-R5/U-R6): the same play, also reporting how many of
+    /// `ids` Bridge silently dropped because it could not establish they are
+    /// playable. A provider written before Addendum U gets the default below
+    /// (0 skipped, via a plain `play(ids:)`) rather than a second copy of
+    /// every conformer.
+    ///
+    /// `startRequired`: true only when the person picked a SPECIFIC row to
+    /// start from (Enter on a track row / track-k in Albums, Artists' drilled
+    /// albums, the Songs list, or a playlist's tracks) — never for a
+    /// whole-collection `p`/`s` play. The caller computes it at the keypress,
+    /// alongside `startAt`.
+    func playReportingSkips(ids: [String], startRequired: Bool) throws -> (queue: BridgeNow.Queue, skippedUnavailable: Int)
     /// What the selected backend is doing now.
     func nowPlaying() throws -> SourceStatus
 }
@@ -150,6 +178,22 @@ extension MusicDataProvider {
     }
     func artistSongs(artistID: String) throws -> MusicList {
         throw MusicProviderError.notImplemented("This Bridge build can't play an artist — update Bridge")
+    }
+    func libraryPlaylists(cursor: String?, limit: Int) throws -> MusicPage {
+        throw MusicProviderError.notImplemented("This Bridge build can't list your playlists — update Bridge")
+    }
+    func playlistTracks(playlistID: String, cursor: String?, limit: Int) throws -> MusicPage {
+        throw MusicProviderError.notImplemented("This Bridge build can't list a playlist's tracks — update Bridge")
+    }
+    /// Addendum U: a provider that predates `skipped_unavailable` (every
+    /// `MusicDataProvider` test double written before this step) still plays
+    /// correctly through its own `play(ids:)` — it just never reports a skip,
+    /// which is exactly the "older Bridge" default D6 already established for
+    /// this field. `startRequired` is accepted, not read: a provider this old
+    /// predates `start_required` too, so there is nowhere for it to go.
+    func playReportingSkips(ids: [String], startRequired: Bool) throws -> (queue: BridgeNow.Queue, skippedUnavailable: Int) {
+        _ = startRequired
+        return (try play(ids: ids), 0)
     }
 }
 
@@ -183,16 +227,23 @@ extension MusicDataProvider {
 /// `onWarming` fires each time the provider says "not ready yet", so a list can
 /// say so while the walk waits. `sleep` is injected so the wait is real in the
 /// app and instant in a test.
+///
+/// **`budget` (C1).** nil (the default) keeps today's behaviour exactly: a
+/// fresh `WarmUpBudget` per attempt, which is right for a LIST — a restart is
+/// not penalised for time the first attempt already spent waiting. Non-nil is
+/// ONE caller-owned budget shared across every page of BOTH attempts, which is
+/// right for a PLAY (Part A D5: one budget per user action, not one per page).
 func walkLibraryPages(fetch: (String?, Int) throws -> MusicPage,
                       limit: Int = 100,
                       onPage: (MusicPage) -> Bool,
                       onRestart: () -> Void,
                       onWarming: (TimeInterval) -> Void = { _ in },
-                      sleep: (TimeInterval) -> Void = { Thread.sleep(forTimeInterval: $0) })
+                      sleep: (TimeInterval) -> Void = { Thread.sleep(forTimeInterval: $0) },
+                      budget: WarmUpBudget? = nil)
                       -> MusicProviderError? {
     func attempt() -> LibraryPageWalkOutcome {
         attemptLibraryPageWalk(fetch: fetch, limit: limit, onPage: onPage,
-                               onWarming: onWarming, sleep: sleep)
+                               onWarming: onWarming, sleep: sleep, budget: budget)
     }
     switch attempt() {
     case .finished:
@@ -319,12 +370,16 @@ private enum LibraryPageWalkOutcome {
 private func attemptLibraryPageWalk(fetch: (String?, Int) throws -> MusicPage, limit: Int,
                                     onPage: (MusicPage) -> Bool,
                                     onWarming: (TimeInterval) -> Void,
-                                    sleep: (TimeInterval) -> Void) -> LibraryPageWalkOutcome {
+                                    sleep: (TimeInterval) -> Void,
+                                    budget: WarmUpBudget? = nil) -> LibraryPageWalkOutcome {
     var cursor: String? = nil
     var generation: Int? = nil
-    // ONE budget for the whole attempt. A restart gets a fresh one, because a
-    // restarted list is a new list and deserves its own patience.
-    let budget = WarmUpBudget()
+    // ONE budget for the whole attempt, by default a fresh one: a restart
+    // gets its own, because a restarted list is a new list and deserves its
+    // own patience. A caller-owned budget (C1's `walkLibraryPages(budget:)`,
+    // the PLAY case) is threaded straight through instead, so it keeps
+    // counting across a restart rather than being topped back up to 60s.
+    let effectiveBudget = budget ?? WarmUpBudget()
     while true {
         let page: MusicPage
         do {
@@ -332,7 +387,7 @@ private func attemptLibraryPageWalk(fetch: (String?, Int) throws -> MusicPage, l
             // hint. Never a failure while the budget holds, because "empty
             // library" would be a lie — and never a restart, because the
             // library did not change, the page was just not ready.
-            page = try retryingWhileWarming(budget: budget, onWarming: onWarming, sleep: sleep) {
+            page = try retryingWhileWarming(budget: effectiveBudget, onWarming: onWarming, sleep: sleep) {
                 try fetch(cursor, limit)
             }
         } catch let error as MusicProviderError {
@@ -362,6 +417,17 @@ func bridgeQueueIDs(_ rows: [MusicRow], shuffle: Bool, startAt: Int) -> [String]
     guard !rows.isEmpty else { return [] }
     let start = min(max(1, startAt), rows.count)
     return rows[(start - 1)...].map(\.id)
+}
+
+/// Addendum U (U-R6): the unavailable-song notice, appended to any
+/// successful Bridge play's footer when `n` is greater than 0 — never
+/// replacing whatever that footer already said (D11's video-skip sentence,
+/// or the plain "N tracks" one), only trailing it. Shared by every Bridge
+/// play footer (Songs/Albums/Artists in `LibraryScene`, playlists in
+/// `PlaylistsScene`), so the plural rule is written once.
+func bridgeUnavailableSongsNotice(_ n: Int) -> String {
+    guard n > 0 else { return "" }
+    return n == 1 ? "1 song isn't available to Bridge." : "\(n) songs aren't available to Bridge."
 }
 
 /// A count a person reads, grouped in threes: 15646 → "15,646".

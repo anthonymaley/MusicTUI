@@ -140,6 +140,68 @@ final class BridgeLibraryListsSceneTests: XCTestCase {
         XCTAssertEqual(spy.count("onAlbums"), 0, "an older-Bridge refusal fell back to Music.app")
     }
 
+    // MARK: - Live gate (2026-09-24): the same filter + warm-up-retry defect, checked here
+
+    /// The coordinator's live-gate finding (`PlaylistsScene`'s `plCursor`
+    /// pointing outside the filtered set after a warm-up-retry) does NOT
+    /// reproduce here: `LibraryScene`'s `nav.cursor` is a position WITHIN the
+    /// filtered list itself (`focusedAlbum()`/`selectionUnderCursor()` read
+    /// `src[vis[nav.cursor]]`), never an absolute index into the unfiltered
+    /// `albums` array the way `PlaylistsScene.plCursor` indexes
+    /// `bridgePlaylistRows` directly — so the existing bounds-only clamp
+    /// (`nav.cursor >= visible`) is already correct: whatever `nav.cursor`
+    /// is, `vis[nav.cursor]` is always a filtered row. This test proves it
+    /// empirically with the exact same scenario as the Playlists one: a
+    /// filter typed while warming, give-up, `r` retry, and the fresh page's
+    /// filter match NOT at row 0 (`albumPage` puts "In Rainbows" at index 0,
+    /// "Mezzanine" at index 1 — filtering to "Mezzanine" only).
+    func testFilterTypedWhileWarmingGiveUpThenRetryLandsOnTheFilteredAlbumNotIndexZero() {
+        let warming = """
+        {"ok":false,"op":"slice.libraryAlbums","error":{"kind":"warming","detail":"preparing your library","retry_after":5.0}}
+        """
+        let requests = Int(LibraryWarmUp.maxTotalWait / LibraryWarmUp.maxWait) + 1
+        let wire = BridgeLibraryReadsWire(["slice.libraryAlbums": Array(repeating: warming, count: requests)])
+        let s = libraryTestScene(flag: BridgeSelectedFlag(true), wire: wire, spy: LibraryAppleScriptSpy(),
+                                 warmUpSleep: { _ in })
+
+        goToSubView(s, .albums)
+        // Filter typed WHILE warming, before any row exists — committed with
+        // Enter so the later `r` reaches the retry handler, not the filter box.
+        _ = s.handle(.char("/"))
+        for c in "Mezzanine" { _ = s.handle(.char(c)) }
+        _ = s.handle(.enter)
+        XCTAssertTrue(settleScene(s) {
+            s.render(frame: frame, snapshot: idle).contains("Bridge is still preparing your library - press r to retry")
+        }, "it never gave up visibly")
+
+        wire.script("slice.libraryAlbums", [albumPage])   // "In Rainbows" at 0, "Mezzanine" at 1
+        _ = s.handle(.char("r"))
+        // Codex's review (971b9659): waiting on `.contains("Mezzanine")` is
+        // NOT proof the replacement row landed — the filter box echoes back
+        // the typed text itself ("Mezzanine") the instant it's typed, well
+        // before the retry ever lands anything, so that wait could pass
+        // vacuously against an empty list. `renderRail`'s row label is
+        // `"<name> — <artist>"` ("Mezzanine — Massive Attack"); the artist
+        // half can ONLY come from an actual rendered row, never the filter
+        // echo, so waiting on it proves the row itself landed.
+        XCTAssertTrue(settleScene(s) { s.render(frame: frame, snapshot: idle).contains("Massive Attack") },
+                      "the replacement row never actually landed, not just the filter echo")
+
+        let out = s.render(frame: frame, snapshot: idle)
+        XCTAssertFalse(out.contains("In Rainbows"), "the filter must still exclude 'In Rainbows'")
+        // `nav.cursor` is a FILTERED-list position: with exactly one visible
+        // row, it must be 0 (not an unfiltered index of 1).
+        XCTAssertEqual(s.navCursorForTest, 0)
+
+        // Strengthen further: assert the SELECTED album's identity via the
+        // drill-in request itself, not just the cursor's numeric position.
+        _ = s.handle(.enter)
+        XCTAssertTrue(settleScene(s) { !wire.sent("slice.libraryAlbumTracks").isEmpty },
+                      "Enter on the filtered row never drilled in")
+        XCTAssertEqual(wire.sent("slice.libraryAlbumTracks").first?["id"] as? String, "al2",
+                       "the drill-in read the wrong album — 'In Rainbows' (al1), not the filtered 'Mezzanine' (al2)")
+    }
+
     // MARK: - Music.app mode: unaffected
 
     func testInMusicAppModeAllThreeListsComeFromTheSpyAndNoHeaderNamesALibrary() {
