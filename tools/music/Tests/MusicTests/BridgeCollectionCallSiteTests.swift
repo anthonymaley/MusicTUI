@@ -65,7 +65,9 @@ final class BridgeCollectionCallSiteTests: XCTestCase {
                             sources: emptySources(), appQueue: AppQueueStore(),
                             status: status, actions: ActionRunner(status: status),
                             resolveAlbum: { _, _, _ in resolved },
-                            resolveArtist: { _, _ in resolved })
+                            resolveArtist: { _, _ in resolved },
+                            // Never the real ~/.config/music/artist-tiers.json (C2 isolation).
+                            resultCache: temporaryResultCache().cache)
     }
 
     /// `ActionRunner` runs on its own serial queue, so the assertion has to wait
@@ -88,43 +90,27 @@ final class BridgeCollectionCallSiteTests: XCTestCase {
 
     // MARK: - Album play
 
-    /// The binding itself: in Bridge mode the album reaches the WIRE. Fails if
-    /// `bridgeNotWiredYet` is reinstated at this call site.
-    func testAlbumPlayInBridgeModeQueuesOnTheWire() {
+    /// C3 item 8 rewrite (was `testAlbumPlayInBridgeModeQueuesOnTheWire`,
+    /// `testAlbumPlayFromARowQueuesThatRowToTheEnd` and
+    /// `testAlbumShuffleQueuesTheWholeSet`, three variants of the same now-gone
+    /// behaviour). `playAlbum` is the Music.app-SOURCED path; this harness
+    /// never gives it a provider, so `s.playAlbum` here models a Music.app
+    /// list played while `routing.mode == .source` (Bridge selected) — the
+    /// join is gone (rule 3, no silent fallback): nothing reaches the wire,
+    /// and the footer says why in `LibraryProvenance.bridgeSelectedMusicAppList`'s
+    /// own words, not "Play failed.".
+    func testAMusicAppListsAlbumPlayInBridgeModeSendsNothingAndSaysWhy() {
         let wire = Wire()
         let status = StatusStore()
         let s = scene(mode: .source, wire: wire, status: status,
                       resolved: AlbumResolution(tracks: tracks(3), matched: 3))
 
         s.playAlbum(title: "Album", artist: "A", shuffle: false)
-        settle(wire)
+        settleStatus(status)
 
-        XCTAssertEqual(wire.queued.count, 1, "the album never reached Bridge")
-        XCTAssertEqual(wire.queuedTitles, ["T1", "T2", "T3"])
-    }
-
-    /// Start-at-row travels to the wire, not just through the pure helper.
-    func testAlbumPlayFromARowQueuesThatRowToTheEnd() {
-        let wire = Wire()
-        let s = scene(mode: .source, wire: wire, status: StatusStore(),
-                      resolved: AlbumResolution(tracks: tracks(5), matched: 5))
-
-        s.playAlbum(title: "Album", artist: "A", shuffle: false, startAt: 4)
-        settle(wire)
-
-        XCTAssertEqual(wire.queuedTitles, ["T4", "T5"])
-    }
-
-    /// Shuffle sends the whole set, in some order, and never the start row only.
-    func testAlbumShuffleQueuesTheWholeSet() {
-        let wire = Wire()
-        let s = scene(mode: .source, wire: wire, status: StatusStore(),
-                      resolved: AlbumResolution(tracks: tracks(6), matched: 6))
-
-        s.playAlbum(title: "Album", artist: "A", shuffle: true, startAt: 4)
-        settle(wire)
-
-        XCTAssertEqual(Set(wire.queuedTitles), Set(["T1", "T2", "T3", "T4", "T5", "T6"]))
+        XCTAssertTrue(wire.queued.isEmpty, "a Music.app-sourced album reached Bridge's wire")
+        XCTAssertEqual(status.current()?.text, LibraryProvenance.bridgeSelectedMusicAppList)
+        XCTAssertEqual(status.current()?.isError, true)
     }
 
     /// Music.app mode must not reach the wire at all. This is the other half of
@@ -144,15 +130,22 @@ final class BridgeCollectionCallSiteTests: XCTestCase {
 
     // MARK: - Artist play
 
-    func testArtistPlayInBridgeModeQueuesEveryTrack() {
+    /// C3 item 8 rewrite (was `testArtistPlayInBridgeModeQueuesEveryTrack`).
+    /// Same property as the album case above: `playArtist` is the
+    /// Music.app-SOURCED path, and played while Bridge is selected it refuses
+    /// rather than joining.
+    func testAMusicAppListsArtistPlayInBridgeModeSendsNothingAndSaysWhy() {
         let wire = Wire()
-        let s = scene(mode: .source, wire: wire, status: StatusStore(),
+        let status = StatusStore()
+        let s = scene(mode: .source, wire: wire, status: status,
                       resolved: AlbumResolution(tracks: tracks(4), matched: 4))
 
         s.playArtist(name: "A", shuffle: false)
-        settle(wire)
+        settleStatus(status)
 
-        XCTAssertEqual(wire.queuedTitles, ["T1", "T2", "T3", "T4"])
+        XCTAssertTrue(wire.queued.isEmpty, "a Music.app-sourced artist reached Bridge's wire")
+        XCTAssertEqual(status.current()?.text, LibraryProvenance.bridgeSelectedMusicAppList)
+        XCTAssertEqual(status.current()?.isError, true)
     }
 
     func testArtistPlayInMusicAppModeNeverTouchesTheWire() {
@@ -166,41 +159,13 @@ final class BridgeCollectionCallSiteTests: XCTestCase {
         XCTAssertTrue(wire.queued.isEmpty, "Music.app mode sent a Bridge request")
     }
 
-    // MARK: - Failures stay visible
-
-    /// A Bridge refusal must reach the footer in its OWN words. `ActionRunner`
-    /// reduces anything that is not an `ActionError` to "Play failed.", which is
-    /// how the 100-song bound and "no unique match" became four useless words
-    /// twice already.
-    func testABridgeRefusalReachesTheFooterInItsOwnWords() {
-        let wire = Wire()
-        wire.reply = #"{"ok":false,"op":"slice.queue","error":{"kind":"unresolvable","detail":"2 of 25 tracks have no unique match (2 ambiguous)"}}"#
-        let status = StatusStore()
-        let s = scene(mode: .source, wire: wire, status: status,
-                      resolved: AlbumResolution(tracks: tracks(25), matched: 25))
-
-        s.playAlbum(title: "Top 25", artist: "A", shuffle: false)
-        settleStatus(status)
-
-        let text = status.current()?.text ?? ""
-        XCTAssertTrue(text.contains("2 of 25 tracks have no unique match (2 ambiguous)"),
-                      "the app's own reason was lost; got: \(text)")
-        XCTAssertNotEqual(text, "Play failed.", "the refusal was reduced to the label")
-        XCTAssertEqual(status.current()?.isError, true)
-    }
-
-    /// A track with no album refuses before anything is sent, naming the count.
-    func testAnUndescribableTrackRefusesBeforeSendingAnything() {
-        let wire = Wire()
-        let status = StatusStore()
-        let s = scene(mode: .source, wire: wire, status: status,
-                      resolved: AlbumResolution(tracks: tracks(2, album: nil), matched: 2))
-
-        s.playAlbum(title: "Album", artist: "A", shuffle: false)
-        settleStatus(status)
-
-        XCTAssertTrue(wire.queued.isEmpty, "sent a queue it could not describe")
-        XCTAssertEqual(status.current()?.text,
-                       "2 of 2 tracks in 'Album' have no album, so Bridge cannot identify them")
-    }
+    // C3 item 8: `testABridgeRefusalReachesTheFooterInItsOwnWords` moved to
+    // the Bridge path in `BridgeLibraryPlaySceneTests`, with the same
+    // property (a Bridge refusal reaches the footer in its own words, never
+    // reduced to "Play failed."), now exercised through `playBridgeAlbum`.
+    //
+    // `testAnUndescribableTrackRefusesBeforeSendingAnything` is deleted: "no
+    // album, so Bridge cannot identify it" was the join's own rule, and the
+    // join is gone from the Library tab. Its sibling in
+    // `BridgeCollectionQueueTests` still pins the helper directly.
 }

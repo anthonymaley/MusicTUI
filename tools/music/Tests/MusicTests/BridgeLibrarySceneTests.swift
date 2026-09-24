@@ -36,6 +36,13 @@ final class BridgeLibrarySceneTests: XCTestCase {
         /// Scripted `slice.queue` answers, in order; afterwards it succeeds.
         private var queueReplies: [String]
         private var queueRequests = 0
+        /// C2 harness addition: scripted `slice.libraryAlbums` /
+        /// `slice.libraryArtists` pages, for the rewritten tests that need
+        /// Albums or Artists to answer from Bridge alongside Songs.
+        private let albumPages: [String]
+        private var albumRequests = 0
+        private let artistPages: [String]
+        private var artistRequests = 0
 
         static let queued = """
         {"ok":true,"op":"slice.queue","status":{"playback":"playing","title":"Aquarama","artist":"Moomin",
@@ -50,13 +57,22 @@ final class BridgeLibrarySceneTests: XCTestCase {
         static let unscripted = """
         {"ok":false,"op":"slice.librarySongs","error":{"kind":"bad_request","detail":"unscripted page request"}}
         """
+        static let unscriptedAlbums = """
+        {"ok":false,"op":"slice.libraryAlbums","error":{"kind":"bad_request","detail":"unscripted album page request"}}
+        """
+        static let unscriptedArtists = """
+        {"ok":false,"op":"slice.libraryArtists","error":{"kind":"bad_request","detail":"unscripted artist page request"}}
+        """
 
         convenience init(pages: [String], gateAt: Int) { self.init(pages: pages, gateAt: [gateAt]) }
 
-        init(pages: [String], gateAt: Set<Int> = [], queueReplies: [String] = []) {
+        init(pages: [String], gateAt: Set<Int> = [], queueReplies: [String] = [],
+            albumPages: [String] = [], artistPages: [String] = []) {
             self.pages = pages
             self.gateAt = gateAt
             self.queueReplies = queueReplies
+            self.albumPages = albumPages
+            self.artistPages = artistPages
             for i in gateAt { gates[i] = DispatchSemaphore(value: 0) }
         }
 
@@ -76,6 +92,14 @@ final class BridgeLibrarySceneTests: XCTestCase {
                 let q = queueRequests
                 queueRequests += 1
                 reply = q < queueReplies.count ? queueReplies[q] : Self.queued
+            case "slice.libraryAlbums":
+                let a = albumRequests
+                albumRequests += 1
+                reply = a < albumPages.count ? albumPages[a] : Self.unscriptedAlbums
+            case "slice.libraryArtists":
+                let a = artistRequests
+                artistRequests += 1
+                reply = a < artistPages.count ? artistPages[a] : Self.unscriptedArtists
             default:             reply = Self.status
             }
             let gate = gates[n]
@@ -157,6 +181,11 @@ final class BridgeLibrarySceneTests: XCTestCase {
         /// failure state was touched.
         var albumReads: Int { lock.lock(); defer { lock.unlock() }; return albumReadCount }
         private var albumReadCount = 0
+        /// C2 harness addition: the same probe as `albumReads`, for Artists —
+        /// needed once Artists can ALSO be Bridge-sourced, so "the Music.app
+        /// source is asked 0 times" is provable for all three lists, not two.
+        var artistReads: Int { lock.lock(); defer { lock.unlock() }; return artistReadCount }
+        private var artistReadCount = 0
         func sources() -> LibraryDataSources {
             LibraryDataSources(onAlbums: { [self] page in
                                    lock.lock(); albumReadCount += 1; lock.unlock()
@@ -168,7 +197,8 @@ final class BridgeLibrarySceneTests: XCTestCase {
                                    return page(rows)
                                },
                                onArtists: { [self] page in
-                                   artists.isEmpty ? true : page(artists)
+                                   lock.lock(); artistReadCount += 1; lock.unlock()
+                                   return artists.isEmpty ? true : page(artists)
                                },
                                onAlbumTracks: { _, _ in [] },
                                onArtistAlbums: { _ in [] },
@@ -205,7 +235,9 @@ final class BridgeLibrarySceneTests: XCTestCase {
                                                                                     transport: wire.transport))
                                     : nil
                             },
-                            warmUpSleep: { waits.record($0) })
+                            warmUpSleep: { waits.record($0) },
+                            // Never the real ~/.config/music/artist-tiers.json (C2 isolation).
+                            resultCache: temporaryResultCache().cache)
     }
 
     /// `[` / `]` cycle artists → albums → songs; land on Songs from wherever the
@@ -454,17 +486,24 @@ final class BridgeLibrarySceneTests: XCTestCase {
 
     /// Patience runs out, and when it does the person is told it has STOPPED,
     /// with a way to ask again. An endless "Preparing…" would be its own lie.
+    ///
+    /// **Bounded by 60 s of waiting (D5), not by an attempt count.** `warming`'s
+    /// hint is 1.0 s, so the budget holds for exactly sixty 1.0 s waits before
+    /// it gives up on the 61st request — the same shape `WarmUpPatienceTests`
+    /// proves against the policy directly; this proves it reaches the scene.
     func testWarmingIsBoundedAndEndsInAVisibleMessage() {
         let status = StatusStore()
-        let wire = Wire(pages: Array(repeating: warming, count: LibraryWarmUp.maxAttempts + 1))
+        let requests = Int(LibraryWarmUp.maxTotalWait) + 1
+        let wire = Wire(pages: Array(repeating: warming, count: requests))
         let s = scene(mode: .source, wire: wire, spy: AppleScriptSpy(), status: status)
         toSongs(s)
 
-        XCTAssertTrue(settle(s) { status.current() != nil }, "it waited forever without saying so")
+        XCTAssertTrue(settle(s, seconds: 5) { status.current() != nil },
+                      "it waited forever without saying so")
         XCTAssertEqual(status.current()?.text, LibraryWarmUp.gaveUp)
         XCTAssertEqual(status.current()?.isError, true)
-        XCTAssertEqual(wire.sent("slice.librarySongs").count, LibraryWarmUp.maxAttempts + 1,
-                       "the retries were not bounded at \(LibraryWarmUp.maxAttempts)")
+        XCTAssertEqual(wire.sent("slice.librarySongs").count, requests,
+                       "the retries were not bounded at \(LibraryWarmUp.maxTotalWait)s of waiting")
 
         let out = s.render(frame: frame, snapshot: idle)
         XCTAssertTrue(out.contains("Bridge is still preparing your library - press r to retry"),
@@ -561,76 +600,91 @@ final class BridgeLibrarySceneTests: XCTestCase {
 
     /// And it does not wait forever. When patience runs out the person is told,
     /// rather than being left with a row that never plays and no explanation.
+    ///
+    /// **Bounded by 60 s of waiting (D5), not by an attempt count** — the same
+    /// change as the list walk's, because it is the same shared policy.
     func testAColdQueueGivesUpVisiblyRatherThanWaitingForever() {
         let status = StatusStore()
+        let requests = Int(LibraryWarmUp.maxTotalWait) + 1
         let wire = Wire(pages: [page1, page2],
-                        queueReplies: Array(repeating: queueWarming, count: LibraryWarmUp.maxAttempts + 1))
+                        queueReplies: Array(repeating: queueWarming, count: requests))
         let s = scene(mode: .source, wire: wire, spy: AppleScriptSpy(), status: status)
         toSongs(s)
         XCTAssertTrue(settle(s) { s.songsForTest.count == 3 })
 
         _ = s.handle(.enter)
-        let deadline = Date().addingTimeInterval(3)
+        let deadline = Date().addingTimeInterval(5)
         while Date() < deadline && status.current()?.text != LibraryWarmUp.gaveUp { usleep(5_000) }
 
         XCTAssertEqual(status.current()?.text, LibraryWarmUp.gaveUp, "the give-up was silent")
         XCTAssertEqual(status.current()?.isError, true)
-        XCTAssertEqual(wire.sent("slice.queue").count, LibraryWarmUp.maxAttempts + 1,
-                       "the queue retries were not bounded")
+        XCTAssertEqual(wire.sent("slice.queue").count, requests,
+                       "the queue retries were not bounded at \(LibraryWarmUp.maxTotalWait)s of waiting")
     }
 
     // MARK: - Two backends, two failure states
 
-    /// Bridge's failure is Bridge's alone. Albums is read from Music.app, which
-    /// was asked and answered — so it must show the successful-empty text, not
-    /// "Couldn't read the Music library", which nothing here established.
-    func testABridgeFailureLeavesTheMusicAppListsAlone() {
+    /// C2 rewrite of `testABridgeFailureLeavesTheMusicAppListsAlone`: with
+    /// D1/D7, Bridge selected means Albums is ALSO Bridge-sourced, not
+    /// Music.app's — a Songs refusal must not mark it failed, and it must
+    /// show Bridge's own rows, never having asked Music.app at all.
+    func testABridgeSongsFailureLeavesTheBridgeAlbumsListAlone() {
         let status = StatusStore()
-        let wire = Wire(pages: [noAccess])
+        let albumPage = """
+        {"ok":true,"op":"slice.libraryAlbums","generation":3,"total":1,
+         "items":[{"id":"al1","title":"In Rainbows","artist":"Radiohead","track_count":10,"kind":"album"}],
+         "next_cursor":null}
+        """
+        let wire = Wire(pages: [noAccess], albumPages: [albumPage])
         let spy = AppleScriptSpy()
         let s = scene(mode: .source, wire: wire, spy: spy, status: status)
         toSongs(s)
-        XCTAssertTrue(settle(s) { status.current() != nil }, "the Bridge failure was silent")
+        XCTAssertTrue(settle(s) { status.current() != nil }, "the Bridge Songs failure was silent")
 
         go(s, to: .albums)
-        XCTAssertTrue(settle(s) { s.render(frame: frame, snapshot: idle).contains("(no albums)") },
-                      "Albums never finished its own read; got: \(s.render(frame: frame, snapshot: idle))")
-        // Longer than the shared chain's first backoff (0.5s), so a retry this
-        // failure had no business scheduling has had its chance to fire. Without
-        // this the shared retry silently repairs the state and hides the defect.
-        _ = settle(s, seconds: 1.2) { false }
-        XCTAssertEqual(spy.albumReads, 1,
-                       "a Bridge failure spent the shared Music.app retry budget and re-read Music.app")
+        XCTAssertTrue(settle(s) { s.render(frame: frame, snapshot: idle).contains("In Rainbows") },
+                      "Albums did not show Bridge's own rows; got: \(s.render(frame: frame, snapshot: idle))")
         let out = s.render(frame: frame, snapshot: idle)
-        XCTAssertFalse(out.contains("Couldn't read the Music library"),
-                       "a Bridge refusal was reported as a Music.app read failure: \(out)")
         XCTAssertFalse(out.contains("Bridge has not been granted"),
-                       "the Albums list spoke for Bridge: \(out)")
+                       "the Songs failure bled into the Albums list: \(out)")
+        XCTAssertFalse(out.contains("Couldn't read the Music library"),
+                       "Albums read Music.app instead of Bridge: \(out)")
+        XCTAssertEqual(spy.albumReads, 0, "Albums asked Music.app instead of Bridge")
+        XCTAssertFalse(spy.wasAsked, "the Music.app source was asked at all")
     }
 
-    /// And the other way. A Music.app bulk read that failed says nothing about a
-    /// list Music.app was never asked for: an empty Bridge library still reads as
-    /// empty, not as unreadable.
-    func testAMusicAppFailureLeavesTheBridgeListAlone() {
-        let emptyLibrary = """
-        {"ok":true,"op":"slice.librarySongs","generation":3,"total":0,"items":[],"next_cursor":null}
+    /// C2 rewrite of `testAMusicAppFailureLeavesTheBridgeListAlone`: in Bridge
+    /// mode no list reads Music.app any more (D1), so a Music.app source that
+    /// would fail is simply never consulted — every spy count stays 0 across
+    /// all three lists.
+    func testInBridgeModeNoListReadsMusicApp() {
+        let emptyAlbums = """
+        {"ok":true,"op":"slice.libraryAlbums","generation":3,"total":0,"items":[],"next_cursor":null}
         """
-        let wire = Wire(pages: [emptyLibrary])
-        let s = scene(mode: .source, wire: wire,
-                      spy: AppleScriptSpy(albumsSucceed: false), status: StatusStore())
+        let emptyArtists = """
+        {"ok":true,"op":"slice.libraryArtists","generation":3,"total":0,"items":[],"next_cursor":null}
+        """
+        let wire = Wire(pages: [page1, page2], albumPages: [emptyAlbums], artistPages: [emptyArtists])
+        // A Music.app source that would FAIL every read, so any list that
+        // reached it would show the generic failure text.
+        let spy = AppleScriptSpy(albumsSucceed: false)
+        let s = scene(mode: .source, wire: wire, spy: spy, status: StatusStore())
 
-        go(s, to: .albums)                                  // kick the failing Music.app read
-        XCTAssertTrue(settle(s) { s.render(frame: frame, snapshot: idle).contains("Couldn't read the Music library") },
-                      "the Music.app read did not fail as arranged")
+        toSongs(s)
+        XCTAssertTrue(settle(s) { s.songsForTest.count == 3 })
+        go(s, to: .albums)
+        XCTAssertTrue(settle(s) { s.render(frame: frame, snapshot: idle).contains("(no albums)") },
+                      "Albums never settled; got: \(s.render(frame: frame, snapshot: idle))")
+        go(s, to: .artists)
+        XCTAssertTrue(settle(s) { s.render(frame: frame, snapshot: idle).contains("(no artists)") },
+                      "Artists never settled; got: \(s.render(frame: frame, snapshot: idle))")
 
-        go(s, to: .songs)
-        XCTAssertTrue(settle(s) { s.render(frame: frame, snapshot: idle).contains("(no songs)") },
-                      "the Bridge list never settled; got: \(s.render(frame: frame, snapshot: idle))")
         let out = s.render(frame: frame, snapshot: idle)
         XCTAssertFalse(out.contains("Couldn't read the Music library"),
-                       "a Music.app failure marked the Bridge list unreadable: \(out)")
-        XCTAssertEqual(wire.sent("slice.librarySongs").count, 1,
-                       "the shared Music.app retry re-walked Bridge")
+                       "a list read the failing Music.app source: \(out)")
+        XCTAssertEqual(spy.albumReads, 0)
+        XCTAssertEqual(spy.artistReads, 0)
+        XCTAssertFalse(spy.wasAsked)
     }
 
     /// `r` on a failed Bridge list asks BRIDGE again — its own retry, not the
@@ -651,27 +705,38 @@ final class BridgeLibrarySceneTests: XCTestCase {
 
     // MARK: - All three lists say what they show
 
-    /// The tab is showing two libraries at once, so all three lists name theirs.
-    /// Albums and Artists work, and the line says where their rows come from
-    /// rather than that anything is wrong with them.
-    func testInBridgeModeAlbumsAndArtistsNameMusicAppAsTheirLibrary() {
-        let wire = Wire(pages: [page1, page2])
-        let spy = AppleScriptSpy(albums: [LibraryAlbum(id: "al1", name: "In Rainbows", artist: "Radiohead", trackCount: 10),
-                                          LibraryAlbum(id: "al2", name: "Mezzanine", artist: "Massive Attack", trackCount: 11)],
-                                 artists: [LibraryArtist(id: "ar1", name: "Radiohead")])
-        let s = scene(mode: .source, wire: wire, spy: spy, status: StatusStore())
+    /// C2 rewrite of `testInBridgeModeAlbumsAndArtistsNameMusicAppAsTheirLibrary`:
+    /// with D1, Albums and Artists are ALSO Bridge's now, and the count each
+    /// header shows comes from the wire's own `total` — never predicted here.
+    func testInBridgeModeAllThreeListsNameBridgeAndItsCount() {
+        let albumPage = """
+        {"ok":true,"op":"slice.libraryAlbums","generation":3,"total":3012,
+         "items":[{"id":"al1","title":"In Rainbows","artist":"Radiohead","track_count":10,"kind":"album"}],
+         "next_cursor":null}
+        """
+        let artistPage = """
+        {"ok":true,"op":"slice.libraryArtists","generation":3,"total":1801,
+         "items":[{"id":"ar1","title":"Radiohead","kind":"artist"}],"next_cursor":null}
+        """
+        let wire = Wire(pages: [page1, page2], albumPages: [albumPage], artistPages: [artistPage])
+        let s = scene(mode: .source, wire: wire, spy: AppleScriptSpy(), status: StatusStore())
+
+        toSongs(s)
+        XCTAssertTrue(settle(s) { s.songsForTest.count == 3 })
+        XCTAssertTrue(s.render(frame: frame, snapshot: idle)
+                       .contains("Songs \u{2014} Bridge library (15,646)"))
 
         go(s, to: .albums)
         XCTAssertTrue(settle(s) { s.render(frame: frame, snapshot: idle).contains("In Rainbows") })
         XCTAssertTrue(s.render(frame: frame, snapshot: idle)
-                       .contains("Albums \u{2014} Music.app library (2)"),
-                      "the Albums list did not say which library it shows: \(s.render(frame: frame, snapshot: idle))")
+                       .contains("Albums \u{2014} Bridge library (3,012)"),
+                      "the Albums count did not come from the wire: \(s.render(frame: frame, snapshot: idle))")
 
         go(s, to: .artists)
         XCTAssertTrue(settle(s) { s.render(frame: frame, snapshot: idle).contains("Radiohead") })
         XCTAssertTrue(s.render(frame: frame, snapshot: idle)
-                       .contains("Artists \u{2014} Music.app library (1)"),
-                      "the Artists list did not say which library it shows: \(s.render(frame: frame, snapshot: idle))")
+                       .contains("Artists \u{2014} Bridge library (1,801)"),
+                      "the Artists count did not come from the wire: \(s.render(frame: frame, snapshot: idle))")
     }
 
     /// In Music.app mode there is only one library, so no list says anything —
@@ -831,10 +896,15 @@ final class LibrarySongWalkTests: XCTestCase {
 
     /// Bounded, and the last word is that it STOPPED preparing — not a silent
     /// give-up and not an endless wait.
+    ///
+    /// **Bounded by 60 s of waiting (D5), not by an attempt count.** A 1 s hint
+    /// gives exactly sixty waits before the budget is spent, so the 61st
+    /// request is the one that gives up.
     func testWarmingStopsAfterItsBoundedAttempts() {
+        let requests = Int(LibraryWarmUp.maxTotalWait) + 1
         let script = Array(repeating: Result<MusicPage, MusicProviderError>
                             .failure(.warming("still going", retryAfter: 1)),
-                           count: LibraryWarmUp.maxAttempts + 1)
+                           count: requests)
         let fake = Fake(script)
         var slept: [TimeInterval] = []
         let error = walkLibrarySongs(fake, onPage: { _ in true }, onRestart: {},
@@ -843,8 +913,10 @@ final class LibrarySongWalkTests: XCTestCase {
             return XCTFail("expected a warming give-up, got \(String(describing: error))")
         }
         XCTAssertEqual(why, LibraryWarmUp.gaveUp)
-        XCTAssertEqual(fake.cursors.count, LibraryWarmUp.maxAttempts + 1)
-        XCTAssertEqual(slept.count, LibraryWarmUp.maxAttempts, "it slept after giving up")
+        XCTAssertEqual(fake.cursors.count, requests)
+        XCTAssertEqual(slept.count, Int(LibraryWarmUp.maxTotalWait), "it slept after giving up")
+        XCTAssertEqual(slept.reduce(0, +), LibraryWarmUp.maxTotalWait, accuracy: 0.0001,
+                       "the recorded waits did not sum to the budget")
     }
 
     func testTheHintIsClampedAtBothEnds() {

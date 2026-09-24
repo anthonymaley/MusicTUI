@@ -74,6 +74,10 @@ enum SourceReadiness: Equatable {
         case .socketUnavailable(let why): return .unavailable("Bridge's control socket is unusable: \(why)")
         case .unreadable:        return .unavailable("Bridge sent a reply this build could not read")
         case .didNotStart(let s): return .unavailable("Bridge did not start playback (\(s))")
+        // Only a library read can see this, and the Output tab does not make
+        // one (D6); if it ever does, this is the older-Bridge line rather than
+        // a generic refusal.
+        case .unsupported:       return .unavailable("Bridge is older than this MusicTUI — update Bridge")
         }
     }
 }

@@ -70,7 +70,9 @@ final class SnapToPlayingRowTests: XCTestCase {
         let status = StatusStore()
         return LibraryScene(backend: AppleScriptBackend(), routing: routing(),
                             sources: librarySongs(songs), appQueue: AppQueueStore(),
-                            status: status, actions: ActionRunner(status: status))
+                            status: status, actions: ActionRunner(status: status),
+                            // Never the real ~/.config/music/artist-tiers.json (C2 isolation).
+                            resultCache: temporaryResultCache().cache)
     }
 
     /// `[` and `]` cycle artists / albums / songs; three presses land on Songs

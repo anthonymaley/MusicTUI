@@ -61,6 +61,12 @@ enum SourceAppError: Error, Equatable {
     /// row it cannot read. It carries what was wrong, because "Bridge sent
     /// something odd" is not something a person can act on.
     case malformedReply(String)
+    /// An OLDER Bridge that does not serve this op (D6): the contract is
+    /// additive, so an older peer answers `unknown_op` for the five slice-2
+    /// reads rather than reading as wholly incompatible. Carries the op name;
+    /// the caller decides on the KIND, never the prose, and turns this into its
+    /// own "update Bridge" sentence per op.
+    case unsupported(String)
 
     /// Deliberately short: it renders inside Radio's one-line message strip
     /// beside a `✗`, not in a log.
@@ -80,6 +86,10 @@ enum SourceAppError: Error, Equatable {
         case .timedOut:      return "Bridge did not answer in time"
         case .socketUnavailable(let d): return "Bridge's control socket is unusable: \(d)"
         case .didNotStart(let s): return "Bridge did not start playback (\(s))"
+        // Op-neutral, like `.warming`: a surface that can name the op (the
+        // Output tab, `BridgeMusicProvider`) says something more specific from
+        // the op it asked for rather than from this generic line.
+        case .unsupported: return "Bridge doesn't serve that yet — update Bridge"
         }
     }
 }
@@ -540,6 +550,16 @@ protocol SourceControlling {
     func librarySongs(cursor: String?, limit: Int) throws -> MusicPage
     /// Queue exactly these library rows, by the ids a Bridge page gave us.
     func queue(libraryIDs: [String]) throws
+    /// One page of the app's own MusicKit albums (D1, contract 3 additive).
+    func libraryAlbums(cursor: String?, limit: Int) throws -> MusicPage
+    /// One page of the app's own MusicKit artists (D1).
+    func libraryArtists(cursor: String?, limit: Int) throws -> MusicPage
+    /// One album's tracks: complete, or refused — never paged, never partial (D2).
+    func libraryAlbumTracks(albumID: String) throws -> MusicList
+    /// One artist's albums (D2), for the drill-in.
+    func libraryArtistAlbums(artistID: String) throws -> MusicList
+    /// One artist's songs (D2): what an artist PLAYS.
+    func libraryArtistSongs(artistID: String) throws -> MusicList
 }
 
 struct SourceAppControl: SourceControlling {
@@ -613,25 +633,104 @@ struct SourceAppControl: SourceControlling {
     /// whole point: a row played by its own id needs no `(title, artist, album)`
     /// join, so the 338 rows that join could not resolve stop being a category.
     func librarySongs(cursor: String?, limit: Int = 100) throws -> MusicPage {
-        var body: [String: Any] = ["op": "slice.librarySongs", "limit": limit]
+        try libraryPage(op: "slice.librarySongs", opName: "library", limit: limit, cursor: cursor,
+                        rows: .anyKnownKind)
+    }
+
+    /// D1: MusicKit's own album entities, not song rows grouped by title —
+    /// see the boundary decision in the slice-2 score.
+    func libraryAlbums(cursor: String?, limit: Int = 100) throws -> MusicPage {
+        try libraryPage(op: "slice.libraryAlbums", opName: "album", limit: limit, cursor: cursor,
+                        rows: .exactly(.album))
+    }
+
+    /// D1.
+    func libraryArtists(cursor: String?, limit: Int = 100) throws -> MusicPage {
+        try libraryPage(op: "slice.libraryArtists", opName: "artist", limit: limit, cursor: cursor,
+                        rows: .exactly(.artist))
+    }
+
+    /// D2: an album's tracks, complete or refused, never paged and never
+    /// partial. A dropped track would silently shorten the album, so a row of
+    /// the wrong or an unknown kind fails the whole read rather than being
+    /// skipped (unlike the paged Songs list, where an unrecognised row kind is
+    /// merely something this build does not serve yet).
+    func libraryAlbumTracks(albumID: String) throws -> MusicList {
+        try libraryContainer(op: "slice.libraryAlbumTracks", opName: "album tracks",
+                             id: albumID, rows: .exactly(.song))
+    }
+
+    /// D2.
+    func libraryArtistAlbums(artistID: String) throws -> MusicList {
+        try libraryContainer(op: "slice.libraryArtistAlbums", opName: "artist albums",
+                             id: artistID, rows: .exactly(.album))
+    }
+
+    /// D2: what the artist PLAYS (ruling 12.2), at most 100 rows.
+    func libraryArtistSongs(artistID: String) throws -> MusicList {
+        try libraryContainer(op: "slice.libraryArtistSongs", opName: "artist songs",
+                             id: artistID, rows: .exactly(.song))
+    }
+
+    /// Which row kinds a paged list or a container read accepts, and what it
+    /// does with anything else.
+    ///
+    /// **`.anyKnownKind` is Songs alone**, unchanged from before this slice: any
+    /// row this build recognises is accepted whatever its kind, and only a kind
+    /// this build has never heard of is dropped (the Discover precedent).
+    ///
+    /// **`.exactly(kind)` is every op D1/D2 add.** A row of any OTHER kind —
+    /// recognised or not — is `malformedReply`, never dropped: a dropped album,
+    /// artist or track would silently shorten a list or an album with nothing
+    /// to say why, which the fail-closed rule for the library path exists to
+    /// prevent.
+    private enum LibraryRowPolicy {
+        case anyKnownKind
+        case exactly(MusicRow.Kind)
+    }
+
+    /// One row, decoded under `policy`, or the reason the whole read fails.
+    private func libraryRow(_ item: [String: Any], opName: String,
+                            policy: LibraryRowPolicy) throws -> MusicRow? {
+        switch (policy, readMusicRow(item)) {
+        case (.anyKnownKind, .row(let row)):
+            return row
+        case (.anyKnownKind, .unknownKind):
+            return nil
+        case (.exactly(let kind), .row(let row)) where row.kind == kind:
+            return row
+        case (.exactly, .row(let row)):
+            throw SourceAppError.malformedReply(
+                "Bridge's \(opName) list contains a row of kind \(row.kind.rawValue)")
+        case (.exactly, .unknownKind(let kind)):
+            throw SourceAppError.malformedReply("Bridge's \(opName) list contains a row of kind \(kind)")
+        case (_, .malformed(let what)):
+            throw SourceAppError.malformedReply("Bridge's \(opName) page contains \(what)")
+        }
+    }
+
+    /// FAIL CLOSED, shared by every paged library list (`slice.librarySongs`,
+    /// `slice.libraryAlbums`, `slice.libraryArtists`). Every field the contract
+    /// requires is required here, and a page that does not satisfy it is
+    /// refused rather than read as a SHORTER LIBRARY. That is the whole risk on
+    /// this op: a truncated or half-written page is indistinguishable from a
+    /// genuine last page unless the client insists on the contract, and a
+    /// person would be shown a library missing rows with nothing to tell them
+    /// so. It matters more the moment these frames cross a network to an iPad.
+    private func libraryPage(op: String, opName: String, limit: Int, cursor: String?,
+                             rows policy: LibraryRowPolicy) throws -> MusicPage {
+        var body: [String: Any] = ["op": op, "limit": limit]
         if let cursor { body["cursor"] = cursor }
         let reply = try send(body, over: libraryTransport)
 
-        // FAIL CLOSED. Every field the contract requires is required here, and
-        // a page that does not satisfy it is refused rather than read as a
-        // SHORTER LIBRARY. That is the whole risk on this op: a truncated or
-        // half-written page is indistinguishable from a genuine last page
-        // unless the client insists on the contract, and a person would be
-        // shown a library missing songs with nothing to tell them so. It
-        // matters more the moment these frames cross a network to an iPad.
         guard let items = reply["items"] as? [[String: Any]] else {
-            throw SourceAppError.malformedReply("Bridge's library page is missing items")
+            throw SourceAppError.malformedReply("Bridge's \(opName) page is missing items")
         }
         guard let generation = reply["generation"] as? Int else {
-            throw SourceAppError.malformedReply("Bridge's library page is missing generation")
+            throw SourceAppError.malformedReply("Bridge's \(opName) page is missing generation")
         }
         guard let total = reply["total"] as? Int else {
-            throw SourceAppError.malformedReply("Bridge's library page is missing total")
+            throw SourceAppError.malformedReply("Bridge's \(opName) page is missing total")
         }
         // A MISSING key and an explicit null are different claims: null says
         // "this is the last page", absent says nothing at all. Read as one they
@@ -640,7 +739,7 @@ struct SourceAppControl: SourceControlling {
         // gives `NSNull` for an explicit null and nothing for an absent key,
         // which is exactly the distinction needed.
         guard let cursorValue = reply["next_cursor"] else {
-            throw SourceAppError.malformedReply("Bridge's library page is missing next_cursor")
+            throw SourceAppError.malformedReply("Bridge's \(opName) page is missing next_cursor")
         }
         let nextCursor: String?
         switch cursorValue {
@@ -648,20 +747,12 @@ struct SourceAppControl: SourceControlling {
         case let text as String:   nextCursor = text
         default:
             throw SourceAppError.malformedReply(
-                "Bridge's library page has a next_cursor that is neither text nor null")
+                "Bridge's \(opName) page has a next_cursor that is neither text nor null")
         }
 
-        // A row this build cannot READ makes the whole page unreadable. A row
-        // that merely names a kind this build does not SERVE is dropped, which
-        // is the Discover precedent and is a different fact about the page.
         var rows: [MusicRow] = []
         for item in items {
-            switch readMusicRow(item) {
-            case .row(let row):     rows.append(row)
-            case .unknownKind:      continue
-            case .malformed(let what):
-                throw SourceAppError.malformedReply("Bridge's library page contains \(what)")
-            }
+            if let row = try libraryRow(item, opName: opName, policy: policy) { rows.append(row) }
         }
 
         // `clamped` is deliberately not read: a page carries the rows it
@@ -676,6 +767,28 @@ struct SourceAppControl: SourceControlling {
                          nextCursor: nextCursor,
                          total: total,
                          generation: generation,
+                         stale: reply["stale"] as? Bool ?? false,
+                         refreshing: reply["refreshing"] as? Bool ?? false)
+    }
+
+    /// Shared by the three container reads. Complete or refused — `generation`
+    /// and `items` are required, and there is no `total` or `next_cursor` to
+    /// read (section 2: container replies carry neither).
+    private func libraryContainer(op: String, opName: String, id: String,
+                                  rows policy: LibraryRowPolicy) throws -> MusicList {
+        let reply = try send(["op": op, "id": id], over: libraryTransport)
+
+        guard let generation = reply["generation"] as? Int else {
+            throw SourceAppError.malformedReply("Bridge's \(opName) reply is missing generation")
+        }
+        guard let items = reply["items"] as? [[String: Any]] else {
+            throw SourceAppError.malformedReply("Bridge's \(opName) reply is missing items")
+        }
+        var rows: [MusicRow] = []
+        for item in items {
+            if let row = try libraryRow(item, opName: opName, policy: policy) { rows.append(row) }
+        }
+        return MusicList(rows: rows, generation: generation,
                          stale: reply["stale"] as? Bool ?? false,
                          refreshing: reply["refreshing"] as? Bool ?? false)
     }
@@ -802,6 +915,16 @@ struct SourceAppControl: SourceControlling {
                 // Decoded on the KIND. The detail travels for display; nothing
                 // decides anything by reading it.
                 throw SourceAppError.staleGeneration(detail)
+            case "unknown_op":
+                // An OLDER Bridge that predates this op (D6, additive contract).
+                // Carries the op name, not the prose, so the caller can say
+                // which capability is missing rather than "Bridge refused".
+                throw SourceAppError.unsupported(op)
+            // `too_large`, `not_in_library` and `library_changed` (D2/D4) are
+            // not decoded on their kind: each already carries the sentence a
+            // person should read verbatim (section 2), and none of them
+            // changes what the client does next the way `warming`,
+            // `stale_generation` and `unknown_op` do.
             default:
                 throw SourceAppError.refused(detail)
             }

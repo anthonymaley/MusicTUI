@@ -23,6 +23,37 @@ struct BridgeMusicProvider: MusicDataProvider {
         catch let error as SourceAppError { throw Self.translate(error) }
     }
 
+    /// D1.
+    func libraryAlbums(cursor: String?, limit: Int = 100) throws -> MusicPage {
+        do { return try control.libraryAlbums(cursor: cursor, limit: limit) }
+        catch let error as SourceAppError { throw Self.translate(error) }
+    }
+
+    /// D1.
+    func libraryArtists(cursor: String?, limit: Int = 100) throws -> MusicPage {
+        do { return try control.libraryArtists(cursor: cursor, limit: limit) }
+        catch let error as SourceAppError { throw Self.translate(error) }
+    }
+
+    /// D2. Complete or refused — see `MusicList`.
+    func albumTracks(albumID: String) throws -> MusicList {
+        do { return try control.libraryAlbumTracks(albumID: albumID) }
+        catch let error as SourceAppError { throw Self.translate(error) }
+    }
+
+    /// D2. A browse view, distinct from `artistSongs` (D1: an artist PLAYS its
+    /// songs, not the tracks of the albums shown here).
+    func artistAlbums(artistID: String) throws -> MusicList {
+        do { return try control.libraryArtistAlbums(artistID: artistID) }
+        catch let error as SourceAppError { throw Self.translate(error) }
+    }
+
+    /// D2.
+    func artistSongs(artistID: String) throws -> MusicList {
+        do { return try control.libraryArtistSongs(artistID: artistID) }
+        catch let error as SourceAppError { throw Self.translate(error) }
+    }
+
     /// Ids here are Bridge's own LIBRARY ids, from a page this provider served.
     func play(ids: [String]) throws -> BridgeNow.Queue {
         do { try control.queue(libraryIDs: ids) }
@@ -66,8 +97,35 @@ struct BridgeMusicProvider: MusicDataProvider {
             return .unavailable(what)
         case .unreadable:
             return .unavailable("Bridge sent a library page this build cannot read")
+        case .unsupported(let op):
+            // D6: an OLDER Bridge that predates this op. Additive, not a
+            // contract mismatch — the op name (the wire string `send` carried
+            // through) picks which capability the person is told is missing.
+            return .notImplemented(Self.unsupportedSentence(forWireOp: op))
         default:
             return .unavailable(error.message)
+        }
+    }
+
+    /// One sentence per slice-2 op, keyed by the wire op name. The protocol
+    /// extension's defaults in `MusicProvider.swift` use the same five
+    /// sentences, so a provider that never reaches Bridge at all (an absent
+    /// method) and a provider that reaches an old Bridge (`unknown_op`) read
+    /// identically to a person.
+    private static func unsupportedSentence(forWireOp op: String) -> String {
+        switch op {
+        case "slice.libraryAlbums":
+            return "This Bridge build can't list your albums — update Bridge"
+        case "slice.libraryArtists":
+            return "This Bridge build can't list your artists — update Bridge"
+        case "slice.libraryAlbumTracks":
+            return "This Bridge build can't list an album's tracks — update Bridge"
+        case "slice.libraryArtistAlbums":
+            return "This Bridge build can't list an artist's albums — update Bridge"
+        case "slice.libraryArtistSongs":
+            return "This Bridge build can't play an artist — update Bridge"
+        default:
+            return "Bridge doesn't serve that yet — update Bridge"
         }
     }
 }

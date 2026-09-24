@@ -67,7 +67,9 @@ final class SpaceInTextCaptureTests: XCTestCase {
         let scene = LibraryScene(backend: AppleScriptBackend(),
                                  routing: RoutingCoordinator(store: PlaybackModeStore(path: NSTemporaryDirectory() + "m-\(UUID().uuidString).json"), surface: .tui, makeSource: { SourceAppClient() }), sources: sources,
                                   appQueue: AppQueueStore(), status: status,
-                                  actions: ActionRunner(status: status))
+                                  actions: ActionRunner(status: status),
+                                  // Never the real ~/.config/music/artist-tiers.json (C2 isolation).
+                                  resultCache: temporaryResultCache().cache)
 
         _ = scene.handle(.char("/"))                // default sub-view is Artists, so filter is live
         type("deep", into: scene.handle)

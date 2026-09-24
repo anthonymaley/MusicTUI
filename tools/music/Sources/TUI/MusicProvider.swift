@@ -18,6 +18,19 @@ struct MusicRow: Equatable {
     let artist: String
     let album: String?
     let kind: Kind
+    /// MusicKit `Album.trackCount`, for an album row only. `nil` for every other
+    /// kind — the memberwise default keeps every existing call site
+    /// source-compatible.
+    var trackCount: Int? = nil
+}
+
+/// One container's rows: complete, or refused — never paged and never partial
+/// (D2). An album's tracks, an artist's albums, or an artist's songs.
+struct MusicList: Equatable {
+    let rows: [MusicRow]
+    let generation: Int
+    let stale: Bool
+    let refreshing: Bool
 }
 
 /// One page of rows, with the provider's own place-marker.
@@ -96,6 +109,19 @@ enum MusicProviderError: Error, LocalizedError, Equatable {
 protocol MusicDataProvider {
     /// A page of the library's songs. `cursor` nil starts at the beginning.
     func librarySongs(cursor: String?, limit: Int) throws -> MusicPage
+    /// A page of the library's albums (D1): MusicKit's own album entities, not
+    /// song rows grouped by title.
+    func libraryAlbums(cursor: String?, limit: Int) throws -> MusicPage
+    /// A page of the library's artists (D1).
+    func libraryArtists(cursor: String?, limit: Int) throws -> MusicPage
+    /// One album's tracks, complete or refused (D2): never a title-and-credit
+    /// match, and never partial.
+    func albumTracks(albumID: String) throws -> MusicList
+    /// One artist's albums (D2), for the drill-in — a browse view, distinct
+    /// from `artistSongs` (D1's "artist play is the song relationship").
+    func artistAlbums(artistID: String) throws -> MusicList
+    /// One artist's songs (D2): what an artist PLAYS, per ruling 12.2.
+    func artistSongs(artistID: String) throws -> MusicList
     /// Play exactly these ids, in this order, and report the queue that
     /// resulted. Ids are this provider's own.
     func play(ids: [String]) throws -> BridgeNow.Queue
@@ -103,12 +129,43 @@ protocol MusicDataProvider {
     func nowPlaying() throws -> SourceStatus
 }
 
-/// Walk every page of a provider's library songs, handing each page to `onPage`
-/// as it arrives, and restarting ONCE when the library changes underneath.
+/// Defaults for the five slice-2 reads, so a provider written before D1/D2 (in
+/// particular the `Fake` test doubles in `BridgeLibrarySceneTests`, which
+/// implement only the three original methods) keeps compiling untouched. Each
+/// default is exactly the sentence `BridgeMusicProvider` gives for an older
+/// Bridge's `unknown_op` (D6), so a provider that genuinely does not implement
+/// these reports the same "update Bridge" a contract mismatch would.
+extension MusicDataProvider {
+    func libraryAlbums(cursor: String?, limit: Int) throws -> MusicPage {
+        throw MusicProviderError.notImplemented("This Bridge build can't list your albums — update Bridge")
+    }
+    func libraryArtists(cursor: String?, limit: Int) throws -> MusicPage {
+        throw MusicProviderError.notImplemented("This Bridge build can't list your artists — update Bridge")
+    }
+    func albumTracks(albumID: String) throws -> MusicList {
+        throw MusicProviderError.notImplemented("This Bridge build can't list an album's tracks — update Bridge")
+    }
+    func artistAlbums(artistID: String) throws -> MusicList {
+        throw MusicProviderError.notImplemented("This Bridge build can't list an artist's albums — update Bridge")
+    }
+    func artistSongs(artistID: String) throws -> MusicList {
+        throw MusicProviderError.notImplemented("This Bridge build can't play an artist — update Bridge")
+    }
+}
+
+/// Walk every page of a paged library read, handing each page to `onPage` as it
+/// arrives, and restarting ONCE when the library changes underneath.
+///
+/// **Generic over the fetch, not over the provider (revision 2, D1).** Songs,
+/// Albums and Artists are three separate paged reads on `MusicDataProvider`
+/// (`librarySongs`, `libraryAlbums`, `libraryArtists`), so the walk takes the
+/// one method it should call as a closure rather than the whole provider.
+/// `walkLibrarySongs` below is the one-line wrapper C1 keeps for its existing
+/// callers and tests; C2 calls this directly for Albums and Artists.
 ///
 /// Returns nil when the walk completed (or the caller asked it to stop), and the
 /// error that ended it otherwise. Pure with respect to the scene: it owns no
-/// state, so it is tested against a fake provider without standing one up.
+/// state, so it is tested against a fake fetch without standing one up.
 ///
 /// **A restart discards everything the first attempt produced.** That is the
 /// whole reason this is a walk and not a loop: rows from two observations of the
@@ -126,15 +183,15 @@ protocol MusicDataProvider {
 /// `onWarming` fires each time the provider says "not ready yet", so a list can
 /// say so while the walk waits. `sleep` is injected so the wait is real in the
 /// app and instant in a test.
-func walkLibrarySongs(_ provider: MusicDataProvider,
+func walkLibraryPages(fetch: (String?, Int) throws -> MusicPage,
                       limit: Int = 100,
                       onPage: (MusicPage) -> Bool,
                       onRestart: () -> Void,
                       onWarming: (TimeInterval) -> Void = { _ in },
                       sleep: (TimeInterval) -> Void = { Thread.sleep(forTimeInterval: $0) })
                       -> MusicProviderError? {
-    func attempt() -> LibrarySongWalkOutcome {
-        attemptLibrarySongWalk(provider, limit: limit, onPage: onPage,
+    func attempt() -> LibraryPageWalkOutcome {
+        attemptLibraryPageWalk(fetch: fetch, limit: limit, onPage: onPage,
                                onWarming: onWarming, sleep: sleep)
     }
     switch attempt() {
@@ -152,35 +209,69 @@ func walkLibrarySongs(_ provider: MusicDataProvider,
     }
 }
 
-/// How long a list waits on a provider that is still preparing itself.
+/// The Songs list's walk, unchanged in behaviour: a thin wrapper over
+/// `walkLibraryPages` bound to `provider.librarySongs`.
+func walkLibrarySongs(_ provider: MusicDataProvider,
+                      limit: Int = 100,
+                      onPage: (MusicPage) -> Bool,
+                      onRestart: () -> Void,
+                      onWarming: (TimeInterval) -> Void = { _ in },
+                      sleep: (TimeInterval) -> Void = { Thread.sleep(forTimeInterval: $0) })
+                      -> MusicProviderError? {
+    walkLibraryPages(fetch: provider.librarySongs, limit: limit, onPage: onPage,
+                     onRestart: onRestart, onWarming: onWarming, sleep: sleep)
+}
+
+/// How long a list, or a play, waits on a provider that is still preparing
+/// itself.
 ///
 /// The hint is the provider's, the bounds are the client's: a hint of 0 would
 /// spin and a hint of an hour would hang, and neither is something a caller
-/// should be able to do to this process. Ten attempts at a clamped hint covers
-/// the measured 6.4s drain several times over, and then it stops and says so
-/// rather than waiting forever on a person's behalf.
+/// should be able to do to this process.
+///
+/// **60 s of total waiting, not a fixed attempt count (D5, the controller's
+/// 2026-09-23 ruling).** A cold drain measured 23.16 s that same night, against
+/// the old budget of 10 attempts at a clamped hint — about 10 s, well short of
+/// it. 60 s covers that drain about 2.6 times over, and the budget is spent in
+/// wall-clock time waited, not in requests made, so a slow drain that answers a
+/// short hint gets more tries rather than running out on a technicality.
 enum LibraryWarmUp {
-    static let maxAttempts = 10
+    static let maxTotalWait: TimeInterval = 60
     static let minWait: TimeInterval = 0.25
     static let maxWait: TimeInterval = 5.0
     static func wait(forHint hint: TimeInterval) -> TimeInterval {
         min(maxWait, max(minWait, hint))
     }
-    /// What a list says when it has run out of patience. Distinct from the
-    /// "still going" line, because a person needs to know it has STOPPED.
+    /// What a list, or a play, says when it has run out of patience. Distinct
+    /// from the "still going" line, because a person needs to know it has
+    /// STOPPED.
     static let gaveUp = "Bridge is still preparing your library"
 }
 
-/// One warm-up budget, spent across however many requests share it.
+/// One warm-up budget, spent across however many requests share it, in seconds
+/// of waiting rather than in attempts (D5).
 ///
 /// A budget is the CALLER's, not the retry helper's, so a paged walk spends one
-/// allowance across a whole list rather than a fresh ten on every one of 157
-/// pages — which is the difference between waiting ten seconds and waiting
-/// twenty-six minutes.
+/// allowance across a whole list rather than a fresh one on every one of 157
+/// pages — which is the difference between waiting a bounded time and waiting
+/// an unbounded multiple of it. A play action shares one budget across its
+/// membership read and its queue (C3), for the same reason.
 final class WarmUpBudget {
-    private(set) var spent = 0
-    var exhausted: Bool { spent >= LibraryWarmUp.maxAttempts }
-    func spend() { spent += 1 }
+    private(set) var waited: TimeInterval = 0
+
+    /// The next wait for this hint, or nil when the budget is spent: the
+    /// clamped hint, shortened so `waited` never exceeds `maxTotalWait`.
+    /// Records what it returns, so the last wait before giving up can be
+    /// shorter than the hint would otherwise call for, rather than overshooting
+    /// the budget to finish out a clamped wait.
+    func nextWait(forHint hint: TimeInterval) -> TimeInterval? {
+        let remaining = LibraryWarmUp.maxTotalWait - waited
+        guard remaining > 0 else { return nil }
+        let next = min(LibraryWarmUp.wait(forHint: hint), remaining)
+        waited += next
+        return next
+    }
+
     init() {}
 }
 
@@ -203,19 +294,19 @@ func retryingWhileWarming<T>(budget: WarmUpBudget = WarmUpBudget(),
             return try body()
         } catch let error as MusicProviderError {
             guard case .warming(_, let hint) = error else { throw error }
-            guard !budget.exhausted else {
+            guard let wait = budget.nextWait(forHint: hint) else {
                 // Not "it failed": it is STILL preparing, and this client has
-                // stopped waiting. A person can ask again.
+                // stopped waiting. A person can ask again. Never sleeps: the
+                // budget is spent, so this is the give-up itself.
                 throw MusicProviderError.warming(LibraryWarmUp.gaveUp, retryAfter: hint)
             }
-            budget.spend()
             onWarming(hint)
-            sleep(LibraryWarmUp.wait(forHint: hint))
+            sleep(wait)
         }
     }
 }
 
-private enum LibrarySongWalkOutcome {
+private enum LibraryPageWalkOutcome {
     case finished
     case stale(String)
     case failed(MusicProviderError)
@@ -225,10 +316,10 @@ private enum LibrarySongWalkOutcome {
 /// this attempt started with is stale even when the provider did not say so —
 /// the generation on the page is the observation boundary, and the client is not
 /// entitled to assume a provider will always catch the change for it.
-private func attemptLibrarySongWalk(_ provider: MusicDataProvider, limit: Int,
+private func attemptLibraryPageWalk(fetch: (String?, Int) throws -> MusicPage, limit: Int,
                                     onPage: (MusicPage) -> Bool,
                                     onWarming: (TimeInterval) -> Void,
-                                    sleep: (TimeInterval) -> Void) -> LibrarySongWalkOutcome {
+                                    sleep: (TimeInterval) -> Void) -> LibraryPageWalkOutcome {
     var cursor: String? = nil
     var generation: Int? = nil
     // ONE budget for the whole attempt. A restart gets a fresh one, because a
@@ -242,7 +333,7 @@ private func attemptLibrarySongWalk(_ provider: MusicDataProvider, limit: Int,
             // library" would be a lie — and never a restart, because the
             // library did not change, the page was just not ready.
             page = try retryingWhileWarming(budget: budget, onWarming: onWarming, sleep: sleep) {
-                try provider.librarySongs(cursor: cursor, limit: limit)
+                try fetch(cursor, limit)
             }
         } catch let error as MusicProviderError {
             if case .staleGeneration(let why) = error { return .stale(why) }
@@ -260,6 +351,17 @@ private func attemptLibrarySongWalk(_ provider: MusicDataProvider, limit: Int,
         guard let next = page.nextCursor else { return .finished }
         cursor = next
     }
+}
+
+/// The start-row / shuffle rule for a Bridge collection play (D3), the same
+/// rule `bridgeCollectionRows` applies to Music.app-mode rows: shuffle sends
+/// every id, shuffled, and ignores the start row; otherwise the start row is
+/// clamped to 1...count and every row from it to the end is sent.
+func bridgeQueueIDs(_ rows: [MusicRow], shuffle: Bool, startAt: Int) -> [String] {
+    if shuffle { return rows.shuffled().map(\.id) }
+    guard !rows.isEmpty else { return [] }
+    let start = min(max(1, startAt), rows.count)
+    return rows[(start - 1)...].map(\.id)
 }
 
 /// A count a person reads, grouped in threes: 15646 → "15,646".
@@ -316,6 +418,17 @@ func readMusicRow(_ item: [String: Any]) -> MusicRowReading {
     guard let kind = MusicRow.Kind(rawValue: kindName) else {
         return .unknownKind(kindName)
     }
+    // An album row carries its own track count (MusicKit `Album.trackCount`),
+    // required and never negative: it feeds the tier filter and the "N
+    // tracks" line, and a row silently missing it would misclassify or
+    // mislabel rather than say so.
+    var trackCount: Int? = nil
+    if kind == .album {
+        guard let count = item["track_count"] as? Int, count >= 0 else {
+            return .malformed("an album row with no track_count (id \(id))")
+        }
+        trackCount = count
+    }
     // An absent `artist` reads as an empty credit rather than a fault: a row
     // with no credit is a thing Apple Music genuinely has, it renders as a
     // blank credit a person can SEE, and it is still playable by its id. An
@@ -323,5 +436,6 @@ func readMusicRow(_ item: [String: Any]) -> MusicRowReading {
     return .row(MusicRow(id: id, title: title,
                          artist: item["artist"] as? String ?? "",
                          album: item["album"] as? String,
-                         kind: kind))
+                         kind: kind,
+                         trackCount: trackCount))
 }

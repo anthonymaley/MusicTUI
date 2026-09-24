@@ -144,10 +144,28 @@ final class LibraryScene: Scene {
     private var songs: [LibrarySong] = []
     private var songsLoaded = false
     private var songsFetchStarted = false
-    // Which library the Songs list is showing. Set when the load picks its
-    // branch, so the header describes where the rows ACTUALLY came from rather
-    // than which output happens to be selected at the moment it paints.
-    private var songsFromBridge = false
+    // D7: which library each list's rows ACTUALLY came from, set when its load
+    // picks its branch — not which output happens to be selected at the moment
+    // it paints. `nil` means "hasn't loaded under any output yet", which is the
+    // only state a provenance mismatch can never fire on (there is nothing yet
+    // to be wrong about). `tick`'s provenance check (D7 item 4) resets a list
+    // whose recorded source differs from the live one.
+    private var songsSource: ListSource? = nil
+    private var albumsSource: ListSource? = nil
+    private var artistsSource: ListSource? = nil
+    /// Whether the Songs list is Bridge's, computed from `songsSource` so every
+    /// existing read site (render, retry, `tabShowsTwoLibraries`) needed no
+    /// change when D7 added the source record.
+    private var songsFromBridge: Bool { songsSource == .bridge }
+    /// Bumped by a provenance reset (D7 item 4) or a manual Bridge retry.
+    /// Every inbox post for a list carries the epoch its load started under;
+    /// a post whose epoch has moved on by the time `tick` drains it is
+    /// dropped under `inboxLock`, so rows from an abandoned load — Bridge's
+    /// walk, or Music.app's shared read — can never land after the list has
+    /// already reloaded from the other backend.
+    private var songsWalkEpoch = 0
+    private var albumsSourceEpoch = 0
+    private var artistsSourceEpoch = 0
     private var bridgeSongTotal: Int? = nil
     /// Bridge is preparing its library. Not a failure and not an empty list:
     /// the list says so and the walk keeps asking.
@@ -167,6 +185,74 @@ final class LibraryScene: Scene {
     private var artistsFetchStarted = false
     private var artistAlbums: [LibraryAlbum] = []
     private var artistAlbumsLoaded = false
+    /// Bridge's own sentence for a failed artist-albums drill-in (C3 item 4),
+    /// shown by the empty rail instead of "Loading albums…" or "(no albums)".
+    private var artistAlbumsFailure: String? = nil
+
+    // D1/C2: Albums and Artists from Bridge, each its own BridgeListFeed —
+    // shared walk-and-inbox discipline (BridgeListFeed.swift) rather than two
+    // more hand-rolled copies of loadSongsFromBridge. `lazy` so the closures
+    // are built once, on first Bridge-mode use, and reused for the scene's
+    // lifetime; `reset()` (not a fresh instance) is how a provenance switch
+    // clears one out.
+    private lazy var albumsFeed: BridgeListFeed<LibraryAlbum> = {
+        let sleep = warmUpSleep
+        return BridgeListFeed<LibraryAlbum>(
+            fetch: { [weak self] cursor, limit in
+                guard let self, let provider = self.makeProvider() else {
+                    throw MusicProviderError.unavailable("Bridge is not the selected output")
+                }
+                return try provider.libraryAlbums(cursor: cursor, limit: limit)
+            },
+            map: { LibraryAlbum(id: $0.id, name: $0.title, artist: $0.artist, trackCount: $0.trackCount ?? 0) },
+            sleep: sleep)
+    }()
+    private lazy var artistsFeed: BridgeListFeed<LibraryArtist> = {
+        let sleep = warmUpSleep
+        return BridgeListFeed<LibraryArtist>(
+            fetch: { [weak self] cursor, limit in
+                guard let self, let provider = self.makeProvider() else {
+                    throw MusicProviderError.unavailable("Bridge is not the selected output")
+                }
+                return try provider.libraryArtists(cursor: cursor, limit: limit)
+            },
+            map: { LibraryArtist(id: $0.id, name: $0.title) },
+            sleep: sleep)
+    }()
+    private var bridgeAlbumTotal: Int? = nil
+    private var bridgeArtistTotal: Int? = nil
+    private var bridgeAlbumsFailure: String? = nil
+    private var bridgeArtistsFailure: String? = nil
+    private var bridgeAlbumsWarming = false
+    private var bridgeArtistsWarming = false
+
+    // C3: an album's tracks and an artist's songs/albums, read from Bridge by
+    // id rather than the `(title, artist, album)` AppleScript join. Keyed like
+    // `trackCache` but kept separate from it so a Bridge failure never looks
+    // like a cached Music.app miss, and cleared whenever a provenance switch
+    // clears the Music.app caches (D7).
+    private var bridgeTracks: [String: [MusicRow]] = [:]
+    private var bridgeTrackFailures: [String: String] = [:]
+    /// One album's landed tracks OR its failure sentence, posted under
+    /// `inboxLock` from `previewQueue` (or a detached thread — see
+    /// `kickTrackFetch`'s Bridge branch) and drained in `tick`, same
+    /// discipline as `previewInbox`. Not `Result<[MusicRow], String>`: a
+    /// plain `String` failure does not conform to `Error`, and this outcome
+    /// is never thrown, only pattern-matched.
+    private enum BridgeTracksOutcome {
+        case success([MusicRow])
+        case failure(String)
+    }
+    /// Which rail's provenance epoch governs a given track fetch: the Albums
+    /// root rail (`albumsSourceEpoch`) or an artist's albums rail
+    /// (`artistsSourceEpoch`) — the same distinction `currentAlbumSource`
+    /// draws by `nav.subView`. Captured at KICK time alongside the epoch
+    /// itself, so a fetch that outlives a provenance switch is dropped even
+    /// if the same album id is reopened afterward under the new output.
+    private enum AlbumRailEpochSource { case albums, artists }
+    private var bridgeTracksInbox:
+        [(albumID: String, epochSource: AlbumRailEpochSource, epoch: Int, result: BridgeTracksOutcome)] = []
+
     // Album-artists tier filter (`a` on the Artists list cycles All → 12"/EP →
     // Albums). The two sets are the normalized artist names in each tier, built in
     // tick as album pages stream in (so the filter refines live while albums load)
@@ -260,9 +346,20 @@ final class LibraryScene: Scene {
     private var bridgeWalkInFlight = false
     private var artistsPending: [LibraryArtist] = []
     private var artistsDone = false
-    // Tagged with the requested artistID so a slow fetch for a since-abandoned
-    // artist can be dropped in tick (last-writer-wins guard, like trackCache).
-    private var artistAlbumsInbox: (artistID: String, albums: [LibraryAlbum])? = nil
+    // Tagged with the requested artistID (a since-abandoned artist's slow
+    // fetch is dropped in tick, last-writer-wins) AND the `artistsSourceEpoch`
+    // captured when the fetch was KICKED (a since-abandoned OUTPUT's slow
+    // fetch is dropped too, even if the person has reopened the SAME artist
+    // under the new output by the time it lands — an id match alone cannot
+    // tell "the same artist, still on this output" apart from "the same
+    // artist id, now on the other library", and Bridge's and Music.app's id
+    // spaces are not guaranteed disjoint by anything checked here).
+    private var artistAlbumsInbox: (artistID: String, epoch: Int, albums: [LibraryAlbum])? = nil
+    /// C3 item 4: a failed Bridge artist-albums read, tagged like
+    /// `artistAlbumsInbox` so a stale failure for an abandoned artist OR an
+    /// abandoned output is dropped rather than overwriting the current
+    /// state.
+    private var pendingArtistAlbumsFailure: (artistID: String, epoch: Int, sentence: String)? = nil
     private var previewInbox: [(id: String, tracks: [String])] = []
 
     // Real hero covers: the artwork ladder (embedded, then REST, then the
@@ -301,6 +398,14 @@ final class LibraryScene: Scene {
     /// a test should not pay seconds of real wall clock to prove it.
     private let warmUpSleep: (TimeInterval) -> Void
 
+    /// The tier filter's SWR cache (`rememberArtistTiers` / `cachedArtistTiers`),
+    /// Music.app's own — never fed from Bridge rows (see the `a` handler and
+    /// the walk-done branch in `tick`). Injectable so a test proves its own
+    /// behaviour against a temp directory instead of the real
+    /// `~/.config/music/artist-tiers.json`; the real cache by default, so
+    /// production is unchanged.
+    private let resultCache: ResultCache
+
     init(backend: AppleScriptBackend,
          routing: RoutingCoordinator, sources: LibraryDataSources,
          appQueue: AppQueueStore, status: StatusStore, actions: ActionRunner,
@@ -310,11 +415,13 @@ final class LibraryScene: Scene {
          resolveArtist: @escaping (AppleScriptBackend, String) -> AlbumResolution
              = { resolveArtistPlaybackTracks(backend: $0, artist: $1) },
          makeProvider: @escaping () -> MusicDataProvider? = { nil },
-         warmUpSleep: @escaping (TimeInterval) -> Void = { Thread.sleep(forTimeInterval: $0) }) {
+         warmUpSleep: @escaping (TimeInterval) -> Void = { Thread.sleep(forTimeInterval: $0) },
+         resultCache: ResultCache = ResultCache()) {
         self.resolveAlbum = resolveAlbum
         self.resolveArtist = resolveArtist
         self.makeProvider = makeProvider
         self.warmUpSleep = warmUpSleep
+        self.resultCache = resultCache
         self.routing = routing
         self.backend = backend
         self.sources = sources
@@ -411,28 +518,41 @@ final class LibraryScene: Scene {
     /// has not been granted Apple Music access"). Only the retry affordance is
     /// this scene's to add.
     ///
-    /// `bridge` is per-LIST, not per-scene: only the list whose rows Bridge
-    /// serves may speak for Bridge. Albums and Artists still read Music.app in
-    /// both modes, so they keep the generic sentence.
-    private func unreadableMessage(_ st: LibraryStatus, bridge: Bool = false) -> String? {
+    /// `bridgeFailure` is per-LIST, not per-scene: a caller passes its OWN
+    /// list's Bridge sentence (nil when that list is Music.app-sourced), so
+    /// only the list whose rows Bridge actually serves ever speaks for Bridge.
+    private func unreadableMessage(_ st: LibraryStatus, bridgeFailure: String? = nil) -> String? {
         guard st == .unreadableRetrying || st == .unreadableExhausted else { return nil }
-        guard bridge, let bridgeFailure else { return libraryStatusMessage(st) }
+        guard let bridgeFailure else { return libraryStatusMessage(st) }
         return st == .unreadableExhausted ? "\(bridgeFailure) - press r to retry"
                                           : "\(bridgeFailure) - retrying"
     }
 
-    /// Off-thread album fetch: the page is appended to albumsPending under
-    /// inboxLock and drained in tick. The onPage closure returns false if the
-    /// scene has deallocated, which aborts the read. albumsDone is set once the
-    /// read finishes so tick can flip albumsLoaded. Kicked once (guarded by
-    /// albumsFetchStarted) when the Albums sub-view first becomes active.
+    /// Off-thread album fetch (D1/C2). In Bridge mode this is MusicKit's own
+    /// album entities via `albumsFeed`, drained in `tick`; otherwise the
+    /// existing AppleScript-backed shared read, unchanged except for the
+    /// epoch guard D7 adds so a page from an abandoned Music.app read (the
+    /// output switched to Bridge while it was in flight) cannot land after
+    /// the list has already reloaded from Bridge. The onPage closure returns
+    /// false if the scene has deallocated OR the epoch has moved on, either of
+    /// which aborts the read. albumsDone is set once the read finishes so
+    /// tick can flip albumsLoaded. Kicked once (guarded by albumsFetchStarted)
+    /// when the Albums sub-view first becomes active.
     private func loadAlbums() {
         albumsFetchStarted = true
+        if makeProvider() != nil {
+            albumsSource = .bridge
+            albumsFeed.start()
+            return
+        }
+        albumsSource = .musicApp
         let sources = self.sources
+        let epoch = albumsSourceEpoch
         runSharedRead({ [weak self] in
             sources.onAlbums { page in
                 guard let self else { return false }   // scene gone -> stop the walk
                 self.inboxLock.lock()
+                guard self.albumsSourceEpoch == epoch else { self.inboxLock.unlock(); return false }
                 self.albumsPending.append(contentsOf: page)
                 self.inboxLock.unlock()
                 return true
@@ -440,8 +560,9 @@ final class LibraryScene: Scene {
         }, markDone: { [weak self] in
             guard let self else { return }
             self.inboxLock.lock()
+            defer { self.inboxLock.unlock() }
+            guard self.albumsSourceEpoch == epoch else { return }
             self.albumsDone = true
-            self.inboxLock.unlock()
         })
     }
 
@@ -450,13 +571,15 @@ final class LibraryScene: Scene {
     /// becomes active.
     private func loadSongs() {
         if let provider = makeProvider() { return loadSongsFromBridge(provider) }
-        songsFromBridge = false
+        songsSource = .musicApp
         songsFetchStarted = true
         let sources = self.sources
+        let epoch = songsWalkEpoch
         runSharedRead({ [weak self] in
             sources.onSongs { page in
                 guard let self else { return false }   // scene gone -> stop the walk
                 self.inboxLock.lock()
+                guard self.songsWalkEpoch == epoch else { self.inboxLock.unlock(); return false }
                 self.songsPending.append(contentsOf: page)
                 self.inboxLock.unlock()
                 return true
@@ -464,8 +587,9 @@ final class LibraryScene: Scene {
         }, markDone: { [weak self] in
             guard let self else { return }
             self.inboxLock.lock()
+            defer { self.inboxLock.unlock() }
+            guard self.songsWalkEpoch == epoch else { return }
             self.songsDone = true
-            self.inboxLock.unlock()
         })
     }
 
@@ -511,9 +635,15 @@ final class LibraryScene: Scene {
         }
         inboxLock.unlock()
         guard !alreadyWalking else { return }   // one walk at a time, this list's own guard
-        songsFromBridge = true
+        songsSource = .bridge
         songsFetchStarted = true
         let sleep = self.warmUpSleep
+        // D7: captured once, so a page from THIS walk landing after a
+        // provenance reset bumped the epoch (the output switched away from
+        // Bridge while this walk was in flight) is dropped rather than
+        // resurrecting a list that has already reloaded from the other
+        // backend.
+        let epoch = songsWalkEpoch
         // `self` is captured weakly and touched only per page, so a walk of 157
         // pages cannot keep a dismissed scene alive to its end, and a torn-down
         // scene stops the walk at its next page.
@@ -528,6 +658,8 @@ final class LibraryScene: Scene {
                         LibrarySong(id: $0.id, title: $0.title, artist: $0.artist, album: $0.album ?? "")
                     }
                     self.inboxLock.lock()
+                    defer { self.inboxLock.unlock() }
+                    guard self.songsWalkEpoch == epoch else { return false }   // reset since -> stop
                     if self.songsAwaitingReplacement {
                         // First page of the new generation: it REPLACES what is
                         // on screen, wholesale, in one drain.
@@ -539,7 +671,6 @@ final class LibraryScene: Scene {
                     }
                     if let total = page.total { self.songsTotalPending = total }
                     self.bridgeWarmingPending = false
-                    self.inboxLock.unlock()
                     return true
                 },
                 onRestart: { [weak self] in
@@ -553,32 +684,37 @@ final class LibraryScene: Scene {
                     // list never blinks to empty just because the library moved
                     // underneath it.
                     self.inboxLock.lock()
+                    defer { self.inboxLock.unlock() }
+                    guard self.songsWalkEpoch == epoch else { return }
                     self.songsAwaitingReplacement = true
                     self.songsPending = []
                     self.songsTotalPending = nil
-                    self.inboxLock.unlock()
                 },
                 onWarming: { [weak self] _ in
                     guard let self else { return }
                     self.inboxLock.lock()
+                    defer { self.inboxLock.unlock() }
+                    guard self.songsWalkEpoch == epoch else { return }
                     self.bridgeWarmingPending = true
-                    self.inboxLock.unlock()
                 },
                 sleep: sleep)
             guard let self else { return }
             let sentence = failure.map { $0.errorDescription ?? "Bridge couldn't read your library" }
             self.inboxLock.lock()
             self.bridgeWalkInFlight = false
-            self.songsDone = true
-            self.bridgeFailurePending = sentence
-            self.bridgeWarmingPending = false   // it is over, one way or the other
+            let stillCurrent = self.songsWalkEpoch == epoch   // else: reset since -> the ending is dropped too
+            if stillCurrent {
+                self.songsDone = true
+                self.bridgeFailurePending = sentence
+                self.bridgeWarmingPending = false   // it is over, one way or the other
+            }
             self.inboxLock.unlock()
             // Also on the footer, because the list's own message only shows
             // while the list is EMPTY (`libraryStatus` has no "rows present but
             // the read failed" state). A walk that dies after its third page
             // would otherwise leave a partial library looking complete —
             // exactly the silence rule 3 forbids.
-            if let sentence { self.status.post(sentence, error: true) }
+            if stillCurrent, let sentence { self.status.post(sentence, error: true) }
         }
     }
 
@@ -600,16 +736,25 @@ final class LibraryScene: Scene {
         songsFetchStarted = false   // tick re-kicks the one-shot load
     }
 
-    /// Off-thread streaming artist-list fetch — same page-by-page discipline as
-    /// loadSongs. Kicked once (guarded by artistsFetchStarted) when the Artists
-    /// sub-view first becomes active.
+    /// Off-thread streaming artist-list fetch (D1/C2). Bridge mode drains
+    /// `artistsFeed`; otherwise the existing AppleScript-backed shared read,
+    /// with the same epoch guard `loadAlbums` adds. Kicked once (guarded by
+    /// artistsFetchStarted) when the Artists sub-view first becomes active.
     private func loadArtists() {
         artistsFetchStarted = true
+        if makeProvider() != nil {
+            artistsSource = .bridge
+            artistsFeed.start()
+            return
+        }
+        artistsSource = .musicApp
         let sources = self.sources
+        let epoch = artistsSourceEpoch
         runSharedRead({ [weak self] in
             sources.onArtists { page in
                 guard let self else { return false }   // scene gone -> stop the walk
                 self.inboxLock.lock()
+                guard self.artistsSourceEpoch == epoch else { self.inboxLock.unlock(); return false }
                 self.artistsPending.append(contentsOf: page)
                 self.inboxLock.unlock()
                 return true
@@ -617,23 +762,58 @@ final class LibraryScene: Scene {
         }, markDone: { [weak self] in
             guard let self else { return }
             self.inboxLock.lock()
+            defer { self.inboxLock.unlock() }
+            guard self.artistsSourceEpoch == epoch else { return }
             self.artistsDone = true
-            self.inboxLock.unlock()
         })
     }
 
     /// Off-thread fetch of one artist's albums, posted to artistAlbumsInbox and
     /// drained in tick. Unlike loadArtists this refetches every time an artist is
     /// opened, so it clears the prior list first (render shows "Loading albums…").
+    ///
+    /// C3 item 4: in Bridge mode this reads `slice.libraryArtistAlbums` by id —
+    /// `sources.onArtistAlbums` (the AppleScript join) is never called.
     private func loadArtistAlbums(artistID: String) {
         artistAlbums = []
         artistAlbumsLoaded = false
+        artistAlbumsFailure = nil
+        // Captured at kick time: whichever result lands, it is only accepted
+        // if `artistsSourceEpoch` is STILL this value when it lands — a
+        // provenance switch (or a manual Bridge retry) bumps it, and either
+        // branch below (Bridge or Music.app) can equally outlive one.
+        let epoch = artistsSourceEpoch
+        if let provider = makeProvider() {
+            let sleep = warmUpSleep
+            Thread.detachNewThread { [weak self] in
+                do {
+                    let list = try retryingWhileWarming(sleep: sleep) {
+                        try provider.artistAlbums(artistID: artistID)
+                    }
+                    let mapped = list.rows.map {
+                        LibraryAlbum(id: $0.id, name: $0.title, artist: $0.artist, trackCount: $0.trackCount ?? 0)
+                    }
+                    guard let self else { return }
+                    self.inboxLock.lock()
+                    self.artistAlbumsInbox = (artistID, epoch, mapped)
+                    self.inboxLock.unlock()
+                } catch {
+                    guard let self else { return }
+                    let sentence = (error as? MusicProviderError)?.errorDescription
+                        ?? "Couldn't read that artist's albums from Bridge."
+                    self.inboxLock.lock()
+                    self.pendingArtistAlbumsFailure = (artistID, epoch, sentence)
+                    self.inboxLock.unlock()
+                }
+            }
+            return
+        }
         let sources = self.sources
         Thread.detachNewThread { [weak self] in
             let fetched = sources.onArtistAlbums(artistID)
             guard let self else { return }
             self.inboxLock.lock()
-            self.artistAlbumsInbox = (artistID, fetched)
+            self.artistAlbumsInbox = (artistID, epoch, fetched)
             self.inboxLock.unlock()
         }
     }
@@ -641,8 +821,47 @@ final class LibraryScene: Scene {
     /// Kick a serial background fetch of one album's tracks, unless it's already
     /// cached or in flight. Serial so a fast scroll can't pile concurrent
     /// full-library predicate scans onto Music. Called only from the main thread.
+    ///
+    /// C3 item 2: for a Bridge-sourced album (`currentAlbumSource == .bridge`)
+    /// this reads `slice.libraryAlbumTracks` by id instead of AppleScript.
+    /// A previously-failed Bridge album is NOT retried by this call (the tick
+    /// preview-kick calls this on every focus) — only `execute`'s
+    /// `.fetchAlbumTracks` (an explicit Enter/drill) clears the failure first,
+    /// which is what "fetched again on the next Enter, not on every focus"
+    /// means in practice.
     private func kickTrackFetch(albumID: String, title: String, artist: String) {
         guard trackCache[albumID] == nil, !previewInFlight.contains(albumID) else { return }
+        if currentAlbumSource == .bridge {
+            guard bridgeTrackFailures[albumID] == nil else { return }
+            guard let provider = makeProvider() else { return }   // output changed under us; do nothing
+            previewInFlight.insert(albumID)
+            let sleep = warmUpSleep
+            // Captured at kick time, same reasoning as `loadArtistAlbums`:
+            // whichever rail this album's tracks belong to (`currentAlbumSource`
+            // already tells us it is Bridge's; this remembers WHICH Bridge
+            // epoch), a result that lands after that rail's provenance has
+            // moved on is dropped, even if the same album id is reopened
+            // under the new output before it lands.
+            let epochSource: AlbumRailEpochSource = nav.subView == .artists ? .artists : .albums
+            let epoch = epochSource == .artists ? artistsSourceEpoch : albumsSourceEpoch
+            Thread.detachNewThread { [weak self] in
+                do {
+                    let list = try retryingWhileWarming(sleep: sleep) { try provider.albumTracks(albumID: albumID) }
+                    guard let self else { return }
+                    self.inboxLock.lock()
+                    self.bridgeTracksInbox.append((albumID, epochSource, epoch, .success(list.rows)))
+                    self.inboxLock.unlock()
+                } catch {
+                    guard let self else { return }
+                    let sentence = (error as? MusicProviderError)?.errorDescription
+                        ?? "Couldn't read that album's tracks from Bridge."
+                    self.inboxLock.lock()
+                    self.bridgeTracksInbox.append((albumID, epochSource, epoch, .failure(sentence)))
+                    self.inboxLock.unlock()
+                }
+            }
+            return
+        }
         previewInFlight.insert(albumID)
         let sources = self.sources
         previewQueue.async { [weak self] in
@@ -682,6 +901,117 @@ final class LibraryScene: Scene {
     /// arrival; `tick` spends it on the first snapshot that can answer.
     func becameActive() { snapToPlayingPending = true }
 
+    // MARK: provenance (D7)
+
+    /// Once per tick, compute which library the selected output implies and
+    /// reset any list whose recorded source no longer matches it. Called
+    /// before the inbox drain and the lazy-loader kicks below, so a list this
+    /// tick resets is also reloaded from the right source this same tick.
+    /// Returns whether anything reset, so the caller knows to redraw and post
+    /// the one shared message.
+    private func applyProvenance() -> Bool {
+        let want: ListSource = makeProvider() != nil ? .bridge : .musicApp
+        var resetAny = false
+        if let source = songsSource, source != want { resetSongsList(); resetAny = true }
+        if let source = albumsSource, source != want { resetAlbumsList(); resetAny = true }
+        if let source = artistsSource, source != want { resetArtistsList(); resetAny = true }
+        if resetAny {
+            clearAlbumCentricCaches()
+            status.post("Output changed \u{2014} showing \(want == .bridge ? "Bridge's" : "the Music.app") library")
+        }
+        return resetAny
+    }
+
+    private func resetSongsList() {
+        songs = []
+        songsLoaded = false
+        songsFetchStarted = false
+        songsDone = false
+        bridgeSongTotal = nil
+        bridgeFailure = nil
+        bridgeWarming = false
+        songsSource = nil
+        songsWalkEpoch += 1
+        if nav.subView == .songs { returnToRoot(.songs) }
+    }
+
+    private func resetAlbumsList() {
+        albums = []
+        albumsLoaded = false
+        albumsFetchStarted = false
+        albumsDone = false
+        bridgeAlbumTotal = nil
+        bridgeAlbumsFailure = nil
+        bridgeAlbumsWarming = false
+        albumsSource = nil
+        albumsSourceEpoch += 1
+        albumsFeed.reset()
+        // Tier sets are derived from `albums`; a library switch invalidates
+        // them along with it.
+        epArtists = []
+        albumArtists = []
+        if nav.subView == .albums { returnToRoot(.albums) }
+    }
+
+    private func resetArtistsList() {
+        artists = []
+        artistsLoaded = false
+        artistsFetchStarted = false
+        artistsDone = false
+        bridgeArtistTotal = nil
+        bridgeArtistsFailure = nil
+        bridgeArtistsWarming = false
+        artistsSource = nil
+        artistsSourceEpoch += 1
+        artistsFeed.reset()
+        artistAlbums = []
+        artistAlbumsLoaded = false
+        artistAlbumsFailure = nil
+        // Defense in depth: the epoch bump above already makes tick's drain
+        // drop these two on arrival (they are checked against
+        // `artistsSourceEpoch`), but clearing them here too means a stale
+        // one already sitting in the inbox is gone immediately rather than
+        // lingering, unread, until the next background post replaces it.
+        inboxLock.lock()
+        artistAlbumsInbox = nil
+        pendingArtistAlbumsFailure = nil
+        inboxLock.unlock()
+        if nav.subView == .artists { returnToRoot(.artists) }
+    }
+
+    /// Album-preview and cover caches are keyed by album id, and both the
+    /// Music.app and Bridge album rails share them — a provenance switch
+    /// invalidates every entry regardless of which list triggered the reset,
+    /// because an id from the OLD library means nothing to the new one (the
+    /// two id spaces never collide, but a stale entry would still paint the
+    /// wrong tracks/cover under a NEW row that happens to reuse a position).
+    private func clearAlbumCentricCaches() {
+        trackCache = [:]
+        previewInFlight = []
+        coverCache = [:]
+        coverInFlight = []
+        bridgeTracks = [:]
+        bridgeTrackFailures = [:]
+        // Same defense-in-depth as `resetArtistsList`'s inbox clear: the
+        // epoch bumps in `resetAlbumsList`/`resetArtistsList` already make
+        // tick's drain drop a stale entry on arrival, but dropping it here
+        // too means it is gone immediately.
+        inboxLock.lock()
+        bridgeTracksInbox = []
+        inboxLock.unlock()
+    }
+
+    /// Drop back to a sub-view's root level when a provenance reset catches it
+    /// mid-drill: the drilled identity (an album id, an artist id) belongs to
+    /// the library that is no longer selected, so there is nothing left for it
+    /// to mean.
+    private func returnToRoot(_ sub: LibrarySubView) {
+        nav = LibraryNav(subView: sub, stack: [LibraryNav.root(for: sub)], cursor: 0)
+        railScroll = 0
+        trackScroll = 0
+        filter = ""
+    }
+
     func tick(snapshot: NowPlayingSnapshot) -> Bool {
         var changed = false
         if snapToPlayingPending, case .songList = nav.current,
@@ -694,6 +1024,11 @@ final class LibraryScene: Scene {
                 changed = true
             }
         }
+
+        // D7: before anything else this tick, so a list reset here also
+        // reloads from the right source this same tick.
+        if applyProvenance() { changed = true }
+
         inboxLock.lock()
         let newAlbums = albumsPending; albumsPending = []
         let albumsWalkDone = albumsDone
@@ -707,12 +1042,14 @@ final class LibraryScene: Scene {
         let newArtists = artistsPending; artistsPending = []
         let artistsWalkDone = artistsDone
         let freshArtistAlbums = artistAlbumsInbox; artistAlbumsInbox = nil
+        let freshArtistAlbumsFailure = pendingArtistAlbumsFailure; pendingArtistAlbumsFailure = nil
         let landedPreviews = previewInbox; previewInbox = []
         let landedCovers = coverInbox; coverInbox = []
         let artLanded = artDirty; artDirty = false
         let landedReadFailed = pendingReadFailed; pendingReadFailed = nil
         let landedExhausted = pendingExhausted
         let wantsRestart = restartRequested; restartRequested = false
+        let landedBridgeTracks = bridgeTracksInbox; bridgeTracksInbox = []
         inboxLock.unlock()
 
         // Mirror the shared load state so render and input never touch the
@@ -725,15 +1062,19 @@ final class LibraryScene: Scene {
 
         // One shared retry: reopen only the lists that have nothing to show, so
         // the active sub-view re-kicks below and exactly one new read happens.
+        // D7 extends slice 1's `!songsFromBridge` guard to Albums and Artists:
+        // this coordinator only ever reads Music.app, so a Bridge-sourced list
+        // is never its to reopen.
         if wantsRestart {
-            if albums.isEmpty { albumsFetchStarted = false; albumsDone = false; albumsLoaded = false }
-            // Only the lists this coordinator actually reads. A Bridge Songs
-            // list is not Music.app's to reopen: its read never failed, and
-            // restarting it here would make a Music.app retry re-walk Bridge.
+            if albums.isEmpty, albumsSource != .bridge {
+                albumsFetchStarted = false; albumsDone = false; albumsLoaded = false
+            }
             if songs.isEmpty && !songsFromBridge {
                 songsFetchStarted = false; songsDone = false; songsLoaded = false
             }
-            if artists.isEmpty { artistsFetchStarted = false; artistsDone = false; artistsLoaded = false }
+            if artists.isEmpty, artistsSource != .bridge {
+                artistsFetchStarted = false; artistsDone = false; artistsLoaded = false
+            }
             changed = true
         }
 
@@ -754,12 +1095,86 @@ final class LibraryScene: Scene {
             // Walk finished: rebuild the tier sets authoritatively from the full
             // album list (drops any stale cache-seeded names that no longer qualify)
             // and refresh the SWR cache off the main thread (best-effort).
+            //
+            // This branch only ever fires for the Music.app path: `albumsDone`
+            // is set only by `loadAlbums`'s AppleScript closure, never by
+            // `albumsFeed`, so a Bridge-sourced album list finishing (drained
+            // below) cannot reach here. That is D1's tier-filter rule (C2
+            // item 8): Bridge's tiers are session-local and never touch
+            // Music.app's SWR cache.
             epArtists = albumArtistSet(from: albums, minTracks: 2, maxTracks: 5)
             albumArtists = albumArtistSet(from: albums, minTracks: 6)
             let (ep, alb) = (epArtists, albumArtists)
-            Thread.detachNewThread { ResultCache().rememberArtistTiers(ep: ep, albums: alb) }
+            let cache = resultCache
+            Thread.detachNewThread { cache.rememberArtistTiers(ep: ep, albums: alb) }
             changed = true
         }
+
+        // D1/C2: Albums and Artists from Bridge, drained the same way Songs'
+        // walk is — a replace (first page of a fresh attempt) then appends,
+        // total/failure/warming as level state, and `done` becoming `*Loaded`.
+        // A feed drains to nothing when its list isn't Bridge-sourced, so this
+        // runs unconditionally rather than gated on `albumsSource == .bridge`.
+        let albumsDrain = albumsFeed.drain()
+        // FIX (live-gate finding, 2026-09-23): `replace` and `append` are NOT
+        // mutually exclusive within one drain. `BridgeListFeed` accumulates
+        // every page an attempt lands between two `drain()` calls — page 1
+        // into `replace`, every later page into `append` — and a fast local
+        // socket walk (measured elsewhere at ~1ms/page) routinely finishes
+        // ALL of a multi-thousand-row list before the scene's first tick ever
+        // drains it. An `if replace … else if append …` here applied only
+        // page 1 and SILENTLY DISCARDED every later page's rows on that same
+        // drain, while the header still showed Bridge's wire `total` (read
+        // separately, never from `albums.count`) — so the list looked
+        // populated and the count looked right, but only the first page's
+        // rows actually existed in `albums`. Filtering for anything past
+        // page 1 (alphabetically: any title/artist starting after wherever
+        // page 1's sort order ended) always found nothing, which is exactly
+        // what the live gate saw ("Drone Logic" / "Daniel Avery", both
+        // sorted well past a small first page). Both must apply, every tick.
+        if let replace = albumsDrain.replace {
+            albums = replace
+        }
+        if !albumsDrain.append.isEmpty {
+            albums.append(contentsOf: albumsDrain.append)
+        }
+        if albumsDrain.replace != nil || !albumsDrain.append.isEmpty {
+            epArtists = albumArtistSet(from: albums, minTracks: 2, maxTracks: 5)
+            albumArtists = albumArtistSet(from: albums, minTracks: 6)
+            let visible = visibleAlbumIndices().count
+            if isAlbumRail, nav.cursor >= visible { nav.cursor = max(0, visible - 1); railScroll = 0 }
+            changed = true
+        }
+        if let newFailure = albumsDrain.failure, newFailure != bridgeAlbumsFailure {
+            status.post(newFailure, error: true)
+        }
+        if bridgeAlbumTotal != albumsDrain.total { bridgeAlbumTotal = albumsDrain.total; changed = true }
+        if bridgeAlbumsFailure != albumsDrain.failure { bridgeAlbumsFailure = albumsDrain.failure; changed = true }
+        if bridgeAlbumsWarming != albumsDrain.warming { bridgeAlbumsWarming = albumsDrain.warming; changed = true }
+        if albumsDrain.done && !albumsLoaded { albumsLoaded = true; changed = true }
+
+        let artistsDrain = artistsFeed.drain()
+        // Same fix as Albums above, same reason: `replace` and `append` can
+        // both be non-empty in one drain, and both must be applied.
+        if let replace = artistsDrain.replace {
+            artists = replace
+        }
+        if !artistsDrain.append.isEmpty {
+            artists.append(contentsOf: artistsDrain.append)
+        }
+        if artistsDrain.replace != nil || !artistsDrain.append.isEmpty {
+            let visible = visibleArtistIndices().count
+            if isArtistList, nav.cursor >= visible { nav.cursor = max(0, visible - 1); railScroll = 0 }
+            changed = true
+        }
+        if let newFailure = artistsDrain.failure, newFailure != bridgeArtistsFailure {
+            status.post(newFailure, error: true)
+        }
+        if bridgeArtistTotal != artistsDrain.total { bridgeArtistTotal = artistsDrain.total; changed = true }
+        if bridgeArtistsFailure != artistsDrain.failure { bridgeArtistsFailure = artistsDrain.failure; changed = true }
+        if bridgeArtistsWarming != artistsDrain.warming { bridgeArtistsWarming = artistsDrain.warming; changed = true }
+        if artistsDrain.done && !artistsLoaded { artistsLoaded = true; changed = true }
+
         // A person asked for a fresh read (`r`): start from nothing, visibly.
         if songsRestarted {
             songs = []
@@ -787,16 +1202,30 @@ final class LibraryScene: Scene {
         if !newArtists.isEmpty { artists.append(contentsOf: newArtists); changed = true }
         if artistsWalkDone && !artistsLoaded { artistsLoaded = true; changed = true }
         // Apply an artist-albums fetch only if it's still for the current artist
-        // (id in the stack's .artistAlbums level); a stale one for an abandoned
-        // artist is dropped so it can't overwrite the current one under its
-        // breadcrumb (last-writer-wins guard).
-        if let freshArtistAlbums, freshArtistAlbums.artistID == currentArtistID() {
+        // (id in the stack's .artistAlbums level) AND the same provenance epoch
+        // it was kicked under: an id match alone is not enough (Codex review) —
+        // a fetch that outlives a provenance switch must be dropped even if the
+        // person has reopened the SAME artist id under the new output by the
+        // time it lands, or a Music.app result could paint under a
+        // Bridge-labelled artist (or the reverse).
+        if let freshArtistAlbums, freshArtistAlbums.artistID == currentArtistID(),
+           freshArtistAlbums.epoch == artistsSourceEpoch {
             artistAlbums = freshArtistAlbums.albums
             artistAlbumsLoaded = true
+            artistAlbumsFailure = nil
             if case .artistAlbums = nav.current {
                 let count = visibleAlbumIndices().count
                 if nav.cursor >= count { nav.cursor = max(0, count - 1) }
             }
+            changed = true
+        }
+        // C3 item 4: same last-writer-wins-and-same-epoch guard as the
+        // success case above — a failure for an artist the person has since
+        // backed out of, OR whose output has since switched, is dropped
+        // rather than painting under the current breadcrumb.
+        if let freshArtistAlbumsFailure, freshArtistAlbumsFailure.artistID == currentArtistID(),
+           freshArtistAlbumsFailure.epoch == artistsSourceEpoch {
+            artistAlbumsFailure = freshArtistAlbumsFailure.sentence
             changed = true
         }
         // Lazily load each list the first time its sub-view is shown.
@@ -811,6 +1240,38 @@ final class LibraryScene: Scene {
         for item in landedCovers {
             coverCache[item.id] = item.cover
             coverInFlight.remove(item.id)
+            changed = true
+        }
+        // C3 item 2: Bridge album-tracks reads, drained like `previewInbox`
+        // but into the separate `bridgeTracks`/`bridgeTrackFailures` caches so
+        // a Bridge failure never looks like a cached Music.app miss.
+        //
+        // Every item's epoch is checked against whichever rail's CURRENT
+        // epoch it claims to belong to, same reasoning as the artist-albums
+        // guard above: `previewInFlight` is cleared unconditionally (the fetch
+        // this album was waiting on is over, one way or the other, so a fresh
+        // kick must be allowed), but the cache writes only happen for a
+        // result whose provenance hasn't moved on since it was kicked.
+        for item in landedBridgeTracks {
+            previewInFlight.remove(item.albumID)
+            let currentEpoch = item.epochSource == .artists ? artistsSourceEpoch : albumsSourceEpoch
+            guard item.epoch == currentEpoch else { continue }   // obsolete output/list -> drop
+            switch item.result {
+            case .success(let rows):
+                bridgeTracks[item.albumID] = rows
+                // Also into `trackCache`, so the existing render, count and
+                // cursor-clamp code (all keyed by title strings) works
+                // unchanged for a Bridge-sourced album exactly as it does for
+                // a Music.app one — `bridgeTracks` exists ADDITIONALLY, so
+                // `playBridgeAlbum` can queue by the rows' own ids.
+                trackCache[item.albumID] = rows.map(\.title)
+                bridgeTrackFailures.removeValue(forKey: item.albumID)
+            case .failure(let sentence):
+                // `trackCache` deliberately left unset: the right pane reads
+                // `bridgeTrackFailures` first and shows the sentence exactly
+                // where it would otherwise say "Loading…".
+                bridgeTrackFailures[item.albumID] = sentence
+            }
             changed = true
         }
         if artLanded { changed = true }
@@ -831,7 +1292,11 @@ final class LibraryScene: Scene {
         // first on the shared serial previewQueue. The hero renders in every
         // zone mode (not just .three, unlike the track preview above), so no
         // .three gate here.
-        if isAlbumRail || isTracksLevel, let a = focusedAlbum() {
+        //
+        // C3 item 3: NEVER for a Bridge-sourced album — it gets the gradient
+        // (gap G3). A transportable artwork URL for a MusicKit library item is
+        // its own unmeasured question, not this slice's to answer.
+        if (isAlbumRail || isTracksLevel), currentAlbumSource != .bridge, let a = focusedAlbum() {
             kickCoverFetch(albumID: a.id)
         }
         return changed
@@ -963,6 +1428,25 @@ final class LibraryScene: Scene {
                 status.post("Asking Bridge for your library again\u{2026}")
                 return .none
             }
+            // C2 item 7: a failed Bridge Albums or Artists list resets and
+            // restarts only that list's own feed — never the shared budget
+            // `loads` owns, which is Music.app's alone.
+            if albumsSource == .bridge, isAlbumList, bridgeAlbumsFailure != nil {
+                albumsFeed.reset()
+                albumsFetchStarted = false
+                albumsDone = false
+                bridgeAlbumsFailure = nil
+                status.post("Asking Bridge for your library again\u{2026}")
+                return .none
+            }
+            if artistsSource == .bridge, isArtistList, bridgeArtistsFailure != nil {
+                artistsFeed.reset()
+                artistsFetchStarted = false
+                artistsDone = false
+                bridgeArtistsFailure = nil
+                status.post("Asking Bridge for your library again\u{2026}")
+                return .none
+            }
             loads.manualRetry()
             inboxLock.lock()
             pendingReadFailed = false
@@ -990,8 +1474,15 @@ final class LibraryScene: Scene {
             guard isArtistList else { return .none }
             artistFilter = artistFilter.next
             if artistFilter != .all {
-                if epArtists.isEmpty, albumArtists.isEmpty,
-                   let cached = ResultCache().cachedArtistTiers() {
+                // C2 item 8: the SWR cache is Music.app's alone. Seeding from
+                // it ahead of a Bridge album load would paint Music.app
+                // artist names as this tier's members until Bridge's own
+                // rows land and correct them — a real (if brief) library mix.
+                // Once Bridge rows exist, `epArtists`/`albumArtists` are
+                // already computed live from them (the feed's drain), so this
+                // seed only ever matters for the empty, not-yet-loaded case.
+                if makeProvider() == nil, epArtists.isEmpty, albumArtists.isEmpty,
+                   let cached = resultCache.cachedArtistTiers() {
                     epArtists = cached.ep; albumArtists = cached.albums
                 }
                 if !albumsFetchStarted { loadAlbums() }
@@ -1032,28 +1523,69 @@ final class LibraryScene: Scene {
         case .fetchArtistAlbums(let artistID, _):
             loadArtistAlbums(artistID: artistID)
         case .fetchAlbumTracks(let albumID, let title, let artist):
+            // A retry on Enter: clearing the failure first is what lets a
+            // person retry a failed Bridge album by drilling in again,
+            // without the tick-driven preview kick retrying it on every focus
+            // (kickTrackFetch's own guard).
+            bridgeTrackFailures.removeValue(forKey: albumID)
             // Reuse the shared cache: if the preview already loaded it, this is a
             // no-op and the tracks level paints instantly; otherwise it kicks the
             // same serial fetch and the pane shows "loading…" until it lands.
             kickTrackFetch(albumID: albumID, title: title, artist: artist)
-        case .play(.album(_, let title, let artist)):
+        case .play(.album(let id, let title, let artist)):
             // Enter on a row in the album tracklist starts the queue AT that track
             // (nav.cursor is the track index there); elsewhere it's whole-album.
-            playAlbum(title: title, artist: artist, shuffle: false,
-                      startAt: isTracksLevel ? nav.cursor + 1 : 1)
-        case .shuffle(.album(_, let title, let artist)):
-            playAlbum(title: title, artist: artist, shuffle: true)
+            dispatchAlbumPlay(id: id, title: title, artist: artist, shuffle: false,
+                              startAt: isTracksLevel ? nav.cursor + 1 : 1)
+        case .shuffle(.album(let id, let title, let artist)):
+            dispatchAlbumPlay(id: id, title: title, artist: artist, shuffle: true, startAt: 1)
         case .play(.song(let id, let title, let artist)):
-            playSong(id: id, title: title, artist: artist, album: albumForSong(id: id), shuffle: false)
+            dispatchSongPlay(id: id, title: title, artist: artist, shuffle: false)
         case .shuffle(.song(let id, let title, let artist)):
-            playSong(id: id, title: title, artist: artist, album: albumForSong(id: id), shuffle: true)
-        case .play(.artist(_, let name)):
-            playArtist(name: name, shuffle: false)
-        case .shuffle(.artist(_, let name)):
-            playArtist(name: name, shuffle: true)
+            dispatchSongPlay(id: id, title: title, artist: artist, shuffle: true)
+        case .play(.artist(let id, let name)):
+            dispatchArtistPlay(id: id, name: name, shuffle: false)
+        case .shuffle(.artist(let id, let name)):
+            dispatchArtistPlay(id: id, name: name, shuffle: true)
         case .none:
             break
         }
+    }
+
+    /// C3 item 5: decided by the source of the list the action came from, not
+    /// by the live output alone — a stale Music.app-sourced list played while
+    /// Bridge is now selected refuses, exactly as a stale Bridge-sourced one
+    /// played after switching to Music.app does (rule 3, both directions).
+    private func dispatchAlbumPlay(id: String, title: String, artist: String, shuffle: Bool, startAt: Int) {
+        if currentAlbumSource == .bridge {
+            playBridgeAlbum(albumID: id, title: title, shuffle: shuffle, startAt: startAt, rows: bridgeTracks[id])
+        } else if makeProvider() != nil {
+            actions.run("Play") { throw ActionError(message: LibraryProvenance.bridgeSelectedMusicAppList) }
+        } else {
+            playAlbum(title: title, artist: artist, shuffle: shuffle, startAt: startAt)
+        }
+    }
+
+    private func dispatchArtistPlay(id: String, name: String, shuffle: Bool) {
+        if artistsSource == .bridge {
+            playBridgeArtist(artistID: id, name: name, shuffle: shuffle)
+        } else if makeProvider() != nil {
+            actions.run("Play") { throw ActionError(message: LibraryProvenance.bridgeSelectedMusicAppList) }
+        } else {
+            playArtist(name: name, shuffle: shuffle)
+        }
+    }
+
+    private func dispatchSongPlay(id: String, title: String, artist: String, shuffle: Bool) {
+        if songsFromBridge, makeProvider() == nil {
+            actions.run("Play") { throw ActionError(message: LibraryProvenance.musicAppSelectedBridgeList) }
+            return
+        }
+        if !songsFromBridge, makeProvider() != nil {
+            actions.run("Play") { throw ActionError(message: LibraryProvenance.bridgeSelectedMusicAppList) }
+            return
+        }
+        playSong(id: id, title: title, artist: artist, shuffle: shuffle)
     }
 
     /// Whole-album (or from-a-track) play via the app-owned queue. macOS 26.x
@@ -1065,13 +1597,24 @@ final class LibraryScene: Scene {
     /// track, so not gapless — the accepted trade-off. On the action queue; the
     /// bulk fetch never freezes the UI and failures toast.
     // Internal, not private, so the routing binding is reachable from a test.
+    //
+    // C3 item 8: this is now the MUSIC.APP-SOURCED album's play path only.
+    // Bridge-sourced albums play through `playBridgeAlbum`, dispatched by
+    // `execute` from `currentAlbumSource`; a Music.app-sourced album played
+    // while Bridge is selected refuses here (rule 3: no join, in either
+    // direction) rather than resolving by title against whichever backend
+    // Bridge would otherwise join to.
     func playAlbum(title: String, artist: String, shuffle: Bool, startAt: Int = 1) {
         let backend = self.backend
         let store = self.appQueue
         let routing = self.routing
         let status = self.status
         let resolve = self.resolveAlbum
+        let makeProvider = self.makeProvider
         actions.run("Play") {
+            if makeProvider() != nil {
+                throw ActionError(message: LibraryProvenance.bridgeSelectedMusicAppList)
+            }
             // Binding rule 9's named exception: the library READ stays on
             // AppleScript in BOTH modes, so the two branches resolve from the
             // same rows and cannot play a different album than the one listed.
@@ -1107,14 +1650,11 @@ final class LibraryScene: Scene {
                             status.post("Playing \(ordered.count) of \(res.matched) — the rest aren't available yet.")
                         }
                     },
-                    source: {
-                        let rows = try bridgeCollectionRows(tracks: res.tracks, shuffle: shuffle,
-                                                            startAt: startAt, named: title)
-                        try $0.control.queue(rows: rows)
-                        status.post("Playing '\(title)' on Bridge — \(rows.count) tracks.")
-                        if res.matched > res.tracks.count {
-                            status.post("\(res.tracks.count) of \(res.matched) — the rest aren't available yet.")
-                        }
+                    source: { _ in
+                        // The join is gone: a Music.app-sourced list played
+                        // while Bridge is selected refuses rather than joining
+                        // Bridge on `(title, artist, album)`.
+                        throw ActionError(message: LibraryProvenance.bridgeSelectedMusicAppList)
                     },
                     unaffected: {})
             } catch let error as SourceAppError {
@@ -1130,19 +1670,18 @@ final class LibraryScene: Scene {
     /// instead of the old native `play some track` that dropped into the whole
     /// library and bled into Autoplay. Autoplay (∞) must be OFF. Shuffle is a
     /// no-op for a single track (the param stays for a uniform call site).
-    /// The album for a song row, by its persistent id.
     ///
-    /// Bridge joins on the exact `(title, artist, album)` triple and MusicTUI's
-    /// persistent id means nothing to it, so the album has to travel. It lives on
-    /// the row already; `LibrarySelection` just does not carry it.
-    private func albumForSong(id: String) -> String? {
-        songs.first(where: { $0.id == id })?.album
-    }
-
+    /// **No `album` parameter.** Before C3 this needed the song's album to
+    /// build Bridge's `(title, artist, album)` queue row when there was no
+    /// provider; that fallback is gone (D3/C3 item 8 — a Music.app-sourced
+    /// song played while Bridge is selected refuses in `dispatchSongPlay`
+    /// before this function is ever called), so nothing here reads it any
+    /// more. `songs[].album` still exists on the row for display.
+    ///
     /// `id` is the id of whichever backend produced the row, and it is opaque
     /// here: in Bridge mode it is the MusicKit library id a Bridge page carried,
     /// and it is what plays the row. Nothing compares it to a Music.app id.
-    private func playSong(id: String, title: String, artist: String, album: String?, shuffle: Bool) {
+    private func playSong(id: String, title: String, artist: String, shuffle: Bool) {
         let backend = self.backend
         let store = self.appQueue
         let routing = self.routing
@@ -1194,19 +1733,11 @@ final class LibraryScene: Scene {
                 return
             }
             if routing.mode == .source {
-                guard let album else { throw ActionError(message: "'\(title)' has no album, so Bridge cannot identify it") }
-                do {
-                    try routing.perform(.libraryPlay, musicApp: {},
-                        source: { try $0.control.queue(rows: [SourceLibraryRow(title: title, artist: artist, album: album)]) },
-                        unaffected: {})
-                } catch let error as SourceAppError {
-                    // ActionRunner prints an ActionError's message and reduces
-                    // anything else to "Play failed." — which is how a real
-                    // refusal ("no unique match", "not authorized") reached the
-                    // footer as four useless words.
-                    throw ActionError(message: error.message)
-                }
-                return
+                // C3 item 8: the join is gone. This is a Music.app-sourced
+                // song (no provider, checked above) played while Bridge is
+                // selected — rule 3, no silent fallback in either direction.
+                // After this, this file sends no title-and-credit queue shape at all.
+                throw ActionError(message: LibraryProvenance.bridgeSelectedMusicAppList)
             }
             // Same credit drift as playAlbum: the song row's artist is the library
             // credit and can differ from the stored credit (comma vs ampersand,
@@ -1227,13 +1758,20 @@ final class LibraryScene: Scene {
     /// Play every library track by one artist as an app-owned queue (scoped,
     /// navigable, stops at the end — same rationale as playAlbum). Autoplay OFF.
     // Internal, not private, so the routing binding is reachable from a test.
+    //
+    // C3 item 8: Music.app-sourced artists only, same as `playAlbum`.
+    // Bridge-sourced artists play through `playBridgeArtist`.
     func playArtist(name: String, shuffle: Bool) {
         let backend = self.backend
         let store = self.appQueue
         let routing = self.routing
         let status = self.status
         let resolve = self.resolveArtist
+        let makeProvider = self.makeProvider
         actions.run("Play") {
+            if makeProvider() != nil {
+                throw ActionError(message: LibraryProvenance.bridgeSelectedMusicAppList)
+            }
             // Rule 9's named exception again: the read runs in both modes.
             //
             // `name` is the library credit (album artist, else artist), so the
@@ -1259,19 +1797,100 @@ final class LibraryScene: Scene {
                             status.post("Playing \(ordered.count) of \(res.matched) — the rest aren't available yet.")
                         }
                     },
-                    source: {
-                        // Ruling 12.2: an artist expands to that artist's SONGS.
-                        // startAt is 1 because an artist rail row has no track
-                        // cursor to start from, matching the Music.app branch.
-                        let rows = try bridgeCollectionRows(tracks: res.tracks, shuffle: shuffle,
-                                                            startAt: 1, named: name)
-                        try $0.control.queue(rows: rows)
-                        status.post("Playing '\(name)' on Bridge — \(rows.count) tracks.")
-                        if res.matched > res.tracks.count {
-                            status.post("\(res.tracks.count) of \(res.matched) — the rest aren't available yet.")
-                        }
+                    source: { _ in
+                        throw ActionError(message: LibraryProvenance.bridgeSelectedMusicAppList)
                     },
                     unaffected: {})
+            } catch let error as SourceAppError {
+                throw ActionError(message: error.message)
+            }
+        }
+    }
+
+    /// C3 item 6: whole-album (or from-a-track) play via Bridge, by the ids
+    /// the rows this person was looking at carry. `rows`, when non-nil, is
+    /// the already-cached list — captured on the main thread by `execute`, so
+    /// it is exactly the list `nav.cursor` indexed; a fresh read only happens
+    /// when nothing is cached yet.
+    // Internal, not private, so it is reachable from a test.
+    func playBridgeAlbum(albumID: String, title: String, shuffle: Bool, startAt: Int, rows: [MusicRow]?) {
+        let routing = self.routing
+        let status = self.status
+        let makeProvider = self.makeProvider
+        let sleep = self.warmUpSleep
+        actions.run("Play") {
+            guard let provider = makeProvider() else {
+                // Output changed to Music.app between the keypress and this
+                // closure running: the list WAS Bridge's, but Bridge is no
+                // longer selected.
+                throw ActionError(message: LibraryProvenance.musicAppSelectedBridgeList)
+            }
+            do {
+                // ONE budget for the whole action (read + queue), so D5's
+                // 60s is the action's total patience, not 60s per call.
+                let budget = WarmUpBudget()
+                let onWarming: (TimeInterval) -> Void = { _ in
+                    status.post("Preparing your library \u{2014} '\(title)' will play when it's ready\u{2026}")
+                }
+                let trackRows = try rows ?? retryingWhileWarming(budget: budget, onWarming: onWarming, sleep: sleep) {
+                    try provider.albumTracks(albumID: albumID)
+                }.rows
+                try require(!trackRows.isEmpty, "'\(title)' has no songs Bridge can play.")
+                let ids = bridgeQueueIDs(trackRows, shuffle: shuffle, startAt: startAt)
+                try retryingWhileWarming(budget: budget, onWarming: onWarming, sleep: sleep) {
+                    try routing.perform(.libraryPlay,
+                        musicApp: {
+                            throw ActionError(message:
+                                "Output changed to Music.app before '\(title)' could play on Bridge; nothing was played.")
+                        },
+                        source: { _ in _ = try provider.play(ids: ids) },
+                        unaffected: {})
+                }
+                status.post("Playing '\(title)' on Bridge \u{2014} \(ids.count) tracks.")
+            } catch let error as MusicProviderError {
+                throw ActionError(message: error.errorDescription ?? "Couldn't play '\(title)' on Bridge.")
+            } catch let error as SourceAppError {
+                throw ActionError(message: error.message)
+            }
+        }
+    }
+
+    /// C3 item 7: every library track by one Bridge artist — the same shape
+    /// as `playBridgeAlbum` through `provider.artistSongs(artistID:)`, one
+    /// budget shared by the read and the queue, no start row, and `too_large`
+    /// reaching the footer verbatim with no queue sent.
+    // Internal, not private, so it is reachable from a test.
+    func playBridgeArtist(artistID: String, name: String, shuffle: Bool) {
+        let routing = self.routing
+        let status = self.status
+        let makeProvider = self.makeProvider
+        let sleep = self.warmUpSleep
+        actions.run("Play") {
+            guard let provider = makeProvider() else {
+                throw ActionError(message: LibraryProvenance.musicAppSelectedBridgeList)
+            }
+            do {
+                let budget = WarmUpBudget()
+                let onWarming: (TimeInterval) -> Void = { _ in
+                    status.post("Preparing your library \u{2014} '\(name)' will play when it's ready\u{2026}")
+                }
+                let songRows = try retryingWhileWarming(budget: budget, onWarming: onWarming, sleep: sleep) {
+                    try provider.artistSongs(artistID: artistID)
+                }.rows
+                try require(!songRows.isEmpty, "'\(name)' has no songs Bridge can play.")
+                let ids = bridgeQueueIDs(songRows, shuffle: shuffle, startAt: 1)
+                try retryingWhileWarming(budget: budget, onWarming: onWarming, sleep: sleep) {
+                    try routing.perform(.libraryPlay,
+                        musicApp: {
+                            throw ActionError(message:
+                                "Output changed to Music.app before '\(name)' could play on Bridge; nothing was played.")
+                        },
+                        source: { _ in _ = try provider.play(ids: ids) },
+                        unaffected: {})
+                }
+                status.post("Playing '\(name)' on Bridge \u{2014} \(ids.count) tracks.")
+            } catch let error as MusicProviderError {
+                throw ActionError(message: error.errorDescription ?? "Couldn't play '\(name)' on Bridge.")
             } catch let error as SourceAppError {
                 throw ActionError(message: error.message)
             }
@@ -1283,7 +1902,10 @@ final class LibraryScene: Scene {
     /// Whether `r` means anything right now. Either backend can be the one
     /// offering it, and neither answers for the other.
     private var retryOffered: Bool {
-        readFailed || (songsFromBridge && isSongList && bridgeFailure != nil)
+        readFailed
+            || (songsFromBridge && isSongList && bridgeFailure != nil)
+            || (albumsSource == .bridge && isAlbumList && bridgeAlbumsFailure != nil)
+            || (artistsSource == .bridge && isArtistList && bridgeArtistsFailure != nil)
     }
 
     private var isAlbumList: Bool { if case .albumList = nav.current { return true }; return false }
@@ -1301,6 +1923,26 @@ final class LibraryScene: Scene {
     /// the drilled artist's albums; otherwise the whole-library albums.
     private var currentAlbums: [LibraryAlbum] {
         nav.subView == .artists ? artistAlbums : albums
+    }
+
+    /// Which library the album rail/hero/preview at the CURRENT level is
+    /// showing (C3 item 1). At `.albumList` it's `albumsSource`. At
+    /// `.artistAlbums`, and at `.tracks` inside the Artists sub-view, it's
+    /// `artistsSource` (an artist's albums are Artists' rows, not Albums').
+    /// At `.tracks` inside the Albums sub-view it's `albumsSource`. `nil`
+    /// (the Songs sub-view, or nothing drilled) means the question does not
+    /// apply here.
+    private var currentAlbumSource: ListSource? {
+        switch nav.current {
+        case .albumList:
+            return albumsSource
+        case .artistAlbums:
+            return artistsSource
+        case .tracks:
+            return nav.subView == .artists ? artistsSource : albumsSource
+        default:
+            return nil
+        }
     }
 
     /// The drilled artist's name, if we're anywhere inside an artist (.artistAlbums
@@ -1415,28 +2057,24 @@ final class LibraryScene: Scene {
         }
     }
 
-    /// True while this tab is showing MORE THAN ONE library: Bridge's songs
-    /// beside Music.app's albums and artists. In Music.app mode everything comes
-    /// from one place, nothing needs saying, and all three headers stay exactly
-    /// as they have always been.
+    /// True while this tab is showing MORE THAN ONE library: some list here is
+    /// Bridge's and some Music.app's. Since D1 that can be Songs alongside a
+    /// Music.app-sourced Albums/Artists only in the narrow window right after
+    /// a provenance switch, before the lazy loaders have picked their branch
+    /// (`applyProvenance` resets `*Source` to nil, and the SAME tick's lazy
+    /// load fills it back in — see D7). In steady state Albums and Artists
+    /// follow Songs to whichever library is selected.
     private var tabShowsTwoLibraries: Bool { songsFromBridge || routing.mode == .source }
 
     /// Which library the showing list is reading, and how big it is once that is
     /// known.
     ///
-    /// **Required by the design, not decoration.** With Bridge selected the tab
-    /// shows two libraries at once — Songs from Bridge's MusicKit library,
-    /// Albums and Artists still from Music.app — and they are different sets of
-    /// songs, so a list that named neither would be telling a person the same
-    /// thing about both. Albums and Artists are not broken and the line does not
-    /// say they are; it says where their rows come from, which is Music.app in
-    /// both modes.
-    ///
-    /// **No count is invented.** Songs shows Bridge's own `total` (whatever it
-    /// is on the day — 15,697 when this was measured, and read from the wire,
-    /// never from here), falling back to the rows in hand only once the walk has
-    /// finished. Albums and Artists show their count only once their read is
-    /// done, because until then the number would be "how far it has got".
+    /// **Required by the design, not decoration.** A list that named neither
+    /// library would be telling a person the same thing whichever one it
+    /// happened to be showing. **No count is invented**: every branch shows
+    /// the backend's own count — Bridge's wire `total` first, else the rows
+    /// in hand once THAT list's own read is done — never a number computed
+    /// here.
     private func librarySourceLine() -> String? {
         switch nav.subView {
         case .songs:
@@ -1444,15 +2082,31 @@ final class LibraryScene: Scene {
             return sourceLine("Songs", "Bridge library",
                               count: bridgeSongTotal ?? (songsLoaded ? songs.count : nil))
         case .albums:
-            guard tabShowsTwoLibraries else { return nil }
-            return sourceLine("Albums", "Music.app library", count: albumsLoaded ? albums.count : nil)
+            switch albumsSource {
+            case .bridge:
+                return sourceLine("Albums", "Bridge library",
+                                  count: bridgeAlbumTotal ?? (albumsLoaded ? albums.count : nil))
+            case .musicApp:
+                guard tabShowsTwoLibraries else { return nil }
+                return sourceLine("Albums", "Music.app library", count: albumsLoaded ? albums.count : nil)
+            case nil:
+                return nil   // hasn't picked a branch yet this session
+            }
         case .artists:
-            guard tabShowsTwoLibraries else { return nil }
             // Drilled into one artist the rows are that artist's albums, so the
             // artist count would be a number about a different list. Left off
-            // rather than made up.
-            return sourceLine("Artists", "Music.app library",
-                              count: (isArtistList && artistsLoaded) ? artists.count : nil)
+            // rather than made up — "Artists count shows only at the list level".
+            switch artistsSource {
+            case .bridge:
+                return sourceLine("Artists", "Bridge library",
+                                  count: (isArtistList && artistsLoaded) ? (bridgeArtistTotal ?? artists.count) : nil)
+            case .musicApp:
+                guard tabShowsTwoLibraries else { return nil }
+                return sourceLine("Artists", "Music.app library",
+                                  count: (isArtistList && artistsLoaded) ? artists.count : nil)
+            case nil:
+                return nil
+            }
         }
     }
 
@@ -1476,12 +2130,31 @@ final class LibraryScene: Scene {
         let vis = visibleAlbumIndices()
         if vis.isEmpty {
             out += ANSICode.moveTo(row: listY, col: z.railX)
-            let loaded = (nav.subView == .artists) ? artistAlbumsLoaded : albumsLoaded
-            let st = libraryStatus(hasData: !albums.isEmpty, lastReadFailed: readFailed,
-                                   retriesExhausted: retriesExhausted)
             let msg: String
-            if let failure = unreadableMessage(st) { msg = failure }
-            else { msg = loaded ? (filter.isEmpty ? "(no albums)" : "(no matches)") : "Loading albums\u{2026}" }
+            if nav.subView == .artists {
+                // The drilled artist's albums (C3 item 4): Bridge's own
+                // sentence replaces "Loading albums…"/"(no albums)". No
+                // separate `r` here — drilling out and back in retries it.
+                if let failure = artistAlbumsFailure {
+                    msg = failure
+                } else {
+                    msg = artistAlbumsLoaded ? (filter.isEmpty ? "(no albums)" : "(no matches)") : "Loading albums\u{2026}"
+                }
+            } else if albumsSource == .bridge {
+                // C2 item 6: Bridge's own failure/warming, never the shared
+                // `readFailed` — a Music.app read that failed says nothing
+                // about a list Music.app was never asked for.
+                let st = libraryStatus(hasData: !albums.isEmpty, lastReadFailed: bridgeAlbumsFailure != nil,
+                                       retriesExhausted: true)
+                if let failure = unreadableMessage(st, bridgeFailure: bridgeAlbumsFailure) { msg = failure }
+                else if bridgeAlbumsWarming { msg = "Preparing your library\u{2026}" }
+                else { msg = albumsLoaded ? (filter.isEmpty ? "(no albums)" : "(no matches)") : "Loading albums\u{2026}" }
+            } else {
+                let st = libraryStatus(hasData: !albums.isEmpty, lastReadFailed: readFailed,
+                                       retriesExhausted: retriesExhausted)
+                if let failure = unreadableMessage(st) { msg = failure }
+                else { msg = albumsLoaded ? (filter.isEmpty ? "(no albums)" : "(no matches)") : "Loading albums\u{2026}" }
+            }
             out += "\(ANSICode.dim)\(msg)\(ANSICode.reset)"
             return
         }
@@ -1548,7 +2221,7 @@ final class LibraryScene: Scene {
                 : libraryStatus(hasData: !songs.isEmpty, lastReadFailed: readFailed,
                                 retriesExhausted: retriesExhausted)
             let msg: String
-            if let failure = unreadableMessage(st, bridge: songsFromBridge) { msg = failure }
+            if let failure = unreadableMessage(st, bridgeFailure: songsFromBridge ? bridgeFailure : nil) { msg = failure }
             // Not ready YET. Ahead of "Loading songs…" because it says something
             // truer — the wait is Bridge's, not the read's — and ahead of any
             // empty text, because an empty list here would be a lie.
@@ -1589,18 +2262,36 @@ final class LibraryScene: Scene {
             // With the album-artists toggle on, an empty list can mean "albums still
             // loading" (the set isn't populated yet) vs "loaded, none owned" — name
             // those honestly instead of a blanket "(no artists)".
-            let st = libraryStatus(hasData: !artists.isEmpty, lastReadFailed: readFailed,
-                                   retriesExhausted: retriesExhausted)
             let msg: String
-            if let failure = unreadableMessage(st) { msg = failure }
-            else if !artistsLoaded { msg = "Loading artists\u{2026}" }
-            else if artistFilter != .all && !albumsLoaded { msg = "Loading albums\u{2026}" }
-            else if !filter.isEmpty { msg = "(no matches)" }
-            else {
-                switch artistFilter {
-                case .all: msg = "(no artists)"
-                case .epOr12: msg = "(no 12\" / EP artists)"
-                case .albums: msg = "(no album artists)"
+            if artistsSource == .bridge {
+                // C2 item 6: Bridge's own failure/warming, never `readFailed`.
+                let st = libraryStatus(hasData: !artists.isEmpty, lastReadFailed: bridgeArtistsFailure != nil,
+                                       retriesExhausted: true)
+                if let failure = unreadableMessage(st, bridgeFailure: bridgeArtistsFailure) { msg = failure }
+                else if bridgeArtistsWarming { msg = "Preparing your library\u{2026}" }
+                else if !artistsLoaded { msg = "Loading artists\u{2026}" }
+                else if artistFilter != .all && albumsSource == .bridge && !albumsLoaded { msg = "Loading albums\u{2026}" }
+                else if !filter.isEmpty { msg = "(no matches)" }
+                else {
+                    switch artistFilter {
+                    case .all: msg = "(no artists)"
+                    case .epOr12: msg = "(no 12\" / EP artists)"
+                    case .albums: msg = "(no album artists)"
+                    }
+                }
+            } else {
+                let st = libraryStatus(hasData: !artists.isEmpty, lastReadFailed: readFailed,
+                                       retriesExhausted: retriesExhausted)
+                if let failure = unreadableMessage(st) { msg = failure }
+                else if !artistsLoaded { msg = "Loading artists\u{2026}" }
+                else if artistFilter != .all && !albumsLoaded { msg = "Loading albums\u{2026}" }
+                else if !filter.isEmpty { msg = "(no matches)" }
+                else {
+                    switch artistFilter {
+                    case .all: msg = "(no artists)"
+                    case .epOr12: msg = "(no 12\" / EP artists)"
+                    case .albums: msg = "(no album artists)"
+                    }
                 }
             }
             out += "\(ANSICode.dim)\(msg)\(ANSICode.reset)"
@@ -1737,7 +2428,12 @@ final class LibraryScene: Scene {
         out += ANSICode.moveTo(row: y, col: rx) + "\(ANSICode.dim)\(String(repeating: "\u{2500}", count: min(z.rightWidth, 18)))\(ANSICode.reset)"
         y += 1
         guard let lines = cached else {
-            out += ANSICode.moveTo(row: y, col: rx) + "\(ANSICode.dim)Loading\u{2026}\(ANSICode.reset)"
+            // C3 item 2: a Bridge failure shows its own sentence exactly where
+            // "Loading…" would otherwise sit — `trackCache` is left unset on
+            // a Bridge failure, so this is the one place that tells the two
+            // apart.
+            let text = bridgeTrackFailures[a.id] ?? "Loading\u{2026}"
+            out += ANSICode.moveTo(row: y, col: rx) + "\(ANSICode.dim)\(text)\(ANSICode.reset)"
             return
         }
         if lines.isEmpty {
