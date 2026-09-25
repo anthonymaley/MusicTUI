@@ -615,7 +615,10 @@ struct SourceAppControl: SourceControlling {
 
     private let path: String
     private let transport: (String, String) throws -> String
-    /// The same transport with a longer timeout, used only by `librarySongs`.
+    /// The same transport with a longer timeout, for the library reads and for
+    /// every `slice.queue`: starting a queue can wait on the player preparing
+    /// its first song, and Bridge retries that once after a cold start, which
+    /// together outlast the transport commands' 10s.
     private let libraryTransport: (String, String) throws -> String
 
     init(path: String = SourceAppStationSearch.socketPath) {
@@ -898,7 +901,7 @@ struct SourceAppControl: SourceControlling {
     /// holds.
     func queue(libraryIDs: [String], startRequired: Bool = false) throws -> Int {
         let body: [String: Any] = ["op": "slice.queue", "library_ids": libraryIDs, "start_required": startRequired]
-        let reply = try send(body)
+        let reply = try send(body, over: libraryTransport)
         guard let raw = reply["skipped_unavailable"] else { return 0 }
         guard CFGetTypeID(raw as CFTypeRef) != CFBooleanGetTypeID(),
               let skipped = raw as? Int, skipped >= 0, skipped < libraryIDs.count else {
@@ -931,7 +934,7 @@ struct SourceAppControl: SourceControlling {
             "op": "slice.queue",
             "rows": rows.map { ["title": $0.title, "artist": $0.artist, "album": $0.album] },
         ]
-        _ = try send(body)
+        _ = try send(body, over: libraryTransport)
     }
 
     /// Hands an ordered list of catalogue songs over for the app to resolve and
@@ -944,7 +947,7 @@ struct SourceAppControl: SourceControlling {
     /// second copy of those numbers on this side would drift from the ones
     /// actually enforced.
     func queue(catalogIDs: [String]) throws {
-        _ = try send(["op": "slice.queue", "ids": catalogIDs])
+        _ = try send(["op": "slice.queue", "ids": catalogIDs], over: libraryTransport)
     }
 
     /// Play ONE station natively on Bridge.

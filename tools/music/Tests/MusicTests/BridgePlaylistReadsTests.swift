@@ -533,9 +533,9 @@ final class BridgePlaylistReadsTests: XCTestCase {
 
     // MARK: - Addendum U (Bridge-as-built): `start_required` on the request
 
-    /// `slice.queue` goes over the MAIN transport, never `libraryTransport`
-    /// (`queue(libraryIDs:)` calls the bare `send(_:)`), so these read
-    /// `sentOnMain`, not `firstLibraryRequest`.
+    /// `slice.queue` goes over the long-timeout `libraryTransport` (a queue may
+    /// wait on the player preparing its first song, and one retry of that), so
+    /// these read `sentOnLibrary`.
     ///
     /// Codex's review (f70150a0): Bridge now treats an ABSENT `start_required`
     /// as a legacy request and refuses it, so the client must send an
@@ -544,11 +544,11 @@ final class BridgePlaylistReadsTests: XCTestCase {
     func testQueueSendsStartRequiredExplicitlyEveryTime() throws {
         let wireTrue = Wire([queueReply(skippedUnavailable: 0)])
         _ = try control(wireTrue).queue(libraryIDs: ["i.a"], startRequired: true)
-        XCTAssertEqual(wireTrue.decoded(wireTrue.sentOnMain.first)["start_required"] as? Bool, true)
+        XCTAssertEqual(wireTrue.decoded(wireTrue.sentOnLibrary.first)["start_required"] as? Bool, true)
 
         let wireFalse = Wire([queueReply(skippedUnavailable: 0)])
         _ = try control(wireFalse).queue(libraryIDs: ["i.a"], startRequired: false)
-        XCTAssertEqual(wireFalse.decoded(wireFalse.sentOnMain.first)["start_required"] as? Bool, false,
+        XCTAssertEqual(wireFalse.decoded(wireFalse.sentOnLibrary.first)["start_required"] as? Bool, false,
                        "false must be SENT explicitly, not omitted")
 
         // The default (no argument at all — every caller written before this
@@ -556,7 +556,7 @@ final class BridgePlaylistReadsTests: XCTestCase {
         // still sends the key, as `false`.
         let wireDefault = Wire([queueReply(skippedUnavailable: 0)])
         _ = try control(wireDefault).queue(libraryIDs: ["i.a"])
-        XCTAssertEqual(wireDefault.decoded(wireDefault.sentOnMain.first)["start_required"] as? Bool, false)
+        XCTAssertEqual(wireDefault.decoded(wireDefault.sentOnLibrary.first)["start_required"] as? Bool, false)
     }
 
     /// `BridgeMusicProvider.play(ids:)`'s one remaining caller (`playSong`, a
@@ -566,7 +566,7 @@ final class BridgePlaylistReadsTests: XCTestCase {
         {"ok":true,"op":"slice.status","status":{"playback":"playing"}}
         """])
         _ = try provider(wire).play(ids: ["i.a"])
-        XCTAssertEqual(wire.decoded(wire.sentOnMain.first)["start_required"] as? Bool, true)
+        XCTAssertEqual(wire.decoded(wire.sentOnLibrary.first)["start_required"] as? Bool, true)
     }
 
     func testProviderPlayReportingSkipsSendsWhicheverStartRequiredItIsGiven() throws {
@@ -575,7 +575,7 @@ final class BridgePlaylistReadsTests: XCTestCase {
             {"ok":true,"op":"slice.status","status":{"playback":"playing"}}
             """])
             _ = try provider(wire).playReportingSkips(ids: ["i.a"], startRequired: want)
-            let req = wire.decoded(wire.sentOnMain.first)
+            let req = wire.decoded(wire.sentOnLibrary.first)
             XCTAssertEqual(req["start_required"] as? Bool, want)
         }
     }

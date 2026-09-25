@@ -423,10 +423,13 @@ final class LibraryReadTimeoutTests: XCTestCase {
         try control.queue(libraryIDs: ["i.a"])
         try control.pause()
 
-        XCTAssertEqual(tally.library.count, 1, "the library read did not use the long-timeout transport")
+        // The library read and the queue (which may wait on the player
+        // preparing its first song) use the long timeout; status and pause do not.
+        XCTAssertEqual(tally.library.count, 2, "the library read or the queue did not use the long-timeout transport")
         XCTAssertTrue(tally.library[0].contains("slice.librarySongs"))
-        XCTAssertEqual(tally.ordinary.count, 3, "an ordinary op was sent down the long-timeout transport")
-        XCTAssertTrue(tally.ordinary.allSatisfy { !$0.contains("slice.librarySongs") })
+        XCTAssertTrue(tally.library[1].contains("slice.queue"))
+        XCTAssertEqual(tally.ordinary.count, 2, "an ordinary op was sent down the long-timeout transport")
+        XCTAssertTrue(tally.ordinary.allSatisfy { !$0.contains("slice.librarySongs") && !$0.contains("slice.queue") })
     }
 
     /// The one-transport test seam still serves every op, so no existing test
