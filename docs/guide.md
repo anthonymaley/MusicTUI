@@ -47,10 +47,10 @@ The skill triggers automatically when Claude detects music-related intent; `/mus
 
 ### 3. Interactive TUI
 
-Run bare `music` in a real terminal for the unified interactive shell: a tabbed interface with **Now**, **Discover**, **Library**, **Playlists**, **Radio**, and **Speakers** tabs.
+Run bare `music` in a real terminal for the unified interactive shell: a tabbed interface with **Now**, **Discover**, **Library**, **Playlists**, **Radio**, and **Output** tabs.
 
 ```
-music                           Unified shell: Now / Discover / Library / Playlists / Radio / Speakers tabs
+music                           Unified shell: Now / Discover / Library / Playlists / Radio / Output tabs
 ```
 
 Current TUI contract:
@@ -279,10 +279,13 @@ apple-music/
 │   │   │   ├── CLIBridgeGate.swift        # gates a verb into Music.app's body or a Bridge one
 │   │   │   ├── CLIBridgeDispatch.swift    # the CLI's one dispatch seam: mode read, output lock, mutate
 │   │   │   ├── CLIBridgeTransport.swift   # Bridge now/pause/skip/back/stop/seek
-│   │   │   ├── CLIBridgePlay.swift        # Bridge `music play` (resume/N/playlist/album/song/artist)
+│   │   │   ├── CLIBridgePlay.swift        # Bridge `music play` (resume/N/playlist/album/song/artist/catalog song link)
 │   │   │   ├── CLIBridgeSelection.swift   # matches a name against Bridge's own library
 │   │   │   ├── CLIBridgeNow.swift         # pure now/play-result rendering for Bridge output
-│   │   │   └── BridgePlaybackRef.swift    # a cached row → a Bridge play request, by origin (D3)
+│   │   │   ├── CLIBridgeReads.swift       # pure renderers: catalog search, station search, discover, playlist/history reads
+│   │   │   ├── CLIBridgeListings.swift    # Bridge `discover`/`playlist list`/`playlist tracks`/`similar`
+│   │   │   ├── CLIBridgeRadio.swift       # Bridge `radio search`/`radio add` lookup/`radio play` (never auto-picks)
+│   │   │   └── BridgePlaybackRef.swift    # a cached row → a Bridge play request, by origin (D3, D6)
 │   │   ├── Models/
 │   │   │   ├── OutputFormat.swift
 │   │   │   └── ResultCache.swift
