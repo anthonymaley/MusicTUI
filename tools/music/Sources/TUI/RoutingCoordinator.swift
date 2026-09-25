@@ -33,6 +33,15 @@ final class RoutingCoordinator {
     private let store: PlaybackModeStore
     private let makeSource: () -> SourceAppClient
 
+    /// The cross-process output lock (slice 3, D6), exposed read-only so the
+    /// CLI can take it directly around a playback mutation. The CLI's mutation
+    /// already runs inside `perform`, which holds `order` and has set the
+    /// re-entry marker, so there is deliberately NO method here that enters
+    /// `exclusively` on the CLI's behalf. Nil only for coordinators built
+    /// directly in tests; production builds through `live`, which always
+    /// passes one.
+    let outputLock: OutputLock?
+
     /// Which surface this process IS. One per process, set at composition, so a
     /// TUI call site cannot claim to be the CLI and vice versa (ruling 12.14).
     private let surface: InvocationSurface
@@ -54,20 +63,23 @@ final class RoutingCoordinator {
     /// the truth for the life of the process, and only a switch changes it.
     init(store: PlaybackModeStore,
          surface: InvocationSurface,
-         makeSource: @escaping () -> SourceAppClient) {
+         makeSource: @escaping () -> SourceAppClient,
+         outputLock: OutputLock? = nil) {
         self.store = store
         self.surface = surface
         self.makeSource = makeSource
+        self.outputLock = outputLock
         self.current = store.mode()
     }
 
     /// The composition both processes use: the TUI once at launch with `.tui`,
     /// each CLI command once per invocation with `.cli`, so the CLI obeys the
     /// same selection the Output tab made (Codex B2) while 12.14 still tells the
-    /// two surfaces apart.
+    /// two surfaces apart. It always carries the output lock beside the
+    /// store's mode.json, so a temp store gets a temp lock.
     static func live(store: PlaybackModeStore = PlaybackModeStore(),
                      surface: InvocationSurface) -> RoutingCoordinator {
-        RoutingCoordinator(store: store, surface: surface, makeSource: { SourceAppClient() })
+        RoutingCoordinator(store: store, surface: surface, makeSource: { SourceAppClient() }, outputLock: OutputLock(path: store.lockPath))
     }
 
     var mode: PlaybackMode {
@@ -132,11 +144,16 @@ final class RoutingCoordinator {
     /// is NOT such evidence: it also covers a failed connect or write to a live
     /// app that may still be playing, and treating it as stopped could leave
     /// both players running (rule 4, DoD 8).
+    ///
+    /// **The whole transaction holds the output lock (slice 3, D6)**, taken
+    /// after `order` and never before it, so a CLI playback change in another
+    /// process cannot land between the pause and the commit. See
+    /// `underOutputLock` for the waiting, revalidation and refusal rules.
     func switchMode(to target: PlaybackMode,
                     readiness: () -> SourceReadiness,
                     pauseOutgoing: (PlaybackMode) throws -> Bool,
                     dropQueue: (PlaybackMode) throws -> Void) throws -> SwitchResult {
-        try exclusively {
+        try exclusively { try underOutputLock {
             let outgoing = mode
             guard target != outgoing else { return .alreadyInMode }
 
@@ -162,10 +179,33 @@ final class RoutingCoordinator {
 
             state.lock(); current = target; state.unlock()
             return .switched(to: target)
-        }
+        } }
     }
 
     // MARK: - private
+
+    /// D6, the switch's side. Holds the cross-process lock for `body` and
+    /// releases it on every exit path. After acquiring, the persisted mode must
+    /// still be the mode held in memory: another process that moved it has made
+    /// this switch's idea of the outgoing player stale, and a mismatch refuses
+    /// rather than re-routes. Waiting past the bound, or a lock file that
+    /// cannot be opened, refuses in the switch's words (fail closed). A holder
+    /// is never forced to release.
+    private func underOutputLock<T>(_ body: () throws -> T) throws -> T {
+        guard let outputLock else { return try body() }
+        do {
+            return try outputLock.withLock {
+                guard store.mode() == mode else {
+                    throw ActionError(message: OutputLock.tuiModeChangedMessage)
+                }
+                return try body()
+            }
+        } catch let error as OutputLockError {
+            // A switch is always the Output tab's, whatever surface built the
+            // coordinator, so it refuses in the switch's words.
+            throw ActionError(message: error.message(for: .tui))
+        }
+    }
 
     /// The factory runs OUTSIDE `state`, so a factory that reads `mode` cannot
     /// deadlock. `order` is already held, so two clients are never built.
