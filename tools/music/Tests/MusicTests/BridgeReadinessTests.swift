@@ -246,20 +246,34 @@ final class BridgeReadinessTests: XCTestCase {
         let client = { SourceAppClient(path: "/nonexistent", transport: { _, _ in
             #"{"ok":true,"op":"slice.status","status":{"playback":"idle","contract":3,"authorization":"denied"}}"#
         }) }
+        // Inert closures (P6's seam): this test builds its SpeakersScene
+        // directly rather than through scene(reply:), and the trailing tick()
+        // below would otherwise kick the real fetchSpeakerDevices()/
+        // fetchEQSnapshot()/visualizerStatus() — real AppleScript, and a real
+        // ~/.config/music write — on every run of this file.
         let scene = SpeakersScene(backend: AppleScriptBackend(executable: "/usr/bin/true"),
                                   status: StatusStore(),
                                   actions: ActionRunner(status: StatusStore()),
                                   routing: RoutingCoordinator(store: store, surface: .tui,
                                                               makeSource: { client() }),
-                                  makeSourceClient: client)
+                                  makeSourceClient: client,
+                                  fetchSpeakers: { [] },
+                                  fetchEQ: { _ in EQSnapshot(enabled: false, current: nil, presets: []) },
+                                  fetchVisualizer: { _ in false })
 
         // Cursor starts on the Music.app row, which is the switch TARGET here.
         let before = scene.bridgeReadinessForTest
+        // A fixed wall-clock poll here raced under full-suite load (P7):
+        // GCD scheduling of selectMode's action body competes with every
+        // other test's background work, so a real 3.0s budget could be
+        // exceeded without the work itself stalling. The completion hook is
+        // a synchronization primitive; the poll was not.
+        let done = DispatchSemaphore(value: 0)
+        scene.selectModeFinishedForTest = { done.signal() }
         _ = scene.handle(.enter)
 
-        // Wait for the switch's result to LAND in the inbox, still unapplied.
-        let deadline = Date().addingTimeInterval(3.0)
-        while Date() < deadline && !scene.hasPendingReadinessForTest { usleep(10_000) }
+        XCTAssertEqual(done.wait(timeout: .now() + 10), .success,
+                       "selectMode's action never finished")
         XCTAssertTrue(scene.hasPendingReadinessForTest, "the switch never published its readiness")
         XCTAssertEqual(scene.bridgeReadinessForTest, before,
                        "the switch wrote bridgeReadiness directly instead of publishing it")

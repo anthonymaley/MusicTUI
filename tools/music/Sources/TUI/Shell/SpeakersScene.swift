@@ -87,6 +87,11 @@ final class SpeakersScene: Scene {
         readinessLock.lock(); defer { readinessLock.unlock() }
         return inboxReadiness != nil
     }
+
+    /// Test-only: fires after selectMode's action body finishes (either branch).
+    /// Never read or set by production code.
+    var selectModeFinishedForTest: (() -> Void)?
+
     private let speakerTargets = TargetAccumulator()
     private let eqTargetLock = NSLock()
     private var eqTarget: String? = nil
@@ -160,6 +165,10 @@ final class SpeakersScene: Scene {
     private func selectMode(_ target: PlaybackMode) {
         actions.run("Output") { [weak self] in
             guard let self else { return }
+            // Fires on every exit from this closure — including a thrown
+            // error from switchMode — so a test waiting on it can never be
+            // stranded by the exceptional path.
+            defer { self.selectModeFinishedForTest?() }
             // Through the injected factory, like the probe. Building a real
             // client here made this path unmockable AND meant a test drove the
             // live app's socket instead of a stub.
