@@ -66,13 +66,7 @@ func bridgeRowsRefusal(_ rows: [SongResult]) -> String? {
 /// (`refuseInBridge`): the sentence, or `{"ok":false,"error":…}` under `--json`.
 /// The caller throws `ExitCode.failure`.
 func printCachedRowRefusal(_ why: String, json: Bool) {
-    if json {
-        let body: [String: Any] = ["ok": false, "error": why]
-        let data = (try? JSONSerialization.data(withJSONObject: body)) ?? Data()
-        print(String(decoding: data, as: UTF8.self))
-    } else {
-        print(why)
-    }
+    print(cliFailureText(why, json: json))
 }
 
 /// The two inputs `add` and `playlist create/add` read before their shipped
