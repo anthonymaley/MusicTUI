@@ -46,6 +46,7 @@ struct AppleScriptBackend {
     /// shell's single serial action queue — blocked with it. On expiry the
     /// osascript subprocess is terminated and `ScriptError.timeout` thrown.
     func run(_ script: String, timeout: TimeInterval = 45) async throws -> String {
+        try ExternalCallTripwire.shared.check(.appleScript(script: script))
         verbose("osascript: \(script.prefix(200))")
 
         let process = Process()

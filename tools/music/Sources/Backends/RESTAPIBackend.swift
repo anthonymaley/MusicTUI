@@ -19,6 +19,7 @@ struct RESTAPIBackend {
     // MARK: - Raw requests
 
     func get(_ path: String) async throws -> (Data, Int) {
+        try ExternalCallTripwire.shared.check(.http(method: "GET", path: path))
         let url = URL(string: "https://api.music.apple.com\(path)")!
         var request = URLRequest(url: url)
         request.setValue("Bearer \(developerToken)", forHTTPHeaderField: "Authorization")
@@ -31,6 +32,7 @@ struct RESTAPIBackend {
     }
 
     func post(_ path: String, body: Data? = nil) async throws -> (Data, Int) {
+        try ExternalCallTripwire.shared.check(.http(method: "POST", path: path))
         let url = URL(string: "https://api.music.apple.com\(path)")!
         var request = URLRequest(url: url)
         request.httpMethod = "POST"

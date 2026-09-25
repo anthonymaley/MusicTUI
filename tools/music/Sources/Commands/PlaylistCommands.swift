@@ -251,14 +251,33 @@ func playlistAddStrategy(hasTokens: Bool, itemsAreIndices: Bool, allLibraryRows:
 /// Split cached rows by origin so each goes down its only valid route:
 /// catalog rows to the API, library rows to an AppleScript duplicate. Order
 /// inside each half is the order the user typed. Pure, for testability.
+///
+/// A Bridge row is in neither half: Music.app cannot duplicate it and the API
+/// cannot add it. `playlist create/add` refuse the whole command on any Bridge
+/// row (`bridgeRowsRefusal`) before this runs, so none arrives here.
 func partitionByOrigin(_ rows: [SongResult]) -> (catalog: [SongResult], library: [SongResult]) {
-    (rows.filter { $0.origin == .catalog }, rows.filter { $0.origin == .library })
+    var catalog: [SongResult] = []
+    var library: [SongResult] = []
+    for row in rows {
+        switch row.origin {
+        case .catalog: catalog.append(row)
+        case .library: library.append(row)
+        case .bridgeLibrary: continue
+        }
+    }
+    return (catalog, library)
 }
 
 /// True when there is at least one row and every row is a library row. This
 /// is the fact the keyless strategies need; computed once from one cache read.
+/// A Bridge row is not a Music.app library row.
 func allLibraryRows(_ rows: [SongResult]) -> Bool {
-    !rows.isEmpty && rows.allSatisfy { $0.origin == .library }
+    !rows.isEmpty && rows.allSatisfy { row in
+        switch row.origin {
+        case .library: return true
+        case .catalog, .bridgeLibrary: return false
+        }
+    }
 }
 
 /// The single route for adding LIBRARY rows to a playlist, keyed or keyless:
@@ -737,14 +756,27 @@ struct PlaylistCreate: ParsableCommand {
     @Argument(help: "Result indices to add (from last search/similar)") var indices: [Int] = []
     @Flag(name: .long, help: "Output JSON") var json = false
     func run() throws {
-        let auth = AuthManager()
-        let devToken = try? auth.requireDeveloperToken()
-        let userToken = auth.userToken()
+        try execute(deps: .live)
+    }
 
-        let (resolved, dropped) = ResultCache().lookupSongs(indices: indices)
+    /// The shipped body, reading the cache and the auth state only through
+    /// `deps` (score S3). One cache read; any Bridge row refuses the whole
+    /// command before the token reads, AppleScript or REST.
+    func execute(deps: CachedRowCommandDeps) throws {
+        let (resolved, dropped) = ResultCache.resolve(indices: indices, in: (try? deps.readSongs()) ?? [])
+        if let why = bridgeRowsRefusal(resolved) {
+            printCachedRowRefusal(why, json: json)
+            throw ExitCode.failure
+        }
         if !dropped.isEmpty {
             errorOut("⚠ Skipped index(es) not in the last results: \(dropped.map(String.init).joined(separator: ", "))")
         }
+
+        // Token reads come after the lookup and the Bridge-row check. They are
+        // optional reads, so the move changes no Music.app output.
+        let auth = try deps.readAuth()
+        let devToken = auth.dev
+        let userToken = auth.user
 
         switch playlistCreateStrategy(hasTokens: devToken != nil && userToken != nil,
                                       indexCount: indices.count,
@@ -793,7 +825,7 @@ struct PlaylistCreate: ParsableCommand {
         }
         // `.rest` guarantees both tokens are present.
         guard let devToken, let userToken else { return }
-        let api = RESTAPIBackend(developerToken: devToken, userToken: userToken, storefront: auth.storefront())
+        let api = RESTAPIBackend(developerToken: devToken, userToken: userToken, storefront: auth.storefront)
         let backend = AppleScriptBackend()
 
         // One API call creates the playlist and seeds the tracks — no
@@ -869,9 +901,13 @@ struct PlaylistAdd: ParsableCommand {
     @Argument(help: "Song title or result indices") var items: [String] = []
     @Flag(name: .long, help: "Output JSON") var json = false
     func run() throws {
-        let auth = AuthManager()
-        let devToken = try? auth.requireDeveloperToken()
-        let userToken = auth.userToken()
+        try execute(deps: .live)
+    }
+
+    /// The shipped body, reading the cache and the auth state only through
+    /// `deps` (score S3). Indices read the cache once; any Bridge row refuses
+    /// the whole command before the token reads, AppleScript or REST.
+    func execute(deps: CachedRowCommandDeps) throws {
         let backend = AppleScriptBackend()
 
         let ints = items.compactMap { Int($0) }
@@ -879,12 +915,22 @@ struct PlaylistAdd: ParsableCommand {
 
         var resolved: [SongResult] = []
         if itemsAreIndices {
-            let lookup = ResultCache().lookupSongs(indices: ints)
+            let lookup = ResultCache.resolve(indices: ints, in: (try? deps.readSongs()) ?? [])
             resolved = lookup.resolved
+            if let why = bridgeRowsRefusal(resolved) {
+                printCachedRowRefusal(why, json: json)
+                throw ExitCode.failure
+            }
             if !lookup.dropped.isEmpty {
                 errorOut("⚠ Skipped index(es) not in the last results: \(lookup.dropped.map(String.init).joined(separator: ", "))")
             }
         }
+
+        // Token reads come after the lookup and the Bridge-row check. They are
+        // optional reads, so the move changes no Music.app output.
+        let auth = try deps.readAuth()
+        let devToken = auth.dev
+        let userToken = auth.user
 
         switch playlistAddStrategy(hasTokens: devToken != nil && userToken != nil,
                                    itemsAreIndices: itemsAreIndices,
@@ -938,7 +984,7 @@ struct PlaylistAdd: ParsableCommand {
         }
         // `.rest` guarantees both tokens are present.
         guard let devToken, let userToken else { return }
-        let api = RESTAPIBackend(developerToken: devToken, userToken: userToken, storefront: auth.storefront())
+        let api = RESTAPIBackend(developerToken: devToken, userToken: userToken, storefront: auth.storefront)
 
         if itemsAreIndices {
             guard !resolved.isEmpty else {
