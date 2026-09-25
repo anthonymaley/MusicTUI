@@ -145,6 +145,14 @@ protocol MusicDataProvider {
     /// restarts the read rather than stitching two observations together.
     /// Rows come in the playlist's own order, with repeats kept.
     func playlistTracks(playlistID: String, cursor: String?, limit: Int) throws -> MusicPage
+    /// The FRESH whole-playlist play walk only (F4/C4): otherwise identical to
+    /// `playlistTracks`, but hints Bridge that this page is for a queue, so a
+    /// playlist over Bridge's queue bound is refused `too_large` on page 1
+    /// instead of after a full multi-page walk. Never used for the preview
+    /// read, the drill-in feed, or any read that starts from a specific track.
+    /// A provider that predates this method (every conformer before C4) gets
+    /// the default below, which is exactly `playlistTracks` — see its doc.
+    func playlistTracksForQueue(playlistID: String, cursor: String?, limit: Int) throws -> MusicPage
     /// Play exactly these ids, in this order, and report the queue that
     /// resulted. Ids are this provider's own.
     func play(ids: [String]) throws -> BridgeNow.Queue
@@ -191,6 +199,15 @@ extension MusicDataProvider {
     }
     func playlistTracks(playlistID: String, cursor: String?, limit: Int) throws -> MusicPage {
         throw MusicProviderError.notImplemented("This Bridge build can't list a playlist's tracks — update Bridge")
+    }
+    /// F4/C4: a provider written before `for_queue` existed (every fake in
+    /// `BridgeLibraryPlaySceneTests`/`BridgePlaylistsPlaySceneTests` predating
+    /// this step, and `BridgeMusicProvider` itself for every OTHER read of a
+    /// playlist's tracks) behaves exactly as `playlistTracks` — no second
+    /// implementation to keep in step, and the Music.app path this seam never
+    /// touches is untouched by construction.
+    func playlistTracksForQueue(playlistID: String, cursor: String?, limit: Int) throws -> MusicPage {
+        try playlistTracks(playlistID: playlistID, cursor: cursor, limit: limit)
     }
     /// Addendum U: a provider that predates `skipped_unavailable` (every
     /// `MusicDataProvider` test double written before this step) still plays

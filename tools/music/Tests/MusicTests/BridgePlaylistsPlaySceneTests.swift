@@ -244,6 +244,96 @@ final class BridgePlaylistsPlaySceneTests: XCTestCase {
                        "p at the tracks level, walk done, sent a new read")
     }
 
+    // MARK: - F4/C4: `for_queue` on the fresh whole-playlist play walk
+
+    /// The rail `p` walk is exactly the read `playBridgePlaylist` sends when
+    /// there are no cached rows (the branch this whole step is scoped to) —
+    /// every page of it must carry `for_queue: true`, not just the first.
+    func testPAtTheRailSendsForQueueTrueOnEveryPageOfItsFreshRead() {
+        let page1 = tracksPage([("i.a", "Alpha", "A")], total: 2, next: "c1")
+        let page2 = tracksPage([("i.b", "Zulu", "Z")], total: 2)
+        let wire = BridgeLibraryReadsWire(["slice.libraryPlaylists": [onePlaylistPage],
+                                           "slice.queue": [queueOK], "slice.status": [statusOK]])
+        wire.script("slice.libraryPlaylistTracks", [page1, page2])
+        let s = settledScene(wire: wire)
+        _ = s.handle(.char("p"))
+        XCTAssertTrue(settleScene(s) { wire.sent("slice.libraryPlaylistTracks").count >= 2 },
+                      "the second page of the fresh walk never landed")
+        for req in wire.sent("slice.libraryPlaylistTracks") {
+            XCTAssertEqual(req["for_queue"] as? Bool, true, "a page of p's fresh read did not carry for_queue:true")
+        }
+        XCTAssertTrue(settleScene(s) { !wire.sent("slice.queue").isEmpty })
+    }
+
+    /// A page-1 `too_large` refusal (Bridge's F4 wire behaviour) must reach
+    /// the footer verbatim through the existing `walkError` path, with no
+    /// second page read and — because the whole action throws before ever
+    /// building the id list — no `slice.queue` sent at all.
+    func testPageOneTooLargeRefusalReachesTheFooterVerbatimWithNoSecondPageAndNoQueue() {
+        let sentence = "'Chill' has 767 songs Bridge can play, which is more than the 100 Bridge can queue."
+        let refusal = """
+        {"ok":false,"op":"slice.libraryPlaylistTracks","error":{"kind":"too_large","detail":"\(sentence)"}}
+        """
+        let wire = BridgeLibraryReadsWire(["slice.libraryPlaylists": [onePlaylistPage]])
+        wire.script("slice.libraryPlaylistTracks", [refusal])
+        let status = StatusStore()
+        let s = playlistsTestScene(flag: BridgeSelectedFlag(true), wire: wire, spy: PlaylistAppleScriptSpy(),
+                                   status: status, width: 120)
+        XCTAssertTrue(settleScene(s) { s.render(frame: frame, snapshot: idle).contains("Chill") })
+        _ = s.handle(.char("p"))
+        XCTAssertTrue(settleScene(s) { status.current()?.text == sentence },
+                      "got: \(String(describing: status.current()?.text))")
+        XCTAssertEqual(wire.sent("slice.libraryPlaylistTracks").count, 1,
+                       "a page-1 too_large refusal must not be followed by a second page read")
+        XCTAssertTrue(wire.sent("slice.queue").isEmpty, "a page-1 too_large refusal must never reach slice.queue")
+    }
+
+    /// The preview kick (limit 50, three-zone auto-read) is not the fresh
+    /// whole-playlist play walk and must carry no `for_queue` at all.
+    func testThePreviewReadCarriesNoForQueue() {
+        let wire = BridgeLibraryReadsWire(["slice.libraryPlaylists": [onePlaylistPage]])
+        wire.script("slice.libraryPlaylistTracks", [tracksPage([("i.a", "Track A", "Artist A")])])
+        let s = playlistsTestScene(flag: BridgeSelectedFlag(true), wire: wire, spy: PlaylistAppleScriptSpy(), width: 160)
+        XCTAssertTrue(settleScene(s) { s.render(frame: threeZoneFrame, snapshot: idle).contains("Chill") })
+        XCTAssertTrue(settleScene(s) { !wire.sent("slice.libraryPlaylistTracks").isEmpty })
+        let req = wire.sent("slice.libraryPlaylistTracks").first!
+        XCTAssertEqual(req["limit"] as? Int, 50)
+        XCTAssertNil(req["for_queue"], "the preview read must not carry for_queue")
+    }
+
+    /// The drill-in feed (Enter on the rail) is not the fresh whole-playlist
+    /// play walk either, and must carry no `for_queue`.
+    func testTheDrillInFeedCarriesNoForQueue() {
+        let wire = BridgeLibraryReadsWire(["slice.libraryPlaylists": [onePlaylistPage]])
+        wire.script("slice.libraryPlaylistTracks", [tracksPage([("i.a", "Track A", "Artist A")])])
+        let s = settledScene(wire: wire)
+        _ = s.handle(.enter)
+        XCTAssertTrue(settleScene(s) { !wire.sent("slice.libraryPlaylistTracks").isEmpty })
+        let req = wire.sent("slice.libraryPlaylistTracks").first!
+        XCTAssertEqual(req["limit"] as? Int, 500)
+        XCTAssertNil(req["for_queue"], "the drill-in read must not carry for_queue")
+    }
+
+    /// Against a fake OLDER Bridge — one that answers a normal page and never
+    /// even looks at the extra key, exactly what a synthesized `Decodable`
+    /// dropping an unknown field produces — `p` still sends `for_queue` (the
+    /// client is unconditional about it) and still queues normally: the
+    /// client depends on nothing Bridge does with the field, only on what it
+    /// sends.
+    func testAgainstAFakeOldBridgeThatIgnoresForQueuePStillQueuesNormally() {
+        let wire = BridgeLibraryReadsWire(["slice.libraryPlaylists": [onePlaylistPage],
+                                           "slice.queue": [queueOK], "slice.status": [statusOK]])
+        wire.script("slice.libraryPlaylistTracks", [tracksPage([("i.a", "A", "Art"), ("i.b", "B", "Art")])])
+        let s = settledScene(wire: wire)
+        _ = s.handle(.char("p"))
+        XCTAssertTrue(settleScene(s) { !wire.sent("slice.queue").isEmpty })
+        let read = wire.sent("slice.libraryPlaylistTracks").first!
+        XCTAssertEqual(read["for_queue"] as? Bool, true)
+        let queueReq = wire.sent("slice.queue").first!
+        XCTAssertEqual(queueReq["library_ids"] as? [String], ["i.a", "i.b"])
+        XCTAssertEqual(queueReq["start_required"] as? Bool, false)
+    }
+
     // MARK: - Refusals and failures
 
     func test101RowPlaylistSendsAll101IdsAndBridgesOver100SentenceReachesTheFooterVerbatim() {
