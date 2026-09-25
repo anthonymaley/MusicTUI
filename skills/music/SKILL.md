@@ -64,6 +64,7 @@ music shuffle                                 # toggle (or: music shuffle on|off
 music repeat off|one|all
 music love                                    # favorite the current track
 music unlove                                  # unfavorite
+music sync-plays                              # record Bridge's finished library plays in Music.app
 ```
 
 ## Speakers (no auth)

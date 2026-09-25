@@ -257,11 +257,13 @@ apple-music/
 │   │   │   ├── AuthManager.swift
 │   │   │   ├── JWTGenerator.swift
 │   │   │   └── AuthPage.swift
+│   │   ├── PlaySync/                  # recording Bridge's finished library plays in Music.app (journal, writer)
 │   │   ├── Commands/
 │   │   │   ├── PlaybackCommands.swift     # play/pause/skip/back/stop/now/seek/shuffle/repeat
 │   │   │   ├── PlayParser.swift           # play arg parser: query/speakers/volume/shuffle
 │   │   │   ├── PlayResolution.swift       # play query resolution order
 │   │   │   ├── LoveCommands.swift         # love/unlove
+│   │   │   ├── SyncPlaysCommand.swift     # sync-plays: record Bridge plays in Music.app
 │   │   │   ├── HistoryCommands.swift      # recent/rotation
 │   │   │   ├── SpeakerCommands.swift
 │   │   │   ├── VolumeCommands.swift
@@ -363,7 +365,7 @@ All three are written owner-only: files `0600` in a `0700` directory (since 3.7.
 
 ## Version
 
-Current version: v3.14.0. All five locations stay in sync:
+Current version: v3.15.0. All five locations stay in sync:
 - `.claude-plugin/plugin.json` → `version`
 - `.claude-plugin/marketplace.json` → `metadata.version`
 - `.claude-plugin/marketplace.json` → `plugins[0].version`

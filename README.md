@@ -161,6 +161,7 @@ chmod 600 ~/.config/music/config.json ~/.config/music/user-token ~/.config/music
 | `music shuffle` / `music repeat off\|one\|all` | Shuffle and repeat modes |
 | `music seek +30` / `music seek 1:30` | Seek within the current track (relative or absolute) |
 | `music love` / `music unlove` | Favorite / unfavorite the current track |
+| `music sync-plays` | Record the library songs Bridge played to the end in Music.app (play count and last played) |
 
 Single-song playback is bounded the same way, and it stops when the song ends. `music play --song`, `music play "Song" "Artist"`, `music play <N>` from a search listing, and a bare `music play "X"` that resolves to a song all play exactly that one song and then stop, rather than continuing into the rest of your library. As with albums, that boundary holds only if Autoplay is off.
 
