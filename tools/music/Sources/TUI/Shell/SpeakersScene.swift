@@ -158,8 +158,8 @@ final class SpeakersScene: Scene {
                 pauseOutgoing: { outgoing in
                     switch outgoing {
                     case .musicApp:
-                        _ = try? syncRun { try await self.backend.runMusic("pause") }
-                        return true
+                        return try confirmMusicAppNotPlaying(session: liveMusicAppPauseSession,
+                                                             isRunning: liveMusicAppMayBeRunning)
                     case .source:
                         return try confirmBridgeNotPlaying(client.control)
                     }
