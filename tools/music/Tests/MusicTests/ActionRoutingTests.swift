@@ -168,6 +168,10 @@ final class ActionRoutingTests: XCTestCase {
         // CLI-only, like the other `.cliPlay*` rows; their TUI rows are
         // unreachable and decided with those rows, not defaulted.
         .cliPlayQuery: .source, .cliPlayCatalogSong: .source,
+        // Slice 3 Part 2, D3: Radio's Live/Personal browse and its add-by-URL
+        // lookup. TUI-only for now; both are served like every other
+        // Bridge-mode read.
+        .radioCatalogueBrowse: .source, .radioStationLookup: .source,
     ]
 
     /// The table covers the closed set. Adding an action fails here until its

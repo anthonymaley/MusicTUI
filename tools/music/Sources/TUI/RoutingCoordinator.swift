@@ -21,6 +21,17 @@
 // queue the caller is on.
 import Foundation
 
+/// Slice 3 Part 2, D3: "choice inside the lock, round trip outside, result
+/// carries an epoch." What `RoutingCoordinator.choose` hands back instead of
+/// running a closure, so the caller's own read happens outside the boundary.
+struct ProviderChoice<Provider> {
+    let provider: Provider
+    /// `RoutingCoordinator.epoch` at the moment the choice was made.
+    let epoch: Int
+    /// `RoutingCoordinator.mode` at the moment the choice was made.
+    let mode: PlaybackMode
+}
+
 final class RoutingCoordinator {
 
     /// The outcome of a switch that went ahead or had nothing to do. A switch
@@ -55,6 +66,14 @@ final class RoutingCoordinator {
     private var source: SourceAppClient?
     private var reachedBoundary: (() -> Void)?
 
+    /// Slice 3 Part 2, D3. Starts at 0; incremented exactly once per
+    /// COMMITTED switch (never on `alreadyInMode`, a refused switch — readiness,
+    /// an unconfirmed pause, a failed queue drop, a failed save — or a
+    /// foreign-process mismatch caught by `underOutputLock`). In-process only,
+    /// like `mode` itself: another TUI process's switch is not seen by this
+    /// one's epoch (true today).
+    private var _epoch = 0
+
     /// A unique key per instance. `ObjectIdentifier.hashValue` is not
     /// guaranteed unique, so it cannot name "this coordinator" (Codex, 11:47).
     private let reentryKey = "RoutingCoordinator.\(UUID().uuidString)"
@@ -87,6 +106,14 @@ final class RoutingCoordinator {
         return current
     }
 
+    /// Slice 3 Part 2, D3. The epoch a result is stamped with when its
+    /// provider was chosen; a caller compares its own stamp against this at
+    /// drain time and drops a result whose epoch has moved on.
+    var epoch: Int {
+        state.lock(); defer { state.unlock() }
+        return _epoch
+    }
+
     /// Runs exactly one branch for `action`, chosen now rather than when it was
     /// requested.
     ///
@@ -111,6 +138,35 @@ final class RoutingCoordinator {
             case .unaffected:      try unaffected()
             case .source:          try source(sourceClient())
             case .refused(let why): throw ActionError(message: why)
+            }
+        }
+    }
+
+    /// Chooses a provider for `action`, reading mode and epoch together with
+    /// the routing decision under the same ordering boundary `perform` uses —
+    /// so a switch cannot land between "which provider" and "what epoch this
+    /// is". A refused route throws exactly as `perform`'s does.
+    ///
+    /// **`musicApp` and `source` must only CONSTRUCT a provider.** They run
+    /// INSIDE the boundary, so they must be cheap and synchronous, never the
+    /// round trip itself: the whole point of returning a `ProviderChoice`
+    /// rather than running a closure is that the caller's own read (a socket
+    /// round trip, in Radio and Discover) happens on its own thread AFTER this
+    /// returns, so it can never hold the switch transaction open (a slow read
+    /// must not delay a switch).
+    func choose<Provider>(_ action: MusicTUIAction,
+                          musicApp: () throws -> Provider,
+                          source: (SourceAppClient) throws -> Provider) throws -> ProviderChoice<Provider> {
+        try exclusively {
+            switch routeAction(action, in: mode, from: surface) {
+            case .musicApp:
+                return ProviderChoice(provider: try musicApp(), epoch: epoch, mode: mode)
+            case .source:
+                return ProviderChoice(provider: try source(sourceClient()), epoch: epoch, mode: mode)
+            case .unaffected:
+                throw ActionError(message: "Internal error: \(action) has no provider to choose")
+            case .refused(let why):
+                throw ActionError(message: why)
             }
         }
     }
@@ -177,7 +233,10 @@ final class RoutingCoordinator {
                 throw ActionError(message: "Couldn't save the playback mode; \(name(outgoing))'s queue was cleared, still using \(name(outgoing))")
             }
 
-            state.lock(); current = target; state.unlock()
+            // D3: the epoch moves exactly here, with the mode — the only path
+            // that reaches a COMMITTED switch. Every earlier `throw` above
+            // returns before this line, so a refused switch never touches it.
+            state.lock(); current = target; _epoch += 1; state.unlock()
             return .switched(to: target)
         } }
     }
