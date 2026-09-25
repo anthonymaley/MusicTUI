@@ -12,6 +12,30 @@ struct Search: ParsableCommand {
     @Flag(name: .long, help: "Output JSON") var json = false
 
     func run() throws {
+        try runSearch(query: query, artist: artist, album: album, types: types, library: library,
+                      limit: limit, json: json, env: .live())
+    }
+}
+
+/// `music search`, dispatched (slice 3 S7, D1). `--library` is
+/// `.searchLibrary`, which Bridge serves from its own library; the catalogue
+/// search is `.catalogSearch`, a temporary migration exception that keeps its
+/// shipped backend until S8 (Q2). Neither is playback, so neither takes the
+/// output lock.
+func runSearch(query: [String], artist: String?, album: String?, types: String, library: Bool,
+               limit: Int, json: Bool, env: CLIBridgeEnv,
+               musicApp: ([String], String?, String?, String, Bool, Int, Bool) throws -> Void = searchViaMusicApp) throws {
+    try cliDispatch(library ? .searchLibrary : .catalogSearch, json: json, env: env,
+                    musicApp: { try musicApp(query, artist, album, types, library, limit, json) },
+                    bridge: library
+                        ? { try bridgeSearchLibraryCommand($0, query: query, artist: artist, album: album,
+                                                           types: types, limit: limit, json: json, env: env) }
+                        : cliBridgeNotServed(.catalogSearch))
+}
+
+/// The shipped `music search` body, verbatim.
+func searchViaMusicApp(query: [String], artist: String?, album: String?, types: String, library: Bool,
+                       limit: Int, json: Bool) throws {
         let searchTypes = parseSearchTypes(types)
         let results: SearchResults
         let term: String
@@ -62,6 +86,57 @@ struct Search: ParsableCommand {
         }
 
         printSearchResults(results)
+}
+
+// MARK: - search --library with Bridge selected (S7, D3, D4)
+
+let bridgeSearchSongsOnlyRefusal = "Bridge library search returns songs only in this version."
+
+/// `music search --library` with Bridge selected: songs from Bridge's own
+/// library, matched as `librarySearchScript` matches (`bridgeLibrarySearch`).
+///
+/// **Publish, then print (D3).** The rows are written to the result cache
+/// (atomically) BEFORE any numbered row is shown, so a number on screen is
+/// always a number `music play N` can find. A failed write shows no numbered
+/// rows and exits 1. No results publishes an empty list, so a later `play N`
+/// refuses as out of range rather than playing an older search's row.
+func bridgeSearchLibraryCommand(_ session: CLIBridgeSession, query: [String], artist: String?, album: String?,
+                                types: String, limit: Int, json: Bool, env: CLIBridgeEnv) throws {
+    guard parseSearchTypes(types) == [.songs] else {
+        throw ActionError(message: bridgeSearchSongsOnlyRefusal)
+    }
+    let term = query.joined(separator: " ")
+    let found = try bridgeLibrarySearch(provider: session.provider, term: term, artist: artist, album: album,
+                                        limit: limit, budget: session.budget, sleep: env.sleep,
+                                        onWarming: { _ in env.err(cliBridgeWarmingProgress) })
+    let rows: [MusicRow]
+    switch found {
+    case .refused(let why): throw ActionError(message: why)
+    case .rows(let matched): rows = matched
+    }
+
+    let published = rows.enumerated().map { i, row in
+        SongResult(index: i + 1, title: row.title, artist: row.artist, album: row.album ?? "",
+                   catalogId: "", origin: .bridgeLibrary, bridgeID: row.id)
+    }
+    do {
+        try env.cache.writeSongs(published)
+    } catch {
+        throw ActionError(message: "Couldn't save these results, so music play N would not find them: \(error.localizedDescription)")
+    }
+
+    guard !published.isEmpty else {
+        throw ActionError(message: "No results for '\(term)'")
+    }
+    if json {
+        // No `id`: `add --id` must never be handed a Bridge library id.
+        env.out(OutputFormat(mode: .json).render(published.map {
+            ["bridge_id": $0.bridgeID ?? "", "title": $0.title, "artist": $0.artist, "album": $0.album]
+        }))
+    } else {
+        for row in published {
+            env.out("\(row.index). \(row.title) \u{2014} \(row.artist) [\(row.album)]")
+        }
     }
 }
 

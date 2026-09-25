@@ -60,11 +60,11 @@ extension CLIBridgeEnv {
     /// a Bridge client on `wire`'s transport, and `io` recording output and
     /// sleeps.
     ///
-    /// `surface` is `.cli` unless a test says otherwise. Until S6 flips a CLI
-    /// route to `.source`, the only way to drive the Bridge branch THROUGH the
-    /// real `perform` is a coordinator whose matrix column serves the action,
-    /// so the Bridge-branch tests pass `.tui`. Production composes `.cli` only
-    /// (`live()`).
+    /// `surface` is `.cli` unless a test says otherwise, and every Bridge-branch
+    /// test drives the real CLI column: S6 and S7 dispatch `now`, transport,
+    /// the `music play` forms and `search --library` from `.cli`. A test passes
+    /// `.tui` only to model the TUI process itself. Production composes `.cli`
+    /// only (`live()`).
     ///
     /// `outputLock` builds the CLI's lock from its path, so a test can hand in
     /// S1's latched lock (a waiter that pauses on a barrier, never a sleep).

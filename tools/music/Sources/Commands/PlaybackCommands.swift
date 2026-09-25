@@ -36,7 +36,59 @@ struct Play: ParsableCommand {
     @Flag(name: [.customShort("v"), .customLong("verbose")], help: "Show diagnostic output") var verboseFlag = false
 
     func run() throws {
-        try refuseInBridge(.cliPlayResume, json: json)   // every `play` form changes playback (12.14)
+        try runPlay(args: args, playlist: playlist, album: album, song: song, artist: artist, json: json,
+                    verbose: verboseFlag, env: .live(), musicAppDeps: .live)
+    }
+}
+
+/// What the Music.app body of `music play` reads outside itself for `play N`
+/// (slice 3 S7, R2): the cached rows, and the shipped re-resolve of one row by
+/// title. Tests inject both; the rest of the body is the production code.
+struct PlayMusicAppDeps {
+    var readSongs: () throws -> [SongResult]
+    /// Called only for a row `musicAppIndexRoute` sends to `.reResolveByTitle`.
+    var resolveIndexed: (SongResult, Int) throws -> Void
+
+    /// The shipped re-resolve, moved verbatim: a bounded local play by title
+    /// and artist, then the catalogue add-and-play, else the shipped failure.
+    static var live: PlayMusicAppDeps {
+        PlayMusicAppDeps(
+            readSongs: { try ResultCache().readSongs() },
+            resolveIndexed: { song, index in
+                let backend = AppleScriptBackend()
+                if try !playSongBoundedOrReportFailure(backend: backend, title: song.title, artist: song.artist) {
+                    if try !addCatalogSongAndPlay(backend: backend, query: "\(song.title) \(song.artist)", title: song.title, artist: song.artist) {
+                        print("'\(song.title)' not in library. Run: music add \(index)")
+                        throw ExitCode.failure
+                    }
+                }
+            })
+    }
+}
+
+/// `music play`, dispatched (slice 3 S7, D1). The matrix decides from the form
+/// (`playAction`); the Music.app branch is ALWAYS the production
+/// `playViaMusicApp` (no closure override, R2), under the output lock; the
+/// Bridge branch is `bridgePlayCommand` (CLIBridgePlay.swift).
+func runPlay(args: [String], playlist: String?, album: String?, song: String?, artist: String?,
+             json: Bool, verbose: Bool = false, env: CLIBridgeEnv, musicAppDeps: PlayMusicAppDeps) throws {
+    try cliDispatch(playAction(args: args, playlist: playlist, album: album, song: song, artist: artist),
+                    json: json, env: env,
+                    musicApp: {
+                        try playViaMusicApp(args: args, playlist: playlist, album: album, song: song,
+                                            artist: artist, json: json, verbose: verbose, deps: musicAppDeps)
+                    },
+                    bridge: {
+                        try bridgePlayCommand($0, args: args, playlist: playlist, album: album, song: song,
+                                              artist: artist, json: json, env: env)
+                    })
+}
+
+/// The shipped `music play` body, verbatim, except that `play N` reads the
+/// cache through `deps.readSongs`, refuses a Bridge row (`musicAppIndexRoute`,
+/// S3), and re-resolves any other row through `deps.resolveIndexed`.
+func playViaMusicApp(args: [String], playlist: String?, album: String?, song: String?, artist: String?,
+                     json: Bool, verbose verboseFlag: Bool, deps: PlayMusicAppDeps) throws {
         Music.verbose = verboseFlag
         Music.isJSON = json
         let backend = AppleScriptBackend()
@@ -160,15 +212,16 @@ struct Play: ParsableCommand {
                 throw ExitCode.failure
             }
 
-            // Single integer → play from cache
+            // Single integer → play from cache. A Bridge row is refused before
+            // anything reaches AppleScript or REST (S3, D3).
             if args.count == 1, let index = Int(args[0]) {
-                let cache = ResultCache()
-                let song = try cache.lookupSong(index: index)
-                if try !playSongBoundedOrReportFailure(backend: backend, title: song.title, artist: song.artist) {
-                    if try !addCatalogSongAndPlay(backend: backend, query: "\(song.title) \(song.artist)", title: song.title, artist: song.artist) {
-                        print("'\(song.title)' not in library. Run: music add \(index)")
-                        throw ExitCode.failure
-                    }
+                let song = try ResultCache.row(index: index, in: deps.readSongs())
+                switch musicAppIndexRoute(forCachedRow: song, index: index) {
+                case .refuse(let why):
+                    printCachedRowRefusal(why, json: json)
+                    throw ExitCode.failure
+                case .reResolveByTitle:
+                    try deps.resolveIndexed(song, index)
                 }
                 showNowPlaying(json: json, waitForPlay: true)
                 return
@@ -359,7 +412,6 @@ struct Play: ParsableCommand {
             try await backend.runMusic("play")
         }
         showNowPlaying(json: json, waitForPlay: true)
-    }
 }
 
 /// Bounded single-song play against the real backend.

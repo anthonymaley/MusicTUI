@@ -275,8 +275,8 @@ final class CLIBridgeDispatchTests: XCTestCase {
                                                             CLIBridgeReplies.warming(retryAfter: 1)],
                                            "slice.queue": [#"{"ok":true,"skipped_unavailable":0}"#]])
         let io = CLIBridgeTestIO()
-        // `.tui`: the CLI still refuses `.cliPlaySong` until S7 dispatches it.
-        let env = CLIBridgeEnv.test(mode: .source, wire: wire, io: io, surface: .tui)
+        // The real CLI surface: S7 dispatches `.cliPlaySong` to Bridge.
+        let env = CLIBridgeEnv.test(mode: .source, wire: wire, io: io)
         var statusError: Error?
         XCTAssertNoThrow(try cliDispatch(.cliPlaySong, json: false, env: env, musicApp: {}, bridge: { session in
             _ = try session.mutate { try $0.queue(libraryIDs: ["i.1"], startRequired: true) }

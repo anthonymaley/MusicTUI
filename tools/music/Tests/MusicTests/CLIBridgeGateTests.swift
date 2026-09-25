@@ -12,13 +12,13 @@ final class CLIBridgeGateTests: XCTestCase {
     /// Slice 3 D7: the playback verbs Bridge does not serve from the CLI yet
     /// refuse in their not-served words.
     func testUnservedPlaybackVerbsRefuseWithTheirD7WordsOnBridge() {
-        let verbs: [MusicTUIAction] = [.cliPlayResume, .persistentShuffleMode, .persistentRepeatMode,
-                                       .radioStationPlay, .playlistTemp]
+        let verbs: [MusicTUIAction] = [.cliPlayQuery, .cliPlayCatalogSong, .persistentShuffleMode,
+                                       .persistentRepeatMode, .radioStationPlay, .playlistTemp]
         for action in verbs {
             XCTAssertEqual(cliBridgeRefusal(action, mode: .source), cliBridgeNotServedReason(action), "\(action)")
         }
-        XCTAssertEqual(cliBridgeRefusal(.cliPlayResume, mode: .source),
-                       "Bridge output is selected, and music play isn't available from the CLI on Bridge yet. Use MusicTUI, or switch Output to Music.app.")
+        XCTAssertEqual(cliBridgeRefusal(.cliPlayQuery, mode: .source),
+                       "Bridge output is selected, and music play <words> isn't available from the CLI on Bridge yet. Use MusicTUI, or switch Output to Music.app.")
     }
 
     /// A dispatched verb is not gated. If one ever were, "go ahead as it
@@ -33,11 +33,16 @@ final class CLIBridgeGateTests: XCTestCase {
 
     /// One failure formatter for the gate and the dispatcher (S6 unified S5's copy).
     func testRefuseInBridgePrintsTheSharedFailureText() {
-        for json in [false, true] {
-            let shipped = captureStdout { try refuseInBridge(.playlistTemp, json: json, mode: .source) }
-            XCTAssertEqual(shipped.output,
-                           cliFailureText(cliBridgeNotServedReason(.playlistTemp), json: json) + "\n")
-        }
+        let why = cliBridgeNotServedReason(.playlistTemp)
+        let text = captureStdout { try refuseInBridge(.playlistTemp, json: false, mode: .source) }
+        XCTAssertEqual(text.output, cliFailureText(why, json: false) + "\n")
+        // Parsed, not compared as bytes: JSONSerialization does not order the
+        // keys of two equal dictionaries the same way every time.
+        let json = captureStdout { try refuseInBridge(.playlistTemp, json: true, mode: .source) }
+        let printed = try? JSONSerialization.jsonObject(with: Data(json.output.utf8)) as? [String: Any]
+        XCTAssertEqual(printed?["ok"] as? Bool, false)
+        XCTAssertEqual(printed?["error"] as? String, why)
+        XCTAssertEqual(printed?.count, 2)
         XCTAssertEqual(cliFailureText("x", json: false), "x")
         let doc = try? JSONSerialization.jsonObject(with: Data(cliFailureText("x", json: true).utf8)) as? [String: Any]
         XCTAssertEqual(doc?["ok"] as? Bool, false)
@@ -68,10 +73,10 @@ final class CLIBridgeGateTests: XCTestCase {
     }
 
     func testRefuseInBridgeExitsNonZeroOnlyOnBridge() {
-        XCTAssertThrowsError(try refuseInBridge(.cliPlayResume, mode: .source)) { error in
+        XCTAssertThrowsError(try refuseInBridge(.cliPlayQuery, mode: .source)) { error in
             XCTAssertEqual(error as? ExitCode, .failure)
         }
-        XCTAssertNoThrow(try refuseInBridge(.cliPlayResume, mode: .musicApp))
+        XCTAssertNoThrow(try refuseInBridge(.cliPlayQuery, mode: .musicApp))
     }
 
     // MARK: - Which action, when flags decide
@@ -101,7 +106,6 @@ final class CLIBridgeGateTests: XCTestCase {
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
             .appendingPathComponent("Sources/Commands")
         let gated: [(file: String, command: String)] = [
-            ("PlaybackCommands.swift", "Play"),
             ("DiscoveryCommands.swift", "Similar"), ("DiscoveryCommands.swift", "Suggest"),
             ("DiscoveryCommands.swift", "NewReleases"), ("LoveCommands.swift", "Love"),
             ("LoveCommands.swift", "Unlove"), ("RemoveCommand.swift", "Remove"),
@@ -116,7 +120,7 @@ final class CLIBridgeGateTests: XCTestCase {
         }
     }
 
-    /// Slice 3 S6: the dispatching verbs. `run()` starts with `try run<Verb>(`
+    /// Slice 3 S6 and S7: the dispatching verbs. `run()` starts with `try run<Verb>(`
     /// (`Now` keeps its TTY check first, then calls it), and `run<Verb>`'s
     /// first statement is `try cliDispatch(`, so no AppleScript, `open` or
     /// Bridge request can precede the route.
@@ -130,6 +134,8 @@ final class CLIBridgeGateTests: XCTestCase {
             ("PlaybackCommands.swift", "Seek", "runSeek"), ("PlaybackCommands.swift", "Shuffle", "runShuffle"),
             ("PlaybackCommands.swift", "Repeat_", "runRepeat"), ("RadioCommands.swift", "RadioPlay", "runRadioPlay"),
             ("PlaylistCommands.swift", "PlaylistTemp", "runPlaylistTemp"),
+            // S7: `music play` and `music search`.
+            ("PlaybackCommands.swift", "Play", "runPlay"), ("SearchCommand.swift", "Search", "runSearch"),
         ]
         for (file, command, verb) in dispatching {
             let source = try String(contentsOf: commands.appendingPathComponent(file), encoding: .utf8)
