@@ -19,6 +19,7 @@ struct Music: ParsableCommand {
             Repeat_.self,
             Love.self,
             Unlove.self,
+            SyncPlays.self,
             // Speakers & Volume
             Speaker.self,
             Vol.self,
