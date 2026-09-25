@@ -169,8 +169,8 @@ final class ActionRoutingTests: XCTestCase {
         // unreachable and decided with those rows, not defaulted.
         .cliPlayQuery: .source, .cliPlayCatalogSong: .source,
         // Slice 3 Part 2, D3: Radio's Live/Personal browse and its add-by-URL
-        // lookup. TUI-only for now; both are served like every other
-        // Bridge-mode read.
+        // lookup. Both are served like every other Bridge-mode read (the
+        // lookup also from the CLI since P7).
         .radioCatalogueBrowse: .source, .radioStationLookup: .source,
     ]
 
@@ -247,6 +247,8 @@ final class ActionRoutingTests: XCTestCase {
         .searchLibrary,
         // P6
         .catalogSearch, .cliPlayCatalogSong,
+        // P7
+        .radioSearch, .radioStationLookup, .radioStationPlay,
     ]
 
     func testTheDispatchedSetIsExactlyS7sPlusP6s() {
@@ -287,9 +289,10 @@ final class ActionRoutingTests: XCTestCase {
     /// Section 2's M rows under Anthony's Q2 ruling [B]: the read-only lookups
     /// that keep their shipped backends as temporary migration exceptions until
     /// Part B serves or refuses each one.
-    /// Part 2 deletes each as it serves or refuses it: P6 retired `.catalogSearch`.
+    /// Part 2 deletes each as it serves or refuses it: P6 retired
+    /// `.catalogSearch`, P7 `.radioSearch`.
     private let s8Migration: Set<MusicTUIAction> = [
-        .playlistListing, .radioSearch, .discoverFeed,
+        .playlistListing, .discoverFeed,
         .similar, .suggest, .newReleases, .recent, .rotation,
     ]
 
@@ -306,6 +309,41 @@ final class ActionRoutingTests: XCTestCase {
         let literal = source[start.upperBound..<end.lowerBound]
         XCTAssertFalse(literal.contains(".catalogSearch"), "P6 retired it")
         XCTAssertFalse(literal.contains("slice.search (P6)"), "its migration comment goes with it")
+    }
+
+    /// P7 deleted the radio search's line and its comment from the exceptions
+    /// literal. STRUCTURAL: reads ActionRouting.swift's source text.
+    func testTheRadioSearchMigrationLineIsDeleted() throws {
+        let file = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Sources/TUI/ActionRouting.swift")
+        let source = try String(contentsOf: file, encoding: .utf8)
+        guard let start = source.range(of: "let cliBridgeExceptions: Set<MusicTUIAction> = ["),
+              let end = source.range(of: "\n]\n", range: start.upperBound..<source.endIndex)
+        else { return XCTFail("cliBridgeExceptions literal not found") }
+        let literal = source[start.upperBound..<end.lowerBound]
+        XCTAssertFalse(literal.contains(".radioSearch"), "P7 retired it")
+        XCTAssertFalse(literal.contains("slice.searchStations (P7)"), "its migration comment goes with it")
+        XCTAssertFalse(literal.contains("until Part B's P7"), "`radio add`'s lookup note is no longer a promise")
+    }
+
+    /// P7: the three radio actions are dispatched from the CLI with Bridge
+    /// selected and keep their shipped route with Music.app selected. The
+    /// lookup is CLI-reachable now; the play takes the output lock, the two
+    /// reads do not.
+    func testRadioSearchLookupAndPlayAreDispatchedByP7() {
+        for action in [MusicTUIAction.radioSearch, .radioStationLookup, .radioStationPlay] {
+            XCTAssertTrue(action.surfaces.contains(.cli), "\(action)")
+            XCTAssertTrue(cliDispatchedOnBridge.contains(action), "\(action)")
+            XCTAssertFalse(cliBridgeExceptions.contains(action), "\(action)")
+            XCTAssertEqual(routeAction(action, in: .source, from: .cli), .source, "\(action)")
+            XCTAssertEqual(routeAction(action, in: .musicApp, from: .cli), .musicApp, "\(action)")
+        }
+        XCTAssertEqual(MusicTUIAction.radioStationLookup.surfaces, [.tui, .cli])
+        XCTAssertTrue(requiresOutputLock(.radioStationPlay))
+        XCTAssertFalse(requiresOutputLock(.radioSearch))
+        XCTAssertFalse(requiresOutputLock(.radioStationLookup))
+        XCTAssertTrue(cliBridgeExceptions.contains(.radioAddURL), "the favourite itself stays MusicTUI's own state")
     }
 
     /// S8 closes the inventory: the exception set is exactly section 2's E

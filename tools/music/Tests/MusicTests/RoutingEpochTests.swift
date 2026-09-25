@@ -264,18 +264,22 @@ final class RoutingEpochTests: XCTestCase {
     /// place is caught from this file too.
     func testTheTwoNewActionsAreTuiOnlyAndServedOnBridge() {
         for action in [MusicTUIAction.radioCatalogueBrowse, .radioStationLookup] {
-            XCTAssertEqual(action.surfaces, [.tui], "\(action)")
             XCTAssertFalse(action.touchesPlayback, "\(action)")
             XCTAssertFalse(action.readsMusicAppCurrentTrack, "\(action)")
             XCTAssertEqual(routeAction(action, in: .musicApp, from: .tui), .musicApp, "\(action)")
             XCTAssertEqual(routeAction(action, in: .source, from: .tui), .source, "\(action)")
-            // No CLI invoker exists yet: the closed CLI clause refuses, naming
-            // what is not yet available, exactly as D7 requires for every
-            // undispatched action.
-            guard case .refused(let reason) = routeAction(action, in: .source, from: .cli) else {
-                return XCTFail("\(action) must refuse from the CLI: no invoker exists yet")
-            }
-            XCTAssertEqual(reason, cliBridgeNotServedReason(action), "\(action)")
         }
+        // No CLI invoker exists for the browse: the closed CLI clause refuses,
+        // naming what is not available, exactly as D7 requires for every
+        // undispatched action.
+        XCTAssertEqual(MusicTUIAction.radioCatalogueBrowse.surfaces, [.tui])
+        guard case .refused(let reason) = routeAction(.radioCatalogueBrowse, in: .source, from: .cli) else {
+            return XCTFail("radioCatalogueBrowse must refuse from the CLI: no invoker exists")
+        }
+        XCTAssertEqual(reason, cliBridgeNotServedReason(.radioCatalogueBrowse))
+        // Part 2 P7 widened the lookup to the CLI (`radio add`) and dispatched it.
+        XCTAssertEqual(MusicTUIAction.radioStationLookup.surfaces, [.tui, .cli])
+        XCTAssertEqual(routeAction(.radioStationLookup, in: .source, from: .cli), .source)
+        XCTAssertEqual(routeAction(.radioStationLookup, in: .musicApp, from: .cli), .musicApp)
     }
 }

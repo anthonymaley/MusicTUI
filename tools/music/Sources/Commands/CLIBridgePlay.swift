@@ -170,6 +170,7 @@ private func bridgePlayIndex(_ session: CLIBridgeSession, index: Int, json: Bool
         case .resume:                          sent = 0
         case .libraryQueue(let ids, _):        sent = ids.count
         case .catalogueQueue(let ids):         sent = ids.count
+        case .station:                         sent = 1   // never from a cached row
         }
         let skipped = try session.mutate { try sendBridgeRef(ref, to: $0) }
         bridgeShowAfterMutation(
@@ -209,6 +210,10 @@ func sendBridgeRef(_ ref: BridgePlaybackRef, to control: SourceControlling) thro
     case .catalogueQueue(let ids):
         // `slice.queue {"ids"}`: never `library_ids` (D6).
         return try control.queueReportingSkips(catalogIDs: ids)
+    case .station(let id, let name):
+        // `slice.playStation`: a station replaces the queue; nothing is skipped.
+        try control.playStation(id: id, named: name)
+        return 0
     }
 }
 

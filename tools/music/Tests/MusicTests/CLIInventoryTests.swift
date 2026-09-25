@@ -64,6 +64,12 @@ final class CLIInventoryTests: XCTestCase {
         // `play N` on a `.bridgeCatalog` row is the `play N` row above (D6).
         Row(invocation: "search (catalogue)", command: "Search", letter: .served, enforcement: .route(.catalogSearch), owner: "P6"),
         Row(invocation: "play <Apple Music song link>", command: "Play", letter: .served, enforcement: .route(.cliPlayCatalogSong), owner: "P6"),
+        // Part 2, P7: radio search (`slice.searchStations`), `radio add`'s name
+        // lookup (`slice.station`; the favourite itself is the E row below) and
+        // radio play (`slice.playStation`, D8: ambiguity refuses, never picks).
+        Row(invocation: "radio search", command: "RadioSearch", letter: .served, enforcement: .route(.radioSearch), owner: "P7"),
+        Row(invocation: "radio add URL (station name lookup)", command: "RadioAdd", letter: .served, enforcement: .route(.radioStationLookup), owner: "P7"),
+        Row(invocation: "radio play", command: "RadioPlay", letter: .served, enforcement: .route(.radioStationPlay), owner: "P7"),
 
         // Refused before any side effect.
         Row(invocation: "shuffle", command: "Shuffle", letter: .refused, enforcement: .route(.persistentShuffleMode), owner: "S6"),
@@ -75,7 +81,6 @@ final class CLIInventoryTests: XCTestCase {
         Row(invocation: "love", command: "Love", letter: .refused, enforcement: .route(.loveTrack), owner: "existing"),
         Row(invocation: "unlove", command: "Unlove", letter: .refused, enforcement: .route(.loveTrack), owner: "existing"),
         Row(invocation: "playlist temp", command: "PlaylistTemp", letter: .refused, enforcement: .route(.playlistTemp), owner: "S6"),
-        Row(invocation: "radio play", command: "RadioPlay", letter: .refused, enforcement: .route(.radioStationPlay), owner: "S6"),
         Row(invocation: "similar (no title: current track)", command: "Similar", letter: .refused, enforcement: .route(.similarToCurrentTrack), owner: "existing"),
         Row(invocation: "suggest (no --from: current track)", command: "Suggest", letter: .refused, enforcement: .route(.suggestFromCurrentTrack), owner: "existing"),
         Row(invocation: "new-releases --like-current", command: "NewReleases", letter: .refused, enforcement: .route(.newReleasesLikeCurrentTrack), owner: "existing"),
@@ -91,7 +96,6 @@ final class CLIInventoryTests: XCTestCase {
         // Migration exceptions [B]: shipped backends until Part B.
         Row(invocation: "playlist list", command: "PlaylistList", letter: .migration, enforcement: .route(.playlistListing), owner: "S8"),
         Row(invocation: "playlist tracks", command: "PlaylistTracks", letter: .migration, enforcement: .route(.playlistListing), owner: "S8"),
-        Row(invocation: "radio search", command: "RadioSearch", letter: .migration, enforcement: .route(.radioSearch), owner: "S8"),
         Row(invocation: "discover", command: "Discover", letter: .migration, enforcement: .route(.discoverFeed), owner: "S8"),
         Row(invocation: "similar <title>", command: "Similar", letter: .migration, enforcement: .route(.similar), owner: "S8"),
         Row(invocation: "suggest --from P", command: "Suggest", letter: .migration, enforcement: .route(.suggest), owner: "S8"),
@@ -109,7 +113,7 @@ final class CLIInventoryTests: XCTestCase {
         Row(invocation: "playlist cleanup", command: "PlaylistCleanup", letter: .exception, enforcement: .route(.playlistWrite), owner: "—"),
         Row(invocation: "playlist share", command: "PlaylistShare", letter: .exception, enforcement: .route(.playlistShare), owner: "—"),
         Row(invocation: "radio list", command: "RadioList", letter: .exception, enforcement: .noMatrixRow("local favourites"), owner: "—"),
-        Row(invocation: "radio add URL", command: "RadioAdd", letter: .exception, enforcement: .route(.radioAddURL), owner: "S8 ([B]: unchanged)"),
+        Row(invocation: "radio add URL", command: "RadioAdd", letter: .exception, enforcement: .route(.radioAddURL), owner: "S8, P7 (the favourite stays local; its lookup is the P7 row)"),
         Row(invocation: "mix", command: "Mix", letter: .exception, enforcement: .route(.cliMix), owner: "—"),
         Row(invocation: "eq", command: "EQ", letter: .exception, enforcement: .route(.eq), owner: "—"),
         Row(invocation: "visualizer", command: "Visualizer", letter: .exception, enforcement: .route(.visualizer), owner: "—"),
@@ -131,6 +135,7 @@ final class CLIInventoryTests: XCTestCase {
     /// Migration exceptions Part B has already served or refused, by step.
     private let retiredMigrations: [MusicTUIAction: String] = [
         .catalogSearch: "P6",
+        .radioSearch: "P7",
     ]
 
     /// The M rows still standing.
@@ -271,11 +276,14 @@ final class CLIInventoryTests: XCTestCase {
     func testTheInventoryCloses() {
         func count(_ l: Letter) -> Int { inventory.filter { $0.letter == l }.count }
         // P6: catalogue search moved M → S; the song link moved R → S.
-        XCTAssertEqual(count(.served), 15)
-        XCTAssertEqual(count(.refused), 21)
-        XCTAssertEqual(count(.migration), 9)
+        // P7: radio search moved M → S and radio play R → S; `radio add`'s
+        // lookup, CLI-reachable since P7, is a served row of its own (+1 row;
+        // `radio add`'s favourite stays the E row).
+        XCTAssertEqual(count(.served), 18)
+        XCTAssertEqual(count(.refused), 20)
+        XCTAssertEqual(count(.migration), 8)
         XCTAssertEqual(count(.exception), 19)
-        XCTAssertEqual(inventory.count, 64)
+        XCTAssertEqual(inventory.count, 65)
     }
 
     // MARK: - The gate comes first (STRUCTURAL: source text, not execution evidence)

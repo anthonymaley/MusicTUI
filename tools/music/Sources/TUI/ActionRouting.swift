@@ -50,8 +50,8 @@ enum MusicTUIAction: CaseIterable, Equatable {
     /// Slice 3 Part 2, D3. `radio add URL`'s enrichment lookup, split from
     /// `radioAddURL` (which saves the favourite from the slug and stays
     /// MusicTUI's own state): this is the read that fills in the station's
-    /// real name from whichever provider is chosen. TUI-only until P7 wires
-    /// the CLI's `radio add`.
+    /// real name from whichever provider is chosen. Both surfaces since P7
+    /// wired the CLI's `radio add`.
     case radioStationLookup
     // Each of these three is two verbs wearing one name: an explicit target, or
     // Music.app's current track when none is given (DiscoveryCommands.swift:20,
@@ -193,7 +193,8 @@ extension MusicTUIAction {
              .radioStationPlay,     // RadioScene.swift:160, DiscoverScene.swift:290 / RadioCommands.swift:27
              .radioSearch,          // RadioScene.swift:173 / / RadioCommands.swift:85
              .radioAddURL,          // RadioScene.swift:174 a / RadioCommands.swift:68
-             .loveTrack,            // NowPlayingScene.swift:732 l / LoveCommands.swift:8
+             .radioStationLookup,   // RadioScene.swift, `a`'s enrichment / RadioCommands.swift, runRadioAdd (P7)
+             .loveTrack,           // NowPlayingScene.swift:732 l / LoveCommands.swift:8
              .playlistListing,      // Shell.swift:94 / PlaylistCommands.swift:23
              .discoverFeed,         // DiscoverScene.swift:462 / DiscoverCommands.swift:52
              .airplayRoute,         // SpeakersScene.swift:332 / SpeakerCommands.swift:48
@@ -215,12 +216,9 @@ extension MusicTUIAction {
              .libraryRetry,              // LibraryScene.swift:667 r, only while a read failed
              .radioFavourite,            // RadioScene.swift:172 f — toggles an existing row
              .genius,                    // NowPlayingScene.swift:760 g; no CLI verb
-             // Slice 3 Part 2, D3: no CLI verb reaches either yet. P5 wires
-             // radioCatalogueBrowse from RadioScene's Live/Personal lists; P7
-             // widens radioStationLookup to [.tui, .cli] when it wires the
-             // CLI's `radio add`.
-             .radioCatalogueBrowse,
-             .radioStationLookup:
+             // Slice 3 Part 2, D3: no CLI verb reaches it. P5 wires it from
+             // RadioScene's Live/Personal lists.
+             .radioCatalogueBrowse:
             return [.tui]
 
         // CLI only.
@@ -278,6 +276,10 @@ let cliDispatchedOnBridge: Set<MusicTUIAction> = [
     // Part 2 P6: catalogue search (`slice.search`) and the Apple Music SONG
     // link (`slice.queue {"ids"}`, D7). Any other link classifies as words.
     .catalogSearch, .cliPlayCatalogSong,
+    // Part 2 P7: `radio search` (`slice.searchStations`), `radio add`'s name
+    // lookup (`slice.station`) and `radio play` (`slice.playStation`, D8: an
+    // ambiguous name refuses, never auto-picks).
+    .radioSearch, .radioStationLookup, .radioStationPlay,
 ]
 
 /// CLI actions that keep their shipped backend while Bridge is selected
@@ -305,8 +307,8 @@ let cliBridgeExceptions: Set<MusicTUIAction> = [
     .playlistWrite,
     .playlistShare,
     .cliMix,
-    // E: MusicTUI's own state. `radio add` saves a local favourite; its REST
-    // name lookup is as shipped ([B]) until Part B's P7 moves it to `slice.station`.
+    // E: MusicTUI's own state. `radio add` saves a local favourite in both
+    // modes; its name lookup is `.radioStationLookup`, dispatched (P7).
     .radioAddURL,
     .auth,
     // E: Music.app settings (spec 6.4, Unaffected).
@@ -314,7 +316,6 @@ let cliBridgeExceptions: Set<MusicTUIAction> = [
     .visualizer,
     // M: temporary migration exceptions [B].
     .playlistListing,   // migration exception until Part B's slice.libraryPlaylists / slice.libraryPlaylistTracks (P8)
-    .radioSearch,       // migration exception until Part B's slice.searchStations (P7)
     .discoverFeed,      // migration exception until Part B's slice.recommendations (P8)
     .similar,           // migration exception until Part B's slice.search (P8)
     .suggest,           // migration exception until Part B's P8, which refuses it (no Bridge op; Q1 default)
@@ -456,8 +457,8 @@ func routeAction(_ action: MusicTUIAction,
     /// station lookup are reads with no Music.app current-track dependency,
     /// so both are served the same way every other Bridge-mode TUI read is.
     /// `routing.choose` hands the caller a provider to read from AFTER this
-    /// returns; the CLI clause above is unreachable for either until an
-    /// invoker exists there.
+    /// returns. From the CLI, the clause above decides: `radio add`'s lookup
+    /// is dispatched (P7); the browse has no CLI invoker.
     case .radioCatalogueBrowse, .radioStationLookup:
         return .source
 

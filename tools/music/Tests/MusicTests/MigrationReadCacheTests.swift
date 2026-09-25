@@ -84,7 +84,7 @@ final class MigrationReadCacheTests: XCTestCase {
     /// dispatched `search --library` writes `.bridgeLibrary`, and the
     /// dispatched catalogue search `.bridgeCatalog`.
     func testTheMigrationReadsAreExceptionsNotDispatched() {
-        for action in [MusicTUIAction.playlistListing, .radioSearch, .discoverFeed,
+        for action in [MusicTUIAction.playlistListing, .discoverFeed,
                        .similar, .suggest, .newReleases, .recent, .rotation] {
             XCTAssertTrue(cliBridgeExceptions.contains(action), "\(action)")
             XCTAssertFalse(cliDispatchedOnBridge.contains(action), "\(action)")

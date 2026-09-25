@@ -1,7 +1,7 @@
 import Foundation
 
-/// What the CLI asks Bridge to play (score D2). There is no station case
-/// until its first caller (Part 2, P7); exhaustive switches then force it.
+/// What the CLI asks Bridge to play (score D2). Exhaustive switches over it
+/// force every new case to be decided where a reference becomes a request.
 enum BridgePlaybackRef: Equatable {
     /// `slice.play`: resume whatever Bridge has loaded.
     case resume
@@ -10,6 +10,9 @@ enum BridgePlaybackRef: Equatable {
     /// `slice.queue` with `ids`: catalogue ids a Bridge op produced (a
     /// `.bridgeCatalog` row) or a song link named (Part 2 D6, D7).
     case catalogueQueue(ids: [String])
+    /// `slice.playStation` {`id`,`name`} (Part 2 D6, P7): `music radio play`.
+    /// `name` travels for Bridge's refusal of a station Apple does not carry.
+    case station(id: String, name: String)
 }
 
 /// Bridge `play N`: queue the row, or refuse it with a sentence.
