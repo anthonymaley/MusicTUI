@@ -1062,6 +1062,31 @@ final class PlaySyncEngineTests: XCTestCase {
         XCTAssertEqual(h.writer.library[Song.spont], state(1, At.second))
     }
 
+    /// Same play as above, but decoded from a wire reply carrying `origin`
+    /// and `catalog_id` (test-only: the public half of catalogue plays). The
+    /// journal only ever sees a `CompletedPlayRecord`, which has no origin
+    /// field, so a catalogue-origin play must be synced exactly like a
+    /// library one.
+    func testACatalogueOriginPlayIsSyncedExactlyLikeALibraryPlay() throws {
+        let reply = """
+        {"ok":true,"ledger_id":"L1","latest_seq":1,"next_after":1,"more":false,
+         "plays":[{"alias":"\(Song.spontAlias)","artist":"Artist","catalog_id":"1458871225",
+         "completed_at":"2026-09-25T01:38:55.091Z","duration_s":128.647,"end":"advance",
+         "library_id":"i.qlWqltep4qY5","origin":"catalogue","play_id":"PLAY-C",
+         "position_s":127.82,"seq":1,"title":"Spontaneous"}]}
+        """
+        let body = try JSONSerialization.jsonObject(with: reply.data(using: .utf8)!) as! [String: Any]
+        let decoded = try SourceAppControl.completedPlaysPage(from: body, ledgerID: nil, after: 0, limit: 200)
+        h.feed.override = { _, _, _ in decoded }
+
+        h.pass()
+
+        XCTAssertEqual(h.writer.library[Song.spont], state(1, At.second))
+        XCTAssertEqual(h.entry(1)?.state, .done)
+        XCTAssertEqual(h.entry(1)?.alias, Song.spontAlias)
+        XCTAssertEqual(h.journal().consumedThrough, 1)
+    }
+
     // 16. The library is not ready.
     func testEmptyLibraryLeavesPlaysPendingAndStopsTheApply() {
         h.writer.library = [:]
