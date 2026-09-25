@@ -1074,6 +1074,20 @@ final class PlaySyncEngineTests: XCTestCase {
         XCTAssertEqual(result.newProblems, [])
     }
 
+    /// An empty library is not a silent `.stop`: the pass says why the play is
+    /// still waiting, instead of falling through to "Nothing new to record."
+    func testEmptyLibraryNotesTheLibraryNotLoadedAccessFailure() {
+        h.writer.library = [:]
+        h.writer.libraryTrackCount = 0
+        h.feed.add(Song.awakeAlias, "Are You Awake?", at: At.first)
+
+        let result = h.pass()
+
+        XCTAssertEqual(result.musicAccess, .failed(MusicAccessSentence.libraryNotLoaded))
+        XCTAssertEqual(result.waiting, 1)
+        XCTAssertEqual(h.journal().entries.map(\.state), [.pending])
+    }
+
     func testReadFailureOnAPendingPlayStopsTheApply() {
         h.feed.add(Song.awakeAlias, "Are You Awake?", at: At.first)
         h.feed.add(Song.donorAlias, "Organ Donor", at: At.second)

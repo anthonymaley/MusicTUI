@@ -53,6 +53,12 @@ enum SyncPlaysSentence {
         case .notRunning: return "Music.app quit while plays were being recorded"
         case .timedOut: return "Music.app did not answer in time"
         case .failed(let detail):
+            if detail == MusicAccessSentence.libraryNotLoaded {
+                return "Music.app's library hasn't finished loading"
+            }
+            if detail == MusicAccessSentence.noMatch {
+                return "the track could not be found in Music.app when it came time to write"
+            }
             var trimmed = detail.trimmingCharacters(in: .whitespacesAndNewlines)
             if trimmed.hasSuffix(".") { trimmed.removeLast() }
             return "Music.app could not be accessed (\(trimmed))"
