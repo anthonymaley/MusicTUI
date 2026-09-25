@@ -221,6 +221,18 @@ func runShell() {
     // touches queueStore, so there's no concurrent access and no lock needed.
     restoreQueueOnLaunch(queueStore: queueStore, appQueue: appQueue, backend: backend)
     poller.start()
+    // Records Bridge's finished library plays in Music.app, on a thread of its
+    // own (not the poller's, not this input loop), and only while Bridge is the
+    // selected output. It never launches Music.app: with Music.app not running,
+    // plays wait for the next pass.
+    let playSync = PlaySyncWorker(
+        isBridgeSelected: { routing.mode == .source },
+        runner: PlaySyncEngine(paths: .live,
+                               feed: SourceAppControl(),
+                               writer: MusicPlayCountWriter(),
+                               inspector: ProcMusicInstanceInspector()),
+        post: { text, error, ttl in status.post(text, error: error, ttl: ttl) })
+    playSync.start()
     // Sweep temp queue playlists left by a prior session (sparing the one still
     // playing). Off-main so a slow Music doesn't delay first paint.
     DispatchQueue.global().async { sweepQueuePlaylists(backend: backend) }
@@ -234,6 +246,9 @@ func runShell() {
         // wait, so nothing queued behind `q` can mint a name and start a
         // create after the user asked to leave. Synchronous, no waiting.
         discoverLifecycle.closeAdmission()
+        // Bounded (2s); a pass still writing is left to finish, and whatever it
+        // had begun is settled by the next pass.
+        playSync.stop()
         poller.stop()
         // Rule 2, phase 2: sweep Discover temp playlists now that the poller
         // is confirmed stopped, i.e. this is a genuine exit — never on a
