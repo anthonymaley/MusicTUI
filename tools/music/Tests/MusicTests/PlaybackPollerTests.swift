@@ -31,7 +31,7 @@ final class PlaybackPollerTests: XCTestCase {
     }
 
     private func poller() -> PlaybackPoller {
-        PlaybackPoller(store: NowPlayingStore(), backend: AppleScriptBackend(), appQueue: AppQueueStore(),
+        PlaybackPoller(store: NowPlayingStore(), backend: AppleScriptBackend(executable: "/usr/bin/true"), appQueue: AppQueueStore(),
                         queueStore: QueueStore(path: queueStoreTmpPath))
     }
 

@@ -226,7 +226,7 @@ final class BridgeLibrarySceneTests: XCTestCase {
     private func scene(mode: PlaybackMode, wire: Wire, spy: AppleScriptSpy,
                        status: StatusStore, waits: Waits = Waits()) -> LibraryScene {
         let route = routing(mode)
-        return LibraryScene(backend: AppleScriptBackend(), routing: route,
+        return LibraryScene(backend: AppleScriptBackend(executable: "/usr/bin/true"), routing: route,
                             sources: spy.sources(), appQueue: AppQueueStore(),
                             status: status, actions: ActionRunner(status: status),
                             makeProvider: {

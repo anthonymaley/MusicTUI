@@ -197,7 +197,7 @@ final class BridgeNowTests: XCTestCase {
         let store = PlaybackModeStore(path: NSTemporaryDirectory() + "mode-\(UUID().uuidString).json")
         store.set(mode)
         let statusStore = StatusStore()
-        return NowPlayingScene(backend: AppleScriptBackend(), appQueue: AppQueueStore(),
+        return NowPlayingScene(backend: AppleScriptBackend(executable: "/usr/bin/true"), appQueue: AppQueueStore(),
                                status: statusStore, actions: ActionRunner(status: statusStore),
                                routing: RoutingCoordinator(store: store, surface: .tui,
                                                            makeSource: { SourceAppClient(path: "/nonexistent") }))
@@ -303,7 +303,7 @@ final class BridgeNowTests: XCTestCase {
         let modeStore = PlaybackModeStore(path: NSTemporaryDirectory() + "mode-\(UUID().uuidString).json")
         modeStore.set(mode)
         let client = { SourceAppClient(path: "/nonexistent", transport: { _, _ in try reply() }) }
-        return PlaybackPoller(store: store, backend: AppleScriptBackend(), appQueue: AppQueueStore(),
+        return PlaybackPoller(store: store, backend: AppleScriptBackend(executable: "/usr/bin/true"), appQueue: AppQueueStore(),
                               queueStore: QueueStore(path: NSTemporaryDirectory() + "q-\(UUID().uuidString).json"),
                               routing: RoutingCoordinator(store: modeStore, surface: .tui, makeSource: client),
                               makeSourceClient: client)
@@ -358,7 +358,7 @@ final class NowQuietKeyTests: XCTestCase {
         let store = PlaybackModeStore(path: NSTemporaryDirectory() + "mode-\(UUID().uuidString).json")
         store.set(.source)
         let status = StatusStore()
-        return NowPlayingScene(backend: AppleScriptBackend(), appQueue: AppQueueStore(),
+        return NowPlayingScene(backend: AppleScriptBackend(executable: "/usr/bin/true"), appQueue: AppQueueStore(),
                                status: status, actions: ActionRunner(status: status),
                                routing: RoutingCoordinator(store: store, surface: .tui,
                                                            makeSource: { SourceAppClient(path: "/nonexistent") }))
@@ -386,7 +386,7 @@ final class NowQuietKeyTests: XCTestCase {
     private func scene(status: StatusStore, reply: @escaping (String, String) throws -> String) -> NowPlayingScene {
         let store = PlaybackModeStore(path: NSTemporaryDirectory() + "mode-\(UUID().uuidString).json")
         store.set(.source)
-        return NowPlayingScene(backend: AppleScriptBackend(), appQueue: AppQueueStore(),
+        return NowPlayingScene(backend: AppleScriptBackend(executable: "/usr/bin/true"), appQueue: AppQueueStore(),
                                status: status, actions: ActionRunner(status: status),
                                routing: RoutingCoordinator(store: store, surface: .tui,
                                                            makeSource: { SourceAppClient(path: "/nonexistent",

@@ -27,7 +27,7 @@ final class PollerModeBoundaryTests: XCTestCase {
         let modeStore = PlaybackModeStore(path: NSTemporaryDirectory() + "mode-\(UUID().uuidString).json")
         modeStore.set(mode)
         let routing = RoutingCoordinator(store: modeStore, surface: .tui, makeSource: { factory.make() })
-        let poller = PlaybackPoller(store: store, backend: AppleScriptBackend(),
+        let poller = PlaybackPoller(store: store, backend: AppleScriptBackend(executable: "/usr/bin/true"),
                                     appQueue: AppQueueStore(),
                                     queueStore: QueueStore(path: NSTemporaryDirectory() + "q-\(UUID().uuidString).json"),
                                     routing: routing,
