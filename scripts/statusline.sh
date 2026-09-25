@@ -36,6 +36,11 @@ if command -v "$MUSIC_CLI" &>/dev/null; then
         VOLUMES=$(echo "$JSON" | grep -o '"speakers":\[[^]]*\]' | grep -o '"volume":[0-9]*' | cut -d: -f2 | paste -sd, - | sed 's/,/, /g')
     fi
 
+    # No track name means nothing worth a status line: Bridge idle/loading (no
+    # album, duration, position, or speakers either) reports a state with no
+    # track, and an icon with a blank label is worse than nothing.
+    [ -z "$TRACK" ] && exit 0
+
     [ "$STATE" = "playing" ] && ICON="▶" || ICON="⏸"
     [ -n "$LIVE" ] && ICON="$ICON ◉"
 
