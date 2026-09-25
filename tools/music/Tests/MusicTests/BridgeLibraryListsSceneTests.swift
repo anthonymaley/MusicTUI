@@ -284,8 +284,12 @@ final class BridgeLibraryListsSceneTests: XCTestCase {
         flag.selected = false   // flip away from Bridge while page 2 is in flight
         XCTAssertTrue(settleScene(s) { s.songsForTest.isEmpty }, "the provenance reset never cleared the list")
         wire.release(op: "slice.librarySongs", at: 1)
-        // Give the abandoned walk a moment to try to land its second page.
+        // Give the abandoned walk a moment to try to land its second page,
+        // THEN drain — `render` alone never calls `tick`, so without this the
+        // test would pass vacuously regardless of whether the epoch guard
+        // held.
         Thread.sleep(forTimeInterval: 0.2)
+        for _ in 0..<10 { _ = s.tick(snapshot: idle) }
         let out = s.render(frame: frame, snapshot: idle)
         XCTAssertFalse(out.contains("Nude"), "a Bridge row landed after the list had reset to Music.app: \(out)")
     }
