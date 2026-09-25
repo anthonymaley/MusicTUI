@@ -80,6 +80,15 @@ final class RadioScene: Scene {
     private var resolveInbox: (epoch: Int, station: Station)? = nil
     // commitSearch's search path.
     private var searchInbox: (epoch: Int, term: String, hits: [Station], failure: String?)? = nil
+    /// How many posts each inbox has been OFFERED ("live", "personal",
+    /// "lookup", "search"), accepted or not. Under `inboxLock`. Nothing reads
+    /// it but tests: it is how a test knows a background post has been written
+    /// before it ticks, so the order two posts arrive in can be pinned.
+    private var offered: [String: Int] = [:]
+    func postsOffered(_ kind: String) -> Int {
+        inboxLock.lock(); defer { inboxLock.unlock() }
+        return offered[kind, default: 0]
+    }
 
     /// One Live or Personal read, stamped with the epoch its provider was
     /// chosen at. `failure` is set only on Bridge: open mode keeps its shipped
@@ -318,7 +327,12 @@ store: StationStore, catalog: RadioCatalog?,
                   choice.provider.catalogueAvailable,
                   let resolved = (try? choice.provider.station(id: id)) ?? nil else { return }
             guard let self else { return }
-            self.inboxLock.lock(); self.resolveInbox = (choice.epoch, resolved); self.inboxLock.unlock()
+            self.inboxLock.lock()
+            self.offered["lookup", default: 0] += 1
+            if Self.mayReplace(self.resolveInbox?.epoch, with: choice.epoch) {
+                self.resolveInbox = (choice.epoch, resolved)
+            }
+            self.inboxLock.unlock()
         }
     }
 
@@ -375,11 +389,27 @@ store: StationStore, catalog: RadioCatalog?,
                 failure = "Search failed"
             }
             guard let self else { return }
-            self.inboxLock.lock(); self.searchInbox = (epoch, term, hits, failure); self.inboxLock.unlock()
+            self.inboxLock.lock()
+            self.offered["search", default: 0] += 1
+            if Self.mayReplace(self.searchInbox?.epoch, with: epoch) {
+                self.searchInbox = (epoch, term, hits, failure)
+            }
+            self.inboxLock.unlock()
         }
     }
 
     private enum Browse { case live, personal }
+
+    /// Every inbox is ONE slot, so its writes are epoch-monotonic: a post
+    /// replaces what is waiting only when its epoch is at least as new. Last
+    /// writer wins was the defect (Codex, Part 2 review): after a switch, the
+    /// new output's post could land first and the old output's after it; the
+    /// stale one took the slot, the drain dropped it, the fetch flags stayed
+    /// set, and the fresh result was lost with no retry. Call under `inboxLock`.
+    private static func mayReplace(_ storedEpoch: Int?, with incoming: Int) -> Bool {
+        guard let storedEpoch else { return true }
+        return incoming >= storedEpoch
+    }
 
     /// One Live or Personal read. The CHOICE runs here, on the fetch thread,
     /// never on the main thread: a playback action can hold the ordering lock
@@ -417,7 +447,12 @@ store: StationStore, catalog: RadioCatalog?,
             }
             guard let self else { return }
             self.inboxLock.lock()
-            if which == .live { self.liveInbox = post } else { self.personalInbox = post }
+            self.offered[which == .live ? "live" : "personal", default: 0] += 1
+            if which == .live {
+                if Self.mayReplace(self.liveInbox?.epoch, with: post.epoch) { self.liveInbox = post }
+            } else {
+                if Self.mayReplace(self.personalInbox?.epoch, with: post.epoch) { self.personalInbox = post }
+            }
             self.inboxLock.unlock()
         }
     }
