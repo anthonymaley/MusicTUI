@@ -11,7 +11,29 @@ import XCTest
 /// an unfilled field look like a finding.
 final class BridgeReadinessTests: XCTestCase {
 
-    private func scene(reply: @escaping (String, String) throws -> String) -> SpeakersScene {
+    /// Counts calls to the injected speaker/EQ/visualizer refresh closures, so a
+    /// test can prove `tick()` reaches ONLY these — never the real
+    /// `fetchSpeakerDevices()`/`fetchEQSnapshot`/`visualizerStatus`, which shell
+    /// out to real AppleScript and, for speakers, write through to the real
+    /// `~/.config/music` cache.
+    private final class RefreshCallCounter {
+        private let lock = NSLock()
+        private(set) var speakerCalls = 0
+        private(set) var eqCalls = 0
+        private(set) var visualizerCalls = 0
+
+        func bumpSpeakers() { lock.lock(); speakerCalls += 1; lock.unlock() }
+        func bumpEQ() { lock.lock(); eqCalls += 1; lock.unlock() }
+        func bumpVisualizer() { lock.lock(); visualizerCalls += 1; lock.unlock() }
+    }
+
+    /// `refreshCounter` is nil for every existing test — they don't care about
+    /// the speaker/EQ/visualizer refresh, only that it never reaches real
+    /// AppleScript. The inert closures always stand in for the production
+    /// defaults; the counter is opt-in instrumentation for the one test that
+    /// asserts on it.
+    private func scene(reply: @escaping (String, String) throws -> String,
+                        refreshCounter: RefreshCallCounter? = nil) -> SpeakersScene {
         let store = PlaybackModeStore(path: NSTemporaryDirectory() + "mode-\(UUID().uuidString).json")
         return SpeakersScene(backend: AppleScriptBackend(executable: "/usr/bin/true"),
                              status: StatusStore(),
@@ -19,7 +41,19 @@ final class BridgeReadinessTests: XCTestCase {
                              routing: RoutingCoordinator(store: store, surface: .tui,
                                                          makeSource: { SourceAppClient(path: "/nonexistent",
                                                                                        transport: reply) }),
-                             makeSourceClient: { SourceAppClient(path: "/nonexistent", transport: reply) })
+                             makeSourceClient: { SourceAppClient(path: "/nonexistent", transport: reply) },
+                             fetchSpeakers: {
+                                 refreshCounter?.bumpSpeakers()
+                                 return []
+                             },
+                             fetchEQ: { _ in
+                                 refreshCounter?.bumpEQ()
+                                 return EQSnapshot(enabled: false, current: nil, presets: [])
+                             },
+                             fetchVisualizer: { _ in
+                                 refreshCounter?.bumpVisualizer()
+                                 return false
+                             })
     }
 
     private func settle(_ s: SpeakersScene, seconds: Double = 2.0) {
@@ -78,6 +112,28 @@ final class BridgeReadinessTests: XCTestCase {
         for _ in 0..<40 { _ = s.tick(snapshot: NowPlayingSnapshot(outcome: .stopped, history: [], surrounding: [])) }   // same sitting, no gap
         XCTAssertEqual(s.readinessProbeCount, afterEntry,
                        "readiness is polling: it must be asked on entry, not on a heartbeat")
+    }
+
+    /// `tick()`'s speaker/EQ/visualizer refresh must go through the injected
+    /// closures only. Before this seam, `fetchSpeakerDevices()` built its own
+    /// real `AppleScriptBackend()` — bypassing the scene's injected (inert)
+    /// backend entirely — and wrote through to the real `~/.config/music`
+    /// speaker cache on every tick. A count of zero default calls is the
+    /// isolation proof; an empty `reply` transport keeps Bridge itself out of
+    /// it too.
+    func testTickReachesOnlyTheInjectedSpeakerEQAndVisualizerClosures() {
+        let counter = RefreshCallCounter()
+        let s = scene(reply: { _, _ in self.authorized }, refreshCounter: counter)
+        for _ in 0..<5 {
+            _ = s.tick(snapshot: NowPlayingSnapshot(outcome: .stopped, history: [], surrounding: []))
+        }
+        // The fetch is kicked off on a background queue; give it a bounded
+        // window to land rather than asserting on the same thread as the kick.
+        let deadline = Date().addingTimeInterval(2.0)
+        while Date() < deadline && counter.speakerCalls == 0 { usleep(20_000) }
+        XCTAssertGreaterThan(counter.speakerCalls, 0, "tick() never called the injected fetchSpeakers")
+        XCTAssertGreaterThan(counter.eqCalls, 0, "tick() never called the injected fetchEQ")
+        XCTAssertGreaterThan(counter.visualizerCalls, 0, "tick() never called the injected fetchVisualizer")
     }
 
     /// Every failure keeps its own words. Collapsing them is what let a client

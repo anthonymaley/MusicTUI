@@ -60,6 +60,12 @@ final class SpeakersScene: Scene {
     /// How the client is built. Injectable so a test can drive readiness without
     /// a socket; production uses the real one.
     private let makeSourceClient: () -> SourceAppClient
+    /// The three external refreshes `tick()` fires on entry and every 5s.
+    /// Injectable so a test can prove it never reaches AppleScript or the real
+    /// speaker cache; production uses the real global functions, unchanged.
+    private let fetchSpeakers: () throws -> [[String: Any]]
+    private let fetchEQ: (AppleScriptBackend) throws -> EQSnapshot
+    private let fetchVisualizer: (AppleScriptBackend) throws -> Bool
 
     /// Bridge's own last-reported state. Owned by the main loop and written ONLY
     /// in `tick()`; background work posts to `inboxReadiness` instead.
@@ -106,12 +112,18 @@ final class SpeakersScene: Scene {
 
     init(backend: AppleScriptBackend, status: StatusStore, actions: ActionRunner,
          routing: RoutingCoordinator,
-         makeSourceClient: @escaping () -> SourceAppClient = { SourceAppClient() }) {
+         makeSourceClient: @escaping () -> SourceAppClient = { SourceAppClient() },
+         fetchSpeakers: @escaping () throws -> [[String: Any]] = fetchSpeakerDevices,
+         fetchEQ: @escaping (AppleScriptBackend) throws -> EQSnapshot = { try fetchEQSnapshot($0, openWindow: false) },
+         fetchVisualizer: @escaping (AppleScriptBackend) throws -> Bool = visualizerStatus) {
         self.backend = backend
         self.status = status
         self.actions = actions
         self.routing = routing
         self.makeSourceClient = makeSourceClient
+        self.fetchSpeakers = fetchSpeakers
+        self.fetchEQ = fetchEQ
+        self.fetchVisualizer = fetchVisualizer
     }
 
     /// Ask Bridge how it is, once, off the input thread.
@@ -250,13 +262,16 @@ final class SpeakersScene: Scene {
             fetchInFlight = true
             fetchStartedAt = now
             lastFetchKickoff = now
+            let fetchSpeakers = self.fetchSpeakers
+            let fetchEQ = self.fetchEQ
+            let fetchVisualizer = self.fetchVisualizer
             DispatchQueue.global().async { [weak self] in
-                let result = speakerRows(from: (try? fetchSpeakerDevices()) ?? [])
+                let result = speakerRows(from: (try? fetchSpeakers()) ?? [])
                 let backend = self?.backend ?? AppleScriptBackend()
                 // openWindow: false — the poll must never pop the Equalizer
                 // window (it steals focus, e.g. from the visualizer).
-                let eq = try? fetchEQSnapshot(backend, openWindow: false)
-                let vis = try? visualizerStatus(backend)
+                let eq = try? fetchEQ(backend)
+                let vis = try? fetchVisualizer(backend)
                 guard let self else { return }
                 self.inboxLock.lock()
                 self.inbox = result
