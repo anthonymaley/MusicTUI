@@ -1053,8 +1053,12 @@ final class PlaylistsScene: Scene {
                 } else {
                     var collected: [MusicRow] = []
                     var lastSkipped = 0
+                    // F4/C4: the FRESH whole-playlist play walk only — the one
+                    // path that reads for a `p`/`s` with no cached rows —
+                    // hints Bridge with `for_queue` so an over-bound playlist
+                    // is refused on page 1 rather than after a full walk.
                     let walkError = walkLibraryPages(
-                        fetch: { c, l in try provider.playlistTracks(playlistID: playlistID, cursor: c, limit: l) },
+                        fetch: { c, l in try provider.playlistTracksForQueue(playlistID: playlistID, cursor: c, limit: l) },
                         limit: Self.bridgeTracksPageLimit,
                         onPage: { page in
                             collected.append(contentsOf: page.rows)

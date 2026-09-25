@@ -63,7 +63,22 @@ struct BridgeMusicProvider: MusicDataProvider {
     /// D4. Stateless: each page re-reads and re-validates the whole
     /// playlist, so a `stale_generation` can come back on any page.
     func playlistTracks(playlistID: String, cursor: String?, limit: Int = 500) throws -> MusicPage {
-        do { return try control.libraryPlaylistTracks(playlistID: playlistID, cursor: cursor, limit: limit) }
+        do { return try control.libraryPlaylistTracks(playlistID: playlistID, cursor: cursor, limit: limit,
+                                                       forQueue: false) }
+        catch let error as SourceAppError { throw Self.translate(error) }
+    }
+
+    /// F4/C4: the FRESH whole-playlist play walk only. Sends Bridge's
+    /// optional `for_queue` hint, so a playlist whose playable song count is
+    /// over Bridge's queue bound is refused `too_large` on page 1 instead of
+    /// after a full multi-page walk. An older Bridge ignores the unknown key
+    /// (synthesized `Decodable` drops it), and this client reads no
+    /// capability to decide whether to send it — the field is unconditional
+    /// here, and behaves like today's `playlistTracks` against a Bridge that
+    /// does not act on it.
+    func playlistTracksForQueue(playlistID: String, cursor: String?, limit: Int = 500) throws -> MusicPage {
+        do { return try control.libraryPlaylistTracks(playlistID: playlistID, cursor: cursor, limit: limit,
+                                                       forQueue: true) }
         catch let error as SourceAppError { throw Self.translate(error) }
     }
 
