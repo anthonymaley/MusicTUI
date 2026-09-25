@@ -67,6 +67,10 @@ enum SourceAppError: Error, Equatable {
     /// the caller decides on the KIND, never the prose, and turns this into its
     /// own "update Bridge" sentence per op.
     case unsupported(String)
+    /// The play-record cursor the caller sent belongs to a record Bridge no
+    /// longer has. A restart, not a refusal: the caller asks again from the
+    /// beginning. Carries Bridge's sentence, for display only.
+    case ledgerChanged(String)
 
     /// Deliberately short: it renders inside Radio's one-line message strip
     /// beside a `✗`, not in a log.
@@ -90,6 +94,7 @@ enum SourceAppError: Error, Equatable {
         // Output tab, `BridgeMusicProvider`) says something more specific from
         // the op it asked for rather than from this generic line.
         case .unsupported: return "Bridge doesn't serve that yet — update Bridge"
+        case .ledgerChanged: return "Bridge's play record was replaced"
         }
     }
 }

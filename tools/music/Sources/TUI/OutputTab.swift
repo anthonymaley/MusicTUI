@@ -78,6 +78,9 @@ enum SourceReadiness: Equatable {
         // one (D6); if it ever does, this is the older-Bridge line rather than
         // a generic refusal.
         case .unsupported:       return .unavailable("Bridge is older than this MusicTUI — update Bridge")
+        // Only a play-record read can see this, and the Output tab does not
+        // make one; if it ever does, it says what happened.
+        case .ledgerChanged:     return .unavailable("Bridge's play record was replaced")
         }
     }
 }

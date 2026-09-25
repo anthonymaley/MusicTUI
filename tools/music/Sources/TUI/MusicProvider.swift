@@ -11,6 +11,13 @@ import Foundation
 /// 2026-09-23). The old `(title, artist, album)` join existed only because a
 /// Bridge play began from an AppleScript row; under "two modes, two libraries"
 /// (Anthony, 2026-09-23) a row is played with the id its own provider gave it.
+///
+/// Browsing and playing still never convert ids. The one exception is
+/// play-count write-back, which is not a scene path: it uses the Music.app
+/// persistent ID that Bridge reports for a library song it played to the end.
+/// That is an identity Bridge observed and passed along, rewritten from decimal
+/// to hex notation (`persistentIDHex(fromAlias:)`), never a mapping the client
+/// computes from a row's id.
 struct MusicRow: Equatable {
     enum Kind: String, Equatable { case song, album, playlist, station, artist }
     let id: String
