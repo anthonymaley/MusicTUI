@@ -82,10 +82,12 @@ final class MigrationReadCacheTests: XCTestCase {
     /// The migration reads route as shipped on Bridge (they are exceptions,
     /// not dispatched), so none of them can publish a Bridge row: only the
     /// dispatched `search --library` writes `.bridgeLibrary`, and the
-    /// dispatched catalogue search `.bridgeCatalog`.
+    /// dispatched catalogue search `.bridgeCatalog`. Part 2 P8 retired
+    /// discover, the playlist listings, similar, suggest and new-releases
+    /// (`testTheP8MigrationExceptionsAreRetired`); `recent` and `rotation`
+    /// remain for P9.
     func testTheMigrationReadsAreExceptionsNotDispatched() {
-        for action in [MusicTUIAction.playlistListing, .discoverFeed,
-                       .similar, .suggest, .newReleases, .recent, .rotation] {
+        for action in [MusicTUIAction.recent, .rotation] {
             XCTAssertTrue(cliBridgeExceptions.contains(action), "\(action)")
             XCTAssertFalse(cliDispatchedOnBridge.contains(action), "\(action)")
             XCTAssertEqual(routeAction(action, in: .source, from: .cli),
@@ -100,5 +102,22 @@ final class MigrationReadCacheTests: XCTestCase {
         XCTAssertTrue(cliDispatchedOnBridge.contains(.catalogSearch))
         XCTAssertEqual(routeAction(.catalogSearch, in: .source, from: .cli), .source)
         XCTAssertEqual(routeAction(.catalogSearch, in: .musicApp, from: .cli), .musicApp, "Decision 7: shipped in Music.app mode")
+    }
+
+    /// Part 2, P8 retired five: with Bridge selected, discover, the playlist
+    /// listings and `similar <title>` dispatch to Bridge (their rows are
+    /// `.bridgeLibrary`/`.bridgeCatalog`, written by Bridge ops), and
+    /// `suggest`/`new-releases` refuse. None runs its shipped body on Bridge.
+    func testTheP8MigrationExceptionsAreRetired() {
+        for action in [MusicTUIAction.discoverFeed, .playlistListing, .similar] {
+            XCTAssertFalse(cliBridgeExceptions.contains(action), "\(action)")
+            XCTAssertEqual(routeAction(action, in: .source, from: .cli), .source, "\(action)")
+        }
+        for action in [MusicTUIAction.suggest, .newReleases] {
+            XCTAssertFalse(cliBridgeExceptions.contains(action), "\(action)")
+            guard case .refused = routeAction(action, in: .source, from: .cli) else {
+                XCTFail("\(action) must refuse on Bridge"); continue
+            }
+        }
     }
 }

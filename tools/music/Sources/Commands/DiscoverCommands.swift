@@ -10,6 +10,9 @@ import Foundation
 // album: music:// only plays stations, and the library API is add-only. Playing
 // an album from Discover means adding it to the library first, which is the exact
 // thing Discover is not for. See docs/platform-notes.md before adding a play verb.
+//
+// With Bridge selected the feed comes from Bridge (slice 3 Part 2, P8,
+// `CLIBridgeListings.swift`); `--recent` is refused there.
 
 struct Discover: ParsableCommand {
     static let configuration = CommandConfiguration(
@@ -22,6 +25,12 @@ struct Discover: ParsableCommand {
     @Flag(name: .long, help: "Every rail from the feed, uncurated") var all = false
 
     func run() throws {
+        try runDiscover(limit: limit, perRail: perRail, recent: recent, json: json, all: all,
+                        env: .live(), musicApp: runViaMusicApp)
+    }
+
+    /// The shipped `music discover` body, verbatim: Music.app mode's branch.
+    func runViaMusicApp() throws {
         guard let feed = makeDiscoverFeed() else {
             print("Discover needs a Music User Token. Run: music auth setup")
             throw ExitCode.failure
@@ -102,4 +111,16 @@ struct Discover: ParsableCommand {
         case .song: return "song"
         }
     }
+}
+
+/// `music discover`, dispatched as `.discoverFeed` (slice 3 Part 2, P8).
+/// Bridge selected: `bridgeDiscoverCommand` (`--recent` refuses there, before
+/// any Bridge read). Music.app selected: the shipped body, `musicApp`,
+/// injected so a test can count it. A read: neither branch takes the lock.
+func runDiscover(limit: Int, perRail: Int, recent: Bool, json: Bool, all: Bool, env: CLIBridgeEnv,
+                 musicApp: () throws -> Void) throws {
+    try cliDispatch(.discoverFeed, json: json, env: env,
+                    musicApp: musicApp,
+                    bridge: { try bridgeDiscoverCommand($0, limit: limit, perRail: perRail, recent: recent,
+                                                        json: json, all: all, env: env) })
 }
