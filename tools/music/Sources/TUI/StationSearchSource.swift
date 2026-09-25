@@ -1020,6 +1020,11 @@ struct SourceAppControl: SourceControlling {
                 // Decoded on the KIND. The detail travels for display; nothing
                 // decides anything by reading it.
                 throw SourceAppError.staleGeneration(detail)
+            case "ledger_changed":
+                // The finished-plays cursor belongs to a play record that has
+                // been replaced. A restart from the beginning, decided on the
+                // kind; the detail is for display only.
+                throw SourceAppError.ledgerChanged(detail)
             case "unknown_op":
                 // An OLDER Bridge that predates this op (D6, additive contract).
                 // Carries the op name, not the prose, so the caller can say
@@ -1044,6 +1049,127 @@ struct SourceAppControl: SourceControlling {
             }
         }
         return reply
+    }
+}
+
+// MARK: - Finished plays
+//
+// The same disposable slice debt as the rest of this file, and the same fail
+// closed discipline as the library pages: a page that breaks the contract is
+// refused whole, never read as fewer plays. A play read wrongly here is a play
+// counted twice, or never, in the Music.app library.
+
+extension SourceAppControl: CompletedPlaysReading {
+
+    /// One page of library songs Bridge played to the end, oldest first.
+    ///
+    /// `ledgerID` nil is sent as an explicit JSON null: "I have no cursor yet".
+    /// The bounds on `after` and `limit` are Bridge's to enforce and are not
+    /// duplicated here; an out-of-range request comes back as a refusal.
+    func completedPlays(ledgerID: String?, after: Int, limit: Int) throws -> CompletedPlaysPage {
+        let body: [String: Any] = [
+            "op": "slice.completedPlays",
+            "ledger_id": ledgerID.map { $0 as Any } ?? NSNull(),
+            "after": after,
+            "limit": limit,
+        ]
+        let reply = try send(body)
+        return try Self.completedPlaysPage(from: reply, ledgerID: ledgerID, after: after, limit: limit)
+    }
+
+    /// Reads and checks one page against what was asked for. Every key is
+    /// required, and the page must be exactly the plays after the cursor, in
+    /// order, with a consistent cursor and `more`.
+    static func completedPlaysPage(from reply: [String: Any], ledgerID requested: String?,
+                                   after: Int, limit: Int) throws -> CompletedPlaysPage {
+        func bad(_ what: String) -> SourceAppError {
+            .malformedReply("Bridge's play record page \(what)")
+        }
+
+        guard let ledger = reply["ledger_id"] as? String else { throw bad("is missing ledger_id") }
+        guard let latest = strictInt(reply["latest_seq"]), latest >= 0 else {
+            throw bad("is missing latest_seq")
+        }
+        guard let nextAfter = strictInt(reply["next_after"]) else { throw bad("is missing next_after") }
+        guard let more = strictBool(reply["more"]) else { throw bad("is missing more") }
+        guard let items = reply["plays"] as? [[String: Any]] else { throw bad("is missing plays") }
+
+        // A reply for a different record than the cursor names would apply the
+        // cursor to plays it does not describe. A replaced record is refused as
+        // such; an ok reply for another one is a broken peer.
+        if let requested, requested != ledger {
+            throw bad("belongs to a different play record than the one asked for")
+        }
+        guard items.count <= limit else { throw bad("holds more plays than were asked for") }
+
+        var plays: [CompletedPlayRecord] = []
+        plays.reserveCapacity(items.count)
+        for (index, item) in items.enumerated() {
+            let play = try completedPlay(item, bad: bad)
+            // Exactly the plays after the cursor: contiguous, no gaps, no
+            // repeats, none already consumed.
+            guard play.seq == after + 1 + index else {
+                throw bad("has play \(play.seq) where \(after + 1 + index) belongs")
+            }
+            plays.append(play)
+        }
+
+        guard nextAfter == (plays.last?.seq ?? after) else {
+            throw bad("has a next_after that is not its last play")
+        }
+        guard nextAfter <= latest else { throw bad("has a next_after past its latest_seq") }
+        guard more == (nextAfter < latest) else { throw bad("has a more that disagrees with its cursor") }
+        guard !(more && plays.isEmpty) else { throw bad("is empty while saying there is more") }
+
+        return CompletedPlaysPage(ledgerID: ledger, latestSeq: latest, nextAfter: nextAfter,
+                                  more: more, plays: plays)
+    }
+
+    /// One play record. `alias` must be present as text or an explicit null;
+    /// an absent key is not the same claim as "no alias". `duration_s` and
+    /// `position_s` are evidence for Bridge's own decision and are not read.
+    private static func completedPlay(_ item: [String: Any],
+                                       bad: (String) -> SourceAppError) throws -> CompletedPlayRecord {
+        guard let seq = strictInt(item["seq"]), seq >= 1 else { throw bad("has a play with no seq") }
+        func text(_ key: String) throws -> String {
+            guard let value = item[key] as? String else { throw bad("has play \(seq) with no \(key)") }
+            return value
+        }
+        let alias: String?
+        switch item["alias"] {
+        case is NSNull:            alias = nil
+        case let value as String:  alias = value
+        case nil:                  throw bad("has play \(seq) with no alias")
+        default:                   throw bad("has play \(seq) with an alias that is neither text nor null")
+        }
+        let stamp = try text("completed_at")
+        guard let completedAt = completedAtFormatter.date(from: stamp) else {
+            throw bad("has play \(seq) with an unreadable completed_at")
+        }
+        return CompletedPlayRecord(seq: seq, playID: try text("play_id"), alias: alias,
+                                   libraryID: try text("library_id"),
+                                   title: try text("title"), artist: try text("artist"),
+                                   completedAt: completedAt, end: try text("end"))
+    }
+
+    /// ISO-8601 UTC with fractional seconds, as the feed writes it.
+    private static let completedAtFormatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
+
+    /// A JSON integer, never a JSON boolean: `JSONSerialization` bridges both to
+    /// `NSNumber`, and `as? Int` alone would read `true` as 1.
+    private static func strictInt(_ value: Any?) -> Int? {
+        guard let value, CFGetTypeID(value as CFTypeRef) != CFBooleanGetTypeID() else { return nil }
+        return value as? Int
+    }
+
+    /// A JSON boolean, never a number that happens to be 0 or 1.
+    private static func strictBool(_ value: Any?) -> Bool? {
+        guard let value, CFGetTypeID(value as CFTypeRef) == CFBooleanGetTypeID() else { return nil }
+        return value as? Bool
     }
 }
 
