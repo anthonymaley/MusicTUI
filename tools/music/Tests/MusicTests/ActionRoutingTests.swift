@@ -266,15 +266,77 @@ final class ActionRoutingTests: XCTestCase {
         }
     }
 
-    /// S6 keeps today's behaviour for everything that is neither dispatched,
-    /// a current-track reader, nor playback: those are the temporary exception
-    /// set, written as a literal in ActionRouting.swift until S8 narrows it.
-    func testTheExceptionSetIsEverythingNeitherDispatchedCurrentTrackNorPlayback() {
-        let expected = Set(MusicTUIAction.allCases.filter {
-            !s7Dispatched.contains($0) && !$0.readsMusicAppCurrentTrack && !$0.touchesPlayback
-        })
-        XCTAssertEqual(cliBridgeExceptions, expected)
+    /// Section 2's E rows: library management (Anthony, 2026-09-16 13:36),
+    /// MusicTUI's own state, and Music.app settings (spec 6.4 Unaffected).
+    /// They run as shipped with Bridge selected and are not temporary.
+    private let s8Named: Set<MusicTUIAction> = [
+        .addToLibrary, .playlistWrite, .playlistShare, .cliMix,
+        .radioAddURL, .auth, .eq, .visualizer,
+    ]
+
+    /// Section 2's M rows under Anthony's Q2 ruling [B]: the read-only lookups
+    /// that keep their shipped backends as temporary migration exceptions until
+    /// Part B serves or refuses each one.
+    private let s8Migration: Set<MusicTUIAction> = [
+        .catalogSearch, .playlistListing, .radioSearch, .discoverFeed,
+        .similar, .suggest, .newReleases, .recent, .rotation,
+    ]
+
+    /// S8 closes the inventory: the exception set is exactly section 2's E
+    /// rows plus the M rows, and nothing else. `.volume` and `.airplayRoute`
+    /// left it (refused on Bridge); the TUI-only rows S6 carried left it too,
+    /// because no CLI verb reaches them.
+    func testTheExceptionSetIsExactlySection2sNamedAndMigrationRows() {
+        XCTAssertEqual(cliBridgeExceptions, s8Named.union(s8Migration))
+        XCTAssertTrue(s8Named.isDisjoint(with: s8Migration))
         XCTAssertTrue(cliBridgeExceptions.isDisjoint(with: cliDispatchedOnBridge))
+        XCTAssertFalse(cliBridgeExceptions.contains(.volume))
+        XCTAssertFalse(cliBridgeExceptions.contains(.airplayRoute))
+        for action in cliBridgeExceptions {
+            XCTAssertTrue(action.surfaces.contains(.cli), "\(action) is an exception no CLI verb reaches")
+            XCTAssertFalse(action.touchesPlayback, "\(action): a playback verb is never an exception")
+            XCTAssertFalse(action.readsMusicAppCurrentTrack, "\(action)")
+        }
+    }
+
+    /// Each migration exception carries a comment naming the Part B op (or
+    /// Part B step) that retires it, so Part B can find and delete it.
+    /// STRUCTURAL: reads ActionRouting.swift's source text; not execution evidence.
+    func testEveryMigrationExceptionNamesThePartBWorkThatRetiresIt() throws {
+        let file = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Sources/TUI/ActionRouting.swift")
+        let source = try String(contentsOf: file, encoding: .utf8)
+        guard let start = source.range(of: "let cliBridgeExceptions: Set<MusicTUIAction> = ["),
+              let end = source.range(of: "\n]\n", range: start.upperBound..<source.endIndex)
+        else { return XCTFail("cliBridgeExceptions literal not found") }
+        let lines = source[start.upperBound..<end.lowerBound].split(separator: "\n")
+        for action in s8Migration {
+            let line = lines.first { $0.contains(".\(action),") }
+            XCTAssertNotNil(line, "\(action) is not on a line of its own in the literal")
+            XCTAssertTrue(line?.contains("// migration exception until Part B's ") ?? false,
+                          "\(action) must name the Part B op that retires it: \(line ?? "")")
+        }
+        for action in s8Named {
+            let line = lines.first { $0.contains(".\(action),") }
+            XCTAssertNotNil(line, "\(action) is not in the literal")
+            XCTAssertFalse(line?.contains("migration exception") ?? true, "\(action) is named, not temporary")
+        }
+    }
+
+    /// S8: volume and speakers refuse on Bridge from the CLI with their
+    /// TUI-table reasons, and are unchanged with Music.app selected.
+    func testVolumeAndSpeakersRefuseOnBridgeWithTheirTuiReasons() {
+        for action in [MusicTUIAction.volume, .airplayRoute] {
+            guard case .refused = routeAction(action, in: .source, from: .cli) else {
+                return XCTFail("\(action) must refuse from the CLI on Bridge")
+            }
+            XCTAssertEqual(routeAction(action, in: .source, from: .cli),
+                           routeAction(action, in: .source, from: .tui), "\(action) keeps its TUI-table reason")
+            XCTAssertEqual(routeAction(action, in: .musicApp, from: .cli), .musicApp, "\(action)")
+        }
+        XCTAssertTrue(requiresOutputLock(.airplayRoute), "speaker actions that can heal take the lock")
+        XCTAssertFalse(requiresOutputLock(.volume), "volume never heals a route")
     }
 
     /// Every playback-changing CLI verb that is not dispatched still refuses
@@ -328,22 +390,27 @@ final class ActionRoutingTests: XCTestCase {
         }
     }
 
-    /// The other half: a CLI command that is not dispatched, not playback and
-    /// not a current-track reader is UNCHANGED, as it ships (S6; S8 narrows).
+    /// The other half: a CLI command that is not dispatched, not playback, not
+    /// a current-track reader, and not volume or speakers (S8) is UNCHANGED:
+    /// it is one of section 2's E or M rows and runs as it ships.
     ///
     /// NOTE, for Anthony (kept from 12.14). The CLI has non-playback WRITES
     /// (`mix`, `add`, `playlist create/delete/...`); they stay with the reads,
     /// "unchanged", by his 2026-09-16 13:36 ruling on library management.
     func testNonPlaybackCliCommandsAreUnchangedInSourceMode() {
+        var checked: Set<MusicTUIAction> = []
         for action in MusicTUIAction.allCases
         where action.surfaces.contains(.cli)
             && !action.touchesPlayback
             && !action.readsMusicAppCurrentTrack
-            && !s7Dispatched.contains(action) {
+            && !s7Dispatched.contains(action)
+            && action != .volume && action != .airplayRoute {
+            checked.insert(action)
             XCTAssertEqual(routeAction(action, in: .source, from: .cli),
                            routeAction(action, in: .musicApp, from: .cli),
                            "\(action) neither plays nor reads the current track: it must ship unchanged")
         }
+        XCTAssertEqual(checked, s8Named.union(s8Migration))
     }
 
     /// The distinction still has to BITE for what Bridge does not serve from

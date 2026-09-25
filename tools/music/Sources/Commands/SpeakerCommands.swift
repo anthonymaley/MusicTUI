@@ -60,6 +60,7 @@ struct SpeakerSmart: ParsableCommand {
     @Flag(name: .shortAndLong, help: "Show diagnostic output") var verbose = false
 
     func run() throws {
+        try refuseInBridge(.airplayRoute, json: json)
         Music.verbose = verbose
         Music.isJSON = json
         try runSpeakerSmart(args: args, json: json)
@@ -68,8 +69,48 @@ struct SpeakerSmart: ParsableCommand {
 
 // MARK: - Shared logic (callable without ArgumentParser)
 
+/// Slice 3 S8 (R1): whether a speaker action can reach route healing, which
+/// pauses and then plays (`RouteHealer.swift:81-87`), and so must run inside
+/// the output lock where a TUI Output switch cannot straddle it. `list`,
+/// `verify` and the interactive picker never heal, play or pause (the picker
+/// only sets selection and volume), so they take no lock.
+func speakerActionRequiresOutputLock(_ action: SpeakerAction) -> Bool {
+    switch action {
+    case .add, .addWithVolume, .remove, .exclusive, .indices, .wake:
+        return true
+    case .list, .verify, .interactive:
+        return false
+    }
+}
+
+/// Every speaker command's entry, with the live values: the output lock
+/// expecting Music.app (the Bridge gate has already run in each `run()`), and
+/// the shipped body.
 func runSpeakerSmart(args: [String], json: Bool) throws {
+    try runSpeakerSmart(args: args, json: json,
+                        guard: { body in try withCLIOutputLock(expecting: .musicApp, json: json, env: .live(), body) },
+                        execute: executeSpeakerAction)
+}
+
+/// The command-owned path (S8, R1): parse, classify, and run `execute` inside
+/// `guard` for every action that can reach route healing, or directly for the
+/// read-only ones. Tests pass the real `withCLIOutputLock` on a temp store and
+/// a fake `execute` standing in for the healer.
+func runSpeakerSmart(args: [String], json: Bool,
+                     guard lockGuard: (() throws -> Void) throws -> Void,
+                     execute: (SpeakerAction, Bool) throws -> Void) throws {
     let action = SpeakerParser.parse(args)
+    if speakerActionRequiresOutputLock(action) {
+        try withoutActuallyEscaping(execute) { execute in
+            try lockGuard { try execute(action, json) }
+        }
+    } else {
+        try execute(action, json)
+    }
+}
+
+/// The shipped per-action body, moved verbatim from `runSpeakerSmart` (S8).
+func executeSpeakerAction(_ action: SpeakerAction, json: Bool) throws {
     let backend = AppleScriptBackend()
 
     switch action {
@@ -616,6 +657,7 @@ struct SpeakerList: ParsableCommand {
     static let configuration = CommandConfiguration(commandName: "list", abstract: "List AirPlay devices.", shouldDisplay: false)
     @Flag(name: .long, help: "Output JSON") var json = false
     func run() throws {
+        try refuseInBridge(.airplayRoute, json: json)
         try listSpeakers(json: json)
     }
 }
@@ -624,6 +666,7 @@ struct SpeakerSet: ParsableCommand {
     static let configuration = CommandConfiguration(commandName: "set", abstract: "Switch to a single speaker.", shouldDisplay: false)
     @Argument(help: "Speaker name") var name: String
     func run() throws {
+        try refuseInBridge(.airplayRoute)
         try runSpeakerSmart(args: [name, "only"], json: false)
     }
 }
@@ -632,6 +675,7 @@ struct SpeakerAdd: ParsableCommand {
     static let configuration = CommandConfiguration(commandName: "add", abstract: "Add speaker to group.", shouldDisplay: false)
     @Argument(help: "Speaker name") var name: String
     func run() throws {
+        try refuseInBridge(.airplayRoute)
         try runSpeakerSmart(args: [name], json: false)
     }
 }
@@ -640,6 +684,7 @@ struct SpeakerRemove: ParsableCommand {
     static let configuration = CommandConfiguration(commandName: "remove", abstract: "Remove speaker from group.", shouldDisplay: false)
     @Argument(help: "Speaker name") var name: String
     func run() throws {
+        try refuseInBridge(.airplayRoute)
         try runSpeakerSmart(args: [name, "stop"], json: false)
     }
 }
@@ -648,6 +693,7 @@ struct SpeakerStop: ParsableCommand {
     static let configuration = CommandConfiguration(commandName: "stop", abstract: "Remove speaker (alias).", shouldDisplay: false)
     @Argument(help: "Speaker name") var name: String
     func run() throws {
+        try refuseInBridge(.airplayRoute)
         try runSpeakerSmart(args: [name, "stop"], json: false)
     }
 }
