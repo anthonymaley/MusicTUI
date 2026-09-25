@@ -74,7 +74,7 @@ func catalogueSearchLines(_ records: [CatalogueRecord]) -> [String] {
 /// (album absent, never `""`); a mixed reply becomes an object keyed by
 /// `songs`/`albums`, each key present only when that kind is non-empty (the
 /// shipped multi-type shape, `SearchCommand.swift:77-84`).
-func catalogueSearchJSON(_ records: [CatalogueRecord]) -> String {
+func catalogueSearchJSON(_ records: [CatalogueRecord], songsOnlyRequest: Bool = true) -> String {
     let songs = records.filter { $0.kind == .song }
     let albums = records.filter { $0.kind == .album }
     func songDict(_ r: CatalogueRecord) -> [String: Any] {
@@ -85,10 +85,13 @@ func catalogueSearchJSON(_ records: [CatalogueRecord]) -> String {
     func albumDict(_ r: CatalogueRecord) -> [String: Any] {
         ["id": r.catalogueID, "title": r.title, "artist": r.artist]
     }
-    if albums.isEmpty {
+    // The shape follows what was ASKED for, as the shipped body does: a bare
+    // array only for a songs-only request, even when a mixed request finds no albums.
+    if songsOnlyRequest {
         return bridgeReadsJSON(songs.map(songDict))
     }
-    var payload: [String: Any] = ["albums": albums.map(albumDict)]
+    var payload: [String: Any] = [:]
+    if !albums.isEmpty { payload["albums"] = albums.map(albumDict) }
     if !songs.isEmpty { payload["songs"] = songs.map(songDict) }
     return bridgeReadsJSON(payload)
 }

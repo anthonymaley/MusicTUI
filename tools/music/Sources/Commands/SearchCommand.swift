@@ -196,7 +196,7 @@ func bridgeSearchCatalogueCommand(_ session: CLIBridgeSession, query: [String], 
         throw ActionError(message: "No results for '\(term)'")
     }
     if json {
-        env.out(catalogueSearchJSON(records))
+        env.out(catalogueSearchJSON(records, songsOnlyRequest: searchTypes == [.songs]))
     } else {
         catalogueSearchLines(records).forEach(env.out)
     }

@@ -71,7 +71,7 @@ final class CLIBridgeReadsTests: XCTestCase {
     func testCatalogueSearchJSONMultiTypeIsKeyedObject() {
         let song = CatalogueRecord(kind: .song, catalogueID: "1", title: "S1", artist: "A1", album: nil)
         let album = CatalogueRecord(kind: .album, catalogueID: "2", title: "Al", artist: "A2", album: nil)
-        let json = catalogueSearchJSON([song, album])
+        let json = catalogueSearchJSON([song, album], songsOnlyRequest: false)
         let expected = "{\"albums\":[{\"artist\":\"A2\",\"id\":\"2\",\"title\":\"Al\"}]," +
                        "\"songs\":[{\"artist\":\"A1\",\"id\":\"1\",\"title\":\"S1\"}]}"
         XCTAssertEqual(json, expected)
@@ -79,7 +79,7 @@ final class CLIBridgeReadsTests: XCTestCase {
 
     func testCatalogueSearchJSONAlbumsOnlyOmitsSongsKey() {
         let album = CatalogueRecord(kind: .album, catalogueID: "2", title: "Al", artist: "A2", album: nil)
-        let json = catalogueSearchJSON([album])
+        let json = catalogueSearchJSON([album], songsOnlyRequest: false)
         XCTAssertFalse(json.contains("\"songs\""))
         XCTAssertTrue(json.contains("\"albums\""))
     }
@@ -265,5 +265,14 @@ final class CLIBridgeReadsTests: XCTestCase {
                                album: nil, catalogueID: "999")
         let json = historyJSON([item], label: "recent")
         XCTAssertEqual(json, "{\"items\":[{\"album\":\"\",\"artist\":\"\",\"name\":\"Idioteque\",\"type\":\"songs\"}]}")
+    }
+
+    /// A mixed request that finds no albums still prints the keyed object, as the
+    /// shipped multi-type body does, never a bare array.
+    func testAMixedRequestWithNoAlbumsStillPrintsAnObject() throws {
+        let song = CatalogueRecord(kind: .song, catalogueID: "1", title: "S", artist: "A", album: nil)
+        let json = catalogueSearchJSON([song], songsOnlyRequest: false)
+        let obj = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any])
+        XCTAssertNotNil(obj["songs"]); XCTAssertNil(obj["albums"])
     }
 }
