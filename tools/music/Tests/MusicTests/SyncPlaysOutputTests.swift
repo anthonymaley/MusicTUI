@@ -218,9 +218,7 @@ final class SyncPlaysOutputTests: XCTestCase {
     /// must never claim nothing was changed.
     func testJournalNotSavedAfterMusicWasReached() {
         let path = "/tmp/playsync/journal.json"
-        var r = blockedAtStart(.journalUnreadable(path: path))
-        r.fetch = .ok(newPlays: 2)
-        r.musicRunning = true
+        let r = blockedAtStart(.journalNotSaved(path: path))
         let out = renderSyncPlays(r, json: false)
         XCTAssertEqual(out.text,
                        "The play-sync journal at \(path) could not be saved, so the sync stopped; "
@@ -233,8 +231,7 @@ final class SyncPlaysOutputTests: XCTestCase {
 
     func testJournalNotSavedAfterFetchOnly() {
         let path = "/tmp/playsync/journal.json"
-        var r = blockedAtStart(.journalUnreadable(path: path))
-        r.fetch = .bridgeNotRunning
+        let r = blockedAtStart(.journalNotSaved(path: path))
         let out = renderSyncPlays(r, json: false)
         XCTAssertFalse(out.text.contains("nothing was changed"))
         XCTAssertTrue(out.text.contains("could not be saved"))
@@ -243,9 +240,7 @@ final class SyncPlaysOutputTests: XCTestCase {
 
     func testJournalNotSavedStillListsWhatWasRecorded() {
         let path = "/tmp/playsync/journal.json"
-        var r = blockedAtStart(.journalUnreadable(path: path))
-        r.fetch = .ok(newPlays: 1)
-        r.musicRunning = true
+        var r = blockedAtStart(.journalNotSaved(path: path))
         r.recorded = [entry("Teardrop", "Massive Attack")]
         let out = renderSyncPlays(r, json: false)
         XCTAssertEqual(out.text, """

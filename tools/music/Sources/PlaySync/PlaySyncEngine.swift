@@ -169,7 +169,7 @@ private final class PassRun {
         } catch {
             // The journal could not be saved. Nothing further was attempted:
             // no set call is ever made without its `writing` entry on disk.
-            var result = PlaySyncResult.passBlocked(.journalUnreadable(path: engine.paths.journal.path))
+            var result = PlaySyncResult.passBlocked(.journalNotSaved(path: engine.paths.journal.path))
             result.fetch = fetchStatus
             result.musicRunning = musicRunning
             result.recorded = recorded

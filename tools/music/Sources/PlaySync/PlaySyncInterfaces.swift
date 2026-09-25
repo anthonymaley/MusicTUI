@@ -186,6 +186,9 @@ enum PlaySyncTrigger {
 enum PlaySyncBlock: Equatable {
     case lockBusy
     case journalUnreadable(path: String)
+    /// The journal loaded, but a save later in the same pass failed. Distinct
+    /// from `journalUnreadable`: the read succeeded, only the write did not.
+    case journalNotSaved(path: String)
     case journalTooNew
     case directoryUnsafe(path: String)
 }

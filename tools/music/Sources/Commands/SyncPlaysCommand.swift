@@ -139,12 +139,9 @@ func renderSyncPlays(_ result: PlaySyncResult, json: Bool) -> (text: String, exi
         case .lockBusy:
             sentence = S.lockBusy
         case .journalUnreadable(let path):
-            // The same block is returned when the journal could not be read at
-            // the start and when it could not be saved later in the pass. Only
-            // a pass that got past the start has a fetch status or reached
-            // Music.app; before any set call Music.app has been found running.
-            let passHadStarted = result.fetch != .skipped || result.musicRunning || !result.recorded.isEmpty
-            sentence = passHadStarted ? S.journalNotSaved(path) : S.journalUnreadable(path)
+            sentence = S.journalUnreadable(path)
+        case .journalNotSaved(let path):
+            sentence = S.journalNotSaved(path)
         case .journalTooNew:
             sentence = S.journalTooNew
         case .directoryUnsafe(let path):
