@@ -187,4 +187,61 @@ final class ResultCacheTests: XCTestCase {
     func testMemberwiseInitDefaultsOriginToCatalog() {
         XCTAssertEqual(SongResult(index: 1, title: "t", artist: "a", album: "b", catalogId: "c").origin, .catalog)
     }
+
+    // MARK: - Bridge provenance (score S3, D3)
+
+    /// Rows every shipped writer produces encode exactly as they did before
+    /// `bridge_id` existed: the same keys and values, no `bridge_id`, no null.
+    /// Compared with sorted keys because the default encoder's key order was
+    /// never stable (it differs between processes, measured 2026-09-25 against
+    /// the pre-change struct), so unsorted bytes could not be pinned even then.
+    func testExistingRowsEncodeToTheSameBytes() throws {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = .sortedKeys
+        let catalog = SongResult(index: 1, title: "Alpha", artist: "A", album: "AA", catalogId: "id1")
+        let library = SongResult(index: 2, title: "Beta", artist: "B", album: "BB", catalogId: "pid2", origin: .library)
+        XCTAssertEqual(String(decoding: try encoder.encode(catalog), as: UTF8.self),
+                       #"{"album":"AA","artist":"A","catalogId":"id1","index":1,"origin":"catalog","title":"Alpha"}"#)
+        XCTAssertEqual(String(decoding: try encoder.encode(library), as: UTF8.self),
+                       #"{"album":"BB","artist":"B","catalogId":"pid2","index":2,"origin":"library","title":"Beta"}"#)
+    }
+
+    func testBridgeRowRoundTripsWithItsBridgeID() throws {
+        let cache = ResultCache(directory: testDir.path)
+        try cache.writeSongs([
+            SongResult(index: 1, title: "Alpha", artist: "A", album: "AA", catalogId: "",
+                       origin: .bridgeLibrary, bridgeID: "12345"),
+            SongResult(index: 2, title: "Beta", artist: "B", album: "BB", catalogId: "",
+                       origin: .bridgeLibrary),
+        ])
+        let loaded = try cache.readSongs()
+        XCTAssertEqual(loaded[0].origin, .bridgeLibrary)
+        XCTAssertEqual(loaded[0].bridgeID, "12345")
+        XCTAssertEqual(loaded[0].catalogId, "", "Bridge rows keep an empty catalogId")
+        XCTAssertEqual(loaded[1].origin, .bridgeLibrary)
+        XCTAssertNil(loaded[1].bridgeID)
+        let raw = try String(contentsOf: testDir.appendingPathComponent("last-songs.json"), encoding: .utf8)
+        XCTAssertTrue(raw.contains(#""origin":"bridge_library""#), raw)
+        XCTAssertTrue(raw.contains(#""bridge_id":"12345""#), raw)
+        XCTAssertEqual(raw.components(separatedBy: "bridge_id").count - 1, 1,
+                       "bridge_id is encoded only when non-nil")
+    }
+
+    func testLegacyRowWithBridgeLookingIdStillDecodesAsCatalog() throws {
+        let json = #"[{"index":1,"title":"Alpha","artist":"A","album":"AA","catalogId":"i.abc123"}]"#
+        try json.data(using: .utf8)!.write(to: testDir.appendingPathComponent("last-songs.json"))
+        let loaded = try ResultCache(directory: testDir.path).readSongs()
+        XCTAssertEqual(loaded[0].origin, .catalog)
+        XCTAssertNil(loaded[0].bridgeID)
+    }
+
+    func testRowLookupInAnAlreadyReadList() throws {
+        let rows = [SongResult(index: 1, title: "a", artist: "", album: "", catalogId: "x"),
+                    SongResult(index: 3, title: "c", artist: "", album: "", catalogId: "z")]
+        XCTAssertEqual(try ResultCache.row(index: 3, in: rows).title, "c")
+        XCTAssertThrowsError(try ResultCache.row(index: 2, in: rows))
+        let split = ResultCache.resolve(indices: [3, 2, 1], in: rows)
+        XCTAssertEqual(split.resolved.map(\.index), [3, 1])
+        XCTAssertEqual(split.dropped, [2])
+    }
 }

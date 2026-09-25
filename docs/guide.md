@@ -252,6 +252,7 @@ apple-music/
 │   │   │   ├── AppleScriptBackend.swift   # osascript wrapper + watchdog timeout
 │   │   │   ├── AppleScriptEscaping.swift  # one escaping helper
 │   │   │   ├── LibraryLookup.swift        # one library-track lookup script
+│   │   │   ├── ExternalCallTripwire.swift # test-only: traps AppleScript/REST calls instead of firing them
 │   │   │   └── RESTAPIBackend.swift
 │   │   ├── Auth/
 │   │   │   ├── AuthManager.swift
@@ -274,7 +275,14 @@ apple-music/
 │   │   │   ├── PlaylistCommands.swift
 │   │   │   ├── RadioCommands.swift        # radio list/play/add/search
 │   │   │   ├── DiscoveryCommands.swift
-│   │   │   └── MixCommand.swift
+│   │   │   ├── MixCommand.swift
+│   │   │   ├── CLIBridgeGate.swift        # gates a verb into Music.app's body or a Bridge one
+│   │   │   ├── CLIBridgeDispatch.swift    # the CLI's one dispatch seam: mode read, output lock, mutate
+│   │   │   ├── CLIBridgeTransport.swift   # Bridge now/pause/skip/back/stop/seek
+│   │   │   ├── CLIBridgePlay.swift        # Bridge `music play` (resume/N/playlist/album/song/artist)
+│   │   │   ├── CLIBridgeSelection.swift   # matches a name against Bridge's own library
+│   │   │   ├── CLIBridgeNow.swift         # pure now/play-result rendering for Bridge output
+│   │   │   └── BridgePlaybackRef.swift    # a cached row → a Bridge play request, by origin (D3)
 │   │   ├── Models/
 │   │   │   ├── OutputFormat.swift
 │   │   │   └── ResultCache.swift
@@ -290,6 +298,8 @@ apple-music/
 │   │       ├── RadioNav.swift             # Radio tab navigation reducer
 │   │       ├── StationStore.swift         # local favorites (stations.json)
 │   │       ├── StationPlayback.swift      # https:// → music:// URL rewrite
+│   │       ├── OutputLock.swift           # cross-process lock: a TUI Output switch and a CLI playback change can't race
+│   │       ├── MusicAppPauseConfirm.swift # confirms Music.app actually paused before the switch commits to Bridge
 │   │       ├── PlaylistBrowserModel.swift, PlaylistDataSources.swift
 │   │       ├── NowPlayingTUI.swift, TUILayout.swift
 │   │       ├── ListPicker.swift, MultiSelectList.swift, VolumeMixer.swift

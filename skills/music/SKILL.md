@@ -33,6 +33,77 @@ The music CLI has two backends:
 - **AppleScript**: playback, speakers, volume, now playing, library browsing (no auth needed)
 - **REST API**: catalog search, library writes, playlists via API, discovery (needs auth)
 
+## When Bridge is the selected output
+
+MusicTUI can also play through Bridge, its own built-in player, instead of
+Music.app — chosen from the TUI's **Output** tab. Check which one is active
+with `music now --json`: Bridge selected adds `"output": "bridge"`; nothing
+there means Music.app.
+
+With Bridge selected, transport and `music play` still work, but only these
+forms, and only from Bridge's own library:
+
+```bash
+music now --json                                  # look for "output": "bridge"
+music play                                        # resume
+music play --playlist "Top 25 Most Played"        # plays in order
+music play --playlist "Top 25 Most Played" shuffle # trailing "shuffle" shuffles it
+music play --album "Kid A" --artist "Radiohead"   # in order; trailing shuffle works here too
+music play --song "Idioteque" --artist "Radiohead"
+music play --artist "Radiohead"
+music search --library "Idioteque"                # numbered results, playable on Bridge
+music play 2                                      # play result #2 from that search
+music pause / music skip / music back / music stop / music seek +30
+```
+
+What's different from Music.app mode:
+
+- **Plain `music play <words>` refuses.** There's no fast-path parsing
+  (speaker names, filler words, volume) yet, and no bare-word search-and-play.
+  Name what you want with `--song`, `--album`, `--playlist`, or `--artist`,
+  or run `music search --library "<query>"` and then `music play N`.
+- **Nothing falls back to the catalog.** Every form above plays only what's
+  already in Bridge's library — no add-and-play for a song you don't own, and
+  no Apple Music links (`music play "https://music.apple.com/..."` refuses).
+- **A numbered result only plays back on the source that produced it.** Only
+  `music search --library`'s numbers are Bridge-playable; a plain `music
+  search` (catalog) or a listing from `music playlist tracks`/`music recent`/
+  etc. is not, and `music play N` on one of those refuses and names the fix
+  (search again with `--library`).
+- **Over 100 matching songs refuses** rather than queueing a huge list.
+- **Volume and speaker commands refuse** (`music volume`, `music speaker
+  ...`): there's no AirPlay routing from the CLI on Bridge yet. Use MusicTUI's
+  Output tab, or switch Output back to Music.app.
+- **`music shuffle`/`music repeat`, `music radio play`, and `music playlist
+  temp` refuse** the same way.
+- `music eq` and `music visualizer` are Music.app settings either way; they
+  don't touch what Bridge plays.
+- `music now --json` on Bridge never carries `album`, `duration`, `position`,
+  `speakers`, or `live`; it adds a `queue` object while a play is still
+  building. Text output tags the title `[Bridge]`, or says `Bridge is
+  <state>.`/`Nothing playing on Bridge.` when idle. A play command's result
+  line can say fewer were queued than requested (e.g. "Playing 39 of 42
+  tracks") when Bridge skipped a song it doesn't have or a video-only track.
+
+**Reads keep their current backend while Bridge is selected, for now:** `music
+search` (catalog), `music discover`, `music recent`, `music rotation`, `music
+radio search`, `music playlist list`/`tracks`, and explicit `music
+similar`/`suggest`/`new-releases` all still run exactly as they do in
+Music.app mode. They may still need a developer key, and what they list can
+be Music.app's library rather than Bridge's — this is temporary, until Bridge
+gets its own versions of these. Their numbered results follow the same rule
+as above: they don't feed Bridge's `music play N`; search Bridge's own copy
+with `music search --library` first if you want to play what they found.
+`music radio add <url>` is unaffected.
+
+**Commands that read the current track still refuse**, because Music.app's
+current track isn't what Bridge is playing: bare `music similar`, `music
+suggest`, `music new-releases --like-current`, `music add --to` with no song,
+`music remove`, `music love`/`music unlove`. Name the song explicitly instead.
+
+Music.app mode is exactly as it ships; none of the above applies unless
+Bridge is the selected output.
+
 ## Playback (no auth)
 
 ```bash
@@ -333,3 +404,8 @@ Always use `--json` when you need to parse the output programmatically.
 - **"No tracks found"**: Try a broader search query
 - **"No station found for..."**: Radio search is shallow; ask the user for the station's share URL from music.apple.com and use `music radio play <url>` / `music radio add <url>` instead
 - **Speaker commands fail**: Check exact speaker name with `music speaker list`
+- **"Bridge output is selected, and ... isn't available from the CLI on Bridge yet."**: That command isn't wired to Bridge yet (volume, speakers, radio play, shuffle/repeat, `playlist temp`, plain `play <words>`, catalog links). Use MusicTUI, or switch Output to Music.app on the Output tab.
+- **"Bridge output is selected, so Music.app's current track is not what you are hearing."**: The command reads the "current track" (`similar`, `suggest`, `new-releases --like-current`, `add --to` with no song, `remove`, `love`/`unlove`), which would be wrong while Bridge plays something else. Name the song explicitly instead.
+- **"Result N came from a Music.app or catalogue listing, so Bridge can't play it by its own id."** / **"...came from Bridge's library, which Music.app can't play by identity."**: A numbered result only plays back on the source that produced it. Search again with `--library` (Bridge) or without it (Music.app), matching whichever Output is selected.
+- **"Output is being switched; nothing was changed. Try again."** / **"Output changed to Music.app/Bridge while this command ran; nothing was changed."**: Another MusicTUI process (the TUI, most likely) changed the Output tab at the same moment. Retry the command.
+- **"Bridge is still playing."** (from `music pause`): Bridge didn't confirm it stopped playing. Try `music pause` again, or check MusicTUI.

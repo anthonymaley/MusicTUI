@@ -2,33 +2,49 @@
 import ArgumentParser
 import Foundation
 
-/// Ruling 12.14 at the CLI's door (DoD 13).
+/// The CLI's Bridge gate, for verbs that do not dispatch (DoD 13).
 ///
-/// `routeAction(_:in:from: .cli)` has refused playback-changing verbs in Source
-/// Mode since step 1, but no CLI command asked it, so `music play` went straight
-/// to Music.app while Bridge was selected: the fallback 12.14 forbids. Each verb
-/// the matrix can refuse calls this FIRST, before any AppleScript, so a refusal
-/// can never follow a side effect.
+/// A verb the matrix can refuse and that does not go through `cliDispatch`
+/// calls this FIRST, before any AppleScript, so a refusal can never follow a
+/// side effect. Verbs Bridge serves dispatch instead (`CLIBridgeDispatch.swift`,
+/// slice 3 S6 onward).
 ///
 /// Pure: the mode is passed in. `nil` means go ahead exactly as the verb ships.
+/// **A `.source` route is never "go ahead":** a gated verb has no Bridge
+/// branch, so going ahead would run Music.app with Bridge selected, a silent
+/// fallback. It refuses instead (fail closed).
 func cliBridgeRefusal(_ action: MusicTUIAction, mode: PlaybackMode) -> String? {
-    guard case .refused(let why) = routeAction(action, in: mode, from: .cli) else { return nil }
-    return why
+    switch routeAction(action, in: mode, from: .cli) {
+    case .refused(let why): return why
+    case .source:           return cliGateOnDispatchedAction
+    case .musicApp, .unaffected: return nil
+    }
 }
+
+/// What a gated verb says if the matrix serves its action through Bridge: the
+/// verb should be dispatching, and nothing was changed.
+let cliGateOnDispatchedAction =
+    "Internal error: this command is served through Bridge but was not dispatched there; nothing was changed."
 
 /// Refuse `action` if the selected output says so: print the reason (as JSON
 /// under `--json`) and exit non-zero. Music.app selected returns immediately.
 func refuseInBridge(_ action: MusicTUIAction, json: Bool = false,
                     mode: PlaybackMode = PlaybackModeStore().mode()) throws {
     guard let why = cliBridgeRefusal(action, mode: mode) else { return }
-    if json {
-        let body: [String: Any] = ["ok": false, "error": why]
-        let data = (try? JSONSerialization.data(withJSONObject: body)) ?? Data()
-        print(String(decoding: data, as: UTF8.self))
-    } else {
-        print(why)
-    }
+    print(cliFailureText(why, json: json))
     throw ExitCode.failure
+}
+
+/// One CLI failure as printed: the sentence, or `{"ok":false,"error":…}` under
+/// `--json`. The single formatter for the gate and the dispatcher, so a
+/// dispatched refusal is byte-identical to a gated one.
+func cliFailureText(_ message: String, json: Bool) -> String {
+    guard json else { return message }
+    let body: [String: Any] = ["ok": false, "error": message]
+    // Sorted keys: a dictionary's order varies between calls, so without this
+    // the same refusal printed different bytes (found by S7, 2026-09-25).
+    let data = (try? JSONSerialization.data(withJSONObject: body, options: [.sortedKeys])) ?? Data()
+    return String(decoding: data, as: UTF8.self)
 }
 
 // MARK: - Which action a verb is, when its flags decide

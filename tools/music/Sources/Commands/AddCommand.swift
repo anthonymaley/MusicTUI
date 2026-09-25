@@ -12,12 +12,17 @@ enum AddIndexRoute: Equatable {
     /// listing writes these). Refused here, before any token read, so an
     /// empty id never reaches the API from either auth state.
     case noCatalogId
+    /// A Bridge library row, with or without its Bridge id. Its case in
+    /// `Add.execute` IS the refusal (score S3, D3), so dropping the case is a
+    /// compile error rather than a silent fall-through to the token reads.
+    case bridgeRow
 }
 
 func addIndexRoute(origin: SongOrigin, catalogId: String, hasTargets: Bool) -> AddIndexRoute {
     switch origin {
     case .catalog: return catalogId.isEmpty ? .noCatalogId : .catalog
     case .library: return hasTargets ? .duplicateIntoPlaylists : .alreadyInLibrary
+    case .bridgeLibrary: return .bridgeRow
     }
 }
 
@@ -48,14 +53,26 @@ struct Add: ParsableCommand {
 
     func run() throws {
         try refuseInBridge(addAction(query: query, id: id, to: to), json: json)
+        try execute(deps: .liveRequiringTokens)
+    }
+
+    /// The shipped body after the Bridge gate, reading the cache and the auth
+    /// state only through `deps` (score S3). The cache is read once and that
+    /// row is carried through; a Bridge row is refused before any token read,
+    /// AppleScript or REST.
+    func execute(deps: CachedRowCommandDeps) throws {
         // A library row needs no token for anything, so it is handled before
         // the token reads below, the same way `search --library` branches
         // before requireDeveloperToken().
+        var cachedRow: SongResult?
         if id == nil, query.count == 1, let index = Int(query[0]) {
-            let song = try ResultCache().lookupSong(index: index)
+            let song = try ResultCache.row(index: index, in: deps.readSongs())
             switch addIndexRoute(origin: song.origin, catalogId: song.catalogId, hasTargets: !to.isEmpty) {
+            case .bridgeRow:
+                printCachedRowRefusal(bridgeRowsRefusal([song]) ?? "", json: json)
+                throw ExitCode.failure
             case .catalog:
-                break
+                cachedRow = song
             case .noCatalogId:
                 if json {
                     print(OutputFormat(mode: .json).render(
@@ -93,10 +110,12 @@ struct Add: ParsableCommand {
             }
         }
 
-        let auth = AuthManager()
-        let devToken = try auth.requireDeveloperToken()
-        let userToken = try auth.requireUserToken()
-        let api = RESTAPIBackend(developerToken: devToken, userToken: userToken, storefront: auth.storefront())
+        // `liveRequiringTokens` throws the shipped `AuthError` for a missing
+        // token; these guards only cover an injected read that returns nil.
+        let auth = try deps.readAuth()
+        guard let devToken = auth.dev else { throw AuthError.configNotFound }
+        guard let userToken = auth.user else { throw AuthError.userTokenRequired }
+        let api = RESTAPIBackend(developerToken: devToken, userToken: userToken, storefront: auth.storefront)
 
         var songToAdd: CatalogSong?
         var trackTitle: String?
@@ -114,9 +133,8 @@ struct Add: ParsableCommand {
             }
             print(json ? "{\"added\":\"\(catalogID)\"}" : "Added (id: \(catalogID)).")
             return
-        } else if query.count == 1, let index = Int(query[0]) {
-            let cache = ResultCache()
-            let song = try cache.lookupSong(index: index)
+        } else if let song = cachedRow {
+            // The row read above, not a second read of the same index.
             songToAdd = CatalogSong(id: song.catalogId, title: song.title, artist: song.artist, album: song.album)
         } else if !query.isEmpty {
             let searchQuery = query.joined(separator: " ")

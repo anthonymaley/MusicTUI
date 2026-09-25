@@ -31,10 +31,18 @@ enum MusicTUIAction: CaseIterable, Equatable {
     // Playback entry points
     case libraryPlay, playlistPlay, discoverTrackPlay, discoverPlayAll, radioStationPlay
     case cliPlayResume, cliPlayIndex, cliPlayPlaylist, cliPlayAlbum, cliPlaySong, cliPlayArtist
+    /// Slice 3 D7: `music play <words>` (free words) and `music play <Apple
+    /// Music link>`, split from `cliPlayResume` so the matrix can refuse them
+    /// on Bridge while the other forms dispatch (Anthony's Q1 ruling; the link
+    /// is catalogue play, deferred).
+    case cliPlayQuery, cliPlayCatalogSong
 
     // Reads
     case libraryListing, playlistListing, discoverFeed, discoverRefresh
     case catalogSearch, searchLibrary, radioSearch, recent, rotation
+    /// `music now` (and bare `music` off a TTY): the CLI's read of what the
+    /// selected output is playing (slice 3, D7). A read, not playback.
+    case nowStatus
     // Each of these three is two verbs wearing one name: an explicit target, or
     // Music.app's current track when none is given (DiscoveryCommands.swift:20,
     // :123, :214). They are split because Anthony's 2026-09-16 ruling treats the
@@ -75,7 +83,8 @@ enum MusicTUIAction: CaseIterable, Equatable {
              .collectionShuffle, .persistentShuffleMode, .persistentRepeatMode,
              .libraryPlay, .playlistPlay, .discoverTrackPlay, .discoverPlayAll,
              .radioStationPlay, .cliPlayResume, .cliPlayIndex, .cliPlayPlaylist,
-             .cliPlayAlbum, .cliPlaySong, .cliPlayArtist, .playlistTemp, .quiet:
+             .cliPlayAlbum, .cliPlaySong, .cliPlayArtist, .cliPlayQuery, .cliPlayCatalogSong,
+             .playlistTemp, .quiet:
             return true
         default:
             return false
@@ -206,6 +215,8 @@ extension MusicTUIAction {
              .cliPlayAlbum,      // PlaybackCommands.swift:33
              .cliPlaySong,       // PlaybackCommands.swift:58
              .cliPlayArtist,     // PlaybackCommands.swift:11 — DECLARED, see below
+             .cliPlayQuery,      // PlaybackCommands.swift, `playViaMusicApp` smart positional args
+             .cliPlayCatalogSong,// PlaybackCommands.swift, `playViaMusicApp` one-arg Apple Music link
              .catalogSearch,     // SearchCommand.swift:33
              .searchLibrary,     // SearchCommand.swift:18
              .recent,            // HistoryCommands.swift:22
@@ -219,6 +230,7 @@ extension MusicTUIAction {
              .similarToCurrentTrack,          // DiscoveryCommands.swift:8, query omitted
              .suggestFromCurrentTrack,        // DiscoveryCommands.swift:123
              .newReleasesLikeCurrentTrack,    // DiscoveryCommands.swift:201, --like-current
+             .nowStatus,         // PlaybackCommands.swift, struct Now (off a TTY)
              .playlistWrite,     // PlaylistCommands.swift:734 and the other five verbs
              .playlistTemp,      // PlaylistCommands.swift:1081
              .playlistShare,     // PlaylistCommands.swift:1027
@@ -230,9 +242,141 @@ extension MusicTUIAction {
     }
 }
 
-/// Ruling 12.14, verbatim from the spec.
-let cliPlaybackDeferredInV1 =
-    "Bridge output is selected, but CLI playback is not supported in v1. Use MusicTUI or switch Output to Music.app."
+// MARK: - Slice 3, D7: the CLI with Bridge selected
+//
+// Ruling 12.14's blanket CLI deferral is reversed only for the verbs that
+// dispatch. The CLI clause of `routeAction` is CLOSED: an action is dispatched
+// to Bridge, refused for Music.app's stale current track, a named exception
+// that runs as it ships, or refused with a reason naming what is not served.
+// Nothing reaches Music.app by default.
+
+/// The CLI actions served through Bridge while Bridge is selected. Grows by
+/// score step (S6 → S7 → S7P); nothing else adds to it.
+let cliDispatchedOnBridge: Set<MusicTUIAction> = [
+    // S6: `now` and transport.
+    .nowStatus, .playPause, .next, .previous, .seek, .stop,
+    // S7: `music play` from Bridge's own library (D4), and `search --library`.
+    // Free words (`.cliPlayQuery`) and Apple Music links (`.cliPlayCatalogSong`)
+    // are deliberately absent: they refuse (Q1; catalogue play deferred).
+    .cliPlayResume, .cliPlayIndex, .cliPlayPlaylist, .cliPlayAlbum, .cliPlaySong, .cliPlayArtist,
+    .searchLibrary,
+]
+
+/// CLI actions that keep their shipped backend while Bridge is selected
+/// (slice 3 S8, section 2 of the Part 1 score). Written as a literal, never
+/// derived: an action added later must be placed here by decision, and
+/// `CLIInventoryTests` fails until every CLI command is classified.
+///
+/// Two kinds, and only these:
+///
+/// - **Named exceptions (E)**, not temporary: explicit library management
+///   (Anthony, 2026-09-16 13:36), MusicTUI's own state, and the Music.app
+///   settings spec 6.4 marks Unaffected.
+/// - **Migration exceptions (M)**, temporary, by Anthony's Q2 ruling [B]
+///   (2026-09-25): read-only lookups that keep their shipped backends until
+///   Part B serves or refuses each one. They may need a developer key and can
+///   show Music.app's library, and their cached results never feed Bridge
+///   `play N` (score D3; `MigrationReadCacheTests`). Each is commented with the
+///   Part B op that retires it; Part B deletes the line and its comment.
+///
+/// Not here: volume and speakers (refused on Bridge, S8), anything that plays,
+/// the current-track readers, and TUI-only rows no CLI verb reaches.
+let cliBridgeExceptions: Set<MusicTUIAction> = [
+    // E: explicit library management (Anthony, 2026-09-16 13:36).
+    .addToLibrary,
+    .playlistWrite,
+    .playlistShare,
+    .cliMix,
+    // E: MusicTUI's own state. `radio add` saves a local favourite; its REST
+    // name lookup is as shipped ([B]) until Part B's P7 moves it to `slice.station`.
+    .radioAddURL,
+    .auth,
+    // E: Music.app settings (spec 6.4, Unaffected).
+    .eq,
+    .visualizer,
+    // M: temporary migration exceptions [B].
+    .catalogSearch,     // migration exception until Part B's slice.search (P6)
+    .playlistListing,   // migration exception until Part B's slice.libraryPlaylists / slice.libraryPlaylistTracks (P8)
+    .radioSearch,       // migration exception until Part B's slice.searchStations (P7)
+    .discoverFeed,      // migration exception until Part B's slice.recommendations (P8)
+    .similar,           // migration exception until Part B's slice.search (P8)
+    .suggest,           // migration exception until Part B's P8, which refuses it (no Bridge op; Q1 default)
+    .newReleases,       // migration exception until Part B's P8, which refuses it (no Bridge op; Q1 default)
+    .recent,            // migration exception until Part B's slice.recentTracks (P9, served on a D9 pass, else refused)
+    .rotation,          // migration exception until Part B's slice.heavyRotation (P9, served on a D9 pass, else refused)
+]
+
+/// D7's reason for a CLI action Bridge does not serve. Shuffle and repeat
+/// modes, volume and AirPlay keep the TUI table's reasons; everything else
+/// names what is not available.
+func cliBridgeNotServedReason(_ action: MusicTUIAction) -> String {
+    switch action {
+    case .persistentShuffleMode, .persistentRepeatMode, .volume, .airplayRoute:
+        if case .refused(let why) = routeAction(action, in: .source, from: .tui) { return why }
+    default:
+        break
+    }
+    return "Bridge output is selected, and \(cliBridgeNotServedWhat(action)) isn't available from the CLI on Bridge yet. Use MusicTUI, or switch Output to Music.app."
+}
+
+/// The `<what>` in D7's sentence, per action. Every case is named, so a new
+/// action cannot be refused with a blank.
+private func cliBridgeNotServedWhat(_ action: MusicTUIAction) -> String {
+    switch action {
+    // The dispatched `music play` forms never reach here from the CLI; they
+    // are named anyway, so none is left blank.
+    case .cliPlayResume, .cliPlayIndex, .cliPlayPlaylist, .cliPlayAlbum,
+         .cliPlaySong, .cliPlayArtist, .collectionShuffle:
+        return "music play"
+    case .cliPlayQuery:             return "music play <words>"
+    case .cliPlayCatalogSong:       return "music play <Apple Music link>"
+    case .radioStationPlay:         return "music radio play"
+    case .playlistTemp:             return "music playlist temp"
+    case .persistentShuffleMode:    return "music shuffle"
+    case .persistentRepeatMode:     return "music repeat"
+    case .volume:                   return "music volume"
+    case .airplayRoute:             return "music speaker"
+    case .nowStatus:                return "music now"
+    case .playPause:                return "music pause"
+    case .next:                     return "music skip"
+    case .previous:                 return "music back"
+    case .seek:                     return "music seek"
+    case .stop:                     return "music stop"
+    case .catalogSearch:            return "music search"
+    case .searchLibrary:            return "music search --library"
+    case .radioSearch:              return "music radio search"
+    case .radioAddURL:              return "music radio add"
+    case .recent:                   return "music recent"
+    case .rotation:                 return "music rotation"
+    case .discoverFeed:             return "music discover"
+    case .newReleases, .newReleasesLikeCurrentTrack: return "music new-releases"
+    case .similar, .similarToCurrentTrack:           return "music similar"
+    case .suggest, .suggestFromCurrentTrack:         return "music suggest"
+    case .loveTrack:                return "music love"
+    case .addToLibrary, .addCurrentTrackToPlaylist:  return "music add"
+    case .removeCurrentTrackFromPlaylist:            return "music remove"
+    case .playlistListing:          return "music playlist list"
+    case .playlistWrite:            return "changing playlists"
+    case .playlistShare:            return "music playlist share"
+    case .cliMix:                   return "music mix"
+    case .eq:                       return "music eq"
+    case .visualizer:               return "music visualizer"
+    case .auth:                     return "music auth"
+    // TUI-only rows: no CLI verb reaches them, but none is left unnamed.
+    case .queueJump:                return "jumping to a queue row"
+    case .quiet:                    return "quiet"
+    case .libraryPlay:              return "playing from the Library"
+    case .playlistPlay:             return "playing a playlist"
+    case .discoverTrackPlay, .discoverPlayAll: return "playing from Discover"
+    case .discoverRefresh:          return "refreshing Discover"
+    case .libraryListing:           return "the Library listing"
+    case .libraryArtistTierFilter:  return "the Library artist filter"
+    case .playlistsOpenNowPlaying:  return "opening Now Playing"
+    case .libraryRetry:             return "retrying the Library"
+    case .radioFavourite:           return "radio favourites"
+    case .genius:                   return "Genius"
+    }
+}
 
 /// Anthony's ruling of 2026-09-16. Deliberately NOT the 12.14 wording: the verb
 /// is not deferred, its target is unresolvable, and naming a song fixes it.
@@ -255,24 +399,19 @@ func routeAction(_ action: MusicTUIAction,
         }
     }
 
-    // Ruling 12.14, and ruling 12.13's deferral of section 6.4. CLI ROUTING IS
-    // NOT IN v1: a playback-changing verb refuses explicitly and never falls
-    // back, and everything else behaves exactly as it ships.
-    //
-    // One clause rather than a dozen twin rows, because `touchesPlayback` is
-    // already the set 12.14 names, and it was decided from the code rather than
-    // from verb names — which is what caught `quiet` being a pause.
-    //
-    // Anthony's ruling of 2026-09-16 13:36 adds the second clause: explicit
-    // library management keeps working, and a verb that would resolve its
-    // target through Music.app's stale `current track` refuses instead, with
-    // its own reason. Playback is checked first because `playlist temp` is both
-    // a write and a way to start Music.app playing, and it is the playback that
-    // defers it.
+    // Slice 3, D7: the CLI clause is closed. A dispatched verb goes to Bridge;
+    // a verb that would resolve its target through Music.app's stale `current
+    // track` refuses with its own reason (Anthony, 2026-09-16 13:36); a named
+    // exception runs exactly as it ships; everything else, every undispatched
+    // playback verb included, refuses and names what is not served. There is
+    // no default to Music.app. Playback verbs are never exceptions, so
+    // `playlist temp`, both a write and a way to start Music.app playing,
+    // refuses as playback.
     if surface == .cli {
-        if action.touchesPlayback { return .refused(cliPlaybackDeferredInV1) }
+        if cliDispatchedOnBridge.contains(action) { return .source }
         if action.readsMusicAppCurrentTrack { return .refused(currentTrackIsStaleInBridge) }
-        return routeAction(action, in: .musicApp, from: surface)
+        if cliBridgeExceptions.contains(action) { return routeAction(action, in: .musicApp, from: .cli) }
+        return .refused(cliBridgeNotServedReason(action))
     }
 
     switch action {
@@ -284,8 +423,14 @@ func routeAction(_ action: MusicTUIAction,
          .libraryPlay, .playlistPlay, .discoverTrackPlay, .discoverPlayAll,
          .radioStationPlay,
          .cliPlayResume, .cliPlayIndex, .cliPlayPlaylist, .cliPlayAlbum, .cliPlaySong,
+         .cliPlayQuery, .cliPlayCatalogSong,
          .discoverFeed, .discoverRefresh, .catalogSearch, .radioSearch,
          .recent, .newReleases:
+        return .source
+
+    /// Slice 3, D7: `music now` reads Bridge's own status. CLI-only, so this
+    /// TUI row is unreachable; it is decided, not defaulted.
+    case .nowStatus:
         return .source
 
     /// Anthony's ruling 12.2: an artist expands to that artist's SONGS, matching

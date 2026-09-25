@@ -5,9 +5,18 @@ import Foundation
 /// duplicating the owned track by title and artist. A catalog row goes through
 /// the REST API as before. Files written before this field existed decode as
 /// catalog, which is what every writer produced at the time.
+///
+/// A Bridge library row (`bridge_library`) carries Bridge's own library id in
+/// `bridgeID` and an empty `catalogId`. It becomes a Bridge play reference only
+/// through `bridgeRef(forCachedRow:index:)`, which decides by this origin and
+/// never by the shape of an id; Music.app and library management refuse it
+/// (score S3, D3). Binaries older than this case cannot decode such a row:
+/// `lookupSong` fails, and `lookupSongs` swallows the failure, so downgrade-safe
+/// writes are not promised.
 enum SongOrigin: String, Codable, Equatable {
     case catalog
     case library
+    case bridgeLibrary = "bridge_library"
 }
 
 struct SongResult: Codable, Equatable {
@@ -17,15 +26,25 @@ struct SongResult: Codable, Equatable {
     let album: String
     let catalogId: String
     let origin: SongOrigin
+    /// Bridge's library id, only on `.bridgeLibrary` rows. Encoded (as
+    /// `bridge_id`) only when non-nil, so every row the shipped writers produce
+    /// keeps its bytes.
+    let bridgeID: String?
+
+    enum CodingKeys: String, CodingKey {
+        case index, title, artist, album, catalogId, origin
+        case bridgeID = "bridge_id"
+    }
 
     init(index: Int, title: String, artist: String, album: String, catalogId: String,
-         origin: SongOrigin = .catalog) {
+         origin: SongOrigin = .catalog, bridgeID: String? = nil) {
         self.index = index
         self.title = title
         self.artist = artist
         self.album = album
         self.catalogId = catalogId
         self.origin = origin
+        self.bridgeID = bridgeID
     }
 
     init(from decoder: Decoder) throws {
@@ -36,6 +55,7 @@ struct SongResult: Codable, Equatable {
         album = try c.decode(String.self, forKey: .album)
         catalogId = try c.decode(String.self, forKey: .catalogId)
         origin = try c.decodeIfPresent(SongOrigin.self, forKey: .origin) ?? .catalog
+        bridgeID = try c.decodeIfPresent(String.self, forKey: .bridgeID)
     }
 }
 
@@ -95,11 +115,7 @@ struct ResultCache {
     }
 
     func lookupSong(index: Int) throws -> SongResult {
-        let songs = try readSongs()
-        guard let song = songs.first(where: { $0.index == index }) else {
-            throw CacheError.indexOutOfRange(index)
-        }
-        return song
+        try Self.row(index: index, in: readSongs())
     }
 
     /// Resolve multiple cached indices at once, separating hits from misses
@@ -107,7 +123,20 @@ struct ResultCache {
     /// dropped indices instead of silently building a shorter result. Reads the
     /// cache once.
     func lookupSongs(indices: [Int]) -> (resolved: [SongResult], dropped: [Int]) {
-        let songs = (try? readSongs()) ?? []
+        Self.resolve(indices: indices, in: (try? readSongs()) ?? [])
+    }
+
+    /// `lookupSong` over rows already read, so a command that read the cache
+    /// once carries that one read through instead of reading again.
+    static func row(index: Int, in songs: [SongResult]) throws -> SongResult {
+        guard let song = songs.first(where: { $0.index == index }) else {
+            throw CacheError.indexOutOfRange(index)
+        }
+        return song
+    }
+
+    /// `lookupSongs` over rows already read.
+    static func resolve(indices: [Int], in songs: [SongResult]) -> (resolved: [SongResult], dropped: [Int]) {
         var resolved: [SongResult] = []
         var dropped: [Int] = []
         for index in indices {
