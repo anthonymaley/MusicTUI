@@ -177,6 +177,8 @@ final class CLIBridgeSelectionTests: XCTestCase {
         XCTAssertTrue(msg.contains("; and 1 more"), msg)
         XCTAssertTrue(msg.hasSuffix("Use the exact name."), msg)
         XCTAssertFalse(msg.contains("--artist"), "a playlist ambiguity never suggests --artist")
+        XCTAssertFalse(msg.contains(" — "), "playlist rows have no artist, so no dangling dash: \(msg)")
+        XCTAssertTrue(msg.contains(": Rock; Rock"), msg)
     }
 
     func testPlaylistWithNoSongsRefuses() throws {

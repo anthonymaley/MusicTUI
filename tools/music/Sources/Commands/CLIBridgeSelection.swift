@@ -79,7 +79,7 @@ private func bridgeNoSongsMessage(name: String) -> String {
 /// (song only).
 private func bridgeAmbiguousMessage(query: String, kindPlural: String, rows: [MusicRow],
                                     suggestArtist: Bool, songHint: Bool) -> String {
-    let shown = rows.prefix(5).map { "\($0.title) — \($0.artist)" }.joined(separator: "; ")
+    let shown = rows.prefix(5).map { $0.artist.isEmpty ? $0.title : "\($0.title) — \($0.artist)" }.joined(separator: "; ")
     var msg = "'\(query)' matches \(rows.count) \(kindPlural) in your Bridge library: \(shown)"
     if rows.count > 5 { msg += "; and \(rows.count - 5) more" }
     msg += suggestArtist ? ". Use the exact name, or add --artist." : ". Use the exact name."
