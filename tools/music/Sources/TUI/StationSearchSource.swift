@@ -590,7 +590,13 @@ protocol SourceControlling {
     /// snapshot, so a refusal always arrives on the first page, and a
     /// generation or membership change mid-walk restarts the read rather
     /// than stitching two observations together.
-    func libraryPlaylistTracks(playlistID: String, cursor: String?, limit: Int) throws -> MusicPage
+    ///
+    /// `forQueue` (F4/C4): true only for the client's fresh whole-playlist
+    /// play walk. Sent on the wire as `"for_queue": true`, and omitted
+    /// entirely — never sent as an explicit `false` — otherwise, so an older
+    /// Bridge (whose synthesized `Decodable` drops unknown keys) sees exactly
+    /// the request it always has.
+    func libraryPlaylistTracks(playlistID: String, cursor: String?, limit: Int, forQueue: Bool) throws -> MusicPage
 }
 
 struct SourceAppControl: SourceControlling {
@@ -700,7 +706,9 @@ struct SourceAppControl: SourceControlling {
                              id: artistID, rows: .exactly(.album))
     }
 
-    /// D2: what the artist PLAYS (ruling 12.2), at most 100 rows.
+    /// D2: every song of the artist; Bridge refuses over its queue bound
+    /// (F5: since counting availability before refusing, this can now return
+    /// more than 100 rows — the client applies no row bound of its own).
     func libraryArtistSongs(artistID: String) throws -> MusicList {
         try libraryContainer(op: "slice.libraryArtistSongs", opName: "artist songs",
                              id: artistID, rows: .exactly(.song))
@@ -719,10 +727,15 @@ struct SourceAppControl: SourceControlling {
     /// row shape, in the playlist's own order, with repeats kept; a row of
     /// any other kind is `malformedReply`, never dropped, for the same
     /// fail-closed reason as the container reads.
-    func libraryPlaylistTracks(playlistID: String, cursor: String?, limit: Int = 500) throws -> MusicPage {
+    ///
+    /// `forQueue` (F4/C4): sent as `"for_queue": true` only when true — never
+    /// an explicit `false` — so an older Bridge that predates the field sees
+    /// today's request unchanged.
+    func libraryPlaylistTracks(playlistID: String, cursor: String?, limit: Int = 500,
+                               forQueue: Bool = false) throws -> MusicPage {
         try libraryPage(op: "slice.libraryPlaylistTracks", opName: "playlist tracks", limit: limit,
                         cursor: cursor, id: playlistID, rows: .exactly(.song),
-                        readsSkippedVideos: true)
+                        readsSkippedVideos: true, forQueue: forQueue)
     }
 
     /// Which row kinds a paged list or a container read accepts, and what it
@@ -772,10 +785,15 @@ struct SourceAppControl: SourceControlling {
     /// so. It matters more the moment these frames cross a network to an iPad.
     private func libraryPage(op: String, opName: String, limit: Int, cursor: String?,
                              id: String? = nil, rows policy: LibraryRowPolicy,
-                             readsSkippedVideos: Bool = false) throws -> MusicPage {
+                             readsSkippedVideos: Bool = false, forQueue: Bool = false) throws -> MusicPage {
         var body: [String: Any] = ["op": op, "limit": limit]
         if let cursor { body["cursor"] = cursor }
         if let id { body["id"] = id }
+        // Additive (F4/C4): sent only when true, never an explicit `false` —
+        // an older Bridge's synthesized `Decodable` drops an unknown key, so
+        // omitting it entirely keeps today's request byte-for-byte for every
+        // OTHER caller of this shared helper.
+        if forQueue { body["for_queue"] = true }
         let reply = try send(body, over: libraryTransport)
 
         guard let items = reply["items"] as? [[String: Any]] else {
