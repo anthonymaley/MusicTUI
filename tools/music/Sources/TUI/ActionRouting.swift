@@ -280,6 +280,12 @@ let cliDispatchedOnBridge: Set<MusicTUIAction> = [
     // lookup (`slice.station`) and `radio play` (`slice.playStation`, D8: an
     // ambiguous name refuses, never auto-picks).
     .radioSearch, .radioStationLookup, .radioStationPlay,
+    // Part 2 P8: `discover` (`slice.recommendations`; `--recent` refuses in
+    // the Bridge body), `playlist list`/`playlist tracks` (Bridge's own
+    // library; an ambiguous name refuses, never auto-picks) and `similar
+    // <title>` (`slice.search`, the shipped algorithm). `suggest` and
+    // `new-releases` are refused instead (Q1 default; D10's sentences).
+    .discoverFeed, .playlistListing, .similar,
 ]
 
 /// CLI actions that keep their shipped backend while Bridge is selected
@@ -315,11 +321,6 @@ let cliBridgeExceptions: Set<MusicTUIAction> = [
     .eq,
     .visualizer,
     // M: temporary migration exceptions [B].
-    .playlistListing,   // migration exception until Part B's slice.libraryPlaylists / slice.libraryPlaylistTracks (P8)
-    .discoverFeed,      // migration exception until Part B's slice.recommendations (P8)
-    .similar,           // migration exception until Part B's slice.search (P8)
-    .suggest,           // migration exception until Part B's P8, which refuses it (no Bridge op; Q1 default)
-    .newReleases,       // migration exception until Part B's P8, which refuses it (no Bridge op; Q1 default)
     .recent,            // migration exception until Part B's slice.recentTracks (P9, served on a D9 pass, else refused)
     .rotation,          // migration exception until Part B's slice.heavyRotation (P9, served on a D9 pass, else refused)
 ]
@@ -331,6 +332,13 @@ func cliBridgeNotServedReason(_ action: MusicTUIAction) -> String {
     switch action {
     case .persistentShuffleMode, .persistentRepeatMode, .volume, .airplayRoute:
         if case .refused(let why) = routeAction(action, in: .source, from: .tui) { return why }
+    // Part 2 P8, Q1 default (D10, verbatim): Bridge serves no op for these,
+    // so the reason names what is missing rather than "yet". The
+    // current-track variants never reach here; they keep their own reason.
+    case .suggest:
+        return "Bridge output is selected, and music suggest needs Apple Music account reads Bridge doesn't serve. Switch Output to Music.app to use it."
+    case .newReleases:
+        return "Bridge output is selected, and music new-releases needs a catalogue artist lookup Bridge doesn't serve. Switch Output to Music.app to use it."
     default:
         break
     }

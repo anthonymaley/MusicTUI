@@ -25,7 +25,7 @@ struct PlaylistList: ParsableCommand {
     @Flag(name: .long, help: "Output JSON") var json = false
 
     func run() throws {
-        try listPlaylists(json: json)
+        try runPlaylistList(json: json, env: .live())
     }
 }
 
@@ -35,7 +35,7 @@ struct PlaylistTracks: ParsableCommand {
     @Flag(name: .long, help: "Output JSON") var json = false
 
     func run() throws {
-        try showPlaylistTracks(name: name, json: json)
+        try runPlaylistTracks(name: name, json: json, env: .live())
     }
 }
 

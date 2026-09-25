@@ -31,6 +31,11 @@ final class CLIInventoryTests: XCTestCase {
         /// No matrix row: runs as shipped by design, never gated. The reason is
         /// section 2's.
         case noMatrixRow(String)
+        /// The matrix dispatches the action to Bridge, and the Bridge body
+        /// refuses these flags, with this sentence, before any Bridge read
+        /// (Part 2 P8: `discover --recent`). Execution evidence is the
+        /// command test; this pins the route and the words.
+        case bridgeBodyRefusal(MusicTUIAction, String)
     }
 
     struct Row {
@@ -70,6 +75,11 @@ final class CLIInventoryTests: XCTestCase {
         Row(invocation: "radio search", command: "RadioSearch", letter: .served, enforcement: .route(.radioSearch), owner: "P7"),
         Row(invocation: "radio add URL (station name lookup)", command: "RadioAdd", letter: .served, enforcement: .route(.radioStationLookup), owner: "P7"),
         Row(invocation: "radio play", command: "RadioPlay", letter: .served, enforcement: .route(.radioStationPlay), owner: "P7"),
+        // Part 2, P8: Bridge's own library and feed, and `similar` on `slice.search`.
+        Row(invocation: "playlist list", command: "PlaylistList", letter: .served, enforcement: .route(.playlistListing), owner: "S8, P8"),
+        Row(invocation: "playlist tracks", command: "PlaylistTracks", letter: .served, enforcement: .route(.playlistListing), owner: "S8, P8"),
+        Row(invocation: "discover", command: "Discover", letter: .served, enforcement: .route(.discoverFeed), owner: "S8, P8"),
+        Row(invocation: "similar <title>", command: "Similar", letter: .served, enforcement: .route(.similar), owner: "S8, P8"),
 
         // Refused before any side effect.
         Row(invocation: "shuffle", command: "Shuffle", letter: .refused, enforcement: .route(.persistentShuffleMode), owner: "S6"),
@@ -92,14 +102,13 @@ final class CLIInventoryTests: XCTestCase {
         Row(invocation: "speaker add", command: "SpeakerAdd", letter: .refused, enforcement: .route(.airplayRoute), owner: "S8"),
         Row(invocation: "speaker remove", command: "SpeakerRemove", letter: .refused, enforcement: .route(.airplayRoute), owner: "S8"),
         Row(invocation: "speaker stop", command: "SpeakerStop", letter: .refused, enforcement: .route(.airplayRoute), owner: "S8"),
+        // Part 2, P8, Q1 default: no Bridge op serves these (D10's sentences).
+        Row(invocation: "suggest --from P", command: "Suggest", letter: .refused, enforcement: .route(.suggest), owner: "S8, P8 (Q1: refuse)"),
+        Row(invocation: "new-releases --artist A (and no flag)", command: "NewReleases", letter: .refused, enforcement: .route(.newReleases), owner: "S8, P8 (Q1: refuse)"),
+        Row(invocation: "discover --recent", command: "Discover", letter: .refused,
+            enforcement: .bridgeBodyRefusal(.discoverFeed, bridgeDiscoverRecentRefusal), owner: "P8 (Q1: refuse)"),
 
         // Migration exceptions [B]: shipped backends until Part B.
-        Row(invocation: "playlist list", command: "PlaylistList", letter: .migration, enforcement: .route(.playlistListing), owner: "S8"),
-        Row(invocation: "playlist tracks", command: "PlaylistTracks", letter: .migration, enforcement: .route(.playlistListing), owner: "S8"),
-        Row(invocation: "discover", command: "Discover", letter: .migration, enforcement: .route(.discoverFeed), owner: "S8"),
-        Row(invocation: "similar <title>", command: "Similar", letter: .migration, enforcement: .route(.similar), owner: "S8"),
-        Row(invocation: "suggest --from P", command: "Suggest", letter: .migration, enforcement: .route(.suggest), owner: "S8"),
-        Row(invocation: "new-releases --artist A", command: "NewReleases", letter: .migration, enforcement: .route(.newReleases), owner: "S8"),
         Row(invocation: "recent", command: "Recent", letter: .migration, enforcement: .route(.recent), owner: "S8"),
         Row(invocation: "rotation", command: "Rotation", letter: .migration, enforcement: .route(.rotation), owner: "S8"),
 
@@ -136,6 +145,11 @@ final class CLIInventoryTests: XCTestCase {
     private let retiredMigrations: [MusicTUIAction: String] = [
         .catalogSearch: "P6",
         .radioSearch: "P7",
+        .playlistListing: "P8",
+        .discoverFeed: "P8",
+        .similar: "P8",
+        .suggest: "P8",
+        .newReleases: "P8",
     ]
 
     /// The M rows still standing.
@@ -210,6 +224,13 @@ final class CLIInventoryTests: XCTestCase {
             case .noMatrixRow(let why):
                 XCTAssertEqual(row.letter, .exception, label)
                 XCTAssertFalse(why.isEmpty, label)
+            case .bridgeBodyRefusal(let action, let sentence):
+                XCTAssertEqual(row.letter, .refused, label)
+                XCTAssertTrue(action.surfaces.contains(.cli), label)
+                XCTAssertEqual(routeAction(action, in: .source, from: .cli), .source, "\(label): dispatched, then refused")
+                XCTAssertTrue(cliDispatchedOnBridge.contains(action), label)
+                XCTAssertEqual(routeAction(action, in: .musicApp, from: .cli), .musicApp, "\(label): shipped with Music.app")
+                XCTAssertFalse(sentence.isEmpty, label)
             }
         }
     }
@@ -263,7 +284,7 @@ final class CLIInventoryTests: XCTestCase {
         var named: Set<MusicTUIAction> = []
         for row in inventory {
             switch row.enforcement {
-            case .route(let a), .provenance(let a): named.insert(a)
+            case .route(let a), .provenance(let a), .bridgeBodyRefusal(let a, _): named.insert(a)
             case .noMatrixRow: break
             }
         }
@@ -279,11 +300,16 @@ final class CLIInventoryTests: XCTestCase {
         // P7: radio search moved M → S and radio play R → S; `radio add`'s
         // lookup, CLI-reachable since P7, is a served row of its own (+1 row;
         // `radio add`'s favourite stays the E row).
-        XCTAssertEqual(count(.served), 18)
-        XCTAssertEqual(count(.refused), 20)
-        XCTAssertEqual(count(.migration), 8)
+        // P8: playlist list, playlist tracks, discover and similar <title>
+        // moved M → S; suggest --from and new-releases --artist M → R; and
+        // `discover --recent`, refused in the Bridge body, is a row of its own
+        // (+1 row). Only recent and rotation remain M, for P9.
+        XCTAssertEqual(count(.served), 22)
+        XCTAssertEqual(count(.refused), 23)
+        XCTAssertEqual(count(.migration), 2)
         XCTAssertEqual(count(.exception), 19)
-        XCTAssertEqual(inventory.count, 65)
+        XCTAssertEqual(inventory.count, 66)
+        XCTAssertEqual(migrationActions, [.recent, .rotation], "only P9's two remain")
     }
 
     // MARK: - The gate comes first (STRUCTURAL: source text, not execution evidence)
@@ -303,7 +329,8 @@ final class CLIInventoryTests: XCTestCase {
         var refusing: [String: Set<MusicTUIAction>] = [:]
         for row in inventory where row.letter == .refused {
             switch row.enforcement {
-            case .route(let a), .provenance(let a): refusing[row.command, default: []].insert(a)
+            case .route(let a), .provenance(let a), .bridgeBodyRefusal(let a, _):
+                refusing[row.command, default: []].insert(a)
             case .noMatrixRow: break
             }
         }
