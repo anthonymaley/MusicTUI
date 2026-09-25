@@ -31,6 +31,11 @@ enum MusicTUIAction: CaseIterable, Equatable {
     // Playback entry points
     case libraryPlay, playlistPlay, discoverTrackPlay, discoverPlayAll, radioStationPlay
     case cliPlayResume, cliPlayIndex, cliPlayPlaylist, cliPlayAlbum, cliPlaySong, cliPlayArtist
+    /// Slice 3 D7: `music play <words>` (free words) and `music play <Apple
+    /// Music link>`, split from `cliPlayResume` so the matrix can refuse them
+    /// on Bridge while the other forms dispatch (Anthony's Q1 ruling; the link
+    /// is catalogue play, deferred).
+    case cliPlayQuery, cliPlayCatalogSong
 
     // Reads
     case libraryListing, playlistListing, discoverFeed, discoverRefresh
@@ -78,7 +83,8 @@ enum MusicTUIAction: CaseIterable, Equatable {
              .collectionShuffle, .persistentShuffleMode, .persistentRepeatMode,
              .libraryPlay, .playlistPlay, .discoverTrackPlay, .discoverPlayAll,
              .radioStationPlay, .cliPlayResume, .cliPlayIndex, .cliPlayPlaylist,
-             .cliPlayAlbum, .cliPlaySong, .cliPlayArtist, .playlistTemp, .quiet:
+             .cliPlayAlbum, .cliPlaySong, .cliPlayArtist, .cliPlayQuery, .cliPlayCatalogSong,
+             .playlistTemp, .quiet:
             return true
         default:
             return false
@@ -209,6 +215,8 @@ extension MusicTUIAction {
              .cliPlayAlbum,      // PlaybackCommands.swift:33
              .cliPlaySong,       // PlaybackCommands.swift:58
              .cliPlayArtist,     // PlaybackCommands.swift:11 — DECLARED, see below
+             .cliPlayQuery,      // PlaybackCommands.swift, `playViaMusicApp` smart positional args
+             .cliPlayCatalogSong,// PlaybackCommands.swift, `playViaMusicApp` one-arg Apple Music link
              .catalogSearch,     // SearchCommand.swift:33
              .searchLibrary,     // SearchCommand.swift:18
              .recent,            // HistoryCommands.swift:22
@@ -247,19 +255,24 @@ extension MusicTUIAction {
 let cliDispatchedOnBridge: Set<MusicTUIAction> = [
     // S6: `now` and transport.
     .nowStatus, .playPause, .next, .previous, .seek, .stop,
+    // S7: `music play` from Bridge's own library (D4), and `search --library`.
+    // Free words (`.cliPlayQuery`) and Apple Music links (`.cliPlayCatalogSong`)
+    // are deliberately absent: they refuse (Q1; catalogue play deferred).
+    .cliPlayResume, .cliPlayIndex, .cliPlayPlaylist, .cliPlayAlbum, .cliPlaySong, .cliPlayArtist,
+    .searchLibrary,
 ]
 
 /// CLI actions that keep their shipped backend while Bridge is selected.
 ///
 /// **Temporary, S6.** Every action that is neither dispatched, a current-track
 /// reader, nor playback, which is exactly the set that behaved as it shipped
-/// before slice 3. S8 narrows it to section 2's E rows (plus, under Option B,
+/// before slice 3. S7 moved `.searchLibrary` out: it dispatches to Bridge. S8 narrows it to section 2's E rows (plus, under Option B,
 /// the M rows as commented migration exceptions). Written as a literal, never
 /// derived: an action added later must be placed here by decision.
 let cliBridgeExceptions: Set<MusicTUIAction> = [
     // Reads.
     .libraryListing, .playlistListing, .discoverFeed, .discoverRefresh,
-    .catalogSearch, .searchLibrary, .radioSearch, .recent, .rotation,
+    .catalogSearch, .radioSearch, .recent, .rotation,
     .newReleases, .similar, .suggest,
     // Explicit library management (Anthony, 2026-09-16 13:36).
     .addToLibrary, .playlistWrite, .playlistShare, .cliMix,
@@ -288,10 +301,13 @@ func cliBridgeNotServedReason(_ action: MusicTUIAction) -> String {
 /// action cannot be refused with a blank.
 private func cliBridgeNotServedWhat(_ action: MusicTUIAction) -> String {
     switch action {
-    // Every `music play` form is one command until S7 splits it.
+    // The dispatched `music play` forms never reach here from the CLI; they
+    // are named anyway, so none is left blank.
     case .cliPlayResume, .cliPlayIndex, .cliPlayPlaylist, .cliPlayAlbum,
          .cliPlaySong, .cliPlayArtist, .collectionShuffle:
         return "music play"
+    case .cliPlayQuery:             return "music play <words>"
+    case .cliPlayCatalogSong:       return "music play <Apple Music link>"
     case .radioStationPlay:         return "music radio play"
     case .playlistTemp:             return "music playlist temp"
     case .persistentShuffleMode:    return "music shuffle"
@@ -385,6 +401,7 @@ func routeAction(_ action: MusicTUIAction,
          .libraryPlay, .playlistPlay, .discoverTrackPlay, .discoverPlayAll,
          .radioStationPlay,
          .cliPlayResume, .cliPlayIndex, .cliPlayPlaylist, .cliPlayAlbum, .cliPlaySong,
+         .cliPlayQuery, .cliPlayCatalogSong,
          .discoverFeed, .discoverRefresh, .catalogSearch, .radioSearch,
          .recent, .newReleases:
         return .source

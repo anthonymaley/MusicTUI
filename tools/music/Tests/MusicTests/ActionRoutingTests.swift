@@ -48,10 +48,10 @@ final class ActionRoutingTests: XCTestCase {
     /// one. Each of these was decided rather than defaulted.
     func testAnthonysRulingsHold() {
         // 12.2: an artist expands to SONGS rather than being blocked as
-        // unplayable. Under 12.14 the CLI verb refuses in Source Mode, so the
-        // ruling is pinned where it still decides the outcome: Music.app mode,
-        // where `--artist` is served rather than refused.
+        // unplayable. Served in Music.app mode, and (slice 3 S7) dispatched to
+        // Bridge from the CLI, where it plays the artist's songs too.
         XCTAssertEqual(routeAction(.cliPlayArtist, in: .musicApp, from: .cli), .musicApp)
+        XCTAssertEqual(routeAction(.cliPlayArtist, in: .source, from: .cli), .source)
         // 6.5: collection shuffle is served; persistent mode is refused.
         XCTAssertEqual(routeAction(.collectionShuffle, in: .source, from: .tui), .source)
         guard case .refused = routeAction(.persistentShuffleMode, in: .source, from: .tui) else {
@@ -164,6 +164,10 @@ final class ActionRoutingTests: XCTestCase {
         // Slice 3 D7: `music now`'s read. CLI-only; its TUI row is the
         // unreachable one, pinned so it is decided rather than defaulted.
         .nowStatus: .source,
+        // Slice 3 D7: `music play <words>` and `music play <Apple Music link>`.
+        // CLI-only, like the other `.cliPlay*` rows; their TUI rows are
+        // unreachable and decided with those rows, not defaulted.
+        .cliPlayQuery: .source, .cliPlayCatalogSong: .source,
     ]
 
     /// The table covers the closed set. Adding an action fails here until its
@@ -226,12 +230,21 @@ final class ActionRoutingTests: XCTestCase {
 
     // MARK: - Slice 3 D7: the closed CLI clause (S6)
 
-    /// S6's dispatched set, as a literal: `now` and the five transport verbs.
-    /// S7 grows it; nothing else may.
-    private let s6Dispatched: Set<MusicTUIAction> = [.nowStatus, .playPause, .next, .previous, .seek, .stop]
+    /// The dispatched set after S7, as a literal: S6's `now` and five
+    /// transport verbs, then S7's `music play` forms (resume, index, playlist,
+    /// album, song, artist) and `search --library`. Free words and Apple Music
+    /// links are NOT in it (Anthony's Q1 ruling; catalogue play deferred).
+    private let s7Dispatched: Set<MusicTUIAction> = [
+        .nowStatus, .playPause, .next, .previous, .seek, .stop,
+        .cliPlayResume, .cliPlayIndex, .cliPlayPlaylist, .cliPlayAlbum, .cliPlaySong, .cliPlayArtist,
+        .searchLibrary,
+    ]
 
-    func testTheDispatchedSetIsExactlyS6s() {
-        XCTAssertEqual(cliDispatchedOnBridge, s6Dispatched)
+    func testTheDispatchedSetIsExactlyS7s() {
+        XCTAssertEqual(cliDispatchedOnBridge, s7Dispatched)
+        XCTAssertFalse(cliDispatchedOnBridge.contains(.cliPlayQuery), "Q1: plain music play <words> refuses")
+        XCTAssertFalse(cliDispatchedOnBridge.contains(.cliPlayCatalogSong), "catalogue play is deferred")
+        XCTAssertFalse(cliDispatchedOnBridge.contains(.collectionShuffle))
     }
 
     /// D7: with Bridge selected the CLI clause is closed. Each action is
@@ -240,7 +253,7 @@ final class ActionRoutingTests: XCTestCase {
     func testTheCliClauseIsClosed() {
         for action in MusicTUIAction.allCases {
             let route = routeAction(action, in: .source, from: .cli)
-            if s6Dispatched.contains(action) {
+            if s7Dispatched.contains(action) {
                 XCTAssertEqual(route, .source, "\(action) is dispatched to Bridge")
             } else if action.readsMusicAppCurrentTrack {
                 XCTAssertEqual(route, .refused(currentTrackIsStaleInBridge), "\(action)")
@@ -258,7 +271,7 @@ final class ActionRoutingTests: XCTestCase {
     /// set, written as a literal in ActionRouting.swift until S8 narrows it.
     func testTheExceptionSetIsEverythingNeitherDispatchedCurrentTrackNorPlayback() {
         let expected = Set(MusicTUIAction.allCases.filter {
-            !s6Dispatched.contains($0) && !$0.readsMusicAppCurrentTrack && !$0.touchesPlayback
+            !s7Dispatched.contains($0) && !$0.readsMusicAppCurrentTrack && !$0.touchesPlayback
         })
         XCTAssertEqual(cliBridgeExceptions, expected)
         XCTAssertTrue(cliBridgeExceptions.isDisjoint(with: cliDispatchedOnBridge))
@@ -269,7 +282,7 @@ final class ActionRoutingTests: XCTestCase {
     func testEveryUndispatchedPlaybackCliCommandRefusesInSourceMode() {
         var checked = 0
         for action in MusicTUIAction.allCases
-        where action.surfaces.contains(.cli) && action.touchesPlayback && !s6Dispatched.contains(action) {
+        where action.surfaces.contains(.cli) && action.touchesPlayback && !s7Dispatched.contains(action) {
             checked += 1
             guard case .refused(let reason) = routeAction(action, in: .source, from: .cli) else {
                 XCTFail("\(action) is a playback-changing CLI verb Bridge does not serve yet; it must refuse")
@@ -291,12 +304,10 @@ final class ActionRoutingTests: XCTestCase {
         }
         XCTAssertEqual(cliBridgeNotServedReason(.persistentShuffleMode),
                        "Shuffle and repeat modes are Music.app only for now")
-        let play = "Bridge output is selected, and music play isn't available from the CLI on Bridge yet. Use MusicTUI, or switch Output to Music.app."
-        for action in [MusicTUIAction.cliPlayResume, .cliPlayIndex, .cliPlayPlaylist,
-                       .cliPlayAlbum, .cliPlaySong, .cliPlayArtist] {
-            XCTAssertEqual(routeAction(action, in: .source, from: .cli), .refused(play),
-                           "\(action) refuses as music play until S7")
-        }
+        XCTAssertEqual(routeAction(.cliPlayQuery, in: .source, from: .cli),
+                       .refused("Bridge output is selected, and music play <words> isn't available from the CLI on Bridge yet. Use MusicTUI, or switch Output to Music.app."))
+        XCTAssertEqual(routeAction(.cliPlayCatalogSong, in: .source, from: .cli),
+                       .refused("Bridge output is selected, and music play <Apple Music link> isn't available from the CLI on Bridge yet. Use MusicTUI, or switch Output to Music.app."))
         XCTAssertEqual(cliBridgeNotServedReason(.radioStationPlay),
                        "Bridge output is selected, and music radio play isn't available from the CLI on Bridge yet. Use MusicTUI, or switch Output to Music.app.")
     }
@@ -328,7 +339,7 @@ final class ActionRoutingTests: XCTestCase {
         where action.surfaces.contains(.cli)
             && !action.touchesPlayback
             && !action.readsMusicAppCurrentTrack
-            && !s6Dispatched.contains(action) {
+            && !s7Dispatched.contains(action) {
             XCTAssertEqual(routeAction(action, in: .source, from: .cli),
                            routeAction(action, in: .musicApp, from: .cli),
                            "\(action) neither plays nor reads the current track: it must ship unchanged")
@@ -341,7 +352,7 @@ final class ActionRoutingTests: XCTestCase {
     func testTheSameActionIsServedFromTheTuiAndRefusedFromTheCli() {
         let dual = MusicTUIAction.allCases.filter {
             $0.surfaces.contains(.tui) && $0.surfaces.contains(.cli) && $0.touchesPlayback
-                && !s6Dispatched.contains($0)
+                && !s7Dispatched.contains($0)
         }
         XCTAssertFalse(dual.isEmpty, "no undispatched dual-surface playback action: the test proves nothing")
         var served = 0
@@ -357,13 +368,28 @@ final class ActionRoutingTests: XCTestCase {
     }
 
     /// The dispatched verbs are served from BOTH surfaces with Bridge selected,
-    /// and still go to Music.app with Music.app selected.
+    /// and still go to Music.app with Music.app selected. The one exception is
+    /// `searchLibrary`, whose TUI column stays on AppleScript (ruling 12.1,
+    /// rule 9): S7 changes the CLI clause only, never the TUI column.
     func testDispatchedVerbsAreServedFromBothSurfaces() {
-        for action in s6Dispatched {
+        for action in s7Dispatched {
             XCTAssertEqual(routeAction(action, in: .source, from: .cli), .source, "\(action)")
-            XCTAssertEqual(routeAction(action, in: .source, from: .tui), .source, "\(action)")
+            XCTAssertEqual(routeAction(action, in: .source, from: .tui),
+                           action == .searchLibrary ? .musicApp : .source, "\(action)")
             XCTAssertEqual(routeAction(action, in: .musicApp, from: .cli), .musicApp, "\(action)")
         }
+    }
+
+    /// Every `music play` form touches playback, so Music.app mode holds the
+    /// output lock for it (D6), including the two Bridge refuses.
+    func testEveryPlayFormIsPlaybackAndTakesTheLock() {
+        for action in [MusicTUIAction.cliPlayResume, .cliPlayIndex, .cliPlayPlaylist, .cliPlayAlbum,
+                       .cliPlaySong, .cliPlayArtist, .cliPlayQuery, .cliPlayCatalogSong] {
+            XCTAssertTrue(action.touchesPlayback, "\(action)")
+            XCTAssertTrue(requiresOutputLock(action), "\(action)")
+            XCTAssertEqual(action.surfaces, [.cli], "\(action)")
+        }
+        XCTAssertFalse(requiresOutputLock(.searchLibrary), "a read takes no lock")
     }
 
     /// Music.app mode is untouched by the surface (binding rule 1): an install
