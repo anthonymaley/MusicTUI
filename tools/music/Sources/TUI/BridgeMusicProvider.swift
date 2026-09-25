@@ -204,7 +204,7 @@ struct BridgeMusicProvider: MusicDataProvider {
             // field is.
             return .unavailable(what)
         case .unreadable:
-            return .unavailable("Bridge sent a library page this build cannot read")
+            return .unavailable("Bridge sent a reply this build cannot read")
         case .unsupported(let op):
             // D6: an OLDER Bridge that predates this op. Additive, not a
             // contract mismatch — the op name (the wire string `send` carried
