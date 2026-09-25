@@ -240,16 +240,32 @@ music play --song "Idioteque" --artist "Radiohead"
 music search --library "Idioteque"             # then: music play N
 ```
 
-The CLI plays from Bridge's own library through those explicit forms. Plain
-`music play <words>` (the fast path above), catalog playback, radio playback,
-shuffle/repeat mode, volume, and speaker routing all refuse with Bridge
-selected — there's no fast-path parsing, catalog fallback, or AirPlay routing
-from the CLI on Bridge yet. Use the flags above, use MusicTUI, or switch
-Output back to Music.app. Search, Discover, history, and playlist listings
-keep working on their existing backend either way, but a numbered result only
-plays back on the source that produced it: search Bridge's own library with
-`music search --library` before `music play N` if Bridge is selected. The
-`/music` skill reference has the full command-by-command breakdown.
+The CLI plays from Bridge's own library through those explicit forms. Bridge
+also serves catalog search, song links, radio search/add/play, discover,
+playlist listings, `similar`, `recent`, and `rotation` directly — no
+developer key needed for any of them:
+
+```bash
+music search "Idioteque"                       # catalog: songs and albums only
+music play "https://music.apple.com/...?i=1440830346"
+music radio play "apple music 1"               # exact name or one unambiguous hit only
+music playlist tracks "Top 25 Most Played"
+```
+
+Plain `music play <words>` (the fast path above), non-song Apple Music links,
+shuffle/repeat mode, volume, speaker routing, `playlist temp`, `suggest`, and
+`new-releases` all still refuse with Bridge selected — there's no fast-path
+parsing, no AirPlay routing from the CLI on Bridge yet, and no Bridge op for
+suggestions or new releases. Use the flags above, use MusicTUI, or switch
+Output back to Music.app. A numbered result only plays back on the source and
+namespace that produced it — a Music.app-mode listing doesn't feed Bridge's
+`music play N`, and a Bridge row (library or catalog) doesn't feed Music.app's
+`play N` either — and a Bridge catalog or library row can't yet feed `add N`
+or a playlist write. Library plays Bridge finishes are recorded in Music.app's
+play count via `music sync-plays`, and so are catalog and Discover plays, but
+only when the song has exactly one copy in your library; radio station plays
+are never counted. The `/music` skill reference has the full command-by-command
+breakdown.
 
 ## CLI Commands
 
@@ -407,7 +423,7 @@ Run bare `music` in a real terminal (not inside Claude Code; the TUI requires a 
 
 | Key | Action |
 |-----|--------|
-| `1`/`2`/`3`/`4`/`5`/`6` | Jump to Now / Discover / Library / Playlists / Radio / Speakers tab |
+| `1`/`2`/`3`/`4`/`5`/`6` | Jump to Now / Discover / Library / Playlists / Radio / Output tab |
 | `j`/`k`/`h`/`l` | Vim aliases for ↓ ↑ ← → (`l`/`g`/`G` stay love/Genius on Now) |
 | `g`/`G`, `ctrl-d`/`ctrl-u` | Top / bottom, half-page jumps in list tabs |
 | `Tab` / `Shift-Tab` | Cycle tabs forward / backward |
@@ -441,7 +457,7 @@ Under the track progress is a **control grid** (Shuffle / Order / Repeat / Geniu
 
 ![Playlist Browser](media/playlist.jpg)
 
-**Speakers tab.** `↑↓` select, `Enter` toggles AirPlay outputs on/off, `←→` adjusts per-speaker volume. Active speakers show volume bars. Toggling a speaker on while playing verifies the route; if it couldn't be verified, it toasts (e.g. `'X' selected but route NOT verified`) and names the fix: `music speaker wake`. Below the outputs: an **EQ block** (power row + preset picker; `Enter` toggles/expands, `e` toggles from anywhere) and a **Visualizer** row (`Enter` or `v` toggles Music's on-screen visuals). (The `music speaker`, `music eq`, and `music visualizer` CLIs drive these non-interactively.)
+**Output tab.** `↑↓` select, `Enter` toggles AirPlay outputs on/off, `←→` adjusts per-speaker volume. Active speakers show volume bars. Toggling a speaker on while playing verifies the route; if it couldn't be verified, it toasts (e.g. `'X' selected but route NOT verified`) and names the fix: `music speaker wake`. Below the outputs: an **EQ block** (power row + preset picker; `Enter` toggles/expands, `e` toggles from anywhere) and a **Visualizer** row (`Enter` or `v` toggles Music's on-screen visuals). (The `music speaker`, `music eq`, and `music visualizer` CLIs drive these non-interactively.)
 
 ![Speaker Picker](media/speakers.png)
 
