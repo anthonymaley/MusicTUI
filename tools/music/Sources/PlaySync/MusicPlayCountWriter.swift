@@ -42,6 +42,7 @@ enum MusicAccessSentence {
     static let notRunning = "not running"
     static let timedOut = "timed out"
     static let noMatch = "no match"
+    static let libraryNotLoaded = "Music.app's library hasn't finished loading"
     static let changed = "changed"
     static let invalidPersistentID = "invalid persistent ID"
     static let unexpectedResult = "unexpected scripting result"

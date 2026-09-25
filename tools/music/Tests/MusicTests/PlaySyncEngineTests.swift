@@ -59,6 +59,8 @@ private final class FakeFeed: CompletedPlaysReading {
     /// Replaces the normal answer entirely.
     var override: ((String?, Int, Int) throws -> CompletedPlaysPage)?
     private(set) var requests: [FeedRequest] = []
+    /// Runs once, at the start of the very first request.
+    var beforeFetch: (() -> Void)?
 
     init(ledgerID: String = "L1") { self.ledgerID = ledgerID }
 
@@ -78,6 +80,7 @@ private final class FakeFeed: CompletedPlaysReading {
     }
 
     func completedPlays(ledgerID requested: String?, after: Int, limit: Int) throws -> CompletedPlaysPage {
+        if requests.isEmpty { beforeFetch?() }
         let index = requests.count
         requests.append(FeedRequest(ledgerID: requested, after: after, limit: limit))
         if let error = errors[index] { throw error }
@@ -1074,6 +1077,20 @@ final class PlaySyncEngineTests: XCTestCase {
         XCTAssertEqual(result.newProblems, [])
     }
 
+    /// An empty library is not a silent `.stop`: the pass says why the play is
+    /// still waiting, instead of falling through to "Nothing new to record."
+    func testEmptyLibraryNotesTheLibraryNotLoadedAccessFailure() {
+        h.writer.library = [:]
+        h.writer.libraryTrackCount = 0
+        h.feed.add(Song.awakeAlias, "Are You Awake?", at: At.first)
+
+        let result = h.pass()
+
+        XCTAssertEqual(result.musicAccess, .failed(MusicAccessSentence.libraryNotLoaded))
+        XCTAssertEqual(result.waiting, 1)
+        XCTAssertEqual(h.journal().entries.map(\.state), [.pending])
+    }
+
     func testReadFailureOnAPendingPlayStopsTheApply() {
         h.feed.add(Song.awakeAlias, "Are You Awake?", at: At.first)
         h.feed.add(Song.donorAlias, "Organ Donor", at: At.second)
@@ -1383,13 +1400,30 @@ final class PlaySyncEngineTests: XCTestCase {
         chmod(directory, 0o700)
         h.writer.beforeRead = nil
 
-        XCTAssertEqual(result.blocked, .journalUnreadable(path: h.paths.journal.path))
+        XCTAssertEqual(result.blocked, .journalNotSaved(path: h.paths.journal.path))
         XCTAssertEqual(h.writer.setCalls, [])
         XCTAssertEqual(h.entry(1)?.state, .pending, "the page was saved; the plan was not")
 
         h.pass()
         XCTAssertEqual(h.entry(1)?.state, .done)
         XCTAssertEqual(h.writer.library[Song.awake], state(28, At.first))
+    }
+
+    /// C5's exact shape: the save that fails is the per-page save inside
+    /// `fetchPages`, before `fetchStatus` is ever assigned. A heuristic based
+    /// on `fetch`/`musicRunning` would misread this as "could not be read".
+    func testJournalThatCannotBeSavedDuringTheFirstFetchIsAlsoNotSaved() {
+        h.feed.add(Song.awakeAlias, "Are You Awake?", at: At.first)
+        let directory = h.paths.directory.path
+        h.feed.beforeFetch = { chmod(directory, 0o500) }
+
+        let result = h.pass()
+        chmod(directory, 0o700)
+        h.feed.beforeFetch = nil
+
+        XCTAssertEqual(result.blocked, .journalNotSaved(path: h.paths.journal.path))
+        XCTAssertEqual(result.fetch, .skipped)
+        XCTAssertEqual(h.writer.calls, [])
     }
 
     func testAnUnchangedJournalIsNotRewritten() throws {

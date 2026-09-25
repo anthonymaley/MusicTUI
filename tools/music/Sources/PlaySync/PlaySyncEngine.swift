@@ -169,7 +169,7 @@ private final class PassRun {
         } catch {
             // The journal could not be saved. Nothing further was attempted:
             // no set call is ever made without its `writing` entry on disk.
-            var result = PlaySyncResult.passBlocked(.journalUnreadable(path: engine.paths.journal.path))
+            var result = PlaySyncResult.passBlocked(.journalNotSaved(path: engine.paths.journal.path))
             result.fetch = fetchStatus
             result.musicRunning = musicRunning
             result.recorded = recorded
@@ -365,6 +365,7 @@ private final class PassRun {
             }
             switch lookup {
             case .notFound(libraryTrackCount: 0):
+                noteAccessFailure(MusicAccessError.failed(MusicAccessSentence.libraryNotLoaded))
                 return .stop   // the library is not loaded yet
             case .notFound:
                 try conclude(index, .unmatched, reason: "not_found")
@@ -503,7 +504,10 @@ private final class PassRun {
         }
         guard case .found(let current) = lookup else {
             // No observation of the track: nothing is released.
-            if case .notFound(libraryTrackCount: 0) = lookup { return .stop }
+            if case .notFound(libraryTrackCount: 0) = lookup {
+                noteAccessFailure(MusicAccessError.failed(MusicAccessSentence.libraryNotLoaded))
+                return .stop
+            }
             return .next
         }
 

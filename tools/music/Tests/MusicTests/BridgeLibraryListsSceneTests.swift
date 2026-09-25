@@ -269,10 +269,19 @@ final class BridgeLibraryListsSceneTests: XCTestCase {
     func testASongsWalkFlippedMidWalkNeverShowsABridgeRowAfterTheReset() {
         let page1 = """
         {"ok":true,"op":"slice.librarySongs","generation":3,"total":2,
-         "items":[{"id":"s1","title":"Nude","artist":"Radiohead","album":"In Rainbows","kind":"song"}],
+         "items":[{"id":"s1","title":"Weird Fishes","artist":"Radiohead","album":"In Rainbows","kind":"song"}],
          "next_cursor":"c1"}
         """
-        let wire = BridgeLibraryReadsWire(["slice.librarySongs": [page1]])
+        // A genuine second page (not "unscripted"), so accepting it after the
+        // reset would be visibly wrong — a bad_request from an exhausted
+        // script would fail the walk anyway and prove nothing (same reasoning
+        // as the Albums sibling below).
+        let page2 = """
+        {"ok":true,"op":"slice.librarySongs","generation":3,"total":2,
+         "items":[{"id":"s2","title":"Nude","artist":"Radiohead","album":"In Rainbows","kind":"song"}],
+         "next_cursor":null}
+        """
+        let wire = BridgeLibraryReadsWire(["slice.librarySongs": [page1, page2]])
         wire.gate(op: "slice.librarySongs", at: 1)
         let spy = LibraryAppleScriptSpy()
         let flag = BridgeSelectedFlag(true)
@@ -284,8 +293,12 @@ final class BridgeLibraryListsSceneTests: XCTestCase {
         flag.selected = false   // flip away from Bridge while page 2 is in flight
         XCTAssertTrue(settleScene(s) { s.songsForTest.isEmpty }, "the provenance reset never cleared the list")
         wire.release(op: "slice.librarySongs", at: 1)
-        // Give the abandoned walk a moment to try to land its second page.
+        // Give the abandoned walk a moment to try to land its second page,
+        // THEN drain — `render` alone never calls `tick`, so without this the
+        // test would pass vacuously regardless of whether the epoch guard
+        // held.
         Thread.sleep(forTimeInterval: 0.2)
+        for _ in 0..<10 { _ = s.tick(snapshot: idle) }
         let out = s.render(frame: frame, snapshot: idle)
         XCTAssertFalse(out.contains("Nude"), "a Bridge row landed after the list had reset to Music.app: \(out)")
     }

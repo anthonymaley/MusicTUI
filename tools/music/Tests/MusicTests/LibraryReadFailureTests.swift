@@ -84,7 +84,7 @@ final class LibraryReadFailureTests: XCTestCase {
                                          onArtists: { _ in true },
                                          onAlbumTracks: { _, _ in [] }, onArtistAlbums: { _ in [] },
                                          onAlbumCover: { _ in nil })
-        return LibraryScene(backend: AppleScriptBackend(), routing: routing,
+        return LibraryScene(backend: AppleScriptBackend(executable: "/usr/bin/true"), routing: routing,
                             sources: sources, appQueue: AppQueueStore(),
                             status: status, actions: ActionRunner(status: status),
                             resolveAlbum: { _, _, _ in resolved },

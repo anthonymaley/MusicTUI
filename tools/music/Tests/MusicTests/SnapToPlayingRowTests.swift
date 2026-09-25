@@ -68,7 +68,7 @@ final class SnapToPlayingRowTests: XCTestCase {
 
     private func libraryScene(_ songs: [(String, String)]) -> LibraryScene {
         let status = StatusStore()
-        return LibraryScene(backend: AppleScriptBackend(), routing: routing(),
+        return LibraryScene(backend: AppleScriptBackend(executable: "/usr/bin/true"), routing: routing(),
                             sources: librarySongs(songs), appQueue: AppQueueStore(),
                             status: status, actions: ActionRunner(status: status),
                             // Never the real ~/.config/music/artist-tiers.json (C2 isolation).

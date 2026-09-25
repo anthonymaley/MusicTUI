@@ -13,7 +13,7 @@ final class BridgeReadinessTests: XCTestCase {
 
     private func scene(reply: @escaping (String, String) throws -> String) -> SpeakersScene {
         let store = PlaybackModeStore(path: NSTemporaryDirectory() + "mode-\(UUID().uuidString).json")
-        return SpeakersScene(backend: AppleScriptBackend(),
+        return SpeakersScene(backend: AppleScriptBackend(executable: "/usr/bin/true"),
                              status: StatusStore(),
                              actions: ActionRunner(status: StatusStore()),
                              routing: RoutingCoordinator(store: store, surface: .tui,
@@ -190,7 +190,7 @@ final class BridgeReadinessTests: XCTestCase {
         let client = { SourceAppClient(path: "/nonexistent", transport: { _, _ in
             #"{"ok":true,"op":"slice.status","status":{"playback":"idle","contract":3,"authorization":"denied"}}"#
         }) }
-        let scene = SpeakersScene(backend: AppleScriptBackend(),
+        let scene = SpeakersScene(backend: AppleScriptBackend(executable: "/usr/bin/true"),
                                   status: StatusStore(),
                                   actions: ActionRunner(status: StatusStore()),
                                   routing: RoutingCoordinator(store: store, surface: .tui,

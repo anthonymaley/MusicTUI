@@ -66,7 +66,7 @@ private func makeUserAPI() throws -> RESTAPIBackend {
 /// Print a history response. Items can be mixed resource types (songs,
 /// albums, playlists, stations); song-shaped items go into the ResultCache so
 /// index chaining works, others are listed with their type.
-private func printHistorySongs(data: Data, label: String, json: Bool) throws {
+func printHistorySongs(data: Data, label: String, json: Bool, cache: ResultCache = ResultCache()) throws {
     let parsed = try JSONSerialization.jsonObject(with: data) as? [String: Any]
     let items = parsed?["data"] as? [[String: Any]] ?? []
     guard !items.isEmpty else {
@@ -84,10 +84,12 @@ private func printHistorySongs(data: Data, label: String, json: Bool) throws {
         let artist = attrs["artistName"] as? String ?? ""
         let album = attrs["albumName"] as? String ?? ""
         let isSong = type.contains("song")
-        let catalogId = (attrs["playParams"] as? [String: Any])?["catalogId"] as? String
-            ?? (isSong ? (item["id"] as? String ?? "") : "")
+        let playParamsCatalogId = (attrs["playParams"] as? [String: Any])?["catalogId"] as? String
+        let isLibraryType = type.hasPrefix("library-")   // same signal `kind` below already uses
+        let origin: SongOrigin = (playParamsCatalogId == nil && isLibraryType) ? .library : .catalog
+        let catalogId = playParamsCatalogId ?? (isSong ? (item["id"] as? String ?? "") : "")
         if isSong {
-            cacheable.append(SongResult(index: cacheable.count + 1, title: name, artist: artist, album: album, catalogId: catalogId))
+            cacheable.append(SongResult(index: cacheable.count + 1, title: name, artist: artist, album: album, catalogId: catalogId, origin: origin))
             lines.append("\(cacheable.count). \(name) — \(artist)\(album.isEmpty ? "" : " [\(album)]")")
         } else {
             let kind = type.replacingOccurrences(of: "library-", with: "").replacingOccurrences(of: "s", with: "", options: [.anchored, .backwards])
@@ -95,7 +97,7 @@ private func printHistorySongs(data: Data, label: String, json: Bool) throws {
         }
         dicts.append(["type": type, "name": name, "artist": artist, "album": album])
     }
-    if !cacheable.isEmpty { try? ResultCache().writeSongs(cacheable) }
+    if !cacheable.isEmpty { try? cache.writeSongs(cacheable) }
 
     if json {
         let output = OutputFormat(mode: .json)
