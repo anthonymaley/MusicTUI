@@ -269,10 +269,19 @@ final class BridgeLibraryListsSceneTests: XCTestCase {
     func testASongsWalkFlippedMidWalkNeverShowsABridgeRowAfterTheReset() {
         let page1 = """
         {"ok":true,"op":"slice.librarySongs","generation":3,"total":2,
-         "items":[{"id":"s1","title":"Nude","artist":"Radiohead","album":"In Rainbows","kind":"song"}],
+         "items":[{"id":"s1","title":"Weird Fishes","artist":"Radiohead","album":"In Rainbows","kind":"song"}],
          "next_cursor":"c1"}
         """
-        let wire = BridgeLibraryReadsWire(["slice.librarySongs": [page1]])
+        // A genuine second page (not "unscripted"), so accepting it after the
+        // reset would be visibly wrong — a bad_request from an exhausted
+        // script would fail the walk anyway and prove nothing (same reasoning
+        // as the Albums sibling below).
+        let page2 = """
+        {"ok":true,"op":"slice.librarySongs","generation":3,"total":2,
+         "items":[{"id":"s2","title":"Nude","artist":"Radiohead","album":"In Rainbows","kind":"song"}],
+         "next_cursor":null}
+        """
+        let wire = BridgeLibraryReadsWire(["slice.librarySongs": [page1, page2]])
         wire.gate(op: "slice.librarySongs", at: 1)
         let spy = LibraryAppleScriptSpy()
         let flag = BridgeSelectedFlag(true)
