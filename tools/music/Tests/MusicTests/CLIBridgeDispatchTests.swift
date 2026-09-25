@@ -111,12 +111,12 @@ final class CLIBridgeDispatchTests: XCTestCase {
         let env = CLIBridgeEnv.test(mode: .source, wire: wire, io: io)
         var ran = false
         let (_, calls) = try withTripwire { () throws -> Void in
-            XCTAssertThrowsError(try cliDispatch(.playPause, json: json, env: env,
+            XCTAssertThrowsError(try cliDispatch(.persistentShuffleMode, json: json, env: env,
                                                  musicApp: { ran = true }, bridge: { _ in ran = true })) {
                 XCTAssertEqual($0 as? ExitCode, .failure)
             }
         }
-        let shipped = captureStdout { try refuseInBridge(.playPause, json: json, mode: .source) }
+        let shipped = captureStdout { try refuseInBridge(.persistentShuffleMode, json: json, mode: .source) }
         XCTAssertEqual(shipped.error as? ExitCode, .failure)
         XCTAssertFalse(shipped.output.isEmpty)
         XCTAssertEqual(io.stdoutBytes, shipped.output, "json: \(json)")
@@ -140,7 +140,7 @@ final class CLIBridgeDispatchTests: XCTestCase {
         let wire = BridgeLibraryReadsWire(["slice.status": [CLIBridgeReplies.status()],
                                            "slice.next": [CLIBridgeReplies.ok]])
         let io = CLIBridgeTestIO()
-        let env = CLIBridgeEnv.test(mode: .source, wire: wire, io: io, surface: .tui)
+        let env = CLIBridgeEnv.test(mode: .source, wire: wire, io: io)
         let lockPath = env.routing.outputLock!.path
         var held: Bool?
         try cliDispatch(.next, json: false, env: env, musicApp: { XCTFail("Music.app ran on Bridge") },
@@ -160,7 +160,7 @@ final class CLIBridgeDispatchTests: XCTestCase {
         for json in [false, true] {
             let wire = BridgeLibraryReadsWire(["slice.status": [CLIBridgeReplies.status(authorization: "denied")]])
             let io = CLIBridgeTestIO()
-            let env = CLIBridgeEnv.test(mode: .source, wire: wire, io: io, surface: .tui)
+            let env = CLIBridgeEnv.test(mode: .source, wire: wire, io: io)
             var bridgeRan = false
             XCTAssertThrowsError(try cliDispatch(.next, json: json, env: env, musicApp: {},
                                                  bridge: { _ in bridgeRan = true })) {
@@ -192,7 +192,7 @@ final class CLIBridgeDispatchTests: XCTestCase {
             let wire = BridgeLibraryReadsWire(["slice.status": [CLIBridgeReplies.status()],
                                                "slice.next": [CLIBridgeReplies.refused("Nothing is queued")]])
             let io = CLIBridgeTestIO()
-            let env = CLIBridgeEnv.test(mode: .source, wire: wire, io: io, surface: .tui)
+            let env = CLIBridgeEnv.test(mode: .source, wire: wire, io: io)
             XCTAssertThrowsError(try cliDispatch(.next, json: json, env: env, musicApp: {},
                                                  bridge: { try $0.mutate { try $0.next() } })) {
                 XCTAssertEqual($0 as? ExitCode, .failure)
@@ -212,7 +212,7 @@ final class CLIBridgeDispatchTests: XCTestCase {
     func testAnExitCodeFromTheBridgeBodyPassesThroughUnprinted() {
         let wire = BridgeLibraryReadsWire(["slice.status": [CLIBridgeReplies.status()]])
         let io = CLIBridgeTestIO()
-        let env = CLIBridgeEnv.test(mode: .source, wire: wire, io: io, surface: .tui)
+        let env = CLIBridgeEnv.test(mode: .source, wire: wire, io: io)
         XCTAssertThrowsError(try cliDispatch(.playPause, json: false, env: env, musicApp: {},
                                              bridge: { _ in env.out("Bridge is still playing."); throw ExitCode.failure })) {
             XCTAssertEqual($0 as? ExitCode, .failure)
@@ -226,7 +226,7 @@ final class CLIBridgeDispatchTests: XCTestCase {
         let wire = BridgeLibraryReadsWire(["slice.status": [CLIBridgeReplies.status()],
                                            "slice.next": [CLIBridgeReplies.warming(retryAfter: 2), CLIBridgeReplies.ok]])
         let io = CLIBridgeTestIO()
-        let env = CLIBridgeEnv.test(mode: .source, wire: wire, io: io, surface: .tui)
+        let env = CLIBridgeEnv.test(mode: .source, wire: wire, io: io)
         let lockPath = env.routing.outputLock!.path
         var freeWhileSleeping: [Bool] = []
         io.onSleep = { _ in freeWhileSleeping.append(S.isFree(lockPath)) }
@@ -245,7 +245,7 @@ final class CLIBridgeDispatchTests: XCTestCase {
         let wire = BridgeLibraryReadsWire(["slice.status": [CLIBridgeReplies.status()],
                                            "slice.next": [CLIBridgeReplies.warming(retryAfter: 1), CLIBridgeReplies.ok]])
         let io = CLIBridgeTestIO()
-        let env = CLIBridgeEnv.test(mode: .source, wire: wire, io: io, surface: .tui)
+        let env = CLIBridgeEnv.test(mode: .source, wire: wire, io: io)
         // Another process switches Output while this command waits out the warm-up.
         io.onSleep = { _ in PlaybackModeStore(path: env.testDirectory + "/mode.json").set(.musicApp) }
         XCTAssertThrowsError(try cliDispatch(.next, json: false, env: env, musicApp: {},
@@ -262,7 +262,7 @@ final class CLIBridgeDispatchTests: XCTestCase {
         let warm = Array(repeating: CLIBridgeReplies.warming(retryAfter: 30), count: 20)
         let wire = BridgeLibraryReadsWire(["slice.status": [CLIBridgeReplies.status()], "slice.next": warm])
         let io = CLIBridgeTestIO()
-        let env = CLIBridgeEnv.test(mode: .source, wire: wire, io: io, surface: .tui)
+        let env = CLIBridgeEnv.test(mode: .source, wire: wire, io: io)
         XCTAssertThrowsError(try cliDispatch(.next, json: false, env: env, musicApp: {},
                                              bridge: { try $0.mutate { try $0.next() } }))
         XCTAssertEqual(io.sleeps.reduce(0, +), LibraryWarmUp.maxTotalWait, accuracy: 0.0001)
@@ -275,6 +275,7 @@ final class CLIBridgeDispatchTests: XCTestCase {
                                                             CLIBridgeReplies.warming(retryAfter: 1)],
                                            "slice.queue": [#"{"ok":true,"skipped_unavailable":0}"#]])
         let io = CLIBridgeTestIO()
+        // `.tui`: the CLI still refuses `.cliPlaySong` until S7 dispatches it.
         let env = CLIBridgeEnv.test(mode: .source, wire: wire, io: io, surface: .tui)
         var statusError: Error?
         XCTAssertNoThrow(try cliDispatch(.cliPlaySong, json: false, env: env, musicApp: {}, bridge: { session in
@@ -303,7 +304,7 @@ final class CLIBridgeDispatchTests: XCTestCase {
         let io = CLIBridgeTestIO()
         let latch = OutputLockLatch()
         let cliWaiting = DispatchSemaphore(value: 0)
-        let env = CLIBridgeEnv.test(mode: from, wire: wire, io: io, surface: from == .source ? .tui : .cli,
+        let env = CLIBridgeEnv.test(mode: from, wire: wire, io: io, surface: .cli,
                                     outputLock: { S.latchedLock(path: $0, latch: latch, onWaiting: { cliWaiting.signal() }) })
         return Race(env: env, io: io, wire: wire, latch: latch, cliWaiting: cliWaiting)
     }
@@ -433,7 +434,7 @@ final class CLIBridgeDispatchTests: XCTestCase {
 
     func testABodyThatThrowsInsideMutateLeavesTheLockFree() {
         let wire = BridgeLibraryReadsWire(["slice.status": [CLIBridgeReplies.status()]])
-        let env = CLIBridgeEnv.test(mode: .source, wire: wire, surface: .tui)
+        let env = CLIBridgeEnv.test(mode: .source, wire: wire)
         XCTAssertThrowsError(try cliDispatch(.next, json: false, env: env, musicApp: {},
                                              bridge: { try $0.mutate { _ in throw ActionError(message: "thrown inside") } }))
         XCTAssertTrue(S.isFree(env.routing.outputLock!.path))
@@ -480,7 +481,7 @@ extension CLIBridgeEnv {
         try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
         let store = PlaybackModeStore(path: dir + "/mode.json")
         store.set(mode)
-        let routing = RoutingCoordinator(store: store, surface: .tui,
+        let routing = RoutingCoordinator(store: store, surface: .cli,
                                          makeSource: { SourceAppClient(path: "/nonexistent", transport: transport) },
                                          outputLock: OutputLock(path: store.lockPath))
         self.init(routing: routing, modeStore: store, cache: ResultCache(directory: dir + "/cache"),

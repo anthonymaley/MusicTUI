@@ -29,41 +29,53 @@ struct RadioPlay: ParsableCommand {
     @Argument(help: "Favorite name, search term, or station URL") var query: [String]
 
     func run() throws {
-        try refuseInBridge(.radioStationPlay)   // plays via `open music://`, not AppleScript
-        let input = query.joined(separator: " ").trimmingCharacters(in: .whitespaces)
-        guard !input.isEmpty else { throw ValidationError("Name or URL required.") }
+        try runRadioPlay(query: query, env: .live())
+    }
+}
 
-        if ["http://", "https://", "music://"].contains(where: { input.hasPrefix($0) }) {
-            guard let p = parseStationURL(input), stationPlayURL(input) != nil else {
-                throw ValidationError("Not an Apple Music station URL.")
-            }
-            let s = Station(id: p.id, name: displayNameFromSlug(p.slug), url: input,
-                            isLive: nil, artworkURL: nil)
-            try playStation(s, via: SystemOpener())
-            print("▶ \(s.name)")
-            return
-        }
+/// Slice 3 S6: dispatches with Bridge refused from the CLI (D7), so in
+/// Music.app mode the shipped body (it plays via `open music://`, not
+/// AppleScript) runs inside the output lock.
+func runRadioPlay(query: [String], env: CLIBridgeEnv,
+                  musicApp: ([String]) throws -> Void = radioPlayViaMusicApp) throws {
+    try cliDispatch(.radioStationPlay, json: false, env: env, musicApp: { try musicApp(query) },
+                    bridge: cliBridgeNotServed(.radioStationPlay))
+}
 
-        // Favorites first — no network, no token.
-        if let hit = StationStore().favorites().first(where: {
-            $0.name.localizedCaseInsensitiveContains(input)
-        }) {
-            try playStation(hit, via: SystemOpener())
-            print("▶ \(hit.name)")
-            return
-        }
+func radioPlayViaMusicApp(query: [String]) throws {
+    let input = query.joined(separator: " ").trimmingCharacters(in: .whitespaces)
+    guard !input.isEmpty else { throw ValidationError("Name or URL required.") }
 
-        guard let catalog = makeCatalog() else {
-            errorOut("✗ No match in favorites, and search needs auth (music auth setup).")
-            return
+    if ["http://", "https://", "music://"].contains(where: { input.hasPrefix($0) }) {
+        guard let p = parseStationURL(input), stationPlayURL(input) != nil else {
+            throw ValidationError("Not an Apple Music station URL.")
         }
-        guard let hit = try catalog.search(term: input).first else {
-            errorOut("✗ No station found for “\(input)”. Try pasting the station URL.")
-            return
-        }
+        let s = Station(id: p.id, name: displayNameFromSlug(p.slug), url: input,
+                        isLive: nil, artworkURL: nil)
+        try playStation(s, via: SystemOpener())
+        print("▶ \(s.name)")
+        return
+    }
+
+    // Favorites first — no network, no token.
+    if let hit = StationStore().favorites().first(where: {
+        $0.name.localizedCaseInsensitiveContains(input)
+    }) {
         try playStation(hit, via: SystemOpener())
         print("▶ \(hit.name)")
+        return
     }
+
+    guard let catalog = makeCatalog() else {
+        errorOut("✗ No match in favorites, and search needs auth (music auth setup).")
+        return
+    }
+    guard let hit = try catalog.search(term: input).first else {
+        errorOut("✗ No station found for “\(input)”. Try pasting the station URL.")
+        return
+    }
+    try playStation(hit, via: SystemOpener())
+    print("▶ \(hit.name)")
 }
 
 struct RadioAdd: ParsableCommand {

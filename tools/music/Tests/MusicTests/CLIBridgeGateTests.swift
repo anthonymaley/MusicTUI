@@ -9,15 +9,39 @@ final class CLIBridgeGateTests: XCTestCase {
 
     // MARK: - The decision
 
-    func testPlaybackVerbsRefuseWithTheRulingsWordsOnBridge() {
-        let verbs: [MusicTUIAction] = [.cliPlayResume, .playPause, .next, .previous, .stop, .seek,
-                                       .persistentShuffleMode, .persistentRepeatMode,
+    /// Slice 3 D7: the playback verbs Bridge does not serve from the CLI yet
+    /// refuse in their not-served words.
+    func testUnservedPlaybackVerbsRefuseWithTheirD7WordsOnBridge() {
+        let verbs: [MusicTUIAction] = [.cliPlayResume, .persistentShuffleMode, .persistentRepeatMode,
                                        .radioStationPlay, .playlistTemp]
         for action in verbs {
-            XCTAssertEqual(cliBridgeRefusal(action, mode: .source), cliPlaybackDeferredInV1, "\(action)")
-            XCTAssertEqual(cliBridgeRefusal(action, mode: .source),
-                           "Bridge output is selected, but CLI playback is not supported in v1. Use MusicTUI or switch Output to Music.app.")
+            XCTAssertEqual(cliBridgeRefusal(action, mode: .source), cliBridgeNotServedReason(action), "\(action)")
         }
+        XCTAssertEqual(cliBridgeRefusal(.cliPlayResume, mode: .source),
+                       "Bridge output is selected, and music play isn't available from the CLI on Bridge yet. Use MusicTUI, or switch Output to Music.app.")
+    }
+
+    /// A dispatched verb is not gated. If one ever were, "go ahead as it
+    /// ships" would run Music.app with Bridge selected: a silent fallback. The
+    /// gate fails closed instead.
+    func testTheGateFailsClosedOnADispatchedAction() {
+        for action in cliDispatchedOnBridge {
+            XCTAssertEqual(cliBridgeRefusal(action, mode: .source), cliGateOnDispatchedAction, "\(action)")
+            XCTAssertNil(cliBridgeRefusal(action, mode: .musicApp), "\(action)")
+        }
+    }
+
+    /// One failure formatter for the gate and the dispatcher (S6 unified S5's copy).
+    func testRefuseInBridgePrintsTheSharedFailureText() {
+        for json in [false, true] {
+            let shipped = captureStdout { try refuseInBridge(.playlistTemp, json: json, mode: .source) }
+            XCTAssertEqual(shipped.output,
+                           cliFailureText(cliBridgeNotServedReason(.playlistTemp), json: json) + "\n")
+        }
+        XCTAssertEqual(cliFailureText("x", json: false), "x")
+        let doc = try? JSONSerialization.jsonObject(with: Data(cliFailureText("x", json: true).utf8)) as? [String: Any]
+        XCTAssertEqual(doc?["ok"] as? Bool, false)
+        XCTAssertEqual(doc?["error"] as? String, "x")
     }
 
     func testCurrentTrackVerbsRefuseWithTheirOwnReasonOnBridge() {
@@ -77,11 +101,7 @@ final class CLIBridgeGateTests: XCTestCase {
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
             .appendingPathComponent("Sources/Commands")
         let gated: [(file: String, command: String)] = [
-            ("PlaybackCommands.swift", "Play"), ("PlaybackCommands.swift", "Pause"),
-            ("PlaybackCommands.swift", "Skip"), ("PlaybackCommands.swift", "Back"),
-            ("PlaybackCommands.swift", "Stop"), ("PlaybackCommands.swift", "Seek"),
-            ("PlaybackCommands.swift", "Shuffle"), ("PlaybackCommands.swift", "Repeat_"),
-            ("RadioCommands.swift", "RadioPlay"), ("PlaylistCommands.swift", "PlaylistTemp"),
+            ("PlaybackCommands.swift", "Play"),
             ("DiscoveryCommands.swift", "Similar"), ("DiscoveryCommands.swift", "Suggest"),
             ("DiscoveryCommands.swift", "NewReleases"), ("LoveCommands.swift", "Love"),
             ("LoveCommands.swift", "Unlove"), ("RemoveCommand.swift", "Remove"),
@@ -89,12 +109,64 @@ final class CLIBridgeGateTests: XCTestCase {
         ]
         for (file, command) in gated {
             let source = try String(contentsOf: commands.appendingPathComponent(file), encoding: .utf8)
-            guard let decl = source.range(of: "struct \(command): ParsableCommand"),
-                  let run = source.range(of: "func run() throws {\n", range: decl.upperBound..<source.endIndex)
+            guard let firstLine = firstLineOfRun(command, in: source)
             else { return XCTFail("\(command) not found in \(file)") }
-            let firstLine = source[run.upperBound...].prefix { $0 != "\n" }
             XCTAssertTrue(firstLine.contains("try refuseInBridge("),
                           "\(command).run() must ask the Bridge gate first; it starts with: \(firstLine)")
         }
+    }
+
+    /// Slice 3 S6: the dispatching verbs. `run()` starts with `try run<Verb>(`
+    /// (`Now` keeps its TTY check first, then calls it), and `run<Verb>`'s
+    /// first statement is `try cliDispatch(`, so no AppleScript, `open` or
+    /// Bridge request can precede the route.
+    func testEveryDispatchingVerbDispatchesBeforeDoingAnything() throws {
+        let commands = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Sources/Commands")
+        let dispatching: [(file: String, command: String, verb: String)] = [
+            ("PlaybackCommands.swift", "Pause", "runPause"), ("PlaybackCommands.swift", "Skip", "runSkip"),
+            ("PlaybackCommands.swift", "Back", "runBack"), ("PlaybackCommands.swift", "Stop", "runStop"),
+            ("PlaybackCommands.swift", "Seek", "runSeek"), ("PlaybackCommands.swift", "Shuffle", "runShuffle"),
+            ("PlaybackCommands.swift", "Repeat_", "runRepeat"), ("RadioCommands.swift", "RadioPlay", "runRadioPlay"),
+            ("PlaylistCommands.swift", "PlaylistTemp", "runPlaylistTemp"),
+        ]
+        for (file, command, verb) in dispatching {
+            let source = try String(contentsOf: commands.appendingPathComponent(file), encoding: .utf8)
+            guard let firstLine = firstLineOfRun(command, in: source)
+            else { return XCTFail("\(command) not found in \(file)") }
+            XCTAssertTrue(firstLine.contains("try \(verb)("),
+                          "\(command).run() must start with try \(verb)(; it starts with: \(firstLine)")
+            XCTAssertEqual(firstStatement(ofFunction: verb, in: source).map { $0.hasPrefix("try cliDispatch(") }, true,
+                           "\(verb) must start with try cliDispatch(")
+        }
+
+        let playback = try String(contentsOf: commands.appendingPathComponent("PlaybackCommands.swift"), encoding: .utf8)
+        guard let decl = playback.range(of: "struct Now: ParsableCommand"),
+              let run = playback.range(of: "func run() throws {\n", range: decl.upperBound..<playback.endIndex),
+              let end = playback.range(of: "\n    }\n", range: run.upperBound..<playback.endIndex)
+        else { return XCTFail("Now not found") }
+        let body = playback[run.upperBound..<end.lowerBound]
+        XCTAssertTrue(body.contains("isTTY()"), "Now keeps its TTY check")
+        XCTAssertTrue(body.contains("try runNow("), "Now dispatches through runNow")
+        XCTAssertLessThan(body.range(of: "isTTY()")!.lowerBound, body.range(of: "try runNow(")!.lowerBound,
+                          "the TTY check comes first")
+        XCTAssertEqual(firstStatement(ofFunction: "runNow", in: playback).map { $0.hasPrefix("try cliDispatch(") }, true)
+    }
+
+    private func firstLineOfRun(_ command: String, in source: String) -> String? {
+        guard let decl = source.range(of: "struct \(command): ParsableCommand"),
+              let run = source.range(of: "func run() throws {\n", range: decl.upperBound..<source.endIndex)
+        else { return nil }
+        return String(source[run.upperBound...].prefix { $0 != "\n" })
+    }
+
+    /// The first statement of top-level `func <name>(`, trimmed.
+    private func firstStatement(ofFunction name: String, in source: String) -> String? {
+        guard let decl = source.range(of: "\nfunc \(name)("),
+              let open = source.range(of: "{\n", range: decl.upperBound..<source.endIndex)
+        else { return nil }
+        return String(source[open.upperBound...].prefix { $0 != "\n" })
+            .trimmingCharacters(in: .whitespaces)
     }
 }

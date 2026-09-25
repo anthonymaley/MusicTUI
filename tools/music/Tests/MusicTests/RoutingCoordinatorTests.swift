@@ -337,41 +337,46 @@ final class RoutingCoordinatorTests: XCTestCase {
     /// `ActionError(message: ...)`, because ArgumentParser renders a
     /// `LocalizedError` by its description.
     ///
-    /// The subject is `stop`, a playback-changing CLI verb, so this also proves
-    /// ruling 12.14's message reaches a person at the terminal. `volume` was the
-    /// old subject and is no longer refused from the CLI: it does not change
-    /// playback, so 12.13's deferral leaves it exactly as it ships.
+    /// The subject is `persistentShuffleMode` (`music shuffle`), still refused
+    /// from the CLI with Bridge selected, with its TUI-table reason (slice 3
+    /// D7). `stop` was the subject until S6 dispatched it to Bridge.
     func testCLIPrintsARefusalsReason() {
-        let c = coordinator(mode: .source, recorder: Recorder(), surface: .cli)
-        guard case .refused(let reason) = routeAction(.stop, in: .source, from: .cli) else {
-            return XCTFail("a playback-changing CLI verb must refuse in Source Mode")
+        let r = Recorder()
+        let c = coordinator(mode: .source, recorder: r, surface: .cli)
+        guard case .refused(let reason) = routeAction(.persistentShuffleMode, in: .source, from: .cli) else {
+            return XCTFail("shuffle mode must still refuse from the CLI in Source Mode")
         }
-        XCTAssertEqual(reason, cliPlaybackDeferredInV1)
+        XCTAssertEqual(reason, "Shuffle and repeat modes are Music.app only for now")
         do {
-            try c.perform(.stop, musicApp: {}, source: { _ in }, unaffected: {})
+            try c.perform(.persistentShuffleMode, musicApp: { r.append("musicApp") },
+                          source: { _ in r.append("source") }, unaffected: { r.append("unaffected") })
             XCTFail("expected a refusal")
         } catch {
             XCTAssertEqual(Music.message(for: error), reason)
         }
+        XCTAssertEqual(r.log, [], "a refused CLI verb must never fall back")
+        XCTAssertEqual(r.factoryCalls, 0)
     }
 
     /// The coordinator's surface is the process's, so the SAME action through
     /// the same API refuses in a CLI process and is served in a TUI one. This is
-    /// the execution-side half of 12.14; ActionRoutingTests holds the policy half.
+    /// the execution-side half; ActionRoutingTests holds the policy half. The
+    /// subject is `radioStationPlay` (slice 3 S6): `seek` now reaches Bridge
+    /// from both surfaces, and a radio play still does not from the CLI.
     func testTheSameTransportActionSplitsByProcessSurface() throws {
         let tuiLog = Recorder()
         let tui = coordinator(mode: .source, recorder: tuiLog, surface: .tui)
-        try tui.perform(.seek, musicApp: { tuiLog.append("musicApp") },
+        try tui.perform(.radioStationPlay, musicApp: { tuiLog.append("musicApp") },
                         source: { _ in tuiLog.append("source") },
                         unaffected: { tuiLog.append("unaffected") })
-        XCTAssertEqual(tuiLog.log, ["source"], "the TUI's seek must reach Bridge")
+        XCTAssertEqual(tuiLog.log, ["source"], "the TUI's radio play must reach Bridge")
 
         let cliLog = Recorder()
         let cli = coordinator(mode: .source, recorder: cliLog, surface: .cli)
-        XCTAssertThrowsError(try cli.perform(.seek, musicApp: { cliLog.append("musicApp") },
+        XCTAssertThrowsError(try cli.perform(.radioStationPlay, musicApp: { cliLog.append("musicApp") },
                                              source: { _ in cliLog.append("source") },
                                              unaffected: { cliLog.append("unaffected") })) { error in
-            XCTAssertEqual((error as? ActionError)?.message, cliPlaybackDeferredInV1)
+            XCTAssertEqual((error as? ActionError)?.message, cliBridgeNotServedReason(.radioStationPlay))
         }
         XCTAssertEqual(cliLog.log, [], "a refused CLI verb must never fall back")
         XCTAssertEqual(cliLog.factoryCalls, 0, "a refused CLI verb must not build a source client")
