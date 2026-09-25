@@ -309,6 +309,106 @@ final class CompletedPlaysFeedTests: XCTestCase {
         }
     }
 
+    // MARK: - `origin` / `catalog_id` (test-only; the public half of catalogue plays)
+
+    /// A library play as Bridge writes it once every record carries `origin`
+    /// and `catalog_id`: same shape as `play(_:alias:completedAt:)` plus the
+    /// two new keys, always present.
+    private func libraryOriginPlay(_ seq: Int, alias: String = "\"15\"",
+                                   completedAt: String = "2026-09-25T01:36:27.496Z") -> String {
+        """
+        {"seq":\(seq),"play_id":"P-\(seq)","alias":\(alias),"library_id":"i.\(seq)",
+         "title":"T\(seq)","artist":"A","completed_at":"\(completedAt)",
+         "end":"advance","duration_s":100.0,"position_s":99.0,
+         "origin":"library","catalog_id":null}
+        """
+    }
+
+    /// The catalogue play from the spec, verbatim: a track played from search
+    /// results rather than the library, still carrying a `library_id`.
+    private let catalogueSpontaneous = """
+    {"alias":"854956139719541203","artist":"Flying Lotus","catalog_id":"1458871225",
+     "completed_at":"2026-09-25T03:52:34.100Z","duration_s":128.647,"end":"advance",
+     "library_id":"i.qlWqltep4qY5","origin":"catalogue","play_id":"PLAY-C",
+     "position_s":127.82,"seq":2,"title":"Spontaneous (feat. Little Dragon)"}
+    """
+
+    func testALibraryAndACatalogueOriginPlayDecodeToTheSameRecordShapeAsBefore() throws {
+        let reply = page(latest: 2, nextAfter: 2, more: false,
+                         plays: [libraryOriginPlay(1, alias: "\"596357614188841472\""),
+                                 catalogueSpontaneous])
+        let wire = Wire([reply])
+        let result = try control(wire).completedPlays(ledgerID: "L1", after: 0, limit: 200)
+        XCTAssertEqual(result.plays.count, 2)
+
+        // The library play: `origin` and `catalog_id` are read and ignored,
+        // decoding exactly as a record with neither key would.
+        let libraryPlay = result.plays[0]
+        XCTAssertEqual(libraryPlay.seq, 1)
+        XCTAssertEqual(libraryPlay.playID, "P-1")
+        XCTAssertEqual(libraryPlay.alias, "596357614188841472")
+        XCTAssertEqual(libraryPlay.libraryID, "i.1")
+        XCTAssertEqual(libraryPlay.title, "T1")
+        XCTAssertEqual(libraryPlay.artist, "A")
+        XCTAssertEqual(libraryPlay.end, "advance")
+        XCTAssertEqual(libraryPlay.completedAt.timeIntervalSince1970,
+                       utc(2026, 9, 25, 1, 36, 27, millis: 496).timeIntervalSince1970, accuracy: 0.0005)
+
+        // The catalogue play decodes the same way: `origin` and `catalog_id`
+        // are not distinguishing fields on `CompletedPlayRecord`.
+        let cataloguePlay = result.plays[1]
+        XCTAssertEqual(cataloguePlay.seq, 2)
+        XCTAssertEqual(cataloguePlay.playID, "PLAY-C")
+        XCTAssertEqual(cataloguePlay.alias, "854956139719541203")
+        XCTAssertEqual(cataloguePlay.libraryID, "i.qlWqltep4qY5")
+        XCTAssertEqual(cataloguePlay.title, "Spontaneous (feat. Little Dragon)")
+        XCTAssertEqual(cataloguePlay.artist, "Flying Lotus")
+        XCTAssertEqual(cataloguePlay.end, "advance")
+        XCTAssertEqual(cataloguePlay.completedAt.timeIntervalSince1970,
+                       utc(2026, 9, 25, 3, 52, 34, millis: 100).timeIntervalSince1970, accuracy: 0.0005)
+    }
+
+    func testACatalogueOriginPlayWithANullLibraryIDStillFailsTheWholePage() {
+        let noLibraryID = """
+        {"seq":1,"play_id":"PLAY-C","alias":"854956139719541203","library_id":null,
+         "title":"Spontaneous (feat. Little Dragon)","artist":"Flying Lotus",
+         "completed_at":"2026-09-25T03:52:34.100Z","end":"advance","duration_s":128.647,
+         "position_s":127.82,"origin":"catalogue","catalog_id":"1458871225"}
+        """
+        assertMalformed(page(latest: 1, nextAfter: 1, more: false, plays: [noLibraryID]))
+    }
+
+    /// Records that carry `origin`/`catalog_id` are longer, so a real page may
+    /// hold fewer than `limit` plays while still saying there is more. A short
+    /// page with `more: true` must still be followed to the end.
+    func testAShortPageWithOriginKeysAndMoreIsFollowedToTheEnd() throws {
+        let latest = 10
+        func pageOf(_ range: ClosedRange<Int>) -> String {
+            page(latest: latest, nextAfter: range.upperBound, more: range.upperBound < latest,
+                 plays: range.map { libraryOriginPlay($0) })
+        }
+        // Each page holds 4 plays though the limit asked for is 200: as if the
+        // wider records made Bridge stop a page well short of the limit.
+        let wire = Wire([pageOf(1...4), pageOf(5...8), pageOf(9...10)])
+        let feed: CompletedPlaysReading = control(wire)
+
+        var ledger: String? = nil
+        var after = 0
+        var seen: [Int] = []
+        while true {
+            let result = try feed.completedPlays(ledgerID: ledger, after: after, limit: 200)
+            XCTAssertLessThan(result.plays.count, 200, "each page here is short of the limit")
+            seen += result.plays.map(\.seq)
+            ledger = result.ledgerID
+            after = result.nextAfter
+            if !result.more { break }
+        }
+
+        XCTAssertEqual(wire.sent.count, 3)
+        XCTAssertEqual(seen, Array(1...10))
+        XCTAssertEqual(after, 10)
+    }
+
     func testAThreePageWalkAsksFromEachPagesNextAfter() throws {
         let latest = 450
         func pageOf(_ range: ClosedRange<Int>) -> String {
