@@ -286,6 +286,10 @@ let cliDispatchedOnBridge: Set<MusicTUIAction> = [
     // <title>` (`slice.search`, the shipped algorithm). `suggest` and
     // `new-releases` are refused instead (Q1 default; D10's sentences).
     .discoverFeed, .playlistListing, .similar,
+    // Part 2 P9 [serve]: `recent` (`slice.recentTracks`) and `rotation`
+    // (`slice.heavyRotation`). D9 passed for both (B2): Bridge returned the
+    // same account-level history as the REST path on three occasions.
+    .recent, .rotation,
 ]
 
 /// CLI actions that keep their shipped backend while Bridge is selected
@@ -293,17 +297,15 @@ let cliDispatchedOnBridge: Set<MusicTUIAction> = [
 /// derived: an action added later must be placed here by decision, and
 /// `CLIInventoryTests` fails until every CLI command is classified.
 ///
-/// Two kinds, and only these:
+/// Only **named exceptions (E)**, not temporary: explicit library management
+/// (Anthony, 2026-09-16 13:36), MusicTUI's own state, and the Music.app
+/// settings spec 6.4 marks Unaffected.
 ///
-/// - **Named exceptions (E)**, not temporary: explicit library management
-///   (Anthony, 2026-09-16 13:36), MusicTUI's own state, and the Music.app
-///   settings spec 6.4 marks Unaffected.
-/// - **Migration exceptions (M)**, temporary, by Anthony's Q2 ruling [B]
-///   (2026-09-25): read-only lookups that keep their shipped backends until
-///   Part B serves or refuses each one. They may need a developer key and can
-///   show Music.app's library, and their cached results never feed Bridge
-///   `play N` (score D3; `MigrationReadCacheTests`). Each is commented with the
-///   Part B op that retires it; Part B deletes the line and its comment.
+/// The temporary **M rows** (read-only lookups) of Anthony's Q2 ruling [B]
+/// (2026-09-25) are all retired: Part 2 served or refused each one (P6-P9),
+/// and `CLIInventoryTests` asserts none remains. A `.catalog`/`.library` row
+/// cached by a Music.app-mode read still never feeds Bridge `play N` (score
+/// D3; `MigrationReadCacheTests`).
 ///
 /// Not here: volume and speakers (refused on Bridge, S8), anything that plays,
 /// the current-track readers, and TUI-only rows no CLI verb reaches.
@@ -320,9 +322,6 @@ let cliBridgeExceptions: Set<MusicTUIAction> = [
     // E: Music.app settings (spec 6.4, Unaffected).
     .eq,
     .visualizer,
-    // M: temporary migration exceptions [B].
-    .recent,            // migration exception until Part B's slice.recentTracks (P9, served on a D9 pass, else refused)
-    .rotation,          // migration exception until Part B's slice.heavyRotation (P9, served on a D9 pass, else refused)
 ]
 
 /// D7's reason for a CLI action Bridge does not serve. Shuffle and repeat

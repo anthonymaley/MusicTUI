@@ -219,10 +219,31 @@ final class CLIBridgeReadsTests: XCTestCase {
         XCTAssertEqual(historyLines([item], label: "recent"), ["1. Idioteque — Radiohead"])
     }
 
+    /// P9 (controller ruling on D6 after B2): a `library-songs` item without a
+    /// `catalog_id` is library-only — unnumbered, labelled `(library)`.
     func testHistoryLibraryOnlySongIsUnnumberedWithLibraryLabel() {
-        let item = HistoryItem(type: "songs", id: "s1", name: "Idioteque", artist: "Radiohead",
+        let item = HistoryItem(type: "library-songs", id: "i.s1", name: "Idioteque", artist: "Radiohead",
                                album: nil, catalogueID: nil)
         XCTAssertEqual(historyLines([item], label: "recent"), ["   Idioteque — Radiohead (library)"])
+    }
+
+    /// P9: a `songs` item is a catalogue song whose own `id` is its catalogue
+    /// id, so it is numbered even with no `catalog_id` (B2: every recent item
+    /// had none).
+    func testHistoryCatalogueSongWithoutCatalogIDIsNumberedByItsOwnID() {
+        let item = HistoryItem(type: "songs", id: "1109715151", name: "Lotus Flower", artist: "Radiohead",
+                               album: nil, catalogueID: nil)
+        XCTAssertEqual(historyLines([item], label: "recent"), ["1. Lotus Flower — Radiohead"])
+        XCTAssertEqual(historySongRows([item]), [BridgeHistorySongRow(index: 1, title: "Lotus Flower", artist: "Radiohead",
+                                                                      album: "", catalogueID: "1109715151")])
+    }
+
+    /// P9: a `library-songs` item with a `catalog_id` is numbered by that id.
+    func testHistoryLibrarySongWithCatalogIDIsNumberedByTheCatalogID() {
+        let item = HistoryItem(type: "library-songs", id: "i.abc", name: "Dreams", artist: "Fleetwood Mac",
+                               album: "Rumours", catalogueID: "202272624")
+        XCTAssertEqual(historyLines([item], label: "recent"), ["1. Dreams — Fleetwood Mac [Rumours]"])
+        XCTAssertEqual(historySongRows([item]).map(\.catalogueID), ["202272624"])
     }
 
     func testHistoryOtherTypeIsUnnumberedWithKindLabel() {
@@ -231,12 +252,21 @@ final class CLIBridgeReadsTests: XCTestCase {
         XCTAssertEqual(historyLines([item], label: "recent"), ["   Focus (playlist)"])
     }
 
+    /// Only `songs` and `library-songs` can be numbered: any other type stays
+    /// unnumbered even when it carries a `catalog_id`.
+    func testHistoryNonSongTypeWithACatalogIDStaysUnnumbered() {
+        let item = HistoryItem(type: "albums", id: "1440857000", name: "Mezzanine", artist: "Massive Attack",
+                               album: nil, catalogueID: "1440857000")
+        XCTAssertEqual(historyLines([item], label: "recent"), ["   Mezzanine — Massive Attack (album)"])
+        XCTAssertEqual(historySongRows([item]), [])
+    }
+
     func testHistoryNumberingSkipsUnnumberedRows() {
-        let song = HistoryItem(type: "songs", id: "s1", name: "Numbered", artist: "A",
-                               album: nil, catalogueID: "1")
-        let libraryOnly = HistoryItem(type: "songs", id: "s2", name: "LibOnly", artist: "A",
+        let song = HistoryItem(type: "songs", id: "1", name: "Numbered", artist: "A",
+                               album: nil, catalogueID: nil)
+        let libraryOnly = HistoryItem(type: "library-songs", id: "i.s2", name: "LibOnly", artist: "A",
                                       album: nil, catalogueID: nil)
-        let song2 = HistoryItem(type: "songs", id: "s3", name: "Second", artist: "A",
+        let song2 = HistoryItem(type: "library-songs", id: "i.s3", name: "Second", artist: "A",
                                 album: nil, catalogueID: "2")
         XCTAssertEqual(historyLines([song, libraryOnly, song2], label: "recent"), [
             "1. Numbered — A",
@@ -245,10 +275,10 @@ final class CLIBridgeReadsTests: XCTestCase {
         ])
     }
 
-    func testHistorySongRowsOnlyIncludeCatalogueIDItemsNumberedFromOne() {
-        let song = HistoryItem(type: "songs", id: "s1", name: "Numbered", artist: "A",
-                               album: "Al", catalogueID: "1")
-        let libraryOnly = HistoryItem(type: "songs", id: "s2", name: "LibOnly", artist: "A",
+    func testHistorySongRowsOnlyIncludeCatalogueSongsNumberedFromOne() {
+        let song = HistoryItem(type: "songs", id: "1", name: "Numbered", artist: "A",
+                               album: "Al", catalogueID: nil)
+        let libraryOnly = HistoryItem(type: "library-songs", id: "i.s2", name: "LibOnly", artist: "A",
                                       album: nil, catalogueID: nil)
         let rows = historySongRows([song, libraryOnly])
         XCTAssertEqual(rows, [BridgeHistorySongRow(index: 1, title: "Numbered", artist: "A", album: "Al", catalogueID: "1")])

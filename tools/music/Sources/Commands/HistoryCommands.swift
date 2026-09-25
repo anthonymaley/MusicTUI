@@ -25,6 +25,11 @@ struct Recent: ParsableCommand {
     @Flag(name: .long, help: "Output JSON") var json = false
 
     func run() throws {
+        try runRecent(limit: limit, json: json, env: .live(), musicApp: runViaMusicApp)
+    }
+
+    /// The shipped `music recent` body, verbatim: Music.app mode's branch.
+    func runViaMusicApp() throws {
         let auth = AuthManager()
         if auth.userToken() == nil || (try? auth.requireDeveloperToken()) == nil {
             if json { print(recentNeedsAuthMessage(json: true)) } else { errorOut(recentNeedsAuthMessage(json: false)) }
@@ -49,10 +54,86 @@ struct Rotation: ParsableCommand {
     @Flag(name: .long, help: "Output JSON") var json = false
 
     func run() throws {
+        try runRotation(limit: limit, json: json, env: .live(), musicApp: runViaMusicApp)
+    }
+
+    /// The shipped `music rotation` body, verbatim: Music.app mode's branch.
+    func runViaMusicApp() throws {
         let api = try makeUserAPI()
         let (data, status) = try syncRun { try await api.get("/v1/me/history/heavy-rotation?limit=\(min(10, max(1, limit)))") }
         guard (200...299).contains(status) else { throw APIError.requestFailed(status) }
         try printHistorySongs(data: data, label: "heavy rotation", json: json)
+    }
+}
+
+// MARK: - Dispatch (slice 3 Part 2, P9 [serve]; decisions D6, D9, D10)
+//
+// D9 passed for both ops (B2, `b2/b2-summary.md`): Bridge's ordered
+// `(type, id, catalog_id)` list equalled the REST path's on three occasions,
+// so with Bridge selected `recent` and `rotation` read Bridge
+// (`slice.recentTracks`, `slice.heavyRotation`). With Music.app selected the
+// shipped bodies above run unchanged, auth check and REST included.
+//
+// The Bridge bodies read no token, run no AppleScript and make no REST call.
+// They are reads: no output lock. **Publish, then print (D3):** the items
+// `historyCatalogueID` names (a `songs` item by its own id, a `library-songs`
+// item by its `catalog_id`, the type always Bridge's) are written as
+// `.bridgeCatalog` rows before any line is shown, so `music play N` queues
+// that catalogue id; everything else is listed unnumbered and never cached.
+// The list is published even when it holds no song, so a later `play N`
+// cannot reach an older listing's row.
+
+/// `music recent`, dispatched as `.recent`. `musicApp` is the shipped body,
+/// injected so a test can count it.
+func runRecent(limit: Int, json: Bool, env: CLIBridgeEnv, musicApp: () throws -> Void) throws {
+    try cliDispatch(.recent, json: json, env: env,
+                    musicApp: musicApp,
+                    bridge: { session in
+                        try bridgeHistoryCommand(session, label: "recent", limit: limit, json: json, env: env) {
+                            try session.provider.recentTracks(limit: $0)
+                        }
+                    })
+}
+
+/// `music rotation`, dispatched as `.rotation`. `musicApp` is the shipped
+/// body, injected so a test can count it.
+func runRotation(limit: Int, json: Bool, env: CLIBridgeEnv, musicApp: () throws -> Void) throws {
+    try cliDispatch(.rotation, json: json, env: env,
+                    musicApp: musicApp,
+                    bridge: { session in
+                        try bridgeHistoryCommand(session, label: "heavy rotation", limit: limit, json: json, env: env) {
+                            try session.provider.heavyRotation(limit: $0)
+                        }
+                    })
+}
+
+/// The Bridge body both history verbs share: one read (limit clamped to
+/// 1...10, as shipped), retried only while Bridge answers `warming`, on the
+/// session's one budget; publish; then print through P4's renderers with the
+/// shipped label.
+func bridgeHistoryCommand(_ session: CLIBridgeSession, label: String, limit: Int, json: Bool,
+                          env: CLIBridgeEnv, read: (Int) throws -> [HistoryItem]) throws {
+    let lim = min(10, max(1, limit))
+    let items = try retryingWhileWarming(budget: session.budget,
+                                         onWarming: { _ in env.err(cliBridgeWarmingProgress) },
+                                         sleep: env.sleep) {
+        try read(lim)
+    }
+
+    let published = historySongRows(items).map { row in
+        SongResult(index: row.index, title: row.title, artist: row.artist, album: row.album,
+                   catalogId: "", origin: .bridgeCatalog, bridgeID: row.catalogueID)
+    }
+    do {
+        try env.cache.writeSongs(published)
+    } catch {
+        throw ActionError(message: "Couldn't save these results, so music play N would not find them: \(error.localizedDescription)")
+    }
+
+    if json {
+        env.out(historyJSON(items, label: label))
+    } else {
+        historyLines(items, label: label).forEach(env.out)
     }
 }
 
