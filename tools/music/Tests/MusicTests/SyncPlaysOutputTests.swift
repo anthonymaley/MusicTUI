@@ -26,10 +26,11 @@ final class SyncPlaysOutputTests: XCTestCase {
                         recorded: [PlaySyncEntry] = [],
                         outstanding: [PlaySyncEntry] = [],
                         unconfirmed: [PlaySyncEntry] = [],
-                        waiting: Int = 0) -> PlaySyncResult {
+                        waiting: Int = 0,
+                        musicAccess: MusicAccessError? = nil) -> PlaySyncResult {
         PlaySyncResult(blocked: blocked, fetch: fetch, musicRunning: musicRunning,
                        recorded: recorded, newProblems: [], outstanding: outstanding,
-                       unconfirmed: unconfirmed, waiting: waiting)
+                       unconfirmed: unconfirmed, waiting: waiting, musicAccess: musicAccess)
     }
 
     /// What the engine returns when the journal could not be read at the start.
@@ -92,6 +93,40 @@ final class SyncPlaysOutputTests: XCTestCase {
         let out = renderSyncPlays(result(musicRunning: false, waiting: 0), json: false)
         XCTAssertEqual(out.text, "Nothing new to record.")
         XCTAssertEqual(out.exit, 0)
+    }
+
+    // MARK: Music.app running but a read or write failed
+
+    func testLibraryNotLoadedIsNotMiscastAsCouldNotBeAccessed() {
+        let out = renderSyncPlays(
+            result(musicRunning: true, waiting: 1,
+                  musicAccess: .failed(MusicAccessSentence.libraryNotLoaded)),
+            json: false)
+        XCTAssertEqual(out.text,
+                       "1 play waiting: Music.app's library hasn't finished loading. Run music sync-plays again.")
+        XCTAssertEqual(out.exit, 1)
+    }
+
+    func testNoMatchAtWriteTimeIsNotMiscastAsCouldNotBeAccessed() {
+        let out = renderSyncPlays(
+            result(musicRunning: true, waiting: 1,
+                  musicAccess: .failed(MusicAccessSentence.noMatch)),
+            json: false)
+        XCTAssertEqual(out.text,
+                       "1 play waiting: the track could not be found in Music.app when it came time to write. "
+                       + "Run music sync-plays again.")
+        XCTAssertEqual(out.exit, 1)
+    }
+
+    func testEveryOtherFailedDetailKeepsTheCouldNotBeAccessedForm() {
+        let out = renderSyncPlays(
+            result(musicRunning: true, waiting: 1,
+                  musicAccess: .failed("some other AppleEvent failure.")),
+            json: false)
+        XCTAssertEqual(out.text,
+                       "1 play waiting: Music.app could not be accessed (some other AppleEvent failure). "
+                       + "Run music sync-plays again.")
+        XCTAssertEqual(out.exit, 1)
     }
 
     // MARK: Unconfirmed
@@ -183,9 +218,7 @@ final class SyncPlaysOutputTests: XCTestCase {
     /// must never claim nothing was changed.
     func testJournalNotSavedAfterMusicWasReached() {
         let path = "/tmp/playsync/journal.json"
-        var r = blockedAtStart(.journalUnreadable(path: path))
-        r.fetch = .ok(newPlays: 2)
-        r.musicRunning = true
+        let r = blockedAtStart(.journalNotSaved(path: path))
         let out = renderSyncPlays(r, json: false)
         XCTAssertEqual(out.text,
                        "The play-sync journal at \(path) could not be saved, so the sync stopped; "
@@ -198,8 +231,7 @@ final class SyncPlaysOutputTests: XCTestCase {
 
     func testJournalNotSavedAfterFetchOnly() {
         let path = "/tmp/playsync/journal.json"
-        var r = blockedAtStart(.journalUnreadable(path: path))
-        r.fetch = .bridgeNotRunning
+        let r = blockedAtStart(.journalNotSaved(path: path))
         let out = renderSyncPlays(r, json: false)
         XCTAssertFalse(out.text.contains("nothing was changed"))
         XCTAssertTrue(out.text.contains("could not be saved"))
@@ -208,9 +240,7 @@ final class SyncPlaysOutputTests: XCTestCase {
 
     func testJournalNotSavedStillListsWhatWasRecorded() {
         let path = "/tmp/playsync/journal.json"
-        var r = blockedAtStart(.journalUnreadable(path: path))
-        r.fetch = .ok(newPlays: 1)
-        r.musicRunning = true
+        var r = blockedAtStart(.journalNotSaved(path: path))
         r.recorded = [entry("Teardrop", "Massive Attack")]
         let out = renderSyncPlays(r, json: false)
         XCTAssertEqual(out.text, """

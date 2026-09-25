@@ -53,6 +53,12 @@ enum SyncPlaysSentence {
         case .notRunning: return "Music.app quit while plays were being recorded"
         case .timedOut: return "Music.app did not answer in time"
         case .failed(let detail):
+            if detail == MusicAccessSentence.libraryNotLoaded {
+                return "Music.app's library hasn't finished loading"
+            }
+            if detail == MusicAccessSentence.noMatch {
+                return "the track could not be found in Music.app when it came time to write"
+            }
             var trimmed = detail.trimmingCharacters(in: .whitespacesAndNewlines)
             if trimmed.hasSuffix(".") { trimmed.removeLast() }
             return "Music.app could not be accessed (\(trimmed))"
@@ -133,12 +139,9 @@ func renderSyncPlays(_ result: PlaySyncResult, json: Bool) -> (text: String, exi
         case .lockBusy:
             sentence = S.lockBusy
         case .journalUnreadable(let path):
-            // The same block is returned when the journal could not be read at
-            // the start and when it could not be saved later in the pass. Only
-            // a pass that got past the start has a fetch status or reached
-            // Music.app; before any set call Music.app has been found running.
-            let passHadStarted = result.fetch != .skipped || result.musicRunning || !result.recorded.isEmpty
-            sentence = passHadStarted ? S.journalNotSaved(path) : S.journalUnreadable(path)
+            sentence = S.journalUnreadable(path)
+        case .journalNotSaved(let path):
+            sentence = S.journalNotSaved(path)
         case .journalTooNew:
             sentence = S.journalTooNew
         case .directoryUnsafe(let path):
