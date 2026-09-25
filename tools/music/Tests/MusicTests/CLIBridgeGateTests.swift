@@ -11,11 +11,13 @@ final class CLIBridgeGateTests: XCTestCase {
 
     /// Slice 3 D7: the playback verbs Bridge does not serve from the CLI yet
     /// refuse in their not-served words. (Part 2, P6: the Apple Music song link
-    /// left this list; it is dispatched, so the gate fails closed on it below.)
+    /// left this list; it is dispatched, so the gate fails closed on it below.
+    /// P7: so did `radio play`.)
     func testUnservedPlaybackVerbsRefuseWithTheirD7WordsOnBridge() {
         XCTAssertEqual(cliBridgeRefusal(.cliPlayCatalogSong, mode: .source), cliGateOnDispatchedAction)
+        XCTAssertEqual(cliBridgeRefusal(.radioStationPlay, mode: .source), cliGateOnDispatchedAction)
         let verbs: [MusicTUIAction] = [.cliPlayQuery, .persistentShuffleMode,
-                                       .persistentRepeatMode, .radioStationPlay, .playlistTemp]
+                                       .persistentRepeatMode, .playlistTemp]
         for action in verbs {
             XCTAssertEqual(cliBridgeRefusal(action, mode: .source), cliBridgeNotServedReason(action), "\(action)")
         }
@@ -138,6 +140,9 @@ final class CLIBridgeGateTests: XCTestCase {
             ("PlaylistCommands.swift", "PlaylistTemp", "runPlaylistTemp"),
             // S7: `music play` and `music search`.
             ("PlaybackCommands.swift", "Play", "runPlay"), ("SearchCommand.swift", "Search", "runSearch"),
+            // Part 2 P7: `radio search`. (`radio add` validates its URL first,
+            // as shipped, and dispatches only its lookup.)
+            ("RadioCommands.swift", "RadioSearch", "runRadioSearch"),
         ]
         for (file, command, verb) in dispatching {
             let source = try String(contentsOf: commands.appendingPathComponent(file), encoding: .utf8)

@@ -424,7 +424,10 @@ final class CLIBridgeTransportCommandTests: XCTestCase {
         XCTAssertEqual(h.io.out, [])
     }
 
-    // MARK: shuffle, repeat, radio play, playlist temp
+    // MARK: shuffle, repeat, playlist temp (and radio play's Music.app arguments)
+    //
+    // Part 2 P7 serves `radio play` through Bridge, so it left the refused
+    // verbs; its Bridge and Music.app paths are `CLIBridgeRadioTests`.
 
     private func refusedVerbs() -> [(String, MusicTUIAction, (CLIBridgeEnv, Bool, @escaping () -> Void) throws -> Void)] {
         [
@@ -432,8 +435,6 @@ final class CLIBridgeTransportCommandTests: XCTestCase {
              { env, j, b in try runShuffle(state: "on", json: j, env: env, musicApp: { _, _ in b() }) }),
             ("repeat", .persistentRepeatMode,
              { env, _, b in try runRepeat(mode: "all", env: env, musicApp: { _ in b() }) }),
-            ("radio play", .radioStationPlay,
-             { env, _, b in try runRadioPlay(query: ["BBC", "Radio", "6"], env: env, musicApp: { _ in b() }) }),
             ("playlist temp", .playlistTemp,
              { env, _, b in try runPlaylistTemp(items: ["Teardrop", "Massive Attack"], env: env, musicApp: { _ in b() }) }),
         ]
