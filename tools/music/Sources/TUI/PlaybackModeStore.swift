@@ -34,6 +34,13 @@ final class PlaybackModeStore {
         self.path = path
     }
 
+    /// The cross-process output lock's file, beside `mode.json` (slice 3, D6),
+    /// so a test's temp store gets a temp lock with no further wiring. It is
+    /// never replaced and never deleted; see `OutputLock`.
+    var lockPath: String {
+        ((path as NSString).deletingLastPathComponent as NSString).appendingPathComponent("output.lock")
+    }
+
     private struct Stored: Codable {
         let mode: String
     }
