@@ -161,6 +161,9 @@ final class ActionRoutingTests: XCTestCase {
         // Unaffected: EQ and the visualizer set Music.app state; auth writes
         // MusicTUI's own config.
         .eq: .musicApp, .visualizer: .musicApp, .auth: .unaffected,
+        // Slice 3 D7: `music now`'s read. CLI-only; its TUI row is the
+        // unreachable one, pinned so it is decided rather than defaulted.
+        .nowStatus: .source,
     ]
 
     /// The table covers the closed set. Adding an action fails here until its
@@ -221,61 +224,146 @@ final class ActionRoutingTests: XCTestCase {
         }
     }
 
-    /// DoD 13 and ruling 12.14. Every playback-changing CLI verb refuses while
-    /// Bridge is selected, with EXACTLY the ruled message, and none falls back.
-    func testEveryPlaybackChangingCliCommandRefusesInSourceMode() {
-        let ruled = "Bridge output is selected, but CLI playback is not supported in v1. Use MusicTUI or switch Output to Music.app."
-        for action in MusicTUIAction.allCases
-        where action.surfaces.contains(.cli) && action.touchesPlayback {
-            guard case .refused(let reason) = routeAction(action, in: .source, from: .cli) else {
-                XCTFail("\(action) is a playback-changing CLI verb and must refuse in Source Mode")
-                continue
+    // MARK: - Slice 3 D7: the closed CLI clause (S6)
+
+    /// S6's dispatched set, as a literal: `now` and the five transport verbs.
+    /// S7 grows it; nothing else may.
+    private let s6Dispatched: Set<MusicTUIAction> = [.nowStatus, .playPause, .next, .previous, .seek, .stop]
+
+    func testTheDispatchedSetIsExactlyS6s() {
+        XCTAssertEqual(cliDispatchedOnBridge, s6Dispatched)
+    }
+
+    /// D7: with Bridge selected the CLI clause is closed. Each action is
+    /// dispatched, refused for the stale current track, a named exception, or
+    /// refused with its not-served reason. There is no blanket default.
+    func testTheCliClauseIsClosed() {
+        for action in MusicTUIAction.allCases {
+            let route = routeAction(action, in: .source, from: .cli)
+            if s6Dispatched.contains(action) {
+                XCTAssertEqual(route, .source, "\(action) is dispatched to Bridge")
+            } else if action.readsMusicAppCurrentTrack {
+                XCTAssertEqual(route, .refused(currentTrackIsStaleInBridge), "\(action)")
+            } else if cliBridgeExceptions.contains(action) {
+                XCTAssertEqual(route, routeAction(action, in: .musicApp, from: .cli),
+                               "\(action) is a named exception and runs as it ships")
+            } else {
+                XCTAssertEqual(route, .refused(cliBridgeNotServedReason(action)), "\(action)")
             }
-            XCTAssertEqual(reason, ruled, "\(action) refused with unruled wording")
         }
     }
 
-    /// The other half of 12.14: non-playback CLI commands are UNCHANGED. Section
-    /// 6.4 defers CLI routing entirely and keeps its brokered-read table "as the
-    /// plan for when it returns", so unchanged means "as they ship", not
-    /// "brokered but not playback".
+    /// S6 keeps today's behaviour for everything that is neither dispatched,
+    /// a current-track reader, nor playback: those are the temporary exception
+    /// set, written as a literal in ActionRouting.swift until S8 narrows it.
+    func testTheExceptionSetIsEverythingNeitherDispatchedCurrentTrackNorPlayback() {
+        let expected = Set(MusicTUIAction.allCases.filter {
+            !s6Dispatched.contains($0) && !$0.readsMusicAppCurrentTrack && !$0.touchesPlayback
+        })
+        XCTAssertEqual(cliBridgeExceptions, expected)
+        XCTAssertTrue(cliBridgeExceptions.isDisjoint(with: cliDispatchedOnBridge))
+    }
+
+    /// Every playback-changing CLI verb that is not dispatched still refuses
+    /// in its D7 words, and none falls back to Music.app.
+    func testEveryUndispatchedPlaybackCliCommandRefusesInSourceMode() {
+        var checked = 0
+        for action in MusicTUIAction.allCases
+        where action.surfaces.contains(.cli) && action.touchesPlayback && !s6Dispatched.contains(action) {
+            checked += 1
+            guard case .refused(let reason) = routeAction(action, in: .source, from: .cli) else {
+                XCTFail("\(action) is a playback-changing CLI verb Bridge does not serve yet; it must refuse")
+                continue
+            }
+            XCTAssertEqual(reason, cliBridgeNotServedReason(action), "\(action)")
+        }
+        XCTAssertGreaterThan(checked, 0)
+    }
+
+    /// D7's wording, pinned: shuffle/repeat modes, volume and AirPlay keep the
+    /// TUI table's reasons; everything else names what is not served.
+    func testNotServedReasonsAreD7s() {
+        for action in [MusicTUIAction.persistentShuffleMode, .persistentRepeatMode, .volume, .airplayRoute] {
+            guard case .refused(let tui) = routeAction(action, in: .source, from: .tui) else {
+                return XCTFail("\(action) must be refused in the TUI table")
+            }
+            XCTAssertEqual(cliBridgeNotServedReason(action), tui, "\(action) keeps its TUI-table reason")
+        }
+        XCTAssertEqual(cliBridgeNotServedReason(.persistentShuffleMode),
+                       "Shuffle and repeat modes are Music.app only for now")
+        let play = "Bridge output is selected, and music play isn't available from the CLI on Bridge yet. Use MusicTUI, or switch Output to Music.app."
+        for action in [MusicTUIAction.cliPlayResume, .cliPlayIndex, .cliPlayPlaylist,
+                       .cliPlayAlbum, .cliPlaySong, .cliPlayArtist] {
+            XCTAssertEqual(routeAction(action, in: .source, from: .cli), .refused(play),
+                           "\(action) refuses as music play until S7")
+        }
+        XCTAssertEqual(cliBridgeNotServedReason(.radioStationPlay),
+                       "Bridge output is selected, and music radio play isn't available from the CLI on Bridge yet. Use MusicTUI, or switch Output to Music.app.")
+    }
+
+    /// 12.14's v1 sentence is deleted (S6): no source file names it or says
+    /// "not supported in v1" any more.
+    func testTheV1DeferralSentenceIsDeleted() throws {
+        let sources = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Sources")
+        let files = (FileManager.default.enumerator(at: sources, includingPropertiesForKeys: nil)?
+            .compactMap { $0 as? URL } ?? []).filter { $0.pathExtension == "swift" }
+        XCTAssertFalse(files.isEmpty)
+        for file in files {
+            let text = try String(contentsOf: file, encoding: .utf8)
+            XCTAssertFalse(text.contains("cliPlaybackDeferredInV1"), file.lastPathComponent)
+            XCTAssertFalse(text.contains("CLI playback is not supported in v1"), file.lastPathComponent)
+        }
+    }
+
+    /// The other half: a CLI command that is not dispatched, not playback and
+    /// not a current-track reader is UNCHANGED, as it ships (S6; S8 narrows).
     ///
-    /// NOTE, for Anthony. 12.14 names two categories, playback-changing and
-    /// read-only, and the CLI has a third: non-playback WRITES (`mix`, `add`,
-    /// `remove`, `playlist create/delete/...`, `love`). This test puts them with
-    /// the reads, "unchanged", because 12.13 defers CLI routing entirely. The
-    /// alternative reading refuses them and changes ten shipping verbs.
+    /// NOTE, for Anthony (kept from 12.14). The CLI has non-playback WRITES
+    /// (`mix`, `add`, `playlist create/delete/...`); they stay with the reads,
+    /// "unchanged", by his 2026-09-16 13:36 ruling on library management.
     func testNonPlaybackCliCommandsAreUnchangedInSourceMode() {
         for action in MusicTUIAction.allCases
         where action.surfaces.contains(.cli)
             && !action.touchesPlayback
-            && !action.readsMusicAppCurrentTrack {
+            && !action.readsMusicAppCurrentTrack
+            && !s6Dispatched.contains(action) {
             XCTAssertEqual(routeAction(action, in: .source, from: .cli),
                            routeAction(action, in: .musicApp, from: .cli),
                            "\(action) neither plays nor reads the current track: it must ship unchanged")
         }
     }
 
-    /// The distinction has to BITE, not merely exist. For an action reachable
-    /// from both surfaces that drives a player, the key is served and the verb
-    /// refuses. Without this, a routeAction that ignored `surface` would pass
-    /// every test above.
+    /// The distinction still has to BITE for what Bridge does not serve from
+    /// the CLI: a dual-surface playback action that is not dispatched is served
+    /// from the TUI and refused from the CLI.
     func testTheSameActionIsServedFromTheTuiAndRefusedFromTheCli() {
         let dual = MusicTUIAction.allCases.filter {
             $0.surfaces.contains(.tui) && $0.surfaces.contains(.cli) && $0.touchesPlayback
+                && !s6Dispatched.contains($0)
         }
-        XCTAssertFalse(dual.isEmpty, "no dual-surface playback action: the test proves nothing")
+        XCTAssertFalse(dual.isEmpty, "no undispatched dual-surface playback action: the test proves nothing")
         var served = 0
         for action in dual {
-            let fromCLI = routeAction(action, in: .source, from: .cli)
-            guard case .refused = fromCLI else {
+            guard case .refused = routeAction(action, in: .source, from: .cli) else {
                 XCTFail("\(action) from the CLI must refuse in Source Mode")
                 continue
             }
             if routeAction(action, in: .source, from: .tui) == .source { served += 1 }
         }
         XCTAssertGreaterThan(served, 0,
-                             "every dual-surface playback row refuses from the TUI too: 12.14 has over-reached")
+                             "every undispatched dual-surface playback row refuses from the TUI too")
+    }
+
+    /// The dispatched verbs are served from BOTH surfaces with Bridge selected,
+    /// and still go to Music.app with Music.app selected.
+    func testDispatchedVerbsAreServedFromBothSurfaces() {
+        for action in s6Dispatched {
+            XCTAssertEqual(routeAction(action, in: .source, from: .cli), .source, "\(action)")
+            XCTAssertEqual(routeAction(action, in: .source, from: .tui), .source, "\(action)")
+            XCTAssertEqual(routeAction(action, in: .musicApp, from: .cli), .musicApp, "\(action)")
+        }
     }
 
     /// Music.app mode is untouched by the surface (binding rule 1): an install
@@ -332,8 +420,8 @@ final class ActionRoutingTests: XCTestCase {
         }
     }
 
-    /// `playlist temp` is refused already, and for its own reason: it exists to
-    /// start Music.app playback, so it is playback-changing rather than
+    /// `playlist temp` is refused, and for its own reason: it exists to start
+    /// Music.app playback, so it is playback-changing rather than
     /// current-track-dependent. Pinned so a later edit cannot reclassify it.
     func testPlaylistTempRefusesAsPlaybackNotAsCurrentTrack() {
         XCTAssertTrue(MusicTUIAction.playlistTemp.touchesPlayback)
@@ -341,7 +429,7 @@ final class ActionRoutingTests: XCTestCase {
         guard case .refused(let reason) = routeAction(.playlistTemp, in: .source, from: .cli) else {
             return XCTFail("playlist temp starts Music.app playback and must refuse")
         }
-        XCTAssertEqual(reason, cliPlaybackDeferredInV1)
+        XCTAssertEqual(reason, "Bridge output is selected, and music playlist temp isn't available from the CLI on Bridge yet. Use MusicTUI, or switch Output to Music.app.")
     }
 
     /// A split variant pair must not both claim the same behaviour: the point of

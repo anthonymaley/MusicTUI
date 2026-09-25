@@ -238,7 +238,7 @@ private struct CLIPassThrough: Error {
 }
 
 /// One failure, in the words of whatever produced it.
-private func cliErrorMessage(_ error: Error) -> String {
+func cliErrorMessage(_ error: Error) -> String {
     switch error {
     case let e as ActionError:        return e.message
     case let e as SourceAppError:     return e.message
@@ -248,11 +248,6 @@ private func cliErrorMessage(_ error: Error) -> String {
     }
 }
 
-/// Exactly what `refuseInBridge` prints for `message` (CLIBridgeGate.swift),
-/// so a dispatched refusal is byte-identical to a gated one.
-private func cliFailureText(_ message: String, json: Bool) -> String {
-    guard json else { return message }
-    let body: [String: Any] = ["ok": false, "error": message]
-    let data = (try? JSONSerialization.data(withJSONObject: body)) ?? Data()
-    return String(decoding: data, as: UTF8.self)
-}
+// Failures print through `cliFailureText` (CLIBridgeGate.swift), the one
+// formatter `refuseInBridge` also uses, so a dispatched refusal is
+// byte-identical to a gated one.

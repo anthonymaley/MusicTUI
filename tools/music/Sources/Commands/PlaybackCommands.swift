@@ -645,46 +645,85 @@ func appleMusicSongID(from value: String) -> String? {
     return itemID
 }
 
+// MARK: - Transport and now (slice 3 S6: dispatched per D1)
+//
+// Each verb's `run()` builds one `CLIBridgeEnv.live()` and calls `run<Verb>`,
+// whose first statement is `cliDispatch`: the matrix picks exactly one branch.
+// The `<verb>ViaMusicApp` functions are the shipped bodies, moved verbatim;
+// the Bridge bodies are in CLIBridgeTransport.swift.
+
 struct Pause: ParsableCommand {
     static let configuration = CommandConfiguration(abstract: "Pause playback.")
     func run() throws {
-        try refuseInBridge(.playPause)
-        let backend = AppleScriptBackend()
-        _ = try syncRun { try await backend.runMusic("pause") }
-        print("Paused.")
+        try runPause(env: .live())
     }
+}
+
+func runPause(env: CLIBridgeEnv, musicApp: () throws -> Void = pauseViaMusicApp) throws {
+    try cliDispatch(.playPause, json: false, env: env, musicApp: musicApp,
+                    bridge: { try bridgePauseCommand($0, env: env) })
+}
+
+func pauseViaMusicApp() throws {
+    let backend = AppleScriptBackend()
+    _ = try syncRun { try await backend.runMusic("pause") }
+    print("Paused.")
 }
 
 struct Skip: ParsableCommand {
     static let configuration = CommandConfiguration(abstract: "Skip to next track.")
     @Flag(name: .long, help: "Output JSON") var json = false
     func run() throws {
-        try refuseInBridge(.next, json: json)
-        let backend = AppleScriptBackend()
-        _ = try syncRun { try await backend.runMusic("next track") }
-        showNowPlaying(json: json, waitForPlay: true)
+        try runSkip(json: json, env: .live())
     }
+}
+
+func runSkip(json: Bool, env: CLIBridgeEnv, musicApp: (Bool) throws -> Void = skipViaMusicApp) throws {
+    try cliDispatch(.next, json: json, env: env, musicApp: { try musicApp(json) },
+                    bridge: { try bridgeStepCommand($0, json: json, env: env) { try $0.next() } })
+}
+
+func skipViaMusicApp(json: Bool) throws {
+    let backend = AppleScriptBackend()
+    _ = try syncRun { try await backend.runMusic("next track") }
+    showNowPlaying(json: json, waitForPlay: true)
 }
 
 struct Back: ParsableCommand {
     static let configuration = CommandConfiguration(abstract: "Go to previous track.")
     @Flag(name: .long, help: "Output JSON") var json = false
     func run() throws {
-        try refuseInBridge(.previous, json: json)
-        let backend = AppleScriptBackend()
-        _ = try syncRun { try await backend.runMusic("previous track") }
-        showNowPlaying(json: json, waitForPlay: true)
+        try runBack(json: json, env: .live())
     }
+}
+
+func runBack(json: Bool, env: CLIBridgeEnv, musicApp: (Bool) throws -> Void = backViaMusicApp) throws {
+    try cliDispatch(.previous, json: json, env: env, musicApp: { try musicApp(json) },
+                    bridge: { try bridgeStepCommand($0, json: json, env: env) { try $0.previous() } })
+}
+
+func backViaMusicApp(json: Bool) throws {
+    let backend = AppleScriptBackend()
+    _ = try syncRun { try await backend.runMusic("previous track") }
+    showNowPlaying(json: json, waitForPlay: true)
 }
 
 struct Stop: ParsableCommand {
     static let configuration = CommandConfiguration(abstract: "Stop playback.")
     func run() throws {
-        try refuseInBridge(.stop)
-        let backend = AppleScriptBackend()
-        _ = try syncRun { try await backend.runMusic("stop") }
-        print("Stopped.")
+        try runStop(env: .live())
     }
+}
+
+func runStop(env: CLIBridgeEnv, musicApp: () throws -> Void = stopViaMusicApp) throws {
+    try cliDispatch(.stop, json: false, env: env, musicApp: musicApp,
+                    bridge: { try bridgeStopCommand($0, env: env) })
+}
+
+func stopViaMusicApp() throws {
+    let backend = AppleScriptBackend()
+    _ = try syncRun { try await backend.runMusic("stop") }
+    print("Stopped.")
 }
 
 struct Now: ParsableCommand {
@@ -697,8 +736,17 @@ struct Now: ParsableCommand {
             runShell()
             return
         }
-        showNowPlaying(json: json)
+        try runNow(json: json, env: .live())
     }
+}
+
+func runNow(json: Bool, env: CLIBridgeEnv, musicApp: (Bool) throws -> Void = nowViaMusicApp) throws {
+    try cliDispatch(.nowStatus, json: json, env: env, musicApp: { try musicApp(json) },
+                    bridge: { try bridgeNowCommand($0, json: json, env: env) })
+}
+
+func nowViaMusicApp(json: Bool) throws {
+    showNowPlaying(json: json)
 }
 
 /// The one player state that means a play has actually landed.
@@ -866,77 +914,108 @@ struct Seek: ParsableCommand {
     @Argument(help: "+30 / -30 (relative seconds), 90 (seconds), or 1:30") var position: String
     @Flag(name: .long, help: "Output JSON") var json = false
     func run() throws {
-        try refuseInBridge(.seek, json: json)
-        guard let target = parseSeekTarget(position) else {
-            throw ValidationError("Position must be +N / -N, seconds, or m:ss (e.g. +30, 90, 1:30).")
-        }
-        let backend = AppleScriptBackend()
-        let script = target.delta.map { "set player position to (player position + \($0))" }
-            ?? "set player position to \(target.absolute!)"
-        let result = try syncRun {
-            try await backend.runMusic("""
-                if player state is stopped then return "NOTHING"
-                \(script)
-                delay 0.2
-                set p to player position
-                return (round p) as text
-            """)
-        }
-        let trimmed = result.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed == "NOTHING" {
-            print(json ? "{\"ok\":false,\"error\":\"nothing playing\"}" : "Nothing playing.")
-            throw ExitCode.failure
-        }
-        let pos = Int(trimmed) ?? 0
-        print(json ? "{\"ok\":true,\"position\":\(pos)}" : "Position \(formatTime(pos)).")
+        try runSeek(position: position, json: json, env: .live())
     }
 }
+
+/// Each branch parses the position itself: the Music.app body as it ships
+/// (a `ValidationError`), the Bridge body in D5's failure form.
+func runSeek(position: String, json: Bool, env: CLIBridgeEnv,
+             musicApp: (String, Bool) throws -> Void = seekViaMusicApp) throws {
+    try cliDispatch(.seek, json: json, env: env, musicApp: { try musicApp(position, json) },
+                    bridge: { try bridgeSeekCommand($0, position: position, json: json, env: env) })
+}
+
+func seekViaMusicApp(position: String, json: Bool) throws {
+    guard let target = parseSeekTarget(position) else {
+        throw ValidationError("Position must be +N / -N, seconds, or m:ss (e.g. +30, 90, 1:30).")
+    }
+    let backend = AppleScriptBackend()
+    let script = target.delta.map { "set player position to (player position + \($0))" }
+        ?? "set player position to \(target.absolute!)"
+    let result = try syncRun {
+        try await backend.runMusic("""
+            if player state is stopped then return "NOTHING"
+            \(script)
+            delay 0.2
+            set p to player position
+            return (round p) as text
+        """)
+    }
+    let trimmed = result.trimmingCharacters(in: .whitespacesAndNewlines)
+    if trimmed == "NOTHING" {
+        print(json ? "{\"ok\":false,\"error\":\"nothing playing\"}" : "Nothing playing.")
+        throw ExitCode.failure
+    }
+    let pos = Int(trimmed) ?? 0
+    print(json ? "{\"ok\":true,\"position\":\(pos)}" : "Position \(formatTime(pos)).")
+}
+
+// Shuffle and repeat MODES dispatch with Bridge refused (D7: their TUI-table
+// reason), so in Music.app mode their shipped bodies run inside the output lock.
 
 struct Shuffle: ParsableCommand {
     static let configuration = CommandConfiguration(abstract: "Toggle shuffle (or set on/off).")
     @Argument(help: "on or off (omit to toggle)") var state: String?
     @Flag(name: .long, help: "Output JSON") var json = false
     func run() throws {
-        try refuseInBridge(.persistentShuffleMode, json: json)
-        let backend = AppleScriptBackend()
-        let newState: String
-        if let state = state {
-            let s = state.lowercased()
-            // `music shuffle banana` used to print "Shuffle banana." and set it OFF.
-            guard s == "on" || s == "off" else { throw ValidationError("Shuffle must be on or off (or omitted to toggle).") }
-            _ = try syncRun { try await backend.runMusic("set shuffle enabled to \(s == "on")") }
-            newState = s
-        } else {
-            let result = try syncRun {
-                try await backend.runMusic("""
-                    if shuffle enabled then
-                        set shuffle enabled to false
-                        return "off"
-                    else
-                        set shuffle enabled to true
-                        return "on"
-                    end if
-                """)
-            }
-            newState = result.trimmingCharacters(in: .whitespacesAndNewlines)
-        }
-        print(json ? "{\"shuffle\":\"\(newState)\"}" : "Shuffle \(newState).")
+        try runShuffle(state: state, json: json, env: .live())
     }
+}
+
+func runShuffle(state: String?, json: Bool, env: CLIBridgeEnv,
+                musicApp: (String?, Bool) throws -> Void = shuffleViaMusicApp) throws {
+    try cliDispatch(.persistentShuffleMode, json: json, env: env, musicApp: { try musicApp(state, json) },
+                    bridge: cliBridgeNotServed(.persistentShuffleMode))
+}
+
+func shuffleViaMusicApp(state: String?, json: Bool) throws {
+    let backend = AppleScriptBackend()
+    let newState: String
+    if let state = state {
+        let s = state.lowercased()
+        // `music shuffle banana` used to print "Shuffle banana." and set it OFF.
+        guard s == "on" || s == "off" else { throw ValidationError("Shuffle must be on or off (or omitted to toggle).") }
+        _ = try syncRun { try await backend.runMusic("set shuffle enabled to \(s == "on")") }
+        newState = s
+    } else {
+        let result = try syncRun {
+            try await backend.runMusic("""
+                if shuffle enabled then
+                    set shuffle enabled to false
+                    return "off"
+                else
+                    set shuffle enabled to true
+                    return "on"
+                end if
+            """)
+        }
+        newState = result.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+    print(json ? "{\"shuffle\":\"\(newState)\"}" : "Shuffle \(newState).")
 }
 
 struct Repeat_: ParsableCommand {
     static let configuration = CommandConfiguration(commandName: "repeat", abstract: "Set repeat mode.")
     @Argument(help: "off, one, or all") var mode: String
     func run() throws {
-        try refuseInBridge(.persistentRepeatMode)
-        let m = mode.lowercased()
-        guard ["off", "one", "all"].contains(m) else {
-            throw ValidationError("Repeat mode must be off, one, or all.")
-        }
-        let backend = AppleScriptBackend()
-        _ = try syncRun { try await backend.runMusic("set song repeat to \(m)") }
-        print("Repeat \(m).")
+        try runRepeat(mode: mode, env: .live())
     }
+}
+
+func runRepeat(mode: String, env: CLIBridgeEnv, musicApp: (String) throws -> Void = repeatViaMusicApp) throws {
+    try cliDispatch(.persistentRepeatMode, json: false, env: env, musicApp: { try musicApp(mode) },
+                    bridge: cliBridgeNotServed(.persistentRepeatMode))
+}
+
+func repeatViaMusicApp(mode: String) throws {
+    let m = mode.lowercased()
+    guard ["off", "one", "all"].contains(m) else {
+        throw ValidationError("Repeat mode must be off, one, or all.")
+    }
+    let backend = AppleScriptBackend()
+    _ = try syncRun { try await backend.runMusic("set song repeat to \(m)") }
+    print("Repeat \(m).")
 }
 
 // MARK: - Sync helper for running async from sync ParsableCommand.run()

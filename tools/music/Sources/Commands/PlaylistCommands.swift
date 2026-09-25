@@ -1128,32 +1128,45 @@ struct PlaylistTemp: ParsableCommand {
     static let configuration = CommandConfiguration(commandName: "temp", abstract: "Create a temporary playlist, play it, auto-delete on cleanup.")
     @Argument(help: "Alternating title artist pairs: \"Song1\" \"Artist1\" \"Song2\" \"Artist2\"") var items: [String]
     func run() throws {
-        try refuseInBridge(.playlistTemp)
-        guard items.count >= 2, items.count % 2 == 0 else {
-            print("Provide alternating title artist pairs: temp \"Song\" \"Artist\" \"Song2\" \"Artist2\"")
-            throw ExitCode.failure
-        }
-
-        let name = manualTempPlaylistName()
-        let backend = AppleScriptBackend()
-
-        _ = try syncRun {
-            try await backend.runMusic("make new playlist with properties {name:\"\(escapeAppleScriptString(name))\"}")
-        }
-
-        for i in stride(from: 0, to: items.count, by: 2) {
-            duplicateLibraryTrack(backend: backend, title: items[i], artist: items[i + 1], toPlaylist: name)
-        }
-
-        // Split into separate calls to avoid parameter error -50
-        _ = try syncRun {
-            try await backend.runMusic("set shuffle enabled to true")
-        }
-        _ = try syncRun {
-            try await backend.runMusic("play playlist \"\(escapeAppleScriptString(name))\"")
-        }
-        print("Playing temp playlist with \(items.count / 2) tracks. Run `music playlist cleanup` when done.")
+        try runPlaylistTemp(items: items, env: .live())
     }
+}
+
+/// Slice 3 S6: dispatches with Bridge refused from the CLI (D7), so in
+/// Music.app mode the shipped body runs inside the output lock. A long holder
+/// (it loops over pairs, one AppleScript each) makes a waiting switch refuse
+/// after 30 s; that is D6's stated cost, not an exclusion failure.
+func runPlaylistTemp(items: [String], env: CLIBridgeEnv,
+                     musicApp: ([String]) throws -> Void = playlistTempViaMusicApp) throws {
+    try cliDispatch(.playlistTemp, json: false, env: env, musicApp: { try musicApp(items) },
+                    bridge: cliBridgeNotServed(.playlistTemp))
+}
+
+func playlistTempViaMusicApp(items: [String]) throws {
+    guard items.count >= 2, items.count % 2 == 0 else {
+        print("Provide alternating title artist pairs: temp \"Song\" \"Artist\" \"Song2\" \"Artist2\"")
+        throw ExitCode.failure
+    }
+
+    let name = manualTempPlaylistName()
+    let backend = AppleScriptBackend()
+
+    _ = try syncRun {
+        try await backend.runMusic("make new playlist with properties {name:\"\(escapeAppleScriptString(name))\"}")
+    }
+
+    for i in stride(from: 0, to: items.count, by: 2) {
+        duplicateLibraryTrack(backend: backend, title: items[i], artist: items[i + 1], toPlaylist: name)
+    }
+
+    // Split into separate calls to avoid parameter error -50
+    _ = try syncRun {
+        try await backend.runMusic("set shuffle enabled to true")
+    }
+    _ = try syncRun {
+        try await backend.runMusic("play playlist \"\(escapeAppleScriptString(name))\"")
+    }
+    print("Playing temp playlist with \(items.count / 2) tracks. Run `music playlist cleanup` when done.")
 }
 
 struct PlaylistCreateFrom: ParsableCommand {
