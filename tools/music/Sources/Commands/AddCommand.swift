@@ -12,9 +12,10 @@ enum AddIndexRoute: Equatable {
     /// listing writes these). Refused here, before any token read, so an
     /// empty id never reaches the API from either auth state.
     case noCatalogId
-    /// A Bridge library row, with or without its Bridge id. Its case in
-    /// `Add.execute` IS the refusal (score S3, D3), so dropping the case is a
-    /// compile error rather than a silent fall-through to the token reads.
+    /// A Bridge row, library or catalogue, with or without its Bridge id. Its
+    /// case in `Add.execute` IS the refusal (score S3, D3; Part 2 D6, Q3's
+    /// default), so dropping the case is a compile error rather than a silent
+    /// fall-through to the token reads.
     case bridgeRow
 }
 
@@ -22,7 +23,7 @@ func addIndexRoute(origin: SongOrigin, catalogId: String, hasTargets: Bool) -> A
     switch origin {
     case .catalog: return catalogId.isEmpty ? .noCatalogId : .catalog
     case .library: return hasTargets ? .duplicateIntoPlaylists : .alreadyInLibrary
-    case .bridgeLibrary: return .bridgeRow
+    case .bridgeLibrary, .bridgeCatalog: return .bridgeRow
     }
 }
 

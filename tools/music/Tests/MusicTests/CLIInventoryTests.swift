@@ -60,13 +60,16 @@ final class CLIInventoryTests: XCTestCase {
         Row(invocation: "play --song", command: "Play", letter: .served, enforcement: .route(.cliPlaySong), owner: "S7"),
         Row(invocation: "play --artist", command: "Play", letter: .served, enforcement: .route(.cliPlayArtist), owner: "S7"),
         Row(invocation: "search --library", command: "Search", letter: .served, enforcement: .route(.searchLibrary), owner: "S7"),
+        // Part 2, P6: catalogue search (`slice.search`) and song links (`slice.queue {"ids"}`).
+        // `play N` on a `.bridgeCatalog` row is the `play N` row above (D6).
+        Row(invocation: "search (catalogue)", command: "Search", letter: .served, enforcement: .route(.catalogSearch), owner: "P6"),
+        Row(invocation: "play <Apple Music song link>", command: "Play", letter: .served, enforcement: .route(.cliPlayCatalogSong), owner: "P6"),
 
         // Refused before any side effect.
         Row(invocation: "shuffle", command: "Shuffle", letter: .refused, enforcement: .route(.persistentShuffleMode), owner: "S6"),
         Row(invocation: "repeat", command: "Repeat_", letter: .refused, enforcement: .route(.persistentRepeatMode), owner: "S6"),
-        Row(invocation: "play <Apple Music link>", command: "Play", letter: .refused, enforcement: .route(.cliPlayCatalogSong), owner: "S7"),
-        Row(invocation: "play <words>", command: "Play", letter: .refused, enforcement: .route(.cliPlayQuery), owner: "S7 (Q1: refuse)"),
-        Row(invocation: "add N (Bridge row)", command: "Add", letter: .refused, enforcement: .provenance(.addToLibrary), owner: "S3"),
+        Row(invocation: "play <words> (and any non-song Apple Music link)", command: "Play", letter: .refused, enforcement: .route(.cliPlayQuery), owner: "S7 (Q1: refuse)"),
+        Row(invocation: "add N (Bridge library or catalogue row)", command: "Add", letter: .refused, enforcement: .provenance(.addToLibrary), owner: "S3, P6 (Q3: refuse)"),
         Row(invocation: "add --to P (no song)", command: "Add", letter: .refused, enforcement: .route(.addCurrentTrackToPlaylist), owner: "existing"),
         Row(invocation: "remove", command: "Remove", letter: .refused, enforcement: .route(.removeCurrentTrackFromPlaylist), owner: "existing"),
         Row(invocation: "love", command: "Love", letter: .refused, enforcement: .route(.loveTrack), owner: "existing"),
@@ -86,7 +89,6 @@ final class CLIInventoryTests: XCTestCase {
         Row(invocation: "speaker stop", command: "SpeakerStop", letter: .refused, enforcement: .route(.airplayRoute), owner: "S8"),
 
         // Migration exceptions [B]: shipped backends until Part B.
-        Row(invocation: "search (catalogue)", command: "Search", letter: .migration, enforcement: .route(.catalogSearch), owner: "S8"),
         Row(invocation: "playlist list", command: "PlaylistList", letter: .migration, enforcement: .route(.playlistListing), owner: "S8"),
         Row(invocation: "playlist tracks", command: "PlaylistTracks", letter: .migration, enforcement: .route(.playlistListing), owner: "S8"),
         Row(invocation: "radio search", command: "RadioSearch", letter: .migration, enforcement: .route(.radioSearch), owner: "S8"),
@@ -119,11 +121,22 @@ final class CLIInventoryTests: XCTestCase {
         Row(invocation: "__watch-container", command: "WatchContainer", letter: .exception, enforcement: .noMatrixRow("internal; finishes a Music.app album play's cleanup"), owner: "—"),
     ]
 
-    /// The M set under [B], as its own literal: what Part B must retire.
-    private let migrationActions: Set<MusicTUIAction> = [
+    /// Part 1's M set under [B], as its own literal: everything Part B must
+    /// retire. Never shrinks; a retired action moves to `retiredMigrations`.
+    private let partOneMigrationActions: Set<MusicTUIAction> = [
         .catalogSearch, .playlistListing, .radioSearch, .discoverFeed,
         .similar, .suggest, .newReleases, .recent, .rotation,
     ]
+
+    /// Migration exceptions Part B has already served or refused, by step.
+    private let retiredMigrations: [MusicTUIAction: String] = [
+        .catalogSearch: "P6",
+    ]
+
+    /// The M rows still standing.
+    private var migrationActions: Set<MusicTUIAction> {
+        partOneMigrationActions.subtracting(retiredMigrations.keys)
+    }
 
     // MARK: - The walk
 
@@ -182,9 +195,11 @@ final class CLIInventoryTests: XCTestCase {
                 XCTAssertEqual(row.letter, .refused, label)
                 XCTAssertEqual(routeAction(action, in: .source, from: .cli),
                                routeAction(action, in: .musicApp, from: .cli), "\(label): the matrix runs the verb")
-                let bridgeRow = SongResult(index: 1, title: "T", artist: "A", album: "AL", catalogId: "",
-                                           origin: .bridgeLibrary, bridgeID: "b-1")
-                XCTAssertNotNil(bridgeRowsRefusal([bridgeRow]), "\(label): a Bridge row is refused")
+                for origin in [SongOrigin.bridgeLibrary, .bridgeCatalog] {
+                    let bridgeRow = SongResult(index: 1, title: "T", artist: "A", album: "AL", catalogId: "",
+                                               origin: origin, bridgeID: "b-1")
+                    XCTAssertNotNil(bridgeRowsRefusal([bridgeRow]), "\(label): a \(origin) row is refused")
+                }
                 XCTAssertNil(bridgeRowsRefusal([SongResult(index: 1, title: "T", artist: "A", album: "AL",
                                                            catalogId: "1", origin: .catalog)]), label)
             case .noMatrixRow(let why):
@@ -208,6 +223,32 @@ final class CLIInventoryTests: XCTestCase {
         XCTAssertEqual(migrationFromRows, migrationActions)
     }
 
+    /// Each retired migration exception left `cliBridgeExceptions` and is now
+    /// served through Bridge or refused, and every inventory row that names it
+    /// says so. Part B ends when `migrationActions` is empty (P9).
+    func testRetiredMigrationExceptionsAreServedOrRefusedNeverShipped() {
+        XCTAssertTrue(Set(retiredMigrations.keys).isSubset(of: partOneMigrationActions))
+        for (action, step) in retiredMigrations {
+            XCTAssertFalse(cliBridgeExceptions.contains(action), "\(action) was retired by \(step)")
+            switch routeAction(action, in: .source, from: .cli) {
+            case .source:
+                XCTAssertTrue(cliDispatchedOnBridge.contains(action), "\(action)")
+            case .refused(let why):
+                XCTAssertFalse(why.isEmpty, "\(action)")
+            case .musicApp, .unaffected:
+                XCTFail("\(action) was retired by \(step) but still runs its shipped backend on Bridge")
+            }
+            let rows = inventory.filter {
+                if case .route(let a) = $0.enforcement { return a == action } else { return false }
+            }
+            XCTAssertFalse(rows.isEmpty, "\(action) has no inventory row")
+            for row in rows {
+                XCTAssertTrue(row.letter == .served || row.letter == .refused, "\(row.invocation) is still \(row.letter)")
+                XCTAssertTrue(row.owner.contains(step), "\(row.invocation) names its retiring step")
+            }
+        }
+    }
+
     /// Every CLI-reachable action appears in some row, so the matrix has no
     /// CLI case the inventory forgot. One named omission: `.collectionShuffle`'s
     /// CLI surface is the trailing `shuffle` word inside `music play`
@@ -229,9 +270,10 @@ final class CLIInventoryTests: XCTestCase {
     /// or an exception (named or migration).
     func testTheInventoryCloses() {
         func count(_ l: Letter) -> Int { inventory.filter { $0.letter == l }.count }
-        XCTAssertEqual(count(.served), 13)
-        XCTAssertEqual(count(.refused), 22)
-        XCTAssertEqual(count(.migration), 10)
+        // P6: catalogue search moved M → S; the song link moved R → S.
+        XCTAssertEqual(count(.served), 15)
+        XCTAssertEqual(count(.refused), 21)
+        XCTAssertEqual(count(.migration), 9)
         XCTAssertEqual(count(.exception), 19)
         XCTAssertEqual(inventory.count, 64)
     }

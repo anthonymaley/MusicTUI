@@ -55,7 +55,7 @@ final class MigrationReadCacheTests: XCTestCase {
         guard case .refuse(let why) = bridgeRef(forCachedRow: row, index: 1) else {
             return XCTFail("a \(origin) row became a Bridge reference", file: file, line: line)
         }
-        XCTAssertEqual(why, "Result 1 came from a Music.app or catalogue listing, so Bridge can't play it by its own id. With Bridge selected, run: music search --library \"Angel\"  then  music play N",
+        XCTAssertEqual(why, "Result 1 came from a Music.app or catalogue listing, so Bridge can't play it by its own id. With Bridge selected, run: music search \"Angel\"  then  music play N",
                        file: file, line: line)
 
         let before = h.io.out.count
@@ -81,14 +81,24 @@ final class MigrationReadCacheTests: XCTestCase {
 
     /// The migration reads route as shipped on Bridge (they are exceptions,
     /// not dispatched), so none of them can publish a Bridge row: only the
-    /// dispatched `search --library` writes `.bridgeLibrary`.
+    /// dispatched `search --library` writes `.bridgeLibrary`, and the
+    /// dispatched catalogue search `.bridgeCatalog`.
     func testTheMigrationReadsAreExceptionsNotDispatched() {
-        for action in [MusicTUIAction.catalogSearch, .playlistListing, .radioSearch, .discoverFeed,
+        for action in [MusicTUIAction.playlistListing, .radioSearch, .discoverFeed,
                        .similar, .suggest, .newReleases, .recent, .rotation] {
             XCTAssertTrue(cliBridgeExceptions.contains(action), "\(action)")
             XCTAssertFalse(cliDispatchedOnBridge.contains(action), "\(action)")
             XCTAssertEqual(routeAction(action, in: .source, from: .cli),
                            routeAction(action, in: .musicApp, from: .cli), "\(action)")
         }
+    }
+
+    /// Part 2, P6 retired the catalogue-search migration exception: with
+    /// Bridge selected it is dispatched to Bridge, never run as shipped.
+    func testTheCatalogueSearchMigrationExceptionIsRetired() {
+        XCTAssertFalse(cliBridgeExceptions.contains(.catalogSearch))
+        XCTAssertTrue(cliDispatchedOnBridge.contains(.catalogSearch))
+        XCTAssertEqual(routeAction(.catalogSearch, in: .source, from: .cli), .source)
+        XCTAssertEqual(routeAction(.catalogSearch, in: .musicApp, from: .cli), .musicApp, "Decision 7: shipped in Music.app mode")
     }
 }

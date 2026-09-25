@@ -13,10 +13,19 @@ import Foundation
 /// (score S3, D3). Binaries older than this case cannot decode such a row:
 /// `lookupSong` fails, and `lookupSongs` swallows the failure, so downgrade-safe
 /// writes are not promised.
+///
+/// A Bridge catalogue row (`bridge_catalog`, Part 2 D6) is written ONLY from a
+/// record a Bridge op typed as a song (today: `slice.search`'s `kind: song`),
+/// with the catalogue id in `bridgeID` and an empty `catalogId`. The namespace
+/// comes from the op that produced the id, never from its spelling: a
+/// `.catalog` row is not promoted to it, because `.catalog` also carries
+/// library and album ids. Music.app and library management refuse it; the
+/// older-binary caveat above applies unchanged.
 enum SongOrigin: String, Codable, Equatable {
     case catalog
     case library
     case bridgeLibrary = "bridge_library"
+    case bridgeCatalog = "bridge_catalog"
 }
 
 struct SongResult: Codable, Equatable {
@@ -26,7 +35,8 @@ struct SongResult: Codable, Equatable {
     let album: String
     let catalogId: String
     let origin: SongOrigin
-    /// Bridge's library id, only on `.bridgeLibrary` rows. Encoded (as
+    /// Bridge's own id, only on `.bridgeLibrary` rows (a Bridge library id)
+    /// and `.bridgeCatalog` rows (a catalogue id Bridge returned). Encoded (as
     /// `bridge_id`) only when non-nil, so every row the shipped writers produce
     /// keeps its bytes.
     let bridgeID: String?

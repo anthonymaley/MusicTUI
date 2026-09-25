@@ -12,8 +12,13 @@
 // of a pre-mutation `warming` only); then the status is observed (D5), and a
 // failed observation never re-sends anything.
 //
-// Everything Bridge plays here is from Bridge's own library. Free words and
-// Apple Music links never reach this file: the matrix refuses them.
+// The named forms play from Bridge's own library. Catalogue playback (Part 2
+// P6, D6/D7) is two forms only: `play N` on a `.bridgeCatalog` row (through
+// `bridgeRef`) and a one-arg Apple Music SONG link, each queued as catalogue
+// ids with `slice.queue {"ids"}`. Free words, and any link that is not a song
+// link (which classifies as words), never reach this file: the matrix refuses
+// them. These plays are not recorded in Music.app's play counts; library
+// attribution is Part C's.
 import ArgumentParser
 import Foundation
 
@@ -123,7 +128,10 @@ func bridgePlayCommand(_ session: CLIBridgeSession, args: [String], playlist: St
         _ = try session.mutate { try sendBridgeRef(.resume, to: $0) }
         bridgeShowAfterMutation(session, json: json, env: env)
         return
-    case .catalogLink, .words:
+    case .catalogLink:
+        try bridgePlaySongLink(session, link: args[0], json: json, env: env)
+        return
+    case .words:
         // The matrix refuses these before any Bridge request; if the route
         // ever changed without a body, refuse rather than guess.
         throw ActionError(message: cliBridgeNotServedReason(playAction(args: args, playlist: playlist, album: album,
@@ -161,6 +169,7 @@ private func bridgePlayIndex(_ session: CLIBridgeSession, index: Int, json: Bool
         switch ref {
         case .resume:                          sent = 0
         case .libraryQueue(let ids, _):        sent = ids.count
+        case .catalogueQueue(let ids):         sent = ids.count
         }
         let skipped = try session.mutate { try sendBridgeRef(ref, to: $0) }
         bridgeShowAfterMutation(
@@ -169,6 +178,22 @@ private func bridgePlayIndex(_ session: CLIBridgeSession, index: Int, json: Bool
                                                skippedUnavailable: skipped, skippedVideos: 0, shuffle: false),
             resultJSON: bridgePlayResultJSON(kind: .song, sent: sent, skippedUnavailable: skipped, skippedVideos: 0))
     }
+}
+
+/// `music play <Apple Music song link>` with Bridge selected (Part 2 D7): the
+/// link's song id (`appleMusicSongID`, the `?i=` item, as the Music.app body
+/// reads it) is queued as a catalogue id. No read precedes the mutation.
+private func bridgePlaySongLink(_ session: CLIBridgeSession, link: String, json: Bool, env: CLIBridgeEnv) throws {
+    guard let id = appleMusicSongID(from: link) else {
+        // `PlayForm` classified this as a song link; refuse rather than guess.
+        throw ActionError(message: cliBridgeNotServedReason(.cliPlayQuery))
+    }
+    let ref = BridgePlaybackRef.catalogueQueue(ids: [id])
+    let skipped = try session.mutate { try sendBridgeRef(ref, to: $0) }
+    bridgeShowAfterMutation(
+        session, json: json, env: env,
+        resultLines: ["Playing Apple Music song \(id) on Bridge."],
+        resultJSON: bridgePlayResultJSON(kind: .song, sent: 1, skippedUnavailable: skipped, skippedVideos: 0))
 }
 
 /// D2: the one place a `BridgePlaybackRef` becomes a request. Returns Bridge's
@@ -181,6 +206,9 @@ func sendBridgeRef(_ ref: BridgePlaybackRef, to control: SourceControlling) thro
         return 0
     case .libraryQueue(let ids, let startRequired):
         return try control.queue(libraryIDs: ids, startRequired: startRequired)
+    case .catalogueQueue(let ids):
+        // `slice.queue {"ids"}`: never `library_ids` (D6).
+        return try control.queueReportingSkips(catalogIDs: ids)
     }
 }
 

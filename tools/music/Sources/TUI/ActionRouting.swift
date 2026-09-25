@@ -267,15 +267,17 @@ extension MusicTUIAction {
 // Nothing reaches Music.app by default.
 
 /// The CLI actions served through Bridge while Bridge is selected. Grows by
-/// score step (S6 → S7 → S7P); nothing else adds to it.
+/// score step (S6 → S7 → Part 2 P6 …); nothing else adds to it.
 let cliDispatchedOnBridge: Set<MusicTUIAction> = [
     // S6: `now` and transport.
     .nowStatus, .playPause, .next, .previous, .seek, .stop,
     // S7: `music play` from Bridge's own library (D4), and `search --library`.
-    // Free words (`.cliPlayQuery`) and Apple Music links (`.cliPlayCatalogSong`)
-    // are deliberately absent: they refuse (Q1; catalogue play deferred).
+    // Free words (`.cliPlayQuery`) are deliberately absent: they refuse (Q1).
     .cliPlayResume, .cliPlayIndex, .cliPlayPlaylist, .cliPlayAlbum, .cliPlaySong, .cliPlayArtist,
     .searchLibrary,
+    // Part 2 P6: catalogue search (`slice.search`) and the Apple Music SONG
+    // link (`slice.queue {"ids"}`, D7). Any other link classifies as words.
+    .catalogSearch, .cliPlayCatalogSong,
 ]
 
 /// CLI actions that keep their shipped backend while Bridge is selected
@@ -311,7 +313,6 @@ let cliBridgeExceptions: Set<MusicTUIAction> = [
     .eq,
     .visualizer,
     // M: temporary migration exceptions [B].
-    .catalogSearch,     // migration exception until Part B's slice.search (P6)
     .playlistListing,   // migration exception until Part B's slice.libraryPlaylists / slice.libraryPlaylistTracks (P8)
     .radioSearch,       // migration exception until Part B's slice.searchStations (P7)
     .discoverFeed,      // migration exception until Part B's slice.recommendations (P8)
