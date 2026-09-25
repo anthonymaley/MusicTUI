@@ -213,6 +213,11 @@ struct PlaySyncResult: Equatable {
     var unconfirmed: [PlaySyncEntry]
     /// Plays still waiting, including those held behind an unconfirmed write.
     var waiting: Int
+    /// Why Music.app, found running, could not be read or written this pass:
+    /// the first failure that left a play waiting or unconfirmed. Nil when
+    /// nothing failed. Added after the freeze, with a default, so every
+    /// existing construction is unchanged.
+    var musicAccess: MusicAccessError? = nil
 }
 
 /// The only way anything outside the engine touches play sync. Every journal

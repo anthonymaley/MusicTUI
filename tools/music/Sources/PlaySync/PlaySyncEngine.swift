@@ -132,6 +132,8 @@ private final class PassRun {
     private var fetchStatus: PlaySyncFetchStatus = .skipped
     private var musicRunning = false
     private var recorded: [PlaySyncEntry] = []
+    /// The first Music.app failure that left a play waiting or unconfirmed.
+    private var musicAccess: MusicAccessError?
 
     init(engine: PlaySyncEngine, journal: PlaySyncJournal) {
         self.engine = engine
@@ -162,7 +164,8 @@ private final class PassRun {
                 recorded: recorded, newProblems: newProblems,
                 outstanding: journal.entries.filter { $0.state == .unmatched || $0.state == .conflict },
                 unconfirmed: journal.entries.filter { $0.state == .unresolved },
-                waiting: journal.entries.filter { $0.state == .pending }.count)
+                waiting: journal.entries.filter { $0.state == .pending }.count,
+                musicAccess: musicAccess)
         } catch {
             // The journal could not be saved. Nothing further was attempted:
             // no set call is ever made without its `writing` entry on disk.
@@ -170,6 +173,7 @@ private final class PassRun {
             result.fetch = fetchStatus
             result.musicRunning = musicRunning
             result.recorded = recorded
+            result.musicAccess = musicAccess
             return result
         }
     }
@@ -356,6 +360,7 @@ private final class PassRun {
             do {
                 lookup = try engine.writer.read(process, persistentID: pid)
             } catch {
+                noteAccessFailure(error)
                 return .stop
             }
             switch lookup {
@@ -381,7 +386,7 @@ private final class PassRun {
                 case .applied(let state):
                     try settleApplied(index, state)
                     return .next
-                case .notSent(let current, _):
+                case .notSent(let current, let reason):
                     // No set call was made, so nothing can land: the plan is
                     // dropped and made again from what is there now.
                     update(index) {
@@ -392,7 +397,12 @@ private final class PassRun {
                         if let current { $0.observed = current }
                     }
                     try save()
-                    guard replans < PlaySyncEngine.maxFreshReplansPerPass else { return .next }
+                    guard replans < PlaySyncEngine.maxFreshReplansPerPass else {
+                        // Left waiting for a later pass. With nothing observed,
+                        // Music.app could not be used, and the pass says why.
+                        if current == nil { noteNotSent(reason) }
+                        return .next
+                    }
                     replans += 1
                 case .countAppliedDateUnknown:
                     try markUnresolved(index, phase: .dateOnly)
@@ -414,12 +424,13 @@ private final class PassRun {
         switch engine.writer.write(process, persistentID: pid, expect: before, target: target) {
         case .applied(let state):
             try settleApplied(index, state)
-        case .notSent(nil, _):
+        case .notSent(nil, let reason):
             update(index) {
                 $0.state = .pending
                 $0.attempt = nil
             }
             try save()
+            noteNotSent(reason)
         case .notSent(let current?, _):
             // The track changed after it was read. The saved target is kept
             // and no new one is made.
@@ -447,12 +458,13 @@ private final class PassRun {
         switch engine.writer.writeDate(process, persistentID: pid, expect: expect, date: date) {
         case .applied(let state):
             try settleApplied(index, state)
-        case .notSent(nil, _):
+        case .notSent(nil, let reason):
             update(index) {
                 $0.state = .pending
                 $0.attempt = nil
             }
             try save()
+            noteNotSent(reason)
         case .notSent(let current?, _):
             if current == target {
                 try markDone(index, reconciled: true)
@@ -486,6 +498,7 @@ private final class PassRun {
         do {
             lookup = try engine.writer.read(process, persistentID: pid)
         } catch {
+            noteAccessFailure(error)
             return .stop
         }
         guard case .found(let current) = lookup else {
@@ -544,6 +557,24 @@ private final class PassRun {
             }
         }
         return .next
+    }
+
+    // MARK: Music.app failures, carried to the result
+
+    /// A read that threw: the entry keeps its state and the pass says why.
+    private func noteAccessFailure(_ error: Error) {
+        guard musicAccess == nil else { return }
+        musicAccess = (error as? MusicAccessError) ?? .failed(String(describing: error))
+    }
+
+    /// A write refused before any set call, with nothing observed.
+    private func noteNotSent(_ reason: String) {
+        guard musicAccess == nil else { return }
+        switch reason {
+        case MusicAccessSentence.notRunning: musicAccess = .notRunning
+        case MusicAccessSentence.timedOut: musicAccess = .timedOut
+        default: musicAccess = .failed(reason)
+        }
     }
 
     // MARK: Transitions (each saved before the next entry is touched)

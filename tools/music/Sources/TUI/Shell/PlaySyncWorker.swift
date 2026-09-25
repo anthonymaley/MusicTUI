@@ -14,9 +14,11 @@ import Foundation
 /// is `PlaySyncRunning`; it reads the returned result and nothing else, and
 /// whether a problem is new is the pass's decision, not the worker's.
 ///
-/// The status line stays quiet: it hears only about plays just recorded and
-/// problems reported for the first time. A pass that did nothing, found Bridge
-/// or Music.app not running, or found another sync in progress posts nothing.
+/// The status line stays quiet: it hears only about plays just recorded,
+/// problems reported for the first time, and Music.app being found running but
+/// unusable, once per distinct reason until a pass uses Music.app again. A pass
+/// that did nothing, found Bridge or Music.app not running, or found another
+/// sync in progress posts nothing.
 final class PlaySyncWorker {
 
     /// Toast lifetimes, in seconds.
@@ -39,6 +41,11 @@ final class PlaySyncWorker {
             : "\(count) plays not recorded yet \u{2014} run music sync-plays"
     }
 
+    /// `Plays waiting: <why Music.app could not be used> — run music sync-plays`.
+    static func musicAccessSentence(_ error: MusicAccessError) -> String {
+        "Plays waiting: \(SyncPlaysSentence.musicAccessCause(error)) \u{2014} run music sync-plays"
+    }
+
     private let isBridgeSelected: () -> Bool
     private let runner: PlaySyncRunning
     private let post: (_ text: String, _ error: Bool, _ ttl: TimeInterval) -> Void
@@ -52,6 +59,9 @@ final class PlaySyncWorker {
     private let wake = DispatchSemaphore(value: 0)
     /// Signalled when the thread's loop returns.
     private let finished = DispatchSemaphore(value: 0)
+    /// The Music.app failure last posted. Touched only by `tickOnce`, which
+    /// runs on the worker's thread.
+    private var lastMusicAccess: MusicAccessError?
 
     init(isBridgeSelected: @escaping () -> Bool, runner: PlaySyncRunning,
          post: @escaping (_ text: String, _ error: Bool, _ ttl: TimeInterval) -> Void,
@@ -100,6 +110,17 @@ final class PlaySyncWorker {
         // is the toast left showing.
         if !result.newProblems.isEmpty {
             post(Self.problemSentence(result.newProblems.count), true, Self.problemTTL)
+        }
+        // Said once per distinct reason, not on every tick. Only a pass that
+        // used Music.app without a failure clears it; a pass that never
+        // reached Music.app says nothing either way.
+        if let access = result.musicAccess {
+            if access != lastMusicAccess {
+                lastMusicAccess = access
+                post(Self.musicAccessSentence(access), true, Self.problemTTL)
+            }
+        } else if result.blocked == nil && result.musicRunning {
+            lastMusicAccess = nil
         }
     }
 

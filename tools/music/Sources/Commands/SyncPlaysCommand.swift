@@ -46,6 +46,26 @@ enum SyncPlaysSentence {
         (n == 1 ? "1 play waiting" : "\(n) plays waiting")
             + ": Music.app is not running. Open Music.app and run music sync-plays again."
     }
+    /// Why Music.app, found running, could not be read or written. Shared
+    /// with the TUI's status line.
+    static func musicAccessCause(_ error: MusicAccessError) -> String {
+        switch error {
+        case .notRunning: return "Music.app quit while plays were being recorded"
+        case .timedOut: return "Music.app did not answer in time"
+        case .failed(let detail):
+            var trimmed = detail.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.hasSuffix(".") { trimmed.removeLast() }
+            return "Music.app could not be accessed (\(trimmed))"
+        }
+    }
+    /// `1 play waiting: <cause>. <next step>`; with nothing waiting (only
+    /// unconfirmed writes), the cause alone.
+    static func musicAccessFailed(_ error: MusicAccessError, waiting n: Int) -> String {
+        let prefix = n == 0 ? "" : (n == 1 ? "1 play waiting: " : "\(n) plays waiting: ")
+        let next = error == .notRunning ? "Open Music.app and run music sync-plays again."
+                                        : "Run music sync-plays again."
+        return prefix + musicAccessCause(error) + ". " + next
+    }
     static func unconfirmedHeader(_ n: Int) -> String { "Waiting for Music.app to confirm (\(n)):" }
     static let unconfirmedFooter = "  These, and later plays of the same songs, are checked again on every sync."
     static let bridgeNotRunning = "Bridge is not running, so no new plays could be read."
@@ -92,8 +112,9 @@ enum SyncPlaysSentence {
 /// The whole output of `music sync-plays` for one pass, and its exit status.
 ///
 /// Exit 1 when the pass was blocked, when Music.app was not running while
-/// plays wait, or when new plays could not be read from Bridge. Unconfirmed
-/// and set-aside plays never change the exit status.
+/// plays wait, when Music.app was running but could not be read or written,
+/// or when new plays could not be read from Bridge. Unconfirmed and set-aside
+/// plays never change the exit status on their own.
 func renderSyncPlays(_ result: PlaySyncResult, json: Bool) -> (text: String, exit: Int32) {
     typealias S = SyncPlaysSentence
     var lines: [String] = []
@@ -142,6 +163,10 @@ func renderSyncPlays(_ result: PlaySyncResult, json: Bool) -> (text: String, exi
         }
         if !result.musicRunning && result.waiting > 0 {
             let sentence = S.musicNotRunning(waiting: result.waiting)
+            notices.append(sentence); failure = failure ?? sentence
+        }
+        if result.musicRunning, let access = result.musicAccess {
+            let sentence = S.musicAccessFailed(access, waiting: result.waiting)
             notices.append(sentence); failure = failure ?? sentence
         }
         if result.recorded.isEmpty && notices.isEmpty { lines.append(S.nothingNew) }
