@@ -251,6 +251,8 @@ final class ActionRoutingTests: XCTestCase {
         .radioSearch, .radioStationLookup, .radioStationPlay,
         // P8
         .discoverFeed, .playlistListing, .similar,
+        // P9 (D9 passed for both)
+        .recent, .rotation,
     ]
 
     func testTheDispatchedSetIsExactlyS7sPlusP6s() {
@@ -294,10 +296,9 @@ final class ActionRoutingTests: XCTestCase {
     /// Part 2 deletes each as it serves or refuses it: P6 retired
     /// `.catalogSearch`, P7 `.radioSearch`, P8 `.playlistListing`,
     /// `.discoverFeed`, `.similar` (served) and `.suggest`, `.newReleases`
-    /// (refused, Q1 default).
-    private let s8Migration: Set<MusicTUIAction> = [
-        .recent, .rotation,
-    ]
+    /// (refused, Q1 default), and P9 `.recent`, `.rotation` (served, D9
+    /// pass). None remains.
+    private let s8Migration: Set<MusicTUIAction> = []
 
     /// P6 deleted the catalogue search's line and its comment from the
     /// exceptions literal. STRUCTURAL: reads ActionRouting.swift's source text.
@@ -346,6 +347,37 @@ final class ActionRoutingTests: XCTestCase {
         }
         XCTAssertFalse(literal.contains("(P8)"), "their migration comments go with them")
         XCTAssertFalse(literal.contains("Part B's P8"), "their migration comments go with them")
+    }
+
+    /// P9 deleted the last two migration lines and their comments: the
+    /// exceptions literal names no migration exception at all.
+    /// STRUCTURAL: reads ActionRouting.swift's source text.
+    func testTheP9MigrationLinesAreDeletedAndNoneRemains() throws {
+        let file = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Sources/TUI/ActionRouting.swift")
+        let source = try String(contentsOf: file, encoding: .utf8)
+        guard let start = source.range(of: "let cliBridgeExceptions: Set<MusicTUIAction> = ["),
+              let end = source.range(of: "\n]\n", range: start.upperBound..<source.endIndex)
+        else { return XCTFail("cliBridgeExceptions literal not found") }
+        let literal = source[start.upperBound..<end.lowerBound]
+        XCTAssertFalse(literal.contains(".recent"), "P9 retired it")
+        XCTAssertFalse(literal.contains(".rotation"), "P9 retired it")
+        XCTAssertFalse(literal.contains("migration exception"), "no migration comment remains")
+        XCTAssertFalse(literal.contains("// M:"), "the M heading goes with its rows")
+    }
+
+    /// P9 [serve]: `recent` and `rotation` are dispatched from the CLI with
+    /// Bridge selected (`slice.recentTracks`, `slice.heavyRotation`), keep
+    /// their shipped route with Music.app selected, and are reads.
+    func testP9DispatchesRecentAndRotation() {
+        for action in [MusicTUIAction.recent, .rotation] {
+            XCTAssertTrue(cliDispatchedOnBridge.contains(action), "\(action)")
+            XCTAssertFalse(cliBridgeExceptions.contains(action), "\(action)")
+            XCTAssertEqual(routeAction(action, in: .source, from: .cli), .source, "\(action)")
+            XCTAssertEqual(routeAction(action, in: .musicApp, from: .cli), .musicApp, "\(action)")
+            XCTAssertFalse(requiresOutputLock(action), "\(action) is a read")
+        }
     }
 
     /// P8: discover, the playlist listings and `similar <title>` are
@@ -558,11 +590,15 @@ final class ActionRoutingTests: XCTestCase {
     /// TUI-column entries: `.playlistListing` (the ruling-12.1 listing row,
     /// which the Bridge-mode Playlists scene does not route through) and
     /// `.similar` (no TUI invoker; decided, not defaulted).
+    ///
+    /// P9 likewise: `.rotation` keeps its TUI-column refusal (no TUI invoker;
+    /// D10: the TUI column changes only by P2's two actions).
     func testDispatchedVerbsAreServedFromBothSurfaces() {
         let tuiColumnUnchanged: [MusicTUIAction: ActionRoute] = [
             .searchLibrary: .musicApp,
             .playlistListing: .musicApp,
             .similar: .refused("Not available through the source app in this version"),
+            .rotation: .refused("Heavy rotation has no MusicTUI Source route in this version"),
         ]
         for action in s7Dispatched {
             XCTAssertEqual(routeAction(action, in: .source, from: .cli), .source, "\(action)")

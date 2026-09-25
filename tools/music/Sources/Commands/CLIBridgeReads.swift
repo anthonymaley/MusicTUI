@@ -214,10 +214,9 @@ func playlistTracksJSON(playlist: String, tracks: [MusicRow]) -> String {
 
 // MARK: - History (D5 `slice.recentTracks`/`slice.heavyRotation`)
 
-/// The row to publish for one history SONG that carries a catalogue id
-/// (`.bridgeCatalog`, D6, D10 "numbered items only"). A library-only song (no
-/// `catalogueID`) is rendered but never published — it has no Bridge-owned
-/// catalogue identity to play by.
+/// The row to publish for one history item that is a catalogue song
+/// (`.bridgeCatalog`, D6, "numbered items only"). Anything else is rendered
+/// but never published: it has no Bridge-owned catalogue identity to play by.
 struct BridgeHistorySongRow: Equatable {
     let index: Int
     let title: String
@@ -226,12 +225,33 @@ struct BridgeHistorySongRow: Equatable {
     let catalogueID: String
 }
 
-/// Numbers only songs that carry a `catalogueID`, in reply order — a
-/// library-only song or a non-song item is skipped, never given a number.
+/// P9, the controller's ruling on D6 after B2 (recently played catalogue
+/// songs carry no `playParams.catalogId`): the catalogue id of a history
+/// item, decided by the resource `type` Bridge sent, never by the id's
+/// spelling.
+///
+/// - `songs`: a catalogue resource, so its own `id` IS its catalogue id.
+/// - `library-songs`: a catalogue song only through a non-empty `catalog_id`.
+/// - anything else (playlists, albums, stations, videos, a library song with
+///   no `catalog_id`): nil, listed unnumbered and never cached as playable.
+func historyCatalogueID(_ item: HistoryItem) -> String? {
+    switch item.type {
+    case "songs":
+        return item.id.isEmpty ? nil : item.id
+    case "library-songs":
+        guard let id = item.catalogueID, !id.isEmpty else { return nil }
+        return id
+    default:
+        return nil
+    }
+}
+
+/// Numbers only the items `historyCatalogueID` names, in reply order; every
+/// other item is skipped, never given a number.
 func historySongRows(_ items: [HistoryItem]) -> [BridgeHistorySongRow] {
     var rows: [BridgeHistorySongRow] = []
-    for item in items where item.type.contains("song") {
-        guard let catalogueID = item.catalogueID, !catalogueID.isEmpty else { continue }
+    for item in items {
+        guard let catalogueID = historyCatalogueID(item) else { continue }
         rows.append(BridgeHistorySongRow(index: rows.count + 1, title: item.name,
                                          artist: item.artist ?? "", album: item.album ?? "",
                                          catalogueID: catalogueID))
@@ -246,24 +266,25 @@ private func historyKindLabel(_ type: String) -> String {
     return s
 }
 
-/// P4: a song with a `catalogueID` is numbered, `N. Name — Artist[ [Album]]`;
-/// a song without one is unnumbered, `   Name[ — Artist] (library)`; any other
-/// type is unnumbered, `   Name[ — Artist] (<kind>)` — the shipped shapes and
-/// kind-stripping (`HistoryCommands.swift:93,95-96`). Numbering counts only the
-/// numbered rows. Empty prints the shipped `No <label> history.`.
+/// P4, numbering per P9: an item with a catalogue id (`historyCatalogueID`)
+/// is numbered, `N. Name — Artist[ [Album]]`; a `library-songs` item without
+/// one is unnumbered, `   Name[ — Artist] (library)`; any other type is
+/// unnumbered, `   Name[ — Artist] (<kind>)` — the shipped shapes and
+/// kind-stripping (`printHistorySongs`, `HistoryCommands.swift`). The numbers
+/// are exactly `historySongRows`' indexes. Empty prints the shipped
+/// `No <label> history.`.
 func historyLines(_ items: [HistoryItem], label: String) -> [String] {
     guard !items.isEmpty else { return ["No \(label) history."] }
     var lines: [String] = []
     var n = 0
     for item in items {
-        let isSong = item.type.contains("song")
-        if isSong, let catalogueID = item.catalogueID, !catalogueID.isEmpty {
+        if historyCatalogueID(item) != nil {
             n += 1
             let album = item.album.map { " [\($0)]" } ?? ""
             lines.append("\(n). \(item.name) — \(item.artist ?? "")\(album)")
         } else {
             let artist = item.artist.map { " — \($0)" } ?? ""
-            let kind = isSong ? "library" : historyKindLabel(item.type)
+            let kind = item.type == "library-songs" ? "library" : historyKindLabel(item.type)
             lines.append("   \(item.name)\(artist) (\(kind))")
         }
     }

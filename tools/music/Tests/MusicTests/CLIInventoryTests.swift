@@ -108,9 +108,10 @@ final class CLIInventoryTests: XCTestCase {
         Row(invocation: "discover --recent", command: "Discover", letter: .refused,
             enforcement: .bridgeBodyRefusal(.discoverFeed, bridgeDiscoverRecentRefusal), owner: "P8 (Q1: refuse)"),
 
-        // Migration exceptions [B]: shipped backends until Part B.
-        Row(invocation: "recent", command: "Recent", letter: .migration, enforcement: .route(.recent), owner: "S8"),
-        Row(invocation: "rotation", command: "Rotation", letter: .migration, enforcement: .route(.rotation), owner: "S8"),
+        // Part 2, P9 [serve]: D9 passed for both (b2/b2-summary.md), so the
+        // last two migration exceptions are served through Bridge.
+        Row(invocation: "recent", command: "Recent", letter: .served, enforcement: .route(.recent), owner: "S8, P9 (D9 pass: served)"),
+        Row(invocation: "rotation", command: "Rotation", letter: .served, enforcement: .route(.rotation), owner: "S8, P9 (D9 pass: served)"),
 
         // Named exceptions: run as shipped.
         Row(invocation: "add --id X / add <query> / add N (non-Bridge row)", command: "Add", letter: .exception, enforcement: .route(.addToLibrary), owner: "—"),
@@ -150,6 +151,8 @@ final class CLIInventoryTests: XCTestCase {
         .similar: "P8",
         .suggest: "P8",
         .newReleases: "P8",
+        .recent: "P9",
+        .rotation: "P9",
     ]
 
     /// The M rows still standing.
@@ -303,13 +306,31 @@ final class CLIInventoryTests: XCTestCase {
         // P8: playlist list, playlist tracks, discover and similar <title>
         // moved M → S; suggest --from and new-releases --artist M → R; and
         // `discover --recent`, refused in the Bridge body, is a row of its own
-        // (+1 row). Only recent and rotation remain M, for P9.
-        XCTAssertEqual(count(.served), 22)
+        // (+1 row).
+        // P9: recent and rotation moved M → S (D9 pass). No M row remains.
+        XCTAssertEqual(count(.served), 24)
         XCTAssertEqual(count(.refused), 23)
-        XCTAssertEqual(count(.migration), 2)
+        XCTAssertEqual(count(.migration), 0)
         XCTAssertEqual(count(.exception), 19)
         XCTAssertEqual(inventory.count, 66)
-        XCTAssertEqual(migrationActions, [.recent, .rotation], "only P9's two remain")
+        XCTAssertEqual(migrationActions, [], "Part B retired every migration exception")
+    }
+
+    /// P9, the M-set assertion (score D10): no Part 1 migration action remains
+    /// an exception. Every one is retired by a named step, none is in
+    /// `cliBridgeExceptions`, and no inventory row is still M. After P9
+    /// `cliBridgeExceptions` holds Part 1's E rows only.
+    func testNoPartOneMigrationExceptionRemains() {
+        XCTAssertTrue(migrationActions.isEmpty, "still M: \(migrationActions)")
+        XCTAssertEqual(Set(retiredMigrations.keys), partOneMigrationActions)
+        XCTAssertTrue(cliBridgeExceptions.isDisjoint(with: partOneMigrationActions),
+                      "still an exception: \(cliBridgeExceptions.intersection(partOneMigrationActions))")
+        XCTAssertTrue(inventory.allSatisfy { $0.letter != .migration })
+        var eRows: Set<MusicTUIAction> = []
+        for row in inventory where row.letter == .exception {
+            if case .route(let action) = row.enforcement { eRows.insert(action) }
+        }
+        XCTAssertEqual(cliBridgeExceptions, eRows, "only Part 1's E rows")
     }
 
     // MARK: - The gate comes first (STRUCTURAL: source text, not execution evidence)

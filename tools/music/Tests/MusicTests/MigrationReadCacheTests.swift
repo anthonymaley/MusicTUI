@@ -79,19 +79,18 @@ final class MigrationReadCacheTests: XCTestCase {
         try assertAMigrationReadsRowsNeverFeedBridgePlay(origin: .library)
     }
 
-    /// The migration reads route as shipped on Bridge (they are exceptions,
-    /// not dispatched), so none of them can publish a Bridge row: only the
-    /// dispatched `search --library` writes `.bridgeLibrary`, and the
-    /// dispatched catalogue search `.bridgeCatalog`. Part 2 P8 retired
-    /// discover, the playlist listings, similar, suggest and new-releases
-    /// (`testTheP8MigrationExceptionsAreRetired`); `recent` and `rotation`
-    /// remain for P9.
-    func testTheMigrationReadsAreExceptionsNotDispatched() {
+    /// Part 2 retired every migration read: P6 catalogue search, P7 radio
+    /// search, P8 discover, the playlist listings, similar, suggest and
+    /// new-releases (`testTheP8MigrationExceptionsAreRetired`), and P9
+    /// `recent` and `rotation`, now dispatched to Bridge (their numbered rows
+    /// are `.bridgeCatalog`, written from Bridge's typed history items). No
+    /// read keeps its shipped backend on Bridge; the tests above still pin
+    /// that a `.catalog`/`.library` row never feeds Bridge `play N`.
+    func testNoMigrationReadRemainsAnException() {
         for action in [MusicTUIAction.recent, .rotation] {
-            XCTAssertTrue(cliBridgeExceptions.contains(action), "\(action)")
-            XCTAssertFalse(cliDispatchedOnBridge.contains(action), "\(action)")
-            XCTAssertEqual(routeAction(action, in: .source, from: .cli),
-                           routeAction(action, in: .musicApp, from: .cli), "\(action)")
+            XCTAssertFalse(cliBridgeExceptions.contains(action), "\(action)")
+            XCTAssertTrue(cliDispatchedOnBridge.contains(action), "\(action)")
+            XCTAssertEqual(routeAction(action, in: .source, from: .cli), .source, "\(action)")
         }
     }
 
