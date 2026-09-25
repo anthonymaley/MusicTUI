@@ -262,26 +262,48 @@ let cliDispatchedOnBridge: Set<MusicTUIAction> = [
     .searchLibrary,
 ]
 
-/// CLI actions that keep their shipped backend while Bridge is selected.
+/// CLI actions that keep their shipped backend while Bridge is selected
+/// (slice 3 S8, section 2 of the Part 1 score). Written as a literal, never
+/// derived: an action added later must be placed here by decision, and
+/// `CLIInventoryTests` fails until every CLI command is classified.
 ///
-/// **Temporary, S6.** Every action that is neither dispatched, a current-track
-/// reader, nor playback, which is exactly the set that behaved as it shipped
-/// before slice 3. S7 moved `.searchLibrary` out: it dispatches to Bridge. S8 narrows it to section 2's E rows (plus, under Option B,
-/// the M rows as commented migration exceptions). Written as a literal, never
-/// derived: an action added later must be placed here by decision.
+/// Two kinds, and only these:
+///
+/// - **Named exceptions (E)**, not temporary: explicit library management
+///   (Anthony, 2026-09-16 13:36), MusicTUI's own state, and the Music.app
+///   settings spec 6.4 marks Unaffected.
+/// - **Migration exceptions (M)**, temporary, by Anthony's Q2 ruling [B]
+///   (2026-09-25): read-only lookups that keep their shipped backends until
+///   Part B serves or refuses each one. They may need a developer key and can
+///   show Music.app's library, and their cached results never feed Bridge
+///   `play N` (score D3; `MigrationReadCacheTests`). Each is commented with the
+///   Part B op that retires it; Part B deletes the line and its comment.
+///
+/// Not here: volume and speakers (refused on Bridge, S8), anything that plays,
+/// the current-track readers, and TUI-only rows no CLI verb reaches.
 let cliBridgeExceptions: Set<MusicTUIAction> = [
-    // Reads.
-    .libraryListing, .playlistListing, .discoverFeed, .discoverRefresh,
-    .catalogSearch, .radioSearch, .recent, .rotation,
-    .newReleases, .similar, .suggest,
-    // Explicit library management (Anthony, 2026-09-16 13:36).
-    .addToLibrary, .playlistWrite, .playlistShare, .cliMix,
-    // MusicTUI's own state, and Music.app settings.
-    .radioFavourite, .radioAddURL, .auth,
-    .genius, .eq, .visualizer,
-    .libraryArtistTierFilter, .playlistsOpenNowPlaying, .libraryRetry,
-    // Refused by S8, not yet.
-    .airplayRoute, .volume,
+    // E: explicit library management (Anthony, 2026-09-16 13:36).
+    .addToLibrary,
+    .playlistWrite,
+    .playlistShare,
+    .cliMix,
+    // E: MusicTUI's own state. `radio add` saves a local favourite; its REST
+    // name lookup is as shipped ([B]) until Part B's P7 moves it to `slice.station`.
+    .radioAddURL,
+    .auth,
+    // E: Music.app settings (spec 6.4, Unaffected).
+    .eq,
+    .visualizer,
+    // M: temporary migration exceptions [B].
+    .catalogSearch,     // migration exception until Part B's slice.search (P6)
+    .playlistListing,   // migration exception until Part B's slice.libraryPlaylists / slice.libraryPlaylistTracks (P8)
+    .radioSearch,       // migration exception until Part B's slice.searchStations (P7)
+    .discoverFeed,      // migration exception until Part B's slice.recommendations (P8)
+    .similar,           // migration exception until Part B's slice.search (P8)
+    .suggest,           // migration exception until Part B's P8, which refuses it (no Bridge op; Q1 default)
+    .newReleases,       // migration exception until Part B's P8, which refuses it (no Bridge op; Q1 default)
+    .recent,            // migration exception until Part B's slice.recentTracks (P9, served on a D9 pass, else refused)
+    .rotation,          // migration exception until Part B's slice.heavyRotation (P9, served on a D9 pass, else refused)
 ]
 
 /// D7's reason for a CLI action Bridge does not serve. Shuffle and repeat

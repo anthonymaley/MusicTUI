@@ -6,7 +6,10 @@ struct Vol: ParsableCommand {
     @Argument(help: "Volume level (0-100), 'up', 'down', or speaker name") var args: [String] = []
     @Flag(name: .long, help: "Output JSON") var json = false
 
+    // Slice 3 S8: with Bridge selected, volume refuses first, in the TUI
+    // table's words (Bridge plays at the Mac's output level).
     func run() throws {
+        try refuseInBridge(.volume, json: json)
         let backend = AppleScriptBackend()
 
         if args.isEmpty {
