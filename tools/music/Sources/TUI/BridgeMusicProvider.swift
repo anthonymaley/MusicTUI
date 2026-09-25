@@ -97,6 +97,83 @@ struct BridgeMusicProvider: MusicDataProvider {
         catch let error as SourceAppError { throw Self.translate(error) }
     }
 
+    // MARK: - Part 2 surfaces (D1)
+    //
+    // **D2: the five members that replace an existing `SourceAppClient` member
+    // (rails, tracks, station search, station play, catalogue queue) are NOT
+    // translated.** They delegate to the shipped decoders and rethrow their
+    // `SourceAppError` unchanged, so when a scene is folded onto this seam
+    // every sentence it shows today stays byte-identical. The new reads (Live,
+    // Personal, lookup, catalogue search, history) go through `translate`.
+
+    /// Bridge needs no developer key and no web sign-in (D4).
+    var feedAvailable: Bool { true }
+    var catalogueAvailable: Bool { true }
+
+    /// D2: `BridgeDiscoverFeed`'s rails, errors unchanged.
+    func discoverRails(limit: Int) throws -> [DiscoverRail] {
+        try control.recommendations(limit: limit)
+    }
+
+    /// D2: `BridgeDiscoverFeed`'s tracks, errors unchanged.
+    func containerTracks(for item: DiscoverItem) throws -> [DiscoverItem] {
+        try control.containerTracks(for: item)
+    }
+
+    /// D2: `SourceAppStationSearch`'s bytes and refusal decoding, unchanged.
+    func searchStations(term: String, limit: Int) throws -> [Station] {
+        try control.searchStations(term: term, limit: limit)
+    }
+
+    /// D2: `slice.playStation`, errors unchanged. Bridge plays by id; `url` is
+    /// open mode's play handle and is not sent.
+    func playStation(id: String, name: String, url: String?) throws {
+        _ = url
+        try control.playStation(id: id, named: name)
+    }
+
+    /// D2: the shipped `slice.queue {"ids"}`, errors unchanged, returning
+    /// `skipped_unavailable`.
+    func playCatalogue(ids: [String]) throws -> Int {
+        try control.queueReportingSkips(catalogIDs: ids)
+    }
+
+    /// D5, translated.
+    func liveStations() throws -> [Station] {
+        do { return try control.liveStations() }
+        catch let error as SourceAppError { throw Self.translate(error) }
+    }
+
+    /// D5, translated.
+    func personalStations() throws -> [Station] {
+        do { return try control.personalStations() }
+        catch let error as SourceAppError { throw Self.translate(error) }
+    }
+
+    /// D5, translated. nil is Apple not carrying the station, not a failure.
+    func station(id: String) throws -> Station? {
+        do { return try control.station(id: id) }
+        catch let error as SourceAppError { throw Self.translate(error) }
+    }
+
+    /// D5, translated.
+    func searchCatalogue(term: String, limit: Int) throws -> [CatalogueRecord] {
+        do { return try control.searchCatalogue(term: term, limit: limit) }
+        catch let error as SourceAppError { throw Self.translate(error) }
+    }
+
+    /// D5, translated.
+    func recentTracks(limit: Int) throws -> [HistoryItem] {
+        do { return try control.recentTracks(limit: limit) }
+        catch let error as SourceAppError { throw Self.translate(error) }
+    }
+
+    /// D5, translated.
+    func heavyRotation(limit: Int) throws -> [HistoryItem] {
+        do { return try control.heavyRotation(limit: limit) }
+        catch let error as SourceAppError { throw Self.translate(error) }
+    }
+
     /// Bridge's refusals, in the seam's words.
     ///
     /// **Every outcome that drives behaviour is decided on the wire's KIND, and
@@ -143,7 +220,10 @@ struct BridgeMusicProvider: MusicDataProvider {
     /// sentences, so a provider that never reaches Bridge at all (an absent
     /// method) and a provider that reaches an old Bridge (`unknown_op`) read
     /// identically to a person.
-    private static func unsupportedSentence(forWireOp op: String) -> String {
+    ///
+    /// Part 2 (P1) adds one per new read op; the seam's defaults for those
+    /// reads call this function rather than repeating the text.
+    static func unsupportedSentence(forWireOp op: String) -> String {
         switch op {
         case "slice.libraryAlbums":
             return "This Bridge build can't list your albums — update Bridge"
@@ -159,6 +239,18 @@ struct BridgeMusicProvider: MusicDataProvider {
             return "This Bridge build can't list your playlists — update Bridge"
         case "slice.libraryPlaylistTracks":
             return "This Bridge build can't list a playlist's tracks — update Bridge"
+        case "slice.search":
+            return "This Bridge build can't search the catalogue — update Bridge"
+        case "slice.liveStations":
+            return "This Bridge build can't list live stations — update Bridge"
+        case "slice.personalStations":
+            return "This Bridge build can't show your personal station — update Bridge"
+        case "slice.station":
+            return "This Bridge build can't look up a station — update Bridge"
+        case "slice.recentTracks":
+            return "This Bridge build can't show your listening history — update Bridge"
+        case "slice.heavyRotation":
+            return "This Bridge build can't show heavy rotation — update Bridge"
         default:
             return "Bridge doesn't serve that yet — update Bridge"
         }

@@ -115,11 +115,13 @@ enum MusicProviderError: Error, LocalizedError, Equatable {
 /// whole of the 2026-09-23 product decision. A provider never falls back to the
 /// other backend: a failure is reported as its own backend's failure (rule 3).
 ///
-/// Only the operations the first vertical slice needs are declared here. The
-/// rest of the seam (playlists, container tracks, search, Discover rails,
-/// stations, history) arrives with its own migration step rather than as empty
-/// methods nobody implements.
-protocol MusicDataProvider {
+/// The library reads are declared here. Slice 3, Part 2 (D1) adds Discover,
+/// stations, catalogue playback, catalogue search and history as five separate
+/// surfaces (`ProviderSurfaces.swift`), which this protocol refines so the
+/// Bridge provider serves them all while an open-mode provider conforms to only
+/// the ones Music.app mode serves by id.
+protocol MusicDataProvider: DiscoverProviding, StationProviding, CataloguePlaying,
+                            CatalogueSearching, HistoryProviding {
     /// A page of the library's songs. `cursor` nil starts at the beginning.
     func librarySongs(cursor: String?, limit: Int) throws -> MusicPage
     /// A page of the library's albums (D1): MusicKit's own album entities, not
@@ -201,6 +203,56 @@ extension MusicDataProvider {
     func playReportingSkips(ids: [String], startRequired: Bool) throws -> (queue: BridgeNow.Queue, skippedUnavailable: Int) {
         _ = startRequired
         return (try play(ids: ids), 0)
+    }
+}
+
+/// Part 2 (D1): defaults for the five surfaces, so every provider written
+/// before them (the test fakes above all) keeps compiling. Each read that has
+/// a wire op of its own says exactly what `BridgeMusicProvider` says for an
+/// older Bridge's `unknown_op` on that op.
+///
+/// **Available by default.** A `MusicDataProvider` is the Bridge seam, and
+/// Bridge needs no developer key or web sign-in for Discover or stations (D4);
+/// a fake that does not implement a read says so when it is asked, rather than
+/// pretending the surface does not exist.
+extension MusicDataProvider {
+    var feedAvailable: Bool { true }
+    var catalogueAvailable: Bool { true }
+
+    func discoverRails(limit: Int) throws -> [DiscoverRail] {
+        throw MusicProviderError.notImplemented("This Bridge build can't show Discover — update Bridge")
+    }
+    func containerTracks(for item: DiscoverItem) throws -> [DiscoverItem] {
+        throw MusicProviderError.notImplemented("This Bridge build can't list a Discover item's tracks — update Bridge")
+    }
+    func searchStations(term: String, limit: Int) throws -> [Station] {
+        throw MusicProviderError.notImplemented("This Bridge build can't search stations — update Bridge")
+    }
+    func liveStations() throws -> [Station] {
+        throw MusicProviderError.notImplemented(BridgeMusicProvider.unsupportedSentence(forWireOp: "slice.liveStations"))
+    }
+    func personalStations() throws -> [Station] {
+        throw MusicProviderError.notImplemented(
+            BridgeMusicProvider.unsupportedSentence(forWireOp: "slice.personalStations"))
+    }
+    func station(id: String) throws -> Station? {
+        throw MusicProviderError.notImplemented(BridgeMusicProvider.unsupportedSentence(forWireOp: "slice.station"))
+    }
+    func playStation(id: String, name: String, url: String?) throws {
+        throw MusicProviderError.notImplemented("This Bridge build can't play a station — update Bridge")
+    }
+    func playCatalogue(ids: [String]) throws -> Int {
+        throw MusicProviderError.notImplemented("This Bridge build can't play catalogue songs — update Bridge")
+    }
+    func searchCatalogue(term: String, limit: Int) throws -> [CatalogueRecord] {
+        throw MusicProviderError.notImplemented(BridgeMusicProvider.unsupportedSentence(forWireOp: "slice.search"))
+    }
+    func recentTracks(limit: Int) throws -> [HistoryItem] {
+        throw MusicProviderError.notImplemented(BridgeMusicProvider.unsupportedSentence(forWireOp: "slice.recentTracks"))
+    }
+    func heavyRotation(limit: Int) throws -> [HistoryItem] {
+        throw MusicProviderError.notImplemented(
+            BridgeMusicProvider.unsupportedSentence(forWireOp: "slice.heavyRotation"))
     }
 }
 
