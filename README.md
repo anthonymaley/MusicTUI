@@ -227,6 +227,30 @@ A station plays via its Apple Music share URL with the scheme swapped from `http
 
 Apple's station search is shallow (5-7 results, no pagination) and misses real stations outright: it can't find BBC Radio 1 by name or even by its own catalog id, though the station plays fine once you have its URL. Pasting a URL always works; search sometimes doesn't. Get one from music.apple.com or the Music app's share menu.
 
+### Bridge (MusicTUI's own player)
+
+Bridge is MusicTUI's own built-in player, an alternative to sending playback
+through Music.app. It's chosen from the TUI's **Output** tab; with Bridge
+selected, `music now --json` reports `"output": "bridge"`.
+
+```bash
+music play --playlist "Top 25 Most Played"     # plays in order; add "shuffle" to shuffle it
+music play --album "Kid A" --artist "Radiohead"
+music play --song "Idioteque" --artist "Radiohead"
+music search --library "Idioteque"             # then: music play N
+```
+
+The CLI plays from Bridge's own library through those explicit forms. Plain
+`music play <words>` (the fast path above), catalog playback, radio playback,
+shuffle/repeat mode, volume, and speaker routing all refuse with Bridge
+selected — there's no fast-path parsing, catalog fallback, or AirPlay routing
+from the CLI on Bridge yet. Use the flags above, use MusicTUI, or switch
+Output back to Music.app. Search, Discover, history, and playlist listings
+keep working on their existing backend either way, but a numbered result only
+plays back on the source that produced it: search Bridge's own library with
+`music search --library` before `music play N` if Bridge is selected. The
+`/music` skill reference has the full command-by-command breakdown.
+
 ## CLI Commands
 
 ```
