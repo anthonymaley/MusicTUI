@@ -41,7 +41,9 @@ func refuseInBridge(_ action: MusicTUIAction, json: Bool = false,
 func cliFailureText(_ message: String, json: Bool) -> String {
     guard json else { return message }
     let body: [String: Any] = ["ok": false, "error": message]
-    let data = (try? JSONSerialization.data(withJSONObject: body)) ?? Data()
+    // Sorted keys: a dictionary's order varies between calls, so without this
+    // the same refusal printed different bytes (found by S7, 2026-09-25).
+    let data = (try? JSONSerialization.data(withJSONObject: body, options: [.sortedKeys])) ?? Data()
     return String(decoding: data, as: UTF8.self)
 }
 
