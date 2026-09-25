@@ -30,7 +30,7 @@ final class PlaylistIndexBoundaryTests: XCTestCase {
         return (captured.output, captured.error, calls)
     }
 
-    private let refusal = "Result(s) 2, 3 came from Bridge's library. Adding Bridge rows to your library or a playlist isn't supported yet; search again with Output set to Music.app."
+    private let refusal = "Result(s) 2, 3 came from Bridge. Adding Bridge rows to your library or a playlist isn't supported yet; search again with Output set to Music.app."
 
     private func writeMixed() throws {
         try h.cache.writeSongs([
@@ -66,7 +66,7 @@ final class PlaylistIndexBoundaryTests: XCTestCase {
     func testCreateWithOnlyLibraryAndBridgeRowsRefusesWhole() throws {
         try writeMixed()
         let r = try create(["Mix", "4", "2"])
-        XCTAssertEqual(r.output, "Result(s) 2 came from Bridge's library. Adding Bridge rows to your library or a playlist isn't supported yet; search again with Output set to Music.app.\n")
+        XCTAssertEqual(r.output, "Result(s) 2 came from Bridge. Adding Bridge rows to your library or a playlist isn't supported yet; search again with Output set to Music.app.\n")
         XCTAssertEqual(h.authReads, 0)
         XCTAssertEqual(r.calls, [], "no AppleScript make/duplicate")
     }
@@ -123,7 +123,7 @@ final class PlaylistIndexBoundaryTests: XCTestCase {
     func testAddWithLibraryAndBridgeRowsRefusesWholeWithoutTokens() throws {
         try writeMixed()
         let r = try add(["Mix", "4", "3", "2"])
-        XCTAssertEqual(r.output, "Result(s) 3, 2 came from Bridge's library. Adding Bridge rows to your library or a playlist isn't supported yet; search again with Output set to Music.app.\n",
+        XCTAssertEqual(r.output, "Result(s) 3, 2 came from Bridge. Adding Bridge rows to your library or a playlist isn't supported yet; search again with Output set to Music.app.\n",
                        "Bridge rows are named in the order they were typed")
         XCTAssertEqual((r.error as? ExitCode), .failure)
         XCTAssertEqual(h.authReads, 0)

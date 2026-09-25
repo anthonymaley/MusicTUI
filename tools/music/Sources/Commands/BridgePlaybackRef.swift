@@ -1,12 +1,15 @@
 import Foundation
 
-/// What the CLI asks Bridge to play (score D2). There is no catalogue or
-/// station case until its first caller; exhaustive switches then force it.
+/// What the CLI asks Bridge to play (score D2). There is no station case
+/// until its first caller (Part 2, P7); exhaustive switches then force it.
 enum BridgePlaybackRef: Equatable {
     /// `slice.play`: resume whatever Bridge has loaded.
     case resume
     /// `slice.queue` with `library_ids`.
     case libraryQueue(ids: [String], startRequired: Bool)
+    /// `slice.queue` with `ids`: catalogue ids a Bridge op produced (a
+    /// `.bridgeCatalog` row) or a song link named (Part 2 D6, D7).
+    case catalogueQueue(ids: [String])
 }
 
 /// Bridge `play N`: queue the row, or refuse it with a sentence.
@@ -23,7 +26,9 @@ enum MusicAppIndexRoute: Equatable {
 
 /// The only way a cached row becomes a Bridge reference. Decides by `origin`
 /// and never reads the id's text, so a catalogue or Music.app row whose id
-/// happens to look like a library id is still refused (score D3).
+/// happens to look like a library (or catalogue) id is still refused (score
+/// D3; Part 2 D6). The origin names the namespace: a `.bridgeLibrary` id is
+/// queued as a library id, a `.bridgeCatalog` id as a catalogue id.
 func bridgeRef(forCachedRow row: SongResult, index: Int) -> BridgeIndexRoute {
     switch row.origin {
     case .bridgeLibrary:
@@ -31,35 +36,47 @@ func bridgeRef(forCachedRow row: SongResult, index: Int) -> BridgeIndexRoute {
             return .refuse("Result \(index) has no Bridge id; run the search again.")
         }
         return .queue(.libraryQueue(ids: [id], startRequired: true))
+    case .bridgeCatalog:
+        guard let id = row.bridgeID, !id.isEmpty else {
+            return .refuse("Result \(index) has no Bridge id; run the search again.")
+        }
+        return .queue(.catalogueQueue(ids: [id]))
     case .catalog, .library:
-        return .refuse("Result \(index) came from a Music.app or catalogue listing, so Bridge can't play it by its own id. With Bridge selected, run: music search --library \"\(row.title)\"  then  music play N")
+        // D10 (Part 2): replaces Part 1's `search --library` hint, since a
+        // Bridge catalogue search now produces playable rows too.
+        return .refuse("Result \(index) came from a Music.app or catalogue listing, so Bridge can't play it by its own id. With Bridge selected, run: music search \"\(row.title)\"  then  music play N")
     }
 }
 
-/// Music.app `play N` for a cached row: a Bridge row, with or without its id,
-/// is refused; every other origin keeps the shipped re-resolve (score D3).
+/// Music.app `play N` for a cached row: a Bridge row, library or catalogue,
+/// with or without its id, is refused; every other origin keeps the shipped
+/// re-resolve (score D3; Part 2 D6, D10).
 func musicAppIndexRoute(forCachedRow row: SongResult, index: Int) -> MusicAppIndexRoute {
     switch row.origin {
     case .bridgeLibrary:
         return .refuse("Result \(index) came from Bridge's library, which Music.app can't play by identity. Search again with Output set to Music.app, or switch Output to Bridge.")
+    case .bridgeCatalog:
+        return .refuse("Result \(index) came from Bridge's catalogue search, which Music.app can't play by identity. Search again with Output set to Music.app, or switch Output to Bridge.")
     case .catalog, .library:
         return .reResolveByTitle
     }
 }
 
 /// `add N` and `playlist create/add` with indices: if ANY resolved row is a
-/// Bridge row, the whole command is refused, naming every Bridge row. nil when
-/// there are none. Called before any token read, AppleScript or REST.
+/// Bridge row (library or catalogue), the whole command is refused, naming
+/// every Bridge row. nil when there are none. Called before any token read,
+/// AppleScript or REST. A `.bridgeCatalog` row is refused by Anthony's Q3
+/// default (Part 2 P6A, which would allow it, is out).
 func bridgeRowsRefusal(_ rows: [SongResult]) -> String? {
     let bridgeIndices: [Int] = rows.compactMap { row in
         switch row.origin {
-        case .bridgeLibrary: return row.index
+        case .bridgeLibrary, .bridgeCatalog: return row.index
         case .catalog, .library: return nil
         }
     }
     guard !bridgeIndices.isEmpty else { return nil }
     let list = bridgeIndices.map(String.init).joined(separator: ", ")
-    return "Result(s) \(list) came from Bridge's library. Adding Bridge rows to your library or a playlist isn't supported yet; search again with Output set to Music.app."
+    return "Result(s) \(list) came from Bridge. Adding Bridge rows to your library or a playlist isn't supported yet; search again with Output set to Music.app."
 }
 
 /// Print a cached-row refusal the way the Bridge gate prints its refusals

@@ -23,7 +23,7 @@ final class AddCommandBoundaryTests: XCTestCase {
         return (captured.output, captured.error, calls)
     }
 
-    private let refusal2 = "Result(s) 2 came from Bridge's library. Adding Bridge rows to your library or a playlist isn't supported yet; search again with Output set to Music.app."
+    private let refusal2 = "Result(s) 2 came from Bridge. Adding Bridge rows to your library or a playlist isn't supported yet; search again with Output set to Music.app."
 
     func testBridgeRowIsRefusedBeforeAnyTokenOrExternalCall() throws {
         try h.cache.writeSongs([.row(1, .catalog), .row(2, .bridgeLibrary, bridgeID: "12345")])

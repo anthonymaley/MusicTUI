@@ -238,16 +238,22 @@ final class ActionRoutingTests: XCTestCase {
     /// transport verbs, then S7's `music play` forms (resume, index, playlist,
     /// album, song, artist) and `search --library`. Free words and Apple Music
     /// links are NOT in it (Anthony's Q1 ruling; catalogue play deferred).
+    ///
+    /// Part 2, P6 adds the catalogue search (`slice.search`) and the Apple
+    /// Music song link (`slice.queue {"ids"}`, D7). Free words still refuse.
     private let s7Dispatched: Set<MusicTUIAction> = [
         .nowStatus, .playPause, .next, .previous, .seek, .stop,
         .cliPlayResume, .cliPlayIndex, .cliPlayPlaylist, .cliPlayAlbum, .cliPlaySong, .cliPlayArtist,
         .searchLibrary,
+        // P6
+        .catalogSearch, .cliPlayCatalogSong,
     ]
 
-    func testTheDispatchedSetIsExactlyS7s() {
+    func testTheDispatchedSetIsExactlyS7sPlusP6s() {
         XCTAssertEqual(cliDispatchedOnBridge, s7Dispatched)
         XCTAssertFalse(cliDispatchedOnBridge.contains(.cliPlayQuery), "Q1: plain music play <words> refuses")
-        XCTAssertFalse(cliDispatchedOnBridge.contains(.cliPlayCatalogSong), "catalogue play is deferred")
+        XCTAssertTrue(cliDispatchedOnBridge.contains(.cliPlayCatalogSong), "P6: song links play through Bridge")
+        XCTAssertTrue(cliDispatchedOnBridge.contains(.catalogSearch), "P6: catalogue search reads Bridge")
         XCTAssertFalse(cliDispatchedOnBridge.contains(.collectionShuffle))
     }
 
@@ -281,10 +287,26 @@ final class ActionRoutingTests: XCTestCase {
     /// Section 2's M rows under Anthony's Q2 ruling [B]: the read-only lookups
     /// that keep their shipped backends as temporary migration exceptions until
     /// Part B serves or refuses each one.
+    /// Part 2 deletes each as it serves or refuses it: P6 retired `.catalogSearch`.
     private let s8Migration: Set<MusicTUIAction> = [
-        .catalogSearch, .playlistListing, .radioSearch, .discoverFeed,
+        .playlistListing, .radioSearch, .discoverFeed,
         .similar, .suggest, .newReleases, .recent, .rotation,
     ]
+
+    /// P6 deleted the catalogue search's line and its comment from the
+    /// exceptions literal. STRUCTURAL: reads ActionRouting.swift's source text.
+    func testTheCatalogueSearchMigrationLineIsDeleted() throws {
+        let file = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Sources/TUI/ActionRouting.swift")
+        let source = try String(contentsOf: file, encoding: .utf8)
+        guard let start = source.range(of: "let cliBridgeExceptions: Set<MusicTUIAction> = ["),
+              let end = source.range(of: "\n]\n", range: start.upperBound..<source.endIndex)
+        else { return XCTFail("cliBridgeExceptions literal not found") }
+        let literal = source[start.upperBound..<end.lowerBound]
+        XCTAssertFalse(literal.contains(".catalogSearch"), "P6 retired it")
+        XCTAssertFalse(literal.contains("slice.search (P6)"), "its migration comment goes with it")
+    }
 
     /// S8 closes the inventory: the exception set is exactly section 2's E
     /// rows plus the M rows, and nothing else. `.volume` and `.airplayRoute`
@@ -372,8 +394,7 @@ final class ActionRoutingTests: XCTestCase {
                        "Shuffle and repeat modes are Music.app only for now")
         XCTAssertEqual(routeAction(.cliPlayQuery, in: .source, from: .cli),
                        .refused("Bridge output is selected, and music play <words> isn't available from the CLI on Bridge yet. Use MusicTUI, or switch Output to Music.app."))
-        XCTAssertEqual(routeAction(.cliPlayCatalogSong, in: .source, from: .cli),
-                       .refused("Bridge output is selected, and music play <Apple Music link> isn't available from the CLI on Bridge yet. Use MusicTUI, or switch Output to Music.app."))
+        XCTAssertEqual(routeAction(.cliPlayCatalogSong, in: .source, from: .cli), .source, "P6: dispatched")
         XCTAssertEqual(cliBridgeNotServedReason(.radioStationPlay),
                        "Bridge output is selected, and music radio play isn't available from the CLI on Bridge yet. Use MusicTUI, or switch Output to Music.app.")
     }

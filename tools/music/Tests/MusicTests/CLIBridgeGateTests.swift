@@ -10,9 +10,11 @@ final class CLIBridgeGateTests: XCTestCase {
     // MARK: - The decision
 
     /// Slice 3 D7: the playback verbs Bridge does not serve from the CLI yet
-    /// refuse in their not-served words.
+    /// refuse in their not-served words. (Part 2, P6: the Apple Music song link
+    /// left this list; it is dispatched, so the gate fails closed on it below.)
     func testUnservedPlaybackVerbsRefuseWithTheirD7WordsOnBridge() {
-        let verbs: [MusicTUIAction] = [.cliPlayQuery, .cliPlayCatalogSong, .persistentShuffleMode,
+        XCTAssertEqual(cliBridgeRefusal(.cliPlayCatalogSong, mode: .source), cliGateOnDispatchedAction)
+        let verbs: [MusicTUIAction] = [.cliPlayQuery, .persistentShuffleMode,
                                        .persistentRepeatMode, .radioStationPlay, .playlistTemp]
         for action in verbs {
             XCTAssertEqual(cliBridgeRefusal(action, mode: .source), cliBridgeNotServedReason(action), "\(action)")
