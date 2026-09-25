@@ -477,6 +477,90 @@ final class RadioProviderTests: XCTestCase {
         XCTAssertEqual(r.scene.live.map(\.name), ["REST Live"])
     }
 
+    // MARK: - Epoch-monotonic inboxes: a stale post never replaces a fresh one
+    //
+    // Codex, Part 2 review: each inbox is one slot. When the new output's post
+    // is written FIRST and the old output's lands after it, a last-writer-wins
+    // slot kept the stale one, the drain dropped it, and the fetch flags stayed
+    // set — the fresh result was lost with no retry. Each test pins that order
+    // with `postsOffered` (no tick runs between the two writes), then ticks once.
+
+    /// Waits, without ticking, until `check` holds. Bounded; no sleep.
+    private func waitWithoutTicking(_ what: String, _ check: () -> Bool) {
+        let deadline = Date().addingTimeInterval(5)
+        while !check() && Date() < deadline {}
+        XCTAssertTrue(check(), "\(what) never happened")
+    }
+
+    func testAFreshBrowsePostWrittenBeforeAStaleOneStillLands() throws {
+        let r = rig(mode: .source, catalog: true)
+        let bridgeLive = r.wire.hold("slice.liveStations")
+        let bridgePersonal = r.wire.hold("slice.personalStations")
+        _ = r.scene.tick(snapshot: idle)
+        wait(bridgeLive.entered, "the Bridge Live read")
+        wait(bridgePersonal.entered, "the Bridge Personal read")
+
+        try switchTo(.musicApp, r.routing)
+        let restLive = r.rest.hold(matching: "filter[featured]")
+        let restPersonal = r.rest.hold(matching: "filter[identity]")
+        _ = r.scene.tick(snapshot: idle)            // resets; starts the REST reads
+        wait(restLive.entered, "the REST Live read")
+        wait(restPersonal.entered, "the REST Personal read")
+
+        // Fresh first, and written before anything drains.
+        restLive.release.signal(); restPersonal.release.signal()
+        waitWithoutTicking("the fresh posts") {
+            r.scene.postsOffered("live") == 1 && r.scene.postsOffered("personal") == 1
+        }
+        // Then the stale ones, also written before anything drains.
+        bridgeLive.release.signal(); bridgePersonal.release.signal()
+        waitWithoutTicking("the stale posts") {
+            r.scene.postsOffered("live") == 2 && r.scene.postsOffered("personal") == 2
+        }
+
+        _ = r.scene.tick(snapshot: idle)
+        XCTAssertEqual(r.scene.live.map(\.name), ["REST Live"], "the fresh Live result was lost")
+        XCTAssertEqual(r.scene.personal.map(\.name), ["REST Personal"], "the fresh Personal result was lost")
+        XCTAssertTrue(r.scene.liveLoaded)
+        XCTAssertTrue(r.scene.personalLoaded)
+    }
+
+    func testAFreshSearchWrittenBeforeAStaleOneStillShowsItsHits() throws {
+        let r = rig(mode: .source, catalog: true)
+        let bridgeSearch = r.wire.hold("slice.searchStations")
+        search(r.scene, "jazz")
+        wait(bridgeSearch.entered, "the Bridge search")
+
+        try switchTo(.musicApp, r.routing)
+        search(r.scene, "jazz")                     // the REST search, not held
+        waitWithoutTicking("the fresh search post") { r.scene.postsOffered("search") == 1 }
+        bridgeSearch.release.signal()
+        waitWithoutTicking("the stale search post") { r.scene.postsOffered("search") == 2 }
+
+        _ = r.scene.tick(snapshot: idle)
+        XCTAssertEqual(r.scene.message,
+                       "Search \u{201C}jazz\u{201D} \u{2014} 1 result(s) \u{00B7} f favorite \u{00B7} Esc clear")
+        let out = r.scene.render(frame: frame, snapshot: idle)
+        XCTAssertTrue(out.contains("REST Jazz"), "the fresh hits were lost: \(out)")
+        XCTAssertFalse(out.contains("Bridge Jazz"))
+    }
+
+    func testAFreshLookupWrittenBeforeAStaleOneStillRenamesTheFavourite() throws {
+        let r = rig(mode: .source, catalog: true)
+        let bridgeLookup = r.wire.hold("slice.station")
+        addURL(r.scene)
+        wait(bridgeLookup.entered, "the Bridge lookup")
+
+        try switchTo(.musicApp, r.routing)
+        addURL(r.scene)                             // the REST lookup, not held
+        waitWithoutTicking("the fresh lookup post") { r.scene.postsOffered("lookup") == 1 }
+        bridgeLookup.release.signal()
+        waitWithoutTicking("the stale lookup post") { r.scene.postsOffered("lookup") == 2 }
+
+        _ = r.scene.tick(snapshot: idle)
+        XCTAssertEqual(favouriteName(r), "Apple Music 1 (REST)", "the fresh lookup was lost")
+    }
+
     // MARK: - Structural: the scene no longer reaches around the seam
 
     func testTheSceneNoLongerNamesTheBespokeMembersOrTheCatalogueDirectly() throws {
