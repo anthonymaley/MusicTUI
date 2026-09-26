@@ -127,7 +127,7 @@ final class CLIBridgeListingsTests: XCTestCase {
             XCTAssertEqual(error as? ExitCode, .failure)
             XCTAssertEqual(calls, [])
             XCTAssertEqual(h.seen.ops, ["slice.status"], "readiness only; no slice.recommendations")
-            let expected = "Bridge doesn't serve the recently played row. Switch Output to Music.app to use music discover --recent."
+            let expected = "Bridge doesn't serve the Recently Played rail. Switch Output to Music.app to use music discover --recent."
             XCTAssertEqual(h.io.out, [cliFailureText(expected, json: asJSON)])
         }
     }

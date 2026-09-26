@@ -346,7 +346,7 @@ final class RoutingCoordinatorTests: XCTestCase {
         guard case .refused(let reason) = routeAction(.persistentShuffleMode, in: .source, from: .cli) else {
             return XCTFail("shuffle mode must still refuse from the CLI in Source Mode")
         }
-        XCTAssertEqual(reason, "Shuffle and repeat modes are Music.app only for now")
+        XCTAssertEqual(reason, "Shuffle and repeat modes are Music.app only for now.")
         do {
             try c.perform(.persistentShuffleMode, musicApp: { r.append("musicApp") },
                           source: { _ in r.append("source") }, unaffected: { r.append("unaffected") })

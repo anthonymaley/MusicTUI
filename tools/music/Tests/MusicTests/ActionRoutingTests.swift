@@ -505,7 +505,7 @@ final class ActionRoutingTests: XCTestCase {
             XCTAssertEqual(cliBridgeNotServedReason(action), tui, "\(action) keeps its TUI-table reason")
         }
         XCTAssertEqual(cliBridgeNotServedReason(.persistentShuffleMode),
-                       "Shuffle and repeat modes are Music.app only for now")
+                       "Shuffle and repeat modes are Music.app only for now.")
         XCTAssertEqual(routeAction(.cliPlayQuery, in: .source, from: .cli),
                        .refused("Bridge output is selected, and music play <words> isn't available from the CLI on Bridge yet. Use MusicTUI, or switch Output to Music.app."))
         XCTAssertEqual(routeAction(.cliPlayCatalogSong, in: .source, from: .cli), .source, "P6: dispatched")

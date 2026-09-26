@@ -505,9 +505,9 @@ func routeAction(_ action: MusicTUIAction,
 
     // Refused, each with what to do instead.
     case .persistentShuffleMode, .persistentRepeatMode:
-        return .refused("Shuffle and repeat modes are Music.app only for now")
+        return .refused("Shuffle and repeat modes are Music.app only for now.")
     case .volume:
-        return .refused("Volume is Music.app only; the source plays at the Mac's output level")
+        return .refused("Volume is Music.app only; the source plays at the Mac's output level.")
     case .loveTrack, .addToLibrary, .addCurrentTrackToPlaylist,
          .removeCurrentTrackFromPlaylist, .playlistWrite:
         return .refused("Library changes are Music.app only in this version")
@@ -540,6 +540,6 @@ func routeAction(_ action: MusicTUIAction,
     case .airplayRoute:
         // Anthony, 2026-09-13: "airplay stays in TUI. the point of the bridge is
         // DAC not airplay."
-        return .refused("AirPlay applies in Music.app mode; the source plays to the Mac's wired output")
+        return .refused("AirPlay applies in Music.app mode; the source plays to the Mac's wired output.")
     }
 }
