@@ -7,18 +7,30 @@ PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 CLI_DIR="$PROJECT_DIR/tools/music"
 INSTALL_DIR="${HOME}/.local/bin"
 
+# Each machine builds on its own local disk and installs its own copy. The
+# checkout can be shared between machines over a network mount (the laptop
+# reaches the Studio's home over SMB), so building into tools/music/.build
+# would compile across the network and let two machines overwrite one build,
+# and a symlink into that folder would stop working whenever the mount is
+# unreachable. MUSIC_BUILD_DIR overrides the scratch path.
+BUILD_DIR="${MUSIC_BUILD_DIR:-$HOME/Library/Caches/musictui/build}"
+
 echo "Building music CLI..."
 cd "$CLI_DIR"
-swift build -c release 2>&1
+swift build -c release --scratch-path "$BUILD_DIR" 2>&1
 
-BINARY="$CLI_DIR/.build/release/music"
+BINARY="$BUILD_DIR/release/music"
 if [ ! -f "$BINARY" ]; then
     echo "Error: Build failed — binary not found at $BINARY"
     exit 1
 fi
 
+# Copy, then rename into place: the swap is atomic, so a `music` already
+# running keeps its old file, and an old symlink at this path is replaced.
 mkdir -p "$INSTALL_DIR"
-ln -sf "$BINARY" "$INSTALL_DIR/music"
+cp "$BINARY" "$INSTALL_DIR/.music.new"
+chmod +x "$INSTALL_DIR/.music.new"
+mv -f "$INSTALL_DIR/.music.new" "$INSTALL_DIR/music"
 
 # Copy (don't symlink) the status line script to a stable, version-independent
 # path. The plugin cache dir is versioned (.../music/<version>/) and rotates on
