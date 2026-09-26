@@ -523,9 +523,10 @@ func routeAction(_ action: MusicTUIAction,
     case .newReleasesLikeCurrentTrack:
         return .refused(currentTrackIsStaleInBridge)
     case .rotation:
-        // `rotation` calls REST /v1/me/history/heavy-rotation (HistoryCommands.swift:53);
-        // v1 names no brokered MusicKit route for it (Codex, 11:47).
-        return .refused("Heavy rotation has no MusicTUI Source route in this version")
+        // CLI-only: no TUI key reaches this row. From the CLI, the clause above
+        // dispatches it to Bridge (`slice.heavyRotation`, Part 2 P9); this TUI
+        // column stays refused (D10). Ruling 12.15: a person reads "Bridge".
+        return .refused("Heavy rotation has no Bridge route in MusicTUI in this version")
     /// Ruling 12.13 (2026-09-15) deferred the queue-row jump from v1. Spec 6.2
     /// and DoD 3 require a VISIBLE refusal: `933e85d` predates the narrowing and
     /// routed it to the source, which would have shipped a jump that silently
