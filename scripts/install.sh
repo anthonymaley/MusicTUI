@@ -50,7 +50,7 @@ fi
 if command -v music &>/dev/null; then
     echo "✓ Installed: $(music --version 2>/dev/null || echo 'music ready')"
 else
-    echo "✓ Built and symlinked to $INSTALL_DIR/music"
+    echo "✓ Built and copied to $INSTALL_DIR/music"
     echo "  Restart your shell or run: export PATH=\"\$HOME/.local/bin:\$PATH\""
 fi
 echo "✓ Status line: $INSTALL_DIR/music-statusline (point statusLine.command here)"
