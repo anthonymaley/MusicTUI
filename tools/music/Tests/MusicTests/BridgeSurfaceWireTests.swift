@@ -337,6 +337,17 @@ final class BridgeSurfaceWireTests: XCTestCase {
         }
     }
 
+    /// Bridge overloaded (controller check, 2026-09-25): decoded on the kind
+    /// across every op this shared decoder serves, never "Bridge refused".
+    func testBusyIsReportedAsBusyNotRefused() {
+        for read in newReads {
+            XCTAssertThrowsError(try read.call(control(Wire(refusal(read.op, kind: "busy"))))) {
+                XCTAssertEqual($0 as? SourceAppError, .busy, read.op)
+                XCTAssertEqual(($0 as? SourceAppError)?.message, "Bridge is busy; try again in a moment.")
+            }
+        }
+    }
+
     func testUnauthorizedWarmingAndStaleGenerationAsToday() {
         for read in newReads {
             XCTAssertThrowsError(try read.call(control(Wire(refusal(read.op, kind: "unauthorized"))))) {

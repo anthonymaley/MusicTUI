@@ -81,6 +81,7 @@ enum SourceReadiness: Equatable {
         // Only a play-record read can see this, and the Output tab does not
         // make one; if it ever does, it says what happened.
         case .ledgerChanged:     return .unavailable("Bridge's play record was replaced")
+        case .busy:              return .unavailable("Bridge is busy; try again in a moment.")
         }
     }
 }

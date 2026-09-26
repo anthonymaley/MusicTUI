@@ -71,6 +71,11 @@ enum SourceAppError: Error, Equatable {
     /// longer has. A restart, not a refusal: the caller asks again from the
     /// beginning. Carries Bridge's sentence, for display only.
     case ledgerChanged(String)
+    /// Bridge is handling too many requests at once. Decoded on the kind so
+    /// it never renders as "Bridge refused" — the caller did nothing wrong,
+    /// and the fix is to wait, not to change the request. No auto-retry
+    /// here: the caller decides when to try again.
+    case busy
 
     /// Deliberately short: it renders inside Radio's one-line message strip
     /// beside a `✗`, not in a log.
@@ -95,6 +100,22 @@ enum SourceAppError: Error, Equatable {
         // the op it asked for rather than from this generic line.
         case .unsupported: return "Bridge doesn't serve that yet — update Bridge"
         case .ledgerChanged: return "Bridge's play record was replaced"
+        case .busy: return "Bridge is busy; try again in a moment."
+        }
+    }
+
+    /// The shared decode rule for the two "simple" wire replies (search,
+    /// play): only `unauthorized` and `busy` have a kind of their own, and
+    /// every other kind is `refused(detail)`. One function so a kind added
+    /// to this rule cannot drift between the two call sites — `busy` was
+    /// added to `decodeSearchReply` alone first, then had to be found and
+    /// duplicated into `play`, which is exactly the drift this guards
+    /// against next time.
+    static func fromSimpleFailureKind(_ kind: String?, detail: String) -> SourceAppError {
+        switch kind {
+        case "unauthorized": return .notAuthorized
+        case "busy":          return .busy
+        default:              return .refused(detail)
         }
     }
 }
@@ -184,10 +205,8 @@ struct SourceAppStationSearch: StationSearching {
         }
 
         guard reply.ok else {
-            switch reply.error?.kind {
-            case "unauthorized": throw SourceAppError.notAuthorized
-            default:             throw SourceAppError.refused(reply.error?.detail ?? "no detail")
-            }
+            throw SourceAppError.fromSimpleFailureKind(reply.error?.kind,
+                                                        detail: reply.error?.detail ?? "no detail")
         }
 
         // A missing `stations` key on an ok reply is a contract violation, not
@@ -406,10 +425,8 @@ struct SourceAppPlayback: SourcePlaying {
         }
 
         guard reply.ok else {
-            switch reply.error?.kind {
-            case "unauthorized": throw SourceAppError.notAuthorized
-            default:             throw SourceAppError.refused(reply.error?.detail ?? "no detail")
-            }
+            throw SourceAppError.fromSimpleFailureKind(reply.error?.kind,
+                                                        detail: reply.error?.detail ?? "no detail")
         }
 
         // `ok` alone is not the answer. Before 2026-09-13 the app reported a
@@ -1245,6 +1262,13 @@ struct SourceAppControl: SourceControlling {
             switch error?["kind"] as? String {
             case "unauthorized":
                 throw SourceAppError.notAuthorized
+            case "busy":
+                // Bridge is overloaded, not refusing the request itself — this
+                // is the decoder every paged library read and control op goes
+                // through, so it is the one most likely to see "busy" under
+                // real load. Decoded on the kind so it never renders as
+                // "Bridge refused" (Anthony/controller, 2026-09-25).
+                throw SourceAppError.busy
             case "warming":
                 // The ONE refusal that carries a number, so it cannot survive as
                 // a detail string. `retry_after` is the app's own hint; a reply
