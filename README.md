@@ -154,7 +154,7 @@ chmod 600 ~/.config/music/config.json ~/.config/music/user-token ~/.config/music
 | `music play Working Vibes kitchen 60 shuffle` | Speaker + volume + shuffle in one shot |
 | `music play 3` | Play result #3 from last search/playlist |
 | `music play "Gypsy Woman" "Tom Misch"` | Play a song by title + artist; falls back to catalog add if authenticated |
-| `music play "https://music.apple.com/...?...i=1581424482"` | Add/play a catalog song URL when authenticated |
+| `music play "https://music.apple.com/...?...i=1581424482"` | Add/play a catalog song URL when authenticated; the `.../song/<name>/1581424482` share form works too |
 | `music play --album "Kid A" --artist "Radiohead"` | Explicit flags when the name could collide with a speaker; `music play "X"` also plays as bounded album if X resolves to an album |
 | `music pause` / `music skip` / `music back` / `music stop` | Transport from the terminal |
 | `music now` | What's playing (track, album, speakers) |

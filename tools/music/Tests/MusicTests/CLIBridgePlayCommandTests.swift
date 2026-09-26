@@ -159,6 +159,8 @@ final class CLIBridgePlayCommandTests: XCTestCase {
             ([], nil, nil, nil, "R", .cliPlayArtist),                 // --artist alone
             (["Teardrop"], nil, nil, nil, "R", .cliPlayArtist),       // loose words: the artist refusal, both modes
             ([url], nil, nil, nil, nil, .cliPlayCatalogSong),
+            (["https://music.apple.com/us/song/x/42"], nil, nil, nil, nil, .cliPlayCatalogSong),
+            (["https://music.apple.com/us/song/x/4x2"], nil, nil, nil, nil, .cliPlayQuery),
             (["3"], nil, nil, nil, nil, .cliPlayIndex),
             (["3", "4"], nil, nil, nil, nil, .cliPlayQuery),
             (["Kid", "A"], nil, nil, nil, nil, .cliPlayQuery),

@@ -101,6 +101,36 @@ final class CLIBridgeCataloguePlayTests: XCTestCase {
         XCTAssertEqual(h.io.out, ["Playing Apple Music song 1440857781 on Bridge."] + playingLines)
     }
 
+    /// The `/song/<slug>/<id>` share form (found at a live gate 2026-09-25,
+    /// where it fell through to words) queues exactly like the `?i=` form.
+    func testASongPathLinkQueuesItsIdAsACatalogueId() throws {
+        for link in ["https://music.apple.com/gb/song/teardrop/1440857781",
+                     "https://music.apple.com/gb/song/1440857781",
+                     "https://music.apple.com/gb/song/teardrop/1440857781?ls=1&app=music"] {
+            let h = H(.source, ["slice.status": [ready, playing], "slice.queue": [R.queued()]])
+            let (error, calls) = play(h, [link])
+            XCTAssertNil(error, link)
+            XCTAssertEqual(calls, [], link)
+            XCTAssertEqual(h.seen.ops, ["slice.status", "slice.queue", "slice.status"], link)
+            let queue = try XCTUnwrap(h.seen.bodies("slice.queue").first, link)
+            XCTAssertEqual(queue["ids"] as? [String], ["1440857781"], link)
+            XCTAssertNil(queue["library_ids"], link)
+            XCTAssertEqual(h.io.out, ["Playing Apple Music song 1440857781 on Bridge."] + playingLines, link)
+        }
+    }
+
+    func testAMalformedSongPathLinkRefusesWithNoRequestAtAll() {
+        for link in ["https://music.apple.com/gb/song/teardrop/14408x57781",
+                     "https://music.apple.com/gb/song/teardrop/"] {
+            let h = H(.source)
+            let (error, calls) = play(h, [link])
+            XCTAssertEqual(error as? ExitCode, .failure, link)
+            XCTAssertEqual(h.io.out, [cliBridgeNotServedReason(.cliPlayQuery)], link)
+            XCTAssertEqual(h.wire.requestCount, 0, link)
+            XCTAssertEqual(calls, [], link)
+        }
+    }
+
     func testAnAlbumLinkAndFreeWordsRefuseWithNoRequestAtAll() {
         for args in [["https://music.apple.com/us/album/mezzanine/1440857000"], ["Kid", "A"], ["Teardrop"]] {
             let h = H(.source)

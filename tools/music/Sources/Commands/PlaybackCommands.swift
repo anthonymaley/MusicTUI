@@ -687,14 +687,34 @@ func addCatalogSongIDAndPlay(backend: AppleScriptBackend, id: String) throws -> 
         addToLibrary: { try syncRun { try await api.addToLibrary(songIDs: [song.id]) } })
 }
 
+/// The song id an Apple Music link names, or nil. Two forms:
+/// - `…/album/<slug>/<albumID>?i=<songID>`: the `i` query item (checked first).
+/// - `https://music.apple.com/<sf>/song[/<slug>]/<songID>`: `<sf>` is any two
+///   letters, the query string is ignored, and empty path segments (doubled
+///   slashes) are skipped. The id must be all ASCII digits; anything else is
+///   refused rather than guessed. Album, playlist, artist and station paths
+///   never match here.
 func appleMusicSongID(from value: String) -> String? {
     guard value.contains("music.apple.com"),
-          let components = URLComponents(string: value),
-          let itemID = components.queryItems?.first(where: { $0.name == "i" })?.value,
-          !itemID.isEmpty else {
+          let components = URLComponents(string: value) else {
         return nil
     }
-    return itemID
+    if let itemID = components.queryItems?.first(where: { $0.name == "i" })?.value,
+       !itemID.isEmpty {
+        return itemID
+    }
+    guard components.host == "music.apple.com" else { return nil }
+    let segments = components.path.split(separator: "/", omittingEmptySubsequences: true).map(String.init)
+    guard segments.count == 3 || segments.count == 4,
+          segments[0].count == 2,
+          segments[0].allSatisfy({ $0.isASCII && $0.isLetter }),
+          segments[1] == "song",
+          let id = segments.last,
+          !id.isEmpty,
+          id.allSatisfy({ $0.isASCII && $0.isNumber }) else {
+        return nil
+    }
+    return id
 }
 
 // MARK: - Transport and now (slice 3 S6: dispatched per D1)
