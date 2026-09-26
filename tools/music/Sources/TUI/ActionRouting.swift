@@ -515,7 +515,7 @@ func routeAction(_ action: MusicTUIAction,
     case .playlistTemp:
         return .refused("Temporary playlists exist to bound Music.app; the source builds its own queue")
     case .similar, .similarToCurrentTrack, .suggest, .suggestFromCurrentTrack:
-        return .refused("Not available through the source app in this version")
+        return .refused("Not available through Bridge in this version")
 
     /// `new-releases` itself is brokered and served; the `--like-current`
     /// variant is not, because its SEED is Music.app's current track and Bridge
@@ -526,7 +526,7 @@ func routeAction(_ action: MusicTUIAction,
         // CLI-only: no TUI key reaches this row. From the CLI, the clause above
         // dispatches it to Bridge (`slice.heavyRotation`, Part 2 P9); this TUI
         // column stays refused (D10). Ruling 12.15: a person reads "Bridge".
-        return .refused("Heavy rotation has no Bridge route in MusicTUI in this version")
+        return .refused("Heavy rotation is on the command line only in this version: music rotation")
     /// Ruling 12.13 (2026-09-15) deferred the queue-row jump from v1. Spec 6.2
     /// and DoD 3 require a VISIBLE refusal: `933e85d` predates the narrowing and
     /// routed it to the source, which would have shipped a jump that silently
