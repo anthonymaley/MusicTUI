@@ -71,6 +71,11 @@ enum SourceAppError: Error, Equatable {
     /// longer has. A restart, not a refusal: the caller asks again from the
     /// beginning. Carries Bridge's sentence, for display only.
     case ledgerChanged(String)
+    /// Bridge is handling too many requests at once. Decoded on the kind so
+    /// it never renders as "Bridge refused" — the caller did nothing wrong,
+    /// and the fix is to wait, not to change the request. No auto-retry
+    /// here: the caller decides when to try again.
+    case busy
 
     /// Deliberately short: it renders inside Radio's one-line message strip
     /// beside a `✗`, not in a log.
@@ -95,6 +100,7 @@ enum SourceAppError: Error, Equatable {
         // the op it asked for rather than from this generic line.
         case .unsupported: return "Bridge doesn't serve that yet — update Bridge"
         case .ledgerChanged: return "Bridge's play record was replaced"
+        case .busy: return "Bridge is busy; try again in a moment."
         }
     }
 }
@@ -186,6 +192,7 @@ struct SourceAppStationSearch: StationSearching {
         guard reply.ok else {
             switch reply.error?.kind {
             case "unauthorized": throw SourceAppError.notAuthorized
+            case "busy":          throw SourceAppError.busy
             default:             throw SourceAppError.refused(reply.error?.detail ?? "no detail")
             }
         }

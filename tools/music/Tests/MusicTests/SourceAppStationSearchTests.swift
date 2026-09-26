@@ -81,6 +81,14 @@ final class SourceAppStationSearchTests: XCTestCase {
         }
     }
 
+    func testBusyIsReportedAsBusyNotRefused() {
+        let reply = #"{"ok":false,"op":"slice.searchStations","error":{"kind":"busy","detail":"Bridge is handling too many requests at once; try again in a moment."}}"#
+        XCTAssertThrowsError(try search(replying: reply).searchStations(term: "x")) { error in
+            XCTAssertEqual(error as? SourceAppError, .busy)
+            XCTAssertEqual((error as? SourceAppError)?.message, "Bridge is busy; try again in a moment.")
+        }
+    }
+
     func testOtherRefusalsCarryTheirDetail() {
         let reply = #"{"ok":false,"op":"slice.searchStations","error":{"kind":"bad_request","detail":"empty term"}}"#
         XCTAssertThrowsError(try search(replying: reply).searchStations(term: "x")) { error in
