@@ -112,7 +112,7 @@ What's different from Music.app mode:
 - **`suggest` and `new-releases` still refuse in every form** — Bridge has no
   op for them, naming the Music.app switch.
 - **`discover --recent` refuses**, naming the same fix: `Bridge doesn't serve
-  the recently played row. Switch Output to Music.app to use music discover
+  the Recently Played rail. Switch Output to Music.app to use music discover
   --recent.`
 - **Over 100 matching songs refuses** rather than queueing a huge list.
 - **Volume and speaker commands refuse** (`music volume`, `music speaker
@@ -448,7 +448,7 @@ Always use `--json` when you need to parse the output programmatically.
 - **Speaker commands fail**: Check exact speaker name with `music speaker list`
 - **"Bridge output is selected, and ... isn't available from the CLI on Bridge yet."**: That command isn't wired to Bridge (volume, speakers, shuffle/repeat, `playlist temp`, plain `play <words>` and any non-song Apple Music link). Use MusicTUI, or switch Output to Music.app on the Output tab.
 - **"Bridge output is selected, and music suggest needs Apple Music account reads Bridge doesn't serve."** / **"...music new-releases needs a catalogue artist lookup Bridge doesn't serve."**: Bridge has no op for either read. Switch Output to Music.app to use them.
-- **"Bridge doesn't serve the recently played row. Switch Output to Music.app to use music discover --recent."**: same reason, for `discover --recent` specifically; plain `music discover` is served.
+- **"Bridge doesn't serve the Recently Played rail. Switch Output to Music.app to use music discover --recent."**: same reason, for `discover --recent` specifically; plain `music discover` is served.
 - **"Bridge catalogue search returns songs and albums only in this version."**: drop `--types artists`/`playlists` when Bridge is selected, or switch Output to Music.app.
 - **"Bridge output is selected, so Music.app's current track is not what you are hearing."**: The command reads the "current track" (bare `similar`, `suggest`, `new-releases --like-current`, `add --to` with no song, `remove`, `love`/`unlove`), which would be wrong while Bridge plays something else. Name the song explicitly instead.
 - **"Result N came from a Music.app or catalogue listing, so Bridge can't play it by its own id."** / **"...came from Bridge's library, which Music.app can't play by identity."** / **"...came from Bridge's catalogue search, which Music.app can't play by identity."**: A numbered result only plays back on the source and namespace that produced it. Search again with the matching Output selected (add `--library` for Bridge's library; drop it for the catalog).
