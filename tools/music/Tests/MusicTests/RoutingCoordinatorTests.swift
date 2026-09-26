@@ -73,7 +73,7 @@ final class RoutingCoordinatorTests: XCTestCase {
     /// rather than derived. Listing reads stay on AppleScript by rule 9; EQ, the
     /// visualizer and playlist share are rows the spec leaves as they are.
     private let musicAppInSourceMode: Set<MusicTUIAction> = [
-        .libraryListing, .playlistListing, .searchLibrary, .libraryRetry,
+        .playlistListing, .searchLibrary, .libraryRetry,
         .eq, .visualizer, .playlistShare,
     ]
 
