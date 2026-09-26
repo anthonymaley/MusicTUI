@@ -103,6 +103,21 @@ enum SourceAppError: Error, Equatable {
         case .busy: return "Bridge is busy; try again in a moment."
         }
     }
+
+    /// The shared decode rule for the two "simple" wire replies (search,
+    /// play): only `unauthorized` and `busy` have a kind of their own, and
+    /// every other kind is `refused(detail)`. One function so a kind added
+    /// to this rule cannot drift between the two call sites — `busy` was
+    /// added to `decodeSearchReply` alone first, then had to be found and
+    /// duplicated into `play`, which is exactly the drift this guards
+    /// against next time.
+    static func fromSimpleFailureKind(_ kind: String?, detail: String) -> SourceAppError {
+        switch kind {
+        case "unauthorized": return .notAuthorized
+        case "busy":          return .busy
+        default:              return .refused(detail)
+        }
+    }
 }
 
 /// TEMPORARY. Radio's `/` search served by the MusicTUISource app over its
@@ -190,11 +205,8 @@ struct SourceAppStationSearch: StationSearching {
         }
 
         guard reply.ok else {
-            switch reply.error?.kind {
-            case "unauthorized": throw SourceAppError.notAuthorized
-            case "busy":          throw SourceAppError.busy
-            default:             throw SourceAppError.refused(reply.error?.detail ?? "no detail")
-            }
+            throw SourceAppError.fromSimpleFailureKind(reply.error?.kind,
+                                                        detail: reply.error?.detail ?? "no detail")
         }
 
         // A missing `stations` key on an ok reply is a contract violation, not
@@ -413,10 +425,8 @@ struct SourceAppPlayback: SourcePlaying {
         }
 
         guard reply.ok else {
-            switch reply.error?.kind {
-            case "unauthorized": throw SourceAppError.notAuthorized
-            default:             throw SourceAppError.refused(reply.error?.detail ?? "no detail")
-            }
+            throw SourceAppError.fromSimpleFailureKind(reply.error?.kind,
+                                                        detail: reply.error?.detail ?? "no detail")
         }
 
         // `ok` alone is not the answer. Before 2026-09-13 the app reported a
@@ -1252,6 +1262,13 @@ struct SourceAppControl: SourceControlling {
             switch error?["kind"] as? String {
             case "unauthorized":
                 throw SourceAppError.notAuthorized
+            case "busy":
+                // Bridge is overloaded, not refusing the request itself — this
+                // is the decoder every paged library read and control op goes
+                // through, so it is the one most likely to see "busy" under
+                // real load. Decoded on the kind so it never renders as
+                // "Bridge refused" (Anthony/controller, 2026-09-25).
+                throw SourceAppError.busy
             case "warming":
                 // The ONE refusal that carries a number, so it cannot survive as
                 // a detail string. `retry_after` is the app's own hint; a reply
