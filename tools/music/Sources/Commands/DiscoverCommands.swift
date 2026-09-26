@@ -20,7 +20,7 @@ struct Discover: ParsableCommand {
 
     @Option(name: .long, help: "Max rails to show") var limit: Int = 8
     @Option(name: .long, help: "Max items per rail") var perRail: Int = 6
-    @Flag(name: .long, help: "Only the recently played row") var recent = false
+    @Flag(name: .long, help: "Only the Recently Played rail") var recent = false
     @Flag(name: .long, help: "Output JSON") var json = false
     @Flag(name: .long, help: "Every rail from the feed, uncurated") var all = false
 

@@ -596,8 +596,8 @@ final class ActionRoutingTests: XCTestCase {
         let tuiColumnUnchanged: [MusicTUIAction: ActionRoute] = [
             .searchLibrary: .musicApp,
             .playlistListing: .musicApp,
-            .similar: .refused("Not available through Bridge in this version"),
-            .rotation: .refused("Heavy rotation is on the command line only in this version: music rotation"),
+            .similar: .refused("Not available through Bridge in this version."),
+            .rotation: .refused("Heavy rotation is on the command line only in this version: music rotation."),
         ]
         for action in s7Dispatched {
             XCTAssertEqual(routeAction(action, in: .source, from: .cli), .source, "\(action)")

@@ -320,7 +320,7 @@ breakdown.
 | `music mix --artists "Fouk,Floating Points" --name "Friday Mix"` | Mixed playlist |
 | `music discover` | Your Discover feed: curated rails, Apple's For You plus recently played |
 | `music discover --all` | Every rail Apple's API returns, in Apple's own order, uncurated |
-| `music discover --recent` | Just the recently played row (stations, albums, playlists) |
+| `music discover --recent` | Just the Recently Played rail (stations, albums, playlists) |
 | `music recent` | Recently played tracks (numbered, so `music play 3` works) |
 | `music rotation` | Your heavy-rotation music |
 

@@ -508,14 +508,14 @@ func routeAction(_ action: MusicTUIAction,
         return .refused("Volume is Music.app only; the source plays at the Mac's output level.")
     case .loveTrack, .addToLibrary, .addCurrentTrackToPlaylist,
          .removeCurrentTrackFromPlaylist, .playlistWrite:
-        return .refused("Library changes are Music.app only in this version")
+        return .refused("Library changes are Music.app only in this version.")
     case .cliMix:
         // Codex B1: mix calls api.createPlaylist and populates it.
-        return .refused("mix creates a playlist, which is Music.app only in this version")
+        return .refused("mix creates a playlist, which is Music.app only in this version.")
     case .playlistTemp:
-        return .refused("Temporary playlists exist to bound Music.app; the source builds its own queue")
+        return .refused("Temporary playlists exist to bound Music.app; the source builds its own queue.")
     case .similar, .similarToCurrentTrack, .suggest, .suggestFromCurrentTrack:
-        return .refused("Not available through Bridge in this version")
+        return .refused("Not available through Bridge in this version.")
 
     /// `new-releases` itself is brokered and served; the `--like-current`
     /// variant is not, because its SEED is Music.app's current track and Bridge
@@ -526,16 +526,16 @@ func routeAction(_ action: MusicTUIAction,
         // CLI-only: no TUI key reaches this row. From the CLI, the clause above
         // dispatches it to Bridge (`slice.heavyRotation`, Part 2 P9); this TUI
         // column stays refused (D10). Ruling 12.15: a person reads "Bridge".
-        return .refused("Heavy rotation is on the command line only in this version: music rotation")
+        return .refused("Heavy rotation is on the command line only in this version: music rotation.")
     /// Ruling 12.13 (2026-09-15) deferred the queue-row jump from v1. Spec 6.2
     /// and DoD 3 require a VISIBLE refusal: `933e85d` predates the narrowing and
     /// routed it to the source, which would have shipped a jump that silently
     /// did the wrong thing against a queue the TUI cannot address yet.
     case .queueJump:
-        return .refused("Jumping to a queue row is Music.app only in this version")
+        return .refused("Jumping to a queue row is Music.app only in this version.")
 
     case .genius:
-        return .refused("Genius is a Music.app feature")
+        return .refused("Genius is a Music.app feature.")
     case .airplayRoute:
         // Anthony, 2026-09-13: "airplay stays in TUI. the point of the bridge is
         // DAC not airplay."

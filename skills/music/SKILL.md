@@ -335,7 +335,7 @@ music similar                                 # similar to now playing
 music similar Hotel California                # similar to a specific track (--artist to narrow)
 music discover                                # your Discover feed: curated rails + recently played
 music discover --all                          # every rail the API returns, in Apple's own order
-music discover --recent                       # just the recently played row (mixed types)
+music discover --recent                       # just the Recently Played rail (mixed types)
 music discover --json --limit 5               # rails as JSON
 music recent                                  # recently played tracks (needs user token; cached for `play N`)
 music rotation                                # your heavy-rotation music

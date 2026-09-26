@@ -182,8 +182,9 @@ private func bridgePlayIndex(_ session: CLIBridgeSession, index: Int, json: Bool
 }
 
 /// `music play <Apple Music song link>` with Bridge selected (Part 2 D7): the
-/// link's song id (`appleMusicSongID`, the `?i=` item, as the Music.app body
-/// reads it) is queued as a catalogue id. No read precedes the mutation.
+/// link's song id (`appleMusicSongID`, the `?i=` item or the
+/// `/song/[<slug>/]<id>` path form, as the Music.app body reads it) is queued
+/// as a catalogue id. No read precedes the mutation.
 private func bridgePlaySongLink(_ session: CLIBridgeSession, link: String, json: Bool, env: CLIBridgeEnv) throws {
     guard let id = appleMusicSongID(from: link) else {
         // `PlayForm` classified this as a song link; refuse rather than guess.
