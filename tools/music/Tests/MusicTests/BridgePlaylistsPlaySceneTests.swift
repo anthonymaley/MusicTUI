@@ -339,7 +339,7 @@ final class BridgePlaylistsPlaySceneTests: XCTestCase {
     func test101RowPlaylistSendsAll101IdsAndBridgesOver100SentenceReachesTheFooterVerbatim() {
         let ids = (1...101).map { "i.\($0)" }
         let refusal = """
-        {"ok":false,"op":"slice.queue","error":{"kind":"bad_request","detail":"a queue holds at most 100 songs in MusicTUI Source; 101 were requested"}}
+        {"ok":false,"op":"slice.queue","error":{"kind":"bad_request","detail":"A queue holds at most 100 songs in Bridge; 101 were requested."}}
         """
         let wire = BridgeLibraryReadsWire(["slice.libraryPlaylists": [onePlaylistPage], "slice.queue": [refusal]])
         wire.script("slice.libraryPlaylistTracks", [tracksPage(ids.map { ($0, $0, "Art") })])
@@ -354,7 +354,7 @@ final class BridgePlaylistsPlaySceneTests: XCTestCase {
         XCTAssertEqual(req["start_required"] as? Bool, false,
                        "a whole-playlist `p` must send start_required explicitly as false")
         XCTAssertTrue(settleScene(s) {
-            status.current()?.text == "a queue holds at most 100 songs in MusicTUI Source; 101 were requested"
+            status.current()?.text == "A queue holds at most 100 songs in Bridge; 101 were requested."
         }, "the over-100 sentence never reached the footer verbatim: \(String(describing: status.current()?.text))")
     }
 
@@ -540,7 +540,7 @@ final class BridgePlaylistsPlaySceneTests: XCTestCase {
     func test101SongPlaylistWith2SkippedVideosPOverBoundKeepsBridgesSentenceVerbatimWithNoSkipNotice() {
         let ids = (1...101).map { "i.\($0)" }
         let refusal = """
-        {"ok":false,"op":"slice.queue","error":{"kind":"bad_request","detail":"a queue holds at most 100 songs in MusicTUI Source; 101 were requested"}}
+        {"ok":false,"op":"slice.queue","error":{"kind":"bad_request","detail":"A queue holds at most 100 songs in Bridge; 101 were requested."}}
         """
         let wire = BridgeLibraryReadsWire(["slice.libraryPlaylists": [onePlaylistPage], "slice.queue": [refusal]])
         wire.script("slice.libraryPlaylistTracks", [tracksPage(ids.map { ($0, $0, "Art") }, total: 101, skipped: 2)])
@@ -552,7 +552,7 @@ final class BridgePlaylistsPlaySceneTests: XCTestCase {
         XCTAssertTrue(settleScene(s) { !wire.sent("slice.queue").isEmpty })
         XCTAssertEqual((wire.sent("slice.queue").first?["library_ids"] as? [String])?.count, 101)
         XCTAssertTrue(settleScene(s) {
-            status.current()?.text == "a queue holds at most 100 songs in MusicTUI Source; 101 were requested"
+            status.current()?.text == "A queue holds at most 100 songs in Bridge; 101 were requested."
         }, "got: \(String(describing: status.current()?.text)) — the sentence must be verbatim with no skip notice")
     }
 

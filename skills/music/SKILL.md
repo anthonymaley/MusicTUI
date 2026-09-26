@@ -62,6 +62,7 @@ needed for any of these — and plays back what they find:
 ```bash
 music search "Idioteque"                          # catalog search: songs and albums only
 music play "https://music.apple.com/...?i=1440830346"  # a song link plays via Bridge
+music play "https://music.apple.com/us/song/idioteque/1440830346"  # the /song/ link form works too
 music radio search "apple music"
 music radio play "apple music 1"                  # exact favorite name, or one unambiguous hit
 music radio add "https://music.apple.com/station/..."  # favorites locally either way
