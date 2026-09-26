@@ -43,6 +43,16 @@ enum MusicTUIAction: CaseIterable, Equatable {
     /// `music now` (and bare `music` off a TTY): the CLI's read of what the
     /// selected output is playing (slice 3, D7). A read, not playback.
     case nowStatus
+    /// Slice 3 Part 2, D3. Radio's Live and Personal lists — wired by P5,
+    /// which chooses a provider per fetch and drops a result whose epoch has
+    /// moved on. TUI-only for now.
+    case radioCatalogueBrowse
+    /// Slice 3 Part 2, D3. `radio add URL`'s enrichment lookup, split from
+    /// `radioAddURL` (which saves the favourite from the slug and stays
+    /// MusicTUI's own state): this is the read that fills in the station's
+    /// real name from whichever provider is chosen. Both surfaces since P7
+    /// wired the CLI's `radio add`.
+    case radioStationLookup
     // Each of these three is two verbs wearing one name: an explicit target, or
     // Music.app's current track when none is given (DiscoveryCommands.swift:20,
     // :123, :214). They are split because Anthony's 2026-09-16 ruling treats the
@@ -183,7 +193,8 @@ extension MusicTUIAction {
              .radioStationPlay,     // RadioScene.swift:160, DiscoverScene.swift:290 / RadioCommands.swift:27
              .radioSearch,          // RadioScene.swift:173 / / RadioCommands.swift:85
              .radioAddURL,          // RadioScene.swift:174 a / RadioCommands.swift:68
-             .loveTrack,            // NowPlayingScene.swift:732 l / LoveCommands.swift:8
+             .radioStationLookup,   // RadioScene.swift, `a`'s enrichment / RadioCommands.swift, runRadioAdd (P7)
+             .loveTrack,           // NowPlayingScene.swift:732 l / LoveCommands.swift:8
              .playlistListing,      // Shell.swift:94 / PlaylistCommands.swift:23
              .discoverFeed,         // DiscoverScene.swift:462 / DiscoverCommands.swift:52
              .airplayRoute,         // SpeakersScene.swift:332 / SpeakerCommands.swift:48
@@ -204,7 +215,10 @@ extension MusicTUIAction {
              .playlistsOpenNowPlaying,   // PlaylistsScene.swift:362 b — navigation
              .libraryRetry,              // LibraryScene.swift:667 r, only while a read failed
              .radioFavourite,            // RadioScene.swift:172 f — toggles an existing row
-             .genius:                    // NowPlayingScene.swift:760 g; no CLI verb
+             .genius,                    // NowPlayingScene.swift:760 g; no CLI verb
+             // Slice 3 Part 2, D3: no CLI verb reaches it. P5 wires it from
+             // RadioScene's Live/Personal lists.
+             .radioCatalogueBrowse:
             return [.tui]
 
         // CLI only.
@@ -251,15 +265,31 @@ extension MusicTUIAction {
 // Nothing reaches Music.app by default.
 
 /// The CLI actions served through Bridge while Bridge is selected. Grows by
-/// score step (S6 → S7 → S7P); nothing else adds to it.
+/// score step (S6 → S7 → Part 2 P6 …); nothing else adds to it.
 let cliDispatchedOnBridge: Set<MusicTUIAction> = [
     // S6: `now` and transport.
     .nowStatus, .playPause, .next, .previous, .seek, .stop,
     // S7: `music play` from Bridge's own library (D4), and `search --library`.
-    // Free words (`.cliPlayQuery`) and Apple Music links (`.cliPlayCatalogSong`)
-    // are deliberately absent: they refuse (Q1; catalogue play deferred).
+    // Free words (`.cliPlayQuery`) are deliberately absent: they refuse (Q1).
     .cliPlayResume, .cliPlayIndex, .cliPlayPlaylist, .cliPlayAlbum, .cliPlaySong, .cliPlayArtist,
     .searchLibrary,
+    // Part 2 P6: catalogue search (`slice.search`) and the Apple Music SONG
+    // link (`slice.queue {"ids"}`, D7). Any other link classifies as words.
+    .catalogSearch, .cliPlayCatalogSong,
+    // Part 2 P7: `radio search` (`slice.searchStations`), `radio add`'s name
+    // lookup (`slice.station`) and `radio play` (`slice.playStation`, D8: an
+    // ambiguous name refuses, never auto-picks).
+    .radioSearch, .radioStationLookup, .radioStationPlay,
+    // Part 2 P8: `discover` (`slice.recommendations`; `--recent` refuses in
+    // the Bridge body), `playlist list`/`playlist tracks` (Bridge's own
+    // library; an ambiguous name refuses, never auto-picks) and `similar
+    // <title>` (`slice.search`, the shipped algorithm). `suggest` and
+    // `new-releases` are refused instead (Q1 default; D10's sentences).
+    .discoverFeed, .playlistListing, .similar,
+    // Part 2 P9 [serve]: `recent` (`slice.recentTracks`) and `rotation`
+    // (`slice.heavyRotation`). D9 passed for both (B2): Bridge returned the
+    // same account-level history as the REST path on three occasions.
+    .recent, .rotation,
 ]
 
 /// CLI actions that keep their shipped backend while Bridge is selected
@@ -267,17 +297,15 @@ let cliDispatchedOnBridge: Set<MusicTUIAction> = [
 /// derived: an action added later must be placed here by decision, and
 /// `CLIInventoryTests` fails until every CLI command is classified.
 ///
-/// Two kinds, and only these:
+/// Only **named exceptions (E)**, not temporary: explicit library management
+/// (Anthony, 2026-09-16 13:36), MusicTUI's own state, and the Music.app
+/// settings spec 6.4 marks Unaffected.
 ///
-/// - **Named exceptions (E)**, not temporary: explicit library management
-///   (Anthony, 2026-09-16 13:36), MusicTUI's own state, and the Music.app
-///   settings spec 6.4 marks Unaffected.
-/// - **Migration exceptions (M)**, temporary, by Anthony's Q2 ruling [B]
-///   (2026-09-25): read-only lookups that keep their shipped backends until
-///   Part B serves or refuses each one. They may need a developer key and can
-///   show Music.app's library, and their cached results never feed Bridge
-///   `play N` (score D3; `MigrationReadCacheTests`). Each is commented with the
-///   Part B op that retires it; Part B deletes the line and its comment.
+/// The temporary **M rows** (read-only lookups) of Anthony's Q2 ruling [B]
+/// (2026-09-25) are all retired: Part 2 served or refused each one (P6-P9),
+/// and `CLIInventoryTests` asserts none remains. A `.catalog`/`.library` row
+/// cached by a Music.app-mode read still never feeds Bridge `play N` (score
+/// D3; `MigrationReadCacheTests`).
 ///
 /// Not here: volume and speakers (refused on Bridge, S8), anything that plays,
 /// the current-track readers, and TUI-only rows no CLI verb reaches.
@@ -287,23 +315,13 @@ let cliBridgeExceptions: Set<MusicTUIAction> = [
     .playlistWrite,
     .playlistShare,
     .cliMix,
-    // E: MusicTUI's own state. `radio add` saves a local favourite; its REST
-    // name lookup is as shipped ([B]) until Part B's P7 moves it to `slice.station`.
+    // E: MusicTUI's own state. `radio add` saves a local favourite in both
+    // modes; its name lookup is `.radioStationLookup`, dispatched (P7).
     .radioAddURL,
     .auth,
     // E: Music.app settings (spec 6.4, Unaffected).
     .eq,
     .visualizer,
-    // M: temporary migration exceptions [B].
-    .catalogSearch,     // migration exception until Part B's slice.search (P6)
-    .playlistListing,   // migration exception until Part B's slice.libraryPlaylists / slice.libraryPlaylistTracks (P8)
-    .radioSearch,       // migration exception until Part B's slice.searchStations (P7)
-    .discoverFeed,      // migration exception until Part B's slice.recommendations (P8)
-    .similar,           // migration exception until Part B's slice.search (P8)
-    .suggest,           // migration exception until Part B's P8, which refuses it (no Bridge op; Q1 default)
-    .newReleases,       // migration exception until Part B's P8, which refuses it (no Bridge op; Q1 default)
-    .recent,            // migration exception until Part B's slice.recentTracks (P9, served on a D9 pass, else refused)
-    .rotation,          // migration exception until Part B's slice.heavyRotation (P9, served on a D9 pass, else refused)
 ]
 
 /// D7's reason for a CLI action Bridge does not serve. Shuffle and repeat
@@ -313,6 +331,13 @@ func cliBridgeNotServedReason(_ action: MusicTUIAction) -> String {
     switch action {
     case .persistentShuffleMode, .persistentRepeatMode, .volume, .airplayRoute:
         if case .refused(let why) = routeAction(action, in: .source, from: .tui) { return why }
+    // Part 2 P8, Q1 default (D10, verbatim): Bridge serves no op for these,
+    // so the reason names what is missing rather than "yet". The
+    // current-track variants never reach here; they keep their own reason.
+    case .suggest:
+        return "Bridge output is selected, and music suggest needs Apple Music account reads Bridge doesn't serve. Switch Output to Music.app to use it."
+    case .newReleases:
+        return "Bridge output is selected, and music new-releases needs a catalogue artist lookup Bridge doesn't serve. Switch Output to Music.app to use it."
     default:
         break
     }
@@ -346,6 +371,8 @@ private func cliBridgeNotServedWhat(_ action: MusicTUIAction) -> String {
     case .searchLibrary:            return "music search --library"
     case .radioSearch:              return "music radio search"
     case .radioAddURL:              return "music radio add"
+    case .radioCatalogueBrowse:     return "the Radio tab's Live and Personal lists"
+    case .radioStationLookup:       return "looking up a radio station by URL"
     case .recent:                   return "music recent"
     case .rotation:                 return "music rotation"
     case .discoverFeed:             return "music discover"
@@ -431,6 +458,15 @@ func routeAction(_ action: MusicTUIAction,
     /// Slice 3, D7: `music now` reads Bridge's own status. CLI-only, so this
     /// TUI row is unreachable; it is decided, not defaulted.
     case .nowStatus:
+        return .source
+
+    /// Slice 3 Part 2, D3: Radio's Live/Personal browse and its add-by-URL
+    /// station lookup are reads with no Music.app current-track dependency,
+    /// so both are served the same way every other Bridge-mode TUI read is.
+    /// `routing.choose` hands the caller a provider to read from AFTER this
+    /// returns. From the CLI, the clause above decides: `radio add`'s lookup
+    /// is dispatched (P7); the browse has no CLI invoker.
+    case .radioCatalogueBrowse, .radioStationLookup:
         return .source
 
     /// Anthony's ruling 12.2: an artist expands to that artist's SONGS, matching

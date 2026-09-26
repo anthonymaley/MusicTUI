@@ -40,8 +40,8 @@ Music.app — chosen from the TUI's **Output** tab. Check which one is active
 with `music now --json`: Bridge selected adds `"output": "bridge"`; nothing
 there means Music.app.
 
-With Bridge selected, transport and `music play` still work, but only these
-forms, and only from Bridge's own library:
+With Bridge selected, transport and `music play`'s named forms play only from
+Bridge's own library:
 
 ```bash
 music now --json                                  # look for "output": "bridge"
@@ -56,26 +56,70 @@ music play 2                                      # play result #2 from that sea
 music pause / music skip / music back / music stop / music seek +30
 ```
 
+Bridge also serves catalog and discovery reads directly — no developer key
+needed for any of these — and plays back what they find:
+
+```bash
+music search "Idioteque"                          # catalog search: songs and albums only
+music play "https://music.apple.com/...?i=1440830346"  # a song link plays via Bridge
+music radio search "apple music"
+music radio play "apple music 1"                  # exact favorite name, or one unambiguous hit
+music radio add "https://music.apple.com/station/..."  # favorites locally either way
+music discover --json --limit 4
+music playlist list
+music playlist tracks "Top 25 Most Played"
+music similar "Idioteque" --artist "Radiohead"
+music recent
+music rotation
+```
+
 What's different from Music.app mode:
 
 - **Plain `music play <words>` refuses.** There's no fast-path parsing
-  (speaker names, filler words, volume) yet, and no bare-word search-and-play.
+  (speaker names, filler words, volume) and no bare-word search-and-play.
   Name what you want with `--song`, `--album`, `--playlist`, or `--artist`,
-  or run `music search --library "<query>"` and then `music play N`.
-- **Nothing falls back to the catalog.** Every form above plays only what's
-  already in Bridge's library — no add-and-play for a song you don't own, and
-  no Apple Music links (`music play "https://music.apple.com/..."` refuses).
-- **A numbered result only plays back on the source that produced it.** Only
-  `music search --library`'s numbers are Bridge-playable; a plain `music
-  search` (catalog) or a listing from `music playlist tracks`/`music recent`/
-  etc. is not, and `music play N` on one of those refuses and names the fix
-  (search again with `--library`).
+  run `music search --library "<query>"` then `music play N`, or search the
+  catalog and play a song link (above).
+- `--playlist`/`--album`/`--song`/`--artist` still play only from Bridge's own
+  library — no catalog fallback for those forms.
+- **Catalog search returns songs and albums only.** `music search --types
+  artists` (or `playlists`) with Bridge selected refuses: `Bridge catalogue
+  search returns songs and albums only in this version.`
+- **Catalog playback is two forms only:** `music play N` on a catalog search
+  result, and a one-argument Apple Music **song** link. Any other link
+  (album, playlist, station) is treated as free words and refuses like plain
+  `play <words>`.
+- **A numbered result only plays back on the source and namespace that
+  produced it.** A result from Music.app-mode search or history doesn't feed
+  Bridge's `music play N`: `Result N came from a Music.app or catalogue
+  listing, so Bridge can't play it by its own id. With Bridge selected, run:
+  music search "<title>"  then  music play N`. A Bridge row — library or
+  catalog — doesn't feed Music.app's `play N` either, with a sentence naming
+  which kind it was.
+- **Bridge catalog results can't feed `add N` or a playlist write.** If any
+  resolved index came from Bridge (library or catalog search, or `similar`),
+  the whole command refuses: `Result(s) N[, M] came from Bridge. Adding
+  Bridge rows to your library or a playlist isn't supported yet; search again
+  with Output set to Music.app.`
+- **`radio play` never picks between two matches.** A favorite name (exact,
+  then a unique substring) is tried first, then a station search; one match
+  plays, but two or more refuse with the list instead of picking the first
+  one (Music.app mode keeps its shipped first-match behavior).
+- **`playlist list`/`playlist tracks`** list Bridge's own library; an
+  ambiguous playlist name refuses the same way `play --playlist` does —
+  exact name, then a unique substring, else a list and a request for the
+  exact name.
+- **`suggest` and `new-releases` still refuse in every form** — Bridge has no
+  op for them, naming the Music.app switch.
+- **`discover --recent` refuses**, naming the same fix: `Bridge doesn't serve
+  the recently played row. Switch Output to Music.app to use music discover
+  --recent.`
 - **Over 100 matching songs refuses** rather than queueing a huge list.
 - **Volume and speaker commands refuse** (`music volume`, `music speaker
   ...`): there's no AirPlay routing from the CLI on Bridge yet. Use MusicTUI's
   Output tab, or switch Output back to Music.app.
-- **`music shuffle`/`music repeat`, `music radio play`, and `music playlist
-  temp` refuse** the same way.
+- **`music shuffle`/`music repeat` and `music playlist temp` refuse** the
+  same way.
 - `music eq` and `music visualizer` are Music.app settings either way; they
   don't touch what Bridge plays.
 - `music now --json` on Bridge never carries `album`, `duration`, `position`,
@@ -85,16 +129,13 @@ What's different from Music.app mode:
   line can say fewer were queued than requested (e.g. "Playing 39 of 42
   tracks") when Bridge skipped a song it doesn't have or a video-only track.
 
-**Reads keep their current backend while Bridge is selected, for now:** `music
-search` (catalog), `music discover`, `music recent`, `music rotation`, `music
-radio search`, `music playlist list`/`tracks`, and explicit `music
-similar`/`suggest`/`new-releases` all still run exactly as they do in
-Music.app mode. They may still need a developer key, and what they list can
-be Music.app's library rather than Bridge's — this is temporary, until Bridge
-gets its own versions of these. Their numbered results follow the same rule
-as above: they don't feed Bridge's `music play N`; search Bridge's own copy
-with `music search --library` first if you want to play what they found.
-`music radio add <url>` is unaffected.
+**Plays.** Library songs Bridge plays to the end are recorded in Music.app's
+play count and last-played date via `music sync-plays`, same as before.
+Catalog and Discover plays from Bridge — a catalog search result, a song
+link, `similar`, `recent`, `rotation`, or a track played from the Discover
+tab — are now recorded too, but only when the song has exactly one copy in
+your library; with zero copies or more than one, the play isn't counted.
+Radio station plays are never counted.
 
 **Commands that read the current track still refuse**, because Music.app's
 current track isn't what Bridge is playing: bare `music similar`, `music
@@ -307,14 +348,14 @@ music mix --artists "Fouk,Floating Points" --count 20 --name "Friday Mix"  # mix
 ## Interactive TUI (requires real terminal, not Claude Code)
 
 ```bash
-music                                         # unified shell: Now / Discover / Library / Playlists / Radio / Speakers tabs
+music                                         # unified shell: Now / Discover / Library / Playlists / Radio / Output tabs
 ```
 
-Bare `music` is the main interactive surface: a tabbed shell with **Now**, **Discover**, **Library**, **Playlists**, **Radio**, and **Speakers** tabs. (`music now` / `music now --json` and `music playlist <subcommand>` are non-interactive CLI commands, documented above.) Four one-shot quick pickers also exist for terminal/slash-command use: bare `music speaker` (AirPlay picker), bare `music volume` (mixer), and the `music similar` / `music suggest` result pickers.
+Bare `music` is the main interactive surface: a tabbed shell with **Now**, **Discover**, **Library**, **Playlists**, **Radio**, and **Output** tabs. (`music now` / `music now --json` and `music playlist <subcommand>` are non-interactive CLI commands, documented above.) Four one-shot quick pickers also exist for terminal/slash-command use: bare `music speaker` (AirPlay picker), bare `music volume` (mixer), and the `music similar` / `music suggest` result pickers.
 
-TUI behavior: the Now tab shows the current album context; selecting a playlist on the Playlists tab pins it on the Now tab. Cursor movement is local and fast. On the Speakers tab, toggling a speaker on while playing verifies the route and toasts if it couldn't be verified. The Library tab (no token needed) browses your library in three sub-views: Artists, Albums, Songs (opens on Artists), switched with `[`/`]`; Enter opens an album's tracks (or drills Artist → their albums → tracks), `p` plays and `s` shuffles the item in focus. On the Artists list, `a` cycles a track-count filter: All → 12″/EP (artists with a 2 to 5 track release) → Albums (artists with a 6+ track album), separating 12″s/EPs from full-album deep cuts; the raw list otherwise includes every artist with any library track (even one pulled in by a single playlist song). Library and Playlists heroes show real cover art (fetched once, disk-cached; gradient placeholder while loading or when no cover can be found). The Discover tab (needs the user token) shows Apple's For You rails with **Recently Played** hoisted to the top, five curated rails at four items each by default; navigation is three levels deep, Discover then a rail then a track list, each level keeping its own cursor and scroll position. `r` refreshes the top level, `←`/`Esc` backs out a level, `→` drills in and never plays. `Enter` plays a station outright, opens a read-only track list for an album or playlist, opens the full rail for a `View all N` row, and plays a track inside a drill-in from that track to the end of the container (it slices the temporary playlist from the chosen track onward, so the bounded play form still starts from a beginning, and it turns shuffle off first so the chosen track is the one that starts; `p` leaves shuffle alone). `p` plays an album or playlist row directly, bounded to it, and does nothing on a station, a `View all N` row, or a track row. Playing this way adds the album to the user's library permanently: Discover creates a temporary playlist to play it and removes that playlist afterward, but the songs it added stay, because Apple gives no way to prove which library rows this app added versus ones the user added themselves, so an automatic cleanup could delete music they added on purpose (the temporary playlist goes when the TUI quits, or at a later launch when the app could not confirm it was the one playing; a Discover play pressed while the startup cleanup is still running waits for it to finish first, with a toast saying so) (see docs/platform-notes.md for the platform limits behind this). The Radio tab browses **Favorites · Live · Personal** stations, switched with `[`/`]` (Favorites needs no token; Live and Personal need a developer token). `Enter`/`→` plays, `f` favorites/unfavorites, `/` opens a catalog search (hits land in the list, `Esc` clears back to the sub-view), `a` opens an add-by-URL field: paste a station URL to favorite it directly; anything that isn't a URL redirects to `/` instead of being guessed at. Only `↑↓`/`j`/`k` and `Enter`/`→`/`l` are wired; no page/home/end jumps.
+TUI behavior: the Now tab shows the current album context; selecting a playlist on the Playlists tab pins it on the Now tab. Cursor movement is local and fast. On the Output tab, toggling a speaker on while playing verifies the route and toasts if it couldn't be verified. The Library tab (no token needed) browses your library in three sub-views: Artists, Albums, Songs (opens on Artists), switched with `[`/`]`; Enter opens an album's tracks (or drills Artist → their albums → tracks), `p` plays and `s` shuffles the item in focus. On the Artists list, `a` cycles a track-count filter: All → 12″/EP (artists with a 2 to 5 track release) → Albums (artists with a 6+ track album), separating 12″s/EPs from full-album deep cuts; the raw list otherwise includes every artist with any library track (even one pulled in by a single playlist song). Library and Playlists heroes show real cover art (fetched once, disk-cached; gradient placeholder while loading or when no cover can be found). The Discover tab (needs the user token) shows Apple's For You rails with **Recently Played** hoisted to the top, five curated rails at four items each by default; navigation is three levels deep, Discover then a rail then a track list, each level keeping its own cursor and scroll position. `r` refreshes the top level, `←`/`Esc` backs out a level, `→` drills in and never plays. `Enter` plays a station outright, opens a read-only track list for an album or playlist, opens the full rail for a `View all N` row, and plays a track inside a drill-in from that track to the end of the container (it slices the temporary playlist from the chosen track onward, so the bounded play form still starts from a beginning, and it turns shuffle off first so the chosen track is the one that starts; `p` leaves shuffle alone). `p` plays an album or playlist row directly, bounded to it, and does nothing on a station, a `View all N` row, or a track row. Playing this way adds the album to the user's library permanently: Discover creates a temporary playlist to play it and removes that playlist afterward, but the songs it added stay, because Apple gives no way to prove which library rows this app added versus ones the user added themselves, so an automatic cleanup could delete music they added on purpose (the temporary playlist goes when the TUI quits, or at a later launch when the app could not confirm it was the one playing; a Discover play pressed while the startup cleanup is still running waits for it to finish first, with a toast saying so) (see docs/platform-notes.md for the platform limits behind this). The Radio tab browses **Favorites · Live · Personal** stations, switched with `[`/`]` (Favorites needs no token; Live and Personal need a developer token). `Enter`/`→` plays, `f` favorites/unfavorites, `/` opens a catalog search (hits land in the list, `Esc` clears back to the sub-view), `a` opens an add-by-URL field: paste a station URL to favorite it directly; anything that isn't a URL redirects to `/` instead of being guessed at. Only `↑↓`/`j`/`k` and `Enter`/`→`/`l` are wired; no page/home/end jumps.
 
-TUI controls: `1/2/3/4/5/6` switch tabs (Now / Discover / Library / Playlists / Radio / Speakers), `Tab`/`Shift-Tab` cycle tabs, `[`/`]` switch Library sub-view or Radio Favorites/Live/Personal, `↑↓` navigate (`PgUp/PgDn/Home/End` for long lists, Now/Playlists/Speakers/Library only), `Enter` play/open selected, `←→` seek (Now) or volume (Speakers), `Space` pause, `</>` previous/next track (full up/down through the playlist), `z` shuffle-play (`s`/`m`/`r`/`g` shuffle/order/repeat/Genius on Now), `l` favorite (Now), `f` favorite (Radio), `+/-` volume, `n` next-up options (Now), `/` filter playlists (arrows navigate while typing) or search the Radio catalog (Enter runs the search), `Esc` back, `q` or `Ctrl-C` quit (Ctrl-C quits even from inside a search or filter field). Playlist track-play requires Music's Autoplay (∞) turned OFF: it drives playback track-by-track and needs each track to stop at its end. CLI album playback (`music play --album`) is bounded the same way and needs the same setting.
+TUI controls: `1/2/3/4/5/6` switch tabs (Now / Discover / Library / Playlists / Radio / Output), `Tab`/`Shift-Tab` cycle tabs, `[`/`]` switch Library sub-view or Radio Favorites/Live/Personal, `↑↓` navigate (`PgUp/PgDn/Home/End` for long lists, Now/Playlists/Output/Library only), `Enter` play/open selected, `←→` seek (Now) or volume (Output), `Space` pause, `</>` previous/next track (full up/down through the playlist), `z` shuffle-play (`s`/`m`/`r`/`g` shuffle/order/repeat/Genius on Now), `l` favorite (Now), `f` favorite (Radio), `+/-` volume, `n` next-up options (Now), `/` filter playlists (arrows navigate while typing) or search the Radio catalog (Enter runs the search), `Esc` back, `q` or `Ctrl-C` quit (Ctrl-C quits even from inside a search or filter field). Playlist track-play requires Music's Autoplay (∞) turned OFF: it drives playback track-by-track and needs each track to stop at its end. CLI album playback (`music play --album`) is bounded the same way and needs the same setting.
 
 ## Result Cache
 
@@ -346,6 +387,7 @@ music auth set-token <TOKEN>                  # save user token from browser
 | No auth | play, pause, skip, back, stop, now, shuffle, repeat, speaker, volume, radio list/play/add, search --library | search, add, playlist (API), similar, suggest, new-releases, mix, radio search |
 | Developer token only | Above + search, radio search | add, playlist (API), similar, suggest, new-releases, mix |
 | Both tokens | Everything | — |
+| Bridge selected (any token tier) | play (named forms and `N`), search (catalog and `--library`), a song link, radio list/search/play/add, discover, playlist list/tracks, similar, recent, rotation — none of these need a developer key | shuffle, repeat, speaker, volume, playlist temp, suggest, new-releases, mix, add, playlist (API) |
 
 ## Workflow: Complex Requests
 
@@ -404,8 +446,13 @@ Always use `--json` when you need to parse the output programmatically.
 - **"No tracks found"**: Try a broader search query
 - **"No station found for..."**: Radio search is shallow; ask the user for the station's share URL from music.apple.com and use `music radio play <url>` / `music radio add <url>` instead
 - **Speaker commands fail**: Check exact speaker name with `music speaker list`
-- **"Bridge output is selected, and ... isn't available from the CLI on Bridge yet."**: That command isn't wired to Bridge yet (volume, speakers, radio play, shuffle/repeat, `playlist temp`, plain `play <words>`, catalog links). Use MusicTUI, or switch Output to Music.app on the Output tab.
-- **"Bridge output is selected, so Music.app's current track is not what you are hearing."**: The command reads the "current track" (`similar`, `suggest`, `new-releases --like-current`, `add --to` with no song, `remove`, `love`/`unlove`), which would be wrong while Bridge plays something else. Name the song explicitly instead.
-- **"Result N came from a Music.app or catalogue listing, so Bridge can't play it by its own id."** / **"...came from Bridge's library, which Music.app can't play by identity."**: A numbered result only plays back on the source that produced it. Search again with `--library` (Bridge) or without it (Music.app), matching whichever Output is selected.
+- **"Bridge output is selected, and ... isn't available from the CLI on Bridge yet."**: That command isn't wired to Bridge (volume, speakers, shuffle/repeat, `playlist temp`, plain `play <words>` and any non-song Apple Music link). Use MusicTUI, or switch Output to Music.app on the Output tab.
+- **"Bridge output is selected, and music suggest needs Apple Music account reads Bridge doesn't serve."** / **"...music new-releases needs a catalogue artist lookup Bridge doesn't serve."**: Bridge has no op for either read. Switch Output to Music.app to use them.
+- **"Bridge doesn't serve the recently played row. Switch Output to Music.app to use music discover --recent."**: same reason, for `discover --recent` specifically; plain `music discover` is served.
+- **"Bridge catalogue search returns songs and albums only in this version."**: drop `--types artists`/`playlists` when Bridge is selected, or switch Output to Music.app.
+- **"Bridge output is selected, so Music.app's current track is not what you are hearing."**: The command reads the "current track" (bare `similar`, `suggest`, `new-releases --like-current`, `add --to` with no song, `remove`, `love`/`unlove`), which would be wrong while Bridge plays something else. Name the song explicitly instead.
+- **"Result N came from a Music.app or catalogue listing, so Bridge can't play it by its own id."** / **"...came from Bridge's library, which Music.app can't play by identity."** / **"...came from Bridge's catalogue search, which Music.app can't play by identity."**: A numbered result only plays back on the source and namespace that produced it. Search again with the matching Output selected (add `--library` for Bridge's library; drop it for the catalog).
+- **"Result(s) N came from Bridge. Adding Bridge rows to your library or a playlist isn't supported yet; search again with Output set to Music.app."**: `add N` and `playlist create/add` can't take a Bridge row (library or catalog) by index yet.
+- **"'<name>' matches N favourite stations..."** / **"'<name>' matches N stations..."**: `radio play` on Bridge never guesses between two or more matches; use the exact name or paste the station URL.
 - **"Output is being switched; nothing was changed. Try again."** / **"Output changed to Music.app/Bridge while this command ran; nothing was changed."**: Another MusicTUI process (the TUI, most likely) changed the Output tab at the same moment. Retry the command.
 - **"Bridge is still playing."** (from `music pause`): Bridge didn't confirm it stopped playing. Try `music pause` again, or check MusicTUI.

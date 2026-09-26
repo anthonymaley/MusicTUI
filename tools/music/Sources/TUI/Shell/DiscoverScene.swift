@@ -315,7 +315,12 @@ final class DiscoverScene: Scene {
                                                     isLive: nil, artworkURL: item.artworkURL),
                                             via: opener)
                         },
-                        source: { try $0.control.playStation(id: item.id, named: item.name) },
+                        source: {
+                            // D2: the provider rethrows `SourceAppError`
+                            // unchanged, so the refusal below reads as before.
+                            try BridgeMusicProvider(control: $0.control)
+                                .playStation(id: item.id, name: item.name, url: item.url)
+                        },
                         unaffected: {})
                     status.post("Playing \(item.name)")
                 } catch let error as SourceAppError {
@@ -423,7 +428,7 @@ final class DiscoverScene: Scene {
             // them; and both feeds yield catalogue ids either way.
             let tracks: [DiscoverItem]
             do {
-                tracks = try self.chooseFeed(.discoverFeed).tracks(for: item)
+                tracks = try self.chooseFeed(.discoverFeed).containerTracks(for: item)
             } catch let error as SourceAppError {
                 throw ActionError(message: error.message)
             }
@@ -469,7 +474,8 @@ final class DiscoverScene: Scene {
                                               disableShuffle: disableShuffle)
                 },
                 source: {
-                    try $0.control.queue(catalogIDs: catalogIDs)
+                    // The skip count is not shown here: the toast is today's.
+                    _ = try BridgeMusicProvider(control: $0.control).playCatalogue(ids: catalogIDs)
                     status.post(bridgeToast)
                 },
                 unaffected: {})
@@ -500,15 +506,26 @@ final class DiscoverScene: Scene {
     ///
     /// No fallback in either direction: Bridge selected means Bridge is read,
     /// whether or not a web-service feed exists.
-    private func chooseFeed(_ action: MusicTUIAction) throws -> DiscoverFeedReading {
-        var chosen: DiscoverFeedReading?
-        try routing.perform(action,
-                            musicApp: { chosen = self.feed },
-                            source: { chosen = $0.discover },
-                            unaffected: {})
+    ///
+    /// Slice 3, Part 2 (P3): chosen through the provider seam. Music.app mode
+    /// is `open`, the shipped feed wrapped; Bridge is `BridgeMusicProvider`.
+    /// Discover keeps its documented tolerance of a result from the output
+    /// just left (D3), so the choice's epoch is not checked here.
+    private func chooseFeed(_ action: MusicTUIAction) throws -> DiscoverProviding {
+        let choice: ProviderChoice<DiscoverProviding> = try routing.choose(action,
+            musicApp: { self.open },
+            source: { BridgeMusicProvider(control: $0.control) })
         // Music.app mode with no sign-in: the only state with no feed at all.
-        guard let chosen else { throw ActionError(message: Self.signInToBrowse) }
-        return chosen
+        guard choice.provider.feedAvailable else { throw ActionError(message: Self.signInToBrowse) }
+        return choice.provider
+    }
+
+    /// Music.app mode's provider: the feed this scene was given, wrapped (D4),
+    /// so availability is still `feed != nil` and every read reaches it.
+    /// Discover's station play keeps its shipped `musicApp` body, so no
+    /// catalogue is needed here.
+    private var open: OpenMusicProvider {
+        OpenMusicProvider(discover: feed, catalog: nil, opener: opener)
     }
 
     /// A failure in words for the person, or nil for one that has none of its
@@ -547,7 +564,7 @@ final class DiscoverScene: Scene {
             var fetched: [DiscoverItem] = []
             var failure: String? = nil
             do {
-                fetched = try self.chooseFeed(.discoverFeed).tracks(for: item)
+                fetched = try self.chooseFeed(.discoverFeed).containerTracks(for: item)
             } catch {
                 // This was `try?`, which turned every refusal into an empty list
                 // that rendered as "No tracks." A web-service failure still does;
@@ -572,7 +589,7 @@ final class DiscoverScene: Scene {
                 var failed = false
                 var failure: String? = nil
                 do {
-                    fetched = try self.chooseFeed(.discoverFeed).rails(limit: 30)
+                    fetched = try self.chooseFeed(.discoverFeed).discoverRails(limit: 30)
                 } catch {
                     failed = true
                     failure = Self.words(for: error)

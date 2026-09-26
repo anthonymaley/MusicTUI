@@ -19,9 +19,9 @@ struct Search: ParsableCommand {
 
 /// `music search`, dispatched (slice 3 S7, D1). `--library` is
 /// `.searchLibrary`, which Bridge serves from its own library; the catalogue
-/// search is `.catalogSearch`, a temporary migration exception that keeps its
-/// shipped backend until S8 (Q2). Neither is playback, so neither takes the
-/// output lock.
+/// search is `.catalogSearch`, which Bridge serves with `slice.search` (Part 2
+/// P6; Decision 7: Music.app mode keeps its developer-key body). Neither is
+/// playback, so neither takes the output lock.
 func runSearch(query: [String], artist: String?, album: String?, types: String, library: Bool,
                limit: Int, json: Bool, env: CLIBridgeEnv,
                musicApp: ([String], String?, String?, String, Bool, Int, Bool) throws -> Void = searchViaMusicApp) throws {
@@ -30,7 +30,8 @@ func runSearch(query: [String], artist: String?, album: String?, types: String, 
                     bridge: library
                         ? { try bridgeSearchLibraryCommand($0, query: query, artist: artist, album: album,
                                                            types: types, limit: limit, json: json, env: env) }
-                        : cliBridgeNotServed(.catalogSearch))
+                        : { try bridgeSearchCatalogueCommand($0, query: query, artist: artist, album: album,
+                                                             types: types, limit: limit, json: json, env: env) })
 }
 
 /// The shipped `music search` body, verbatim.
@@ -137,6 +138,67 @@ func bridgeSearchLibraryCommand(_ session: CLIBridgeSession, query: [String], ar
         for row in published {
             env.out("\(row.index). \(row.title) \u{2014} \(row.artist) [\(row.album)]")
         }
+    }
+}
+
+// MARK: - catalogue search with Bridge selected (Part 2 P6, D5, D6)
+
+let bridgeCatalogueSearchTypesRefusal = "Bridge catalogue search returns songs and albums only in this version."
+
+/// `music search` (catalogue) with Bridge selected: one `slice.search` with the
+/// shipped term (query, then `--artist`, then `--album`) and `--limit`.
+///
+/// **Provenance (D6).** Only records Bridge typed `song` become cached rows,
+/// as `.bridgeCatalog` with the id in `bridgeID` and an empty `catalogId`; the
+/// origin comes from this op, never from the id. Albums are shown, never
+/// cached. `--types` narrows what is shown to the kinds asked for (default
+/// songs); anything but songs and albums refuses before any request.
+///
+/// **Publish, then print (D3).** As `search --library`: the rows are written
+/// atomically before any line is shown; a failed write shows no rows and exits
+/// 1; no results publishes an empty list.
+func bridgeSearchCatalogueCommand(_ session: CLIBridgeSession, query: [String], artist: String?, album: String?,
+                                  types: String, limit: Int, json: Bool, env: CLIBridgeEnv) throws {
+    let searchTypes = Set(parseSearchTypes(types))
+    guard searchTypes.isSubset(of: [.songs, .albums]) else {
+        throw ActionError(message: bridgeCatalogueSearchTypesRefusal)
+    }
+    var term = query.joined(separator: " ")
+    if let artist = artist { term += " \(artist)" }
+    if let album = album { term += " \(album)" }
+    guard !term.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+        throw ActionError(message: "Name something to search for.")
+    }
+
+    let found = try retryingWhileWarming(budget: session.budget,
+                                         onWarming: { _ in env.err(cliBridgeWarmingProgress) },
+                                         sleep: env.sleep) {
+        try session.provider.searchCatalogue(term: term, limit: limit)
+    }
+    let records = found.filter { record in
+        switch record.kind {
+        case .song:  return searchTypes.contains(.songs)
+        case .album: return searchTypes.contains(.albums)
+        }
+    }
+
+    let published = catalogueSearchSongRows(records).map { row in
+        SongResult(index: row.index, title: row.title, artist: row.artist, album: row.album ?? "",
+                   catalogId: "", origin: .bridgeCatalog, bridgeID: row.bridgeID)
+    }
+    do {
+        try env.cache.writeSongs(published)
+    } catch {
+        throw ActionError(message: "Couldn't save these results, so music play N would not find them: \(error.localizedDescription)")
+    }
+
+    guard !records.isEmpty else {
+        throw ActionError(message: "No results for '\(term)'")
+    }
+    if json {
+        env.out(catalogueSearchJSON(records, songsOnlyRequest: searchTypes == [.songs]))
+    } else {
+        catalogueSearchLines(records).forEach(env.out)
     }
 }
 

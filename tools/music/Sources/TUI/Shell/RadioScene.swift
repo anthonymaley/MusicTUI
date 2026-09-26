@@ -2,6 +2,13 @@
 // Playback is the music:// scheme rewrite (StationPlayback). Favorites carry
 // their own url+name so this tab paints and plays with NO network and NO token —
 // Live/Personal/search degrade to an honest message instead.
+//
+// Slice 3, Part 2 (P5): every catalogue read and the station play go through
+// the provider seam, chosen per action by `routing.choose` — the REST catalogue
+// and opener wrapped in an `OpenMusicProvider` (D4) with Music.app selected, a
+// `BridgeMusicProvider` with Bridge selected. Every async result carries the
+// epoch its provider was chosen at, and one from before a committed output
+// switch is dropped when it drains (D3). Favourites stay local in both modes.
 import Foundation
 
 final class RadioScene: Scene {
@@ -11,19 +18,31 @@ final class RadioScene: Scene {
     private var nav = RadioNav.initial
     private let store: StationStore
     private let routing: RoutingCoordinator
+    /// Music.app mode's station catalogue (a developer key, `makeCatalog()`).
+    /// Read only through `open`, never directly: with Bridge selected nothing
+    /// here is reached, key or no key (P5).
     private let catalog: RadioCatalog?
-    /// Where `/` gets its stations. Defaults to `catalog`, so with nothing
-    /// injected this scene behaves exactly as it always has. Separate from
-    /// `catalog` on purpose: Live, Personal and `resolve(id:)` keep using the
-    /// REST route regardless, because the slice moves ONE search and widening
-    /// that here would reroute three more paths by accident.
     private let opener: Opener
 
-    private var live: [Station] = []
-    private var personal: [Station] = []
+    // Internal read, private write: a test reads what landed (P5).
+    private(set) var live: [Station] = []
+    private(set) var personal: [Station] = []
     private var searchHits: [Station] = []
-    private var liveLoaded = false
-    private var personalLoaded = false
+    private(set) var liveLoaded = false
+    private(set) var personalLoaded = false
+    /// The routing epoch Live and Personal were fetched for. When
+    /// `routing.epoch` moves (a committed output switch), both lists are
+    /// cleared and fetched again from the new output (D3).
+    private var browseEpoch: Int
+    /// Which async results were dropped as stale ("live", "personal",
+    /// "search", "lookup"), in drain order. Main-thread only. Nothing reads it
+    /// but tests: a drop is otherwise silent by design, and a test has to be
+    /// able to tell "dropped" from "not arrived yet".
+    private(set) var staleDrops: [String] = []
+
+    /// The shown sentence when a `/` search was answered by the output the
+    /// person has since switched away from (D10).
+    static let staleSearchMessage = "✗ Output changed while searching; search again."
 
     // Raw text entry. `searching` is the `/` catalog-search flow — a network
     // call fired on Enter (never live per-keystroke; there is no local list to
@@ -50,16 +69,35 @@ final class RadioScene: Scene {
     // between inbox state and scene state.
     private let inboxLock = NSLock()
     private var liveFetchStarted = false
-    private var liveInbox: [Station]? = nil
+    private var liveInbox: BrowsePost? = nil
     private var personalFetchStarted = false
-    private var personalInbox: [Station]? = nil
+    private var personalInbox: BrowsePost? = nil
     // commitAddURL's add path: the favorite is added synchronously from the
-    // slug (no network, so it's never lost), then resolve() enriches it in the
-    // background. store.add() replaces-by-id, so a landed enrichment can only
-    // upgrade the existing favorite in place, never duplicate it.
-    private var resolveInbox: Station? = nil
+    // slug (no network, so it's never lost), then the chosen provider's
+    // station(id:) enriches it in the background. store.add() replaces-by-id,
+    // so a landed enrichment can only upgrade the existing favorite in place,
+    // never duplicate it.
+    private var resolveInbox: (epoch: Int, station: Station)? = nil
     // commitSearch's search path.
-    private var searchInbox: (term: String, hits: [Station], failure: String?)? = nil
+    private var searchInbox: (epoch: Int, term: String, hits: [Station], failure: String?)? = nil
+    /// How many posts each inbox has been OFFERED ("live", "personal",
+    /// "lookup", "search"), accepted or not. Under `inboxLock`. Nothing reads
+    /// it but tests: it is how a test knows a background post has been written
+    /// before it ticks, so the order two posts arrive in can be pinned.
+    private var offered: [String: Int] = [:]
+    func postsOffered(_ kind: String) -> Int {
+        inboxLock.lock(); defer { inboxLock.unlock() }
+        return offered[kind, default: 0]
+    }
+
+    /// One Live or Personal read, stamped with the epoch its provider was
+    /// chosen at. `failure` is set only on Bridge: open mode keeps its shipped
+    /// `try?` → empty.
+    private struct BrowsePost {
+        let epoch: Int
+        let stations: [Station]
+        let failure: String?
+    }
 
     // Real hero covers: store owns fetch/cache/render; onReady sets artDirty
     // under inboxLock (same discipline as the streaming inboxes above) and
@@ -85,6 +123,24 @@ store: StationStore, catalog: RadioCatalog?,
         self.catalog = catalog
         self.opener = opener
         self.kittyEnabled = kittyEnabled
+        self.browseEpoch = routing.epoch
+    }
+
+    /// Music.app mode's provider: the catalogue and opener this scene was
+    /// given, wrapped (D4), so availability is still `catalog != nil` and
+    /// every read reaches the same object as it ships.
+    private var open: OpenMusicProvider {
+        OpenMusicProvider(discover: nil, catalog: catalog, opener: opener)
+    }
+
+    /// Chooses the station provider for `action` under the coordinator's
+    /// ordering boundary. Only construction happens inside it; the caller's
+    /// round trip runs afterwards, outside the boundary.
+    private static func chooseStations(_ action: MusicTUIAction, routing: RoutingCoordinator,
+                                       open: OpenMusicProvider) throws -> ProviderChoice<StationProviding> {
+        try routing.choose(action,
+                           musicApp: { open },
+                           source: { BridgeMusicProvider(control: $0.control) })
     }
 
     func artPlacementsInvalidated() { lastPlaced = nil }
@@ -199,7 +255,12 @@ store: StationStore, catalog: RadioCatalog?,
             do {
                 try routing.perform(.radioStationPlay,
                     musicApp: { try playStation(s, via: opener) },
-                    source: { try $0.control.playStation(id: s.id, named: s.name) },
+                    source: {
+                        // D2: the provider rethrows `SourceAppError`
+                        // unchanged, so the refusal below reads as before.
+                        try BridgeMusicProvider(control: $0.control)
+                            .playStation(id: s.id, name: s.name, url: s.url)
+                    },
                     unaffected: {})
                 message = "▶ \(s.name)"
             } catch let error as SourceAppError {
@@ -252,13 +313,26 @@ store: StationStore, catalog: RadioCatalog?,
             message = "✗ Couldn't save favorite"
             return
         }
-        if let catalog {
-            let id = p.id
-            Thread.detachNewThread { [weak self] in
-                guard let resolved = (try? catalog.resolve(id: id)) ?? nil else { return }
-                guard let self else { return }
-                self.inboxLock.lock(); self.resolveInbox = resolved; self.inboxLock.unlock()
+        // Enrichment through the provider chosen for `.radioStationLookup`,
+        // chosen on the lookup's own thread so a playback action holding the
+        // ordering lock cannot stall this keypress. `try?` in BOTH modes: this
+        // enriches a favourite already saved, as ships, and a failure leaves
+        // the slug name, which is not a fallback to another output. Music.app
+        // mode with no key reaches nothing, exactly as before.
+        let id = p.id
+        let routing = self.routing
+        let open = self.open
+        Thread.detachNewThread { [weak self] in
+            guard let choice = try? Self.chooseStations(.radioStationLookup, routing: routing, open: open),
+                  choice.provider.catalogueAvailable,
+                  let resolved = (try? choice.provider.station(id: id)) ?? nil else { return }
+            guard let self else { return }
+            self.inboxLock.lock()
+            self.offered["lookup", default: 0] += 1
+            if Self.mayReplace(self.resolveInbox?.epoch, with: choice.epoch) {
+                self.resolveInbox = (choice.epoch, resolved)
             }
+            self.inboxLock.unlock()
         }
     }
 
@@ -274,16 +348,12 @@ store: StationStore, catalog: RadioCatalog?,
         //
         // **Only the CHOICE happens inside the lock; the round trip does not.**
         // Holding the ordering lock across a network call would let a slow
-        // search block a mode switch. A read can safely use the provider chosen
-        // a moment ago - the worst case is results from the output you just left
-        // - and that is what makes this different from a playback action, where
-        // acting on a stale decision means driving the wrong player.
-        var chosen: StationSearching?
+        // search block a mode switch. The result carries the epoch it was
+        // chosen at, and one answered by the output the person has since
+        // switched away from is shown as stale, never as hits (P5).
+        let choice: ProviderChoice<StationProviding>
         do {
-            try routing.perform(.radioSearch,
-                                musicApp: { chosen = self.catalog },
-                                source: { chosen = $0.stationSearch },
-                                unaffected: {})
+            choice = try Self.chooseStations(.radioSearch, routing: routing, open: open)
         } catch let error as ActionError {
             message = "✗ " + error.message
             return
@@ -293,18 +363,23 @@ store: StationStore, catalog: RadioCatalog?,
         }
         // Music.app mode with no developer key: unchanged, and the only state
         // that still refuses here.
-        guard let stationSearch = chosen else {
+        guard choice.provider.catalogueAvailable else {
             message = "✗ Search needs auth (music auth setup)"
             return
         }
         searchInFlight = true
         message = "Searching \u{201C}\(input)\u{201D}\u{2026}"
         let term = input
+        let provider = choice.provider
+        let epoch = choice.epoch
         Thread.detachNewThread { [weak self] in
             var hits: [Station] = []
             var failure: String? = nil
             do {
-                hits = try stationSearch.searchStations(term: term)
+                // 25 is what both shipped searches asked for: the REST
+                // catalogue fixes it itself, and the Bridge request bytes are
+                // the old adapter's (P1).
+                hits = try provider.searchStations(term: term, limit: 25)
             } catch let sourceApp as SourceAppError {
                 // The source app's refusals say something a person can act on
                 // ("not running"), so they are carried through rather than
@@ -314,35 +389,112 @@ store: StationStore, catalog: RadioCatalog?,
                 failure = "Search failed"
             }
             guard let self else { return }
-            self.inboxLock.lock(); self.searchInbox = (term, hits, failure); self.inboxLock.unlock()
+            self.inboxLock.lock()
+            self.offered["search", default: 0] += 1
+            if Self.mayReplace(self.searchInbox?.epoch, with: epoch) {
+                self.searchInbox = (epoch, term, hits, failure)
+            }
+            self.inboxLock.unlock()
         }
+    }
+
+    private enum Browse { case live, personal }
+
+    /// Every inbox is ONE slot, so its writes are epoch-monotonic: a post
+    /// replaces what is waiting only when its epoch is at least as new. Last
+    /// writer wins was the defect (Codex, Part 2 review): after a switch, the
+    /// new output's post could land first and the old output's after it; the
+    /// stale one took the slot, the drain dropped it, the fetch flags stayed
+    /// set, and the fresh result was lost with no retry. Call under `inboxLock`.
+    private static func mayReplace(_ storedEpoch: Int?, with incoming: Int) -> Bool {
+        guard let storedEpoch else { return true }
+        return incoming >= storedEpoch
+    }
+
+    /// One Live or Personal read. The CHOICE runs here, on the fetch thread,
+    /// never on the main thread: a playback action can hold the ordering lock
+    /// for seconds, and the shell loop must keep painting meanwhile (P5).
+    ///
+    /// A provider that cannot read the catalogue (Music.app mode with no key)
+    /// fetches nothing and posts nothing, exactly as today. Open mode keeps
+    /// its shipped `try?` → empty. Bridge mode posts a failure's own words, so
+    /// a Bridge that cannot answer is never shown as an empty list (D4).
+    private func startBrowse(_ which: Browse) {
+        let routing = self.routing
+        let open = self.open
+        let requested = browseEpoch
+        Thread.detachNewThread { [weak self] in
+            let post: BrowsePost
+            do {
+                let choice = try Self.chooseStations(.radioCatalogueBrowse, routing: routing, open: open)
+                guard choice.provider.catalogueAvailable else { return }
+                let provider = choice.provider
+                let read: () throws -> [Station] = {
+                    which == .live ? try provider.liveStations() : try provider.personalStations()
+                }
+                switch choice.mode {
+                case .musicApp:
+                    post = BrowsePost(epoch: choice.epoch, stations: (try? read()) ?? [], failure: nil)
+                case .source:
+                    do {
+                        post = BrowsePost(epoch: choice.epoch, stations: try read(), failure: nil)
+                    } catch {
+                        post = BrowsePost(epoch: choice.epoch, stations: [], failure: Self.words(for: error))
+                    }
+                }
+            } catch {
+                post = BrowsePost(epoch: requested, stations: [], failure: Self.words(for: error))
+            }
+            guard let self else { return }
+            self.inboxLock.lock()
+            self.offered[which == .live ? "live" : "personal", default: 0] += 1
+            if which == .live {
+                if Self.mayReplace(self.liveInbox?.epoch, with: post.epoch) { self.liveInbox = post }
+            } else {
+                if Self.mayReplace(self.personalInbox?.epoch, with: post.epoch) { self.personalInbox = post }
+            }
+            self.inboxLock.unlock()
+        }
+    }
+
+    /// A Bridge-mode browse failure in the words its error carries: the
+    /// provider's translated sentence, or the coordinator's refusal.
+    private static func words(for error: Error) -> String {
+        if let e = error as? MusicProviderError, let why = e.errorDescription { return why }
+        if let e = error as? ActionError { return e.message }
+        if let e = error as? SourceAppError { return e.message }
+        return error.localizedDescription
     }
 
     @discardableResult
     func tick(snapshot: NowPlayingSnapshot) -> Bool {
         var changed = false
 
-        // Live/Personal are fetched once, off-thread, kicked on the first tick
-        // after the tab is entered — same one-shot pattern as LibraryScene's
-        // loadAlbums/loadSongs/loadArtists. Favorites need no fetch — they're
-        // already on disk, so this whole block is skipped with no catalog/token.
-        if let catalog {
-            if !liveFetchStarted {
-                liveFetchStarted = true
-                Thread.detachNewThread { [weak self] in
-                    let fetched = (try? catalog.liveStations()) ?? []
-                    guard let self else { return }
-                    self.inboxLock.lock(); self.liveInbox = fetched; self.inboxLock.unlock()
-                }
-            }
-            if !personalFetchStarted {
-                personalFetchStarted = true
-                Thread.detachNewThread { [weak self] in
-                    let fetched = (try? catalog.personalStation()) ?? []
-                    guard let self else { return }
-                    self.inboxLock.lock(); self.personalInbox = fetched; self.inboxLock.unlock()
-                }
-            }
+        // A committed output switch since the lists were fetched: they came
+        // from the output just left, so they go, and are fetched again from
+        // the new one (D3). Read once, and every drain below is judged against
+        // the same value.
+        let epoch = routing.epoch
+        if epoch != browseEpoch {
+            browseEpoch = epoch
+            live = []; personal = []
+            liveLoaded = false; personalLoaded = false
+            liveFetchStarted = false; personalFetchStarted = false
+            changed = true
+        }
+
+        // Live/Personal are fetched once per epoch, off-thread, kicked on the
+        // first tick after the tab is entered — same one-shot pattern as
+        // LibraryScene's loadAlbums/loadSongs/loadArtists. Favorites need no
+        // fetch — they're already on disk. Which output answers is chosen on
+        // the fetch thread; Music.app mode with no catalog/token reads nothing.
+        if !liveFetchStarted {
+            liveFetchStarted = true
+            startBrowse(.live)
+        }
+        if !personalFetchStarted {
+            personalFetchStarted = true
+            startBrowse(.personal)
         }
 
         inboxLock.lock()
@@ -353,14 +505,35 @@ store: StationStore, catalog: RadioCatalog?,
         let artLanded = artDirty; artDirty = false
         inboxLock.unlock()
 
-        if let freshLive { live = freshLive; liveLoaded = true; changed = true }
-        if let freshPersonal { personal = freshPersonal; personalLoaded = true; changed = true }
-        if let freshResolve {
-            try? store.add(freshResolve)
-            message = "★ \(freshResolve.name)"
-            changed = true
+        if let freshLive {
+            if freshLive.epoch != epoch { staleDrops.append("live") }
+            else {
+                live = freshLive.stations; liveLoaded = true; changed = true
+                if let failure = freshLive.failure { message = "✗ " + failure }
+            }
         }
-        if let freshSearch {
+        if let freshPersonal {
+            if freshPersonal.epoch != epoch { staleDrops.append("personal") }
+            else {
+                personal = freshPersonal.stations; personalLoaded = true; changed = true
+                if let failure = freshPersonal.failure { message = "✗ " + failure }
+            }
+        }
+        if let freshResolve {
+            if freshResolve.epoch != epoch { staleDrops.append("lookup") }
+            else {
+                try? store.add(freshResolve.station)
+                message = "★ \(freshResolve.station.name)"
+                changed = true
+            }
+        }
+        if let freshSearch, freshSearch.epoch != epoch {
+            staleDrops.append("search")
+            searchInFlight = false
+            searchHits = []
+            message = Self.staleSearchMessage
+            changed = true
+        } else if let freshSearch {
             searchInFlight = false
             searchHits = freshSearch.hits
             message = freshSearch.failure.map { "✗ \($0)" }
@@ -377,9 +550,11 @@ store: StationStore, catalog: RadioCatalog?,
     /// side can show an honest "Loading…" instead of a bare empty list. With no
     /// catalog/token nothing will ever load, so this reads false forever rather
     /// than spinning — Favorites (the only sub-view this applies to: false) must
-    /// always work with no network and no token.
+    /// always work with no network and no token. With Bridge selected a list
+    /// always loads (or fails in words). Display only: the mode read here
+    /// decides no route.
     private var loading: Bool {
-        guard catalog != nil else { return false }
+        guard routing.mode == .source || catalog != nil else { return false }
         switch nav.subView {
         case .favorites: return false
         case .live: return !liveLoaded

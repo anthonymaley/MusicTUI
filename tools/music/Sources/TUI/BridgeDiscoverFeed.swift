@@ -25,8 +25,22 @@ struct BridgeDiscoverFeed: DiscoverFeedReading {
 
     /// Apple's rails in Apple's order, empty ones dropped - the same rule the
     /// web-service feed applies.
+    ///
+    /// Part 2, P1: the request lives on `SourceAppControl`
+    /// (`recommendations(limit:)`), which decodes with `rails(fromReply:)`
+    /// below, so this feed and `BridgeMusicProvider` share one implementation.
     func rails(limit: Int) throws -> [DiscoverRail] {
-        let reply = try control.send(["op": "slice.recommendations", "limit": limit])
+        try control.recommendations(limit: limit)
+    }
+
+    /// A station or a song has no track list, so none is asked for - the same
+    /// answer the web-service feed gives without spending a request.
+    func tracks(for item: DiscoverItem) throws -> [DiscoverItem] {
+        try control.containerTracks(for: item)
+    }
+
+    /// The rails of an ok `slice.recommendations` reply.
+    static func rails(fromReply reply: [String: Any]) throws -> [DiscoverRail] {
         // A missing collection on an ok reply is a contract violation, not an
         // empty feed: an honest empty one carries an empty array. The same rule
         // station search keeps (Codex S1).
@@ -44,19 +58,21 @@ struct BridgeDiscoverFeed: DiscoverFeedReading {
         }
     }
 
-    /// A station or a song has no track list, so none is asked for - the same
-    /// answer the web-service feed gives without spending a request.
+    /// The wire `kind` a container is asked for by, or nil for an item with no
+    /// track list (a station or a song), which spends no request.
     ///
     /// The KIND goes back on the wire: a catalogue id does not say whether it is
     /// an album or a playlist, and Bridge once read every one as an album.
-    func tracks(for item: DiscoverItem) throws -> [DiscoverItem] {
-        let kind: String
+    static func containerKind(of item: DiscoverItem) -> String? {
         switch item.kind {
-        case .album:          kind = "album"
-        case .playlist:       kind = "playlist"
-        case .station, .song: return []
+        case .album:          return "album"
+        case .playlist:       return "playlist"
+        case .station, .song: return nil
         }
-        let reply = try control.send(["op": "slice.containerTracks", "id": item.id, "kind": kind])
+    }
+
+    /// The tracks of an ok `slice.containerTracks` reply.
+    static func tracks(fromReply reply: [String: Any]) throws -> [DiscoverItem] {
         guard let rows = reply["items"] as? [[String: Any]] else { throw SourceAppError.unreadable }
         return try Self.items(rows)
     }

@@ -11,7 +11,13 @@ struct Similar: ParsableCommand {
     @Flag(name: .long, help: "Output JSON") var json = false
 
     func run() throws {
-        try refuseInBridge(similarAction(query: query), json: json)
+        try runSimilar(query: query, artist: artist, limit: limit, json: json, env: .live(),
+                       musicApp: runViaMusicApp)
+    }
+
+    /// The shipped `music similar` body, verbatim: Music.app mode's branch,
+    /// both the explicit title and the current track.
+    func runViaMusicApp() throws {
         let auth = AuthManager()
         let devToken = try auth.requireDeveloperToken()
         let userToken = try auth.requireUserToken()
@@ -86,6 +92,20 @@ struct Similar: ParsableCommand {
             }
         }
     }
+}
+
+/// `music similar`, dispatched (slice 3 Part 2, P8). The action comes from the
+/// arguments: a title is `.similar`, which Bridge serves through its catalogue
+/// search (`bridgeSimilarCommand`); no title is `.similarToCurrentTrack`,
+/// which the matrix refuses on Bridge before any request, in the same words
+/// the gate printed. Music.app selected: the shipped body, `musicApp`,
+/// injected so a test can count it. A read: neither branch takes the lock.
+func runSimilar(query: [String], artist: String?, limit: Int, json: Bool, env: CLIBridgeEnv,
+                musicApp: () throws -> Void) throws {
+    try cliDispatch(similarAction(query: query), json: json, env: env,
+                    musicApp: musicApp,
+                    bridge: { try bridgeSimilarCommand($0, query: query, artist: artist, limit: limit,
+                                                       json: json, env: env) })
 }
 
 struct Suggest: ParsableCommand {

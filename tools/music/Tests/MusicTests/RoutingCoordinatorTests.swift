@@ -361,22 +361,23 @@ final class RoutingCoordinatorTests: XCTestCase {
     /// The coordinator's surface is the process's, so the SAME action through
     /// the same API refuses in a CLI process and is served in a TUI one. This is
     /// the execution-side half; ActionRoutingTests holds the policy half. The
-    /// subject is `radioStationPlay` (slice 3 S6): `seek` now reaches Bridge
-    /// from both surfaces, and a radio play still does not from the CLI.
+    /// subject is `collectionShuffle` (`radioStationPlay` until Part 2 P7): `seek` now reaches Bridge
+    /// from both surfaces, and radio play since Part 2 P7; the shuffle word
+    /// still does not from the CLI on its own (it rides inside `music play`).
     func testTheSameTransportActionSplitsByProcessSurface() throws {
         let tuiLog = Recorder()
         let tui = coordinator(mode: .source, recorder: tuiLog, surface: .tui)
-        try tui.perform(.radioStationPlay, musicApp: { tuiLog.append("musicApp") },
+        try tui.perform(.collectionShuffle, musicApp: { tuiLog.append("musicApp") },
                         source: { _ in tuiLog.append("source") },
                         unaffected: { tuiLog.append("unaffected") })
-        XCTAssertEqual(tuiLog.log, ["source"], "the TUI's radio play must reach Bridge")
+        XCTAssertEqual(tuiLog.log, ["source"], "the TUI's collection shuffle must reach Bridge")
 
         let cliLog = Recorder()
         let cli = coordinator(mode: .source, recorder: cliLog, surface: .cli)
-        XCTAssertThrowsError(try cli.perform(.radioStationPlay, musicApp: { cliLog.append("musicApp") },
+        XCTAssertThrowsError(try cli.perform(.collectionShuffle, musicApp: { cliLog.append("musicApp") },
                                              source: { _ in cliLog.append("source") },
                                              unaffected: { cliLog.append("unaffected") })) { error in
-            XCTAssertEqual((error as? ActionError)?.message, cliBridgeNotServedReason(.radioStationPlay))
+            XCTAssertEqual((error as? ActionError)?.message, cliBridgeNotServedReason(.collectionShuffle))
         }
         XCTAssertEqual(cliLog.log, [], "a refused CLI verb must never fall back")
         XCTAssertEqual(cliLog.factoryCalls, 0, "a refused CLI verb must not build a source client")

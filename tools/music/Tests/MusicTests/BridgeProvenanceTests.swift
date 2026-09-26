@@ -24,7 +24,8 @@ final class BridgeProvenanceTests: XCTestCase {
     }
 
     func testMusicAppAndCatalogueRowsAreRefusedByOriginNotIdShape() {
-        let expected = "Result 3 came from a Music.app or catalogue listing, so Bridge can't play it by its own id. With Bridge selected, run: music search --library \"T3\"  then  music play N"
+        // D10 (Part 2, P6) replaces Part 1's `search --library` hint.
+        let expected = "Result 3 came from a Music.app or catalogue listing, so Bridge can't play it by its own id. With Bridge selected, run: music search \"T3\"  then  music play N"
         // A catalogue row whose id looks like a library id is still catalogue.
         XCTAssertEqual(bridgeRef(forCachedRow: .row(3, .catalog, catalogId: "i.abc123"), index: 3), .refuse(expected))
         XCTAssertEqual(bridgeRef(forCachedRow: .row(3, .catalog), index: 3), .refuse(expected))
@@ -50,15 +51,70 @@ final class BridgeProvenanceTests: XCTestCase {
         XCTAssertEqual(musicAppIndexRoute(forCachedRow: .row(5, .library), index: 5), .reResolveByTitle)
     }
 
+    /// D10: Music.app refuses a Bridge catalogue row in its own words, with or
+    /// without its id; it is never re-resolved by title.
+    func testMusicAppRefusesBridgeCatalogueRows() {
+        let refusal = "Result 5 came from Bridge's catalogue search, which Music.app can't play by identity. Search again with Output set to Music.app, or switch Output to Bridge."
+        XCTAssertEqual(musicAppIndexRoute(forCachedRow: .row(5, .bridgeCatalog, bridgeID: "1440"), index: 5), .refuse(refusal))
+        XCTAssertEqual(musicAppIndexRoute(forCachedRow: .row(5, .bridgeCatalog), index: 5), .refuse(refusal))
+    }
+
+    // MARK: - bridge_catalog (Part 2, D6)
+
+    /// D6: a `.bridgeCatalog` row queues its Bridge id as a CATALOGUE id
+    /// (`slice.queue {"ids"}`), never as a library id. The origin decides.
+    func testBridgeCatalogueRowQueuesItsIdAsACatalogueId() {
+        XCTAssertEqual(bridgeRef(forCachedRow: .row(2, .bridgeCatalog, bridgeID: "1440857781"), index: 2),
+                       .queue(.catalogueQueue(ids: ["1440857781"])))
+        // An id spelled like a library id is still catalogue.
+        XCTAssertEqual(bridgeRef(forCachedRow: .row(2, .bridgeCatalog, bridgeID: "i.abc123"), index: 2),
+                       .queue(.catalogueQueue(ids: ["i.abc123"])))
+        // A Bridge LIBRARY row whose id looks like a catalogue id stays a library queue.
+        XCTAssertEqual(bridgeRef(forCachedRow: .row(2, .bridgeLibrary, bridgeID: "1440857781"), index: 2),
+                       .queue(.libraryQueue(ids: ["1440857781"], startRequired: true)))
+    }
+
+    func testBridgeCatalogueRowWithNoIdIsRefused() {
+        for id in [nil, ""] as [String?] {
+            XCTAssertEqual(bridgeRef(forCachedRow: .row(4, .bridgeCatalog, bridgeID: id), index: 4),
+                           .refuse("Result 4 has no Bridge id; run the search again."))
+        }
+    }
+
+    /// D6: a `.catalog` row with a real-looking catalogue id stays refused on
+    /// Bridge (`.catalog` also carries library and album ids).
+    func testACatalogRowWithANumericIdIsStillRefusedOnBridge() {
+        guard case .refuse = bridgeRef(forCachedRow: .row(1, .catalog, catalogId: "1440857781"), index: 1) else {
+            return XCTFail("a .catalog row must never become a Bridge ref")
+        }
+    }
+
+    func testBridgeCatalogueRowRoundTripsAndShippedRowsKeepTheirBytes() throws {
+        let row = SongResult(index: 1, title: "Angel", artist: "Massive Attack", album: "Mezzanine",
+                             catalogId: "", origin: .bridgeCatalog, bridgeID: "1440")
+        let data = try JSONEncoder().encode([row])
+        XCTAssertEqual(try JSONDecoder().decode([SongResult].self, from: data), [row])
+        let text = String(decoding: data, as: UTF8.self)
+        XCTAssertTrue(text.contains(#""origin":"bridge_catalog""#), text)
+        XCTAssertTrue(text.contains(#""bridge_id":"1440""#), text)
+        let shipped = String(decoding: try JSONEncoder().encode([SongResult.row(1, .catalog)]), as: UTF8.self)
+        XCTAssertFalse(shipped.contains("bridge_id"), shipped)
+        XCTAssertFalse(shipped.contains("bridge_catalog"), shipped)
+    }
+
     // MARK: - bridgeRowsRefusal(_:)
 
     func testBridgeRowsRefusalNamesEveryBridgeRowAndNothingElse() {
         XCTAssertNil(bridgeRowsRefusal([]))
         XCTAssertNil(bridgeRowsRefusal([.row(1, .catalog), .row(2, .library)]))
         XCTAssertEqual(bridgeRowsRefusal([.row(1, .catalog), .row(2, .bridgeLibrary, bridgeID: "7")]),
-                       "Result(s) 2 came from Bridge's library. Adding Bridge rows to your library or a playlist isn't supported yet; search again with Output set to Music.app.")
+                       "Result(s) 2 came from Bridge. Adding Bridge rows to your library or a playlist isn't supported yet; search again with Output set to Music.app.")
         XCTAssertEqual(bridgeRowsRefusal([.row(3, .bridgeLibrary), .row(1, .catalog), .row(5, .bridgeLibrary, bridgeID: "x")]),
-                       "Result(s) 3, 5 came from Bridge's library. Adding Bridge rows to your library or a playlist isn't supported yet; search again with Output set to Music.app.")
+                       "Result(s) 3, 5 came from Bridge. Adding Bridge rows to your library or a playlist isn't supported yet; search again with Output set to Music.app.")
+        // D10, Q3's default: a Bridge CATALOGUE row is refused the same way (P6A is out).
+        XCTAssertEqual(bridgeRowsRefusal([.row(1, .catalog), .row(2, .bridgeCatalog, bridgeID: "1440"),
+                                          .row(3, .bridgeLibrary, bridgeID: "b")]),
+                       "Result(s) 2, 3 came from Bridge. Adding Bridge rows to your library or a playlist isn't supported yet; search again with Output set to Music.app.")
     }
 
     // MARK: - The existing origin helpers, now exhaustive
@@ -67,6 +123,10 @@ final class BridgeProvenanceTests: XCTestCase {
         XCTAssertEqual(addIndexRoute(origin: .bridgeLibrary, catalogId: "", hasTargets: false), .bridgeRow)
         XCTAssertEqual(addIndexRoute(origin: .bridgeLibrary, catalogId: "", hasTargets: true), .bridgeRow)
         XCTAssertEqual(addIndexRoute(origin: .bridgeLibrary, catalogId: "id", hasTargets: true), .bridgeRow)
+        for targets in [false, true] {
+            XCTAssertEqual(addIndexRoute(origin: .bridgeCatalog, catalogId: "", hasTargets: targets), .bridgeRow)
+            XCTAssertEqual(addIndexRoute(origin: .bridgeCatalog, catalogId: "1440", hasTargets: targets), .bridgeRow)
+        }
     }
 
     func testBridgeRowsAreNeitherCatalogueNorLibraryRows() {
@@ -75,6 +135,11 @@ final class BridgeProvenanceTests: XCTestCase {
         XCTAssertEqual(p.library.map(\.index), [3])
         XCTAssertFalse(allLibraryRows([.row(1, .bridgeLibrary, bridgeID: "1")]))
         XCTAssertFalse(allLibraryRows([.row(1, .library), .row(2, .bridgeLibrary, bridgeID: "2")]))
+        let c = partitionByOrigin([.row(1, .catalog), .row(2, .bridgeCatalog, bridgeID: "2"), .row(3, .library)])
+        XCTAssertEqual(c.catalog.map(\.index), [1], "a Bridge catalogue row is not a REST catalogue row")
+        XCTAssertEqual(c.library.map(\.index), [3])
+        XCTAssertFalse(allLibraryRows([.row(1, .bridgeCatalog, bridgeID: "1")]))
+        XCTAssertFalse(allLibraryRows([.row(1, .library), .row(2, .bridgeCatalog, bridgeID: "2")]))
     }
 
     // MARK: - The tripwire

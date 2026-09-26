@@ -55,7 +55,7 @@ final class MigrationReadCacheTests: XCTestCase {
         guard case .refuse(let why) = bridgeRef(forCachedRow: row, index: 1) else {
             return XCTFail("a \(origin) row became a Bridge reference", file: file, line: line)
         }
-        XCTAssertEqual(why, "Result 1 came from a Music.app or catalogue listing, so Bridge can't play it by its own id. With Bridge selected, run: music search --library \"Angel\"  then  music play N",
+        XCTAssertEqual(why, "Result 1 came from a Music.app or catalogue listing, so Bridge can't play it by its own id. With Bridge selected, run: music search \"Angel\"  then  music play N",
                        file: file, line: line)
 
         let before = h.io.out.count
@@ -79,16 +79,44 @@ final class MigrationReadCacheTests: XCTestCase {
         try assertAMigrationReadsRowsNeverFeedBridgePlay(origin: .library)
     }
 
-    /// The migration reads route as shipped on Bridge (they are exceptions,
-    /// not dispatched), so none of them can publish a Bridge row: only the
-    /// dispatched `search --library` writes `.bridgeLibrary`.
-    func testTheMigrationReadsAreExceptionsNotDispatched() {
-        for action in [MusicTUIAction.catalogSearch, .playlistListing, .radioSearch, .discoverFeed,
-                       .similar, .suggest, .newReleases, .recent, .rotation] {
-            XCTAssertTrue(cliBridgeExceptions.contains(action), "\(action)")
-            XCTAssertFalse(cliDispatchedOnBridge.contains(action), "\(action)")
-            XCTAssertEqual(routeAction(action, in: .source, from: .cli),
-                           routeAction(action, in: .musicApp, from: .cli), "\(action)")
+    /// Part 2 retired every migration read: P6 catalogue search, P7 radio
+    /// search, P8 discover, the playlist listings, similar, suggest and
+    /// new-releases (`testTheP8MigrationExceptionsAreRetired`), and P9
+    /// `recent` and `rotation`, now dispatched to Bridge (their numbered rows
+    /// are `.bridgeCatalog`, written from Bridge's typed history items). No
+    /// read keeps its shipped backend on Bridge; the tests above still pin
+    /// that a `.catalog`/`.library` row never feeds Bridge `play N`.
+    func testNoMigrationReadRemainsAnException() {
+        for action in [MusicTUIAction.recent, .rotation] {
+            XCTAssertFalse(cliBridgeExceptions.contains(action), "\(action)")
+            XCTAssertTrue(cliDispatchedOnBridge.contains(action), "\(action)")
+            XCTAssertEqual(routeAction(action, in: .source, from: .cli), .source, "\(action)")
+        }
+    }
+
+    /// Part 2, P6 retired the catalogue-search migration exception: with
+    /// Bridge selected it is dispatched to Bridge, never run as shipped.
+    func testTheCatalogueSearchMigrationExceptionIsRetired() {
+        XCTAssertFalse(cliBridgeExceptions.contains(.catalogSearch))
+        XCTAssertTrue(cliDispatchedOnBridge.contains(.catalogSearch))
+        XCTAssertEqual(routeAction(.catalogSearch, in: .source, from: .cli), .source)
+        XCTAssertEqual(routeAction(.catalogSearch, in: .musicApp, from: .cli), .musicApp, "Decision 7: shipped in Music.app mode")
+    }
+
+    /// Part 2, P8 retired five: with Bridge selected, discover, the playlist
+    /// listings and `similar <title>` dispatch to Bridge (their rows are
+    /// `.bridgeLibrary`/`.bridgeCatalog`, written by Bridge ops), and
+    /// `suggest`/`new-releases` refuse. None runs its shipped body on Bridge.
+    func testTheP8MigrationExceptionsAreRetired() {
+        for action in [MusicTUIAction.discoverFeed, .playlistListing, .similar] {
+            XCTAssertFalse(cliBridgeExceptions.contains(action), "\(action)")
+            XCTAssertEqual(routeAction(action, in: .source, from: .cli), .source, "\(action)")
+        }
+        for action in [MusicTUIAction.suggest, .newReleases] {
+            XCTAssertFalse(cliBridgeExceptions.contains(action), "\(action)")
+            guard case .refused = routeAction(action, in: .source, from: .cli) else {
+                XCTFail("\(action) must refuse on Bridge"); continue
+            }
         }
     }
 }

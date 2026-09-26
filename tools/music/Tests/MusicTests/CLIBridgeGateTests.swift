@@ -10,10 +10,14 @@ final class CLIBridgeGateTests: XCTestCase {
     // MARK: - The decision
 
     /// Slice 3 D7: the playback verbs Bridge does not serve from the CLI yet
-    /// refuse in their not-served words.
+    /// refuse in their not-served words. (Part 2, P6: the Apple Music song link
+    /// left this list; it is dispatched, so the gate fails closed on it below.
+    /// P7: so did `radio play`.)
     func testUnservedPlaybackVerbsRefuseWithTheirD7WordsOnBridge() {
-        let verbs: [MusicTUIAction] = [.cliPlayQuery, .cliPlayCatalogSong, .persistentShuffleMode,
-                                       .persistentRepeatMode, .radioStationPlay, .playlistTemp]
+        XCTAssertEqual(cliBridgeRefusal(.cliPlayCatalogSong, mode: .source), cliGateOnDispatchedAction)
+        XCTAssertEqual(cliBridgeRefusal(.radioStationPlay, mode: .source), cliGateOnDispatchedAction)
+        let verbs: [MusicTUIAction] = [.cliPlayQuery, .persistentShuffleMode,
+                                       .persistentRepeatMode, .playlistTemp]
         for action in verbs {
             XCTAssertEqual(cliBridgeRefusal(action, mode: .source), cliBridgeNotServedReason(action), "\(action)")
         }
@@ -57,11 +61,19 @@ final class CLIBridgeGateTests: XCTestCase {
         }
     }
 
-    /// The other half of 12.14: a verb that names its target explicitly, or only
-    /// reads, runs as it ships.
+    /// The other half of 12.14: a verb that names its target explicitly runs
+    /// as it ships. Part 2 P8 took the explicit discovery reads out of this
+    /// group: `similar <title>` dispatches (so the gate, which it no longer
+    /// calls, would fail closed), and `suggest --from`/`new-releases --artist`
+    /// refuse for a missing Bridge op, not for the track.
     func testExplicitAndReadOnlyVariantsGoAheadOnBridge() {
-        for action in [MusicTUIAction.similar, .suggest, .newReleases, .addToLibrary] {
-            XCTAssertNil(cliBridgeRefusal(action, mode: .source), "\(action)")
+        XCTAssertNil(cliBridgeRefusal(.addToLibrary, mode: .source))
+        XCTAssertEqual(cliBridgeRefusal(.similar, mode: .source), cliGateOnDispatchedAction)
+        for action in [MusicTUIAction.suggest, .newReleases] {
+            let why = cliBridgeRefusal(action, mode: .source)
+            XCTAssertEqual(why, cliBridgeNotServedReason(action), "\(action)")
+            XCTAssertNotEqual(why, currentTrackIsStaleInBridge, "\(action)")
+            XCTAssertTrue(why?.hasSuffix("Switch Output to Music.app to use it.") ?? false, "\(action): D10's words")
         }
     }
 
@@ -105,8 +117,9 @@ final class CLIBridgeGateTests: XCTestCase {
         let commands = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
             .appendingPathComponent("Sources/Commands")
+        // Part 2 P8: `Similar` left this list; it dispatches (below).
         let gated: [(file: String, command: String)] = [
-            ("DiscoveryCommands.swift", "Similar"), ("DiscoveryCommands.swift", "Suggest"),
+            ("DiscoveryCommands.swift", "Suggest"),
             ("DiscoveryCommands.swift", "NewReleases"), ("LoveCommands.swift", "Love"),
             ("LoveCommands.swift", "Unlove"), ("RemoveCommand.swift", "Remove"),
             ("AddCommand.swift", "Add"),
@@ -136,14 +149,29 @@ final class CLIBridgeGateTests: XCTestCase {
             ("PlaylistCommands.swift", "PlaylistTemp", "runPlaylistTemp"),
             // S7: `music play` and `music search`.
             ("PlaybackCommands.swift", "Play", "runPlay"), ("SearchCommand.swift", "Search", "runSearch"),
+            // Part 2 P7: `radio search`. (`radio add` validates its URL first,
+            // as shipped, and dispatches only its lookup.)
+            ("RadioCommands.swift", "RadioSearch", "runRadioSearch"),
+            // Part 2 P8: `discover`, `similar`, `playlist list`, `playlist tracks`.
+            ("DiscoverCommands.swift", "Discover", "runDiscover"),
+            ("DiscoveryCommands.swift", "Similar", "runSimilar"),
+            ("PlaylistCommands.swift", "PlaylistList", "runPlaylistList"),
+            ("PlaylistCommands.swift", "PlaylistTracks", "runPlaylistTracks"),
         ]
+        // The playlist verbs' dispatch lives beside their Bridge bodies (P8
+        // owns only the two `run()`s in PlaylistCommands.swift).
+        let verbFile: [String: String] = ["runPlaylistList": "CLIBridgeListings.swift",
+                                          "runPlaylistTracks": "CLIBridgeListings.swift"]
         for (file, command, verb) in dispatching {
             let source = try String(contentsOf: commands.appendingPathComponent(file), encoding: .utf8)
             guard let firstLine = firstLineOfRun(command, in: source)
             else { return XCTFail("\(command) not found in \(file)") }
             XCTAssertTrue(firstLine.contains("try \(verb)("),
                           "\(command).run() must start with try \(verb)(; it starts with: \(firstLine)")
-            XCTAssertEqual(firstStatement(ofFunction: verb, in: source).map { $0.hasPrefix("try cliDispatch(") }, true,
+            let verbSource = try verbFile[verb].map {
+                try String(contentsOf: commands.appendingPathComponent($0), encoding: .utf8)
+            } ?? source
+            XCTAssertEqual(firstStatement(ofFunction: verb, in: verbSource).map { $0.hasPrefix("try cliDispatch(") }, true,
                            "\(verb) must start with try cliDispatch(")
         }
 

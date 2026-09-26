@@ -25,7 +25,7 @@ struct PlaylistList: ParsableCommand {
     @Flag(name: .long, help: "Output JSON") var json = false
 
     func run() throws {
-        try listPlaylists(json: json)
+        try runPlaylistList(json: json, env: .live())
     }
 }
 
@@ -35,7 +35,7 @@ struct PlaylistTracks: ParsableCommand {
     @Flag(name: .long, help: "Output JSON") var json = false
 
     func run() throws {
-        try showPlaylistTracks(name: name, json: json)
+        try runPlaylistTracks(name: name, json: json, env: .live())
     }
 }
 
@@ -252,9 +252,10 @@ func playlistAddStrategy(hasTokens: Bool, itemsAreIndices: Bool, allLibraryRows:
 /// catalog rows to the API, library rows to an AppleScript duplicate. Order
 /// inside each half is the order the user typed. Pure, for testability.
 ///
-/// A Bridge row is in neither half: Music.app cannot duplicate it and the API
-/// cannot add it. `playlist create/add` refuse the whole command on any Bridge
-/// row (`bridgeRowsRefusal`) before this runs, so none arrives here.
+/// A Bridge row, library or catalogue, is in neither half: Music.app cannot
+/// duplicate it and (by Q3's default) it is not handed to the API. `playlist
+/// create/add` refuse the whole command on any Bridge row (`bridgeRowsRefusal`)
+/// before this runs, so none arrives here.
 func partitionByOrigin(_ rows: [SongResult]) -> (catalog: [SongResult], library: [SongResult]) {
     var catalog: [SongResult] = []
     var library: [SongResult] = []
@@ -262,7 +263,7 @@ func partitionByOrigin(_ rows: [SongResult]) -> (catalog: [SongResult], library:
         switch row.origin {
         case .catalog: catalog.append(row)
         case .library: library.append(row)
-        case .bridgeLibrary: continue
+        case .bridgeLibrary, .bridgeCatalog: continue
         }
     }
     return (catalog, library)
@@ -275,7 +276,7 @@ func allLibraryRows(_ rows: [SongResult]) -> Bool {
     !rows.isEmpty && rows.allSatisfy { row in
         switch row.origin {
         case .library: return true
-        case .catalog, .bridgeLibrary: return false
+        case .catalog, .bridgeLibrary, .bridgeCatalog: return false
         }
     }
 }

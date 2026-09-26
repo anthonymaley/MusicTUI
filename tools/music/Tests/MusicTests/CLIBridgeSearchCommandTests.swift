@@ -207,12 +207,15 @@ final class CLIBridgeSearchCommandTests: XCTestCase {
         XCTAssertEqual(h.wire.requestCount, 0)
     }
 
-    /// The catalogue search keeps its shipped backend on Bridge until S8 (Q2).
-    func testCatalogueSearchOnBridgeStillRunsItsShippedBody() {
-        let h = H(.source)
+    /// Part 2, P6 retired the catalogue search's migration exception: with
+    /// Bridge selected it reads Bridge (`CLIBridgeCatalogueSearchTests`) and
+    /// never runs its shipped body.
+    func testCatalogueSearchOnBridgeNoLongerRunsItsShippedBody() {
+        let h = H(.source, ["slice.status": [ready],
+                            "slice.search": [#"{"ok":true,"op":"slice.search","records":[]}"#]])
         var runs = 0
-        XCTAssertNil(search(h, ["Massive"], library: false, musicApp: { runs += 1 }).error)
-        XCTAssertEqual(runs, 1)
-        XCTAssertEqual(h.wire.requestCount, 0)
+        _ = search(h, ["Massive"], library: false, musicApp: { runs += 1 })
+        XCTAssertEqual(runs, 0)
+        XCTAssertEqual(h.seen.ops, ["slice.status", "slice.search"])
     }
 }

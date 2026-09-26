@@ -168,6 +168,10 @@ final class ActionRoutingTests: XCTestCase {
         // CLI-only, like the other `.cliPlay*` rows; their TUI rows are
         // unreachable and decided with those rows, not defaulted.
         .cliPlayQuery: .source, .cliPlayCatalogSong: .source,
+        // Slice 3 Part 2, D3: Radio's Live/Personal browse and its add-by-URL
+        // lookup. Both are served like every other Bridge-mode read (the
+        // lookup also from the CLI since P7).
+        .radioCatalogueBrowse: .source, .radioStationLookup: .source,
     ]
 
     /// The table covers the closed set. Adding an action fails here until its
@@ -234,16 +238,28 @@ final class ActionRoutingTests: XCTestCase {
     /// transport verbs, then S7's `music play` forms (resume, index, playlist,
     /// album, song, artist) and `search --library`. Free words and Apple Music
     /// links are NOT in it (Anthony's Q1 ruling; catalogue play deferred).
+    ///
+    /// Part 2, P6 adds the catalogue search (`slice.search`) and the Apple
+    /// Music song link (`slice.queue {"ids"}`, D7). Free words still refuse.
     private let s7Dispatched: Set<MusicTUIAction> = [
         .nowStatus, .playPause, .next, .previous, .seek, .stop,
         .cliPlayResume, .cliPlayIndex, .cliPlayPlaylist, .cliPlayAlbum, .cliPlaySong, .cliPlayArtist,
         .searchLibrary,
+        // P6
+        .catalogSearch, .cliPlayCatalogSong,
+        // P7
+        .radioSearch, .radioStationLookup, .radioStationPlay,
+        // P8
+        .discoverFeed, .playlistListing, .similar,
+        // P9 (D9 passed for both)
+        .recent, .rotation,
     ]
 
-    func testTheDispatchedSetIsExactlyS7s() {
+    func testTheDispatchedSetIsExactlyS7sPlusP6s() {
         XCTAssertEqual(cliDispatchedOnBridge, s7Dispatched)
         XCTAssertFalse(cliDispatchedOnBridge.contains(.cliPlayQuery), "Q1: plain music play <words> refuses")
-        XCTAssertFalse(cliDispatchedOnBridge.contains(.cliPlayCatalogSong), "catalogue play is deferred")
+        XCTAssertTrue(cliDispatchedOnBridge.contains(.cliPlayCatalogSong), "P6: song links play through Bridge")
+        XCTAssertTrue(cliDispatchedOnBridge.contains(.catalogSearch), "P6: catalogue search reads Bridge")
         XCTAssertFalse(cliDispatchedOnBridge.contains(.collectionShuffle))
     }
 
@@ -277,10 +293,134 @@ final class ActionRoutingTests: XCTestCase {
     /// Section 2's M rows under Anthony's Q2 ruling [B]: the read-only lookups
     /// that keep their shipped backends as temporary migration exceptions until
     /// Part B serves or refuses each one.
-    private let s8Migration: Set<MusicTUIAction> = [
-        .catalogSearch, .playlistListing, .radioSearch, .discoverFeed,
-        .similar, .suggest, .newReleases, .recent, .rotation,
-    ]
+    /// Part 2 deletes each as it serves or refuses it: P6 retired
+    /// `.catalogSearch`, P7 `.radioSearch`, P8 `.playlistListing`,
+    /// `.discoverFeed`, `.similar` (served) and `.suggest`, `.newReleases`
+    /// (refused, Q1 default), and P9 `.recent`, `.rotation` (served, D9
+    /// pass). None remains.
+    private let s8Migration: Set<MusicTUIAction> = []
+
+    /// P6 deleted the catalogue search's line and its comment from the
+    /// exceptions literal. STRUCTURAL: reads ActionRouting.swift's source text.
+    func testTheCatalogueSearchMigrationLineIsDeleted() throws {
+        let file = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Sources/TUI/ActionRouting.swift")
+        let source = try String(contentsOf: file, encoding: .utf8)
+        guard let start = source.range(of: "let cliBridgeExceptions: Set<MusicTUIAction> = ["),
+              let end = source.range(of: "\n]\n", range: start.upperBound..<source.endIndex)
+        else { return XCTFail("cliBridgeExceptions literal not found") }
+        let literal = source[start.upperBound..<end.lowerBound]
+        XCTAssertFalse(literal.contains(".catalogSearch"), "P6 retired it")
+        XCTAssertFalse(literal.contains("slice.search (P6)"), "its migration comment goes with it")
+    }
+
+    /// P7 deleted the radio search's line and its comment from the exceptions
+    /// literal. STRUCTURAL: reads ActionRouting.swift's source text.
+    func testTheRadioSearchMigrationLineIsDeleted() throws {
+        let file = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Sources/TUI/ActionRouting.swift")
+        let source = try String(contentsOf: file, encoding: .utf8)
+        guard let start = source.range(of: "let cliBridgeExceptions: Set<MusicTUIAction> = ["),
+              let end = source.range(of: "\n]\n", range: start.upperBound..<source.endIndex)
+        else { return XCTFail("cliBridgeExceptions literal not found") }
+        let literal = source[start.upperBound..<end.lowerBound]
+        XCTAssertFalse(literal.contains(".radioSearch"), "P7 retired it")
+        XCTAssertFalse(literal.contains("slice.searchStations (P7)"), "its migration comment goes with it")
+        XCTAssertFalse(literal.contains("until Part B's P7"), "`radio add`'s lookup note is no longer a promise")
+    }
+
+    /// P8 deleted five lines and their comments from the exceptions literal.
+    /// STRUCTURAL: reads ActionRouting.swift's source text.
+    func testTheP8MigrationLinesAreDeleted() throws {
+        let file = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Sources/TUI/ActionRouting.swift")
+        let source = try String(contentsOf: file, encoding: .utf8)
+        guard let start = source.range(of: "let cliBridgeExceptions: Set<MusicTUIAction> = ["),
+              let end = source.range(of: "\n]\n", range: start.upperBound..<source.endIndex)
+        else { return XCTFail("cliBridgeExceptions literal not found") }
+        let literal = source[start.upperBound..<end.lowerBound]
+        for action in [".playlistListing", ".discoverFeed", ".similar,", ".suggest", ".newReleases"] {
+            XCTAssertFalse(literal.contains(action), "P8 retired \(action)")
+        }
+        XCTAssertFalse(literal.contains("(P8)"), "their migration comments go with them")
+        XCTAssertFalse(literal.contains("Part B's P8"), "their migration comments go with them")
+    }
+
+    /// P9 deleted the last two migration lines and their comments: the
+    /// exceptions literal names no migration exception at all.
+    /// STRUCTURAL: reads ActionRouting.swift's source text.
+    func testTheP9MigrationLinesAreDeletedAndNoneRemains() throws {
+        let file = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Sources/TUI/ActionRouting.swift")
+        let source = try String(contentsOf: file, encoding: .utf8)
+        guard let start = source.range(of: "let cliBridgeExceptions: Set<MusicTUIAction> = ["),
+              let end = source.range(of: "\n]\n", range: start.upperBound..<source.endIndex)
+        else { return XCTFail("cliBridgeExceptions literal not found") }
+        let literal = source[start.upperBound..<end.lowerBound]
+        XCTAssertFalse(literal.contains(".recent"), "P9 retired it")
+        XCTAssertFalse(literal.contains(".rotation"), "P9 retired it")
+        XCTAssertFalse(literal.contains("migration exception"), "no migration comment remains")
+        XCTAssertFalse(literal.contains("// M:"), "the M heading goes with its rows")
+    }
+
+    /// P9 [serve]: `recent` and `rotation` are dispatched from the CLI with
+    /// Bridge selected (`slice.recentTracks`, `slice.heavyRotation`), keep
+    /// their shipped route with Music.app selected, and are reads.
+    func testP9DispatchesRecentAndRotation() {
+        for action in [MusicTUIAction.recent, .rotation] {
+            XCTAssertTrue(cliDispatchedOnBridge.contains(action), "\(action)")
+            XCTAssertFalse(cliBridgeExceptions.contains(action), "\(action)")
+            XCTAssertEqual(routeAction(action, in: .source, from: .cli), .source, "\(action)")
+            XCTAssertEqual(routeAction(action, in: .musicApp, from: .cli), .musicApp, "\(action)")
+            XCTAssertFalse(requiresOutputLock(action), "\(action) is a read")
+        }
+    }
+
+    /// P8: discover, the playlist listings and `similar <title>` are
+    /// dispatched from the CLI with Bridge selected; `suggest` and
+    /// `new-releases` are refused with D10's sentences (Q1 default). All five
+    /// keep their shipped route with Music.app selected, and none is playback.
+    func testP8DispatchesTheListingsAndRefusesSuggestAndNewReleases() {
+        for action in [MusicTUIAction.discoverFeed, .playlistListing, .similar] {
+            XCTAssertTrue(cliDispatchedOnBridge.contains(action), "\(action)")
+            XCTAssertFalse(cliBridgeExceptions.contains(action), "\(action)")
+            XCTAssertEqual(routeAction(action, in: .source, from: .cli), .source, "\(action)")
+            XCTAssertFalse(requiresOutputLock(action), "\(action) is a read")
+        }
+        XCTAssertEqual(routeAction(.suggest, in: .source, from: .cli),
+                       .refused("Bridge output is selected, and music suggest needs Apple Music account reads Bridge doesn't serve. Switch Output to Music.app to use it."))
+        XCTAssertEqual(routeAction(.newReleases, in: .source, from: .cli),
+                       .refused("Bridge output is selected, and music new-releases needs a catalogue artist lookup Bridge doesn't serve. Switch Output to Music.app to use it."))
+        for action in [MusicTUIAction.discoverFeed, .playlistListing, .similar, .suggest, .newReleases] {
+            XCTAssertEqual(routeAction(action, in: .musicApp, from: .cli), .musicApp, "\(action)")
+        }
+        for action in [MusicTUIAction.similarToCurrentTrack, .suggestFromCurrentTrack, .newReleasesLikeCurrentTrack] {
+            XCTAssertEqual(routeAction(action, in: .source, from: .cli), .refused(currentTrackIsStaleInBridge), "\(action)")
+        }
+    }
+
+    /// P7: the three radio actions are dispatched from the CLI with Bridge
+    /// selected and keep their shipped route with Music.app selected. The
+    /// lookup is CLI-reachable now; the play takes the output lock, the two
+    /// reads do not.
+    func testRadioSearchLookupAndPlayAreDispatchedByP7() {
+        for action in [MusicTUIAction.radioSearch, .radioStationLookup, .radioStationPlay] {
+            XCTAssertTrue(action.surfaces.contains(.cli), "\(action)")
+            XCTAssertTrue(cliDispatchedOnBridge.contains(action), "\(action)")
+            XCTAssertFalse(cliBridgeExceptions.contains(action), "\(action)")
+            XCTAssertEqual(routeAction(action, in: .source, from: .cli), .source, "\(action)")
+            XCTAssertEqual(routeAction(action, in: .musicApp, from: .cli), .musicApp, "\(action)")
+        }
+        XCTAssertEqual(MusicTUIAction.radioStationLookup.surfaces, [.tui, .cli])
+        XCTAssertTrue(requiresOutputLock(.radioStationPlay))
+        XCTAssertFalse(requiresOutputLock(.radioSearch))
+        XCTAssertFalse(requiresOutputLock(.radioStationLookup))
+        XCTAssertTrue(cliBridgeExceptions.contains(.radioAddURL), "the favourite itself stays MusicTUI's own state")
+    }
 
     /// S8 closes the inventory: the exception set is exactly section 2's E
     /// rows plus the M rows, and nothing else. `.volume` and `.airplayRoute`
@@ -368,8 +508,7 @@ final class ActionRoutingTests: XCTestCase {
                        "Shuffle and repeat modes are Music.app only for now")
         XCTAssertEqual(routeAction(.cliPlayQuery, in: .source, from: .cli),
                        .refused("Bridge output is selected, and music play <words> isn't available from the CLI on Bridge yet. Use MusicTUI, or switch Output to Music.app."))
-        XCTAssertEqual(routeAction(.cliPlayCatalogSong, in: .source, from: .cli),
-                       .refused("Bridge output is selected, and music play <Apple Music link> isn't available from the CLI on Bridge yet. Use MusicTUI, or switch Output to Music.app."))
+        XCTAssertEqual(routeAction(.cliPlayCatalogSong, in: .source, from: .cli), .source, "P6: dispatched")
         XCTAssertEqual(cliBridgeNotServedReason(.radioStationPlay),
                        "Bridge output is selected, and music radio play isn't available from the CLI on Bridge yet. Use MusicTUI, or switch Output to Music.app.")
     }
@@ -397,13 +536,21 @@ final class ActionRoutingTests: XCTestCase {
     /// NOTE, for Anthony (kept from 12.14). The CLI has non-playback WRITES
     /// (`mix`, `add`, `playlist create/delete/...`); they stay with the reads,
     /// "unchanged", by his 2026-09-16 13:36 ruling on library management.
+    ///
+    /// Part 2 P8 adds a third kind beside volume and speakers: `suggest` and
+    /// `new-releases`, refused for a missing Bridge op (Q1 default).
     func testNonPlaybackCliCommandsAreUnchangedInSourceMode() {
+        let p8Refused: Set<MusicTUIAction> = [.suggest, .newReleases]
+        for action in p8Refused {
+            XCTAssertEqual(routeAction(action, in: .source, from: .cli), .refused(cliBridgeNotServedReason(action)), "\(action)")
+        }
         var checked: Set<MusicTUIAction> = []
         for action in MusicTUIAction.allCases
         where action.surfaces.contains(.cli)
             && !action.touchesPlayback
             && !action.readsMusicAppCurrentTrack
             && !s7Dispatched.contains(action)
+            && !p8Refused.contains(action)
             && action != .volume && action != .airplayRoute {
             checked.insert(action)
             XCTAssertEqual(routeAction(action, in: .source, from: .cli),
@@ -438,11 +585,25 @@ final class ActionRoutingTests: XCTestCase {
     /// and still go to Music.app with Music.app selected. The one exception is
     /// `searchLibrary`, whose TUI column stays on AppleScript (ruling 12.1,
     /// rule 9): S7 changes the CLI clause only, never the TUI column.
+    ///
+    /// P8 likewise changes only the CLI clause, so two of its rows keep their
+    /// TUI-column entries: `.playlistListing` (the ruling-12.1 listing row,
+    /// which the Bridge-mode Playlists scene does not route through) and
+    /// `.similar` (no TUI invoker; decided, not defaulted).
+    ///
+    /// P9 likewise: `.rotation` keeps its TUI-column refusal (no TUI invoker;
+    /// D10: the TUI column changes only by P2's two actions).
     func testDispatchedVerbsAreServedFromBothSurfaces() {
+        let tuiColumnUnchanged: [MusicTUIAction: ActionRoute] = [
+            .searchLibrary: .musicApp,
+            .playlistListing: .musicApp,
+            .similar: .refused("Not available through the source app in this version"),
+            .rotation: .refused("Heavy rotation has no MusicTUI Source route in this version"),
+        ]
         for action in s7Dispatched {
             XCTAssertEqual(routeAction(action, in: .source, from: .cli), .source, "\(action)")
             XCTAssertEqual(routeAction(action, in: .source, from: .tui),
-                           action == .searchLibrary ? .musicApp : .source, "\(action)")
+                           tuiColumnUnchanged[action] ?? .source, "\(action)")
             XCTAssertEqual(routeAction(action, in: .musicApp, from: .cli), .musicApp, "\(action)")
         }
     }
@@ -502,11 +663,20 @@ final class ActionRoutingTests: XCTestCase {
     /// WORKING. These name their target, so nothing can resolve to a stale
     /// track. A regression here would disable exactly what Anthony ruled must
     /// stay available.
+    ///
+    /// Part 2 P8 moved the explicit discovery reads off "ships unchanged":
+    /// `similar <title>` is served through Bridge, and `suggest`/`new-releases`
+    /// are refused for a missing Bridge op (Q1 default), never for the track
+    /// (`testP8DispatchesTheListingsAndRefusesSuggestAndNewReleases`).
     func testExplicitLibraryManagementKeepsWorkingFromTheCli() {
         for action in [MusicTUIAction.addToLibrary, .playlistWrite, .cliMix,
                        .similar, .suggest, .newReleases] {
             XCTAssertFalse(action.readsMusicAppCurrentTrack,
                            "\(action) is the EXPLICIT variant and must not read the current track")
+            XCTAssertNotEqual(routeAction(action, in: .source, from: .cli), .refused(currentTrackIsStaleInBridge),
+                              "\(action) names its own target")
+        }
+        for action in [MusicTUIAction.addToLibrary, .playlistWrite, .cliMix] {
             XCTAssertEqual(routeAction(action, in: .source, from: .cli),
                            routeAction(action, in: .musicApp, from: .cli),
                            "\(action) names its own target and must ship unchanged")

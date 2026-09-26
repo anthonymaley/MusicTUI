@@ -452,9 +452,11 @@ final class CLIBridgePlayCommandTests: XCTestCase {
         }
     }
 
-    func testAURLAndFreeWordsAreRefusedByTheMatrixWithNoRequestAtAll() {
+    /// Part 2, P6: a SONG link is dispatched (`CLIBridgeCataloguePlayTests`);
+    /// an album link is free words, and free words still refuse.
+    func testAnAlbumURLAndFreeWordsAreRefusedByTheMatrixWithNoRequestAtAll() {
         let cases: [(args: [String], action: MusicTUIAction)] = [
-            (["https://music.apple.com/us/album/x/1?i=42"], .cliPlayCatalogSong),
+            (["https://music.apple.com/us/album/x/1"], .cliPlayQuery),
             (["Kid", "A"], .cliPlayQuery),
             (["Teardrop"], .cliPlayQuery),
         ]

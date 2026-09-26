@@ -156,14 +156,28 @@ struct SourceAppStationSearch: StationSearching {
     }
 
     func searchStations(term: String) throws -> [Station] {
-        let request = SliceRequestBody(op: "slice.searchStations", term: term, limit: 25)
+        try Self.decodeSearchReply(transport(path, Self.requestLine(term: term, limit: 25)))
+    }
+
+    /// The request bytes, exactly as this adapter has always sent them (a
+    /// struct through `JSONEncoder`, so `op`, `term`, `limit` in that order).
+    /// Shared with `SourceAppControl.searchStations(term:limit:)` (Part 2, P1)
+    /// so the provider path cannot drift from the shipped one by a byte.
+    static func requestLine(term: String, limit: Int) throws -> String {
+        let request = SliceRequestBody(op: "slice.searchStations", term: term, limit: limit)
         guard let body = try? JSONEncoder().encode(request),
               let line = String(data: body, encoding: .utf8) else {
             throw SourceAppError.unreadable
         }
+        return line
+    }
 
-        let raw = try transport(path, line)
-
+    /// Everything after the transport, unchanged: the reply's refusals are
+    /// decoded by THIS adapter's rule (only `unauthorized` has a kind of its
+    /// own; every other kind is `refused(detail)`), which differs from
+    /// `SourceAppControl.send`'s. Shared so both paths give a person the same
+    /// words for the same reply (Part 2, D2).
+    static func decodeSearchReply(_ raw: String) throws -> [Station] {
         guard let data = raw.data(using: .utf8),
               let reply = try? JSONDecoder().decode(SliceStationReply.self, from: data) else {
             throw SourceAppError.unreadable
@@ -180,10 +194,39 @@ struct SourceAppStationSearch: StationSearching {
         // an empty result: an honest zero-hit reply carries an empty array.
         guard let stations = reply.stations else { throw SourceAppError.unreadable }
 
-        return stations.map {
-            Station(id: $0.id, name: $0.name, url: $0.url,
-                    isLive: $0.isLive, artworkURL: $0.artworkURL)
+        return stations.map(\.station)
+    }
+
+    /// A `stations` collection from a reply `SourceAppControl.send` already
+    /// decoded (Part 2's Live and Personal reads). The same row decoder as the
+    /// search: every field `WireStation` requires is required here, `url`
+    /// included, and one bad row fails the whole read rather than shortening
+    /// the list. A missing or non-array collection is unreadable, never empty.
+    static func stations(fromWire value: Any?) throws -> [Station] {
+        guard let rows = value as? [Any] else { throw SourceAppError.unreadable }
+        return try decodeWire([SliceStationReply.WireStation].self, from: rows).map(\.station)
+    }
+
+    /// One `station` from `slice.station`: an explicit null is Apple not
+    /// carrying it (nil, a normal answer); an absent key or a non-object is a
+    /// contract violation.
+    static func station(fromWire value: Any?) throws -> Station? {
+        switch value {
+        case is NSNull:
+            return nil
+        case let object as [String: Any]:
+            return try decodeWire(SliceStationReply.WireStation.self, from: object).station
+        default:
+            throw SourceAppError.unreadable
         }
+    }
+
+    private static func decodeWire<T: Decodable>(_ type: T.Type, from object: Any) throws -> T {
+        guard let data = try? JSONSerialization.data(withJSONObject: object),
+              let decoded = try? JSONDecoder().decode(type, from: data) else {
+            throw SourceAppError.unreadable
+        }
+        return decoded
     }
 
     // MARK: - wire types
@@ -209,6 +252,9 @@ struct SourceAppStationSearch: StationSearching {
                 case id, name, url
                 case isLive = "is_live"
                 case artworkURL = "artwork_url"
+            }
+            var station: Station {
+                Station(id: id, name: name, url: url, isLive: isLive, artworkURL: artworkURL)
             }
         }
         let ok: Bool
@@ -597,6 +643,60 @@ protocol SourceControlling {
     /// Bridge (whose synthesized `Decodable` drops unknown keys) sees exactly
     /// the request it always has.
     func libraryPlaylistTracks(playlistID: String, cursor: String?, limit: Int, forQueue: Bool) throws -> MusicPage
+
+    // Slice 3, Part 2, P1: the members the provider surfaces read through
+    // (`ProviderSurfaces.swift`, D1). Each has a default below throwing
+    // `.unsupported(<its wire op>)`, so every conformer written before Part 2
+    // keeps compiling and reads exactly like an older Bridge's `unknown_op`.
+
+    /// Discover's rails (`slice.recommendations`), decoded by
+    /// `BridgeDiscoverFeed`'s rules.
+    func recommendations(limit: Int) throws -> [DiscoverRail]
+    /// A Discover container's tracks (`slice.containerTracks` with its kind);
+    /// a station or a song has none and spends no request.
+    func containerTracks(for item: DiscoverItem) throws -> [DiscoverItem]
+    /// Station search, with the shipped adapter's request bytes and refusal
+    /// decoding (`SourceAppStationSearch`).
+    func searchStations(term: String, limit: Int) throws -> [Station]
+    /// `slice.liveStations` (D5).
+    func liveStations() throws -> [Station]
+    /// `slice.personalStations` (D5).
+    func personalStations() throws -> [Station]
+    /// `slice.station` (D5): nil when Apple does not carry the station.
+    func station(id: String) throws -> Station?
+    /// `slice.search` (D5): songs and albums, unpaged.
+    func searchCatalogue(term: String, limit: Int) throws -> [CatalogueRecord]
+    /// `slice.recentTracks` (D5).
+    func recentTracks(limit: Int) throws -> [HistoryItem]
+    /// `slice.heavyRotation` (D5).
+    func heavyRotation(limit: Int) throws -> [HistoryItem]
+    /// The same `slice.queue {"ids"}` request `queue(catalogIDs:)` sends,
+    /// returning `skipped_unavailable` (0 from a Bridge that predates it).
+    /// `queue(catalogIDs:)` itself is untouched.
+    func queueReportingSkips(catalogIDs: [String]) throws -> Int
+}
+
+/// Defaults for the Part 2 members: an older conformer reads as an older
+/// Bridge, naming the op it does not serve, never as an empty answer.
+extension SourceControlling {
+    func recommendations(limit: Int) throws -> [DiscoverRail] {
+        throw SourceAppError.unsupported("slice.recommendations")
+    }
+    func containerTracks(for item: DiscoverItem) throws -> [DiscoverItem] {
+        throw SourceAppError.unsupported("slice.containerTracks")
+    }
+    func searchStations(term: String, limit: Int) throws -> [Station] {
+        throw SourceAppError.unsupported("slice.searchStations")
+    }
+    func liveStations() throws -> [Station] { throw SourceAppError.unsupported("slice.liveStations") }
+    func personalStations() throws -> [Station] { throw SourceAppError.unsupported("slice.personalStations") }
+    func station(id: String) throws -> Station? { throw SourceAppError.unsupported("slice.station") }
+    func searchCatalogue(term: String, limit: Int) throws -> [CatalogueRecord] {
+        throw SourceAppError.unsupported("slice.search")
+    }
+    func recentTracks(limit: Int) throws -> [HistoryItem] { throw SourceAppError.unsupported("slice.recentTracks") }
+    func heavyRotation(limit: Int) throws -> [HistoryItem] { throw SourceAppError.unsupported("slice.heavyRotation") }
+    func queueReportingSkips(catalogIDs: [String]) throws -> Int { throw SourceAppError.unsupported("slice.queue") }
 }
 
 struct SourceAppControl: SourceControlling {
@@ -920,12 +1020,30 @@ struct SourceAppControl: SourceControlling {
     func queue(libraryIDs: [String], startRequired: Bool = false) throws -> Int {
         let body: [String: Any] = ["op": "slice.queue", "library_ids": libraryIDs, "start_required": startRequired]
         let reply = try send(body, over: libraryTransport)
+        return try Self.skippedUnavailable(in: reply, sent: libraryIDs.count)
+    }
+
+    /// Part 2, P1: `queue(catalogIDs:)`'s exact request, with the skip count
+    /// read by the same rule the library queue reads it.
+    func queueReportingSkips(catalogIDs: [String]) throws -> Int {
+        let reply = try send(Self.catalogueQueueBody(catalogIDs), over: libraryTransport)
+        return try Self.skippedUnavailable(in: reply, sent: catalogIDs.count)
+    }
+
+    /// `skipped_unavailable` from a successful queue reply: absent (an older
+    /// Bridge) is 0; anything but a non-negative integer smaller than the
+    /// number of ids sent is malformed (see `queue(libraryIDs:)`).
+    private static func skippedUnavailable(in reply: [String: Any], sent: Int) throws -> Int {
         guard let raw = reply["skipped_unavailable"] else { return 0 }
         guard CFGetTypeID(raw as CFTypeRef) != CFBooleanGetTypeID(),
-              let skipped = raw as? Int, skipped >= 0, skipped < libraryIDs.count else {
+              let skipped = raw as? Int, skipped >= 0, skipped < sent else {
             throw SourceAppError.malformedReply("Bridge's queue reply has a skipped_unavailable that is not a count")
         }
         return skipped
+    }
+
+    private static func catalogueQueueBody(_ catalogIDs: [String]) -> [String: Any] {
+        ["op": "slice.queue", "ids": catalogIDs]
     }
 
     func resume() throws   { _ = try send(["op": "slice.play"]) }
@@ -965,7 +1083,7 @@ struct SourceAppControl: SourceControlling {
     /// second copy of those numbers on this side would drift from the ones
     /// actually enforced.
     func queue(catalogIDs: [String]) throws {
-        _ = try send(["op": "slice.queue", "ids": catalogIDs], over: libraryTransport)
+        _ = try send(Self.catalogueQueueBody(catalogIDs), over: libraryTransport)
     }
 
     /// Play ONE station natively on Bridge.
@@ -981,6 +1099,103 @@ struct SourceAppControl: SourceControlling {
     /// has to name it. Ruling 17: refused, never fallen back.
     func playStation(id: String, named name: String) throws {
         _ = try send(["op": "slice.playStation", "id": id, "name": name])
+    }
+
+    // MARK: - Part 2, P1: the surfaces' reads
+
+    /// `BridgeDiscoverFeed`'s request and decoder, now reachable through
+    /// `SourceControlling` so a provider can hold ONE control value. The feed
+    /// itself calls this, so there is one implementation, not two.
+    func recommendations(limit: Int) throws -> [DiscoverRail] {
+        try BridgeDiscoverFeed.rails(fromReply: send(["op": "slice.recommendations", "limit": limit]))
+    }
+
+    func containerTracks(for item: DiscoverItem) throws -> [DiscoverItem] {
+        guard let kind = BridgeDiscoverFeed.containerKind(of: item) else { return [] }
+        return try BridgeDiscoverFeed.tracks(fromReply: send(["op": "slice.containerTracks", "id": item.id,
+                                                              "kind": kind]))
+    }
+
+    /// Deliberately NOT through `send`: the shipped station search decodes
+    /// refusals by its own rule (a `warming` or `unknown_op` reads as
+    /// `refused(detail)`), and D2 requires the provider path to throw the very
+    /// same values. Same bytes, same transport, same decoder.
+    func searchStations(term: String, limit: Int) throws -> [Station] {
+        try SourceAppStationSearch.decodeSearchReply(
+            transport(path, SourceAppStationSearch.requestLine(term: term, limit: limit)))
+    }
+
+    /// D5. A missing `stations` on an ok reply, or a station missing `url`,
+    /// fails the whole read.
+    func liveStations() throws -> [Station] {
+        try SourceAppStationSearch.stations(fromWire: send(["op": "slice.liveStations"])["stations"])
+    }
+
+    /// D5.
+    func personalStations() throws -> [Station] {
+        try SourceAppStationSearch.stations(fromWire: send(["op": "slice.personalStations"])["stations"])
+    }
+
+    /// D5. `"station": null` is an answer (nil); an absent key is not.
+    func station(id: String) throws -> Station? {
+        try SourceAppStationSearch.station(fromWire: send(["op": "slice.station", "id": id])["station"])
+    }
+
+    /// D5. `records` [{`kind` song|album, `id`, `title`, `subtitle`, `album`?}].
+    /// A kind this build does not model is dropped, never guessed at (the
+    /// Discover precedent); a row missing a required field fails the read.
+    func searchCatalogue(term: String, limit: Int) throws -> [CatalogueRecord] {
+        let reply = try send(["op": "slice.search", "term": term, "limit": limit])
+        guard let rows = reply["records"] as? [[String: Any]] else { throw SourceAppError.unreadable }
+        return try rows.compactMap { row in
+            guard let kindName = row["kind"] as? String else { throw SourceAppError.unreadable }
+            let kind: CatalogueRecord.Kind
+            switch kindName {
+            case "song":  kind = .song
+            case "album": kind = .album
+            default:      return nil
+            }
+            guard let id = row["id"] as? String,
+                  let title = row["title"] as? String,
+                  let subtitle = row["subtitle"] as? String else { throw SourceAppError.unreadable }
+            return CatalogueRecord(kind: kind, catalogueID: id, title: title, artist: subtitle,
+                                   album: try Self.optionalText(row, "album"))
+        }
+    }
+
+    /// D5.
+    func recentTracks(limit: Int) throws -> [HistoryItem] {
+        try Self.historyItems(fromReply: send(["op": "slice.recentTracks", "limit": limit]))
+    }
+
+    /// D5.
+    func heavyRotation(limit: Int) throws -> [HistoryItem] {
+        try Self.historyItems(fromReply: send(["op": "slice.heavyRotation", "limit": limit]))
+    }
+
+    /// `items` [{`type`, `id`, `name`, `artist`?, `album`?, `catalog_id`?}], in
+    /// Apple's order, nothing filtered, nothing reordered.
+    private static func historyItems(fromReply reply: [String: Any]) throws -> [HistoryItem] {
+        guard let rows = reply["items"] as? [[String: Any]] else { throw SourceAppError.unreadable }
+        return try rows.map { row in
+            guard let type = row["type"] as? String,
+                  let id = row["id"] as? String,
+                  let name = row["name"] as? String else { throw SourceAppError.unreadable }
+            return HistoryItem(type: type, id: id, name: name,
+                               artist: try optionalText(row, "artist"),
+                               album: try optionalText(row, "album"),
+                               catalogueID: try optionalText(row, "catalog_id"))
+        }
+    }
+
+    /// An optional text field: absent or null is nil; present as anything but
+    /// text is a contract violation, not a silently missing value.
+    private static func optionalText(_ row: [String: Any], _ key: String) throws -> String? {
+        switch row[key] {
+        case nil, is NSNull:        return nil
+        case let text as String:    return text
+        default:                    throw SourceAppError.unreadable
+        }
     }
 
     // MARK: - private
