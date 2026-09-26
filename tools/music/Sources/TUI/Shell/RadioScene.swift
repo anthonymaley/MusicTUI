@@ -91,8 +91,9 @@ final class RadioScene: Scene {
     }
 
     /// One Live or Personal read, stamped with the epoch its provider was
-    /// chosen at. `failure` is set only on Bridge: open mode keeps its shipped
-    /// `try?` → empty.
+    /// chosen at. `failure` carries either mode's error in words — Music.app
+    /// mode included, since a REST failure is no longer swallowed into an
+    /// empty list (D4, personal-radio defect fix).
     private struct BrowsePost {
         let epoch: Int
         let stations: [Station]
@@ -416,12 +417,15 @@ store: StationStore, catalog: RadioCatalog?,
     /// for seconds, and the shell loop must keep painting meanwhile (P5).
     ///
     /// A provider that cannot read the catalogue (Music.app mode with no key)
-    /// fetches nothing and posts nothing, exactly as today. Open mode keeps
-    /// its shipped `try?` → empty. Bridge mode posts a failure's own words, so
-    /// a Bridge that cannot answer is never shown as an empty list (D4).
+    /// fetches nothing and posts nothing, exactly as today. Both modes now
+    /// post a failure's own words on a REST/Bridge error, so neither is shown
+    /// as an empty list (D4): Music.app's Personal browse used to swallow a
+    /// 403 into `(try? read()) ?? []`, which is the personal-radio defect
+    /// this fixes.
     private func startBrowse(_ which: Browse) {
         let routing = self.routing
         let open = self.open
+        let catalog = self.catalog
         let requested = browseEpoch
         Thread.detachNewThread { [weak self] in
             let post: BrowsePost
@@ -432,13 +436,14 @@ store: StationStore, catalog: RadioCatalog?,
                 let read: () throws -> [Station] = {
                     which == .live ? try provider.liveStations() : try provider.personalStations()
                 }
-                switch choice.mode {
-                case .musicApp:
-                    post = BrowsePost(epoch: choice.epoch, stations: (try? read()) ?? [], failure: nil)
-                case .source:
-                    do {
-                        post = BrowsePost(epoch: choice.epoch, stations: try read(), failure: nil)
-                    } catch {
+                do {
+                    post = BrowsePost(epoch: choice.epoch, stations: try read(), failure: nil)
+                } catch {
+                    if which == .personal, choice.mode == .musicApp,
+                       Self.isAuthStatus(error), catalog?.hasUserToken() != true {
+                        post = BrowsePost(epoch: choice.epoch, stations: [],
+                                           failure: "Personal stations need a Music User Token. Run: music auth")
+                    } else {
                         post = BrowsePost(epoch: choice.epoch, stations: [], failure: Self.words(for: error))
                     }
                 }
@@ -457,13 +462,23 @@ store: StationStore, catalog: RadioCatalog?,
         }
     }
 
-    /// A Bridge-mode browse failure in the words its error carries: the
-    /// provider's translated sentence, or the coordinator's refusal.
+    /// A browse failure in the words its error carries: the provider's
+    /// translated sentence, the coordinator's refusal, or (Music.app mode)
+    /// the REST catalogue's own `errorDescription` — Apple's error title
+    /// when the body carried one, else the bare HTTP status.
     private static func words(for error: Error) -> String {
         if let e = error as? MusicProviderError, let why = e.errorDescription { return why }
         if let e = error as? ActionError { return e.message }
         if let e = error as? SourceAppError { return e.message }
+        if let e = error as? RadioCatalogError, let why = e.errorDescription { return why }
         return error.localizedDescription
+    }
+
+    /// Whether `error` is a REST catalogue 401/403 — the shape a missing or
+    /// invalid Music-User-Token takes on the Personal filter.
+    private static func isAuthStatus(_ error: Error) -> Bool {
+        guard let e = error as? RadioCatalogError, case .httpStatus(let status, _) = e else { return false }
+        return status == 401 || status == 403
     }
 
     @discardableResult

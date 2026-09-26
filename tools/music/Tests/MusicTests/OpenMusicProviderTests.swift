@@ -36,12 +36,14 @@ final class OpenMusicProviderTests: XCTestCase {
     private final class Fetches {
         var urls: [String] = []
         var reply: Data? = Data(#"{"data":[]}"#.utf8)
+        var status = 200
     }
 
     private func catalog(_ fetches: Fetches) -> RadioCatalog {
         RadioCatalog(storefront: "us", token: { "dev" }, fetch: { url in
             fetches.urls.append(url)
-            return fetches.reply
+            guard let data = fetches.reply else { return nil }
+            return RadioCatalogResponse(status: fetches.status, data: data)
         })
     }
 

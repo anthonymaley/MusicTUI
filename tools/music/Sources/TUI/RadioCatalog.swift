@@ -1,5 +1,8 @@
-// Catalog station reads. Developer token only — live-verified 200 with no
-// Music-User-Token (2026-07-15), which the Apple docs never state.
+// Catalog station reads. Live stations: developer token only, live-verified
+// 200 with no Music-User-Token (2026-07-15). Personal stations: a developer
+// token alone got 403 at the 2026-09-25 gate, so the Music-User-Token is now
+// sent whenever AuthManager has one; live reads keep working with or without
+// it.
 //
 // Hard limits established by probe, do NOT design around them being fixable:
 //  - no browse-all: unfiltered /stations 400s ("No id(s) supplied")
@@ -12,21 +15,51 @@
 //    `resolve` returning nil is NORMAL, not an error.
 import Foundation
 
-enum RadioCatalogError: Error {
+/// One fetch's outcome: nil is a transport-level failure (`fetchFailed`);
+/// otherwise the HTTP status and whatever body came back, which `get` checks
+/// itself rather than trusting a non-nil `Data` to mean success.
+struct RadioCatalogResponse {
+    let status: Int
+    let data: Data
+}
+
+enum RadioCatalogError: Error, Equatable {
     case noToken
     case fetchFailed
     case badResponse
+    /// A non-2xx response. `appleTitle` is the JSON:API `errors[0].title`
+    /// when the body has one.
+    case httpStatus(Int, appleTitle: String?)
+}
+
+extension RadioCatalogError: LocalizedError {
+    var errorDescription: String? {
+        switch self {
+        case .noToken: return "No developer token configured."
+        case .fetchFailed: return "Radio catalogue request failed."
+        case .badResponse: return "Radio catalogue returned an unreadable response."
+        case .httpStatus(let status, let title):
+            if let title, !title.isEmpty { return "\(title) (status \(status))." }
+            return "Radio catalogue request failed (status \(status))."
+        }
+    }
 }
 
 final class RadioCatalog {
     private let storefront: String
     private let token: () -> String?
-    private let fetch: (String) -> Data?
+    private let fetch: (String) -> RadioCatalogResponse?
+    /// Whether a Music-User-Token is on hand — read only for the Personal
+    /// browse's "no token, run auth" message; live reads never consult it.
+    let hasUserToken: () -> Bool
 
-    init(storefront: String, token: @escaping () -> String?, fetch: @escaping (String) -> Data?) {
+    init(storefront: String, token: @escaping () -> String?,
+         fetch: @escaping (String) -> RadioCatalogResponse?,
+         hasUserToken: @escaping () -> Bool = { false }) {
         self.storefront = storefront
         self.token = token
         self.fetch = fetch
+        self.hasUserToken = hasUserToken
     }
 
     private var base: String { "https://api.music.apple.com/v1/catalog/\(storefront)" }
@@ -64,8 +97,21 @@ final class RadioCatalog {
 
     private func get(_ url: String) throws -> Data {
         guard token() != nil else { throw RadioCatalogError.noToken }
-        guard let data = fetch(url) else { throw RadioCatalogError.fetchFailed }
-        return data
+        guard let response = fetch(url) else { throw RadioCatalogError.fetchFailed }
+        guard (200...299).contains(response.status) else {
+            throw RadioCatalogError.httpStatus(response.status, appleTitle: Self.appleErrorTitle(in: response.data))
+        }
+        return response.data
+    }
+
+    /// Apple's JSON:API error shape: `{"errors":[{"title": "..."}]}`. nil when
+    /// the body isn't that shape — the status code alone still gets reported.
+    private static func appleErrorTitle(in data: Data) -> String? {
+        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let errors = root["errors"] as? [[String: Any]],
+              let title = errors.first?["title"] as? String
+        else { return nil }
+        return title
     }
 
     private func decode(_ rows: [[String: Any]]) -> [Station] {
@@ -83,6 +129,20 @@ final class RadioCatalog {
     }
 }
 
+/// The request `makeCatalog()`'s fetch sends: the developer token always,
+/// the Music-User-Token added on top when the caller has one. Pure and free
+/// of `AuthManager`, so header presence is testable without touching real
+/// config (Personal needs the user token — see the header comment above —
+/// live reads are unaffected by its presence either way).
+func radioCatalogRequest(url: URL, developerToken: String, userToken: String?) -> URLRequest {
+    var req = URLRequest(url: url)
+    req.setValue("Bearer \(developerToken)", forHTTPHeaderField: "Authorization")
+    if let userToken {
+        req.setValue(userToken, forHTTPHeaderField: "Music-User-Token")
+    }
+    return req
+}
+
 /// Wired against the real AuthManager. nil when there's no developer token —
 /// callers degrade to favorites-only rather than erroring.
 func makeCatalog() -> RadioCatalog? {
@@ -94,12 +154,17 @@ func makeCatalog() -> RadioCatalog? {
         fetch: { urlString in
             guard let url = URL(string: urlString),
                   let tok = try? AuthManager().requireDeveloperToken() else { return nil }
-            var req = URLRequest(url: url)
-            req.setValue("Bearer \(tok)", forHTTPHeaderField: "Authorization")
+            let req = radioCatalogRequest(url: url, developerToken: tok, userToken: AuthManager().userToken())
             let sem = DispatchSemaphore(value: 0)
-            var out: Data?
-            URLSession.shared.dataTask(with: req) { d, _, _ in out = d; sem.signal() }.resume()
+            var out: RadioCatalogResponse?
+            URLSession.shared.dataTask(with: req) { data, response, _ in
+                if let data, let http = response as? HTTPURLResponse {
+                    out = RadioCatalogResponse(status: http.statusCode, data: data)
+                }
+                sem.signal()
+            }.resume()
             _ = sem.wait(timeout: .now() + 20)
             return out
-        })
+        },
+        hasUserToken: { AuthManager().userToken() != nil })
 }

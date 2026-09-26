@@ -25,11 +25,12 @@ final class RadioCatalogTests: XCTestCase {
     ]}}}
     """
 
-    private func catalog(_ body: String, capture: ((String) -> Void)? = nil) -> RadioCatalog {
+    private func catalog(_ body: String, status: Int = 200, capture: ((String) -> Void)? = nil,
+                         hasUserToken: @escaping () -> Bool = { false }) -> RadioCatalog {
         RadioCatalog(storefront: "us", token: { "tok" }, fetch: { url in
             capture?(url)
-            return body.data(using: .utf8)
-        })
+            return RadioCatalogResponse(status: status, data: Data(body.utf8))
+        }, hasUserToken: hasUserToken)
     }
 
     func testDecodesLiveLineup() throws {
@@ -85,7 +86,67 @@ final class RadioCatalogTests: XCTestCase {
     }
 
     func testMissingTokenThrows() {
-        let c = RadioCatalog(storefront: "us", token: { nil }, fetch: { _ in Data() })
+        let c = RadioCatalog(storefront: "us", token: { nil }, fetch: { _ in RadioCatalogResponse(status: 200, data: Data()) })
         XCTAssertThrowsError(try c.liveStations())
+    }
+
+    // MARK: - HTTP status (personal-radio defect: a 403 used to decode as an
+    // empty station list because `get` never looked at the status).
+
+    /// The 2026-09-25 gate's live finding: a developer-token-only Personal
+    /// read gets 403, and that must throw rather than decode as `[]`.
+    func testNon2xxStatusThrowsTypedError() {
+        let c = catalog(#"{"errors":[{"title":"Forbidden"}]}"#, status: 403)
+        XCTAssertThrowsError(try c.personalStation()) { error in
+            guard case RadioCatalogError.httpStatus(let status, let title) = error else {
+                return XCTFail("expected .httpStatus, got \(error)")
+            }
+            XCTAssertEqual(status, 403)
+            XCTAssertEqual(title, "Forbidden")
+        }
+    }
+
+    func testNon2xxStatusWithNoAppleBodyStillThrows() {
+        let c = catalog("not json", status: 500)
+        XCTAssertThrowsError(try c.liveStations()) { error in
+            guard case RadioCatalogError.httpStatus(let status, let title) = error else {
+                return XCTFail("expected .httpStatus, got \(error)")
+            }
+            XCTAssertEqual(status, 500)
+            XCTAssertNil(title)
+        }
+    }
+
+    func test2xxStatusStillDecodesNormally() throws {
+        let out = try catalog(stationsJSON, status: 200).liveStations()
+        XCTAssertEqual(out.count, 2)
+    }
+
+    // MARK: - Music-User-Token header (personal-radio defect)
+    //
+    // `radioCatalogRequest` is the pure function `makeCatalog()`'s fetch
+    // builds the live request from — testing it directly, rather than
+    // through `makeCatalog()` itself, keeps this off the real AuthManager
+    // and ~/.config/music.
+
+    func testRequestCarriesUserTokenHeaderWhenPresent() {
+        let req = radioCatalogRequest(url: URL(string: "https://api.music.apple.com/v1/catalog/us/stations")!,
+                                      developerToken: "dev", userToken: "user123")
+        XCTAssertEqual(req.value(forHTTPHeaderField: "Authorization"), "Bearer dev")
+        XCTAssertEqual(req.value(forHTTPHeaderField: "Music-User-Token"), "user123")
+    }
+
+    func testRequestOmitsUserTokenHeaderWhenAbsent() {
+        let req = radioCatalogRequest(url: URL(string: "https://api.music.apple.com/v1/catalog/us/stations")!,
+                                      developerToken: "dev", userToken: nil)
+        XCTAssertEqual(req.value(forHTTPHeaderField: "Authorization"), "Bearer dev")
+        XCTAssertNil(req.value(forHTTPHeaderField: "Music-User-Token"))
+    }
+
+    /// `hasUserToken` is the seam `RadioScene`'s failure message reads to
+    /// tell "no token" from "token present but rejected".
+    func testHasUserTokenReflectsInjectedValue() {
+        XCTAssertTrue(RadioCatalog(storefront: "us", token: { "tok" }, fetch: { _ in nil }, hasUserToken: { true }).hasUserToken())
+        XCTAssertFalse(RadioCatalog(storefront: "us", token: { "tok" }, fetch: { _ in nil }).hasUserToken())
     }
 }

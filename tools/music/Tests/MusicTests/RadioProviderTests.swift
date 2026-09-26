@@ -73,7 +73,13 @@ final class RadioProviderTests: XCTestCase {
         private let lock = NSLock()
         private var stored: [String] = []
         private var held: [(entered: DispatchSemaphore, release: DispatchSemaphore, match: String)] = []
+        /// A transport-level failure (`RadioCatalogError.fetchFailed`).
         var fails = false
+        /// The status the Personal filter answers with — 403 pins the
+        /// 2026-09-25 gate finding (a developer-token-only Personal read).
+        var personalStatus = 200
+        var personalErrorTitle: String? = nil
+        var hasUserToken = false
 
         static func body(_ id: String, _ name: String) -> Data {
             Data(#"{"data":[{"id":"\#(id)","attributes":{"name":"\#(name)","url":"https://music.apple.com/us/station/x/\#(id)","isLive":true}}]}"#.utf8)
@@ -85,24 +91,32 @@ final class RadioProviderTests: XCTestCase {
             return (gate.entered, gate.release)
         }
 
-        func fetch(_ url: String) -> Data? {
+        func fetch(_ url: String) -> RadioCatalogResponse? {
             lock.lock()
             stored.append(url)
             var gate: (entered: DispatchSemaphore, release: DispatchSemaphore, match: String)?
             if let i = held.firstIndex(where: { url.contains($0.match) }) { gate = held.remove(at: i) }
             let failing = fails
+            let pStatus = personalStatus
+            let pTitle = personalErrorTitle
             lock.unlock()
             if let gate {
                 gate.entered.signal()
                 _ = gate.release.wait(timeout: .now() + 5)
             }
             if failing { return nil }
-            if url.contains("filter[featured]") { return Self.body("ra.r1", "REST Live") }
-            if url.contains("filter[identity]") { return Self.body("ra.r2", "REST Personal") }
-            if url.contains("/search?") {
-                return Data(#"{"results":{"stations":{"data":[{"id":"ra.r3","attributes":{"name":"REST Jazz","url":"https://music.apple.com/us/station/x/ra.r3"}}]}}}"#.utf8)
+            if url.contains("filter[featured]") { return RadioCatalogResponse(status: 200, data: Self.body("ra.r1", "REST Live")) }
+            if url.contains("filter[identity]") {
+                guard pStatus == 200 else {
+                    let body = pTitle.map { Data(#"{"errors":[{"title":"\#($0)"}]}"#.utf8) } ?? Data()
+                    return RadioCatalogResponse(status: pStatus, data: body)
+                }
+                return RadioCatalogResponse(status: 200, data: Self.body("ra.r2", "REST Personal"))
             }
-            if url.contains("ids=") { return Self.body("ra.978194965", "Apple Music 1 (REST)") }
+            if url.contains("/search?") {
+                return RadioCatalogResponse(status: 200, data: Data(#"{"results":{"stations":{"data":[{"id":"ra.r3","attributes":{"name":"REST Jazz","url":"https://music.apple.com/us/station/x/ra.r3"}}]}}}"#.utf8))
+            }
+            if url.contains("ids=") { return RadioCatalogResponse(status: 200, data: Self.body("ra.978194965", "Apple Music 1 (REST)")) }
             return nil
         }
 
@@ -148,7 +162,8 @@ final class RadioProviderTests: XCTestCase {
                                              return SourceAppClient(path: "/nonexistent", transport: wire.transport)
                                          })
         let catalog = withCatalog
-            ? RadioCatalog(storefront: "us", token: { "dev" }, fetch: { rest.fetch($0) })
+            ? RadioCatalog(storefront: "us", token: { "dev" }, fetch: { rest.fetch($0) },
+                          hasUserToken: { rest.hasUserToken })
             : nil
         let store = StationStore(path: NSTemporaryDirectory() + "stations-\(UUID().uuidString).json")
         let scene = RadioScene(routing: routing, store: store, catalog: catalog, opener: opener)
@@ -237,14 +252,48 @@ final class RadioProviderTests: XCTestCase {
         XCTAssertNil(r.scene.message)
     }
 
-    func testMusicAppRESTFailureIsStillAnEmptyLoadedListWithNoMessage() {
+    /// personal-radio defect fix: Music.app mode used to swallow every REST
+    /// failure into an empty, loaded list with no message (`(try? read()) ??
+    /// []`). Both lists still land empty on a transport failure, but the
+    /// person now sees why instead of a silently empty tab.
+    func testMusicAppRESTFailureIsAnEmptyLoadedListWithAMessage() {
         let r = rig(mode: .musicApp, catalog: true)
         r.rest.fails = true
         loadBoth(r)
 
         XCTAssertEqual(r.scene.live, [])
         XCTAssertEqual(r.scene.personal, [])
-        XCTAssertNil(r.scene.message, "open mode's shipped try? became a visible failure")
+        XCTAssertNotNil(r.scene.message, "a REST failure was silently swallowed again")
+    }
+
+    /// The defect itself, live-gated 2026-09-25: a developer-token-only
+    /// Personal read gets 403. With no Music-User-Token on hand, the person
+    /// sees a message telling them to authorize — not an empty list — and
+    /// Live is unaffected.
+    func testMusicAppPersonal403WithNoUserTokenTellsThePersonToRunAuth() {
+        let r = rig(mode: .musicApp, catalog: true)
+        r.rest.personalStatus = 403
+        r.rest.personalErrorTitle = "Forbidden"
+        r.rest.hasUserToken = false
+        loadBoth(r)
+
+        XCTAssertEqual(r.scene.personal, [])
+        XCTAssertEqual(r.scene.live.map(\.name), ["REST Live"], "Live must be unaffected by the Personal 403")
+        XCTAssertEqual(r.scene.message, "✗ Personal stations need a Music User Token. Run: music auth")
+    }
+
+    /// Same 403, but a Music-User-Token IS on hand (expired/invalid rather
+    /// than missing) — the "run auth" message would be the wrong advice, so
+    /// Apple's own words are shown instead.
+    func testMusicAppPersonal403WithUserTokenShowsAppleWordsNotTheAuthMessage() {
+        let r = rig(mode: .musicApp, catalog: true)
+        r.rest.personalStatus = 403
+        r.rest.personalErrorTitle = "Forbidden"
+        r.rest.hasUserToken = true
+        loadBoth(r)
+
+        XCTAssertEqual(r.scene.personal, [])
+        XCTAssertEqual(r.scene.message, "✗ Forbidden (status 403).")
     }
 
     func testMusicAppWithoutCatalogFetchesNothingFavouritesRenderAndSearchRefusesAsShipped() throws {
