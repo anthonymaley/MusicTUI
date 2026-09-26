@@ -296,6 +296,20 @@ final class RadioProviderTests: XCTestCase {
         XCTAssertEqual(r.scene.message, "✗ Forbidden (status 403).")
     }
 
+    /// A 401 is a developer-token problem (Apple's docs), which `music auth`
+    /// would not fix, so even with no user token the person sees Apple's own
+    /// words and status, not the auth advice.
+    func testMusicAppPersonal401KeepsAppleWordsEvenWithNoUserToken() {
+        let r = rig(mode: .musicApp, catalog: true)
+        r.rest.personalStatus = 401
+        r.rest.personalErrorTitle = "Unauthorized"
+        r.rest.hasUserToken = false
+        loadBoth(r)
+
+        XCTAssertEqual(r.scene.personal, [])
+        XCTAssertEqual(r.scene.message, "✗ Unauthorized (status 401).")
+    }
+
     func testMusicAppWithoutCatalogFetchesNothingFavouritesRenderAndSearchRefusesAsShipped() throws {
         let r = rig(mode: .musicApp, catalog: false)
         try r.store.add(Self.station)

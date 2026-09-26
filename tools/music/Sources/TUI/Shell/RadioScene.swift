@@ -474,11 +474,13 @@ store: StationStore, catalog: RadioCatalog?,
         return error.localizedDescription
     }
 
-    /// Whether `error` is a REST catalogue 401/403 — the shape a missing or
-    /// invalid Music-User-Token takes on the Personal filter.
+    /// Whether `error` is a REST catalogue 403, the shape a missing or invalid
+    /// Music-User-Token takes on the Personal filter. Not 401: Apple documents
+    /// 401 as a developer-token problem, which `music auth` would not fix, so
+    /// it keeps Apple's own words and status (Fable review, 2026-09-25).
     private static func isAuthStatus(_ error: Error) -> Bool {
         guard let e = error as? RadioCatalogError, case .httpStatus(let status, _) = e else { return false }
-        return status == 401 || status == 403
+        return status == 403
     }
 
     @discardableResult
