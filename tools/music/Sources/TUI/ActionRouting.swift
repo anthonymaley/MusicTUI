@@ -38,7 +38,7 @@ enum MusicTUIAction: CaseIterable, Equatable {
     case cliPlayQuery, cliPlayCatalogSong
 
     // Reads
-    case libraryListing, playlistListing, discoverFeed, discoverRefresh
+    case playlistListing, discoverFeed, discoverRefresh
     case catalogSearch, searchLibrary, radioSearch, recent, rotation
     /// `music now` (and bare `music` off a TTY): the CLI's read of what the
     /// selected output is playing (slice 3, D7). A read, not playback.
@@ -210,7 +210,6 @@ extension MusicTUIAction {
              .discoverTrackPlay,         // DiscoverScene.swift:243 enter
              .discoverPlayAll,           // DiscoverScene.swift:245 p
              .discoverRefresh,           // DiscoverScene.swift:240 r
-             .libraryListing,            // LibraryScene.swift:331, :375; no `music library` verb
              .libraryArtistTierFilter,   // LibraryScene.swift:685 a — a FILTER, not "add"
              .playlistsOpenNowPlaying,   // PlaylistsScene.swift:362 b — navigation
              .libraryRetry,              // LibraryScene.swift:667 r, only while a read failed
@@ -396,7 +395,6 @@ private func cliBridgeNotServedWhat(_ action: MusicTUIAction) -> String {
     case .playlistPlay:             return "playing a playlist"
     case .discoverTrackPlay, .discoverPlayAll: return "playing from Discover"
     case .discoverRefresh:          return "refreshing Discover"
-    case .libraryListing:           return "the Library listing"
     case .libraryArtistTierFilter:  return "the Library artist filter"
     case .playlistsOpenNowPlaying:  return "opening Now Playing"
     case .libraryRetry:             return "retrying the Library"
@@ -486,7 +484,7 @@ func routeAction(_ action: MusicTUIAction,
     // A read chosen in advance and identical in both modes is the opposite of a
     // silent fallback, which is what rule 3 forbids.
     // `r` in Library retries that same listing read.
-    case .libraryListing, .playlistListing, .searchLibrary, .libraryRetry:
+    case .playlistListing, .searchLibrary, .libraryRetry:
         return .musicApp
 
     // Section 6.4 marks these Unaffected: they run exactly as in Music.app

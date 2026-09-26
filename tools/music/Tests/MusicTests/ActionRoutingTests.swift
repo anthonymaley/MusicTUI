@@ -62,7 +62,6 @@ final class ActionRoutingTests: XCTestCase {
             return XCTFail("queue-row jump is deferred from v1 and must refuse")
         }
         // 12.1 + rule 9: the Library LISTING stays on AppleScript in both modes.
-        XCTAssertEqual(routeAction(.libraryListing, in: .source, from: .tui), .musicApp)
         XCTAssertEqual(routeAction(.searchLibrary, in: .source, from: .tui), .musicApp)
         // AirPlay stays MusicTUI's, and does not act in Source Mode.
         guard case .refused = routeAction(.airplayRoute, in: .source, from: .tui) else {
@@ -144,7 +143,7 @@ final class ActionRoutingTests: XCTestCase {
         .stop: .source, .recent: .source, .newReleases: .source,
         .catalogSearch: .source, .discoverFeed: .source,
         .rotation: .refused, .similar: .refused, .suggest: .refused,
-        .searchLibrary: .musicApp, .libraryListing: .musicApp, .playlistListing: .musicApp,
+        .searchLibrary: .musicApp, .playlistListing: .musicApp,
         // Anthony, 2026-09-16 13:36. Explicit library management keeps working;
         // anything reading Music.app's current track refuses. These are the TUI
         // column: every one of them is CLI-only, so the CLI clause decides the
