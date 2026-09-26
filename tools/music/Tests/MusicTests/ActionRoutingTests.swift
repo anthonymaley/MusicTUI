@@ -596,8 +596,8 @@ final class ActionRoutingTests: XCTestCase {
         let tuiColumnUnchanged: [MusicTUIAction: ActionRoute] = [
             .searchLibrary: .musicApp,
             .playlistListing: .musicApp,
-            .similar: .refused("Not available through the source app in this version"),
-            .rotation: .refused("Heavy rotation has no MusicTUI Source route in this version"),
+            .similar: .refused("Not available through Bridge in this version"),
+            .rotation: .refused("Heavy rotation is on the command line only in this version: music rotation"),
         ]
         for action in s7Dispatched {
             XCTAssertEqual(routeAction(action, in: .source, from: .cli), .source, "\(action)")
@@ -621,6 +621,21 @@ final class ActionRoutingTests: XCTestCase {
 
     /// Music.app mode is untouched by the surface (binding rule 1): an install
     /// that never opens Output behaves exactly as it ships, from either surface.
+    /// Ruling 12.15: the user-facing output is Bridge. No refusal a person can
+    /// read with Bridge selected, from either surface, names the internal
+    /// "MusicTUI Source" — including rows no key reaches, so a later key
+    /// binding cannot surface the old name.
+    func testNoBridgeModeRefusalNamesTheInternalSourceName() {
+        for action in MusicTUIAction.allCases {
+            for surface in InvocationSurface.allCases {
+                if case .refused(let why) = routeAction(action, in: .source, from: surface) {
+                    XCTAssertFalse(why.contains("MusicTUI Source"),
+                                   "\(action) from \(surface): \(why)")
+                }
+            }
+        }
+    }
+
     func testSurfaceDoesNotChangeMusicAppMode() {
         for action in MusicTUIAction.allCases {
             XCTAssertEqual(routeAction(action, in: .musicApp, from: .tui),
