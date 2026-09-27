@@ -414,7 +414,7 @@ func routeAction(_ action: MusicTUIAction,
                  from surface: InvocationSurface) -> ActionRoute {
     // Binding rule 1: an install that never opens Output behaves exactly as it
     // ships. Everything that is not purely local goes to Music.app.
-    guard mode == .source else {
+    guard mode.usesSource else {
         switch action {
         case .radioFavourite, .radioAddURL, .auth,
              .libraryArtistTierFilter, .playlistsOpenNowPlaying:

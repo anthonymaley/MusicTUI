@@ -571,7 +571,7 @@ store: StationStore, catalog: RadioCatalog?,
     /// always loads (or fails in words). Display only: the mode read here
     /// decides no route.
     private var loading: Bool {
-        guard routing.mode == .source || catalog != nil else { return false }
+        guard routing.mode.usesSource || catalog != nil else { return false }
         switch nav.subView {
         case .favorites: return false
         case .live: return !liveLoaded

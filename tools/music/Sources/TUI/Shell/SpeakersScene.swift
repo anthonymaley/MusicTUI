@@ -60,6 +60,10 @@ final class SpeakersScene: Scene {
     /// How the client is built. Injectable so a test can drive readiness without
     /// a socket; production uses the real one.
     private let makeSourceClient: () -> SourceAppClient
+    /// How a SpanDAC on the network is reached, by `spandac_id`. Nil when the
+    /// scene was composed without the network (every existing test): a network
+    /// target then refuses as not paired rather than reaching for the network.
+    private let makeNetworkClient: ((String) -> SourceAppClient)?
     /// The three external refreshes `tick()` fires on entry and every 5s.
     /// Injectable so a test can prove it never reaches AppleScript or the real
     /// speaker cache; production uses the real global functions, unchanged.
@@ -118,6 +122,7 @@ final class SpeakersScene: Scene {
     init(backend: AppleScriptBackend, status: StatusStore, actions: ActionRunner,
          routing: RoutingCoordinator,
          makeSourceClient: @escaping () -> SourceAppClient = { SourceAppClient() },
+         makeNetworkClient: ((String) -> SourceAppClient)? = nil,
          fetchSpeakers: @escaping () throws -> [[String: Any]] = fetchSpeakerDevices,
          fetchEQ: @escaping (AppleScriptBackend) throws -> EQSnapshot = { try fetchEQSnapshot($0, openWindow: false) },
          fetchVisualizer: @escaping (AppleScriptBackend) throws -> Bool = visualizerStatus) {
@@ -126,6 +131,7 @@ final class SpeakersScene: Scene {
         self.actions = actions
         self.routing = routing
         self.makeSourceClient = makeSourceClient
+        self.makeNetworkClient = makeNetworkClient
         self.fetchSpeakers = fetchSpeakers
         self.fetchEQ = fetchEQ
         self.fetchVisualizer = fetchVisualizer
@@ -172,23 +178,34 @@ final class SpeakersScene: Scene {
             // Through the injected factory, like the probe. Building a real
             // client here made this path unmockable AND meant a test drove the
             // live app's socket instead of a stub.
+            // One client per side of the switch: the incoming output answers
+            // readiness, the OUTGOING one is paused and cleared. They differ
+            // when the switch is between the Mac's SpanDAC and one on the
+            // network, or between two on the network.
             let client = self.makeSourceClient()
+            let clientFor: (PlaybackMode) -> SourceAppClient = { mode in
+                guard let id = mode.networkSourceID else { return client }
+                return self.makeNetworkClient?(id) ?? .failing(.notPaired)
+            }
+            let incoming = clientFor(target)
             let result = try self.routing.switchMode(
                 to: target,
-                readiness: { client.readiness() },
+                readiness: { incoming.readiness() },
                 pauseOutgoing: { outgoing in
                     switch outgoing {
                     case .musicApp:
                         return try confirmMusicAppNotPlaying(session: liveMusicAppPauseSession,
                                                              isRunning: liveMusicAppMayBeRunning)
                     case .source:
-                        return try confirmBridgeNotPlaying(client.control)
+                        return try confirmBridgeNotPlaying(clientFor(outgoing).control)
+                    case .networkSource:
+                        return try confirmBridgeNotPlaying(clientFor(outgoing).control)
                     }
                 },
                 dropQueue: { outgoing in
                     switch outgoing {
                     case .musicApp: break   // MusicTUI's own queue, cleared below
-                    case .source:   try client.control.stop()
+                    case .source, .networkSource: try clientFor(outgoing).control.stop()
                     }
                 })
             switch result {

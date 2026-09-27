@@ -694,7 +694,7 @@ final class DiscoverScene: Scene {
         // 2026-09-22 by DoD 6's rename-away control, with `config.json` and
         // `user-token` moved aside. A fourth Music.app precondition checked
         // outside the Music.app branch, after the three step 3 removed.
-        if feed == nil, routing.mode != .source {
+        if feed == nil, !routing.mode.usesSource {
             out += ANSICode.moveTo(row: y, col: 3)
             return out + "\(ANSICode.dim)Sign in to see your Discover feed (music auth setup).\(ANSICode.reset)"
         }

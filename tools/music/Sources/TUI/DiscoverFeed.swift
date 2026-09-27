@@ -318,5 +318,5 @@ func makeDiscoverFeed() -> DiscoverFeed? {
 /// Pure and out here so the door is testable: as a guard inside the shell it
 /// could be reverted with every scene-level test still green (Codex S2).
 func discoverTabAdmitted(mode: PlaybackMode, hasUserToken: Bool) -> Bool {
-    mode == .source || hasUserToken
+    mode.usesSource || hasUserToken
 }

@@ -1644,7 +1644,7 @@ final class LibraryScene: Scene {
                 notFound: "Couldn't load '\(title)'."))
             do {
                 // Both branches are real, so there is deliberately no
-                // `if routing.mode == .source` above: the coordinator picks the
+                // `if routing.mode.usesSource` above: the coordinator picks the
                 // destination inside its own lock. An outer check would leave a
                 // no-op Music.app branch for a switch that commits mid-action.
                 try routing.perform(.libraryPlay,
@@ -1742,7 +1742,7 @@ final class LibraryScene: Scene {
                 }
                 return
             }
-            if routing.mode == .source {
+            if routing.mode.usesSource {
                 // C3 item 8: the join is gone. This is a Music.app-sourced
                 // song (no provider, checked above) played while Bridge is
                 // selected — rule 3, no silent fallback in either direction.
@@ -2094,7 +2094,7 @@ final class LibraryScene: Scene {
     /// (`applyProvenance` resets `*Source` to nil, and the SAME tick's lazy
     /// load fills it back in — see D7). In steady state Albums and Artists
     /// follow Songs to whichever library is selected.
-    private var tabShowsTwoLibraries: Bool { songsFromBridge || routing.mode == .source }
+    private var tabShowsTwoLibraries: Bool { songsFromBridge || routing.mode.usesSource }
 
     /// Which library the showing list is reading, and how big it is once that is
     /// known.

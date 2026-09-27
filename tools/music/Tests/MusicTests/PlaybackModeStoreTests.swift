@@ -62,4 +62,57 @@ final class PlaybackModeStoreTests: XCTestCase {
         try #"{"mode":"quantum"}"#.write(toFile: path, atomically: true, encoding: .utf8)
         XCTAssertEqual(PlaybackModeStore(path: path).mode(), .musicApp)
     }
+
+    // MARK: - SpanDAC on the network (a third value, with a target)
+
+    private let ipadID = "D2C4A6E8-1B3D-4F5A-8C7E-9A0B2C4D6E8F"
+
+    /// The new value round-trips with the SpanDAC it names.
+    func testTheNetworkValueRoundTripsWithItsTarget() throws {
+        let path = tempPath()
+        XCTAssertTrue(PlaybackModeStore(path: path).set(.networkSource(ipadID)))
+        XCTAssertEqual(PlaybackModeStore(path: path).mode(), .networkSource(ipadID))
+        let stored = try JSONSerialization.jsonObject(with: Data(contentsOf: URL(fileURLWithPath: path))) as? [String: String]
+        XCTAssertEqual(stored, ["mode": "spandac_network", "target": ipadID])
+    }
+
+    /// The two existing values are written exactly as before: no `target`.
+    func testTheExistingValuesAreWrittenByteIdentically() throws {
+        let path = tempPath()
+        PlaybackModeStore(path: path).set(.source)
+        XCTAssertEqual(try String(contentsOfFile: path, encoding: .utf8), #"{"mode":"musictui_source"}"#)
+        PlaybackModeStore(path: path).set(.musicApp)
+        XCTAssertEqual(try String(contentsOfFile: path, encoding: .utf8), #"{"mode":"music_app"}"#)
+    }
+
+    /// A network selection this build cannot serve (no target, or a target
+    /// that is not a SpanDAC id) reads as the default, like an unknown value.
+    func testANetworkValueWithoutAUsableTargetFallsBackToTheDefault() throws {
+        for body in [#"{"mode":"spandac_network"}"#,
+                     #"{"mode":"spandac_network","target":""}"#,
+                     #"{"mode":"spandac_network","target":"d2c4a6e8-1b3d-4f5a-8c7e-9a0b2c4d6e8f"}"#,
+                     #"{"mode":"spandac_network","target":"not-an-id"}"#] {
+            let path = tempPath()
+            try body.write(toFile: path, atomically: true, encoding: .utf8)
+            XCTAssertEqual(PlaybackModeStore(path: path).mode(), .musicApp, body)
+        }
+    }
+
+    /// A target beside the OLD values is ignored: only the new value names a
+    /// SpanDAC on the network, so a build that knows only `musictui_source`
+    /// can never be steered by a field it does not read.
+    func testATargetBesideTheOldValuesChangesNothing() throws {
+        let path = tempPath()
+        try #"{"mode":"musictui_source","target":"\#(ipadID)"}"#.write(toFile: path, atomically: true, encoding: .utf8)
+        XCTAssertEqual(PlaybackModeStore(path: path).mode(), .source)
+    }
+
+    func testTheNetworkModeIsSourceBackedAndNamesItsTarget() {
+        XCTAssertTrue(PlaybackMode.networkSource(ipadID).usesSource)
+        XCTAssertTrue(PlaybackMode.source.usesSource)
+        XCTAssertFalse(PlaybackMode.musicApp.usesSource)
+        XCTAssertEqual(PlaybackMode.networkSource(ipadID).networkSourceID, ipadID)
+        XCTAssertNil(PlaybackMode.source.networkSourceID)
+        XCTAssertNotEqual(PlaybackMode.networkSource(ipadID), .networkSource(UUID().uuidString))
+    }
 }

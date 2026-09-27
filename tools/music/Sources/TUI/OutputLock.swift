@@ -61,7 +61,13 @@ final class OutputLock {
     /// matches the mode the command routed on. A mismatch refuses; it never
     /// re-routes.
     static func cliModeChangedMessage(now mode: PlaybackMode) -> String {
-        "Output changed to \(mode == .musicApp ? "Music.app" : "Bridge") while this command ran; nothing was changed."
+        let name: String
+        switch mode {
+        case .musicApp: name = "Music.app"
+        case .source: name = "Bridge"
+        case .networkSource: name = "a SpanDAC on the network"
+        }
+        return "Output changed to \(name) while this command ran; nothing was changed."
     }
 
     /// The TUI's refusal when another process moved the persisted selection

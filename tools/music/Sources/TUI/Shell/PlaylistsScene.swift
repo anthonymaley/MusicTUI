@@ -1143,7 +1143,7 @@ final class PlaylistsScene: Scene {
             // running `fetchPlaylistTracks`'s AppleScript, not just before
             // resolving by name. Still read live, at execution time, not
             // captured at the keypress.
-            if routing.mode == .source {
+            if routing.mode.usesSource {
                 throw ActionError(message: LibraryProvenance.bridgeSelectedMusicAppList)
             }
             let tracks = fetchPlaylistTracks(backend: backend, playlist: name)
@@ -1160,7 +1160,7 @@ final class PlaylistsScene: Scene {
         let esc = escapeAppleScriptString(playlists[plCursor])
         let name = playlists[plCursor]
         actions.run("Play") { [routing] in
-            if routing.mode == .source {
+            if routing.mode.usesSource {
                 // C3 item 7: same residual-race refusal as playTrack above.
                 throw ActionError(message: LibraryProvenance.bridgeSelectedMusicAppList)
             }

@@ -130,6 +130,6 @@ func airPlayActs(in mode: PlaybackMode) -> Bool {
 func outputModeSelectable(_ mode: PlaybackMode, readiness: SourceReadiness) -> Bool {
     switch mode {
     case .musicApp: return true
-    case .source:   return readiness.canSelect
+    case .source, .networkSource: return readiness.canSelect
     }
 }
