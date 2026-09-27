@@ -72,7 +72,7 @@ func playAction(args: [String], playlist: String?, album: String?, song: String?
 let bridgePlayOneSelectionRefusal = "Name one of --playlist, --album, --song or --artist."
 
 func bridgePlayExtraWordsRefusal(flag: String) -> String {
-    "--\(flag) can't be combined with other words on Bridge."
+    "--\(flag) can't be combined with other words on SpanDAC."
 }
 
 // MARK: - The Bridge body
@@ -194,7 +194,7 @@ private func bridgePlaySongLink(_ session: CLIBridgeSession, link: String, json:
     let skipped = try session.mutate { try sendBridgeRef(ref, to: $0) }
     bridgeShowAfterMutation(
         session, json: json, env: env,
-        resultLines: ["Playing Apple Music song \(id) on Bridge."],
+        resultLines: ["Playing Apple Music song \(id) on SpanDAC."],
         resultJSON: bridgePlayResultJSON(kind: .song, sent: 1, skippedUnavailable: skipped, skippedVideos: 0))
 }
 

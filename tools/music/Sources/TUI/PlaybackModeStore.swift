@@ -40,7 +40,7 @@ enum PlaybackMode: Equatable, Hashable {
 
     /// True for every output a SpanDAC serves over the `slice.*` wire, on this
     /// Mac or on the network: the question almost every caller means when it
-    /// asks "is Bridge selected".
+    /// asks "is SpanDAC selected".
     var usesSource: Bool {
         switch self {
         case .musicApp: return false

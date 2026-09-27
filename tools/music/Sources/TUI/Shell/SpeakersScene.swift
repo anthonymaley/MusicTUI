@@ -253,7 +253,7 @@ final class SpeakersScene: Scene {
                     self.status.post("Output: SpanDAC · \(targetName ?? "on the network")")
                 case .source, .musicApp:
                     self.publishReadiness(client.readiness())
-                    self.status.post(mode == .source ? "Output: Bridge" : "Output: Music.app")
+                    self.status.post(mode == .source ? "Output: SpanDAC" : "Output: Music.app")
                 }
             }
         }
@@ -391,14 +391,14 @@ final class SpeakersScene: Scene {
             let isCursor = dispIdx == cursor
             switch dispRow {
             case .mode(let mode):
-                // Ruling 12.15: the user-facing output is Bridge; "MusicTUI
+                // Ruling 12.15: the user-facing output is SpanDAC; "MusicTUI
                 // Source" stays internal. Ruling 12.13: ready or unavailable
                 // WITH the reason, on one line a person can act on.
                 out += ANSICode.moveTo(row: y, col: 3)
                 let selected = routing.mode == mode
                 let dot = selected ? "\(ANSICode.lime)\u{25CF}\(ANSICode.reset)"
                                    : "\(ANSICode.dim)\u{25CB}\(ANSICode.reset)"
-                let title = mode == .musicApp ? "Music.app" : "Bridge"
+                let title = mode == .musicApp ? "Music.app" : "SpanDAC (this Mac)"
                 let padTitle = title + String(repeating: " ", count: max(0, nameW - title.count))
                 let titleStr = isCursor ? "\(ANSICode.inverse)\(padTitle)\(ANSICode.reset)"
                                         : (selected ? "\(ANSICode.brightWhite)\(padTitle)\(ANSICode.reset)"

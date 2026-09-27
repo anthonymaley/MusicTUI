@@ -91,7 +91,7 @@ func searchViaMusicApp(query: [String], artist: String?, album: String?, types: 
 
 // MARK: - search --library with Bridge selected (S7, D3, D4)
 
-let bridgeSearchSongsOnlyRefusal = "Bridge library search returns songs only in this version."
+let bridgeSearchSongsOnlyRefusal = "SpanDAC library search returns songs only in this version."
 
 /// `music search --library` with Bridge selected: songs from Bridge's own
 /// library, matched as `librarySearchScript` matches (`bridgeLibrarySearch`).
@@ -143,7 +143,7 @@ func bridgeSearchLibraryCommand(_ session: CLIBridgeSession, query: [String], ar
 
 // MARK: - catalogue search with Bridge selected (Part 2 P6, D5, D6)
 
-let bridgeCatalogueSearchTypesRefusal = "Bridge catalogue search returns songs and albums only in this version."
+let bridgeCatalogueSearchTypesRefusal = "SpanDAC catalogue search returns songs and albums only in this version."
 
 /// `music search` (catalogue) with Bridge selected: one `slice.search` with the
 /// shipped term (query, then `--artist`, then `--album`) and `--limit`.

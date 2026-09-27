@@ -18,15 +18,15 @@ enum ListSource: Equatable {
 /// footer string) gets a second copy.
 enum LibraryProvenance {
     static let bridgeSelectedMusicAppList =
-        "Bridge is selected, and this list is from the Music.app library. It is reloading from Bridge; try again in a moment."
+        "SpanDAC is selected, and this list is from the Music.app library. It is reloading from SpanDAC; try again in a moment."
     static let musicAppSelectedBridgeList =
-        "Music.app is selected, and this list is from Bridge's library. It is reloading from Music.app; try again in a moment."
+        "Music.app is selected, and this list is from SpanDAC's library. It is reloading from Music.app; try again in a moment."
 
     /// C2: the Playlists tab's own provenance-switch status lines, posted the
     /// instant a mid-session output flip resets its rail (Part A D7's pattern,
     /// one status post per reset rather than the "reloading" retry sentences
     /// above, because a playlist rail reset is not something a person can hit
     /// mid-read the way a container play can).
-    static let bridgePlaylistsShown = "Output changed \u{2014} showing Bridge's playlists"
+    static let bridgePlaylistsShown = "Output changed \u{2014} showing SpanDAC's playlists"
     static let musicAppPlaylistsShown = "Output changed \u{2014} showing the Music.app playlists"
 }

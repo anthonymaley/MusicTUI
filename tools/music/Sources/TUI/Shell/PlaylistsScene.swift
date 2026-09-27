@@ -44,11 +44,11 @@ func bridgePlaylistPlayMessage(name: String, queued: Int, skippedVideos: Int, sk
     let base: String
     if v == 0 {
         // Byte-identical to Part A's shipped album sentence: never singular.
-        base = "Playing '\(name)' on Bridge \u{2014} \(n) tracks."
+        base = "Playing '\(name)' on SpanDAC \u{2014} \(n) tracks."
     } else if startAt <= 1 {
-        base = "Playing \(n) of \(queued + v) from '\(name)' on Bridge: \(v) video\(v == 1 ? "" : "s") skipped."
+        base = "Playing \(n) of \(queued + v) from '\(name)' on SpanDAC: \(v) video\(v == 1 ? "" : "s") skipped."
     } else {
-        base = "Playing '\(name)' on Bridge from track \(startAt) \u{2014} \(n) track\(n == 1 ? "" : "s"); "
+        base = "Playing '\(name)' on SpanDAC from track \(startAt) \u{2014} \(n) track\(n == 1 ? "" : "s"); "
              + "\(v) video\(v == 1 ? "" : "s") in this playlist skipped."
     }
     guard skippedUnavailable > 0 else { return base }
@@ -70,7 +70,7 @@ final class PlaylistsScene: Scene {
     /// selectable, and names no playlist — nothing honest can supply a count
     /// or a name list in Bridge mode (no AppleScript read, and
     /// `playlist-meta.json` is Music.app's own stale, name-keyed data).
-    static let bridgeMissingNote = "Some Music.app playlists aren't in Bridge's library."
+    static let bridgeMissingNote = "Some Music.app playlists aren't in SpanDAC's library."
 
     // C3: D4's page size (the wire's own maximum) for a drill-in or a fresh
     // play read, and the preview's own much smaller read (decoration, not
@@ -202,7 +202,7 @@ final class PlaylistsScene: Scene {
         return BridgeListFeed<MusicRow>(
             fetch: { [weak self] cursor, limit in
                 guard let self, let provider = self.makeProvider() else {
-                    throw MusicProviderError.unavailable("Bridge is not the selected output")
+                    throw MusicProviderError.unavailable("SpanDAC is not the selected output")
                 }
                 return try provider.libraryPlaylists(cursor: cursor, limit: limit)
             },
@@ -946,7 +946,7 @@ final class PlaylistsScene: Scene {
             bridgeFailure = nil
             bridgeDone = false
             playlistsFeed.start()
-            status.post("Asking Bridge for your playlists again\u{2026}")
+            status.post("Asking SpanDAC for your playlists again\u{2026}")
             return .none
         // C3 item 2: the tracks-level retry — starts a new walk, exactly as
         // a drill-in does.
@@ -1009,7 +1009,7 @@ final class PlaylistsScene: Scene {
         let feed = BridgeListFeed<MusicRow>(
             fetch: { [weak self] cursor, limit in
                 guard let self, let provider = self.makeProvider() else {
-                    throw MusicProviderError.unavailable("Bridge is not the selected output")
+                    throw MusicProviderError.unavailable("SpanDAC is not the selected output")
                 }
                 return try provider.playlistTracks(playlistID: pid, cursor: cursor, limit: limit)
             },
@@ -1079,14 +1079,14 @@ final class PlaylistsScene: Scene {
                     self.previewInboxLock.unlock()
                 }
 
-                try require(!finalRows.isEmpty, "'\(name)' has no songs Bridge can play.")
+                try require(!finalRows.isEmpty, "'\(name)' has no songs SpanDAC can play.")
                 let ids = bridgeQueueIDs(finalRows, shuffle: shuffle, startAt: startAt)
 
                 // Addendum U: set only on the attempt that actually succeeds.
                 var skippedUnavailable = 0
                 _ = try retryingWhileWarming(budget: budget, onWarming: onWarming, sleep: warmUpSleep) {
                     try routing.perform(.playlistPlay, musicApp: {
-                        throw ActionError(message: "Output changed to Music.app before '\(name)' could play on Bridge; nothing was played.")
+                        throw ActionError(message: "Output changed to Music.app before '\(name)' could play on SpanDAC; nothing was played.")
                     }, source: { _ in
                         skippedUnavailable = try provider.playReportingSkips(
                             ids: ids, startRequired: startRequired).skippedUnavailable
@@ -1098,7 +1098,7 @@ final class PlaylistsScene: Scene {
             } catch let e as MusicProviderError {
                 // Bridge's own words reach the footer — the over-100 bound,
                 // the repeated-title refusal, and every other refusal alike.
-                throw ActionError(message: e.errorDescription ?? "Bridge couldn't play that.")
+                throw ActionError(message: e.errorDescription ?? "SpanDAC couldn't play that.")
             }
         }
     }
@@ -1389,8 +1389,8 @@ final class PlaylistsScene: Scene {
         // today (`listY = bodyTop + 2` there too).
         out += ANSICode.moveTo(row: bodyTop + 1, col: z.railX)
         let header = bridgeDone
-            ? "Playlists \u{2014} Bridge library (\(groupedCount(bridgePlaylistHeaderCount(shown: bridgePlaylistRows.count, wireTotal: bridgeTotal))))"
-            : "Playlists \u{2014} Bridge library"
+            ? "Playlists \u{2014} SpanDAC library (\(groupedCount(bridgePlaylistHeaderCount(shown: bridgePlaylistRows.count, wireTotal: bridgeTotal))))"
+            : "Playlists \u{2014} SpanDAC library"
         out += "\(ANSICode.dim)\(header)\(ANSICode.reset)"
 
         let listY = bodyTop + 2

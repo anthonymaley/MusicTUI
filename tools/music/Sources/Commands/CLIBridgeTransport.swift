@@ -69,9 +69,9 @@ func bridgePauseCommand(_ session: CLIBridgeSession, env: CLIBridgeEnv) throws {
     case .paused:
         env.out("Paused.")
     case .nothingPlaying:
-        env.out("Nothing playing on Bridge.")
+        env.out("Nothing playing on SpanDAC.")
     case .stillPlaying:
-        env.out("Bridge is still playing.")
+        env.out("SpanDAC is still playing.")
         throw ExitCode.failure
     }
 }
@@ -110,12 +110,12 @@ func bridgeSeekCommand(_ session: CLIBridgeSession, position: String, json: Bool
     if let delta = target.delta {
         try session.mutate { try $0.seek(byOffset: Double(delta)) }
         requested = ["offset": delta]
-        text = "Seeked \(delta >= 0 ? "+" : "")\(delta)s on Bridge."
+        text = "Seeked \(delta >= 0 ? "+" : "")\(delta)s on SpanDAC."
     } else {
         let absolute = target.absolute ?? 0
         try session.mutate { try $0.seek(toSeconds: Double(absolute)) }
         requested = ["position": absolute]
-        text = "Seeked to \(formatTime(absolute)) on Bridge."
+        text = "Seeked to \(formatTime(absolute)) on SpanDAC."
     }
     if json {
         env.out(OutputFormat(mode: .json).render(["ok": true, "output": "bridge", "requested": requested]))
@@ -148,7 +148,7 @@ func bridgeShowAfterMutation(_ session: CLIBridgeSession, json: Bool, env: CLIBr
             env.out(OutputFormat(mode: .json).render(doc))
         } else {
             resultLines.forEach(env.out)
-            env.err("Bridge accepted the request, but its status couldn't be read: \(message)")
+            env.err("SpanDAC accepted the request, but its status couldn't be read: \(message)")
         }
     }
 }

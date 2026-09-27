@@ -244,7 +244,7 @@ final class RoutingCoordinator {
                     let why = ready.label.trimmingCharacters(in: CharacterSet(charactersIn: "."))
                     throw ActionError(message: "\(why). Still using \(name(outgoing)).")
                 }
-                throw ActionError(message: "Bridge is \(ready.label); still using \(name(outgoing))")
+                throw ActionError(message: "SpanDAC (this Mac) is \(ready.label); still using \(name(outgoing))")
             }
 
             let paused = (try? pauseOutgoing(outgoing)) ?? false
@@ -318,12 +318,12 @@ final class RoutingCoordinator {
     }
 
     /// The name a PERSON reads. Ruling 12.15 (2026-09-15): the user-facing
-    /// output is **Bridge**; the app and the internal components keep the name
+    /// output is **SpanDAC**; the app and the internal components keep the name
     /// MusicTUI Source. Type names are deliberately not renamed with it.
     private func name(_ mode: PlaybackMode) -> String {
         switch mode {
         case .musicApp: return "Music.app"
-        case .source:   return "Bridge"
+        case .source:   return "SpanDAC (this Mac)"
         case .networkSource: return "SpanDAC"
         }
     }

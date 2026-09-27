@@ -64,7 +64,7 @@ final class OutputLock {
         let name: String
         switch mode {
         case .musicApp: name = "Music.app"
-        case .source: name = "Bridge"
+        case .source: name = "SpanDAC (this Mac)"
         case .networkSource: name = "a SpanDAC on the network"
         }
         return "Output changed to \(name) while this command ran; nothing was changed."

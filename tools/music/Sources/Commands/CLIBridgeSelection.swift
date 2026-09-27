@@ -59,18 +59,18 @@ func filterRowsByArtist(_ rows: [MusicRow], artist: String?) -> [MusicRow] {
 // MARK: - Refusals (verbatim, S4)
 
 private func bridgeNotFoundMessage(kind: String, query: String) -> String {
-    "No \(kind) named '\(query)' in your Bridge library."
+    "No \(kind) named '\(query)' in your SpanDAC library."
 }
 
 private func bridgeSongNotFoundMessage(title: String, artist: String?) -> String {
     var msg = "No song matching '\(title)'"
     if let artist, !artist.isEmpty { msg += " by '\(artist)'" }
-    msg += " in your Bridge library. From the CLI, Bridge plays your library only; nothing was added or played."
+    msg += " in your SpanDAC library. From the CLI, SpanDAC plays your library only; nothing was added or played."
     return msg
 }
 
 private func bridgeNoSongsMessage(name: String) -> String {
-    "'\(name)' has no songs Bridge can play."
+    "'\(name)' has no songs SpanDAC can play."
 }
 
 /// `kindPlural` is the plain plural noun ("playlists", "albums", "artists",
@@ -80,7 +80,7 @@ private func bridgeNoSongsMessage(name: String) -> String {
 private func bridgeAmbiguousMessage(query: String, kindPlural: String, rows: [MusicRow],
                                     suggestArtist: Bool, songHint: Bool) -> String {
     let shown = rows.prefix(5).map { $0.artist.isEmpty ? $0.title : "\($0.title) — \($0.artist)" }.joined(separator: "; ")
-    var msg = "'\(query)' matches \(rows.count) \(kindPlural) in your Bridge library: \(shown)"
+    var msg = "'\(query)' matches \(rows.count) \(kindPlural) in your SpanDAC library: \(shown)"
     if rows.count > 5 { msg += "; and \(rows.count - 5) more" }
     msg += suggestArtist ? ". Use the exact name, or add --artist." : ". Use the exact name."
     if songHint {

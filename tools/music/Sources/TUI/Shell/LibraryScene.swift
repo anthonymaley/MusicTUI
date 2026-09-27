@@ -200,7 +200,7 @@ final class LibraryScene: Scene {
         return BridgeListFeed<LibraryAlbum>(
             fetch: { [weak self] cursor, limit in
                 guard let self, let provider = self.makeProvider() else {
-                    throw MusicProviderError.unavailable("Bridge is not the selected output")
+                    throw MusicProviderError.unavailable("SpanDAC is not the selected output")
                 }
                 return try provider.libraryAlbums(cursor: cursor, limit: limit)
             },
@@ -212,7 +212,7 @@ final class LibraryScene: Scene {
         return BridgeListFeed<LibraryArtist>(
             fetch: { [weak self] cursor, limit in
                 guard let self, let provider = self.makeProvider() else {
-                    throw MusicProviderError.unavailable("Bridge is not the selected output")
+                    throw MusicProviderError.unavailable("SpanDAC is not the selected output")
                 }
                 return try provider.libraryArtists(cursor: cursor, limit: limit)
             },
@@ -699,7 +699,7 @@ final class LibraryScene: Scene {
                 },
                 sleep: sleep)
             guard let self else { return }
-            let sentence = failure.map { $0.errorDescription ?? "Bridge couldn't read your library" }
+            let sentence = failure.map { $0.errorDescription ?? "SpanDAC couldn't read your library" }
             self.inboxLock.lock()
             self.bridgeWalkInFlight = false
             let stillCurrent = self.songsWalkEpoch == epoch   // else: reset since -> the ending is dropped too
@@ -800,7 +800,7 @@ final class LibraryScene: Scene {
                 } catch {
                     guard let self else { return }
                     let sentence = (error as? MusicProviderError)?.errorDescription
-                        ?? "Couldn't read that artist's albums from Bridge."
+                        ?? "Couldn't read that artist's albums from SpanDAC."
                     self.inboxLock.lock()
                     self.pendingArtistAlbumsFailure = (artistID, epoch, sentence)
                     self.inboxLock.unlock()
@@ -854,7 +854,7 @@ final class LibraryScene: Scene {
                 } catch {
                     guard let self else { return }
                     let sentence = (error as? MusicProviderError)?.errorDescription
-                        ?? "Couldn't read that album's tracks from Bridge."
+                        ?? "Couldn't read that album's tracks from SpanDAC."
                     self.inboxLock.lock()
                     self.bridgeTracksInbox.append((albumID, epochSource, epoch, .failure(sentence)))
                     self.inboxLock.unlock()
@@ -917,7 +917,7 @@ final class LibraryScene: Scene {
         if let source = artistsSource, source != want { resetArtistsList(); resetAny = true }
         if resetAny {
             clearAlbumCentricCaches()
-            status.post("Output changed \u{2014} showing \(want == .bridge ? "Bridge's" : "the Music.app") library")
+            status.post("Output changed \u{2014} showing \(want == .bridge ? "SpanDAC's" : "the Music.app") library")
         }
         return resetAny
     }
@@ -1425,7 +1425,7 @@ final class LibraryScene: Scene {
             // "press r to retry" retries the list the person is looking at.
             if songsFromBridge, isSongList, bridgeFailure != nil {
                 retryBridgeSongs()
-                status.post("Asking Bridge for your library again\u{2026}")
+                status.post("Asking SpanDAC for your library again\u{2026}")
                 return .none
             }
             // C2 item 7: a failed Bridge Albums or Artists list resets and
@@ -1436,7 +1436,7 @@ final class LibraryScene: Scene {
                 albumsFetchStarted = false
                 albumsDone = false
                 bridgeAlbumsFailure = nil
-                status.post("Asking Bridge for your library again\u{2026}")
+                status.post("Asking SpanDAC for your library again\u{2026}")
                 return .none
             }
             if artistsSource == .bridge, isArtistList, bridgeArtistsFailure != nil {
@@ -1444,7 +1444,7 @@ final class LibraryScene: Scene {
                 artistsFetchStarted = false
                 artistsDone = false
                 bridgeArtistsFailure = nil
-                status.post("Asking Bridge for your library again\u{2026}")
+                status.post("Asking SpanDAC for your library again\u{2026}")
                 return .none
             }
             loads.manualRetry()
@@ -1736,7 +1736,7 @@ final class LibraryScene: Scene {
                 } catch let error as MusicProviderError {
                     // Bridge's own sentence, or the footer reduces it to the
                     // four useless words "Play failed."
-                    throw ActionError(message: error.errorDescription ?? "Couldn't play '\(title)' on Bridge.")
+                    throw ActionError(message: error.errorDescription ?? "Couldn't play '\(title)' on SpanDAC.")
                 } catch let error as SourceAppError {
                     throw ActionError(message: error.message)
                 }
@@ -1846,7 +1846,7 @@ final class LibraryScene: Scene {
                 let trackRows = try rows ?? retryingWhileWarming(budget: budget, onWarming: onWarming, sleep: sleep) {
                     try provider.albumTracks(albumID: albumID)
                 }.rows
-                try require(!trackRows.isEmpty, "'\(title)' has no songs Bridge can play.")
+                try require(!trackRows.isEmpty, "'\(title)' has no songs SpanDAC can play.")
                 let ids = bridgeQueueIDs(trackRows, shuffle: shuffle, startAt: startAt)
                 // Addendum U: how many of `ids` Bridge dropped as unavailable,
                 // set only on the attempt that actually succeeds (U-R5/U-R6).
@@ -1855,7 +1855,7 @@ final class LibraryScene: Scene {
                     try routing.perform(.libraryPlay,
                         musicApp: {
                             throw ActionError(message:
-                                "Output changed to Music.app before '\(title)' could play on Bridge; nothing was played.")
+                                "Output changed to Music.app before '\(title)' could play on SpanDAC; nothing was played.")
                         },
                         source: { _ in
                             skippedUnavailable = try provider.playReportingSkips(
@@ -1864,11 +1864,11 @@ final class LibraryScene: Scene {
                         unaffected: {})
                 }
                 let queuedCount = ids.count - skippedUnavailable
-                var footer = "Playing '\(title)' on Bridge \u{2014} \(queuedCount) tracks."
+                var footer = "Playing '\(title)' on SpanDAC \u{2014} \(queuedCount) tracks."
                 if skippedUnavailable > 0 { footer += " " + bridgeUnavailableSongsNotice(skippedUnavailable) }
                 status.post(footer)
             } catch let error as MusicProviderError {
-                throw ActionError(message: error.errorDescription ?? "Couldn't play '\(title)' on Bridge.")
+                throw ActionError(message: error.errorDescription ?? "Couldn't play '\(title)' on SpanDAC.")
             } catch let error as SourceAppError {
                 throw ActionError(message: error.message)
             }
@@ -1897,7 +1897,7 @@ final class LibraryScene: Scene {
                 let songRows = try retryingWhileWarming(budget: budget, onWarming: onWarming, sleep: sleep) {
                     try provider.artistSongs(artistID: artistID)
                 }.rows
-                try require(!songRows.isEmpty, "'\(name)' has no songs Bridge can play.")
+                try require(!songRows.isEmpty, "'\(name)' has no songs SpanDAC can play.")
                 let ids = bridgeQueueIDs(songRows, shuffle: shuffle, startAt: 1)
                 // Addendum U: same as playBridgeAlbum above. An artist play is
                 // always whole-collection — there is no track-level entry for
@@ -1907,7 +1907,7 @@ final class LibraryScene: Scene {
                     try routing.perform(.libraryPlay,
                         musicApp: {
                             throw ActionError(message:
-                                "Output changed to Music.app before '\(name)' could play on Bridge; nothing was played.")
+                                "Output changed to Music.app before '\(name)' could play on SpanDAC; nothing was played.")
                         },
                         source: { _ in
                             skippedUnavailable = try provider.playReportingSkips(
@@ -1916,11 +1916,11 @@ final class LibraryScene: Scene {
                         unaffected: {})
                 }
                 let queuedCount = ids.count - skippedUnavailable
-                var footer = "Playing '\(name)' on Bridge \u{2014} \(queuedCount) tracks."
+                var footer = "Playing '\(name)' on SpanDAC \u{2014} \(queuedCount) tracks."
                 if skippedUnavailable > 0 { footer += " " + bridgeUnavailableSongsNotice(skippedUnavailable) }
                 status.post(footer)
             } catch let error as MusicProviderError {
-                throw ActionError(message: error.errorDescription ?? "Couldn't play '\(name)' on Bridge.")
+                throw ActionError(message: error.errorDescription ?? "Couldn't play '\(name)' on SpanDAC.")
             } catch let error as SourceAppError {
                 throw ActionError(message: error.message)
             }
@@ -2109,12 +2109,12 @@ final class LibraryScene: Scene {
         switch nav.subView {
         case .songs:
             guard songsFromBridge else { return nil }
-            return sourceLine("Songs", "Bridge library",
+            return sourceLine("Songs", "SpanDAC library",
                               count: bridgeSongTotal ?? (songsLoaded ? songs.count : nil))
         case .albums:
             switch albumsSource {
             case .bridge:
-                return sourceLine("Albums", "Bridge library",
+                return sourceLine("Albums", "SpanDAC library",
                                   count: bridgeAlbumTotal ?? (albumsLoaded ? albums.count : nil))
             case .musicApp:
                 guard tabShowsTwoLibraries else { return nil }
@@ -2128,7 +2128,7 @@ final class LibraryScene: Scene {
             // rather than made up — "Artists count shows only at the list level".
             switch artistsSource {
             case .bridge:
-                return sourceLine("Artists", "Bridge library",
+                return sourceLine("Artists", "SpanDAC library",
                                   count: (isArtistList && artistsLoaded) ? (bridgeArtistTotal ?? artists.count) : nil)
             case .musicApp:
                 guard tabShowsTwoLibraries else { return nil }

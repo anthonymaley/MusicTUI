@@ -436,7 +436,7 @@ final class DiscoverScene: Scene {
             try require(!catalogIDs.isEmpty, "'\(title)': no tracks to play.")
             try self.route(.discoverPlayAll, catalogIDs: catalogIDs, disableShuffle: false,
                        musicAppTitle: title,
-                       bridgeToast: "Playing '\(title)' on Bridge — \(catalogIDs.count) tracks.")
+                       bridgeToast: "Playing '\(title)' on SpanDAC — \(catalogIDs.count) tracks.")
         }
     }
 
@@ -448,8 +448,8 @@ final class DiscoverScene: Scene {
             try self.route(.discoverTrackPlay, catalogIDs: catalogIDs, disableShuffle: true,
                        musicAppTitle: containerTitle,
                        bridgeToast: catalogIDs.count == 1
-                           ? "Playing \(trackName) on Bridge."
-                           : "Playing \(trackName) on Bridge — \(catalogIDs.count) tracks.")
+                           ? "Playing \(trackName) on SpanDAC."
+                           : "Playing \(trackName) on SpanDAC — \(catalogIDs.count) tracks.")
         }
     }
 

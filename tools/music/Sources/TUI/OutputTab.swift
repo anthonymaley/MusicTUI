@@ -46,7 +46,7 @@ enum SourceReadiness: Equatable {
 
     /// The app is not answering at all. Distinguished from every other reason
     /// because it is the one a person fixes by opening the app.
-    static let notRunning = SourceReadiness.unavailable("Bridge is not running")
+    static let notRunning = SourceReadiness.unavailable("SpanDAC is not running")
 
     /// Every way asking Bridge can fail, kept apart.
     ///
@@ -56,32 +56,32 @@ enum SourceReadiness: Equatable {
     /// diagnosis is not.
     static func from(_ error: Error) -> SourceReadiness {
         guard let error = error as? SourceAppError else {
-            return .unavailable("Bridge could not be reached: \(error.localizedDescription)")
+            return .unavailable("SpanDAC could not be reached: \(error.localizedDescription)")
         }
         switch error {
         case .notRunning:        return .notRunning
         // Running, reachable, and not ready for THIS op yet. The Output tab
         // asks about status, which no snapshot gates, so this should not reach
         // here; if it ever does, it says what it is rather than "not running".
-        case .warming(let why, _): return .unavailable("Bridge is preparing: \(why)")
+        case .warming(let why, _): return .unavailable("SpanDAC is preparing: \(why)")
         // Only a paged read can see this, and the Output tab does not make one;
         // it says what it is rather than being folded into a generic refusal.
-        case .staleGeneration(let why): return .unavailable("Bridge's library changed mid-read: \(why)")
+        case .staleGeneration(let why): return .unavailable("SpanDAC's library changed mid-read: \(why)")
         case .malformedReply(let what): return .unavailable(what)
-        case .notAuthorized:     return .unavailable("Bridge has no Apple Music access")
-        case .refused(let why):  return .unavailable("Bridge refused: \(why)")
-        case .timedOut:          return .unavailable("Bridge did not answer in time")
-        case .socketUnavailable(let why): return .unavailable("Bridge's control socket is unusable: \(why)")
-        case .unreadable:        return .unavailable("Bridge sent a reply this build could not read")
-        case .didNotStart(let s): return .unavailable("Bridge did not start playback (\(s))")
+        case .notAuthorized:     return .unavailable("SpanDAC has no Apple Music access")
+        case .refused(let why):  return .unavailable("SpanDAC refused: \(why)")
+        case .timedOut:          return .unavailable("SpanDAC did not answer in time")
+        case .socketUnavailable(let why): return .unavailable("SpanDAC's control socket is unusable: \(why)")
+        case .unreadable:        return .unavailable("SpanDAC sent a reply this build could not read")
+        case .didNotStart(let s): return .unavailable("SpanDAC did not start playback (\(s))")
         // Only a library read can see this, and the Output tab does not make
         // one (D6); if it ever does, this is the older-Bridge line rather than
         // a generic refusal.
-        case .unsupported:       return .unavailable("Bridge is older than this MusicTUI — update Bridge")
+        case .unsupported:       return .unavailable("SpanDAC is older than this MusicTUI — update SpanDAC")
         // Only a play-record read can see this, and the Output tab does not
         // make one; if it ever does, it says what happened.
-        case .ledgerChanged:     return .unavailable("Bridge's play record was replaced")
-        case .busy:              return .unavailable("Bridge is busy; try again in a moment.")
+        case .ledgerChanged:     return .unavailable("SpanDAC's play record was replaced")
+        case .busy:              return .unavailable("SpanDAC is busy; try again in a moment.")
         case .link(let failure): return .unavailable(failure.sentence)
         }
     }

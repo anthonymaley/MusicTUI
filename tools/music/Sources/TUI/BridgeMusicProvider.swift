@@ -203,7 +203,7 @@ struct BridgeMusicProvider: MusicDataProvider {
     static func translate(_ error: SourceAppError) -> MusicProviderError {
         switch error {
         case .notAuthorized:
-            return .unavailable("Bridge has not been granted Apple Music access")
+            return .unavailable("SpanDAC has not been granted Apple Music access")
         case .warming(let why, let retryAfter):
             // Carried through with its hint intact. Flattening it into
             // `unavailable` would turn "ask again in a second" into "your
@@ -214,12 +214,12 @@ struct BridgeMusicProvider: MusicDataProvider {
         case .refused(let detail):
             return .refused(detail)
         case .malformedReply(let what):
-            // The fault travels. "Bridge sent something this build cannot read"
+            // The fault travels. "SpanDAC sent something this build cannot read"
             // is not something a person can act on or report; naming the missing
             // field is.
             return .unavailable(what)
         case .unreadable:
-            return .unavailable("Bridge sent a reply this build cannot read")
+            return .unavailable("SpanDAC sent a reply this build cannot read")
         case .unsupported(let op):
             // D6: an OLDER Bridge that predates this op. Additive, not a
             // contract mismatch — the op name (the wire string `send` carried
@@ -241,33 +241,33 @@ struct BridgeMusicProvider: MusicDataProvider {
     static func unsupportedSentence(forWireOp op: String) -> String {
         switch op {
         case "slice.libraryAlbums":
-            return "This Bridge build can't list your albums — update Bridge"
+            return "This SpanDAC build can't list your albums — update SpanDAC"
         case "slice.libraryArtists":
-            return "This Bridge build can't list your artists — update Bridge"
+            return "This SpanDAC build can't list your artists — update SpanDAC"
         case "slice.libraryAlbumTracks":
-            return "This Bridge build can't list an album's tracks — update Bridge"
+            return "This SpanDAC build can't list an album's tracks — update SpanDAC"
         case "slice.libraryArtistAlbums":
-            return "This Bridge build can't list an artist's albums — update Bridge"
+            return "This SpanDAC build can't list an artist's albums — update SpanDAC"
         case "slice.libraryArtistSongs":
-            return "This Bridge build can't play an artist — update Bridge"
+            return "This SpanDAC build can't play an artist — update SpanDAC"
         case "slice.libraryPlaylists":
-            return "This Bridge build can't list your playlists — update Bridge"
+            return "This SpanDAC build can't list your playlists — update SpanDAC"
         case "slice.libraryPlaylistTracks":
-            return "This Bridge build can't list a playlist's tracks — update Bridge"
+            return "This SpanDAC build can't list a playlist's tracks — update SpanDAC"
         case "slice.search":
-            return "This Bridge build can't search the catalogue — update Bridge"
+            return "This SpanDAC build can't search the catalogue — update SpanDAC"
         case "slice.liveStations":
-            return "This Bridge build can't list live stations — update Bridge"
+            return "This SpanDAC build can't list live stations — update SpanDAC"
         case "slice.personalStations":
-            return "This Bridge build can't show your personal station — update Bridge"
+            return "This SpanDAC build can't show your personal station — update SpanDAC"
         case "slice.station":
-            return "This Bridge build can't look up a station — update Bridge"
+            return "This SpanDAC build can't look up a station — update SpanDAC"
         case "slice.recentTracks":
-            return "This Bridge build can't show your listening history — update Bridge"
+            return "This SpanDAC build can't show your listening history — update SpanDAC"
         case "slice.heavyRotation":
-            return "This Bridge build can't show heavy rotation — update Bridge"
+            return "This SpanDAC build can't show heavy rotation — update SpanDAC"
         default:
-            return "Bridge doesn't serve that yet — update Bridge"
+            return "SpanDAC doesn't serve that yet — update SpanDAC"
         }
     }
 }

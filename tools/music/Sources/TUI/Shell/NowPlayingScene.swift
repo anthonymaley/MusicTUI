@@ -538,7 +538,7 @@ final class NowPlayingScene: Scene {
     private func renderBridgeEmpty(_ bridge: BridgeNow, frame: ShellFrame, into base: String) -> String {
         var out = base
         out += ANSICode.moveTo(row: frame.bodyY + 1, col: 3)
-        out += truncText(bridgeStatusLine(bridge) ?? "Nothing playing on Bridge.", to: frame.width - 6)
+        out += truncText(bridgeStatusLine(bridge) ?? "Nothing playing on SpanDAC.", to: frame.width - 6)
         out += ANSICode.moveTo(row: frame.bodyY + 2, col: 3)
         out += "\(ANSICode.dim)Press \(ANSICode.reset)4\(ANSICode.dim) to browse playlists, \(ANSICode.reset)3\(ANSICode.dim) for Library.\(ANSICode.reset)"
         return out
@@ -562,7 +562,7 @@ final class NowPlayingScene: Scene {
         y += 1
         if y <= bottom {
             out += ANSICode.moveTo(row: y, col: x)
-                + "\(ANSICode.dim)\(truncText("Shuffle and repeat are not available on Bridge.", to: width))\(ANSICode.reset)"
+                + "\(ANSICode.dim)\(truncText("Shuffle and repeat aren't available on SpanDAC.", to: width))\(ANSICode.reset)"
         }
         return out
     }
@@ -727,7 +727,7 @@ final class NowPlayingScene: Scene {
                     // Music.app: the pause is attempted, then its own status
                     // decides, and only a player still going is an error.
                     source: { try require(try confirmBridgeNotPlaying($0.control),
-                                          "Couldn't pause Bridge.") },
+                                          "Couldn't pause SpanDAC.") },
                     unaffected: {})
             }
         }

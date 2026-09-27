@@ -10,7 +10,7 @@ import Foundation
 struct SyncPlays: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "sync-plays",
-        abstract: "Record library songs Bridge played to the end in Music.app's play counts.")
+        abstract: "Record library songs SpanDAC played to the end in Music.app's play counts.")
 
     @Flag(name: .long, help: "Output JSON") var json = false
 
@@ -74,9 +74,9 @@ enum SyncPlaysSentence {
     }
     static func unconfirmedHeader(_ n: Int) -> String { "Waiting for Music.app to confirm (\(n)):" }
     static let unconfirmedFooter = "  These, and later plays of the same songs, are checked again on every sync."
-    static let bridgeNotRunning = "Bridge is not running, so no new plays could be read."
-    static let bridgeTooOld = "Bridge is older than this MusicTUI and does not record plays — update Bridge."
-    static let ledgerReplaced = "Bridge's play record was replaced; plays it held before could not all be read."
+    static let bridgeNotRunning = "SpanDAC is not running, so no new plays could be read."
+    static let bridgeTooOld = "SpanDAC is older than this MusicTUI and does not record plays — update SpanDAC."
+    static let ledgerReplaced = "SpanDAC's play record was replaced; plays it held before could not all be read."
     static func fetchFailed(_ detail: String) -> String {
         let trimmed = detail.trimmingCharacters(in: .whitespacesAndNewlines)
         let ended = trimmed.hasSuffix(".") ? trimmed : trimmed + "."
@@ -104,7 +104,7 @@ enum SyncPlaysSentence {
     static func why(_ entry: PlaySyncEntry) -> String {
         if entry.state == .conflict { return "Music.app's play count changed during the write; left as it was" }
         switch entry.reason {
-        case "no_alias", "bad_alias": return "Bridge could not identify it in Music.app"
+        case "no_alias", "bad_alias": return "SpanDAC could not identify it in Music.app"
         case "not_found": return "not in your Music.app library"
         case "ambiguous": return "matches more than one Music.app track"
         case "conflict": return "Music.app's play count changed during the write; left as it was"
