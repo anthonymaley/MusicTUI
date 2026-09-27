@@ -161,7 +161,7 @@ chmod 600 ~/.config/music/config.json ~/.config/music/user-token ~/.config/music
 | `music shuffle` / `music repeat off\|one\|all` | Shuffle and repeat modes |
 | `music seek +30` / `music seek 1:30` | Seek within the current track (relative or absolute) |
 | `music love` / `music unlove` | Favorite / unfavorite the current track |
-| `music sync-plays` | Record the library songs Bridge played to the end in Music.app (play count and last played) |
+| `music sync-plays` | Record the library songs SpanDAC played to the end in Music.app (play count and last played) |
 
 Single-song playback is bounded the same way, and it stops when the song ends. `music play --song`, `music play "Song" "Artist"`, `music play <N>` from a search listing, and a bare `music play "X"` that resolves to a song all play exactly that one song and then stop, rather than continuing into the rest of your library. As with albums, that boundary holds only if Autoplay is off.
 
@@ -227,10 +227,10 @@ A station plays via its Apple Music share URL with the scheme swapped from `http
 
 Apple's station search is shallow (5-7 results, no pagination) and misses real stations outright: it can't find BBC Radio 1 by name or even by its own catalog id, though the station plays fine once you have its URL. Pasting a URL always works; search sometimes doesn't. Get one from music.apple.com or the Music app's share menu.
 
-### Bridge (MusicTUI's own player)
+### SpanDAC (MusicTUI's own player)
 
-Bridge is MusicTUI's own built-in player, an alternative to sending playback
-through Music.app. It's chosen from the TUI's **Output** tab; with Bridge
+SpanDAC is MusicTUI's own built-in player, an alternative to sending playback
+through Music.app. It's chosen from the TUI's **Output** tab; with SpanDAC
 selected, `music now --json` reports `"output": "bridge"`.
 
 ```bash
@@ -240,7 +240,7 @@ music play --song "Idioteque" --artist "Radiohead"
 music search --library "Idioteque"             # then: music play N
 ```
 
-The CLI plays from Bridge's own library through those explicit forms. Bridge
+The CLI plays from SpanDAC's own library through those explicit forms. SpanDAC
 also serves catalog search, song links, radio search/add/play, discover,
 playlist listings, `similar`, `recent`, and `rotation` directly — no
 developer key needed for any of them:
@@ -254,14 +254,14 @@ music playlist tracks "Top 25 Most Played"
 
 Plain `music play <words>` (the fast path above), non-song Apple Music links,
 shuffle/repeat mode, volume, speaker routing, `playlist temp`, `suggest`, and
-`new-releases` all still refuse with Bridge selected — there's no fast-path
-parsing, no AirPlay routing from the CLI on Bridge yet, and no Bridge op for
+`new-releases` all still refuse with SpanDAC selected — there's no fast-path
+parsing, no AirPlay routing from the CLI on SpanDAC yet, and no SpanDAC op for
 suggestions or new releases. Use the flags above, use MusicTUI, or switch
 Output back to Music.app. A numbered result only plays back on the source and
-namespace that produced it — a Music.app-mode listing doesn't feed Bridge's
-`music play N`, and a Bridge row (library or catalog) doesn't feed Music.app's
-`play N` either — and a Bridge catalog or library row can't yet feed `add N`
-or a playlist write. Library plays Bridge finishes are recorded in Music.app's
+namespace that produced it — a Music.app-mode listing doesn't feed SpanDAC's
+`music play N`, and a SpanDAC row (library or catalog) doesn't feed Music.app's
+`play N` either — and a SpanDAC catalog or library row can't yet feed `add N`
+or a playlist write. Library plays SpanDAC finishes are recorded in Music.app's
 play count via `music sync-plays`, and so are catalog and Discover plays, but
 only when the song has exactly one copy in your library; radio station plays
 are never counted. The `/music` skill reference has the full command-by-command
