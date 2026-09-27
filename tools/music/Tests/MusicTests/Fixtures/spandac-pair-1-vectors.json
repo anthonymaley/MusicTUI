@@ -1,0 +1,327 @@
+{
+  "base" : {
+    "exchange" : [
+      {
+        "from" : "C",
+        "line" : "{\"t\":\"hello\",\"v\":1,\"cid\":\"6B1F3C2E-8D4A-4F0B-9C7E-2A5D1E0F3B91\",\"cname\":\"MusicTUI on Mac Studio\"}"
+      },
+      {
+        "from" : "S",
+        "line" : "{\"t\":\"hello\",\"v\":1,\"sid\":\"D2C4A6E8-1B3D-4F5A-8C7E-9A0B2C4D6E8F\",\"sname\":\"Anthony’s iPad\"}"
+      },
+      {
+        "from" : "C",
+        "line" : "{\"t\":\"commit\",\"h\":\"BaLLG5pMlc8iddbq1rCnjm613ONyeY2BAfzn9gjwxXQ\"}"
+      },
+      {
+        "from" : "S",
+        "line" : "{\"t\":\"commit\",\"h\":\"c_K7-PHGI9IZf5wQ1she3MI8E-NOxnhBk3aQdrwiNio\"}"
+      },
+      {
+        "from" : "C",
+        "line" : "{\"t\":\"reveal\",\"pk\":\"BCkENo4Ma-II1zKIytAwb3KndwKdTOyHZFXJ09Kc6Z6--ER_k8t8ia9TuLLj2Ky0My2kyDDgE-JCqujY4P-P3HQ\",\"n\":\"Y6b9XFzzfAh7iZVEMA5tS79tcLQS7DanokGDiPJrUtc\"}"
+      },
+      {
+        "from" : "S",
+        "line" : "{\"t\":\"reveal\",\"pk\":\"BEjcHedNYXzvX44oAai9DLvh0qrMTKMQ7qsb-K8dEkTSLp_yB2TTQyNiCeQwS6cNY97rWYlBsgGdpUnVU_NdYpU\",\"n\":\"Y-2k2e2ALWD_eMk8SVDpbJvLBgV3SajlBfa6fap8qB8\"}"
+      },
+      {
+        "from" : "C",
+        "line" : "{\"t\":\"confirm\",\"mac\":\"rwrHxKkNDtqjvhn9VmM06tcG2LBFQB0eKNO7QX_mH8k\"}"
+      },
+      {
+        "from" : "S",
+        "line" : "{\"t\":\"confirm\",\"mac\":\"o8lovkZAQr8CcJEzkgY34wivtmQYgRtmi4hvO7NiDIE\"}"
+      },
+      {
+        "from" : "C",
+        "line" : "{\"t\":\"done\"}"
+      }
+    ],
+    "expected" : {
+      "code" : 49504,
+      "code_digits" : "049504",
+      "code_display" : "049 504",
+      "HC" : "05a2cb1b9a4c95cf2275d6ead6b0a78e6eb5dce372798d8101fce7f608f0c574",
+      "HS" : "73f2bbf8f1c623d2197f9c10d6c85edcc23c13e34ec6784193769076bc22362a",
+      "K_conf_C" : "1684c07275c2c134919fa8640a5ba639a2a2da2e8be38b7f04d24620da4cf827",
+      "K_conf_S" : "2548dc495390085f8dcddef8dc3be84d70bf9ae725565f40f7196d62dcf26fc3",
+      "K_pair" : "a73a80ec087dd583f0b749a37deadcd4342751cafb59249f43e4f58680ec33bc",
+      "MC" : "af0ac7c4a90d0edaa3be19fd566334ead706d8b045401d1e28d3bb417fe61fc9",
+      "MS" : "a3c968be464042bf02709133920637e308afb66418811b668b886f3bb3620c81",
+      "pkC" : "042904368e0c6be208d73288cad0306f72a777029d4cec876455c9d3d29ce99ebef8447f93cb7c89af53b8b2e3d8acb4332da4c830e013e242aae8d8e0ff8fdc74",
+      "pkS" : "0448dc1de74d617cef5f8e2801a8bd0cbbe1d2aacc4ca310eeab1bf8af1d1244d22e9ff20764d343236209e4304ba70d63deeb598941b2019da549d553f35d6295",
+      "psk_id" : "cb21746898641ed86baf27df4ddaa073",
+      "psk_identity" : "cb21746898641ed86baf27df4ddaa073",
+      "salt" : "994a54f1f1a9ad99df77cb6d3044d1fd66d707505ff83a0b68567d02037caf30",
+      "sas" : "8a5867a0",
+      "T" : "7370616e6461632d706169722f31002436423146334332452d384434412d344630422d394337452d324135443145304633423931002444324334413645382d314233442d344635412d384337452d39413042324334443645384600164d75736963545549206f6e204d61632053747564696f0010416e74686f6e79e280997320695061640041042904368e0c6be208d73288cad0306f72a777029d4cec876455c9d3d29ce99ebef8447f93cb7c89af53b8b2e3d8acb4332da4c830e013e242aae8d8e0ff8fdc7400410448dc1de74d617cef5f8e2801a8bd0cbbe1d2aacc4ca310eeab1bf8af1d1244d22e9ff20764d343236209e4304ba70d63deeb598941b2019da549d553f35d6295002063a6fd5c5cf37c087b899544300e6d4bbf6d70b412ec36a7a2418388f26b52d7002063eda4d9ed802d60ff78c93c4950e96c9bcb06057749a8e505f6ba7daa7ca81f",
+      "Z" : "52e43d16e4704651024f5aaa2b6715664acaf2150c0daba3401555c3fe3a04eb"
+    },
+    "inputs" : {
+      "cid" : "6B1F3C2E-8D4A-4F0B-9C7E-2A5D1E0F3B91",
+      "cname" : "MusicTUI on Mac Studio",
+      "dC" : "62b7520ff373c11d2a2b0393f40eff057f5d761fa360708c07b514c1ea7123ee",
+      "dC_label" : "spandac-pair/1 vector dC",
+      "dS" : "7a4b9aee81bf23f0f1b24ed4d1ed5052573bb2c3d4d2a309a4c8c26c44e4c994",
+      "dS_label" : "spandac-pair/1 vector dS",
+      "nC" : "63a6fd5c5cf37c087b899544300e6d4bbf6d70b412ec36a7a2418388f26b52d7",
+      "nC_label" : "spandac-pair/1 vector nC",
+      "nS" : "63eda4d9ed802d60ff78c93c4950e96c9bcb06057749a8e505f6ba7daa7ca81f",
+      "nS_label" : "spandac-pair/1 vector nS",
+      "sid" : "D2C4A6E8-1B3D-4F5A-8C7E-9A0B2C4D6E8F",
+      "sname" : "Anthony’s iPad"
+    }
+  },
+  "compressed_key" : {
+    "pkS_compressed" : "0348dc1de74d617cef5f8e2801a8bd0cbbe1d2aacc4ca310eeab1bf8af1d1244d2",
+    "reveal_line" : "{\"t\":\"reveal\",\"pk\":\"A0jcHedNYXzvX44oAai9DLvh0qrMTKMQ7qsb-K8dEkTS\",\"n\":\"Y-2k2e2ALWD_eMk8SVDpbJvLBgV3SajlBfa6fap8qB8\"}",
+    "rule" : "a reveal whose pk is 33 bytes (compressed) aborts with reason format"
+  },
+  "encoding" : "byte strings are lowercase hex here (base64url without padding on the wire); ids and names are verbatim strings, hashed as UTF-8; every scalar and nonce is SHA-256 of its *_label",
+  "mitm" : {
+    "assert" : "code_C (c_to_m.code) != code_S (m_to_s.code); MC from c_to_m fails S's check under m_to_s's K_conf_C and T",
+    "c_to_m" : {
+      "code" : 443146,
+      "K_pair" : "79ea7d8bf9f8077f0e3ca5c3174032f088ce7963ba75a94626374b7ee42115a4",
+      "MC" : "afccb09da32637426a35f2c1f407c24990de530ac784e5cc455f30ec6c6c55f3",
+      "pkM1" : "04fb178a33ec7a245ca8bc113d2d8802c26b635a5b0ce0859ae423b3ec609334739f661f8de36af505f3d64565823e21ef2aab59dca8b24f392d4f5a814d959f06",
+      "T" : "7370616e6461632d706169722f31002436423146334332452d384434412d344630422d394337452d324135443145304633423931002444324334413645382d314233442d344635412d384337452d39413042324334443645384600164d75736963545549206f6e204d61632053747564696f0010416e74686f6e79e280997320695061640041042904368e0c6be208d73288cad0306f72a777029d4cec876455c9d3d29ce99ebef8447f93cb7c89af53b8b2e3d8acb4332da4c830e013e242aae8d8e0ff8fdc74004104fb178a33ec7a245ca8bc113d2d8802c26b635a5b0ce0859ae423b3ec609334739f661f8de36af505f3d64565823e21ef2aab59dca8b24f392d4f5a814d959f06002063a6fd5c5cf37c087b899544300e6d4bbf6d70b412ec36a7a2418388f26b52d70020f9c4231e8d1caddcc60a8210983189381ad9be20865e0fbd36e085bdf6891296"
+    },
+    "inputs" : {
+      "dM1" : "847d0281af0805f6eadcf86e062a9de59913c3cdbdb0413b8815d6f8543f880e",
+      "dM1_label" : "spandac-pair/1 vector dM1",
+      "dM2" : "5eec42fb5f31216649cee891ebd7e9b708d3608adf8d982ae9beb33c0f1ede54",
+      "dM2_label" : "spandac-pair/1 vector dM2",
+      "nM1" : "f9c4231e8d1caddcc60a8210983189381ad9be20865e0fbd36e085bdf6891296",
+      "nM1_label" : "spandac-pair/1 vector nM1",
+      "nM2" : "304c30541f2b981c09a9e2a00f54c01a21e2fc0581f75432f51681efbe4741db",
+      "nM2_label" : "spandac-pair/1 vector nM2"
+    },
+    "m_to_s" : {
+      "code" : 306041,
+      "K_conf_C" : "6691a8e5294aaa1e19030a9745d707a38b9de36b6177ce8576dcfd0d55dec8ed",
+      "K_pair" : "8f56dd3d2df841946f6f31898f027354627d842f645039db7a9f94d60d614665",
+      "pkM2" : "04b8d247ba3dfbaf895e4a0abdffe24ec6571777e3ca126756e9e93e4a93deaaf80401f03880f1872931c3a0ee896ac616576e9f178a752eb080d8f6c5ee4cd831",
+      "T" : "7370616e6461632d706169722f31002436423146334332452d384434412d344630422d394337452d324135443145304633423931002444324334413645382d314233442d344635412d384337452d39413042324334443645384600164d75736963545549206f6e204d61632053747564696f0010416e74686f6e79e28099732069506164004104b8d247ba3dfbaf895e4a0abdffe24ec6571777e3ca126756e9e93e4a93deaaf80401f03880f1872931c3a0ee896ac616576e9f178a752eb080d8f6c5ee4cd83100410448dc1de74d617cef5f8e2801a8bd0cbbe1d2aacc4ca310eeab1bf8af1d1244d22e9ff20764d343236209e4304ba70d63deeb598941b2019da549d553f35d62950020304c30541f2b981c09a9e2a00f54c01a21e2fc0581f75432f51681efbe4741db002063eda4d9ed802d60ff78c93c4950e96c9bcb06057749a8e505f6ba7daa7ca81f"
+    }
+  },
+  "protocol" : "spandac-pair/1",
+  "provenance" : "Generated 2026-09-26 from Sources/SourceCore/SpanDACPair.swift (CryptoKit) with the S session and a test C session exchanging the recorded lines. Every field was then recomputed from the labelled inputs by two implementations sharing no code with it: pure Python (P-256 arithmetic, RFC 5869 HKDF and the protocol written from design-ipad.md 3.5; SHA-256 and HMAC from the standard library) and the cryptography 50.0.1 package (OpenSSL): 104/104 checks passed, and a tampered copy failed. Re-run: python3 spandac-pair-1-crosscheck.py spandac-pair-1-vectors.json",
+  "role_separation" : {
+    "HC_with_source_role_byte" : "17c58adad81c61c494a33cafb6164638189d783ac2d114ce8a6014bf1610ddb0",
+    "HS_with_controller_role_byte" : "0c6ddfabc294c12973995e335d68dcd822c6caf954544fbfb900a732a24d92a8",
+    "rule" : "a commitment computed with the other role's byte is not accepted: both differ from HS and HC"
+  },
+  "single_flips" : [
+    {
+      "expected" : {
+        "code" : 599934,
+        "K_pair" : "de04a3b3869400ddf28c683467b742c53dbf1f47e635b88b080d3b60704625c6",
+        "pkC" : "045cd28ae08e48d62119ad980c8e6be64cacf9f683c8805abec0dcff68c1b6bc5577e6d2a480ad9b602bf5aa71058ff730c773625f2c41dbb55cbde84411f0df33",
+        "pkS" : "0448dc1de74d617cef5f8e2801a8bd0cbbe1d2aacc4ca310eeab1bf8af1d1244d22e9ff20764d343236209e4304ba70d63deeb598941b2019da549d553f35d6295",
+        "psk_id" : "035292b8e4d7f6620858d32fa11018f0",
+        "sas" : "af6482fe",
+        "T" : "7370616e6461632d706169722f31002436423146334332452d384434412d344630422d394337452d324135443145304633423931002444324334413645382d314233442d344635412d384337452d39413042324334443645384600164d75736963545549206f6e204d61632053747564696f0010416e74686f6e79e280997320695061640041045cd28ae08e48d62119ad980c8e6be64cacf9f683c8805abec0dcff68c1b6bc5577e6d2a480ad9b602bf5aa71058ff730c773625f2c41dbb55cbde84411f0df3300410448dc1de74d617cef5f8e2801a8bd0cbbe1d2aacc4ca310eeab1bf8af1d1244d22e9ff20764d343236209e4304ba70d63deeb598941b2019da549d553f35d6295002063a6fd5c5cf37c087b899544300e6d4bbf6d70b412ec36a7a2418388f26b52d7002063eda4d9ed802d60ff78c93c4950e96c9bcb06057749a8e505f6ba7daa7ca81f"
+      },
+      "field" : "pkC",
+      "inputs" : {
+        "cid" : "6B1F3C2E-8D4A-4F0B-9C7E-2A5D1E0F3B91",
+        "cname" : "MusicTUI on Mac Studio",
+        "dC" : "75b9b19ba4650e492333d5d637d6190edf96b4e8a27d81d84799979a2a86e796",
+        "dC_label" : "spandac-pair/1 vector dC flip",
+        "dS" : "7a4b9aee81bf23f0f1b24ed4d1ed5052573bb2c3d4d2a309a4c8c26c44e4c994",
+        "dS_label" : "spandac-pair/1 vector dS",
+        "nC" : "63a6fd5c5cf37c087b899544300e6d4bbf6d70b412ec36a7a2418388f26b52d7",
+        "nC_label" : "spandac-pair/1 vector nC",
+        "nS" : "63eda4d9ed802d60ff78c93c4950e96c9bcb06057749a8e505f6ba7daa7ca81f",
+        "nS_label" : "spandac-pair/1 vector nS",
+        "sid" : "D2C4A6E8-1B3D-4F5A-8C7E-9A0B2C4D6E8F",
+        "sname" : "Anthony’s iPad"
+      }
+    },
+    {
+      "expected" : {
+        "code" : 103924,
+        "K_pair" : "f3156fc097fd2527582fc881c2a2699e067ef386293006e705b0e0b52ab662d4",
+        "pkC" : "042904368e0c6be208d73288cad0306f72a777029d4cec876455c9d3d29ce99ebef8447f93cb7c89af53b8b2e3d8acb4332da4c830e013e242aae8d8e0ff8fdc74",
+        "pkS" : "0494595a03409c95da01407f35eb7bcfb2ec7538f8fbb8d056beaaf04c6880d1cc2c9ad1d8bc9c9efb01fcf021705edcff5c335651e047303a7f9ead5c0554ad3e",
+        "psk_id" : "1692875fb9dfdc66b453f8145bc9d600",
+        "sas" : "e77376b4",
+        "T" : "7370616e6461632d706169722f31002436423146334332452d384434412d344630422d394337452d324135443145304633423931002444324334413645382d314233442d344635412d384337452d39413042324334443645384600164d75736963545549206f6e204d61632053747564696f0010416e74686f6e79e280997320695061640041042904368e0c6be208d73288cad0306f72a777029d4cec876455c9d3d29ce99ebef8447f93cb7c89af53b8b2e3d8acb4332da4c830e013e242aae8d8e0ff8fdc7400410494595a03409c95da01407f35eb7bcfb2ec7538f8fbb8d056beaaf04c6880d1cc2c9ad1d8bc9c9efb01fcf021705edcff5c335651e047303a7f9ead5c0554ad3e002063a6fd5c5cf37c087b899544300e6d4bbf6d70b412ec36a7a2418388f26b52d7002063eda4d9ed802d60ff78c93c4950e96c9bcb06057749a8e505f6ba7daa7ca81f"
+      },
+      "field" : "pkS",
+      "inputs" : {
+        "cid" : "6B1F3C2E-8D4A-4F0B-9C7E-2A5D1E0F3B91",
+        "cname" : "MusicTUI on Mac Studio",
+        "dC" : "62b7520ff373c11d2a2b0393f40eff057f5d761fa360708c07b514c1ea7123ee",
+        "dC_label" : "spandac-pair/1 vector dC",
+        "dS" : "376632f3697c0a8e08f1a3ad28ee67b1ea0bea234387e0bed0dea6e89b9e9684",
+        "dS_label" : "spandac-pair/1 vector dS flip",
+        "nC" : "63a6fd5c5cf37c087b899544300e6d4bbf6d70b412ec36a7a2418388f26b52d7",
+        "nC_label" : "spandac-pair/1 vector nC",
+        "nS" : "63eda4d9ed802d60ff78c93c4950e96c9bcb06057749a8e505f6ba7daa7ca81f",
+        "nS_label" : "spandac-pair/1 vector nS",
+        "sid" : "D2C4A6E8-1B3D-4F5A-8C7E-9A0B2C4D6E8F",
+        "sname" : "Anthony’s iPad"
+      }
+    },
+    {
+      "expected" : {
+        "code" : 619273,
+        "K_pair" : "79c3858648ae4deadb4d4cf36cc92398e9f869217ebffdf299d7f40533b10f66",
+        "pkC" : "042904368e0c6be208d73288cad0306f72a777029d4cec876455c9d3d29ce99ebef8447f93cb7c89af53b8b2e3d8acb4332da4c830e013e242aae8d8e0ff8fdc74",
+        "pkS" : "0448dc1de74d617cef5f8e2801a8bd0cbbe1d2aacc4ca310eeab1bf8af1d1244d22e9ff20764d343236209e4304ba70d63deeb598941b2019da549d553f35d6295",
+        "psk_id" : "c605c3149e681dc55f797102a9435bc4",
+        "sas" : "f91fedc9",
+        "T" : "7370616e6461632d706169722f31002436423146334332452d384434412d344630422d394337452d324135443145304633423931002444324334413645382d314233442d344635412d384337452d39413042324334443645384600164d75736963545549206f6e204d61632053747564696f0010416e74686f6e79e280997320695061640041042904368e0c6be208d73288cad0306f72a777029d4cec876455c9d3d29ce99ebef8447f93cb7c89af53b8b2e3d8acb4332da4c830e013e242aae8d8e0ff8fdc7400410448dc1de74d617cef5f8e2801a8bd0cbbe1d2aacc4ca310eeab1bf8af1d1244d22e9ff20764d343236209e4304ba70d63deeb598941b2019da549d553f35d62950020d7818c865544b980bd5790ed747d3563f955e76c575d379ce3a34c55d77deed0002063eda4d9ed802d60ff78c93c4950e96c9bcb06057749a8e505f6ba7daa7ca81f"
+      },
+      "field" : "nC",
+      "inputs" : {
+        "cid" : "6B1F3C2E-8D4A-4F0B-9C7E-2A5D1E0F3B91",
+        "cname" : "MusicTUI on Mac Studio",
+        "dC" : "62b7520ff373c11d2a2b0393f40eff057f5d761fa360708c07b514c1ea7123ee",
+        "dC_label" : "spandac-pair/1 vector dC",
+        "dS" : "7a4b9aee81bf23f0f1b24ed4d1ed5052573bb2c3d4d2a309a4c8c26c44e4c994",
+        "dS_label" : "spandac-pair/1 vector dS",
+        "nC" : "d7818c865544b980bd5790ed747d3563f955e76c575d379ce3a34c55d77deed0",
+        "nC_label" : "spandac-pair/1 vector nC flip",
+        "nS" : "63eda4d9ed802d60ff78c93c4950e96c9bcb06057749a8e505f6ba7daa7ca81f",
+        "nS_label" : "spandac-pair/1 vector nS",
+        "sid" : "D2C4A6E8-1B3D-4F5A-8C7E-9A0B2C4D6E8F",
+        "sname" : "Anthony’s iPad"
+      }
+    },
+    {
+      "expected" : {
+        "code" : 321776,
+        "K_pair" : "03590c190321e27233aa37ca9223fc18369157bf0ac4e06b5a4b11ca9be6c1be",
+        "pkC" : "042904368e0c6be208d73288cad0306f72a777029d4cec876455c9d3d29ce99ebef8447f93cb7c89af53b8b2e3d8acb4332da4c830e013e242aae8d8e0ff8fdc74",
+        "pkS" : "0448dc1de74d617cef5f8e2801a8bd0cbbe1d2aacc4ca310eeab1bf8af1d1244d22e9ff20764d343236209e4304ba70d63deeb598941b2019da549d553f35d6295",
+        "psk_id" : "94d3797a15b59e1c64c48301b23c06dd",
+        "sas" : "21b22030",
+        "T" : "7370616e6461632d706169722f31002436423146334332452d384434412d344630422d394337452d324135443145304633423931002444324334413645382d314233442d344635412d384337452d39413042324334443645384600164d75736963545549206f6e204d61632053747564696f0010416e74686f6e79e280997320695061640041042904368e0c6be208d73288cad0306f72a777029d4cec876455c9d3d29ce99ebef8447f93cb7c89af53b8b2e3d8acb4332da4c830e013e242aae8d8e0ff8fdc7400410448dc1de74d617cef5f8e2801a8bd0cbbe1d2aacc4ca310eeab1bf8af1d1244d22e9ff20764d343236209e4304ba70d63deeb598941b2019da549d553f35d6295002063a6fd5c5cf37c087b899544300e6d4bbf6d70b412ec36a7a2418388f26b52d70020888f5de59dd0256a2c541f8bfe75a11d2762a79f4dcb3fc551955d1c04789761"
+      },
+      "field" : "nS",
+      "inputs" : {
+        "cid" : "6B1F3C2E-8D4A-4F0B-9C7E-2A5D1E0F3B91",
+        "cname" : "MusicTUI on Mac Studio",
+        "dC" : "62b7520ff373c11d2a2b0393f40eff057f5d761fa360708c07b514c1ea7123ee",
+        "dC_label" : "spandac-pair/1 vector dC",
+        "dS" : "7a4b9aee81bf23f0f1b24ed4d1ed5052573bb2c3d4d2a309a4c8c26c44e4c994",
+        "dS_label" : "spandac-pair/1 vector dS",
+        "nC" : "63a6fd5c5cf37c087b899544300e6d4bbf6d70b412ec36a7a2418388f26b52d7",
+        "nC_label" : "spandac-pair/1 vector nC",
+        "nS" : "888f5de59dd0256a2c541f8bfe75a11d2762a79f4dcb3fc551955d1c04789761",
+        "nS_label" : "spandac-pair/1 vector nS flip",
+        "sid" : "D2C4A6E8-1B3D-4F5A-8C7E-9A0B2C4D6E8F",
+        "sname" : "Anthony’s iPad"
+      }
+    },
+    {
+      "expected" : {
+        "code" : 39132,
+        "K_pair" : "a924cc41681855c0117bafc1f21a8430565d786d4e223a21ae0cd54fbfdcb526",
+        "pkC" : "042904368e0c6be208d73288cad0306f72a777029d4cec876455c9d3d29ce99ebef8447f93cb7c89af53b8b2e3d8acb4332da4c830e013e242aae8d8e0ff8fdc74",
+        "pkS" : "0448dc1de74d617cef5f8e2801a8bd0cbbe1d2aacc4ca310eeab1bf8af1d1244d22e9ff20764d343236209e4304ba70d63deeb598941b2019da549d553f35d6295",
+        "psk_id" : "1539253151fa810851056d37e0de91f4",
+        "sas" : "2607b45c",
+        "T" : "7370616e6461632d706169722f31002436423146334332452d384434412d344630422d394337452d324135443145304633423932002444324334413645382d314233442d344635412d384337452d39413042324334443645384600164d75736963545549206f6e204d61632053747564696f0010416e74686f6e79e280997320695061640041042904368e0c6be208d73288cad0306f72a777029d4cec876455c9d3d29ce99ebef8447f93cb7c89af53b8b2e3d8acb4332da4c830e013e242aae8d8e0ff8fdc7400410448dc1de74d617cef5f8e2801a8bd0cbbe1d2aacc4ca310eeab1bf8af1d1244d22e9ff20764d343236209e4304ba70d63deeb598941b2019da549d553f35d6295002063a6fd5c5cf37c087b899544300e6d4bbf6d70b412ec36a7a2418388f26b52d7002063eda4d9ed802d60ff78c93c4950e96c9bcb06057749a8e505f6ba7daa7ca81f"
+      },
+      "field" : "cid",
+      "inputs" : {
+        "cid" : "6B1F3C2E-8D4A-4F0B-9C7E-2A5D1E0F3B92",
+        "cname" : "MusicTUI on Mac Studio",
+        "dC" : "62b7520ff373c11d2a2b0393f40eff057f5d761fa360708c07b514c1ea7123ee",
+        "dC_label" : "spandac-pair/1 vector dC",
+        "dS" : "7a4b9aee81bf23f0f1b24ed4d1ed5052573bb2c3d4d2a309a4c8c26c44e4c994",
+        "dS_label" : "spandac-pair/1 vector dS",
+        "nC" : "63a6fd5c5cf37c087b899544300e6d4bbf6d70b412ec36a7a2418388f26b52d7",
+        "nC_label" : "spandac-pair/1 vector nC",
+        "nS" : "63eda4d9ed802d60ff78c93c4950e96c9bcb06057749a8e505f6ba7daa7ca81f",
+        "nS_label" : "spandac-pair/1 vector nS",
+        "sid" : "D2C4A6E8-1B3D-4F5A-8C7E-9A0B2C4D6E8F",
+        "sname" : "Anthony’s iPad"
+      }
+    },
+    {
+      "expected" : {
+        "code" : 102822,
+        "K_pair" : "d93af9f8ddbae5c3bbd0a1663c9561d3d77c5d63db23bceaf526bd723eb2a9b4",
+        "pkC" : "042904368e0c6be208d73288cad0306f72a777029d4cec876455c9d3d29ce99ebef8447f93cb7c89af53b8b2e3d8acb4332da4c830e013e242aae8d8e0ff8fdc74",
+        "pkS" : "0448dc1de74d617cef5f8e2801a8bd0cbbe1d2aacc4ca310eeab1bf8af1d1244d22e9ff20764d343236209e4304ba70d63deeb598941b2019da549d553f35d6295",
+        "psk_id" : "d51a87647cc148ff117be7895a9712f5",
+        "sas" : "0615f726",
+        "T" : "7370616e6461632d706169722f31002436423146334332452d384434412d344630422d394337452d324135443145304633423931002444324334413645382d314233442d344635412d384337452d39413042324334443645383000164d75736963545549206f6e204d61632053747564696f0010416e74686f6e79e280997320695061640041042904368e0c6be208d73288cad0306f72a777029d4cec876455c9d3d29ce99ebef8447f93cb7c89af53b8b2e3d8acb4332da4c830e013e242aae8d8e0ff8fdc7400410448dc1de74d617cef5f8e2801a8bd0cbbe1d2aacc4ca310eeab1bf8af1d1244d22e9ff20764d343236209e4304ba70d63deeb598941b2019da549d553f35d6295002063a6fd5c5cf37c087b899544300e6d4bbf6d70b412ec36a7a2418388f26b52d7002063eda4d9ed802d60ff78c93c4950e96c9bcb06057749a8e505f6ba7daa7ca81f"
+      },
+      "field" : "sid",
+      "inputs" : {
+        "cid" : "6B1F3C2E-8D4A-4F0B-9C7E-2A5D1E0F3B91",
+        "cname" : "MusicTUI on Mac Studio",
+        "dC" : "62b7520ff373c11d2a2b0393f40eff057f5d761fa360708c07b514c1ea7123ee",
+        "dC_label" : "spandac-pair/1 vector dC",
+        "dS" : "7a4b9aee81bf23f0f1b24ed4d1ed5052573bb2c3d4d2a309a4c8c26c44e4c994",
+        "dS_label" : "spandac-pair/1 vector dS",
+        "nC" : "63a6fd5c5cf37c087b899544300e6d4bbf6d70b412ec36a7a2418388f26b52d7",
+        "nC_label" : "spandac-pair/1 vector nC",
+        "nS" : "63eda4d9ed802d60ff78c93c4950e96c9bcb06057749a8e505f6ba7daa7ca81f",
+        "nS_label" : "spandac-pair/1 vector nS",
+        "sid" : "D2C4A6E8-1B3D-4F5A-8C7E-9A0B2C4D6E80",
+        "sname" : "Anthony’s iPad"
+      }
+    },
+    {
+      "expected" : {
+        "code" : 609180,
+        "K_pair" : "0bf2e8e0b0a5876d5ccc98857239e1ed8722e6d9244074561b2bf417dc7cb28c",
+        "pkC" : "042904368e0c6be208d73288cad0306f72a777029d4cec876455c9d3d29ce99ebef8447f93cb7c89af53b8b2e3d8acb4332da4c830e013e242aae8d8e0ff8fdc74",
+        "pkS" : "0448dc1de74d617cef5f8e2801a8bd0cbbe1d2aacc4ca310eeab1bf8af1d1244d22e9ff20764d343236209e4304ba70d63deeb598941b2019da549d553f35d6295",
+        "psk_id" : "199f092b54d5219f51e77f6c0b6ff35f",
+        "sas" : "36654f9c",
+        "T" : "7370616e6461632d706169722f31002436423146334332452d384434412d344630422d394337452d324135443145304633423931002444324334413645382d314233442d344635412d384337452d39413042324334443645384600174d75736963545549206f6e204d61632053747564696f2e0010416e74686f6e79e280997320695061640041042904368e0c6be208d73288cad0306f72a777029d4cec876455c9d3d29ce99ebef8447f93cb7c89af53b8b2e3d8acb4332da4c830e013e242aae8d8e0ff8fdc7400410448dc1de74d617cef5f8e2801a8bd0cbbe1d2aacc4ca310eeab1bf8af1d1244d22e9ff20764d343236209e4304ba70d63deeb598941b2019da549d553f35d6295002063a6fd5c5cf37c087b899544300e6d4bbf6d70b412ec36a7a2418388f26b52d7002063eda4d9ed802d60ff78c93c4950e96c9bcb06057749a8e505f6ba7daa7ca81f"
+      },
+      "field" : "cname",
+      "inputs" : {
+        "cid" : "6B1F3C2E-8D4A-4F0B-9C7E-2A5D1E0F3B91",
+        "cname" : "MusicTUI on Mac Studio.",
+        "dC" : "62b7520ff373c11d2a2b0393f40eff057f5d761fa360708c07b514c1ea7123ee",
+        "dC_label" : "spandac-pair/1 vector dC",
+        "dS" : "7a4b9aee81bf23f0f1b24ed4d1ed5052573bb2c3d4d2a309a4c8c26c44e4c994",
+        "dS_label" : "spandac-pair/1 vector dS",
+        "nC" : "63a6fd5c5cf37c087b899544300e6d4bbf6d70b412ec36a7a2418388f26b52d7",
+        "nC_label" : "spandac-pair/1 vector nC",
+        "nS" : "63eda4d9ed802d60ff78c93c4950e96c9bcb06057749a8e505f6ba7daa7ca81f",
+        "nS_label" : "spandac-pair/1 vector nS",
+        "sid" : "D2C4A6E8-1B3D-4F5A-8C7E-9A0B2C4D6E8F",
+        "sname" : "Anthony’s iPad"
+      }
+    },
+    {
+      "expected" : {
+        "code" : 302107,
+        "K_pair" : "f672a254109f835ea7fe8665212e7e8de5d9b65c17f441cc07ad6808e4764b64",
+        "pkC" : "042904368e0c6be208d73288cad0306f72a777029d4cec876455c9d3d29ce99ebef8447f93cb7c89af53b8b2e3d8acb4332da4c830e013e242aae8d8e0ff8fdc74",
+        "pkS" : "0448dc1de74d617cef5f8e2801a8bd0cbbe1d2aacc4ca310eeab1bf8af1d1244d22e9ff20764d343236209e4304ba70d63deeb598941b2019da549d553f35d6295",
+        "psk_id" : "ffaae7eeac27a187ba43830e4e95e9c5",
+        "sas" : "931f4d1b",
+        "T" : "7370616e6461632d706169722f31002436423146334332452d384434412d344630422d394337452d324135443145304633423931002444324334413645382d314233442d344635412d384337452d39413042324334443645384600164d75736963545549206f6e204d61632053747564696f000e416e74686f6e79277320695061640041042904368e0c6be208d73288cad0306f72a777029d4cec876455c9d3d29ce99ebef8447f93cb7c89af53b8b2e3d8acb4332da4c830e013e242aae8d8e0ff8fdc7400410448dc1de74d617cef5f8e2801a8bd0cbbe1d2aacc4ca310eeab1bf8af1d1244d22e9ff20764d343236209e4304ba70d63deeb598941b2019da549d553f35d6295002063a6fd5c5cf37c087b899544300e6d4bbf6d70b412ec36a7a2418388f26b52d7002063eda4d9ed802d60ff78c93c4950e96c9bcb06057749a8e505f6ba7daa7ca81f"
+      },
+      "field" : "sname",
+      "inputs" : {
+        "cid" : "6B1F3C2E-8D4A-4F0B-9C7E-2A5D1E0F3B91",
+        "cname" : "MusicTUI on Mac Studio",
+        "dC" : "62b7520ff373c11d2a2b0393f40eff057f5d761fa360708c07b514c1ea7123ee",
+        "dC_label" : "spandac-pair/1 vector dC",
+        "dS" : "7a4b9aee81bf23f0f1b24ed4d1ed5052573bb2c3d4d2a309a4c8c26c44e4c994",
+        "dS_label" : "spandac-pair/1 vector dS",
+        "nC" : "63a6fd5c5cf37c087b899544300e6d4bbf6d70b412ec36a7a2418388f26b52d7",
+        "nC_label" : "spandac-pair/1 vector nC",
+        "nS" : "63eda4d9ed802d60ff78c93c4950e96c9bcb06057749a8e505f6ba7daa7ca81f",
+        "nS_label" : "spandac-pair/1 vector nS",
+        "sid" : "D2C4A6E8-1B3D-4F5A-8C7E-9A0B2C4D6E8F",
+        "sname" : "Anthony's iPad"
+      }
+    }
+  ],
+  "spec" : "design-ipad.md section 3.5 (private vault, 2026-09-26)"
+}
