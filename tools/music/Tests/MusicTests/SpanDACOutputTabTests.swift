@@ -137,8 +137,8 @@ final class SpanDACOutputTabTests: XCTestCase {
                               pairing: state, forgetPrompt: nil, selected: nil).first?.note
         }
         XCTAssertEqual(note(), "pairing · tap Pair with MusicTUI on the iPad")
-        state.phase = .code("482 913")
-        XCTAssertEqual(note(), "pairing · does the iPad show 482 913? y / n")
+        state.phase = .confirming
+        XCTAssertEqual(note(), "pairing · tap Allow on Kitchen iPad")
         let forgetting = spandacOutputRows(paired: [record(ipad, name: "Studio iPad")], seen: [], probes: [ipad: .ready],
                                            pairing: nil, forgetPrompt: ipad, selected: nil)
         XCTAssertEqual(forgetting.first?.note, "forget? y / n")
@@ -199,11 +199,11 @@ final class SpanDACOutputTabTests: XCTestCase {
         XCTAssertEqual(driver.begun.first?.controllerID, try pairs.controllerID())
 
         driver.events?(.code("482 913", sourceName: "Kitchen iPad"))
-        XCTAssertTrue(o.awaitingAnswer)
-        XCTAssertEqual(posts.texts.last, "SpanDAC on Kitchen iPad shows 482 913?  y / n")
-        XCTAssertEqual(o.rows(selected: nil).first?.note, "pairing · does the iPad show 482 913? y / n")
-        o.answer(true)
-        XCTAssertEqual(driver.handle.answers, [true])
+        XCTAssertEqual(driver.handle.answers, [true], "MusicTUI answers its own confirmation automatically, with no prompt")
+        XCTAssertFalse(o.awaitingAnswer, "nothing is asked on this Mac any more")
+        driver.events?(.confirming)
+        XCTAssertEqual(posts.texts.last, "Tap Allow on Kitchen iPad.")
+        XCTAssertEqual(o.rows(selected: nil).first?.note, "pairing · tap Allow on Kitchen iPad")
 
         let result = SpanDACPairResult(sourceID: other, sourceName: "Kitchen iPad",
                                        pskID: String(repeating: "cd", count: 16), pairKey: Data(repeating: 3, count: 32))
@@ -217,7 +217,10 @@ final class SpanDACOutputTabTests: XCTestCase {
         XCTAssertEqual(o.rows(selected: nil).first?.note, "ready", "a new pair is asked how it is at once")
     }
 
-    func testANoOrAMismatchSavesNothingAndSaysSo() {
+    /// The device's person taps Don't allow, or the key confirmation
+    /// mismatches: MusicTUI still answered its own side automatically, but
+    /// nothing is saved and the failure is said in words.
+    func testARejectionOrAMismatchSavesNothingAndSaysSo() {
         let pairs = SpanDACPairedStore(path: dir + "/spandac/paired.json")
         let browser = FakeSpanDACBrowser(), driver = FakePairingDriver(), posts = Posts()
         let o = outputs(pairs: pairs, browser: browser, driver: driver, posts: posts)
@@ -225,8 +228,7 @@ final class SpanDACOutputTabTests: XCTestCase {
         browser.emit([sighting(other, name: "Kitchen iPad", pairPort: 51456)])
         o.pair(other)
         driver.events?(.code("482 913", sourceName: "Kitchen iPad"))
-        o.answer(false)
-        XCTAssertEqual(driver.handle.answers, [false])
+        XCTAssertEqual(driver.handle.answers, [true], "MusicTUI answers its own confirmation automatically")
         driver.events?(.finished(.failure(.codesDiffer)))
         XCTAssertEqual(posts.all.last?.0, "Codes differ; nothing was paired. Try again from the iPad.")
         XCTAssertEqual(posts.all.last?.1, true)

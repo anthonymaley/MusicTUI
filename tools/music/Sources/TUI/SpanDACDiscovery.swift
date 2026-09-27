@@ -127,7 +127,9 @@ final class SpanDACOutputs {
             /// Waiting for the iPad to open its pairing window.
             case waitingForWindow
             case connecting
-            case code(String)
+            /// The key confirmation is running. MusicTUI's own side answered
+            /// automatically; only the device's person still has something to
+            /// do, by tapping Allow there.
             case confirming
         }
         let sourceID: String
@@ -138,8 +140,7 @@ final class SpanDACOutputs {
             switch phase {
             case .waitingForWindow: return "pairing · tap Pair with MusicTUI on the iPad"
             case .connecting: return "pairing…"
-            case .code(let code): return "pairing · does the iPad show \(code)? y / n"
-            case .confirming: return "pairing · waiting for the iPad"
+            case .confirming: return "pairing · tap Allow on \(name)"
             }
         }
     }
@@ -281,12 +282,11 @@ final class SpanDACOutputs {
         }
     }
 
-    /// A y/n is being asked (a code to compare, or a forget to confirm).
+    /// A y/n is being asked (only a forget to confirm now: pairing's own
+    /// confirmation is automatic and asks the person nothing).
     var awaitingAnswer: Bool {
         lock.lock(); defer { lock.unlock() }
-        if forgetPrompt != nil { return true }
-        if case .code? = pairing?.phase { return true }
-        return false
+        return forgetPrompt != nil
     }
 
     var isPairing: Bool {
@@ -347,15 +347,19 @@ final class SpanDACOutputs {
 
     private func handle(_ event: SpanDACPairingEvent) {
         switch event {
-        case .code(let code, let name):
+        case .code:
+            // The key confirmation the wire protocol runs is unchanged; only
+            // who answers "matches" does. MusicTUI answers its own side at
+            // once, with no prompt — only the device's person still taps
+            // anything, via its own Allow / Don't allow.
+            pairingHandle?.answer(matches: true)
+        case .confirming:
             lock.lock()
-            pairing?.phase = .code(code)
+            let name = pairing?.name ?? "SpanDAC"
+            pairing?.phase = .confirming
             version += 1
             lock.unlock()
-            post("SpanDAC on \(name) shows \(code)?  y / n", false, SpanDACPairingController.confirmTimeout)
-        case .confirming:
-            lock.lock(); pairing?.phase = .confirming; version += 1; lock.unlock()
-            post("Confirm on the iPad: tap Matches.", false, SpanDACPairingController.confirmTimeout)
+            post("Tap Allow on \(name).", false, SpanDACPairingController.confirmTimeout)
         case .finished(let result):
             finishPairing(result)
         }
@@ -377,22 +381,15 @@ final class SpanDACOutputs {
         }
     }
 
-    /// The person's y or n: to the code on screen, or to "Forget …?".
+    /// The person's y or n to "Forget …?". Pairing no longer asks anything
+    /// here: MusicTUI answers its own confirmation automatically.
     func answer(_ yes: Bool) {
         lock.lock()
-        if let id = forgetPrompt {
-            forgetPrompt = nil
-            version += 1
-            lock.unlock()
-            if yes { forget(id) } else { post("Nothing was forgotten.", false, 3) }
-            return
-        }
-        let handle = pairingHandle
-        let showingCode: Bool
-        if case .code? = pairing?.phase { showingCode = true } else { showingCode = false }
+        guard let id = forgetPrompt else { lock.unlock(); return }
+        forgetPrompt = nil
+        version += 1
         lock.unlock()
-        guard showingCode, let handle else { return }
-        handle.answer(matches: yes)
+        if yes { forget(id) } else { post("Nothing was forgotten.", false, 3) }
     }
 
     /// Esc: drop a pending question or a pairing in progress.
