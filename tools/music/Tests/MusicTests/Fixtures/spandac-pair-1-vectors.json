@@ -107,7 +107,7 @@
     }
   },
   "protocol" : "spandac-pair/1",
-  "provenance" : "Generated 2026-09-26 from Sources/SourceCore/SpanDACPair.swift (CryptoKit) with the S session and a test C session exchanging the recorded lines. Every field was then recomputed from the labelled inputs by two implementations sharing no code with it: pure Python (P-256 arithmetic, RFC 5869 HKDF and the protocol written from design-ipad.md 3.5; SHA-256 and HMAC from the standard library) and the cryptography 50.0.1 package (OpenSSL): 104/104 checks passed, and a tampered copy failed. Re-run: python3 spandac-pair-1-crosscheck.py spandac-pair-1-vectors.json",
+  "provenance" : "Generated 2026-09-26 by the reference implementation with a source session and a test controller session exchanging the recorded lines. Every field was recomputed from the labelled inputs by two independent implementations sharing no code with it (pure Python with RFC 5869 HKDF and P-256 arithmetic; the cryptography package over OpenSSL): 104/104 checks passed, and a tampered copy failed.",
   "role_separation" : {
     "HC_with_source_role_byte" : "17c58adad81c61c494a33cafb6164638189d783ac2d114ce8a6014bf1610ddb0",
     "HS_with_controller_role_byte" : "0c6ddfabc294c12973995e335d68dcd822c6caf954544fbfb900a732a24d92a8",
@@ -323,5 +323,5 @@
       }
     }
   ],
-  "spec" : "design-ipad.md section 3.5 (private vault, 2026-09-26)"
+  "spec" : "spandac-pair/1, 2026-09-26"
 }
