@@ -513,7 +513,7 @@ struct SpanDACPairingController {
             }
             guard let peer = SpanDACPair.publicKey(x963: pkS),
                   var z = try? SpanDACPair.sharedSecret(privateKey, peer) else {
-                return fail(.broken("the iPad's key is not usable"), abort: SpanDACPairMessage.Reason.format)
+                return fail(.broken("SpanDAC's key is not usable"), abort: SpanDACPairMessage.Reason.format)
             }
             transcript = SpanDACPair.transcript(cid: controllerID, sid: sourceID, cname: controllerName,
                                                 sname: sourceName, pkC: publicKey, pkS: pkS, nC: nonce, nS: nS)
@@ -596,7 +596,7 @@ struct SpanDACPairingController {
              SpanDACPairMessage.Reason.confirm: return .codesDiffer
         case SpanDACPairMessage.Reason.timeout: return .timedOut
         case SpanDACPairMessage.Reason.tooMany: return .broken("too many failed attempts; open the window again")
-        default: return .broken("the iPad aborted: \(reason)")
+        default: return .broken("SpanDAC aborted: \(reason)")
         }
     }
 }
