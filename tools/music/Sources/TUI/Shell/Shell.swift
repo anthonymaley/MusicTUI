@@ -147,7 +147,14 @@ func runShell() {
             scenes[id] = scene
             return scene
         case .speakers:
-            let scene = SpeakersScene(backend: backend, status: status, actions: actions, routing: routing)
+            // SpanDACs on the network: reached through the coordinator's own
+            // factory, so the Output tab and every other surface build the
+            // same client for the same SpanDAC.
+            let spandac = SpanDACOutputs(makeClient: { routing.client(for: .networkSource($0)) },
+                                         post: { text, error, ttl in status.post(text, error: error, ttl: ttl) })
+            let scene = SpeakersScene(backend: backend, status: status, actions: actions, routing: routing,
+                                      makeNetworkClient: { routing.client(for: .networkSource($0)) },
+                                      spandac: spandac)
             scenes[id] = scene
             return scene
         case .library:

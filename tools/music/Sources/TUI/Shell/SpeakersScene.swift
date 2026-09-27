@@ -29,6 +29,9 @@ enum SpeakersDisplayRow: Equatable {
     /// Output mode first: it is the only control that changes WHERE audio goes,
     /// so it sits above the speakers it governs (ruling 12.4).
     case mode(PlaybackMode)
+    /// A SpanDAC on the network, by `spandac_id`: paired, or seen and not
+    /// yet paired. Listed under their own heading, below the Mac's own.
+    case spandac(String)
     case speaker(Int)        // index into the SpeakerRow array
     case eqPower
     case eq
@@ -38,8 +41,12 @@ enum SpeakersDisplayRow: Equatable {
 
 func speakersDisplayRows(speakerCount: Int, expanded: Bool,
                          presetNames: [String],
-                         showModes: Bool = true) -> [SpeakersDisplayRow] {
+                         showModes: Bool = true,
+                         spandacIDs: [String] = []) -> [SpeakersDisplayRow] {
     var rows: [SpeakersDisplayRow] = showModes ? [.mode(.musicApp), .mode(.source)] : []
+    // None known, none shown: with no pairs and nothing on the network the
+    // tab is exactly as it was.
+    if showModes { rows += spandacIDs.map { .spandac($0) } }
     rows += (0..<speakerCount).map { .speaker($0) }
     rows.append(.eqPower)
     rows.append(.eq)
@@ -51,7 +58,24 @@ func speakersDisplayRows(speakerCount: Int, expanded: Bool,
 final class SpeakersScene: Scene {
     let id: SceneID = .speakers
     let tabTitle = "Output"
-    var footerHint: String { "\u{2191}\u{2193} Move  Enter Toggle/Select  \u{2190}\u{2192} Volume/Preset  e EQ  v Visualizer" }
+    var footerHint: String {
+        if spandac?.awaitingAnswer == true { return "y Yes  n No  Esc Cancel" }
+        if spandac?.isPairing == true { return "Esc Cancel pairing" }
+        if let current = currentSpanDACRow, current.paired {
+            return "\u{2191}\u{2193} Move  Enter Select  f Forget"
+        }
+        return "\u{2191}\u{2193} Move  Enter Toggle/Select  \u{2190}\u{2192} Volume/Preset  e EQ  v Visualizer"
+    }
+
+    private var spandacIDs: [String] { spandacRows.map(\.sourceID) }
+
+    /// The network SpanDAC under the cursor, if the cursor is on one.
+    private var currentSpanDACRow: SpanDACOutputRow? {
+        let display = speakersDisplayRows(speakerCount: rows.count, expanded: eqExpanded,
+                                          presetNames: pickerPresetNames, spandacIDs: spandacIDs)
+        guard display.indices.contains(cursor), case .spandac(let id) = display[cursor] else { return nil }
+        return spandacRows.first { $0.sourceID == id }
+    }
 
     private let backend: AppleScriptBackend
     private let status: StatusStore
@@ -64,6 +88,11 @@ final class SpeakersScene: Scene {
     /// scene was composed without the network (every existing test): a network
     /// target then refuses as not paired rather than reaching for the network.
     private let makeNetworkClient: ((String) -> SourceAppClient)?
+    /// SpanDACs on the network: discovery, readiness, pairing, forgetting.
+    /// Nil when composed without the network, and then the tab lists none.
+    private let spandac: SpanDACOutputs?
+    /// The network rows as last drawn; the cursor and keys index into them.
+    private var spandacRows: [SpanDACOutputRow] = []
     /// The three external refreshes `tick()` fires on entry and every 5s.
     /// Injectable so a test can prove it never reaches AppleScript or the real
     /// speaker cache; production uses the real global functions, unchanged.
@@ -123,6 +152,7 @@ final class SpeakersScene: Scene {
          routing: RoutingCoordinator,
          makeSourceClient: @escaping () -> SourceAppClient = { SourceAppClient() },
          makeNetworkClient: ((String) -> SourceAppClient)? = nil,
+         spandac: SpanDACOutputs? = nil,
          fetchSpeakers: @escaping () throws -> [[String: Any]] = fetchSpeakerDevices,
          fetchEQ: @escaping (AppleScriptBackend) throws -> EQSnapshot = { try fetchEQSnapshot($0, openWindow: false) },
          fetchVisualizer: @escaping (AppleScriptBackend) throws -> Bool = visualizerStatus) {
@@ -132,6 +162,7 @@ final class SpeakersScene: Scene {
         self.routing = routing
         self.makeSourceClient = makeSourceClient
         self.makeNetworkClient = makeNetworkClient
+        self.spandac = spandac
         self.fetchSpeakers = fetchSpeakers
         self.fetchEQ = fetchEQ
         self.fetchVisualizer = fetchVisualizer
@@ -168,7 +199,7 @@ final class SpeakersScene: Scene {
     /// Enter on a mode row. Ruling 12.3's transaction lives in the coordinator:
     /// pause the outgoing player, drop its queue, save, commit — and refuse the
     /// whole switch if any step cannot be confirmed.
-    private func selectMode(_ target: PlaybackMode) {
+    private func selectMode(_ target: PlaybackMode, name targetName: String? = nil) {
         actions.run("Output") { [weak self] in
             guard let self else { return }
             // Fires on every exit from this closure — including a thrown
@@ -216,8 +247,14 @@ final class SpeakersScene: Scene {
                 // `bridgeReadiness` here would reinstate the main-loop/background
                 // race the inbox exists to remove — and this is the path a
                 // successful Enter on Bridge actually takes.
-                self.publishReadiness(client.readiness())
-                self.status.post(mode == .source ? "Output: Bridge" : "Output: Music.app")
+                switch mode {
+                case .networkSource(let id):
+                    self.spandac?.probe(id)
+                    self.status.post("Output: SpanDAC · \(targetName ?? "on the network")")
+                case .source, .musicApp:
+                    self.publishReadiness(client.readiness())
+                    self.status.post(mode == .source ? "Output: Bridge" : "Output: Music.app")
+                }
             }
         }
     }
@@ -225,6 +262,24 @@ final class SpeakersScene: Scene {
     @discardableResult
     func tick(snapshot: NowPlayingSnapshot) -> Bool {
         var changed = false
+        // SpanDACs on the network: keep discovery alive while the tab is
+        // shown, and redraw the rows when anything behind them moved.
+        if let spandac {
+            spandac.touch()
+            if spandac.tick() || spandacRows.isEmpty {
+                let fresh = spandac.rows(selected: routing.mode.networkSourceID)
+                if fresh != spandacRows {
+                    let cursorID = currentSpanDACRow?.sourceID
+                    spandacRows = fresh
+                    changed = true
+                    // Keep the cursor on the same SpanDAC when rows move.
+                    let display = speakersDisplayRows(speakerCount: rows.count, expanded: eqExpanded,
+                                                      presetNames: pickerPresetNames, spandacIDs: spandacIDs)
+                    if let cursorID, let i = display.firstIndex(of: .spandac(cursorID)) { cursor = i }
+                    if cursor >= display.count { cursor = max(0, display.count - 1) }
+                }
+            }
+        }
         // Apply a landed fetch — unless the user mutated state after it started,
         // in which case it's stale and would briefly revert the optimistic UI.
         // Bridge readiness: drained here so the only writer is the main loop.
@@ -252,7 +307,7 @@ final class SpeakersScene: Scene {
                 everLoaded = true
                 if let name = cursorName, let i = rows.firstIndex(where: { $0.name == name }) { cursor = i }
                 let displayCount = speakersDisplayRows(speakerCount: rows.count, expanded: eqExpanded,
-                                                       presetNames: pickerPresetNames).count
+                                                       presetNames: pickerPresetNames, spandacIDs: spandacIDs).count
                 if cursor >= displayCount { cursor = max(0, displayCount - 1) }
                 changed = true
             }
@@ -277,6 +332,7 @@ final class SpeakersScene: Scene {
         // below — readiness is a question you ask on opening the tab, not a
         // heartbeat against the app's socket.
         if reentered || bridgeReadiness == .checking { kickReadinessProbe() }
+        if reentered { spandac?.activated() }
         // A wedged enumeration (osascript hung on a dying device) used to set
         // fetchInFlight forever and kill refreshes for the session; treat a
         // long-overdue fetch as dead and allow a new kickoff. (The backend
@@ -325,7 +381,7 @@ final class SpeakersScene: Scene {
         y += 2
 
         let displayRows = speakersDisplayRows(speakerCount: rows.count, expanded: eqExpanded,
-                                              presetNames: pickerPresetNames)
+                                              presetNames: pickerPresetNames, spandacIDs: spandacIDs)
         let nameW = 18
         let barW = 16
         let bottom = frame.bodyY + frame.bodyHeight - 1
@@ -356,6 +412,28 @@ final class SpeakersScene: Scene {
                     note = "  \(ANSICode.dim)\(text)\(ANSICode.reset)"
                 }
                 out += "  \(dot) \(titleStr)\(note)"
+                y += 1
+
+            case .spandac(let id):
+                guard let row = spandacRows.first(where: { $0.sourceID == id }) else { break }
+                // The heading, once, above the first network row.
+                if spandacRows.first?.sourceID == id {
+                    out += ANSICode.moveTo(row: y, col: 3)
+                    out += "\(ANSICode.dim)SpanDAC on the network\(ANSICode.reset)"
+                    y += 1
+                    guard y <= bottom else { break }
+                }
+                out += ANSICode.moveTo(row: y, col: 3)
+                let selected = routing.mode == .networkSource(id)
+                let dot = selected ? "\(ANSICode.lime)\u{25CF}\(ANSICode.reset)"
+                                   : "\(ANSICode.dim)\u{25CB}\(ANSICode.reset)"
+                let title = truncText(row.name, to: nameW)
+                let padTitle = title + String(repeating: " ", count: max(0, nameW - title.count))
+                let titleStr = isCursor ? "\(ANSICode.inverse)\(padTitle)\(ANSICode.reset)"
+                                        : (selected ? "\(ANSICode.brightWhite)\(padTitle)\(ANSICode.reset)"
+                                                    : "\(ANSICode.dim)\(padTitle)\(ANSICode.reset)")
+                let text = truncText(row.note, to: max(0, frame.width - nameW - 12))
+                out += "  \(dot) \(titleStr)  \(ANSICode.dim)\(text)\(ANSICode.reset)"
                 y += 1
 
             case .speaker(let i):
@@ -478,8 +556,24 @@ final class SpeakersScene: Scene {
         // capture mode, so the full list-scene set is safe everywhere.
         let key = vimAlias(key, listScene: true)
         let displayRows = speakersDisplayRows(speakerCount: rows.count, expanded: eqExpanded,
-                                              presetNames: pickerPresetNames)
+                                              presetNames: pickerPresetNames, spandacIDs: spandacIDs)
         let rowCount = displayRows.count   // always ≥ 1 (EQ row always present)
+
+        // A y/n question from pairing or forgetting takes y, n and Esc first.
+        if let spandac {
+            if case .escape = key, spandac.cancel() { return .redraw }
+            if spandac.awaitingAnswer {
+                switch key {
+                case .char("y"), .char("Y"): spandac.answer(true); return .redraw
+                case .char("n"), .char("N"): spandac.answer(false); return .redraw
+                default: break
+                }
+            }
+            if case .char("f") = key, let row = currentSpanDACRow, row.paired {
+                spandac.askToForget(row.sourceID)
+                return .redraw
+            }
+        }
 
         // Collapse the picker when Escape is pressed; otherwise pop.
         if case .escape = key {
@@ -487,7 +581,7 @@ final class SpeakersScene: Scene {
                 eqExpanded = false
                 // Clamp cursor: it may have been on a preset row that no longer exists.
                 let collapsed = speakersDisplayRows(speakerCount: rows.count, expanded: false,
-                                                   presetNames: pickerPresetNames)
+                                                   presetNames: pickerPresetNames, spandacIDs: spandacIDs)
                 if cursor >= collapsed.count { cursor = max(0, collapsed.count - 1) }
                 return .redraw
             }
@@ -519,6 +613,16 @@ final class SpeakersScene: Scene {
             case .mode(let target):
                 selectMode(target)
                 return .redraw
+            case .spandac(let id):
+                // Paired: select it (only a ready one switches; the switch
+                // itself refuses in words otherwise). Not paired: pair.
+                guard let spandac, let row = spandacRows.first(where: { $0.sourceID == id }) else { return .none }
+                if row.paired {
+                    selectMode(.networkSource(id), name: row.name)
+                } else if !spandac.isPairing {
+                    spandac.pair(id)
+                }
+                return .redraw
             case .speaker(let i):
                 rows[i].active.toggle()
                 lastMutation = Date()
@@ -532,7 +636,7 @@ final class SpeakersScene: Scene {
                 // Clamp after collapse.
                 if !eqExpanded {
                     let collapsed = speakersDisplayRows(speakerCount: rows.count, expanded: false,
-                                                       presetNames: pickerPresetNames)
+                                                       presetNames: pickerPresetNames, spandacIDs: spandacIDs)
                     if cursor >= collapsed.count { cursor = max(0, collapsed.count - 1) }
                 }
                 return .redraw
