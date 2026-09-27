@@ -82,6 +82,7 @@ enum SourceReadiness: Equatable {
         // make one; if it ever does, it says what happened.
         case .ledgerChanged:     return .unavailable("Bridge's play record was replaced")
         case .busy:              return .unavailable("Bridge is busy; try again in a moment.")
+        case .link(let failure): return .unavailable(failure.sentence)
         }
     }
 }

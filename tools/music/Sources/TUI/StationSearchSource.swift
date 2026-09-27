@@ -76,6 +76,10 @@ enum SourceAppError: Error, Equatable {
     /// and the fix is to wait, not to change the request. No auto-retry
     /// here: the caller decides when to try again.
     case busy
+    /// A SpanDAC on the network could not be found, reached, agreed with or
+    /// read from. Carries the structured reason, so the Output tab can show a
+    /// short note and everything else the whole sentence.
+    case link(SpanDACLinkFailure)
 
     /// Deliberately short: it renders inside Radio's one-line message strip
     /// beside a `✗`, not in a log.
@@ -101,6 +105,7 @@ enum SourceAppError: Error, Equatable {
         case .unsupported: return "Bridge doesn't serve that yet — update Bridge"
         case .ledgerChanged: return "Bridge's play record was replaced"
         case .busy: return "Bridge is busy; try again in a moment."
+        case .link(let failure): return failure.sentence
         }
     }
 
@@ -488,6 +493,16 @@ struct SourceAppClient {
         playback = SourceAppPlayback(path: path, transport: transport)
         stationSearch = SourceAppStationSearch(path: path, transport: transport)
         control = SourceAppControl(path: path, transport: transport)
+        discover = BridgeDiscoverFeed(path: path, transport: transport)
+    }
+
+    /// The same, with the library reads and `slice.queue` on a transport of
+    /// their own (a longer timeout), as the Unix client has.
+    init(path: String, transport: @escaping (String, String) throws -> String,
+         libraryTransport: @escaping (String, String) throws -> String) {
+        playback = SourceAppPlayback(path: path, transport: transport)
+        stationSearch = SourceAppStationSearch(path: path, transport: transport)
+        control = SourceAppControl(path: path, transport: transport, libraryTransport: libraryTransport)
         discover = BridgeDiscoverFeed(path: path, transport: transport)
     }
 
