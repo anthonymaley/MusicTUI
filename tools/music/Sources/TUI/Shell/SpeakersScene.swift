@@ -419,7 +419,7 @@ final class SpeakersScene: Scene {
                 // The heading, once, above the first network row.
                 if spandacRows.first?.sourceID == id {
                     out += ANSICode.moveTo(row: y, col: 3)
-                    out += "\(ANSICode.dim)SpanDAC on the network\(ANSICode.reset)"
+                    out += "\(ANSICode.dim)Select a SpanDAC and press Enter to pair\(ANSICode.reset)"
                     y += 1
                     guard y <= bottom else { break }
                 }

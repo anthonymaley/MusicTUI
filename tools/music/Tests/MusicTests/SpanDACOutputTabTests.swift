@@ -340,7 +340,7 @@ final class SpanDACOutputTabTests: XCTestCase {
         waitUntil { o.rows(selected: nil).first?.note == "ready" }
         _ = s.tick(snapshot: snapshot())
         let text = s.render(frame: frame(), snapshot: snapshot())
-        XCTAssertTrue(text.contains("SpanDAC on the network"), text)
+        XCTAssertTrue(text.contains("Select a SpanDAC and press Enter to pair"), text)
         XCTAssertTrue(text.contains("Studio iPad"), text)
 
         _ = s.handle(.down); _ = s.handle(.down)   // Music.app, Bridge, then the iPad
