@@ -11,7 +11,7 @@ import XCTest
 
 /// Plain-TCP pairing responder on 127.0.0.1: feeds each line to `TestSource`
 /// and writes its reply. After `done` it waits `closeDelay`, then closes.
-final class LoopbackPairingResponder {
+final class LoopbackPairingPeer {
     private let listener: NWListener
     private let queue = DispatchQueue(label: "loopback-pair")
     private let source: TestSource
@@ -125,7 +125,7 @@ final class SpanDACPairingSessionTests: XCTestCase {
     /// `done`, and success reported only after the source closed.
     func testAPairingOverTCPSavesAndWaitsForTheSourceToClose() throws {
         let src = source()
-        let responder = try LoopbackPairingResponder(source: src, closeDelay: 0.4)
+        let responder = try LoopbackPairingPeer(source: src, closeDelay: 0.4)
         defer { responder.stop() }
         let events = Events()
         var saved: SpanDACPairResult?
@@ -149,7 +149,7 @@ final class SpanDACPairingSessionTests: XCTestCase {
 
     func testAnsweringNoSavesNothingAndTheSourceSeesRejected() throws {
         let src = source()
-        let responder = try LoopbackPairingResponder(source: src)
+        let responder = try LoopbackPairingPeer(source: src)
         defer { responder.stop() }
         let events = Events()
         var saves = 0
@@ -164,7 +164,7 @@ final class SpanDACPairingSessionTests: XCTestCase {
 
     /// The iPad's "Not this" after the controller's y: nothing is saved.
     func testTheIPadsNotThisSavesNothing() throws {
-        let responder = try LoopbackPairingResponder(source: source(), rejectConfirm: true)
+        let responder = try LoopbackPairingPeer(source: source(), rejectConfirm: true)
         defer { responder.stop() }
         let events = Events()
         var saves = 0
@@ -179,7 +179,7 @@ final class SpanDACPairingSessionTests: XCTestCase {
     /// A save that fails sends no `done`, so the source keeps nothing either.
     func testAFailedSaveSendsNoDone() throws {
         let src = source()
-        let responder = try LoopbackPairingResponder(source: src)
+        let responder = try LoopbackPairingPeer(source: src)
         defer { responder.stop() }
         let events = Events()
         let handle = begin(responder.port, events: events, save: { _ in "disk full" })
@@ -193,7 +193,7 @@ final class SpanDACPairingSessionTests: XCTestCase {
 
     func testAClosedWindowOrABusySourceIsSaidInWords() throws {
         for (reason, failure) in [("closed", SpanDACPairFailure.windowClosed), ("busy", .busy)] {
-            let responder = try LoopbackPairingResponder(source: source(), abortAtHello: reason)
+            let responder = try LoopbackPairingPeer(source: source(), abortAtHello: reason)
             defer { responder.stop() }
             let events = Events()
             _ = begin(responder.port, events: events)
@@ -204,7 +204,7 @@ final class SpanDACPairingSessionTests: XCTestCase {
 
     /// Nothing listening on the pairing port: the window is not open.
     func testNothingListeningIsAClosedWindow() throws {
-        let responder = try LoopbackPairingResponder(source: source())
+        let responder = try LoopbackPairingPeer(source: source())
         let port = responder.port
         responder.stop()
         Thread.sleep(forTimeInterval: 0.2)
@@ -215,7 +215,7 @@ final class SpanDACPairingSessionTests: XCTestCase {
     }
 
     func testCancelEndsTheSession() throws {
-        let responder = try LoopbackPairingResponder(source: source())
+        let responder = try LoopbackPairingPeer(source: source())
         defer { responder.stop() }
         let events = Events()
         let handle = begin(responder.port, events: events)
