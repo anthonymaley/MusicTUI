@@ -383,13 +383,13 @@ enum SpanDACPairFailure: Equatable {
     /// The status-line sentence (section 4.3).
     var sentence: String {
         switch self {
-        case .windowClosed: return "SpanDAC is not ready to pair. Tap Pair with MusicTUI on the iPad, then try again."
+        case .windowClosed: return "SpanDAC is not ready to pair. Tap Pair with MusicTUI in SpanDAC, then try again."
         case .busy: return "SpanDAC is pairing with another Mac; try again in a moment."
         case .version: return "SpanDAC uses a different pairing version; update MusicTUI or SpanDAC."
-        case .codesDiffer: return "Codes differ; nothing was paired. Try again from the iPad."
-        case .timedOut: return "Pairing timed out; nothing was paired. Try again from the iPad."
+        case .codesDiffer: return "Codes differ; nothing was paired. Try again from SpanDAC."
+        case .timedOut: return "Pairing timed out; nothing was paired. Try again from SpanDAC."
         case .broken(let why): return "Pairing failed (\(why)); nothing was paired."
-        case .disconnected: return "The iPad closed the pairing connection; nothing was paired."
+        case .disconnected: return "SpanDAC closed the pairing connection; nothing was paired."
         case .notSaved(let why): return "Couldn't save the pairing on this Mac (\(why)); nothing was paired."
         case .cancelled: return "Pairing cancelled; nothing was paired."
         }

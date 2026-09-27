@@ -58,7 +58,7 @@ enum SpanDACLinkFailure: Error, Equatable {
         case .notPaired: return "This Mac is not paired with that SpanDAC; pair it from the Output tab."
         case .pairingsUnavailable(let why): return why
         case .notFound: return "SpanDAC was not found on this network."
-        case .asleep: return "SpanDAC is asleep or closed on the iPad; open it there."
+        case .asleep: return "SpanDAC is asleep or closed; open it on the device."
         case .refused(let status): return SpanDACLinkFailure.refusalSentence(status)
         case .unsafeCipher: return "SpanDAC negotiated an unsafe cipher; update it"
         case .noAnswer: return "SpanDAC did not answer in time."
@@ -72,7 +72,7 @@ enum SpanDACLinkFailure: Error, Equatable {
         case .notPaired: return "not paired · Enter to pair"
         case .pairingsUnavailable: return "pairings unavailable · see ~/.config/music/spandac"
         case .notFound: return "not found on this network"
-        case .asleep: return "asleep or closed on the iPad · open it there"
+        case .asleep: return "asleep or closed · open SpanDAC on the device"
         case .refused(let status): return SpanDACLinkFailure.refusalSentence(status)
         case .unsafeCipher: return "unsafe cipher · update SpanDAC"
         case .noAnswer: return "did not answer in time"

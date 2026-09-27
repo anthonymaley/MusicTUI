@@ -367,7 +367,7 @@ final class SpanDACPairingTests: XCTestCase {
         XCTAssertEqual(SpanDACPairingController.failure(forSourceAbort: "busy"), .busy)
         XCTAssertEqual(SpanDACPairingController.failure(forSourceAbort: "rejected"), .codesDiffer)
         XCTAssertEqual(SpanDACPairingController.failure(forSourceAbort: "timeout"), .timedOut)
-        XCTAssertEqual(SpanDACPairFailure.codesDiffer.sentence, "Codes differ; nothing was paired. Try again from the iPad.")
+        XCTAssertEqual(SpanDACPairFailure.codesDiffer.sentence, "Codes differ; nothing was paired. Try again from SpanDAC.")
     }
 
     /// Ten seconds for messages 1 to 6; the confirm phase is bounded by the

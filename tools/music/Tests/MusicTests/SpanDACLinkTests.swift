@@ -128,7 +128,7 @@ final class SpanDACLinkTests: XCTestCase {
         let got = failure { try transport(nil, port: port).exchange("x", timeout: 10) }
         XCTAssertEqual(got, .asleep)
         XCTAssertLessThan(Date().timeIntervalSince(started), 2)
-        XCTAssertEqual(got?.note, "asleep or closed on the iPad · open it there")
+        XCTAssertEqual(got?.note, "asleep or closed · open SpanDAC on the device")
     }
 
     func testAPeerThatClosesWithoutAReplyIsNoAnswer() throws {

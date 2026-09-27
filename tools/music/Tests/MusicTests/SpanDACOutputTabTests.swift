@@ -136,7 +136,7 @@ final class SpanDACOutputTabTests: XCTestCase {
             spandacOutputRows(paired: [], seen: [sighting(other, name: "Kitchen iPad")], probes: [:],
                               pairing: state, forgetPrompt: nil, selected: nil).first?.note
         }
-        XCTAssertEqual(note(), "pairing · tap Pair with MusicTUI on the iPad")
+        XCTAssertEqual(note(), "pairing · tap Pair with MusicTUI on Kitchen iPad")
         state.phase = .confirming
         XCTAssertEqual(note(), "pairing · tap Allow on Kitchen iPad")
         let forgetting = spandacOutputRows(paired: [record(ipad, name: "Studio iPad")], seen: [], probes: [ipad: .ready],
@@ -172,7 +172,7 @@ final class SpanDACOutputTabTests: XCTestCase {
         waitUntil { o.rows(selected: nil).allSatisfy { $0.note != "checking…" } }
         let rows = o.rows(selected: nil)
         XCTAssertEqual(rows.first { $0.sourceID == ipad }?.note, "ready")
-        XCTAssertEqual(rows.first { $0.sourceID == other }?.note, "asleep or closed on the iPad · open it there")
+        XCTAssertEqual(rows.first { $0.sourceID == other }?.note, "asleep or closed · open SpanDAC on the device")
     }
 
     // MARK: - Pairing as status-line prompts
@@ -187,9 +187,9 @@ final class SpanDACOutputTabTests: XCTestCase {
         o.touch()
         browser.emit([sighting(other, name: "Kitchen iPad")])
         o.pair(other)
-        XCTAssertEqual(posts.texts.last, "Open SpanDAC on the iPad and tap Pair with MusicTUI.")
+        XCTAssertEqual(posts.texts.last, "Open SpanDAC on Kitchen iPad and tap Pair with MusicTUI.")
         XCTAssertTrue(driver.begun.isEmpty, "no connection before the window is open")
-        XCTAssertEqual(o.rows(selected: nil).first?.note, "pairing · tap Pair with MusicTUI on the iPad")
+        XCTAssertEqual(o.rows(selected: nil).first?.note, "pairing · tap Pair with MusicTUI on Kitchen iPad")
 
         browser.emit([sighting(other, name: "Kitchen iPad", pairPort: 51456)])
         XCTAssertEqual(driver.begun.count, 1)
@@ -230,7 +230,7 @@ final class SpanDACOutputTabTests: XCTestCase {
         driver.events?(.code("482 913", sourceName: "Kitchen iPad"))
         XCTAssertEqual(driver.handle.answers, [true], "MusicTUI answers its own confirmation automatically")
         driver.events?(.finished(.failure(.codesDiffer)))
-        XCTAssertEqual(posts.all.last?.0, "Codes differ; nothing was paired. Try again from the iPad.")
+        XCTAssertEqual(posts.all.last?.0, "Codes differ; nothing was paired. Try again from SpanDAC.")
         XCTAssertEqual(posts.all.last?.1, true)
         XCTAssertEqual(pairs.pairs(), [])
     }
@@ -246,8 +246,8 @@ final class SpanDACOutputTabTests: XCTestCase {
         clock = clock.addingTimeInterval(121)
         XCTAssertTrue(o.tick())
         XCTAssertFalse(o.isPairing)
-        waitUntil { posts.texts.last == "The iPad's pairing window did not open; nothing was paired." }
-        XCTAssertEqual(posts.texts.last, "The iPad's pairing window did not open; nothing was paired.")
+        waitUntil { posts.texts.last == "SpanDAC on Kitchen iPad did not open pairing; nothing was paired." }
+        XCTAssertEqual(posts.texts.last, "SpanDAC on Kitchen iPad did not open pairing; nothing was paired.")
     }
 
     func testEscCancelsAPairingInProgress() {
@@ -284,7 +284,7 @@ final class SpanDACOutputTabTests: XCTestCase {
         o.answer(true)
         XCTAssertEqual(pairs.pairs(), [])
         XCTAssertEqual(cancelled, 1)
-        XCTAssertEqual(posts.texts.last, "Forgot Studio iPad. Remove this Mac on the iPad too.")
+        XCTAssertEqual(posts.texts.last, "Forgot Studio iPad. Remove this Mac in SpanDAC on Studio iPad too.")
     }
 
     // MARK: - Discovery runs only while it is wanted

@@ -138,7 +138,7 @@ final class SpanDACOutputs {
 
         var note: String {
             switch phase {
-            case .waitingForWindow: return "pairing · tap Pair with MusicTUI on the iPad"
+            case .waitingForWindow: return "pairing · tap Pair with MusicTUI on \(name)"
             case .connecting: return "pairing…"
             case .confirming: return "pairing · tap Allow on \(name)"
             }
@@ -306,7 +306,7 @@ final class SpanDACOutputs {
         forgetPrompt = nil
         version += 1
         lock.unlock()
-        post("Open SpanDAC on the iPad and tap Pair with MusicTUI.", false, Self.windowWait)
+        post("Open SpanDAC on \(name) and tap Pair with MusicTUI.", false, Self.windowWait)
         startPairingIfWindowOpen(sourceID)
     }
 
@@ -417,7 +417,7 @@ final class SpanDACOutputs {
         pairing = nil
         version += 1
         DispatchQueue.global().async { [weak self] in
-            self?.post("The iPad's pairing window did not open; nothing was paired.", true, 6)
+            self?.post("SpanDAC on \(state.name) did not open pairing; nothing was paired.", true, 6)
         }
     }
 
@@ -449,6 +449,6 @@ final class SpanDACOutputs {
         registry.cancelAll(sourceID)
         lock.lock(); probes[sourceID] = nil; version += 1; lock.unlock()
         reloadPairs()
-        post("Forgot \(name). Remove this Mac on the iPad too.", false, 5)
+        post("Forgot \(name). Remove this Mac in SpanDAC on \(name) too.", false, 5)
     }
 }
