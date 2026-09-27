@@ -244,7 +244,7 @@ final class BridgeSurfaceWireTests: XCTestCase {
             let wire = Wire(#"{"ok":true,"op":"slice.queue","skipped_unavailable":\#(raw)}"#)
             XCTAssertThrowsError(try control(wire).queueReportingSkips(catalogIDs: ["1", "2"]), raw) {
                 XCTAssertEqual($0 as? SourceAppError, .malformedReply(
-                    "Bridge's queue reply has a skipped_unavailable that is not a count"), raw)
+                    "SpanDAC's queue reply has a skipped_unavailable that is not a count"), raw)
             }
         }
     }
@@ -338,12 +338,12 @@ final class BridgeSurfaceWireTests: XCTestCase {
     }
 
     /// Bridge overloaded (controller check, 2026-09-25): decoded on the kind
-    /// across every op this shared decoder serves, never "Bridge refused".
+    /// across every op this shared decoder serves, never "SpanDAC refused".
     func testBusyIsReportedAsBusyNotRefused() {
         for read in newReads {
             XCTAssertThrowsError(try read.call(control(Wire(refusal(read.op, kind: "busy"))))) {
                 XCTAssertEqual($0 as? SourceAppError, .busy, read.op)
-                XCTAssertEqual(($0 as? SourceAppError)?.message, "Bridge is busy; try again in a moment.")
+                XCTAssertEqual(($0 as? SourceAppError)?.message, "SpanDAC is busy; try again in a moment.")
             }
         }
     }
@@ -362,8 +362,8 @@ final class BridgeSurfaceWireTests: XCTestCase {
                 XCTAssertEqual($0 as? SourceAppError, .staleGeneration("s"), read.op)
             }
             XCTAssertThrowsError(try read.call(control(Wire(refusal(read.op, kind: "not_found",
-                                                                    detail: "Bridge's words"))))) {
-                XCTAssertEqual($0 as? SourceAppError, .refused("Bridge's words"), read.op)
+                                                                    detail: "SpanDAC's words"))))) {
+                XCTAssertEqual($0 as? SourceAppError, .refused("SpanDAC's words"), read.op)
             }
         }
     }

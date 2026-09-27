@@ -197,7 +197,7 @@ final class PlaySyncWorkerTests: XCTestCase {
 
         for (name, result) in [("no-op", noop), ("lock busy", busy), ("unreadable", unreadable),
                                ("too new", tooNew), ("unsafe", unsafe), ("Music.app quit", musicQuit),
-                               ("Bridge not running", bridgeDown), ("Bridge too old", bridgeOld),
+                               ("SpanDAC not running", bridgeDown), ("SpanDAC too old", bridgeOld),
                                ("fetch failed", fetchFailed)] {
             let runner = FakeRunner(result: result)
             let log = PostLog()

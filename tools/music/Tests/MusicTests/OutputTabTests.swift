@@ -51,10 +51,10 @@ final class OutputTabTests: XCTestCase {
         XCTAssertTrue(SourceReadiness.ready.canSelect)
         XCTAssertEqual(SourceReadiness.ready.label, "ready")
 
-        let reasons = ["Bridge is not running",
-                       "Bridge was denied Apple Music access",
+        let reasons = ["SpanDAC is not running",
+                       "SpanDAC was denied Apple Music access",
                        "Apple Music access is restricted on this Mac",
-                       "Bridge speaks a different version (2); update one of them"]
+                       "SpanDAC speaks a different version (2); update one of them"]
         for reason in reasons {
             let state = SourceReadiness.unavailable(reason)
             XCTAssertFalse(state.canSelect, "\(reason) must not be selectable")

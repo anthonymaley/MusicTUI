@@ -335,7 +335,7 @@ final class OutputLockTests: XCTestCase {
         XCTAssertEqual(OutputLock.cliModeChangedMessage(now: .musicApp),
                        "Output changed to Music.app while this command ran; nothing was changed.")
         XCTAssertEqual(OutputLock.cliModeChangedMessage(now: .source),
-                       "Output changed to Bridge while this command ran; nothing was changed.")
+                       "Output changed to SpanDAC (this Mac) while this command ran; nothing was changed.")
         XCTAssertEqual(OutputLock.tuiModeChangedMessage,
                        "Output was changed by another MusicTUI process; nothing was switched.")
     }

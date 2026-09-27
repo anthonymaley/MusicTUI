@@ -24,10 +24,10 @@ final class RadioProviderTests: XCTestCase {
         private let lock = NSLock()
         private var stored: [String] = []
         private var scripted: [String: String] = [
-            "slice.liveStations": #"{"ok":true,"op":"slice.liveStations","stations":[\#(Wire.station("ra.b1", "Bridge Live", live: true))]}"#,
-            "slice.personalStations": #"{"ok":true,"op":"slice.personalStations","stations":[\#(Wire.station("ra.b2", "Bridge Personal", live: false))]}"#,
-            "slice.searchStations": #"{"ok":true,"op":"slice.searchStations","stations":[\#(Wire.station("ra.b3", "Bridge Jazz", live: false))]}"#,
-            "slice.station": #"{"ok":true,"op":"slice.station","station":\#(Wire.station("ra.978194965", "Apple Music 1 (Bridge)", live: true))}"#,
+            "slice.liveStations": #"{"ok":true,"op":"slice.liveStations","stations":[\#(Wire.station("ra.b1", "SpanDAC Live", live: true))]}"#,
+            "slice.personalStations": #"{"ok":true,"op":"slice.personalStations","stations":[\#(Wire.station("ra.b2", "SpanDAC Personal", live: false))]}"#,
+            "slice.searchStations": #"{"ok":true,"op":"slice.searchStations","stations":[\#(Wire.station("ra.b3", "SpanDAC Jazz", live: false))]}"#,
+            "slice.station": #"{"ok":true,"op":"slice.station","station":\#(Wire.station("ra.978194965", "Apple Music 1 (SpanDAC)", live: true))}"#,
             "slice.playStation": #"{"ok":true,"op":"slice.playStation","status":{"playback":"playing","title":"Apple Music 1","artist":""}}"#,
         ]
         private var held: [String: (entered: DispatchSemaphore, release: DispatchSemaphore)] = [:]
@@ -247,8 +247,8 @@ final class RadioProviderTests: XCTestCase {
         XCTAssertEqual(r.scene.personal.map(\.name), ["REST Personal"])
         XCTAssertEqual(r.rest.count("filter[featured]=apple-music-live-radio"), 1)
         XCTAssertEqual(r.rest.count("filter[identity]=personal"), 1)
-        XCTAssertTrue(r.wire.requests.isEmpty, "Music.app mode sent a Bridge request")
-        XCTAssertEqual(r.sourceBuilt.value, 0, "Music.app mode built a Bridge client")
+        XCTAssertTrue(r.wire.requests.isEmpty, "Music.app mode sent a SpanDAC request")
+        XCTAssertEqual(r.sourceBuilt.value, 0, "Music.app mode built a SpanDAC client")
         XCTAssertNil(r.scene.message)
     }
 
@@ -356,11 +356,11 @@ final class RadioProviderTests: XCTestCase {
         let r = rig(mode: .source, catalog: true)
         loadBoth(r)
 
-        XCTAssertEqual(r.scene.live.map(\.name), ["Bridge Live"])
-        XCTAssertEqual(r.scene.personal.map(\.name), ["Bridge Personal"])
+        XCTAssertEqual(r.scene.live.map(\.name), ["SpanDAC Live"])
+        XCTAssertEqual(r.scene.personal.map(\.name), ["SpanDAC Personal"])
         XCTAssertEqual(r.wire.sent("slice.liveStations").count, 1)
         XCTAssertEqual(r.wire.sent("slice.personalStations").count, 1)
-        XCTAssertTrue(r.rest.urls.isEmpty, "Bridge mode reached the REST catalogue: \(r.rest.urls)")
+        XCTAssertTrue(r.rest.urls.isEmpty, "SpanDAC mode reached the REST catalogue: \(r.rest.urls)")
         XCTAssertEqual(r.opener.opened, [])
     }
 
@@ -371,9 +371,9 @@ final class RadioProviderTests: XCTestCase {
         loadBoth(r)
 
         XCTAssertEqual(r.scene.live, [])
-        XCTAssertEqual(r.scene.message, "✗ This Bridge build can't list live stations — update Bridge")
-        XCTAssertEqual(r.scene.personal.map(\.name), ["Bridge Personal"])
-        XCTAssertTrue(r.rest.urls.isEmpty, "a Bridge failure fell back to REST")
+        XCTAssertEqual(r.scene.message, "✗ This SpanDAC build can't list live stations — update SpanDAC")
+        XCTAssertEqual(r.scene.personal.map(\.name), ["SpanDAC Personal"])
+        XCTAssertTrue(r.rest.urls.isEmpty, "a SpanDAC failure fell back to REST")
     }
 
     func testBridgeWithNoCatalogShowsLoadingUntilTheListLands() {
@@ -386,7 +386,7 @@ final class RadioProviderTests: XCTestCase {
         XCTAssertTrue(r.scene.render(frame: frame, snapshot: idle).contains("Loading\u{2026}"))
         gate.release.signal()
         XCTAssertTrue(tickUntil(r.scene) { r.scene.liveLoaded })
-        XCTAssertTrue(r.scene.render(frame: frame, snapshot: idle).contains("Bridge Live"))
+        XCTAssertTrue(r.scene.render(frame: frame, snapshot: idle).contains("SpanDAC Live"))
     }
 
     func testBridgeSearchIsTheShippedRequestAndNoREST() {
@@ -394,7 +394,7 @@ final class RadioProviderTests: XCTestCase {
         search(r.scene, "jazz")
         XCTAssertTrue(tickUntil(r.scene) { r.scene.message?.contains("1 result") == true })
 
-        XCTAssertTrue(r.scene.render(frame: frame, snapshot: idle).contains("Bridge Jazz"))
+        XCTAssertTrue(r.scene.render(frame: frame, snapshot: idle).contains("SpanDAC Jazz"))
         let sent = r.wire.sent("slice.searchStations")
         XCTAssertEqual(sent.count, 1)
         XCTAssertEqual(sent.first?["term"] as? String, "jazz")
@@ -406,10 +406,10 @@ final class RadioProviderTests: XCTestCase {
         let r = rig(mode: .source, catalog: true)
         addURL(r.scene)
         XCTAssertEqual(favouriteName(r), "Apple Music 1", "the slug favourite is saved first")
-        XCTAssertTrue(tickUntil(r.scene) { self.favouriteName(r) == "Apple Music 1 (Bridge)" })
+        XCTAssertTrue(tickUntil(r.scene) { self.favouriteName(r) == "Apple Music 1 (SpanDAC)" })
 
         XCTAssertEqual(r.wire.sent("slice.station").first?["id"] as? String, "ra.978194965")
-        XCTAssertEqual(r.rest.count("ids="), 0, "Bridge mode resolved the station over REST")
+        XCTAssertEqual(r.rest.count("ids="), 0, "SpanDAC mode resolved the station over REST")
     }
 
     func testBridgeAddWhenBridgeCannotLookUpKeepsTheSlugName() {
@@ -449,18 +449,18 @@ final class RadioProviderTests: XCTestCase {
     func testASwitchAfterLoadRefetchesFromTheNewOutput() throws {
         let r = rig(mode: .source, catalog: true)
         loadBoth(r)
-        XCTAssertEqual(r.scene.live.map(\.name), ["Bridge Live"])
+        XCTAssertEqual(r.scene.live.map(\.name), ["SpanDAC Live"])
 
         try switchTo(.musicApp, r.routing)
         refetch(r)
         XCTAssertEqual(r.scene.live.map(\.name), ["REST Live"])
         XCTAssertEqual(r.scene.personal.map(\.name), ["REST Personal"])
         XCTAssertEqual(r.rest.count("filter[featured]"), 1)
-        XCTAssertEqual(r.wire.sent("slice.liveStations").count, 1, "Bridge was read again after leaving it")
+        XCTAssertEqual(r.wire.sent("slice.liveStations").count, 1, "SpanDAC was read again after leaving it")
 
         try switchTo(.source, r.routing)
         refetch(r)
-        XCTAssertEqual(r.scene.live.map(\.name), ["Bridge Live"])
+        XCTAssertEqual(r.scene.live.map(\.name), ["SpanDAC Live"])
         XCTAssertEqual(r.wire.sent("slice.liveStations").count, 2)
         XCTAssertEqual(r.rest.count("filter[featured]"), 1)
     }
@@ -469,7 +469,7 @@ final class RadioProviderTests: XCTestCase {
         let r = rig(mode: .source, catalog: true)
         let bridgeLive = r.wire.hold("slice.liveStations")
         _ = r.scene.tick(snapshot: idle)
-        wait(bridgeLive.entered, "the Bridge Live read")
+        wait(bridgeLive.entered, "the SpanDAC Live read")
 
         // The switch commits while Bridge's Live answer is in flight: the
         // read holds no lock, so the switch is not delayed by it.
@@ -480,7 +480,7 @@ final class RadioProviderTests: XCTestCase {
         bridgeLive.release.signal()
 
         XCTAssertTrue(tickUntil(r.scene) { r.scene.staleDrops.contains("live") },
-                      "the Bridge Live result was never drained as stale")
+                      "the SpanDAC Live result was never drained as stale")
         XCTAssertEqual(r.scene.live, [], "a Live result from the output just left was shown")
         XCTAssertFalse(r.scene.liveLoaded)
 
@@ -494,14 +494,14 @@ final class RadioProviderTests: XCTestCase {
         let r = rig(mode: .source, catalog: true)
         let gate = r.wire.hold("slice.searchStations")
         search(r.scene, "jazz")
-        wait(gate.entered, "the Bridge search")
+        wait(gate.entered, "the SpanDAC search")
         try switchTo(.musicApp, r.routing)
         gate.release.signal()
 
         XCTAssertTrue(tickUntil(r.scene) { r.scene.staleDrops.contains("search") })
         XCTAssertEqual(r.scene.message, "✗ Output changed while searching; search again.")
         let out = r.scene.render(frame: frame, snapshot: idle)
-        XCTAssertFalse(out.contains("Bridge Jazz"), "stale hits were shown: \(out)")
+        XCTAssertFalse(out.contains("SpanDAC Jazz"), "stale hits were shown: \(out)")
         XCTAssertFalse(out.contains("Search Results"))
     }
 
@@ -509,7 +509,7 @@ final class RadioProviderTests: XCTestCase {
         let r = rig(mode: .source, catalog: false)
         let gate = r.wire.hold("slice.station")
         addURL(r.scene)
-        wait(gate.entered, "the Bridge lookup")
+        wait(gate.entered, "the SpanDAC lookup")
         try switchTo(.musicApp, r.routing)
         gate.release.signal()
 
@@ -560,8 +560,8 @@ final class RadioProviderTests: XCTestCase {
         let bridgeLive = r.wire.hold("slice.liveStations")
         let bridgePersonal = r.wire.hold("slice.personalStations")
         _ = r.scene.tick(snapshot: idle)
-        wait(bridgeLive.entered, "the Bridge Live read")
-        wait(bridgePersonal.entered, "the Bridge Personal read")
+        wait(bridgeLive.entered, "the SpanDAC Live read")
+        wait(bridgePersonal.entered, "the SpanDAC Personal read")
 
         try switchTo(.musicApp, r.routing)
         let restLive = r.rest.hold(matching: "filter[featured]")
@@ -592,7 +592,7 @@ final class RadioProviderTests: XCTestCase {
         let r = rig(mode: .source, catalog: true)
         let bridgeSearch = r.wire.hold("slice.searchStations")
         search(r.scene, "jazz")
-        wait(bridgeSearch.entered, "the Bridge search")
+        wait(bridgeSearch.entered, "the SpanDAC search")
 
         try switchTo(.musicApp, r.routing)
         search(r.scene, "jazz")                     // the REST search, not held
@@ -605,14 +605,14 @@ final class RadioProviderTests: XCTestCase {
                        "Search \u{201C}jazz\u{201D} \u{2014} 1 result(s) \u{00B7} f favorite \u{00B7} Esc clear")
         let out = r.scene.render(frame: frame, snapshot: idle)
         XCTAssertTrue(out.contains("REST Jazz"), "the fresh hits were lost: \(out)")
-        XCTAssertFalse(out.contains("Bridge Jazz"))
+        XCTAssertFalse(out.contains("SpanDAC Jazz"))
     }
 
     func testAFreshLookupWrittenBeforeAStaleOneStillRenamesTheFavourite() throws {
         let r = rig(mode: .source, catalog: true)
         let bridgeLookup = r.wire.hold("slice.station")
         addURL(r.scene)
-        wait(bridgeLookup.entered, "the Bridge lookup")
+        wait(bridgeLookup.entered, "the SpanDAC lookup")
 
         try switchTo(.musicApp, r.routing)
         addURL(r.scene)                             // the REST lookup, not held

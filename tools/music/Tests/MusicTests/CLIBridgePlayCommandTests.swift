@@ -196,7 +196,7 @@ final class CLIBridgePlayCommandTests: XCTestCase {
         XCTAssertEqual(h.seen.locked("slice.queue"), [true], "the mutation holds the output lock")
         XCTAssertEqual(h.seen.locked("slice.libraryPlaylistTracks"), [false], "library walks stay outside the lock")
         XCTAssertEqual(h.seen.locked("slice.status"), [false, false], "the observation is outside the lock")
-        XCTAssertEqual(h.io.out, ["Playing 2 of 5 from 'Road Trip' on Bridge: 2 videos skipped. 1 song isn't available to Bridge."]
+        XCTAssertEqual(h.io.out, ["Playing 2 of 5 from 'Road Trip' on SpanDAC: 2 videos skipped. 1 song isn't available to SpanDAC."]
                        + playingLines)
         XCTAssertTrue(OutputLockTestSupport.isFree(h.lockPath))
     }
@@ -260,7 +260,7 @@ final class CLIBridgePlayCommandTests: XCTestCase {
         XCTAssertEqual(queue["library_ids"] as? [String], ["s1", "s2"])
         XCTAssertEqual(queue["start_required"] as? Bool, false)
         XCTAssertEqual((h.seen.bodies("slice.libraryAlbumTracks").first?["id"] as? String), "a1")
-        XCTAssertEqual(h.io.out, ["Playing 'Mezzanine' on Bridge \u{2014} 2 tracks."] + playingLines)
+        XCTAssertEqual(h.io.out, ["Playing 'Mezzanine' on SpanDAC \u{2014} 2 tracks."] + playingLines)
     }
 
     func testArtistQueuesBridgesOrder() throws {
@@ -295,7 +295,7 @@ final class CLIBridgePlayCommandTests: XCTestCase {
         let queue = try XCTUnwrap(h.seen.bodies("slice.queue").first)
         XCTAssertEqual(queue["library_ids"] as? [String], ["s1"])
         XCTAssertEqual(queue["start_required"] as? Bool, true)
-        XCTAssertEqual(h.io.out, ["Playing 'Teardrop' on Bridge."] + playingLines)
+        XCTAssertEqual(h.io.out, ["Playing 'Teardrop' on SpanDAC."] + playingLines)
     }
 
     func testResumeSendsSlicePlayUnderTheLockThenTheNowText() {
@@ -326,8 +326,8 @@ final class CLIBridgePlayCommandTests: XCTestCase {
     func testAmbiguousAndNotFoundQueueNothing() {
         let songs = R.songs([("s1", "Angel", "Massive Attack", "Mezzanine"), ("s2", "Angel", "Shaggy", "Hot Shot")])
         let cases: [(song: String, expected: String)] = [
-            ("Angel", "'Angel' matches 2 songs in your Bridge library: Angel \u{2014} Massive Attack; Angel \u{2014} Shaggy. Use the exact name, or add --artist. Or: music search --library \"Angel\"  then  music play N"),
-            ("Nope", "No song matching 'Nope' in your Bridge library. From the CLI, Bridge plays your library only; nothing was added or played."),
+            ("Angel", "'Angel' matches 2 songs in your SpanDAC library: Angel \u{2014} Massive Attack; Angel \u{2014} Shaggy. Use the exact name, or add --artist. Or: music search --library \"Angel\"  then  music play N"),
+            ("Nope", "No song matching 'Nope' in your SpanDAC library. From the CLI, SpanDAC plays your library only; nothing was added or played."),
         ]
         for c in cases {
             let h = H(.source, ["slice.status": [ready], "slice.librarySongs": [songs]])
@@ -340,7 +340,7 @@ final class CLIBridgePlayCommandTests: XCTestCase {
     }
 
     func testOverAHundredIsRefusedInBridgesWords() {
-        let tooLarge = #"{"ok":false,"error":{"kind":"too_large","detail":"That's 140 songs; Bridge queues at most 100 at once."}}"#
+        let tooLarge = #"{"ok":false,"error":{"kind":"too_large","detail":"That's 140 songs; SpanDAC queues at most 100 at once."}}"#
         let h = H(.source, [
             "slice.status": [ready],
             "slice.libraryArtists": [R.page(op: "slice.libraryArtists", kind: "artist", [("r1", "Bach", "", "")])],
@@ -349,7 +349,7 @@ final class CLIBridgePlayCommandTests: XCTestCase {
         ])
         let (error, _) = play(h, artist: "Bach")
         XCTAssertEqual(error as? ExitCode, .failure)
-        XCTAssertEqual(h.io.out, ["Bridge refused: That's 140 songs; Bridge queues at most 100 at once."])
+        XCTAssertEqual(h.io.out, ["SpanDAC refused: That's 140 songs; SpanDAC queues at most 100 at once."])
         XCTAssertEqual(h.wire.sent("slice.queue").count, 1, "a refused mutation is never re-sent")
     }
 
@@ -403,8 +403,8 @@ final class CLIBridgePlayCommandTests: XCTestCase {
                 XCTAssertEqual(doc["status_error"] as? String, message)
                 XCTAssertEqual(doc["sent"] as? Int, 1)
             } else {
-                XCTAssertEqual(h.io.out, ["Playing 'Teardrop' on Bridge."])
-                XCTAssertEqual(h.io.err, ["Bridge accepted the request, but its status couldn't be read: \(message)"])
+                XCTAssertEqual(h.io.out, ["Playing 'Teardrop' on SpanDAC."])
+                XCTAssertEqual(h.io.err, ["SpanDAC accepted the request, but its status couldn't be read: \(message)"])
             }
         }
     }
@@ -423,11 +423,11 @@ final class CLIBridgePlayCommandTests: XCTestCase {
             ("playlist + artist", [], "P", nil, nil, "R", nameOne),
             ("album + song", [], nil, "A", "S", nil, nameOne),
             ("album + song + artist", [], nil, "A", "S", "R", nameOne),
-            ("playlist + words", ["x"], "P", nil, nil, nil, "--playlist can't be combined with other words on Bridge."),
-            ("playlist + shuffle + words", ["shuffle", "x"], "P", nil, nil, nil, "--playlist can't be combined with other words on Bridge."),
-            ("album + artist + words", ["x"], nil, "A", nil, "R", "--album can't be combined with other words on Bridge."),
-            ("song + shuffle", ["shuffle"], nil, nil, "S", nil, "--song can't be combined with other words on Bridge."),
-            ("song + artist + words", ["x"], nil, nil, "S", "R", "--song can't be combined with other words on Bridge."),
+            ("playlist + words", ["x"], "P", nil, nil, nil, "--playlist can't be combined with other words on SpanDAC."),
+            ("playlist + shuffle + words", ["shuffle", "x"], "P", nil, nil, nil, "--playlist can't be combined with other words on SpanDAC."),
+            ("album + artist + words", ["x"], nil, "A", nil, "R", "--album can't be combined with other words on SpanDAC."),
+            ("song + shuffle", ["shuffle"], nil, nil, "S", nil, "--song can't be combined with other words on SpanDAC."),
+            ("song + artist + words", ["x"], nil, nil, "S", "R", "--song can't be combined with other words on SpanDAC."),
             ("blank album", [], nil, " ", nil, nil, "Album name can't be empty."),
             ("blank playlist", [], "", nil, nil, nil, "Playlist name can't be empty."),
             ("blank song", [], nil, nil, "  ", nil, "Song name can't be empty."),
@@ -501,7 +501,7 @@ final class CLIBridgePlayCommandTests: XCTestCase {
         let h = H(.source, ["slice.status": [ready]])
         try h.cache.writeSongs([.row(1, .bridgeLibrary, bridgeID: nil)])
         XCTAssertEqual(play(h, args: ["1"]).error as? ExitCode, .failure)
-        XCTAssertEqual(h.io.out, ["Result 1 has no Bridge id; run the search again."])
+        XCTAssertEqual(h.io.out, ["Result 1 has no SpanDAC id; run the search again."])
 
         let h2 = H(.source, ["slice.status": [ready]])
         try h2.cache.writeSongs([.row(1, .bridgeLibrary, bridgeID: "b-1")])

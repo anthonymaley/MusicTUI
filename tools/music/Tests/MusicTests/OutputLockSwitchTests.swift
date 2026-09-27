@@ -250,7 +250,7 @@ final class OutputLockSwitchTests: XCTestCase {
         let c = coordinator(s)
         XCTAssertThrowsError(try c.switchMode(to: .musicApp, readiness: { .ready },
                                               pauseOutgoing: { _ in false }, dropQueue: { _ in })) { error in
-            XCTAssertEqual((error as? ActionError)?.message, "Couldn't confirm Bridge paused; still using it")
+            XCTAssertEqual((error as? ActionError)?.message, "Couldn't confirm SpanDAC (this Mac) paused; still using it")
         }
         XCTAssertEqual(c.mode, .source)
         XCTAssertTrue(S.isFree(s.lockPath))

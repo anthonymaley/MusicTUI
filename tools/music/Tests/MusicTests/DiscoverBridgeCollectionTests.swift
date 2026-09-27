@@ -151,7 +151,7 @@ final class DiscoverBridgeCollectionTests: XCTestCase {
         settle { !created.ids.isEmpty }
 
         XCTAssertEqual(created.ids, ["801", "802", "803"])
-        XCTAssertTrue(wire.queued.isEmpty, "Music.app mode sent a Bridge request")
+        XCTAssertTrue(wire.queued.isEmpty, "Music.app mode sent a SpanDAC request")
     }
 
     // MARK: - Enter on a track row
@@ -193,7 +193,7 @@ final class DiscoverBridgeCollectionTests: XCTestCase {
         settle { !created.ids.isEmpty }
 
         XCTAssertEqual(created.ids, ["802", "803"])
-        XCTAssertTrue(wire.queued.isEmpty, "Music.app mode sent a Bridge request")
+        XCTAssertTrue(wire.queued.isEmpty, "Music.app mode sent a SpanDAC request")
     }
 
     // MARK: - Failures stay visible

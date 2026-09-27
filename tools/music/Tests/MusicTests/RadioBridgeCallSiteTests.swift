@@ -51,7 +51,7 @@ final class RadioBridgeCallSiteTests: XCTestCase {
 
         XCTAssertEqual(wire.sent.first?["op"] as? String, "slice.playStation")
         XCTAssertEqual(wire.sent.first?["id"] as? String, "ra.978194965")
-        XCTAssertTrue(opener.opened.isEmpty, "Bridge mode opened a music:// URL in Music.app")
+        XCTAssertTrue(opener.opened.isEmpty, "SpanDAC mode opened a music:// URL in Music.app")
     }
 
     /// And Music.app mode still opens the URL, so the test above cannot pass
@@ -64,14 +64,14 @@ final class RadioBridgeCallSiteTests: XCTestCase {
         s.execute(.play(station))
 
         XCTAssertEqual(opener.opened.count, 1, "Music.app mode did not open the station URL")
-        XCTAssertTrue(wire.sent.isEmpty, "Music.app mode sent a Bridge request")
+        XCTAssertTrue(wire.sent.isEmpty, "Music.app mode sent a SpanDAC request")
     }
 
     /// Ruling 17: a station Apple's catalogue does not carry refuses, in the
     /// app's own words, and is never played on Music.app instead.
     func testAnUnresolvableStationRefusesWithoutFallingBack() {
         let wire = Wire()
-        wire.reply = #"{"ok":false,"op":"slice.playStation","error":{"kind":"unresolvable","detail":"'BBC Radio 1' isn't in Apple Music's catalogue, so Bridge can't play it. Switch Output to Music.app to play this station."}}"#
+        wire.reply = #"{"ok":false,"op":"slice.playStation","error":{"kind":"unresolvable","detail":"'BBC Radio 1' isn't in Apple Music's catalogue, so SpanDAC can't play it. Switch Output to Music.app to play this station."}}"#
         let opener = RecordingOpener()
         let s = scene(mode: .source, wire: wire, opener: opener)
 

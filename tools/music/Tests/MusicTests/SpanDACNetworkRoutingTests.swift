@@ -215,6 +215,6 @@ final class SpanDACNetworkRoutingTests: XCTestCase {
         XCTAssertEqual(OutputLock.cliModeChangedMessage(now: .networkSource(ipad)),
                        "Output changed to a SpanDAC on the network while this command ran; nothing was changed.")
         XCTAssertEqual(OutputLock.cliModeChangedMessage(now: .source),
-                       "Output changed to Bridge while this command ran; nothing was changed.")
+                       "Output changed to SpanDAC (this Mac) while this command ran; nothing was changed.")
     }
 }

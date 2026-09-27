@@ -154,14 +154,14 @@ final class CLIBridgeSelectionTests: XCTestCase {
         let result = try resolveBridgePlaylistSelection(provider: provider(wire), name: "Rock", shuffle: false,
                                                          sleep: noSleep)
         guard case .refused(let msg) = result else { return XCTFail("temp playlist must not match") }
-        XCTAssertEqual(msg, "No playlist named 'Rock' in your Bridge library.")
+        XCTAssertEqual(msg, "No playlist named 'Rock' in your SpanDAC library.")
     }
 
     func testPlaylistNotFound() throws {
         let wire = BridgeLibraryReadsWire(["slice.libraryPlaylists": [playlistsPage([(id: "pl1", title: "Jazz")])]])
         let result = try resolveBridgePlaylistSelection(provider: provider(wire), name: "Rock", shuffle: false,
                                                          sleep: noSleep)
-        XCTAssertEqual(result, .refused("No playlist named 'Rock' in your Bridge library."))
+        XCTAssertEqual(result, .refused("No playlist named 'Rock' in your SpanDAC library."))
     }
 
     func testPlaylistAmbiguousListsUpToFiveAndCounts() throws {
@@ -173,7 +173,7 @@ final class CLIBridgeSelectionTests: XCTestCase {
         let result = try resolveBridgePlaylistSelection(provider: provider(wire), name: "Rock", shuffle: false,
                                                          sleep: noSleep)
         guard case .refused(let msg) = result else { return XCTFail("6 exact matches must be ambiguous") }
-        XCTAssertTrue(msg.hasPrefix("'Rock' matches 6 playlists in your Bridge library: "), msg)
+        XCTAssertTrue(msg.hasPrefix("'Rock' matches 6 playlists in your SpanDAC library: "), msg)
         XCTAssertTrue(msg.contains("; and 1 more"), msg)
         XCTAssertTrue(msg.hasSuffix("Use the exact name."), msg)
         XCTAssertFalse(msg.contains("--artist"), "a playlist ambiguity never suggests --artist")
@@ -188,7 +188,7 @@ final class CLIBridgeSelectionTests: XCTestCase {
         ])
         let result = try resolveBridgePlaylistSelection(provider: provider(wire), name: "Empty", shuffle: false,
                                                          sleep: noSleep)
-        XCTAssertEqual(result, .refused("'Empty' has no songs Bridge can play."))
+        XCTAssertEqual(result, .refused("'Empty' has no songs SpanDAC can play."))
     }
 
     func testPlaylistResolvesAndQueuesInOrderWithSkippedVideos() throws {
@@ -245,7 +245,7 @@ final class CLIBridgeSelectionTests: XCTestCase {
     func testArtistNotFound() throws {
         let wire = BridgeLibraryReadsWire(["slice.libraryArtists": [artistsPage([(id: "ar1", title: "Radiohead")])]])
         let result = try resolveBridgeArtistSelection(provider: provider(wire), name: "Bowie", sleep: noSleep)
-        XCTAssertEqual(result, .refused("No artist named 'Bowie' in your Bridge library."))
+        XCTAssertEqual(result, .refused("No artist named 'Bowie' in your SpanDAC library."))
     }
 
     // MARK: - Song resolver: one id, startRequired true, artist filter, no catalogue fallback
@@ -271,7 +271,7 @@ final class CLIBridgeSelectionTests: XCTestCase {
         let wire = BridgeLibraryReadsWire(["slice.librarySongs": [songsPage([])]])
         let result = try resolveBridgeSongSelection(provider: provider(wire), title: "Nude", artist: "Radiohead", sleep: noSleep)
         XCTAssertEqual(result, .refused(
-            "No song matching 'Nude' by 'Radiohead' in your Bridge library. From the CLI, Bridge plays your library only; nothing was added or played."))
+            "No song matching 'Nude' by 'Radiohead' in your SpanDAC library. From the CLI, SpanDAC plays your library only; nothing was added or played."))
     }
 
     func testSongAmbiguitySuggestsArtistAndSearch() throws {
@@ -386,7 +386,7 @@ final class CLIBridgeSelectionTests: XCTestCase {
                                                              album: nil, limit: 2, sleep: noSleep) else {
             return XCTFail("expected rows")
         }
-        XCTAssertEqual(rows.map(\.id), ["s3", "s1"], "Bridge's own order, not re-sorted")
+        XCTAssertEqual(rows.map(\.id), ["s3", "s1"], "SpanDAC's own order, not re-sorted")
     }
 
     func testSearchOnlyAsksLibrarySongsNeverQueue() throws {

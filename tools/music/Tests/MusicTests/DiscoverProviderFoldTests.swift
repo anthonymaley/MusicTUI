@@ -190,7 +190,7 @@ final class DiscoverProviderFoldTests: XCTestCase {
         XCTAssertEqual(r.scene.rails.map(\.title), ["Stations for You"])
         XCTAssertEqual(r.feed?.railLimits, [30])
         XCTAssertEqual(r.feed?.trackItems, [])
-        XCTAssertTrue(r.wire.requests.isEmpty, "Music.app mode sent a Bridge request")
+        XCTAssertTrue(r.wire.requests.isEmpty, "Music.app mode sent a SpanDAC request")
     }
 
     func testMusicAppDrillInIsOneFeedTrackReadAndNoWire() {
@@ -352,11 +352,11 @@ final class DiscoverProviderFoldTests: XCTestCase {
         XCTAssertEqual(queued.first?["ids"] as? [String], ["802", "803"])
         XCTAssertNil(queued.first?["library_ids"], "a catalogue queue must never send library ids")
         XCTAssertEqual(queued.first?.keys.sorted(), ["ids", "op"])
-        XCTAssertEqual(r.status.current()?.text, "Playing S2 on Bridge — 2 tracks.")
+        XCTAssertEqual(r.status.current()?.text, "Playing S2 on SpanDAC — 2 tracks.")
 
         r.scene.playCatalogSlice(catalogIDs: ["803"], containerTitle: "Boom Bap", trackName: "S3")
         drain(r.actions)
-        XCTAssertEqual(r.status.current()?.text, "Playing S3 on Bridge.")
+        XCTAssertEqual(r.status.current()?.text, "Playing S3 on SpanDAC.")
         XCTAssertEqual(r.created.created, [])
     }
 
@@ -368,7 +368,7 @@ final class DiscoverProviderFoldTests: XCTestCase {
         XCTAssertEqual(r.wire.requests.compactMap { $0["op"] as? String },
                        ["slice.containerTracks", "slice.queue"])
         XCTAssertEqual(r.wire.sent("slice.queue").first?["ids"] as? [String], ["901", "902"])
-        XCTAssertEqual(r.status.current()?.text, "Playing 'Boom Bap' on Bridge — 2 tracks.")
+        XCTAssertEqual(r.status.current()?.text, "Playing 'Boom Bap' on SpanDAC — 2 tracks.")
         XCTAssertEqual(r.feed?.trackItems, [])
         XCTAssertEqual(r.created.created, [])
     }
@@ -394,7 +394,7 @@ final class DiscoverProviderFoldTests: XCTestCase {
             .appendingPathComponent("Sources/TUI/Shell/DiscoverScene.swift")
         let text = try String(contentsOf: file, encoding: .utf8)
         for bespoke in ["$0.discover", "$0.control.queue(catalogIDs:", "$0.control.playStation"] {
-            XCTAssertFalse(text.contains(bespoke), "DiscoverScene still reaches Bridge through \(bespoke)")
+            XCTAssertFalse(text.contains(bespoke), "DiscoverScene still reaches SpanDAC through \(bespoke)")
         }
         XCTAssertTrue(text.contains("try routing.choose("), "the feed is not chosen through the seam")
     }

@@ -153,8 +153,8 @@ final class CLIBridgeSearchCommandTests: XCTestCase {
 
     func testNonSongTypesAndABlankSearchRefuseAfterReadiness() throws {
         let cases: [(query: [String], types: String, expected: String)] = [
-            (["Massive"], "albums", "Bridge library search returns songs only in this version."),
-            (["Massive"], "songs,artists", "Bridge library search returns songs only in this version."),
+            (["Massive"], "albums", "SpanDAC library search returns songs only in this version."),
+            (["Massive"], "songs,artists", "SpanDAC library search returns songs only in this version."),
             ([], "songs", "Name something to search for."),
         ]
         for c in cases {

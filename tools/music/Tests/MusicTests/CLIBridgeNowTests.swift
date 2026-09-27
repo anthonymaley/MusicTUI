@@ -25,20 +25,20 @@ final class CLIBridgeNowTests: XCTestCase {
     func testTitleLineWhenTitlePresent() {
         for state in states {
             let s = status(playback: state)
-            XCTAssertEqual(bridgeNowLines(s).first, "Teardrop \u{2014} Massive Attack [Bridge]", "state \(state)")
+            XCTAssertEqual(bridgeNowLines(s).first, "Teardrop \u{2014} Massive Attack [SpanDAC]", "state \(state)")
         }
     }
 
     func testTitleLineWithEmptyOrNilArtistDropsTheDash() {
         for state in states {
-            XCTAssertEqual(bridgeNowLines(status(playback: state, artist: "")).first, "Teardrop [Bridge]")
+            XCTAssertEqual(bridgeNowLines(status(playback: state, artist: "")).first, "Teardrop [SpanDAC]")
         }
-        XCTAssertEqual(bridgeNowLines(status(artist: nil)).first, "Teardrop [Bridge]")
+        XCTAssertEqual(bridgeNowLines(status(artist: nil)).first, "Teardrop [SpanDAC]")
     }
 
     func testEmptyTitleIsTreatedAsAbsent() {
         XCTAssertEqual(bridgeNowLines(status(playback: "idle", title: "", artist: nil)).first,
-                       "Nothing playing on Bridge.")
+                       "Nothing playing on SpanDAC.")
     }
 
     // MARK: - The quiet case, and what must never read as it
@@ -47,16 +47,16 @@ final class CLIBridgeNowTests: XCTestCase {
         for state in states {
             let first = bridgeNowLines(status(playback: state, title: nil, artist: nil)).first
             if state == "idle" || state == "stopped" {
-                XCTAssertEqual(first, "Nothing playing on Bridge.", "state \(state)")
+                XCTAssertEqual(first, "Nothing playing on SpanDAC.", "state \(state)")
             } else {
-                XCTAssertEqual(first, "Bridge is \(state).", "state \(state)")
+                XCTAssertEqual(first, "SpanDAC is \(state).", "state \(state)")
             }
         }
     }
 
     func testLoadingNeverReadsAsNothingPlaying() {
         XCTAssertEqual(bridgeNowLines(status(playback: "loading", title: nil, artist: nil)).first,
-                       "Bridge is loading.")
+                       "SpanDAC is loading.")
     }
 
     func testInvalidNeverReadsAsNothingPlayingEvenWhenIdleOrStopped() {
@@ -64,14 +64,14 @@ final class CLIBridgeNowTests: XCTestCase {
             let s = status(playback: state, title: nil, artist: nil, phase: "invalid",
                           requested: 9, reason: "a song was removed", built: 7)
             let lines = bridgeNowLines(s)
-            XCTAssertEqual(lines.first, "Bridge is \(state).", "state \(state)")
+            XCTAssertEqual(lines.first, "SpanDAC is \(state).", "state \(state)")
             XCTAssertTrue(lines.contains("Stopped: a song was removed. 7 of 9 built."))
         }
         // Without built_before_failure too.
         let s = status(playback: "idle", title: nil, artist: nil, phase: "invalid",
                        requested: 9, reason: "a song was removed", built: nil)
         let lines = bridgeNowLines(s)
-        XCTAssertEqual(lines.first, "Bridge is idle.")
+        XCTAssertEqual(lines.first, "SpanDAC is idle.")
         XCTAssertTrue(lines.contains("Stopped: a song was removed."))
     }
 
@@ -80,7 +80,7 @@ final class CLIBridgeNowTests: XCTestCase {
     func testStatusAndPositionLinesAppendWhenTitlePresent() {
         let s = status(playback: "playing", phase: "building", requested: 12, present: 5, index: 3)
         XCTAssertEqual(bridgeNowLines(s), [
-            "Teardrop \u{2014} Massive Attack [Bridge]",
+            "Teardrop \u{2014} Massive Attack [SpanDAC]",
             "Building queue: 5 of 12 ready.",
             "Song 4 of 12",
         ])
@@ -89,12 +89,12 @@ final class CLIBridgeNowTests: XCTestCase {
     func testStatusAndPositionLinesAppendWithNoTitle() {
         let s = status(playback: "playing", title: nil, artist: nil, phase: "complete",
                       requested: 12, present: 12, index: 0)
-        XCTAssertEqual(bridgeNowLines(s), ["Bridge is playing.", "Song 1 of 12"])
+        XCTAssertEqual(bridgeNowLines(s), ["SpanDAC is playing.", "Song 1 of 12"])
     }
 
     func testNoStatusOrPositionLineWhenNeitherApplies() {
         let s = status(playback: "playing", phase: "complete", requested: 10, index: nil)
-        XCTAssertEqual(bridgeNowLines(s), ["Teardrop \u{2014} Massive Attack [Bridge]"])
+        XCTAssertEqual(bridgeNowLines(s), ["Teardrop \u{2014} Massive Attack [SpanDAC]"])
     }
 
     // MARK: - JSON: output/state always present
@@ -172,7 +172,7 @@ final class CLIBridgeNowTests: XCTestCase {
     func testForbiddenKeysNeverAppear() {
         let dict = bridgeNowJSON(status(phase: "complete", requested: 12, present: 12, index: 0))
         for key in ["album", "duration", "position", "speakers", "live"] {
-            XCTAssertNil(dict[key], "\(key) must never appear in Bridge now JSON")
+            XCTAssertNil(dict[key], "\(key) must never appear in SpanDAC now JSON")
         }
     }
 
@@ -220,9 +220,9 @@ final class CLIBridgeNowTests: XCTestCase {
                             let isQuiet = !titlePresent && (phase == nil || phase == "none")
                                 && (state == "idle" || state == "stopped")
                             if isQuiet {
-                                XCTAssertEqual(lines.first, "Nothing playing on Bridge.", tag)
+                                XCTAssertEqual(lines.first, "Nothing playing on SpanDAC.", tag)
                             } else {
-                                XCTAssertNotEqual(lines.first, "Nothing playing on Bridge.", tag)
+                                XCTAssertNotEqual(lines.first, "Nothing playing on SpanDAC.", tag)
                             }
                         }
                     }
@@ -237,7 +237,7 @@ final class CLIBridgeNowTests: XCTestCase {
         let lines = bridgePlayResultLines(kind: .playlist, label: "Top 25 Most Played", sent: 40,
                                           skippedUnavailable: 1, skippedVideos: 2, shuffle: false)
         XCTAssertEqual(lines, [
-            "Playing 39 of 42 from 'Top 25 Most Played' on Bridge: 2 videos skipped. 1 song isn't available to Bridge.",
+            "Playing 39 of 42 from 'Top 25 Most Played' on SpanDAC: 2 videos skipped. 1 song isn't available to SpanDAC.",
         ])
     }
 
@@ -253,7 +253,7 @@ final class CLIBridgeNowTests: XCTestCase {
     func testPlaylistWithNoSkipsUsesTheWholeCollectionForm() {
         let lines = bridgePlayResultLines(kind: .playlist, label: "Top 25 Most Played", sent: 25,
                                           skippedUnavailable: 0, skippedVideos: 0, shuffle: false)
-        XCTAssertEqual(lines, ["Playing 'Top 25 Most Played' on Bridge \u{2014} 25 tracks."])
+        XCTAssertEqual(lines, ["Playing 'Top 25 Most Played' on SpanDAC \u{2014} 25 tracks."])
     }
 
     // MARK: - Play results: album / artist
@@ -262,14 +262,14 @@ final class CLIBridgeNowTests: XCTestCase {
         for kind in [BridgePlayResultKind.album, .artist] {
             let lines = bridgePlayResultLines(kind: kind, label: "OK Computer", sent: 12,
                                               skippedUnavailable: 0, skippedVideos: 0, shuffle: false)
-            XCTAssertEqual(lines, ["Playing 'OK Computer' on Bridge \u{2014} 12 tracks."])
+            XCTAssertEqual(lines, ["Playing 'OK Computer' on SpanDAC \u{2014} 12 tracks."])
         }
     }
 
     func testAlbumPlayResultWithUnavailableNotice() {
         let lines = bridgePlayResultLines(kind: .album, label: "OK Computer", sent: 12,
                                           skippedUnavailable: 2, skippedVideos: 0, shuffle: false)
-        XCTAssertEqual(lines, ["Playing 'OK Computer' on Bridge \u{2014} 10 tracks. 2 songs aren't available to Bridge."])
+        XCTAssertEqual(lines, ["Playing 'OK Computer' on SpanDAC \u{2014} 10 tracks. 2 songs aren't available to SpanDAC."])
     }
 
     func testAlbumArtistJSONHasNoPlaylistOnlyKeys() {
@@ -286,7 +286,7 @@ final class CLIBridgeNowTests: XCTestCase {
     func testSongPlayResultLine() {
         let lines = bridgePlayResultLines(kind: .song, label: "Teardrop", sent: 1,
                                           skippedUnavailable: 0, skippedVideos: 0, shuffle: false)
-        XCTAssertEqual(lines, ["Playing 'Teardrop' on Bridge."])
+        XCTAssertEqual(lines, ["Playing 'Teardrop' on SpanDAC."])
     }
 
     func testSongPlayResultJSON() {

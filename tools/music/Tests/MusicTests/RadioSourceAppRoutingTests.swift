@@ -52,7 +52,7 @@ final class RadioSourceAppRoutingTests: XCTestCase {
 
         let out = scene.render(frame: frame, snapshot: snapshot)
         XCTAssertFalse(out.contains("Search needs auth"),
-                       "with Bridge selected the search must run with no developer key: \(out)")
+                       "with SpanDAC selected the search must run with no developer key: \(out)")
         XCTAssertTrue(out.contains("Searching"),
                       "expected the in-flight message, got: \(out)")
     }
@@ -84,11 +84,11 @@ final class RadioSourceAppRoutingTests: XCTestCase {
         while Date() < deadline {
             _ = scene.tick(snapshot: snapshot)
             out = scene.render(frame: frame, snapshot: snapshot)
-            if out.contains("Bridge") { break }
+            if out.contains("SpanDAC") { break }
             usleep(20_000)
         }
-        XCTAssertTrue(out.contains("Bridge is not running"),
-                      "expected Bridge's own refusal on the message line within 5s, got: \(out)")
+        XCTAssertTrue(out.contains("SpanDAC is not running"),
+                      "expected SpanDAC's own refusal on the message line within 5s, got: \(out)")
     }
 
     /// Results from the source app land in the SAME list the REST route fills,

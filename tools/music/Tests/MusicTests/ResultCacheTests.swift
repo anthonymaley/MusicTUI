@@ -217,7 +217,7 @@ final class ResultCacheTests: XCTestCase {
         let loaded = try cache.readSongs()
         XCTAssertEqual(loaded[0].origin, .bridgeLibrary)
         XCTAssertEqual(loaded[0].bridgeID, "12345")
-        XCTAssertEqual(loaded[0].catalogId, "", "Bridge rows keep an empty catalogId")
+        XCTAssertEqual(loaded[0].catalogId, "", "SpanDAC rows keep an empty catalogId")
         XCTAssertEqual(loaded[1].origin, .bridgeLibrary)
         XCTAssertNil(loaded[1].bridgeID)
         let raw = try String(contentsOf: testDir.appendingPathComponent("last-songs.json"), encoding: .utf8)

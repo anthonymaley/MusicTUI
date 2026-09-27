@@ -2,7 +2,7 @@ import XCTest
 @testable import music
 
 /// The Output tab's Bridge readiness, after the 2026-09-16 gate found it
-/// reporting "Bridge is not running" while Bridge was running and answering.
+/// reporting "SpanDAC is not running" while SpanDAC was running and answering.
 ///
 /// The defect was not protocol drift: a direct `slice.status` returned
 /// `authorization:"authorized"`, `contract:2`. `refreshBridgeReadiness()` was
@@ -82,7 +82,7 @@ final class BridgeReadinessTests: XCTestCase {
     func testEnteringTheTabProbesOnceAndDeliversTheResult() {
         let s = scene(reply: { _, _ in self.authorized })
         _ = s.tick(snapshot: NowPlayingSnapshot(outcome: .stopped, history: [], surrounding: []))
-        XCTAssertGreaterThan(s.readinessProbeCount, 0, "entering the tab never asked Bridge anything")
+        XCTAssertGreaterThan(s.readinessProbeCount, 0, "entering the tab never asked SpanDAC anything")
         settle(s)
         XCTAssertEqual(s.bridgeReadinessForTest, .ready)
     }
@@ -140,12 +140,12 @@ final class BridgeReadinessTests: XCTestCase {
     /// bug and a missing app print the same sentence.
     func testEachFailureKeepsItsOwnReason() {
         let cases: [(SourceAppError, String)] = [
-            (.notRunning, "Bridge is not running"),
-            (.notAuthorized, "Bridge has no Apple Music access"),
-            (.refused("queue_invalid"), "Bridge refused: queue_invalid"),
-            (.timedOut, "Bridge did not answer in time"),
-            (.socketUnavailable("permission denied"), "Bridge's control socket is unusable: permission denied"),
-            (.unreadable, "Bridge sent a reply this build could not read"),
+            (.notRunning, "SpanDAC is not running"),
+            (.notAuthorized, "SpanDAC has no Apple Music access"),
+            (.refused("queue_invalid"), "SpanDAC refused: queue_invalid"),
+            (.timedOut, "SpanDAC did not answer in time"),
+            (.socketUnavailable("permission denied"), "SpanDAC's control socket is unusable: permission denied"),
+            (.unreadable, "SpanDAC sent a reply this build could not read"),
         ]
         var seen = Set<String>()
         for (error, expected) in cases {
@@ -190,7 +190,7 @@ final class BridgeReadinessTests: XCTestCase {
         let s = scene(reply: { _, _ in denied })
         _ = s.tick(snapshot: NowPlayingSnapshot(outcome: .stopped, history: [], surrounding: []))
         settle(s)
-        XCTAssertEqual(s.bridgeReadinessForTest, .unavailable("Bridge was denied Apple Music access"))
+        XCTAssertEqual(s.bridgeReadinessForTest, .unavailable("SpanDAC was denied Apple Music access"))
     }
 
     // MARK: - The real client path, not just the mapping function
@@ -198,15 +198,15 @@ final class BridgeReadinessTests: XCTestCase {
     /// `SourceReadiness.from(_:)` being right proves nothing if the client never
     /// calls it. This drives `SourceAppClient.readiness()` itself — the code the
     /// Output tab actually runs — with a transport that throws each error in
-    /// turn. Before this fix every row here returned "Bridge is not running".
+    /// turn. Before this fix every row here returned "SpanDAC is not running".
     func testTheClientPathClassifiesEveryThrownError() {
         let cases: [(SourceAppError, String)] = [
-            (.notRunning, "Bridge is not running"),
-            (.notAuthorized, "Bridge has no Apple Music access"),
-            (.refused("queue_invalid"), "Bridge refused: queue_invalid"),
-            (.timedOut, "Bridge did not answer in time"),
-            (.socketUnavailable("permission denied"), "Bridge's control socket is unusable: permission denied"),
-            (.unreadable, "Bridge sent a reply this build could not read"),
+            (.notRunning, "SpanDAC is not running"),
+            (.notAuthorized, "SpanDAC has no Apple Music access"),
+            (.refused("queue_invalid"), "SpanDAC refused: queue_invalid"),
+            (.timedOut, "SpanDAC did not answer in time"),
+            (.socketUnavailable("permission denied"), "SpanDAC's control socket is unusable: permission denied"),
+            (.unreadable, "SpanDAC sent a reply this build could not read"),
         ]
         var seen = Set<String>()
         for (thrown, expected) in cases {
@@ -226,7 +226,7 @@ final class BridgeReadinessTests: XCTestCase {
         let client = SourceAppClient(path: "/nonexistent",
                                      transport: { _, _ in #"{"ok":true,"op":"slice.status"}"# })
         XCTAssertEqual(client.readiness(),
-                       .unavailable("Bridge sent a reply this build could not read"))
+                       .unavailable("SpanDAC sent a reply this build could not read"))
     }
 
     // MARK: - A completed switch publishes, it does not assign
@@ -280,7 +280,7 @@ final class BridgeReadinessTests: XCTestCase {
 
         _ = scene.tick(snapshot: NowPlayingSnapshot(outcome: .stopped, history: [], surrounding: []))
         XCTAssertEqual(scene.bridgeReadinessForTest,
-                       .unavailable("Bridge was denied Apple Music access"),
+                       .unavailable("SpanDAC was denied Apple Music access"),
                        "tick did not apply the switch's published readiness")
         XCTAssertFalse(scene.hasPendingReadinessForTest, "tick left the inbox undrained")
     }

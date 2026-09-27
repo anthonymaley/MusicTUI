@@ -162,8 +162,8 @@ final class CLIBridgeCatalogueSearchTests: XCTestCase {
 
     func testUnsupportedTypesAndABlankTermRefuseWithNoSearch() throws {
         let cases: [(query: [String], types: String, expected: String)] = [
-            (["massive"], "artists", "Bridge catalogue search returns songs and albums only in this version."),
-            (["massive"], "songs,playlists", "Bridge catalogue search returns songs and albums only in this version."),
+            (["massive"], "artists", "SpanDAC catalogue search returns songs and albums only in this version."),
+            (["massive"], "songs,playlists", "SpanDAC catalogue search returns songs and albums only in this version."),
             ([], "songs", "Name something to search for."),
             (["  "], "songs", "Name something to search for."),
         ]
@@ -186,7 +186,7 @@ final class CLIBridgeCatalogueSearchTests: XCTestCase {
         try h.cache.writeSongs([.row(1, .catalog)])
         let (error, calls) = search(h, ["massive"])
         XCTAssertEqual(error as? ExitCode, .failure)
-        XCTAssertEqual(h.io.out, ["This Bridge build can't search the catalogue \u{2014} update Bridge"])
+        XCTAssertEqual(h.io.out, ["This SpanDAC build can't search the catalogue \u{2014} update SpanDAC"])
         XCTAssertEqual(try h.cache.readSongs(), [.row(1, .catalog)])
         XCTAssertEqual(calls, [])
     }

@@ -23,7 +23,7 @@ final class AddCommandBoundaryTests: XCTestCase {
         return (captured.output, captured.error, calls)
     }
 
-    private let refusal2 = "Result(s) 2 came from Bridge. Adding Bridge rows to your library or a playlist isn't supported yet; search again with Output set to Music.app."
+    private let refusal2 = "Result(s) 2 came from SpanDAC. Adding SpanDAC rows to your library or a playlist isn't supported yet; search again with Output set to Music.app."
 
     func testBridgeRowIsRefusedBeforeAnyTokenOrExternalCall() throws {
         try h.cache.writeSongs([.row(1, .catalog), .row(2, .bridgeLibrary, bridgeID: "12345")])
@@ -43,7 +43,7 @@ final class AddCommandBoundaryTests: XCTestCase {
         XCTAssertEqual(r.output, refusal2 + "\n")
         XCTAssertEqual((r.error as? ExitCode), .failure)
         XCTAssertEqual(h.authReads, 0)
-        XCTAssertEqual(r.calls, [], "no AppleScript duplicate of a Bridge row")
+        XCTAssertEqual(r.calls, [], "no AppleScript duplicate of a SpanDAC row")
     }
 
     func testBridgeRowWithNoIdIsRefusedTheSameWay() throws {

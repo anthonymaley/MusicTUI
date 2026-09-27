@@ -277,7 +277,7 @@ final class BridgeLibrarySceneTests: XCTestCase {
         XCTAssertTrue(settle(s) { s.songsForTest.count == 3 }, "the walk never finished")
         XCTAssertEqual(s.songsForTest.map(\.id), ["i.aaa", "i.bbb", "i.ccc"])
         XCTAssertEqual(s.songsForTest.map(\.title), ["Aquarama", "Lotus Flower", "Nude"])
-        XCTAssertFalse(spy.wasAsked, "Bridge mode read the AppleScript library as well")
+        XCTAssertFalse(spy.wasAsked, "SpanDAC mode read the AppleScript library as well")
     }
 
     /// The second page is asked for with the cursor the first one returned, and
@@ -322,7 +322,7 @@ final class BridgeLibrarySceneTests: XCTestCase {
         XCTAssertTrue(settle(s) { s.songsForTest.count == 2 })
 
         let out = s.render(frame: frame, snapshot: idle)
-        XCTAssertTrue(out.contains("Songs \u{2014} Bridge library (15,646)"),
+        XCTAssertTrue(out.contains("Songs \u{2014} SpanDAC library (15,646)"),
                       "the list did not say which library it is showing: \(out)")
         wire.release(at: 1)
     }
@@ -338,10 +338,10 @@ final class BridgeLibrarySceneTests: XCTestCase {
         XCTAssertTrue(settle(s) { s.songsForTest.count == 1 }, "the AppleScript list never landed")
         XCTAssertEqual(s.songsForTest.map(\.id), ["as1"])
         XCTAssertTrue(spy.wasAsked)
-        XCTAssertTrue(wire.sent("slice.librarySongs").isEmpty, "Music.app mode asked Bridge for the library")
+        XCTAssertTrue(wire.sent("slice.librarySongs").isEmpty, "Music.app mode asked SpanDAC for the library")
 
         let out = s.render(frame: frame, snapshot: idle)
-        XCTAssertFalse(out.contains("Bridge library"), "Music.app mode named Bridge: \(out)")
+        XCTAssertFalse(out.contains("SpanDAC library"), "Music.app mode named SpanDAC: \(out)")
         XCTAssertTrue(out.contains("FromAppleScript"))
     }
 
@@ -362,7 +362,7 @@ final class BridgeLibrarySceneTests: XCTestCase {
 
         let out = s.render(frame: frame, snapshot: idle)
         XCTAssertFalse(out.contains("Aquarama"), "a row from the old generation survived: \(out)")
-        XCTAssertTrue(out.contains("Songs \u{2014} Bridge library (2)"),
+        XCTAssertTrue(out.contains("Songs \u{2014} SpanDAC library (2)"),
                       "the count is still the old observation's: \(out)")
     }
 
@@ -392,12 +392,12 @@ final class BridgeLibrarySceneTests: XCTestCase {
         toSongs(s)
 
         XCTAssertTrue(settle(s) { status.current() != nil }, "the failure was silent")
-        XCTAssertEqual(status.current()?.text, "Bridge has not been granted Apple Music access")
-        XCTAssertTrue(s.songsForTest.isEmpty, "a failed Bridge read produced rows anyway")
-        XCTAssertFalse(spy.wasAsked, "Bridge mode fell back to the AppleScript library")
+        XCTAssertEqual(status.current()?.text, "SpanDAC has not been granted Apple Music access")
+        XCTAssertTrue(s.songsForTest.isEmpty, "a failed SpanDAC read produced rows anyway")
+        XCTAssertFalse(spy.wasAsked, "SpanDAC mode fell back to the AppleScript library")
 
         let out = s.render(frame: frame, snapshot: idle)
-        XCTAssertTrue(out.contains("Bridge has not been granted Apple Music access"),
+        XCTAssertTrue(out.contains("SpanDAC has not been granted Apple Music access"),
                       "the list showed a generic message: \(out)")
         XCTAssertFalse(out.contains("(no songs)"), "a refusal rendered as an empty library: \(out)")
     }
@@ -427,8 +427,8 @@ final class BridgeLibrarySceneTests: XCTestCase {
         XCTAssertEqual(s.songsForTest.map(\.id), ["i.aaa", "i.ccc"])
         XCTAssertEqual(wire.sent("slice.librarySongs").count, 2)
         // The count is Bridge's, read from the wire, never assumed here.
-        XCTAssertTrue(s.render(frame: frame, snapshot: idle).contains("Songs \u{2014} Bridge library (15,697)"),
-                      "the count did not come from Bridge: \(s.render(frame: frame, snapshot: idle))")
+        XCTAssertTrue(s.render(frame: frame, snapshot: idle).contains("Songs \u{2014} SpanDAC library (15,697)"),
+                      "the count did not come from SpanDAC: \(s.render(frame: frame, snapshot: idle))")
     }
 
     // MARK: - Not ready yet is not empty
@@ -456,13 +456,13 @@ final class BridgeLibrarySceneTests: XCTestCase {
                       "the list did not say it was preparing; got: \(s.render(frame: frame, snapshot: idle))")
         let waiting = s.render(frame: frame, snapshot: idle)
         XCTAssertFalse(waiting.contains("(no songs)"), "a warming library rendered as an empty one: \(waiting)")
-        XCTAssertFalse(waiting.contains("Bridge library (0)"), "it claimed a count it does not have: \(waiting)")
+        XCTAssertFalse(waiting.contains("SpanDAC library (0)"), "it claimed a count it does not have: \(waiting)")
         XCTAssertTrue(s.songsForTest.isEmpty, "rows appeared before any page did")
 
         wire.release(at: 2)
         XCTAssertTrue(settle(s) { s.songsForTest.count == 3 }, "the walk never got past warming")
         XCTAssertEqual(s.songsForTest.map(\.id), ["i.aaa", "i.bbb", "i.ccc"])
-        XCTAssertEqual(waits.all, [1.0, 1.0], "it did not wait the hint Bridge gave")
+        XCTAssertEqual(waits.all, [1.0, 1.0], "it did not wait the hint SpanDAC gave")
         let out = s.render(frame: frame, snapshot: idle)
         XCTAssertFalse(out.contains("Preparing your library"), "it is still claiming to be preparing: \(out)")
     }
@@ -506,7 +506,7 @@ final class BridgeLibrarySceneTests: XCTestCase {
                        "the retries were not bounded at \(LibraryWarmUp.maxTotalWait)s of waiting")
 
         let out = s.render(frame: frame, snapshot: idle)
-        XCTAssertTrue(out.contains("Bridge is still preparing your library - press r to retry"),
+        XCTAssertTrue(out.contains("SpanDAC is still preparing your library - press r to retry"),
                       "the list did not say it had stopped: \(out)")
         XCTAssertFalse(out.contains("(no songs)"), "it rendered as an empty library: \(out)")
     }
@@ -526,7 +526,7 @@ final class BridgeLibrarySceneTests: XCTestCase {
         XCTAssertTrue(settle(s) { s.songsForTest.count == 1 }, "a stale page was refused")
         let out = s.render(frame: frame, snapshot: idle)
         XCTAssertTrue(out.contains("Aquarama"))
-        XCTAssertTrue(out.contains("Songs \u{2014} Bridge library (15,697)"))
+        XCTAssertTrue(out.contains("Songs \u{2014} SpanDAC library (15,697)"))
         XCTAssertFalse(out.contains("Preparing your library"), "freshness was reported as warming: \(out)")
         XCTAssertFalse(out.contains("press r to retry"), "freshness was reported as a failure: \(out)")
     }
@@ -591,7 +591,7 @@ final class BridgeLibrarySceneTests: XCTestCase {
         XCTAssertEqual(queued.count, 3, "the cold queue was not retried")
         XCTAssertTrue(queued.allSatisfy { ($0["library_ids"] as? [String]) == ["i.bbb"] },
                       "a retry sent something other than the unchanged request")
-        XCTAssertEqual(waits.all, [1.0, 1.0], "it did not wait the hint Bridge gave")
+        XCTAssertEqual(waits.all, [1.0, 1.0], "it did not wait the hint SpanDAC gave")
         XCTAssertEqual(status.current()?.text,
                        "Preparing your library \u{2014} 'Lotus Flower' will play when it's ready\u{2026}",
                        "the wait was silent")
@@ -639,17 +639,17 @@ final class BridgeLibrarySceneTests: XCTestCase {
         let spy = AppleScriptSpy()
         let s = scene(mode: .source, wire: wire, spy: spy, status: status)
         toSongs(s)
-        XCTAssertTrue(settle(s) { status.current() != nil }, "the Bridge Songs failure was silent")
+        XCTAssertTrue(settle(s) { status.current() != nil }, "the SpanDAC Songs failure was silent")
 
         go(s, to: .albums)
         XCTAssertTrue(settle(s) { s.render(frame: frame, snapshot: idle).contains("In Rainbows") },
-                      "Albums did not show Bridge's own rows; got: \(s.render(frame: frame, snapshot: idle))")
+                      "Albums did not show SpanDAC's own rows; got: \(s.render(frame: frame, snapshot: idle))")
         let out = s.render(frame: frame, snapshot: idle)
-        XCTAssertFalse(out.contains("Bridge has not been granted"),
+        XCTAssertFalse(out.contains("SpanDAC has not been granted"),
                        "the Songs failure bled into the Albums list: \(out)")
         XCTAssertFalse(out.contains("Couldn't read the Music library"),
-                       "Albums read Music.app instead of Bridge: \(out)")
-        XCTAssertEqual(spy.albumReads, 0, "Albums asked Music.app instead of Bridge")
+                       "Albums read Music.app instead of SpanDAC: \(out)")
+        XCTAssertEqual(spy.albumReads, 0, "Albums asked Music.app instead of SpanDAC")
         XCTAssertFalse(spy.wasAsked, "the Music.app source was asked at all")
     }
 
@@ -698,8 +698,8 @@ final class BridgeLibrarySceneTests: XCTestCase {
         XCTAssertEqual(wire.sent("slice.librarySongs").count, 1)
 
         _ = s.handle(.char("r"))
-        XCTAssertEqual(status.current()?.text, "Asking Bridge for your library again\u{2026}")
-        XCTAssertTrue(settle(s) { s.songsForTest.count == 3 }, "the retry never re-read Bridge")
+        XCTAssertEqual(status.current()?.text, "Asking SpanDAC for your library again\u{2026}")
+        XCTAssertTrue(settle(s) { s.songsForTest.count == 3 }, "the retry never re-read SpanDAC")
         XCTAssertEqual(s.songsForTest.map(\.id), ["i.aaa", "i.bbb", "i.ccc"])
     }
 
@@ -724,18 +724,18 @@ final class BridgeLibrarySceneTests: XCTestCase {
         toSongs(s)
         XCTAssertTrue(settle(s) { s.songsForTest.count == 3 })
         XCTAssertTrue(s.render(frame: frame, snapshot: idle)
-                       .contains("Songs \u{2014} Bridge library (15,646)"))
+                       .contains("Songs \u{2014} SpanDAC library (15,646)"))
 
         go(s, to: .albums)
         XCTAssertTrue(settle(s) { s.render(frame: frame, snapshot: idle).contains("In Rainbows") })
         XCTAssertTrue(s.render(frame: frame, snapshot: idle)
-                       .contains("Albums \u{2014} Bridge library (3,012)"),
+                       .contains("Albums \u{2014} SpanDAC library (3,012)"),
                       "the Albums count did not come from the wire: \(s.render(frame: frame, snapshot: idle))")
 
         go(s, to: .artists)
         XCTAssertTrue(settle(s) { s.render(frame: frame, snapshot: idle).contains("Radiohead") })
         XCTAssertTrue(s.render(frame: frame, snapshot: idle)
-                       .contains("Artists \u{2014} Bridge library (1,801)"),
+                       .contains("Artists \u{2014} SpanDAC library (1,801)"),
                       "the Artists count did not come from the wire: \(s.render(frame: frame, snapshot: idle))")
     }
 
@@ -757,9 +757,9 @@ final class BridgeLibrarySceneTests: XCTestCase {
                           "\(sub) never loaded its rows")
             let out = s.render(frame: frame, snapshot: idle)
             XCTAssertFalse(out.contains("Music.app library"), "\(sub) named a library: \(out)")
-            XCTAssertFalse(out.contains("Bridge library"), "\(sub) named Bridge: \(out)")
+            XCTAssertFalse(out.contains("SpanDAC library"), "\(sub) named SpanDAC: \(out)")
         }
-        XCTAssertTrue(wire.sent("slice.librarySongs").isEmpty, "Music.app mode asked Bridge for the library")
+        XCTAssertTrue(wire.sent("slice.librarySongs").isEmpty, "Music.app mode asked SpanDAC for the library")
     }
 
     // MARK: - Playing a row
@@ -779,7 +779,7 @@ final class BridgeLibrarySceneTests: XCTestCase {
         let deadline = Date().addingTimeInterval(3)
         while Date() < deadline && wire.sent("slice.queue").isEmpty { usleep(5_000) }
         let queued = wire.sent("slice.queue")
-        XCTAssertEqual(queued.count, 1, "the row never reached Bridge")
+        XCTAssertEqual(queued.count, 1, "the row never reached SpanDAC")
         XCTAssertEqual(queued[0]["library_ids"] as? [String], ["i.bbb"])
         XCTAssertNil(queued[0]["rows"], "no (title, artist, album) join may be sent")
         XCTAssertNil(queued[0]["ids"], "library ids are not catalogue ids")

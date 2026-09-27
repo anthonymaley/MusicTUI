@@ -110,7 +110,7 @@ final class CLIBridgeRadioTests: XCTestCase {
                             "slice.searchStations": [CLIBridgeReplies.refused("catalogue unavailable")]])
         let (error, _) = tripwired { try runRadioSearch(term: ["jazz"], env: h.env, musicApp: { _ in XCTFail() }) }
         XCTAssertEqual(error as? ExitCode, .failure)
-        XCTAssertEqual(h.io.out, ["Bridge refused: catalogue unavailable"])
+        XCTAssertEqual(h.io.out, ["SpanDAC refused: catalogue unavailable"])
     }
 
     func testMusicAppRadioSearchRunsTheShippedBodyAndNoWire() {
@@ -136,7 +136,7 @@ final class CLIBridgeRadioTests: XCTestCase {
         }
         XCTAssertNil(error)
         XCTAssertEqual(calls, [])
-        XCTAssertEqual(lookups, 0, "Music.app's lookup (developer key, REST) never runs on Bridge")
+        XCTAssertEqual(lookups, 0, "Music.app's lookup (developer key, REST) never runs on SpanDAC")
         XCTAssertEqual(h.seen.ops, ["slice.status", "slice.station"])
         let body = try XCTUnwrap(h.seen.bodies("slice.station").first)
         XCTAssertEqual(body["id"] as? String, "ra.978194965")
@@ -217,7 +217,7 @@ final class CLIBridgeRadioTests: XCTestCase {
         let (error, calls) = bridgeRadioPlay(h, [appleMusic1URL], stations: try favourites(h), opener: opener)
         XCTAssertNil(error)
         XCTAssertEqual(calls, [])
-        XCTAssertEqual(opener.urls, [], "Bridge never opens a URL")
+        XCTAssertEqual(opener.urls, [], "SpanDAC never opens a URL")
         XCTAssertEqual(h.seen.ops, ["slice.status", "slice.playStation"])
         let body = try XCTUnwrap(h.seen.bodies("slice.playStation").first)
         XCTAssertEqual(body["id"] as? String, "ra.978194965")

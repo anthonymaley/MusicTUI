@@ -232,7 +232,7 @@ final class OpenMusicProviderTests: XCTestCase {
         XCTAssertFalse(open is MusicDataProvider)
     }
 
-    /// "No open conformer reaches Bridge": the file names no Bridge client.
+    /// "No open conformer reaches SpanDAC": the file names no SpanDAC client.
     func testTheOpenProviderSourceNamesNoBridgeClient() throws {
         let file = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()

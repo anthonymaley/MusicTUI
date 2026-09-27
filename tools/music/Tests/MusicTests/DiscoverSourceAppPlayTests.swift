@@ -49,15 +49,15 @@ final class DiscoverSourceAppPlayTests: XCTestCase {
         }
     }
 
-    /// Bridge overloaded: decoded on the kind, never "Bridge refused" — the
+    /// SpanDAC overloaded: decoded on the kind, never "SpanDAC refused" — the
     /// caller did nothing wrong (controller check, 2026-09-25).
     func testBusyIsReportedAsBusyNotRefused() {
         let client = SourceAppPlayback(path: "/nowhere") { _, _ in
-            #"{"ok":false,"op":"slice.play","error":{"kind":"busy","detail":"Bridge is handling too many requests at once; try again in a moment."}}"#
+            #"{"ok":false,"op":"slice.play","error":{"kind":"busy","detail":"SpanDAC is handling too many requests at once; try again in a moment."}}"#
         }
         XCTAssertThrowsError(try client.play(catalogID: "1")) { error in
             XCTAssertEqual(error as? SourceAppError, .busy)
-            XCTAssertEqual((error as? SourceAppError)?.message, "Bridge is busy; try again in a moment.")
+            XCTAssertEqual((error as? SourceAppError)?.message, "SpanDAC is busy; try again in a moment.")
         }
     }
 

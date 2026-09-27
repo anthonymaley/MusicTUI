@@ -205,7 +205,7 @@ final class BridgeDiscoverFeedTests: XCTestCase {
         """)
         XCTAssertThrowsError(try feed(wire).tracks(for: item("pl.x", .playlist(description: nil)))) { error in
             XCTAssertEqual((error as? SourceAppError)?.message,
-                           "Bridge refused: That playlist isn't in Apple Music's catalogue.")
+                           "SpanDAC refused: That playlist isn't in Apple Music's catalogue.")
         }
     }
 }

@@ -119,7 +119,7 @@ final class BridgeMusicProviderTests: XCTestCase {
         """])
         XCTAssertThrowsError(try provider(wire).librarySongs(cursor: nil, limit: 100)) { error in
             XCTAssertEqual(error as? MusicProviderError,
-                           .unavailable("Bridge has not been granted Apple Music access"))
+                           .unavailable("SpanDAC has not been granted Apple Music access"))
         }
     }
 
@@ -163,7 +163,7 @@ final class BridgeMusicProviderTests: XCTestCase {
         """])
         XCTAssertThrowsError(try provider(wire).librarySongs(cursor: nil, limit: 100)) { error in
             XCTAssertEqual(error as? MusicProviderError,
-                           .unavailable("Bridge's library page contains a row with no id"),
+                           .unavailable("SpanDAC's library page contains a row with no id"),
                            "a malformed row was quietly dropped, shortening the library")
         }
     }
@@ -176,7 +176,7 @@ final class BridgeMusicProviderTests: XCTestCase {
         """])
         XCTAssertThrowsError(try provider(wire).librarySongs(cursor: nil, limit: 100)) { error in
             XCTAssertEqual(error as? MusicProviderError,
-                           .unavailable("Bridge's library page contains a row with no title (id c)"))
+                           .unavailable("SpanDAC's library page contains a row with no title (id c)"))
         }
     }
 
@@ -192,7 +192,7 @@ final class BridgeMusicProviderTests: XCTestCase {
         """])
         XCTAssertThrowsError(try provider(wire).librarySongs(cursor: nil, limit: 100)) { error in
             XCTAssertEqual(error as? MusicProviderError,
-                           .unavailable("Bridge's library page contains a row with no kind (id a)"))
+                           .unavailable("SpanDAC's library page contains a row with no kind (id a)"))
         }
     }
 
@@ -208,7 +208,7 @@ final class BridgeMusicProviderTests: XCTestCase {
         """])
         XCTAssertThrowsError(try provider(absent).librarySongs(cursor: nil, limit: 100)) { error in
             XCTAssertEqual(error as? MusicProviderError,
-                           .unavailable("Bridge's library page is missing next_cursor"),
+                           .unavailable("SpanDAC's library page is missing next_cursor"),
                            "a page with no cursor at all was read as the last page")
         }
 
@@ -228,7 +228,7 @@ final class BridgeMusicProviderTests: XCTestCase {
         """])
         XCTAssertThrowsError(try provider(wire).librarySongs(cursor: nil, limit: 100)) { error in
             XCTAssertEqual(error as? MusicProviderError,
-                           .unavailable("Bridge's library page has a next_cursor that is neither text nor null"))
+                           .unavailable("SpanDAC's library page has a next_cursor that is neither text nor null"))
         }
     }
 
@@ -241,7 +241,7 @@ final class BridgeMusicProviderTests: XCTestCase {
         """])
         XCTAssertThrowsError(try provider(wire).librarySongs(cursor: nil, limit: 100)) { error in
             XCTAssertEqual(error as? MusicProviderError,
-                           .unavailable("Bridge's library page is missing generation"))
+                           .unavailable("SpanDAC's library page is missing generation"))
         }
     }
 
@@ -252,7 +252,7 @@ final class BridgeMusicProviderTests: XCTestCase {
         """])
         XCTAssertThrowsError(try provider(wire).librarySongs(cursor: nil, limit: 100)) { error in
             XCTAssertEqual(error as? MusicProviderError,
-                           .unavailable("Bridge's library page is missing total"))
+                           .unavailable("SpanDAC's library page is missing total"))
         }
     }
 
@@ -383,7 +383,7 @@ final class BridgeLibraryPlayTests: XCTestCase {
 /// The 10s read timeout is shared by every `slice.*` op and is generous for a
 /// transport command. It is not generous for a library read: on 2026-09-23 a
 /// cold first page paid for Bridge's ~6.4s library drain inline, blew the 10s,
-/// and put "Bridge did not answer in time" over an empty Songs list. The library
+/// and put "SpanDAC did not answer in time" over an empty Songs list. The library
 /// read gets its own longer timeout; nothing else changes.
 final class LibraryReadTimeoutTests: XCTestCase {
 

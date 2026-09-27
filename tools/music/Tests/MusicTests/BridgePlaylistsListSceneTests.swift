@@ -60,7 +60,7 @@ final class BridgePlaylistsListSceneTests: XCTestCase {
         let s = playlistsTestScene(flag: BridgeSelectedFlag(true), wire: wire, spy: PlaylistAppleScriptSpy())
 
         XCTAssertTrue(settleScene(s) {
-            s.render(frame: frame, snapshot: idle).contains("Playlists \u{2014} Bridge library (58)")
+            s.render(frame: frame, snapshot: idle).contains("Playlists \u{2014} SpanDAC library (58)")
         }, "the header never showed the visible count of 58")
     }
 
@@ -76,7 +76,7 @@ final class BridgePlaylistsListSceneTests: XCTestCase {
         let s = playlistsTestScene(flag: BridgeSelectedFlag(true), wire: wire, spy: PlaylistAppleScriptSpy())
 
         XCTAssertTrue(settleScene(s) {
-            s.render(frame: frame, snapshot: idle).contains("Playlists \u{2014} Bridge library (2)")
+            s.render(frame: frame, snapshot: idle).contains("Playlists \u{2014} SpanDAC library (2)")
         }, "the header counted a temp container")
         let out = s.render(frame: frame, snapshot: idle)
         XCTAssertFalse(out.contains("__album__"), "a temp container was rendered: \(out)")
@@ -167,7 +167,7 @@ final class BridgePlaylistsListSceneTests: XCTestCase {
                                    warmUpSleep: { _ in })
 
         XCTAssertTrue(settleScene(s) {
-            s.render(frame: frame, snapshot: idle).contains("Bridge is still preparing your library - press r to retry")
+            s.render(frame: frame, snapshot: idle).contains("SpanDAC is still preparing your library - press r to retry")
         }, "it never gave up visibly")
     }
 
@@ -180,11 +180,11 @@ final class BridgePlaylistsListSceneTests: XCTestCase {
         let s = playlistsTestScene(flag: BridgeSelectedFlag(true), wire: wire, spy: spy)
 
         XCTAssertTrue(settleScene(s) { s.render(frame: frame, snapshot: idle).contains("press r to retry") },
-                      "the Bridge failure never showed")
+                      "the SpanDAC failure never showed")
         wire.script("slice.libraryPlaylists", [playlistsPage])
         _ = s.handle(.char("r"))
         XCTAssertTrue(settleScene(s) { s.render(frame: frame, snapshot: idle).contains("Top 25 Most Played") },
-                      "r did not re-walk Bridge")
+                      "r did not re-walk SpanDAC")
         XCTAssertEqual(wire.sent("slice.libraryPlaylists").count, 2)
         XCTAssertEqual(spy.count("loadMusicAppPlaylists"), 0)
     }
@@ -200,10 +200,10 @@ final class BridgePlaylistsListSceneTests: XCTestCase {
         let s = playlistsTestScene(flag: BridgeSelectedFlag(true), wire: wire, spy: spy)
 
         XCTAssertTrue(settleScene(s) {
-            s.render(frame: frame, snapshot: idle).contains("This Bridge build can't list your playlists \u{2014} update Bridge")
+            s.render(frame: frame, snapshot: idle).contains("This SpanDAC build can't list your playlists \u{2014} update SpanDAC")
         })
         let out = s.render(frame: frame, snapshot: idle)
-        XCTAssertFalse(out.contains("Top 25"), "a Music.app row appeared after an older-Bridge refusal")
+        XCTAssertFalse(out.contains("Top 25"), "a Music.app row appeared after an older-SpanDAC refusal")
         XCTAssertEqual(spy.count("loadMusicAppPlaylists"), 0)
     }
 
@@ -217,8 +217,8 @@ final class BridgePlaylistsListSceneTests: XCTestCase {
         XCTAssertTrue(settleScene(s) { s.render(frame: frame, snapshot: idle).contains("Chill") })
         let out = s.render(frame: frame, snapshot: idle)
         XCTAssertTrue(out.contains("Top 25 Most Played"))
-        XCTAssertFalse(out.contains("Bridge library"), "a header named Bridge in Music.app mode: \(out)")
-        XCTAssertFalse(out.contains("Some Music.app playlists"), "the Bridge-only note showed in Music.app mode")
+        XCTAssertFalse(out.contains("SpanDAC library"), "a header named SpanDAC in Music.app mode: \(out)")
+        XCTAssertFalse(out.contains("Some Music.app playlists"), "the SpanDAC-only note showed in Music.app mode")
         XCTAssertEqual(wire.requestCount, 0, "Music.app mode reached the wire at all")
     }
 
@@ -235,9 +235,9 @@ final class BridgePlaylistsListSceneTests: XCTestCase {
 
         flag.selected = true
         XCTAssertTrue(settleScene(s) { !wire.sent("slice.libraryPlaylists").isEmpty },
-                      "the flip never asked Bridge for playlists")
+                      "the flip never asked SpanDAC for playlists")
         XCTAssertTrue(settleScene(s) { s.render(frame: frame, snapshot: idle).contains("Top 25 Most Played") },
-                      "the rail never reloaded from Bridge")
+                      "the rail never reloaded from SpanDAC")
         let out = s.render(frame: frame, snapshot: idle)
         XCTAssertFalse(out.contains("Music.app Playlist"), "the old Music.app rows were still on screen: \(out)")
         XCTAssertEqual(s.railCursorForTest, 0)
@@ -261,7 +261,7 @@ final class BridgePlaylistsListSceneTests: XCTestCase {
         XCTAssertEqual(spy.count("loadMusicAppPlaylists"), 1)
         XCTAssertEqual(spy.count("makeSources"), 1)
         XCTAssertEqual(wire.sent("slice.libraryPlaylists").count, bridgeRequestsBeforeFlip,
-                       "the flip back to Music.app asked Bridge again")
+                       "the flip back to Music.app asked SpanDAC again")
         XCTAssertEqual(status.current()?.text, LibraryProvenance.musicAppPlaylistsShown)
     }
 
@@ -316,7 +316,7 @@ final class BridgePlaylistsListSceneTests: XCTestCase {
     func testABridgePageGatedUntilAfterAFlipToMusicAppNeverAppears() {
         let page1 = """
         {"ok":true,"op":"slice.libraryPlaylists","generation":3,"total":1,
-         "items":[{"id":"pl1","title":"Gated Bridge Playlist","kind":"playlist"}],"next_cursor":null}
+         "items":[{"id":"pl1","title":"Gated SpanDAC Playlist","kind":"playlist"}],"next_cursor":null}
         """
         let wire = BridgeLibraryReadsWire(["slice.libraryPlaylists": [page1]])
         wire.gate(op: "slice.libraryPlaylists", at: 0)
@@ -334,7 +334,7 @@ final class BridgePlaylistsListSceneTests: XCTestCase {
         Thread.sleep(forTimeInterval: 0.15)
         for _ in 0..<10 { _ = s.tick(snapshot: idle) }
         let out = s.render(frame: frame, snapshot: idle)
-        XCTAssertFalse(out.contains("Gated Bridge Playlist"), "a Bridge row landed after the rail had reset to Music.app: \(out)")
+        XCTAssertFalse(out.contains("Gated SpanDAC Playlist"), "a SpanDAC row landed after the rail had reset to Music.app: \(out)")
     }
 
     // MARK: - openPlaylistsScene
@@ -355,8 +355,8 @@ final class BridgePlaylistsListSceneTests: XCTestCase {
                                                                  metaCache: temporaryPlaylistMetaCache().cache)
                                        })
         XCTAssertNotNil(scene)
-        XCTAssertEqual(loaderCalls, 0, "Bridge mode called loadMusicAppPlaylists")
-        XCTAssertEqual(built?.names, [], "Bridge mode built with non-empty names")
+        XCTAssertEqual(loaderCalls, 0, "SpanDAC mode called loadMusicAppPlaylists")
+        XCTAssertEqual(built?.names, [], "SpanDAC mode built with non-empty names")
     }
 
     func testOpenPlaylistsSceneInMusicAppModeWithNoNamesReturnsNilAndPostsNoPlaylistsFound() {

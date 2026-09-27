@@ -2,7 +2,7 @@ import XCTest
 @testable import music
 
 /// C1: the five slice-2 reads (D1/D2) at the transport and provider seam —
-/// framing, row decoding, and the "older Bridge" (`unknown_op`) path. No scene
+/// framing, row decoding, and the "older SpanDAC" (`unknown_op`) path. No scene
 /// is built here; `BridgeLibraryListsSceneTests` (C2) proves the scene wiring.
 ///
 /// Canned through the real `SourceAppControl(path:transport:libraryTransport:)`,
@@ -226,9 +226,9 @@ final class BridgeLibraryReadsTests: XCTestCase {
 
     func testTooLargeNotInLibraryAndLibraryChangedAreRefusedWithTheirDetailVerbatim() {
         let cases: [(kind: String, detail: String)] = [
-            ("too_large", "That artist's songs are too large for Bridge to send at once."),
+            ("too_large", "That artist's songs are too large for SpanDAC to send at once."),
             ("not_in_library", "That album isn't in your library any more."),
-            ("library_changed", "1 of 10 tracks of that album aren't in Bridge's copy of your library yet."),
+            ("library_changed", "1 of 10 tracks of that album aren't in SpanDAC's copy of your library yet."),
         ]
         for c in cases {
             let wire = Wire(["""
@@ -251,15 +251,15 @@ final class BridgeLibraryReadsTests: XCTestCase {
         }
         let expectations: [(call: (BridgeMusicProvider) throws -> Void, op: String, sentence: String)] = [
             ({ _ = try $0.libraryAlbums(cursor: nil, limit: 100) }, "slice.libraryAlbums",
-             "This Bridge build can't list your albums — update Bridge"),
+             "This SpanDAC build can't list your albums — update SpanDAC"),
             ({ _ = try $0.libraryArtists(cursor: nil, limit: 100) }, "slice.libraryArtists",
-             "This Bridge build can't list your artists — update Bridge"),
+             "This SpanDAC build can't list your artists — update SpanDAC"),
             ({ _ = try $0.albumTracks(albumID: "a1") }, "slice.libraryAlbumTracks",
-             "This Bridge build can't list an album's tracks — update Bridge"),
+             "This SpanDAC build can't list an album's tracks — update SpanDAC"),
             ({ _ = try $0.artistAlbums(artistID: "r1") }, "slice.libraryArtistAlbums",
-             "This Bridge build can't list an artist's albums — update Bridge"),
+             "This SpanDAC build can't list an artist's albums — update SpanDAC"),
             ({ _ = try $0.artistSongs(artistID: "r1") }, "slice.libraryArtistSongs",
-             "This Bridge build can't play an artist — update Bridge"),
+             "This SpanDAC build can't play an artist — update SpanDAC"),
         ]
         for e in expectations {
             let wire = Wire([unknownOp(e.op)])
@@ -293,23 +293,23 @@ final class BridgeLibraryReadsTests: XCTestCase {
         let p = BeforeSlice2()
         XCTAssertThrowsError(try p.libraryAlbums(cursor: nil, limit: 100)) { error in
             XCTAssertEqual(error as? MusicProviderError,
-                           .notImplemented("This Bridge build can't list your albums — update Bridge"))
+                           .notImplemented("This SpanDAC build can't list your albums — update SpanDAC"))
         }
         XCTAssertThrowsError(try p.libraryArtists(cursor: nil, limit: 100)) { error in
             XCTAssertEqual(error as? MusicProviderError,
-                           .notImplemented("This Bridge build can't list your artists — update Bridge"))
+                           .notImplemented("This SpanDAC build can't list your artists — update SpanDAC"))
         }
         XCTAssertThrowsError(try p.albumTracks(albumID: "a1")) { error in
             XCTAssertEqual(error as? MusicProviderError,
-                           .notImplemented("This Bridge build can't list an album's tracks — update Bridge"))
+                           .notImplemented("This SpanDAC build can't list an album's tracks — update SpanDAC"))
         }
         XCTAssertThrowsError(try p.artistAlbums(artistID: "r1")) { error in
             XCTAssertEqual(error as? MusicProviderError,
-                           .notImplemented("This Bridge build can't list an artist's albums — update Bridge"))
+                           .notImplemented("This SpanDAC build can't list an artist's albums — update SpanDAC"))
         }
         XCTAssertThrowsError(try p.artistSongs(artistID: "r1")) { error in
             XCTAssertEqual(error as? MusicProviderError,
-                           .notImplemented("This Bridge build can't play an artist — update Bridge"))
+                           .notImplemented("This SpanDAC build can't play an artist — update SpanDAC"))
         }
     }
 
@@ -317,7 +317,7 @@ final class BridgeLibraryReadsTests: XCTestCase {
 
     func testSourceReadinessFromUnsupportedGivesTheStatedSentence() {
         XCTAssertEqual(SourceReadiness.from(SourceAppError.unsupported("slice.libraryAlbums")),
-                       .unavailable("Bridge is older than this MusicTUI — update Bridge"))
+                       .unavailable("SpanDAC is older than this MusicTUI — update SpanDAC"))
     }
 
     // MARK: - walkLibraryPages, generic over the fetch (D1)

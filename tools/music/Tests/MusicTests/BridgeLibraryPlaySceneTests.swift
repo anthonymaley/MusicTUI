@@ -69,7 +69,7 @@ final class BridgeLibraryPlaySceneTests: XCTestCase {
         XCTAssertEqual(wire.sent("slice.libraryAlbumTracks").first?["id"] as? String, "al1")
         XCTAssertTrue(settleScene(s) { s.render(frame: frame, snapshot: idle).contains("Tt1") })
         XCTAssertEqual(spy.count("onAlbumTracks"), 0)
-        XCTAssertEqual(spy.count("onAlbumCover"), 0, "Bridge albums must get the gradient, never a cover fetch")
+        XCTAssertEqual(spy.count("onAlbumCover"), 0, "SpanDAC albums must get the gradient, never a cover fetch")
     }
 
     // MARK: - Album play
@@ -155,7 +155,7 @@ final class BridgeLibraryPlaySceneTests: XCTestCase {
         // it displays and appends the notice.
         XCTAssertEqual(wire.sent("slice.queue").first?["library_ids"] as? [String], ["t1", "t2", "t3"])
         XCTAssertTrue(settleScene(s) {
-            status.current()?.text == "Playing 'In Rainbows' on Bridge \u{2014} 2 tracks. 1 song isn't available to Bridge."
+            status.current()?.text == "Playing 'In Rainbows' on SpanDAC \u{2014} 2 tracks. 1 song isn't available to SpanDAC."
         }, "got: \(String(describing: status.current()?.text))")
     }
 
@@ -181,7 +181,7 @@ final class BridgeLibraryPlaySceneTests: XCTestCase {
         // as `false`.
         XCTAssertEqual(wire.sent("slice.queue").first?["start_required"] as? Bool, false)
         XCTAssertTrue(settleScene(s) {
-            status.current()?.text == "Playing 'Radiohead' on Bridge \u{2014} 2 tracks. 2 songs aren't available to Bridge."
+            status.current()?.text == "Playing 'Radiohead' on SpanDAC \u{2014} 2 tracks. 2 songs aren't available to SpanDAC."
         }, "got: \(String(describing: status.current()?.text))")
     }
 
@@ -201,7 +201,7 @@ final class BridgeLibraryPlaySceneTests: XCTestCase {
         _ = s.handle(.char("p"))
         XCTAssertTrue(settleQueued(wire))
         XCTAssertTrue(settleScene(s) {
-            status.current()?.text == "Playing 'In Rainbows' on Bridge \u{2014} 3 tracks."
+            status.current()?.text == "Playing 'In Rainbows' on SpanDAC \u{2014} 3 tracks."
         }, "got: \(String(describing: status.current()?.text))")
     }
 
@@ -219,8 +219,8 @@ final class BridgeLibraryPlaySceneTests: XCTestCase {
         _ = s.handle(.enter)
 
         XCTAssertTrue(settleScene(s) {
-            s.render(frame: frame, snapshot: idle).contains("Bridge has not been granted Apple Music access")
-        }, "the pane never showed Bridge's own sentence")
+            s.render(frame: frame, snapshot: idle).contains("SpanDAC has not been granted Apple Music access")
+        }, "the pane never showed SpanDAC's own sentence")
     }
 
     func testAnEmptyAlbumRefusesWithNoQueue() {
@@ -291,7 +291,7 @@ final class BridgeLibraryPlaySceneTests: XCTestCase {
         """
         let tooLarge = """
         {"ok":false,"op":"slice.libraryArtistSongs",
-         "error":{"kind":"too_large","detail":"Radiohead has more than 100 songs, which is more than Bridge can queue."}}
+         "error":{"kind":"too_large","detail":"Radiohead has more than 100 songs, which is more than SpanDAC can queue."}}
         """
         let wire = BridgeLibraryReadsWire(["slice.libraryArtists": [artistPage], "slice.libraryArtistSongs": [tooLarge]])
         let status = StatusStore()
@@ -303,7 +303,7 @@ final class BridgeLibraryPlaySceneTests: XCTestCase {
 
         XCTAssertTrue(settleScene(s) { status.current()?.text != nil })
         XCTAssertEqual(status.current()?.text,
-                       "Radiohead has more than 100 songs, which is more than Bridge can queue.")
+                       "Radiohead has more than 100 songs, which is more than SpanDAC can queue.")
         XCTAssertTrue(wire.sent("slice.queue").isEmpty, "too_large still sent a queue")
     }
 
@@ -327,7 +327,7 @@ final class BridgeLibraryPlaySceneTests: XCTestCase {
         XCTAssertTrue(settleScene(s) { status.current()?.text != nil })
         let text = status.current()?.text ?? ""
         XCTAssertTrue(text.contains("another song titled 'T' is playing or queued"),
-                      "Bridge's own reason was lost; got: \(text)")
+                      "SpanDAC's own reason was lost; got: \(text)")
         XCTAssertNotEqual(text, "Play failed.")
         XCTAssertEqual(status.current()?.isError, true)
     }
@@ -350,7 +350,7 @@ final class BridgeLibraryPlaySceneTests: XCTestCase {
 
         let deadline = Date().addingTimeInterval(2)
         while Date() < deadline { usleep(10_000) }
-        XCTAssertTrue(wire.sent("slice.queue").isEmpty, "a play reached Bridge after the flip")
+        XCTAssertTrue(wire.sent("slice.queue").isEmpty, "a play reached SpanDAC after the flip")
         XCTAssertEqual(spy.count("onAlbumTracks") + spy.count("onAlbums"), 0,
                       "a play ran AppleScript instead of refusing")
     }
@@ -385,7 +385,7 @@ final class BridgeLibraryPlaySceneTests: XCTestCase {
         _ = s.tick(snapshot: idle)                             // applyProvenance runs the reset synchronously
         flag.selected = true                                   // ...and back to Bridge
         XCTAssertTrue(settleScene(s) { s.render(frame: frame, snapshot: idle).contains("In Rainbows") },
-                      "Albums never reloaded from Bridge after the flip back")
+                      "Albums never reloaded from SpanDAC after the flip back")
         _ = s.handle(.enter)   // reopen the SAME album: kicks the SECOND, fresh, unblocked fetch
         XCTAssertTrue(settleScene(s) { s.render(frame: frame, snapshot: idle).contains("Tfresh1") },
                       "the fresh tracks never landed")
@@ -399,7 +399,7 @@ final class BridgeLibraryPlaySceneTests: XCTestCase {
         Thread.sleep(forTimeInterval: 0.15)
         for _ in 0..<10 { _ = s.tick(snapshot: idle) }
         let out = s.render(frame: frame, snapshot: idle)
-        XCTAssertFalse(out.contains("Tstale1"), "a stale Bridge tracks result landed after an output switch: \(out)")
+        XCTAssertFalse(out.contains("Tstale1"), "a stale SpanDAC tracks result landed after an output switch: \(out)")
         XCTAssertTrue(out.contains("Tfresh1"), "the fresh result was overwritten by the stale one")
     }
 
@@ -436,7 +436,7 @@ final class BridgeLibraryPlaySceneTests: XCTestCase {
         _ = s.tick(snapshot: idle)                             // applyProvenance runs the reset synchronously
         flag.selected = true                                   // ...and back to Bridge
         XCTAssertTrue(settleScene(s) { s.render(frame: frame, snapshot: idle).contains("Radiohead") },
-                      "Artists never reloaded from Bridge after the flip back")
+                      "Artists never reloaded from SpanDAC after the flip back")
         _ = s.handle(.enter)   // reopen the SAME artist: kicks the SECOND, fresh, unblocked fetch
         XCTAssertTrue(settleScene(s) { s.render(frame: frame, snapshot: idle).contains("Fresh Album") },
                       "the fresh artist-albums result never landed")
@@ -469,6 +469,6 @@ final class BridgeLibraryPlaySceneTests: XCTestCase {
 
         let deadline = Date().addingTimeInterval(1)
         while Date() < deadline { usleep(10_000) }
-        XCTAssertEqual(wire.requestCount, 0, "Music.app mode reached Bridge's wire")
+        XCTAssertEqual(wire.requestCount, 0, "Music.app mode reached SpanDAC's wire")
     }
 }

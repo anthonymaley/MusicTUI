@@ -82,10 +82,10 @@ final class SourceAppStationSearchTests: XCTestCase {
     }
 
     func testBusyIsReportedAsBusyNotRefused() {
-        let reply = #"{"ok":false,"op":"slice.searchStations","error":{"kind":"busy","detail":"Bridge is handling too many requests at once; try again in a moment."}}"#
+        let reply = #"{"ok":false,"op":"slice.searchStations","error":{"kind":"busy","detail":"SpanDAC is handling too many requests at once; try again in a moment."}}"#
         XCTAssertThrowsError(try search(replying: reply).searchStations(term: "x")) { error in
             XCTAssertEqual(error as? SourceAppError, .busy)
-            XCTAssertEqual((error as? SourceAppError)?.message, "Bridge is busy; try again in a moment.")
+            XCTAssertEqual((error as? SourceAppError)?.message, "SpanDAC is busy; try again in a moment.")
         }
     }
 
@@ -123,9 +123,9 @@ final class SourceAppStationSearchTests: XCTestCase {
     // MARK: the messages a person actually reads
 
     func testEveryFailureSaysSomethingActionable() {
-        XCTAssertEqual(SourceAppError.notRunning.message, "Bridge is not running")
-        XCTAssertEqual(SourceAppError.notAuthorized.message, "Bridge has no Apple Music access")
+        XCTAssertEqual(SourceAppError.notRunning.message, "SpanDAC is not running")
+        XCTAssertEqual(SourceAppError.notAuthorized.message, "SpanDAC has no Apple Music access")
         XCTAssertTrue(SourceAppError.refused("boom").message.contains("boom"))
-        XCTAssertEqual(SourceAppError.unreadable.message, "Bridge sent an unreadable reply")
+        XCTAssertEqual(SourceAppError.unreadable.message, "SpanDAC sent an unreadable reply")
     }
 }

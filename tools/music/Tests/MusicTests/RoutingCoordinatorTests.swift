@@ -370,7 +370,7 @@ final class RoutingCoordinatorTests: XCTestCase {
         try tui.perform(.collectionShuffle, musicApp: { tuiLog.append("musicApp") },
                         source: { _ in tuiLog.append("source") },
                         unaffected: { tuiLog.append("unaffected") })
-        XCTAssertEqual(tuiLog.log, ["source"], "the TUI's collection shuffle must reach Bridge")
+        XCTAssertEqual(tuiLog.log, ["source"], "the TUI's collection shuffle must reach SpanDAC")
 
         let cliLog = Recorder()
         let cli = coordinator(mode: .source, recorder: cliLog, surface: .cli)
@@ -426,8 +426,8 @@ final class RoutingCoordinatorTests: XCTestCase {
                                               pauseOutgoing: { _ in false },
                                               dropQueue: { _ in })) { error in
             let message = (error as? ActionError)?.message ?? ""
-            XCTAssertTrue(message.contains("Bridge"),
-                          "the outgoing player is not named Bridge: \(message)")
+            XCTAssertTrue(message.contains("SpanDAC (this Mac)"),
+                          "the outgoing player is not named SpanDAC (this Mac): \(message)")
         }
     }
 }

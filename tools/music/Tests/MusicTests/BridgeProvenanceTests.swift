@@ -19,13 +19,13 @@ final class BridgeProvenanceTests: XCTestCase {
         for id in [nil, ""] as [String?] {
             let row = SongResult.row(4, .bridgeLibrary, bridgeID: id)
             XCTAssertEqual(bridgeRef(forCachedRow: row, index: 4),
-                           .refuse("Result 4 has no Bridge id; run the search again."))
+                           .refuse("Result 4 has no SpanDAC id; run the search again."))
         }
     }
 
     func testMusicAppAndCatalogueRowsAreRefusedByOriginNotIdShape() {
         // D10 (Part 2, P6) replaces Part 1's `search --library` hint.
-        let expected = "Result 3 came from a Music.app or catalogue listing, so Bridge can't play it by its own id. With Bridge selected, run: music search \"T3\"  then  music play N"
+        let expected = "Result 3 came from a Music.app or catalogue listing, so SpanDAC can't play it by its own id. With SpanDAC selected, run: music search \"T3\"  then  music play N"
         // A catalogue row whose id looks like a library id is still catalogue.
         XCTAssertEqual(bridgeRef(forCachedRow: .row(3, .catalog, catalogId: "i.abc123"), index: 3), .refuse(expected))
         XCTAssertEqual(bridgeRef(forCachedRow: .row(3, .catalog), index: 3), .refuse(expected))
@@ -37,14 +37,14 @@ final class BridgeProvenanceTests: XCTestCase {
         let row = try JSONDecoder().decode([SongResult].self, from: Data(json.utf8))[0]
         XCTAssertEqual(row.origin, .catalog)
         guard case .refuse = bridgeRef(forCachedRow: row, index: 1) else {
-            return XCTFail("a legacy row must never become a Bridge ref")
+            return XCTFail("a legacy row must never become a SpanDAC ref")
         }
     }
 
     // MARK: - musicAppIndexRoute(forCachedRow:index:)
 
     func testMusicAppRefusesBridgeRowsAndReResolvesTheRest() {
-        let refusal = "Result 5 came from Bridge's library, which Music.app can't play by identity. Search again with Output set to Music.app, or switch Output to Bridge."
+        let refusal = "Result 5 came from SpanDAC's library, which Music.app can't play by identity. Search again with Output set to Music.app, or switch Output to SpanDAC."
         XCTAssertEqual(musicAppIndexRoute(forCachedRow: .row(5, .bridgeLibrary, bridgeID: "9"), index: 5), .refuse(refusal))
         XCTAssertEqual(musicAppIndexRoute(forCachedRow: .row(5, .bridgeLibrary), index: 5), .refuse(refusal))
         XCTAssertEqual(musicAppIndexRoute(forCachedRow: .row(5, .catalog), index: 5), .reResolveByTitle)
@@ -54,7 +54,7 @@ final class BridgeProvenanceTests: XCTestCase {
     /// D10: Music.app refuses a Bridge catalogue row in its own words, with or
     /// without its id; it is never re-resolved by title.
     func testMusicAppRefusesBridgeCatalogueRows() {
-        let refusal = "Result 5 came from Bridge's catalogue search, which Music.app can't play by identity. Search again with Output set to Music.app, or switch Output to Bridge."
+        let refusal = "Result 5 came from SpanDAC's catalogue search, which Music.app can't play by identity. Search again with Output set to Music.app, or switch Output to SpanDAC."
         XCTAssertEqual(musicAppIndexRoute(forCachedRow: .row(5, .bridgeCatalog, bridgeID: "1440"), index: 5), .refuse(refusal))
         XCTAssertEqual(musicAppIndexRoute(forCachedRow: .row(5, .bridgeCatalog), index: 5), .refuse(refusal))
     }
@@ -77,7 +77,7 @@ final class BridgeProvenanceTests: XCTestCase {
     func testBridgeCatalogueRowWithNoIdIsRefused() {
         for id in [nil, ""] as [String?] {
             XCTAssertEqual(bridgeRef(forCachedRow: .row(4, .bridgeCatalog, bridgeID: id), index: 4),
-                           .refuse("Result 4 has no Bridge id; run the search again."))
+                           .refuse("Result 4 has no SpanDAC id; run the search again."))
         }
     }
 
@@ -85,7 +85,7 @@ final class BridgeProvenanceTests: XCTestCase {
     /// Bridge (`.catalog` also carries library and album ids).
     func testACatalogRowWithANumericIdIsStillRefusedOnBridge() {
         guard case .refuse = bridgeRef(forCachedRow: .row(1, .catalog, catalogId: "1440857781"), index: 1) else {
-            return XCTFail("a .catalog row must never become a Bridge ref")
+            return XCTFail("a .catalog row must never become a SpanDAC ref")
         }
     }
 
@@ -108,13 +108,13 @@ final class BridgeProvenanceTests: XCTestCase {
         XCTAssertNil(bridgeRowsRefusal([]))
         XCTAssertNil(bridgeRowsRefusal([.row(1, .catalog), .row(2, .library)]))
         XCTAssertEqual(bridgeRowsRefusal([.row(1, .catalog), .row(2, .bridgeLibrary, bridgeID: "7")]),
-                       "Result(s) 2 came from Bridge. Adding Bridge rows to your library or a playlist isn't supported yet; search again with Output set to Music.app.")
+                       "Result(s) 2 came from SpanDAC. Adding SpanDAC rows to your library or a playlist isn't supported yet; search again with Output set to Music.app.")
         XCTAssertEqual(bridgeRowsRefusal([.row(3, .bridgeLibrary), .row(1, .catalog), .row(5, .bridgeLibrary, bridgeID: "x")]),
-                       "Result(s) 3, 5 came from Bridge. Adding Bridge rows to your library or a playlist isn't supported yet; search again with Output set to Music.app.")
+                       "Result(s) 3, 5 came from SpanDAC. Adding SpanDAC rows to your library or a playlist isn't supported yet; search again with Output set to Music.app.")
         // D10, Q3's default: a Bridge CATALOGUE row is refused the same way (P6A is out).
         XCTAssertEqual(bridgeRowsRefusal([.row(1, .catalog), .row(2, .bridgeCatalog, bridgeID: "1440"),
                                           .row(3, .bridgeLibrary, bridgeID: "b")]),
-                       "Result(s) 2, 3 came from Bridge. Adding Bridge rows to your library or a playlist isn't supported yet; search again with Output set to Music.app.")
+                       "Result(s) 2, 3 came from SpanDAC. Adding SpanDAC rows to your library or a playlist isn't supported yet; search again with Output set to Music.app.")
     }
 
     // MARK: - The existing origin helpers, now exhaustive
@@ -136,7 +136,7 @@ final class BridgeProvenanceTests: XCTestCase {
         XCTAssertFalse(allLibraryRows([.row(1, .bridgeLibrary, bridgeID: "1")]))
         XCTAssertFalse(allLibraryRows([.row(1, .library), .row(2, .bridgeLibrary, bridgeID: "2")]))
         let c = partitionByOrigin([.row(1, .catalog), .row(2, .bridgeCatalog, bridgeID: "2"), .row(3, .library)])
-        XCTAssertEqual(c.catalog.map(\.index), [1], "a Bridge catalogue row is not a REST catalogue row")
+        XCTAssertEqual(c.catalog.map(\.index), [1], "a SpanDAC catalogue row is not a REST catalogue row")
         XCTAssertEqual(c.library.map(\.index), [3])
         XCTAssertFalse(allLibraryRows([.row(1, .bridgeCatalog, bridgeID: "1")]))
         XCTAssertFalse(allLibraryRows([.row(1, .library), .row(2, .bridgeCatalog, bridgeID: "2")]))

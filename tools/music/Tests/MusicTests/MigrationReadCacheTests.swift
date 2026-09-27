@@ -45,7 +45,7 @@ final class MigrationReadCacheTests: XCTestCase {
         XCTAssertNil(searchError, file: file, line: line)
         XCTAssertEqual(calls, [], file: file, line: line)
         XCTAssertEqual(try h.cache.readSongs().map(\.origin), [.bridgeLibrary, .bridgeLibrary],
-                       "Bridge search published Bridge rows", file: file, line: line)
+                       "SpanDAC search published SpanDAC rows", file: file, line: line)
 
         // The preserved read's shipped writer, same cache, Bridge still selected.
         try h.cache.writeSongs(searchCacheRows([CatalogSong(id: "1440", title: "Angel", artist: "Massive Attack",
@@ -53,9 +53,9 @@ final class MigrationReadCacheTests: XCTestCase {
         let row = try h.cache.lookupSong(index: 1)
         XCTAssertEqual(row.origin, origin, file: file, line: line)
         guard case .refuse(let why) = bridgeRef(forCachedRow: row, index: 1) else {
-            return XCTFail("a \(origin) row became a Bridge reference", file: file, line: line)
+            return XCTFail("a \(origin) row became a SpanDAC reference", file: file, line: line)
         }
-        XCTAssertEqual(why, "Result 1 came from a Music.app or catalogue listing, so Bridge can't play it by its own id. With Bridge selected, run: music search \"Angel\"  then  music play N",
+        XCTAssertEqual(why, "Result 1 came from a Music.app or catalogue listing, so SpanDAC can't play it by its own id. With SpanDAC selected, run: music search \"Angel\"  then  music play N",
                        file: file, line: line)
 
         let before = h.io.out.count
@@ -115,7 +115,7 @@ final class MigrationReadCacheTests: XCTestCase {
         for action in [MusicTUIAction.suggest, .newReleases] {
             XCTAssertFalse(cliBridgeExceptions.contains(action), "\(action)")
             guard case .refused = routeAction(action, in: .source, from: .cli) else {
-                XCTFail("\(action) must refuse on Bridge"); continue
+                XCTFail("\(action) must refuse on SpanDAC"); continue
             }
         }
     }

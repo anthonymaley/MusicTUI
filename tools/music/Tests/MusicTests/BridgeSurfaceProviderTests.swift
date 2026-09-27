@@ -52,7 +52,7 @@ final class BridgeSurfaceProviderTests: XCTestCase {
         catch { return .otherError(String(describing: error)) }
     }
 
-    private func refusal(_ op: String, _ kind: String, _ detail: String = "Bridge's words",
+    private func refusal(_ op: String, _ kind: String, _ detail: String = "SpanDAC's words",
                          extra: String = "") -> String {
         #"{"ok":false,"op":"\#(op)","error":{"kind":"\#(kind)","detail":"\#(detail)"\#(extra)}}"#
     }
@@ -213,19 +213,19 @@ final class BridgeSurfaceProviderTests: XCTestCase {
     }
 
     private let newReads: [NewRead] = [
-        NewRead(op: "slice.search", sentence: "This Bridge build can't search the catalogue — update Bridge") {
+        NewRead(op: "slice.search", sentence: "This SpanDAC build can't search the catalogue — update SpanDAC") {
             try $0.searchCatalogue(term: "x", limit: 10) },
-        NewRead(op: "slice.liveStations", sentence: "This Bridge build can't list live stations — update Bridge") {
+        NewRead(op: "slice.liveStations", sentence: "This SpanDAC build can't list live stations — update SpanDAC") {
             try $0.liveStations() },
         NewRead(op: "slice.personalStations",
-                sentence: "This Bridge build can't show your personal station — update Bridge") {
+                sentence: "This SpanDAC build can't show your personal station — update SpanDAC") {
             try $0.personalStations() },
-        NewRead(op: "slice.station", sentence: "This Bridge build can't look up a station — update Bridge") {
+        NewRead(op: "slice.station", sentence: "This SpanDAC build can't look up a station — update SpanDAC") {
             try $0.station(id: "ra.1") as Any },
         NewRead(op: "slice.recentTracks",
-                sentence: "This Bridge build can't show your listening history — update Bridge") {
+                sentence: "This SpanDAC build can't show your listening history — update SpanDAC") {
             try $0.recentTracks(limit: 10) },
-        NewRead(op: "slice.heavyRotation", sentence: "This Bridge build can't show heavy rotation — update Bridge") {
+        NewRead(op: "slice.heavyRotation", sentence: "This SpanDAC build can't show heavy rotation — update SpanDAC") {
             try $0.heavyRotation(limit: 10) },
     ]
 
@@ -243,10 +243,10 @@ final class BridgeSurfaceProviderTests: XCTestCase {
     func testNewReadsTranslateRefusalsAsTheLibraryReadsDo() {
         for read in newReads {
             let cases: [(String, MusicProviderError)] = [
-                (refusal(read.op, "unauthorized"), .unavailable("Bridge has not been granted Apple Music access")),
+                (refusal(read.op, "unauthorized"), .unavailable("SpanDAC has not been granted Apple Music access")),
                 (refusal(read.op, "warming", "w", extra: #","retry_after":2"#), .warming("w", retryAfter: 2)),
                 (refusal(read.op, "stale_generation", "s"), .staleGeneration("s")),
-                (refusal(read.op, "not_found", "Bridge's words"), .refused("Bridge's words")),
+                (refusal(read.op, "not_found", "SpanDAC's words"), .refused("SpanDAC's words")),
             ]
             for (reply, expected) in cases {
                 XCTAssertThrowsError(try read.call(provider(Wire(reply: reply))), read.op) {
@@ -254,7 +254,7 @@ final class BridgeSurfaceProviderTests: XCTestCase {
                 }
             }
             XCTAssertThrowsError(try read.call(provider(Wire { _ in throw SourceAppError.notRunning })), read.op) {
-                XCTAssertEqual($0 as? MusicProviderError, .unavailable("Bridge is not running"), read.op)
+                XCTAssertEqual($0 as? MusicProviderError, .unavailable("SpanDAC is not running"), read.op)
             }
         }
     }
@@ -303,21 +303,21 @@ final class BridgeSurfaceProviderTests: XCTestCase {
         let album = DiscoverItem(id: "1", name: "A", subtitle: nil, url: nil, artworkURL: nil,
                                  detail: .album(trackCount: nil, year: nil, genre: nil))
         let cases: [(String, () throws -> Any)] = [
-            ("This Bridge build can't show Discover — update Bridge", { try p.discoverRails(limit: 30) }),
-            ("This Bridge build can't list a Discover item's tracks — update Bridge",
+            ("This SpanDAC build can't show Discover — update SpanDAC", { try p.discoverRails(limit: 30) }),
+            ("This SpanDAC build can't list a Discover item's tracks — update SpanDAC",
              { try p.containerTracks(for: album) }),
-            ("This Bridge build can't search stations — update Bridge",
+            ("This SpanDAC build can't search stations — update SpanDAC",
              { try p.searchStations(term: "x", limit: 25) }),
-            ("This Bridge build can't list live stations — update Bridge", { try p.liveStations() }),
-            ("This Bridge build can't show your personal station — update Bridge", { try p.personalStations() }),
-            ("This Bridge build can't look up a station — update Bridge", { try p.station(id: "ra.1") as Any }),
-            ("This Bridge build can't play a station — update Bridge",
+            ("This SpanDAC build can't list live stations — update SpanDAC", { try p.liveStations() }),
+            ("This SpanDAC build can't show your personal station — update SpanDAC", { try p.personalStations() }),
+            ("This SpanDAC build can't look up a station — update SpanDAC", { try p.station(id: "ra.1") as Any }),
+            ("This SpanDAC build can't play a station — update SpanDAC",
              { try p.playStation(id: "ra.1", name: "S", url: nil) }),
-            ("This Bridge build can't play catalogue songs — update Bridge", { try p.playCatalogue(ids: ["1"]) }),
-            ("This Bridge build can't search the catalogue — update Bridge",
+            ("This SpanDAC build can't play catalogue songs — update SpanDAC", { try p.playCatalogue(ids: ["1"]) }),
+            ("This SpanDAC build can't search the catalogue — update SpanDAC",
              { try p.searchCatalogue(term: "x", limit: 10) }),
-            ("This Bridge build can't show your listening history — update Bridge", { try p.recentTracks(limit: 10) }),
-            ("This Bridge build can't show heavy rotation — update Bridge", { try p.heavyRotation(limit: 10) }),
+            ("This SpanDAC build can't show your listening history — update SpanDAC", { try p.recentTracks(limit: 10) }),
+            ("This SpanDAC build can't show heavy rotation — update SpanDAC", { try p.heavyRotation(limit: 10) }),
         ]
         for (sentence, call) in cases {
             XCTAssertThrowsError(try call(), sentence) {

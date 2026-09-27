@@ -149,21 +149,21 @@ final class SyncPlaysOutputTests: XCTestCase {
 
     func testBridgeNotRunning() {
         let out = renderSyncPlays(result(fetch: .bridgeNotRunning), json: false)
-        XCTAssertEqual(out.text, "Bridge is not running, so no new plays could be read.")
+        XCTAssertEqual(out.text, "SpanDAC is not running, so no new plays could be read.")
         XCTAssertEqual(out.exit, 1)
     }
 
     func testBridgeTooOld() {
         let out = renderSyncPlays(result(fetch: .bridgeTooOld), json: false)
         XCTAssertEqual(out.text,
-                       "Bridge is older than this MusicTUI and does not record plays — update Bridge.")
+                       "SpanDAC is older than this MusicTUI and does not record plays — update SpanDAC.")
         XCTAssertEqual(out.exit, 1)
     }
 
     func testLedgerReplacedIsReportedButDoesNotFail() {
         let out = renderSyncPlays(result(fetch: .ledgerReplaced), json: false)
         XCTAssertEqual(out.text,
-                       "Bridge's play record was replaced; plays it held before could not all be read.")
+                       "SpanDAC's play record was replaced; plays it held before could not all be read.")
         XCTAssertEqual(out.exit, 0)
     }
 
@@ -173,23 +173,23 @@ final class SyncPlaysOutputTests: XCTestCase {
         XCTAssertEqual(out.text, """
             Recorded 1 library play in Music.app.
               Teardrop — Massive Attack
-            Bridge's play record was replaced; plays it held before could not all be read.
+            SpanDAC's play record was replaced; plays it held before could not all be read.
             """)
         XCTAssertEqual(out.exit, 0)
     }
 
     func testFetchFailureFails() {
-        let out = renderSyncPlays(result(fetch: .failed("Bridge did not answer in time")), json: false)
-        XCTAssertEqual(out.text, "No new plays could be read: Bridge did not answer in time.")
+        let out = renderSyncPlays(result(fetch: .failed("SpanDAC did not answer in time")), json: false)
+        XCTAssertEqual(out.text, "No new plays could be read: SpanDAC did not answer in time.")
         XCTAssertEqual(out.exit, 1)
     }
 
     func testFetchFailureKeepsItsOwnFullStop() {
         let out = renderSyncPlays(
-            result(fetch: .failed("Bridge's play record was replaced again while it was being read.")),
+            result(fetch: .failed("SpanDAC's play record was replaced again while it was being read.")),
             json: false)
         XCTAssertEqual(out.text,
-                       "No new plays could be read: Bridge's play record was replaced again while it was being read.")
+                       "No new plays could be read: SpanDAC's play record was replaced again while it was being read.")
         XCTAssertEqual(out.exit, 1)
     }
 
@@ -282,8 +282,8 @@ final class SyncPlaysOutputTests: XCTestCase {
         XCTAssertEqual(out.text, """
             Nothing new to record.
             Not recorded (5):
-              A — One: Bridge could not identify it in Music.app
-              B — Two: Bridge could not identify it in Music.app
+              A — One: SpanDAC could not identify it in Music.app
+              B — Two: SpanDAC could not identify it in Music.app
               C — Three: not in your Music.app library
               D — Four: matches more than one Music.app track
               E — Five: Music.app's play count changed during the write; left as it was
@@ -343,7 +343,7 @@ final class SyncPlaysOutputTests: XCTestCase {
         let json = try decode(out.text)
         XCTAssertEqual(json["ok"] as? Bool, false)
         XCTAssertEqual(json["bridge"] as? String, "not_running")
-        XCTAssertEqual(json["error"] as? String, "Bridge is not running, so no new plays could be read.")
+        XCTAssertEqual(json["error"] as? String, "SpanDAC is not running, so no new plays could be read.")
     }
 
     func testJSONBridgeValues() throws {
@@ -384,7 +384,7 @@ final class SyncPlaysOutputTests: XCTestCase {
     func testAbstract() {
         XCTAssertEqual(SyncPlays.configuration.commandName, "sync-plays")
         XCTAssertEqual(SyncPlays.configuration.abstract,
-                       "Record library songs Bridge played to the end in Music.app's play counts.")
+                       "Record library songs SpanDAC played to the end in Music.app's play counts.")
     }
 
     private final class RecordingRunner: PlaySyncRunning {
@@ -401,7 +401,7 @@ final class SyncPlaysOutputTests: XCTestCase {
         let runner = RecordingRunner(result(fetch: .bridgeNotRunning))
         let out = SyncPlays.perform(runner, json: false)
         XCTAssertEqual(runner.triggers, [.explicit])
-        XCTAssertEqual(out.text, "Bridge is not running, so no new plays could be read.")
+        XCTAssertEqual(out.text, "SpanDAC is not running, so no new plays could be read.")
         XCTAssertEqual(out.exit, 1)
     }
 }

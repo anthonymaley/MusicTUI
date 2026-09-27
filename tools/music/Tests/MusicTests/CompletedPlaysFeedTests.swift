@@ -275,7 +275,7 @@ final class CompletedPlaysFeedTests: XCTestCase {
     }
 
     func testLedgerChangedIsItsOwnCase() {
-        let detail = "Bridge's play record was replaced; read it again from the start."
+        let detail = "SpanDAC's play record was replaced; read it again from the start."
         let wire = Wire([refusal("ledger_changed", detail)])
         XCTAssertThrowsError(try control(wire).completedPlays(ledgerID: "OLD", after: 9, limit: 200)) {
             XCTAssertEqual($0 as? SourceAppError, .ledgerChanged(detail))
@@ -290,7 +290,7 @@ final class CompletedPlaysFeedTests: XCTestCase {
     }
 
     func testLedgerUnavailableIsARefusalCarryingItsDetail() {
-        let detail = "Bridge could not open its play record: disk full"
+        let detail = "SpanDAC could not open its play record: disk full"
         let wire = Wire([refusal("ledger_unavailable", detail)])
         XCTAssertThrowsError(try control(wire).completedPlays(ledgerID: nil, after: 0, limit: 200)) {
             XCTAssertEqual($0 as? SourceAppError, .refused(detail))

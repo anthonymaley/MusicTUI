@@ -116,7 +116,7 @@ final class CLIBridgeListingsTests: XCTestCase {
         XCTAssertEqual(Set(rails[0].keys), ["title", "items"], "no recentlyPlayed, never false")
         let item = try XCTUnwrap((rails[0]["items"] as? [[String: Any]])?.first)
         XCTAssertEqual(item["id"] as? String, "ra.978194965")
-        XCTAssertNil(item["url"], "Bridge sends no url")
+        XCTAssertNil(item["url"], "SpanDAC sends no url")
         XCTAssertEqual((rails[0]["items"] as? [Any])?.count, 1, "--per-rail")
     }
 
@@ -127,7 +127,7 @@ final class CLIBridgeListingsTests: XCTestCase {
             XCTAssertEqual(error as? ExitCode, .failure)
             XCTAssertEqual(calls, [])
             XCTAssertEqual(h.seen.ops, ["slice.status"], "readiness only; no slice.recommendations")
-            let expected = "Bridge doesn't serve the Recently Played rail. Switch Output to Music.app to use music discover --recent."
+            let expected = "SpanDAC doesn't serve the Recently Played rail. Switch Output to Music.app to use music discover --recent."
             XCTAssertEqual(h.io.out, [cliFailureText(expected, json: asJSON)])
         }
     }
@@ -136,7 +136,7 @@ final class CLIBridgeListingsTests: XCTestCase {
         let h = H(.source, ["slice.status": [ready], "slice.recommendations": [CLIBridgeReplies.refused("feed unavailable")]])
         let (error, _) = discover(h)
         XCTAssertEqual(error as? ExitCode, .failure)
-        XCTAssertEqual(h.io.out, ["Bridge refused: feed unavailable"])
+        XCTAssertEqual(h.io.out, ["SpanDAC refused: feed unavailable"])
     }
 
     func testMusicAppDiscoverRunsTheShippedBodyAndSendsNothingToBridge() {
@@ -267,7 +267,7 @@ final class CLIBridgeListingsTests: XCTestCase {
         XCTAssertEqual(error as? ExitCode, .failure)
         XCTAssertEqual(calls, [])
         XCTAssertEqual(h.seen.ops, ["slice.status", "slice.libraryPlaylists"], "0 track reads")
-        XCTAssertEqual(h.io.out, ["'road trip' matches 2 playlists in your Bridge library: Road Trip 1; Road Trip 2. Use the exact name."])
+        XCTAssertEqual(h.io.out, ["'road trip' matches 2 playlists in your SpanDAC library: Road Trip 1; Road Trip 2. Use the exact name."])
         XCTAssertEqual(try h.cache.readSongs(), [.row(1, .catalog)], "a refusal publishes nothing")
     }
 
@@ -276,7 +276,7 @@ final class CLIBridgeListingsTests: XCTestCase {
                             "slice.libraryPlaylists": [L.playlists([("p1", "__temp__ Road Trip")])]])
         let (error, _) = playlistTracks(h, "Road Trip")
         XCTAssertEqual(error as? ExitCode, .failure)
-        XCTAssertEqual(h.io.out, ["No playlist named 'Road Trip' in your Bridge library."])
+        XCTAssertEqual(h.io.out, ["No playlist named 'Road Trip' in your SpanDAC library."])
         XCTAssertEqual(h.wire.sent("slice.libraryPlaylistTracks").count, 0)
     }
 
@@ -429,9 +429,9 @@ final class CLIBridgeListingsTests: XCTestCase {
     // MARK: - suggest, new-releases (Q1 default: refused)
 
     static let suggestRefusal =
-        "Bridge output is selected, and music suggest needs Apple Music account reads Bridge doesn't serve. Switch Output to Music.app to use it."
+        "SpanDAC output is selected, and music suggest needs Apple Music account reads SpanDAC doesn't serve. Switch Output to Music.app to use it."
     static let newReleasesRefusal =
-        "Bridge output is selected, and music new-releases needs a catalogue artist lookup Bridge doesn't serve. Switch Output to Music.app to use it."
+        "SpanDAC output is selected, and music new-releases needs a catalogue artist lookup SpanDAC doesn't serve. Switch Output to Music.app to use it."
 
     func testSuggestAndNewReleasesRefuseOnBridgeBeforeAnyRequest() {
         let cases: [(MusicTUIAction, String)] = [
