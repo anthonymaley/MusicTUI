@@ -25,7 +25,9 @@ final class ActionRoutingTests: XCTestCase {
     }
 
     /// Binding rule 1: an install that never opens Output behaves exactly as it
-    /// ships. So nothing is refused in Music.app mode.
+    /// ships. So nothing is refused in Music.app mode. Since the data axis this
+    /// is column 1, open data on the MusicTUI output: it holds BEFORE a person
+    /// accepts SpanDAC as the data source (`DataOutputRoutingTests`).
     func testNothingIsRefusedInMusicAppMode() {
         for action in MusicTUIAction.allCases {
             if case .refused(let reason) = routeAction(action, in: .musicApp, from: .tui) {
@@ -61,7 +63,10 @@ final class ActionRoutingTests: XCTestCase {
         guard case .refused = routeAction(.queueJump, in: .source, from: .tui) else {
             return XCTFail("queue-row jump is deferred from v1 and must refuse")
         }
-        // 12.1 + rule 9: the Library LISTING stays on AppleScript in both modes.
+        // 12.1 + rule 9, now a STALE row kept as it is (score: data route and
+        // output, step 1): the scenes read SpanDAC's own library with a SpanDAC
+        // output selected and never route this row; the data axis
+        // (`routeAction(_:selection:from:)`) reads it from SpanDAC.
         XCTAssertEqual(routeAction(.searchLibrary, in: .source, from: .tui), .musicApp)
         // AirPlay stays MusicTUI's, and does not act in Source Mode.
         guard case .refused = routeAction(.airplayRoute, in: .source, from: .tui) else {
@@ -503,8 +508,10 @@ final class ActionRoutingTests: XCTestCase {
             }
             XCTAssertEqual(cliBridgeNotServedReason(action), tui, "\(action) keeps its TUI-table reason")
         }
+        // The naming rule (score: data route and output): the non-SpanDAC
+        // output is MusicTUI in every sentence a person reads.
         XCTAssertEqual(cliBridgeNotServedReason(.persistentShuffleMode),
-                       "Shuffle and repeat modes are Music.app only for now.")
+                       "Shuffle and repeat modes are MusicTUI only for now.")
         XCTAssertEqual(routeAction(.cliPlayQuery, in: .source, from: .cli),
                        .refused("SpanDAC output is selected, and music play <words> isn't available from the CLI on SpanDAC yet. Use MusicTUI, or switch Output to Music.app."))
         XCTAssertEqual(routeAction(.cliPlayCatalogSong, in: .source, from: .cli), .source, "P6: dispatched")
