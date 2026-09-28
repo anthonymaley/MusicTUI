@@ -556,7 +556,8 @@ struct SourceStatus: Equatable {
     /// Playback position, 0-based within the PRESENT entries. A different
     /// quantity from `queuePresent`, which counts songs ready while building.
     var queueIndex: Int? = nil
-    /// Seeded for a later step; not yet filled or read from.
+    /// What the SpanDAC says is on its output. Nil when the reply carries no
+    /// `output` key (a SpanDAC that predates it), which is read as before.
     var output: SourceOutputInfo? = nil
 }
 
@@ -800,7 +801,8 @@ struct SourceAppControl: SourceControlling {
                             queuePresent: queue?["present"] as? Int,
                             queueReason: queue?["reason"] as? String,
                             queueBuiltBeforeFailure: queue?["built_before_failure"] as? Int,
-                            queueIndex: queue?["index"] as? Int)
+                            queueIndex: queue?["index"] as? Int,
+                            output: Self.outputInfo(from: status))
     }
 
     /// Contract 3. The reply's rows carry MusicKit LIBRARY ids, which is the
@@ -1235,17 +1237,49 @@ struct SourceAppControl: SourceControlling {
     // MARK: - private
 
     /// Ready only when the app says it is authorised AND speaks a contract this
-    /// build knows. Anything else carries the reason a person reads on Output.
-    private func readiness(from status: [String: Any]) -> SourceReadiness {
+    /// build knows AND, when it reports its output, a DAC is connected there.
+    /// Anything else carries the reason a person reads on Output.
+    ///
+    /// **Absent and unknown are different.** No `output` key is an older
+    /// SpanDAC and is read exactly as before. An explicit `unknown` is a newer
+    /// one that has not read its DAC yet: not ready, so the routing transaction
+    /// and the CLI refuse it too. SpanDAC is DAC-only, and an unknown output
+    /// must never fall through to a speaker.
+    func readiness(from status: [String: Any]) -> SourceReadiness {
         if let contract = status["contract"] as? Int, contract != sourceContractVersion {
             return .unavailable("SpanDAC speaks a different version (\(contract)); update one of them")
         }
         switch status["authorization"] as? String {
-        case "authorized":     return .ready
+        case "authorized":     break
         case "not_determined": return .unavailable("SpanDAC has not been granted Apple Music access yet")
         case "denied":         return .unavailable("SpanDAC was denied Apple Music access")
         case "restricted":     return .unavailable("Apple Music access is restricted on this Mac")
         default:               return .unavailable("SpanDAC could not read its Apple Music access")
+        }
+        switch Self.outputInfo(from: status)?.dac {
+        case nil, .connected?: return .ready
+        case .notConnected?:   return .unavailable("plug in your DAC")
+        case .unknown?:        return .unavailable("SpanDAC is still checking for a DAC")
+        }
+    }
+
+    /// The optional `output` object of `slice.status`: `dac` is `connected`,
+    /// `not_connected` or `unknown`; `name` and `max_rate_hz` only beside a
+    /// connected DAC. No key (or null) is nil. A key this build cannot read
+    /// is `unknown`, never connected.
+    static func outputInfo(from status: [String: Any]) -> SourceOutputInfo? {
+        guard let raw = status["output"], !(raw is NSNull) else { return nil }
+        guard let output = raw as? [String: Any] else {
+            return SourceOutputInfo(dac: .unknown, name: nil, maxRateHz: nil)
+        }
+        switch output["dac"] as? String {
+        case "connected":
+            return SourceOutputInfo(dac: .connected, name: output["name"] as? String,
+                                    maxRateHz: output["max_rate_hz"] as? Int)
+        case "not_connected":
+            return SourceOutputInfo(dac: .notConnected, name: nil, maxRateHz: nil)
+        default:
+            return SourceOutputInfo(dac: .unknown, name: nil, maxRateHz: nil)
         }
     }
 

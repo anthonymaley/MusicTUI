@@ -269,14 +269,15 @@ struct SpanDACBonjourResolver: SpanDACResolving {
 }
 
 /// The TXT record SpanDAC publishes (section 3.3 item 3): `v=1`, `contract=3`,
-/// `id=<spandac_id>`, `name=<device name>`, and, only while its pairing window
-/// is open, `pair=1` and `pairport=<n>`. Unauthenticated: a hint, never a
-/// reason to call anything ready.
+/// `id=<spandac_id>`, `name=<device name>`, and, only while the device is
+/// accepting pairing, `pair=1` and `pairport=<n>`. Unauthenticated and
+/// eventually consistent: a hint, never a reason to call anything ready, and
+/// `pair=1` is an invitation to try, never proof the device will accept.
 struct SpanDACTXT: Equatable {
     let sourceID: String
     let name: String
     let contract: Int?
-    /// The pairing port, only while the window is open.
+    /// The pairing port, only while the device advertises pairing.
     let pairingPort: UInt16?
 
     /// Nil unless `v=1` and `id` is a canonical id and `name` is usable.

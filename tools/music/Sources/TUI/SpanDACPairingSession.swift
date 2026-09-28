@@ -1,6 +1,7 @@
 // One `spandac-pair/1` session over the network: the controller state machine
 // (`SpanDACPairingController`) driven over a plain TCP connection to the
-// SpanDAC's pairing port, which is open only while its pairing window is.
+// SpanDAC's pairing port, which is open only while the device is pairable
+// (in the foreground and accepting). A refused connect means it is not.
 //
 // What this adds to the pure half: the connection, one-line framing (4,096
 // bytes at most), the per-phase timeouts, the person's y/n, the save, and
@@ -109,6 +110,7 @@ struct SpanDACNetworkPairing: SpanDACPairingDriving {
                     self.receive()
                 case .waiting(let error), .failed(let error):
                     if case .posix(let code) = error, code == .ECONNREFUSED {
+                        // Nothing listening: the device is not ready to pair.
                         self.end(.failure(.windowClosed))
                     } else if case .failed = state {
                         self.end(.failure(.broken("\(error)")))

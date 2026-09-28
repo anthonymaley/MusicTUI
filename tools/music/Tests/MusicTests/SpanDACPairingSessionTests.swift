@@ -191,8 +191,10 @@ final class SpanDACPairingSessionTests: XCTestCase {
         XCTAssertFalse(src.gotDone)
     }
 
+    /// The device's three "not now" refusals each keep their own failure, so
+    /// the Output tab can show why without calling the device pairable again.
     func testAClosedWindowOrABusySourceIsSaidInWords() throws {
-        for (reason, failure) in [("closed", SpanDACPairFailure.windowClosed), ("busy", .busy)] {
+        for (reason, failure) in [("closed", SpanDACPairFailure.windowClosed), ("busy", .busy), ("too_many", .tooMany)] {
             let responder = try LoopbackPairingPeer(source: source(), abortAtHello: reason)
             defer { responder.stop() }
             let events = Events()
@@ -202,7 +204,8 @@ final class SpanDACPairingSessionTests: XCTestCase {
         }
     }
 
-    /// Nothing listening on the pairing port: the window is not open.
+    /// Nothing listening on the pairing port: the device is not ready to pair
+    /// (its listener is gone, e.g. the app went to the background).
     func testNothingListeningIsAClosedWindow() throws {
         let responder = try LoopbackPairingPeer(source: source())
         let port = responder.port
