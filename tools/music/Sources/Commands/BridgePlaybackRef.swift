@@ -53,13 +53,16 @@ func bridgeRef(forCachedRow row: SongResult, index: Int) -> BridgeIndexRoute {
 
 /// Music.app `play N` for a cached row: a Bridge row, library or catalogue,
 /// with or without its id, is refused; every other origin keeps the shipped
-/// re-resolve (score D3; Part 2 D6, D10).
+/// re-resolve (score D3; Part 2 D6, D10). The refusal is about the saved row
+/// on this route (the shipped MusicTUI `play N` body): it carries no identity this route can
+/// use, so it is never re-resolved by title. It does not mean such rows can
+/// never play on the MusicTUI output.
 func musicAppIndexRoute(forCachedRow row: SongResult, index: Int) -> MusicAppIndexRoute {
     switch row.origin {
     case .bridgeLibrary:
-        return .refuse("Result \(index) came from SpanDAC's library, which the MusicTUI output can't play by identity. Search again with Output set to MusicTUI, or switch Output to SpanDAC.")
+        return .refuse("Result \(index) came from SpanDAC's library, and that saved result can't be used on this route. Search again and pick from the current list, or switch Output to a SpanDAC.")
     case .bridgeCatalog:
-        return .refuse("Result \(index) came from SpanDAC's catalogue search, which the MusicTUI output can't play by identity. Search again with Output set to MusicTUI, or switch Output to SpanDAC.")
+        return .refuse("Result \(index) came from SpanDAC's catalogue search, and that saved result can't be used on this route. Search again and pick from the current list, or switch Output to a SpanDAC.")
     case .catalog, .library:
         return .reResolveByTitle
     }
