@@ -52,4 +52,20 @@ final class SpeakerRowTests: XCTestCase {
         XCTAssertEqual(outputTabRows(speakerCount: 0, expanded: false, presetNames: []),
                        [.spandacMac, .musicApp, .eqPower, .eq, .visualizer])
     }
+
+    /// Before the switch to SpanDAC data, network SpanDACs are drawn but are
+    /// not rows (Enter never reaches them), and with no SpanDAC on this Mac
+    /// its row goes too. "Stop using SpanDAC for music data" ends the SPANDAC
+    /// section, or leads the whole tab when it is the way out of trouble.
+    func testRowsBeforeTheSwitchAndTheStopUsingRow() {
+        XCTAssertEqual(outputTabRows(speakerCount: 1, expanded: false, presetNames: [], spandacIDs: ["A"],
+                                     stopUsing: .endOfSection),
+                       [.spandacMac, .spandac("A"), .stopUsingSpanDAC, .speaker(0), .eqPower, .eq, .visualizer])
+        XCTAssertEqual(outputTabRows(speakerCount: 1, expanded: false, presetNames: [], spandacIDs: ["A"],
+                                     stopUsing: .top),
+                       [.stopUsingSpanDAC, .spandacMac, .spandac("A"), .speaker(0), .eqPower, .eq, .visualizer])
+        XCTAssertEqual(outputTabRows(speakerCount: 0, expanded: false, presetNames: [], spandacIDs: [],
+                                     macRow: false),
+                       [.musicApp, .eqPower, .eq, .visualizer])
+    }
 }

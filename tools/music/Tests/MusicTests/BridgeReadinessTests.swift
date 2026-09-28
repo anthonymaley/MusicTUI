@@ -56,7 +56,8 @@ final class BridgeReadinessTests: XCTestCase {
                              fetchVisualizer: { _ in
                                  refreshCounter?.bumpVisualizer()
                                  return false
-                             })
+                             },
+                             macSocketExists: { false })
     }
 
     private func settle(_ s: SpeakersScene, seconds: Double = 2.0) {
@@ -280,18 +281,27 @@ final class BridgeReadinessTests: XCTestCase {
         // below would otherwise kick the real fetchSpeakerDevices()/
         // fetchEQSnapshot()/visualizerStatus() — real AppleScript, and a real
         // ~/.config/music write — on every run of this file.
+        // After the switch to SpanDAC data (a temp data.json), so the Mac
+        // row is an output and the SPANDAC section ends with "Stop using".
+        let dataStore = DataProviderStore(path: path + ".data.json")
+        dataStore.accept()
         let scene = SpeakersScene(backend: AppleScriptBackend(executable: "/usr/bin/true"),
                                   status: StatusStore(),
                                   actions: ActionRunner(status: StatusStore()),
-                                  routing: RoutingCoordinator(store: store, surface: .tui,
-                                                              makeSource: { client() }),
+                                  routing: RoutingCoordinator(store: store, surface: .tui, dataStore: dataStore,
+                                                              makeSourceFor: { _ in client() },
+                                                              makeDataClient: { client() },
+                                                              starter: FakeMacStarter()),
                                   makeSourceClient: client,
                                   fetchSpeakers: { [] },
                                   fetchEQ: { _ in EQSnapshot(enabled: false, current: nil, presets: []) },
-                                  fetchVisualizer: { _ in false })
+                                  fetchVisualizer: { _ in false },
+                                  macSocketExists: { false })
 
-        // The cursor starts on row 1 (this Mac). With no speakers loaded yet,
-        // row 2 is the stand-in Music.app row, which is the switch TARGET here.
+        // The cursor starts on row 1 (this Mac); row 2 is "Stop using SpanDAC
+        // for music data". With no speakers loaded yet, row 3 is the stand-in
+        // MusicTUI row, which is the switch TARGET here.
+        _ = scene.handle(.down)
         _ = scene.handle(.down)
         let before = scene.bridgeReadinessForTest
         // A fixed wall-clock poll here raced under full-suite load (P7):
