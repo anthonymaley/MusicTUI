@@ -136,9 +136,8 @@ func liveMacSpanDACIsRunning(bundleID: String) -> Bool {
 
 /// Sentences the app's own `slice.status` reply says are an authorization
 /// problem (`StationSearchSource.swift`'s `readiness(from:)`), so this probe
-/// can tell "needs Apple Music access" apart from "hasn't answered yet" or
-/// "no DAC plugged in" (irrelevant to starting SpanDAC for data). **Coupled,
-/// named rather than hidden:** these are copies of that function's sentences,
+/// can tell "needs Apple Music access" apart from "hasn't answered yet".
+/// **Coupled, named rather than hidden:** these are copies of that function's sentences,
 /// in a different file for the same reason `socketPath` is — a wording change
 /// there silently stops this probe reporting `.notAuthorized` and it reads as
 /// `.notYetReady` (retried until the 15 s bound, then `.timedOut`) instead.
@@ -150,13 +149,13 @@ private let macSpanDACNotAuthorizedSentences: Set<String> = [
 ]
 
 /// The live probe: one `slice.status` over the Mac's own Unix socket.
-/// `readiness` folds in DAC-connection state (the Output tab's own concern);
-/// this only cares whether SpanDAC answered and is authorized, so a DAC-only
-/// "unavailable" (`.unavailable("plug in your DAC")`, "still checking") reads
-/// as `.notYetReady` here, not a reason to stop polling.
+/// Starting SpanDAC on this Mac is for music DATA, so this reads
+/// `dataReadiness`: SpanDAC answering with Apple Music access is ready, with
+/// or without a DAC (a DAC is the output's concern, never the data's).
+/// Access problems stop polling; anything else keeps polling, as before.
 func liveMacSpanDACProbe(client: SourceAppClient = SourceAppClient()) -> MacSpanDACProbe {
     do {
-        switch try client.control.status().readiness {
+        switch try client.control.status().dataReadiness {
         case .ready:
             return .ready
         case .unavailable(let reason) where macSpanDACNotAuthorizedSentences.contains(reason):
