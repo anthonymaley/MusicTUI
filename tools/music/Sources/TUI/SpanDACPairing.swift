@@ -358,10 +358,14 @@ struct SpanDACPairResult: Equatable {
 
 /// Why a pairing ended with nothing saved, in words for the status line.
 enum SpanDACPairFailure: Equatable {
-    /// The iPad's pairing window is not open.
+    /// The device is not ready to pair now (`closed`: in the background,
+    /// "Reachable by MusicTUI" off, or its pairing listener gone).
     case windowClosed
-    /// The iPad is pairing with someone else.
+    /// The device is pairing with someone else.
     case busy
+    /// The device asked this Mac to wait (`too_many`: a cooldown or its
+    /// attempt budget).
+    case tooMany
     /// The iPad speaks another pairing version.
     case version
     /// The person answered "n", the iPad answered "Not this", or the codes or
@@ -383,8 +387,9 @@ enum SpanDACPairFailure: Equatable {
     /// The status-line sentence (section 4.3).
     var sentence: String {
         switch self {
-        case .windowClosed: return "SpanDAC is not ready to pair. Tap Pair with MusicTUI in SpanDAC, then try again."
+        case .windowClosed: return "SpanDAC is not ready to pair; open it on the device."
         case .busy: return "SpanDAC is pairing with another Mac; try again in a moment."
+        case .tooMany: return "SpanDAC asked this Mac to wait before pairing again."
         case .version: return "SpanDAC uses a different pairing version; update MusicTUI or SpanDAC."
         case .codesDiffer: return "Codes differ; nothing was paired. Try again from SpanDAC."
         case .timedOut: return "Pairing timed out; nothing was paired. Try again from SpanDAC."
@@ -595,7 +600,7 @@ struct SpanDACPairingController {
         case SpanDACPairMessage.Reason.rejected, SpanDACPairMessage.Reason.commit,
              SpanDACPairMessage.Reason.confirm: return .codesDiffer
         case SpanDACPairMessage.Reason.timeout: return .timedOut
-        case SpanDACPairMessage.Reason.tooMany: return .broken("too many failed attempts; open the window again")
+        case SpanDACPairMessage.Reason.tooMany: return .tooMany
         default: return .broken("SpanDAC aborted: \(reason)")
         }
     }
