@@ -632,7 +632,7 @@ final class PlaySyncEngineTests: XCTestCase {
         h.pass()
         XCTAssertEqual(h.entry(1)?.state, .unresolved)
 
-        h.writer.readErrors = [.failed("Music.app error -10000")]
+        h.writer.readErrors = [.failed("Apple's Music player error -10000")]
         h.pass()
         XCTAssertEqual(h.entry(1)?.state, .unresolved)
 

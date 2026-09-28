@@ -506,7 +506,7 @@ final class DiscoverScene: Scene {
         let injectedOps = self.libraryOps
         let hasAPI = api != nil
         func libraryOps() -> SpanDACLibraryAdding {
-            injectedOps ?? routing.dataClient().libraryWrites(starter: routing.macStarter)
+            injectedOps ?? routing.dataClient().libraryWrites()
         }
         do {
             try routing.perform(action, expecting: expecting, origin: origin,

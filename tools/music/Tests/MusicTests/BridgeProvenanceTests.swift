@@ -25,7 +25,7 @@ final class BridgeProvenanceTests: XCTestCase {
 
     func testMusicAppAndCatalogueRowsAreRefusedByOriginNotIdShape() {
         // D10 (Part 2, P6) replaces Part 1's `search --library` hint.
-        let expected = "Result 3 came from a Music.app or catalogue listing, so SpanDAC can't play it by its own id. With SpanDAC selected, run: music search \"T3\"  then  music play N"
+        let expected = "Result 3 came from a MusicTUI or catalogue listing, so SpanDAC can't play it by its own id. With SpanDAC selected, run: music search \"T3\"  then  music play N"
         // A catalogue row whose id looks like a library id is still catalogue.
         XCTAssertEqual(bridgeRef(forCachedRow: .row(3, .catalog, catalogId: "i.abc123"), index: 3), .refuse(expected))
         XCTAssertEqual(bridgeRef(forCachedRow: .row(3, .catalog), index: 3), .refuse(expected))
@@ -44,7 +44,7 @@ final class BridgeProvenanceTests: XCTestCase {
     // MARK: - musicAppIndexRoute(forCachedRow:index:)
 
     func testMusicAppRefusesBridgeRowsAndReResolvesTheRest() {
-        let refusal = "Result 5 came from SpanDAC's library, which Music.app can't play by identity. Search again with Output set to Music.app, or switch Output to SpanDAC."
+        let refusal = "Result 5 came from SpanDAC's library, which the MusicTUI output can't play by identity. Search again with Output set to MusicTUI, or switch Output to SpanDAC."
         XCTAssertEqual(musicAppIndexRoute(forCachedRow: .row(5, .bridgeLibrary, bridgeID: "9"), index: 5), .refuse(refusal))
         XCTAssertEqual(musicAppIndexRoute(forCachedRow: .row(5, .bridgeLibrary), index: 5), .refuse(refusal))
         XCTAssertEqual(musicAppIndexRoute(forCachedRow: .row(5, .catalog), index: 5), .reResolveByTitle)
@@ -54,7 +54,7 @@ final class BridgeProvenanceTests: XCTestCase {
     /// D10: Music.app refuses a Bridge catalogue row in its own words, with or
     /// without its id; it is never re-resolved by title.
     func testMusicAppRefusesBridgeCatalogueRows() {
-        let refusal = "Result 5 came from SpanDAC's catalogue search, which Music.app can't play by identity. Search again with Output set to Music.app, or switch Output to SpanDAC."
+        let refusal = "Result 5 came from SpanDAC's catalogue search, which the MusicTUI output can't play by identity. Search again with Output set to MusicTUI, or switch Output to SpanDAC."
         XCTAssertEqual(musicAppIndexRoute(forCachedRow: .row(5, .bridgeCatalog, bridgeID: "1440"), index: 5), .refuse(refusal))
         XCTAssertEqual(musicAppIndexRoute(forCachedRow: .row(5, .bridgeCatalog), index: 5), .refuse(refusal))
     }
@@ -108,13 +108,13 @@ final class BridgeProvenanceTests: XCTestCase {
         XCTAssertNil(bridgeRowsRefusal([]))
         XCTAssertNil(bridgeRowsRefusal([.row(1, .catalog), .row(2, .library)]))
         XCTAssertEqual(bridgeRowsRefusal([.row(1, .catalog), .row(2, .bridgeLibrary, bridgeID: "7")]),
-                       "Result(s) 2 came from SpanDAC. Adding SpanDAC rows to your library or a playlist isn't supported yet; search again with Output set to Music.app.")
+                       "Result(s) 2 came from SpanDAC. Adding SpanDAC rows to your library or a playlist isn't supported yet; search again with Output set to MusicTUI.")
         XCTAssertEqual(bridgeRowsRefusal([.row(3, .bridgeLibrary), .row(1, .catalog), .row(5, .bridgeLibrary, bridgeID: "x")]),
-                       "Result(s) 3, 5 came from SpanDAC. Adding SpanDAC rows to your library or a playlist isn't supported yet; search again with Output set to Music.app.")
+                       "Result(s) 3, 5 came from SpanDAC. Adding SpanDAC rows to your library or a playlist isn't supported yet; search again with Output set to MusicTUI.")
         // D10, Q3's default: a Bridge CATALOGUE row is refused the same way (P6A is out).
         XCTAssertEqual(bridgeRowsRefusal([.row(1, .catalog), .row(2, .bridgeCatalog, bridgeID: "1440"),
                                           .row(3, .bridgeLibrary, bridgeID: "b")]),
-                       "Result(s) 2, 3 came from SpanDAC. Adding SpanDAC rows to your library or a playlist isn't supported yet; search again with Output set to Music.app.")
+                       "Result(s) 2, 3 came from SpanDAC. Adding SpanDAC rows to your library or a playlist isn't supported yet; search again with Output set to MusicTUI.")
     }
 
     // MARK: - The existing origin helpers, now exhaustive

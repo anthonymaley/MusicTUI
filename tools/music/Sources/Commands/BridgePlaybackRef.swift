@@ -47,7 +47,7 @@ func bridgeRef(forCachedRow row: SongResult, index: Int) -> BridgeIndexRoute {
     case .catalog, .library:
         // D10 (Part 2): replaces Part 1's `search --library` hint, since a
         // Bridge catalogue search now produces playable rows too.
-        return .refuse("Result \(index) came from a Music.app or catalogue listing, so SpanDAC can't play it by its own id. With SpanDAC selected, run: music search \"\(row.title)\"  then  music play N")
+        return .refuse("Result \(index) came from a MusicTUI or catalogue listing, so SpanDAC can't play it by its own id. With SpanDAC selected, run: music search \"\(row.title)\"  then  music play N")
     }
 }
 
@@ -57,9 +57,9 @@ func bridgeRef(forCachedRow row: SongResult, index: Int) -> BridgeIndexRoute {
 func musicAppIndexRoute(forCachedRow row: SongResult, index: Int) -> MusicAppIndexRoute {
     switch row.origin {
     case .bridgeLibrary:
-        return .refuse("Result \(index) came from SpanDAC's library, which Music.app can't play by identity. Search again with Output set to Music.app, or switch Output to SpanDAC.")
+        return .refuse("Result \(index) came from SpanDAC's library, which the MusicTUI output can't play by identity. Search again with Output set to MusicTUI, or switch Output to SpanDAC.")
     case .bridgeCatalog:
-        return .refuse("Result \(index) came from SpanDAC's catalogue search, which Music.app can't play by identity. Search again with Output set to Music.app, or switch Output to SpanDAC.")
+        return .refuse("Result \(index) came from SpanDAC's catalogue search, which the MusicTUI output can't play by identity. Search again with Output set to MusicTUI, or switch Output to SpanDAC.")
     case .catalog, .library:
         return .reResolveByTitle
     }
@@ -79,7 +79,7 @@ func bridgeRowsRefusal(_ rows: [SongResult]) -> String? {
     }
     guard !bridgeIndices.isEmpty else { return nil }
     let list = bridgeIndices.map(String.init).joined(separator: ", ")
-    return "Result(s) \(list) came from SpanDAC. Adding SpanDAC rows to your library or a playlist isn't supported yet; search again with Output set to Music.app."
+    return "Result(s) \(list) came from SpanDAC. Adding SpanDAC rows to your library or a playlist isn't supported yet; search again with Output set to MusicTUI."
 }
 
 /// Print a cached-row refusal the way the Bridge gate prints its refusals

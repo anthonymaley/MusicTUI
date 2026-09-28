@@ -152,7 +152,7 @@ final class CLIBridgeCataloguePlayTests: XCTestCase {
                                                             album: "Mezzanine")], origin: .catalog))
         let (error, calls) = play(h, ["1"])
         XCTAssertEqual(error as? ExitCode, .failure)
-        XCTAssertEqual(h.io.out, ["Result 1 came from a Music.app or catalogue listing, so SpanDAC can't play it by its own id. With SpanDAC selected, run: music search \"Angel\"  then  music play N"])
+        XCTAssertEqual(h.io.out, ["Result 1 came from a MusicTUI or catalogue listing, so SpanDAC can't play it by its own id. With SpanDAC selected, run: music search \"Angel\"  then  music play N"])
         XCTAssertEqual(h.wire.sent("slice.queue").count, 0)
         XCTAssertEqual(calls, [])
     }
@@ -181,7 +181,7 @@ final class CLIBridgeCataloguePlayTests: XCTestCase {
 
     // MARK: - add and playlist writes (Q3 default: refused; P6A is out)
 
-    private let refusal = "Result(s) 1 came from SpanDAC. Adding SpanDAC rows to your library or a playlist isn't supported yet; search again with Output set to Music.app."
+    private let refusal = "Result(s) 1 came from SpanDAC. Adding SpanDAC rows to your library or a playlist isn't supported yet; search again with Output set to MusicTUI."
 
     private func writeCatalogueRow(_ b: BoundaryHarness) throws {
         try b.cache.writeSongs([SongResult(index: 1, title: "Angel", artist: "Massive Attack", album: "Mezzanine",

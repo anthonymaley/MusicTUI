@@ -38,11 +38,11 @@ protocol MusicLibrarySession {
 
 enum MusicAccessSentence {
     /// Music.app refused automation from this terminal (Apple Event error -1743).
-    static let automationNotPermitted = "Music.app automation is not permitted for this terminal"
+    static let automationNotPermitted = "Automation of Apple's Music player is not permitted for this terminal"
     static let notRunning = "not running"
     static let timedOut = "timed out"
     static let noMatch = "no match"
-    static let libraryNotLoaded = "Music.app's library hasn't finished loading"
+    static let libraryNotLoaded = "The library in Apple's Music player hasn't finished loading"
     static let changed = "changed"
     static let invalidPersistentID = "invalid persistent ID"
     static let unexpectedResult = "unexpected scripting result"
@@ -58,7 +58,7 @@ extension AEFailure {
         case -1712: return .timedOut
         case -1743: return .failed(MusicAccessSentence.automationNotPermitted)
         case -1: return .failed(message)
-        default: return .failed("Music.app error \(code)")
+        default: return .failed("Apple's Music player error \(code)")
         }
     }
 

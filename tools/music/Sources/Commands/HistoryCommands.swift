@@ -12,7 +12,7 @@ import Foundation
 /// overlapping rows between the two), so an AppleScript read would answer
 /// a different question. Pure, for testability.
 func recentNeedsAuthMessage(json: Bool) -> String {
-    let text = "music recent shows Apple's account level listening history, which only the Apple Music API serves. Music.app's own Recently Played is a different, this Mac only list (measured 2026-08-27: zero overlapping rows), so there is no keyless equivalent. Run: music auth setup"
+    let text = "music recent shows Apple's account level listening history, which only the Apple Music API serves. The Recently Played list in Apple's Music player is a different, this Mac only list (measured 2026-08-27: zero overlapping rows), so there is no keyless equivalent. Run: music auth setup"
     if json {
         return OutputFormat(mode: .json).render(["recent": [], "error": text])
     }

@@ -22,7 +22,7 @@ final class CLIBridgeGateTests: XCTestCase {
             XCTAssertEqual(cliBridgeRefusal(action, mode: .source), cliBridgeNotServedReason(action), "\(action)")
         }
         XCTAssertEqual(cliBridgeRefusal(.cliPlayQuery, mode: .source),
-                       "SpanDAC output is selected, and music play <words> isn't available from the CLI on SpanDAC yet. Use MusicTUI, or switch Output to Music.app.")
+                       "SpanDAC output is selected, and music play <words> isn't available from the CLI on SpanDAC yet. Use it from the TUI, or switch Output to MusicTUI.")
     }
 
     /// A dispatched verb is not gated. If one ever were, "go ahead as it
@@ -73,7 +73,7 @@ final class CLIBridgeGateTests: XCTestCase {
             let why = cliBridgeRefusal(action, mode: .source)
             XCTAssertEqual(why, cliBridgeNotServedReason(action), "\(action)")
             XCTAssertNotEqual(why, currentTrackIsStaleInBridge, "\(action)")
-            XCTAssertTrue(why?.hasSuffix("Switch Output to Music.app to use it.") ?? false, "\(action): D10's words")
+            XCTAssertTrue(why?.hasSuffix("Switch Output to MusicTUI to use it.") ?? false, "\(action): D10's words")
         }
     }
 

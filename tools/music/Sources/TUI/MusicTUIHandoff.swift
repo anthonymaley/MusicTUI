@@ -197,24 +197,41 @@ func verifyHandoffTracks(rows: [MusicRow], title: String, library: PersistentIDT
         }
         ids.append(hex)
     }
-    var unique: [String] = []
-    var seen = Set<String>()
-    for id in ids where seen.insert(id).inserted { unique.append(id) }
-
-    let found: [String: [HandoffTrackHit]]
+    let verified: [HandoffTrackHit]?
     do {
-        found = try library.tracks(persistentIDs: unique)
+        verified = try verifyExactTracks(zip(ids, rows).map { ($0, $1.title) }, library: library)
     } catch {
         throw ActionError(message: "Couldn't check '\(title)' in your library, so nothing was played.")
     }
-
-    var verified: [VerifiedHandoffTrack] = []
-    for (row, id) in zip(rows, ids) {
-        guard let hit = exactlyOneTrack(found[id] ?? [], id: id), hit.name == row.title else { throw refused }
-        verified.append(VerifiedHandoffTrack(persistentID: id, name: hit.name, artist: row.artist, album: row.album,
-                                             libraryIndex: hit.libraryIndex))
+    guard let hits = verified else { throw refused }
+    return zip(rows, hits).map { row, hit in
+        VerifiedHandoffTrack(persistentID: hit.persistentID, name: hit.name, artist: row.artist, album: row.album,
+                             libraryIndex: hit.libraryIndex)
     }
-    return verified
+}
+
+/// THE identity check. Every play that hands a SpanDAC song to the MusicTUI
+/// output by persistent ID goes through it: library rows
+/// (`verifyHandoffTracks`) and a song SpanDAC has just added or found owned
+/// (`verifySpanDACAlias`). Each wanted identity (hex) must resolve to exactly
+/// ONE track, and, when a title is known, that track's name must equal it
+/// (CHOSEN guard, C-HANDOFF: it can only refuse). One miss refuses the whole
+/// set: nil, never a partial answer and never a title search. Reads only;
+/// throws only when the read itself failed, which is not "not found".
+func verifyExactTracks(_ wanted: [(persistentID: String, title: String?)],
+                       library: PersistentIDTrackReading) throws -> [HandoffTrackHit]? {
+    guard !wanted.isEmpty else { return nil }
+    var unique: [String] = []
+    var seen = Set<String>()
+    for id in wanted.map(\.persistentID) where seen.insert(id).inserted { unique.append(id) }
+    let found = try library.tracks(persistentIDs: unique)
+    var hits: [HandoffTrackHit] = []
+    for (id, title) in wanted {
+        guard let hit = exactlyOneTrack(found[id] ?? [], id: id) else { return nil }
+        if let title, hit.name != title { return nil }
+        hits.append(hit)
+    }
+    return hits
 }
 
 /// The one track `hits` names, or nil when it names none or more than one.

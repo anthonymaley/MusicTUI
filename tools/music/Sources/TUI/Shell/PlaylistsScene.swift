@@ -70,7 +70,7 @@ final class PlaylistsScene: Scene {
     /// selectable, and names no playlist — nothing honest can supply a count
     /// or a name list in Bridge mode (no AppleScript read, and
     /// `playlist-meta.json` is Music.app's own stale, name-keyed data).
-    static let bridgeMissingNote = "Some Music.app playlists aren't in SpanDAC's library."
+    static let bridgeMissingNote = "Some of your playlists aren't in SpanDAC's library."
 
     // C3: D4's page size (the wire's own maximum) for a drill-in or a fresh
     // play read, and the preview's own much smaller read (decoration, not

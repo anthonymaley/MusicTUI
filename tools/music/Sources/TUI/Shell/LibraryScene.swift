@@ -2184,7 +2184,7 @@ final class LibraryScene: Scene {
                                   count: bridgeAlbumTotal ?? (albumsLoaded ? albums.count : nil))
             case .musicApp:
                 guard tabShowsTwoLibraries else { return nil }
-                return sourceLine("Albums", "Music.app library", count: albumsLoaded ? albums.count : nil)
+                return sourceLine("Albums", "\(musicTUIOutputName) library", count: albumsLoaded ? albums.count : nil)
             case nil:
                 return nil   // hasn't picked a branch yet this session
             }
@@ -2198,7 +2198,7 @@ final class LibraryScene: Scene {
                                   count: (isArtistList && artistsLoaded) ? (bridgeArtistTotal ?? artists.count) : nil)
             case .musicApp:
                 guard tabShowsTwoLibraries else { return nil }
-                return sourceLine("Artists", "Music.app library",
+                return sourceLine("Artists", "\(musicTUIOutputName) library",
                                   count: (isArtistList && artistsLoaded) ? artists.count : nil)
             case nil:
                 return nil

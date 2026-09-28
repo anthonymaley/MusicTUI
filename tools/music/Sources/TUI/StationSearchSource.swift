@@ -481,7 +481,17 @@ struct SourceAppClient {
     let control: SourceControlling
     let discover: DiscoverFeedReading
 
+    /// Where this client sends, and the command transport its members share
+    /// (not the library reads' longer-timeout one). For a caller that sends
+    /// ops no member models (SpanDAC's library add, lookup and playlist ops),
+    /// so they travel over this client's own connection, with whatever it
+    /// wraps around it, rather than one rebuilt from the path.
+    let path: String
+    let transport: (String, String) throws -> String
+
     init(path: String = SourceAppStationSearch.socketPath) {
+        self.path = path
+        transport = SourceAppStationSearch.sendOverUnixSocket
         playback = SourceAppPlayback(path: path)
         stationSearch = SourceAppStationSearch(path: path)
         control = SourceAppControl(path: path)
@@ -490,6 +500,8 @@ struct SourceAppClient {
 
     /// Seam for tests, matching the members' own.
     init(path: String, transport: @escaping (String, String) throws -> String) {
+        self.path = path
+        self.transport = transport
         playback = SourceAppPlayback(path: path, transport: transport)
         stationSearch = SourceAppStationSearch(path: path, transport: transport)
         control = SourceAppControl(path: path, transport: transport)
@@ -500,6 +512,8 @@ struct SourceAppClient {
     /// their own (a longer timeout), as the Unix client has.
     init(path: String, transport: @escaping (String, String) throws -> String,
          libraryTransport: @escaping (String, String) throws -> String) {
+        self.path = path
+        self.transport = transport
         playback = SourceAppPlayback(path: path, transport: transport)
         stationSearch = SourceAppStationSearch(path: path, transport: transport)
         control = SourceAppControl(path: path, transport: transport, libraryTransport: libraryTransport)
