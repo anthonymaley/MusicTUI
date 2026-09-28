@@ -556,6 +556,8 @@ struct SourceStatus: Equatable {
     /// Playback position, 0-based within the PRESENT entries. A different
     /// quantity from `queuePresent`, which counts songs ready while building.
     var queueIndex: Int? = nil
+    /// Seeded for a later step; not yet filled or read from.
+    var output: SourceOutputInfo? = nil
 }
 
 /// One Library or Playlist row, by the triple the app joins on.

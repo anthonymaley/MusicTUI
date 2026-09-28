@@ -71,6 +71,10 @@ struct SpanDACOutputRow: Equatable {
     let note: String
     /// Only an authenticated, ready answer makes a row selectable.
     let ready: Bool
+    /// Seeded for a later step; not yet filled or drawn from.
+    var state: SpanDACRowState = .checking
+    /// Seeded for a later step; not yet filled or drawn from.
+    var output: SourceOutputInfo? = nil
 }
 
 /// Merges the three sources into rows: paired SpanDACs first, then ones seen
@@ -173,6 +177,10 @@ final class SpanDACOutputs {
     /// `paired.json` as last read: on opening the tab, and after this
     /// process pairs or forgets. Not re-read on every frame.
     private var paired: [SpanDACPairRecord] = []
+
+    /// Set once by the scene at composition. Seeded for a later step; not
+    /// yet fired.
+    var onPairedAndReady: ((_ sourceID: String, _ name: String) -> Void)?
 
     init(pairs: SpanDACPairedStore = SpanDACPairedStore(),
          browser: SpanDACBrowsing = SpanDACBonjourBrowser(),
