@@ -61,8 +61,82 @@ func spandacRow(_ id: String, _ name: String, _ state: SpanDACRowState, paired: 
     return row
 }
 
-/// Builds the Output tab over fakes. The mode store is a temp file in `dir`;
-/// the Mac's SpanDAC and every network SpanDAC answer through stub transports.
+/// Stands in for SpanDAC on this Mac's starter. It never launches anything:
+/// the test sets what it answers, and every call is counted. `gate`, when
+/// set, holds `ensureStarted()` until the test signals it.
+final class FakeMacStarter: MacSpanDACStarting {
+    private let lock = NSLock()
+    private var _installed: Bool
+    private var _running = false
+    private var _outcome: MacSpanDACStartOutcome = .ready
+    private var _starting = 0
+    private var _ensureCalls = 0
+    private var _bringForwardCalls = 0
+    private var _newAttemptCalls = 0
+    private let gate: DispatchSemaphore?
+    /// Fires after every `ensureStarted()` and `bringForward()`.
+    var onCall: (() -> Void)?
+
+    init(installed: Bool = true, gate: DispatchSemaphore? = nil) {
+        _installed = installed
+        self.gate = gate
+    }
+
+    func set(installed: Bool? = nil, running: Bool? = nil, outcome: MacSpanDACStartOutcome? = nil) {
+        lock.lock(); defer { lock.unlock() }
+        if let installed { _installed = installed }
+        if let running { _running = running }
+        if let outcome { _outcome = outcome }
+    }
+
+    var ensureCalls: Int { lock.lock(); defer { lock.unlock() }; return _ensureCalls }
+    var bringForwardCalls: Int { lock.lock(); defer { lock.unlock() }; return _bringForwardCalls }
+    var newAttemptCalls: Int { lock.lock(); defer { lock.unlock() }; return _newAttemptCalls }
+    var anyCalls: Int { ensureCalls + bringForwardCalls + newAttemptCalls }
+
+    var isInstalled: Bool { lock.lock(); defer { lock.unlock() }; return _installed }
+    var isRunning: Bool { lock.lock(); defer { lock.unlock() }; return _running }
+    var isStarting: Bool { lock.lock(); defer { lock.unlock() }; return _starting > 0 }
+
+    func ensureStarted() -> MacSpanDACStartOutcome {
+        lock.lock(); _ensureCalls += 1; _starting += 1; lock.unlock()
+        gate?.wait()
+        lock.lock(); _starting -= 1; let outcome = _outcome; lock.unlock()
+        onCall?()
+        return outcome
+    }
+
+    func bringForward() {
+        lock.lock(); _bringForwardCalls += 1; lock.unlock()
+        onCall?()
+    }
+
+    func newAttempt() { lock.lock(); _newAttemptCalls += 1; lock.unlock() }
+}
+
+/// Counts how many times something was built.
+final class BuildCounter {
+    private let lock = NSLock()
+    private var _count = 0
+    var count: Int { lock.lock(); defer { lock.unlock() }; return _count }
+    func bump() { lock.lock(); _count += 1; lock.unlock() }
+}
+
+/// The DATA axis a test starts from, as `data.json` beside the temp mode.json.
+enum OutputTabData {
+    /// The person switched MusicTUI to SpanDAC: every test from before the
+    /// data axis starts here, so its rows behave as they did.
+    case accepted
+    /// No data.json at all: open data, switch screen never shown.
+    case none
+    /// The person said "Not now": open data, declined.
+    case declined
+}
+
+/// Builds the Output tab over fakes. The mode store and data.json are temp
+/// files in `dir`; the Mac's SpanDAC and every network SpanDAC answer through
+/// stub transports; the Mac starter is a fake that never launches anything;
+/// the data client is counted and can only fail.
 func makeOutputTabScene(dir: String, mode: PlaybackMode, spandac: SpanDACOutputsDriving?,
                         speakers: [[String: Any]] = [], status: StatusStore = StatusStore(),
                         macReply: @escaping () throws -> String = { outputTabReadyReply },
@@ -70,21 +144,42 @@ func makeOutputTabScene(dir: String, mode: PlaybackMode, spandac: SpanDACOutputs
                             SourceAppClient(path: "/fake", transport: { _, _ in outputTabReadyReply })
                         },
                         macName: String = "Studio Mac",
-                        clock: @escaping () -> Date = Date.init) -> SpeakersScene {
+                        clock: @escaping () -> Date = Date.init,
+                        data: OutputTabData = .accepted,
+                        starter: FakeMacStarter = FakeMacStarter(),
+                        dataClients: BuildCounter = BuildCounter(),
+                        macSocketExists: @escaping () -> Bool = { false }) -> SpeakersScene {
     let store = PlaybackModeStore(path: dir + "/mode.json")
     store.set(mode)
+    let dataStore = DataProviderStore(path: dir + "/data.json")
+    switch data {
+    case .accepted: dataStore.accept()
+    case .declined: dataStore.decline()
+    case .none: try? FileManager.default.removeItem(atPath: dir + "/data.json")
+    }
     let local = { SourceAppClient(path: "/nonexistent", transport: { _, _ in try macReply() }) }
-    let routing = RoutingCoordinator(store: store, surface: .tui, makeSourceFor: { m in
-        m.networkSourceID.map(network) ?? local()
-    })
+    let routing = RoutingCoordinator(store: store, surface: .tui, dataStore: dataStore,
+                                     makeSourceFor: { m in m.networkSourceID.map(network) ?? local() },
+                                     makeDataClient: {
+                                         dataClients.bump()
+                                         return SourceAppClient(path: "/nonexistent", transport: { _, _ in throw SourceAppError.notRunning })
+                                     },
+                                     starter: starter)
     return SpeakersScene(backend: AppleScriptBackend(executable: "/usr/bin/true"),
                          status: status, actions: ActionRunner(status: status), routing: routing,
                          makeSourceClient: local, makeNetworkClient: network, spandac: spandac,
                          macName: macName, clock: clock,
                          fetchSpeakers: { speakers },
                          fetchEQ: { _ in EQSnapshot(enabled: false, current: nil, presets: []) },
-                         fetchVisualizer: { _ in false })
+                         fetchVisualizer: { _ in false },
+                         macSocketExists: macSocketExists)
 }
+
+/// A Mac SpanDAC that answers, is authorized, and has no DAC plugged in:
+/// ready to serve music data, not ready to play.
+let outputTabNoDACReply = #"{"ok":true,"status":{"playback":"idle","authorization":"authorized","contract":3,"capabilities":[],"output":{"dac":"not_connected"}}}"#
+/// A Mac SpanDAC that answers but has not been allowed Apple Music access.
+let outputTabNotAuthorizedReply = #"{"ok":true,"status":{"playback":"idle","authorization":"not_determined","contract":3,"capabilities":[]}}"#
 
 let outputTabReadyReply = #"{"ok":true,"status":{"playback":"idle","authorization":"authorized","contract":3,"capabilities":[]}}"#
 
@@ -218,9 +313,11 @@ final class OutputTabRenderTests: XCTestCase {
 
     // MARK: - The dump for a person to read
 
-    /// Seven states at 100 and 60 columns, one `.ansi` (raw, `cat` it in a
-    /// terminal) and one `.txt` (what the screen shows) each. Skipped unless
-    /// OUTPUT_RENDER_DUMP is set to a directory.
+    /// Seventeen states at 100 and 60 columns, one `.ansi` (raw, `cat` it in
+    /// a terminal) and one `.txt` (what the screen shows) each. Skipped unless
+    /// OUTPUT_RENDER_DUMP is set to a directory. Cases 1-7 are after the
+    /// switch to SpanDAC data; 8-17 are the switch, the states before SpanDAC
+    /// on this Mac is set up, and the way back.
     func testRenderDump() throws {
         guard let out = ProcessInfo.processInfo.environment["OUTPUT_RENDER_DUMP"], !out.isEmpty else {
             throw XCTSkip("set OUTPUT_RENDER_DUMP=<dir> to write the Output tab's screens")
@@ -240,6 +337,16 @@ final class OutputTabRenderTests: XCTestCase {
             let rows: [SpanDACOutputRow]
             let speakers: [[String: Any]]
             var pairing = false
+            var data: OutputTabData = .accepted
+            var macReply: () throws -> String = { outputTabReadyReply }
+            var installed = true
+            /// Delivered after the tab settles, as a probe would.
+            var macStatus: (SourceReadiness, SourceOutputInfo?)? = (.ready, nil)
+            /// Holds a start open, for the "Starting SpanDAC…" screen.
+            var holdStart = false
+            /// Keys pressed before the screen is drawn: the cursor goes to
+            /// `enterOn` and Enter is pressed there.
+            var enterOn: OutputTabRow? = nil
         }
         let cases: [Case] = [
             Case(name: "1-musicapp-two-speakers", mode: .musicApp,
@@ -257,18 +364,63 @@ final class OutputTabRenderTests: XCTestCase {
                  rows: [spandacRow(ipad, "Studio iPad", .notPaired(pairable: false), paired: false)], speakers: twoSpeakers),
             Case(name: "7-no-speakers", mode: .musicApp,
                  rows: [spandacRow(phone, "iPhone", .ready, output: phoneDAC)], speakers: []),
+            Case(name: "8-switch-screen", mode: .musicApp,
+                 rows: [spandacRow(phone, "iPhone", .ready, output: phoneDAC)], speakers: twoSpeakers,
+                 data: .none),
+            Case(name: "9-no-mac-app-iphone-seen", mode: .musicApp,
+                 rows: [spandacRow(phone, "iPhone", .ready, output: phoneDAC)], speakers: twoSpeakers,
+                 data: .none, macReply: { throw SourceAppError.notRunning }, installed: false, macStatus: nil),
+            Case(name: "10-installed-not-switched", mode: .musicApp,
+                 rows: [spandacRow(phone, "iPhone", .ready, output: phoneDAC)], speakers: twoSpeakers,
+                 data: .declined),
+            Case(name: "11-starting", mode: .musicApp,
+                 rows: [spandacRow(phone, "iPhone", .ready, output: phoneDAC)], speakers: twoSpeakers,
+                 data: .declined, macReply: { throw SourceAppError.notRunning }, macStatus: nil,
+                 holdStart: true, enterOn: .spandacMac),
+            Case(name: "12-needs-apple-music-access", mode: .musicApp,
+                 rows: [spandacRow(phone, "iPhone", .ready, output: phoneDAC)], speakers: twoSpeakers,
+                 data: .declined, macReply: { outputTabNotAuthorizedReply }, macStatus: nil),
+            Case(name: "13-blocked-existing-install", mode: .source,
+                 rows: [spandacRow(phone, "iPhone", .ready, output: phoneDAC)], speakers: twoSpeakers,
+                 data: .none),
+            Case(name: "14-blocked-after-not-now", mode: .source,
+                 rows: [spandacRow(phone, "iPhone", .ready, output: phoneDAC)], speakers: twoSpeakers,
+                 data: .declined),
+            Case(name: "15-switched-mac-app-missing", mode: .musicApp,
+                 rows: [spandacRow(phone, "iPhone", .ready, output: phoneDAC)], speakers: twoSpeakers,
+                 macReply: { throw SourceAppError.notRunning }, installed: false, macStatus: nil),
+            Case(name: "16-spandac-data-musictui-output", mode: .musicApp,
+                 rows: [spandacRow(phone, "iPhone", .ready, output: phoneDAC)], speakers: twoSpeakers),
+            Case(name: "17-stop-using-asks", mode: .musicApp,
+                 rows: [spandacRow(phone, "iPhone", .ready, output: phoneDAC)], speakers: twoSpeakers,
+                 enterOn: .stopUsingSpanDAC),
         ]
+        var gates: [DispatchSemaphore] = []
+        defer { gates.forEach { $0.signal() } }
         var written: [String] = []
         for c in cases {
             let caseDir = dir + "/" + c.name
             try FileManager.default.createDirectory(atPath: caseDir, withIntermediateDirectories: true)
             let fake = FakeSpanDACOutputs(c.rows)
             fake.isPairing = c.pairing
+            let gate = DispatchSemaphore(value: 0)
+            if c.holdStart { gates.append(gate) }
+            let starter = FakeMacStarter(installed: c.installed, gate: c.holdStart ? gate : nil)
             let s = makeOutputTabScene(dir: caseDir, mode: c.mode, spandac: fake, speakers: c.speakers,
-                                       clock: { now })
+                                       macReply: c.macReply, clock: { now }, data: c.data, starter: starter)
             settleOutputTab(s, speakers: c.speakers.count)
-            s.deliverMacStatusForTest(readiness: .ready, output: ssl)
+            if let status = c.macStatus {
+                s.deliverMacStatusForTest(readiness: status.0, output: status.1 ?? ssl)
+            }
             _ = s.tick(snapshot: outputTabSnapshot())
+            if let row = c.enterOn {
+                _ = s.handle(.home)
+                if let i = s.displayRowsForTest.firstIndex(of: row) { for _ in 0..<i { _ = s.handle(.down) } }
+                _ = s.handle(.enter)
+                let deadline = Date().addingTimeInterval(3)
+                while c.holdStart && starter.ensureCalls == 0 && Date() < deadline { usleep(10_000) }
+                _ = s.tick(snapshot: outputTabSnapshot())
+            }
             for width in [100, 60] {
                 let height = 30
                 let frame = shellLayout(width: width, height: height)
@@ -284,6 +436,6 @@ final class OutputTabRenderTests: XCTestCase {
                 XCTAssertTrue(text.contains("SPANDAC"), "\(c.name) at \(width)")
             }
         }
-        XCTAssertEqual(written.count, 14)
+        XCTAssertEqual(written.count, 34)
     }
 }
