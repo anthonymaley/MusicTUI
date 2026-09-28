@@ -768,7 +768,7 @@ private func routeOnMusicTUIWithSpanDACData(_ action: MusicTUIAction,
     // P8), refuses here rather than falling back to the web API. The three
     // listing rows the SpanDAC column still sends to `.musicApp` (stale, see
     // there) are SpanDAC reads here: Library, Albums, Artists and Playlists
-    // come from MusicKit once SpanDAC is the data source (Codex 39, section 4).
+    // come from MusicKit once SpanDAC is the data source.
     case .discoverFeed, .discoverRefresh, .catalogSearch, .radioSearch, .radioCatalogueBrowse,
          .radioStationLookup, .recent, .rotation, .newReleases, .similar, .playlistListing,
          .searchLibrary, .libraryRetry:

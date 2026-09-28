@@ -461,7 +461,7 @@ final class DataOutputRoutingTests: XCTestCase {
         }
     }
 
-    /// DoD 7 as Codex 39 restated it: OPEN DATA never constructs a SpanDAC
+    /// DoD 7 with two selections: OPEN DATA never constructs a SpanDAC
     /// client, through any entry point, for any action, with any origin.
     func testOpenDataModeNeverConstructsASourceClient() throws {
         for surface in InvocationSurface.allCases {
