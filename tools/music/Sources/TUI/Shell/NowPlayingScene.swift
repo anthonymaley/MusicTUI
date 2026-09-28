@@ -358,6 +358,13 @@ final class NowPlayingScene: Scene {
 
         guard case .active(let np) = snapshot.outcome else {
             if let last = lastPlaced { out += kittyDeleteEscape(id: last.id); lastPlaced = nil }
+            // A blocked output: nothing is read and nothing plays until the
+            // person finishes the switch or stops using SpanDAC (C-REPAIR).
+            if case .outputBlocked = routing.selection {
+                out += ANSICode.moveTo(row: frame.bodyY + 1, col: 3)
+                out += "\(ANSICode.dim)\(truncText(finishSwitchingToSpanDAC, to: max(10, frame.width - 6)))\(ANSICode.reset)"
+                return out
+            }
             if let bridge = snapshot.bridge {
                 return renderBridgeEmpty(bridge, frame: frame, into: out)
             }
@@ -742,8 +749,12 @@ final class NowPlayingScene: Scene {
     /// 2026-09-16 exactly: while Bridge plays, Music.app's current track is
     /// whatever it was left on, so the favourite lands on the wrong song.
     /// Silent and plausible, which is the worst shape for this defect.
+    ///
+    /// Asked on both axes: the SOUND route decides, so a blocked output
+    /// (C-REPAIR) refuses in its own sentence, and SpanDAC data with the
+    /// MusicTUI output keeps these keys as shipped.
     private func askMatrix(_ action: MusicTUIAction) -> Bool {
-        if case .refused(let why) = routeAction(action, in: routing.mode, from: .tui) {
+        if case .refused(let why) = routeAction(action, selection: routing.selection, from: .tui).sound {
             status.post(why, error: true)
             return false
         }

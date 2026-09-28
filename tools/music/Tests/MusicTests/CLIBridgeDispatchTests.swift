@@ -166,7 +166,7 @@ final class CLIBridgeDispatchTests: XCTestCase {
                                                  bridge: { _ in bridgeRan = true })) {
                 XCTAssertEqual($0 as? ExitCode, .failure)
             }
-            let sentence = "SpanDAC was denied Apple Music access. Switch Output to Music.app to use Music.app instead."
+            let sentence = "SpanDAC was denied Apple Music access. Switch Output to MusicTUI to play there instead."
             if json {
                 XCTAssertEqual(io.out.count, 1)
                 let doc = try? JSONSerialization.jsonObject(with: Data(io.out[0].utf8)) as? [String: Any]
@@ -184,7 +184,7 @@ final class CLIBridgeDispatchTests: XCTestCase {
         let io = CLIBridgeTestIO()
         let env = CLIBridgeEnv(test: .source, io: io, transport: { _, _ in throw SourceAppError.notRunning })
         XCTAssertThrowsError(try cliDispatch(.next, json: false, env: env, musicApp: {}, bridge: { _ in XCTFail() }))
-        XCTAssertEqual(io.out, ["SpanDAC is not running. Switch Output to Music.app to use Music.app instead."])
+        XCTAssertEqual(io.out, ["SpanDAC is not running. Switch Output to MusicTUI to play there instead."])
     }
 
     func testABridgeErrorIsPrintedInItsOwnWords() {

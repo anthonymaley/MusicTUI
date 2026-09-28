@@ -56,7 +56,8 @@ final class BridgeReadinessTests: XCTestCase {
                              fetchVisualizer: { _ in
                                  refreshCounter?.bumpVisualizer()
                                  return false
-                             })
+                             },
+                             macSocketExists: { false })
     }
 
     private func settle(_ s: SpeakersScene, seconds: Double = 2.0) {
@@ -272,26 +273,51 @@ final class BridgeReadinessTests: XCTestCase {
         let path = NSTemporaryDirectory() + "mode-\(UUID().uuidString).json"
         let store = PlaybackModeStore(path: path)
         store.set(.source)
+        // The probe gate. `tick()` drains the inbox and THEN starts the Mac
+        // row's own status probe, which answers through this same client off
+        // the main loop. Ungated, that answer could land in the inbox between
+        // `tick()` returning and the last assertion, and read as "tick left
+        // the inbox undrained" (a race in this test, not in the scene). Once
+        // the switch has finished, every call on this client waits here until
+        // the assertions are done, so the probe cannot refill the inbox early.
+        let gateLock = NSLock()
+        var gated = false
+        let probeGate = DispatchSemaphore(value: 0)
+        defer {
+            gateLock.lock(); gated = false; gateLock.unlock()
+            probeGate.signal()
+        }
         let client = { SourceAppClient(path: "/nonexistent", transport: { _, _ in
-            #"{"ok":true,"op":"slice.status","status":{"playback":"idle","contract":3,"authorization":"denied"}}"#
+            gateLock.lock(); let wait = gated; gateLock.unlock()
+            if wait { _ = probeGate.wait(timeout: .now() + 10) }
+            return #"{"ok":true,"op":"slice.status","status":{"playback":"idle","contract":3,"authorization":"denied"}}"#
         }) }
         // Inert closures (P6's seam): this test builds its SpeakersScene
         // directly rather than through scene(reply:), and the trailing tick()
         // below would otherwise kick the real fetchSpeakerDevices()/
         // fetchEQSnapshot()/visualizerStatus() — real AppleScript, and a real
         // ~/.config/music write — on every run of this file.
+        // After the switch to SpanDAC data (a temp data.json), so the Mac
+        // row is an output and the SPANDAC section ends with "Stop using".
+        let dataStore = DataProviderStore(path: path + ".data.json")
+        dataStore.accept()
         let scene = SpeakersScene(backend: AppleScriptBackend(executable: "/usr/bin/true"),
                                   status: StatusStore(),
                                   actions: ActionRunner(status: StatusStore()),
-                                  routing: RoutingCoordinator(store: store, surface: .tui,
-                                                              makeSource: { client() }),
+                                  routing: RoutingCoordinator(store: store, surface: .tui, dataStore: dataStore,
+                                                              makeSourceFor: { _ in client() },
+                                                              makeDataClient: { client() },
+                                                              starter: FakeMacStarter()),
                                   makeSourceClient: client,
                                   fetchSpeakers: { [] },
                                   fetchEQ: { _ in EQSnapshot(enabled: false, current: nil, presets: []) },
-                                  fetchVisualizer: { _ in false })
+                                  fetchVisualizer: { _ in false },
+                                  macSocketExists: { false })
 
-        // The cursor starts on row 1 (this Mac). With no speakers loaded yet,
-        // row 2 is the stand-in Music.app row, which is the switch TARGET here.
+        // The cursor starts on row 1 (this Mac); row 2 is "Stop using SpanDAC
+        // for music data". With no speakers loaded yet, row 3 is the stand-in
+        // MusicTUI row, which is the switch TARGET here.
+        _ = scene.handle(.down)
         _ = scene.handle(.down)
         let before = scene.bridgeReadinessForTest
         // A fixed wall-clock poll here raced under full-suite load (P7):
@@ -309,7 +335,11 @@ final class BridgeReadinessTests: XCTestCase {
         XCTAssertEqual(scene.bridgeReadinessForTest, before,
                        "the switch wrote bridgeReadiness directly instead of publishing it")
 
+        gateLock.lock(); gated = true; gateLock.unlock()
+        let probesBefore = scene.readinessProbeCount
         _ = scene.tick(snapshot: NowPlayingSnapshot(outcome: .stopped, history: [], surrounding: []))
+        XCTAssertEqual(scene.readinessProbeCount, probesBefore + 1,
+                       "tick is expected to start the probe the gate holds")
         XCTAssertEqual(scene.bridgeReadinessForTest,
                        .unavailable("SpanDAC was denied Apple Music access"),
                        "tick did not apply the switch's published readiness")

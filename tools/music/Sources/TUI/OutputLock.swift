@@ -63,7 +63,7 @@ final class OutputLock {
     static func cliModeChangedMessage(now mode: PlaybackMode) -> String {
         let name: String
         switch mode {
-        case .musicApp: name = "Music.app"
+        case .musicApp: name = musicTUIOutputName
         case .source: name = "SpanDAC on this Mac"
         case .networkSource: name = "a SpanDAC on the network"
         }

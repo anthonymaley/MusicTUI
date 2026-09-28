@@ -247,7 +247,7 @@ final class RadioProviderTests: XCTestCase {
         XCTAssertEqual(r.scene.personal.map(\.name), ["REST Personal"])
         XCTAssertEqual(r.rest.count("filter[featured]=apple-music-live-radio"), 1)
         XCTAssertEqual(r.rest.count("filter[identity]=personal"), 1)
-        XCTAssertTrue(r.wire.requests.isEmpty, "Music.app mode sent a SpanDAC request")
+        XCTAssertTrue(r.wire.requests.isEmpty, "MusicTUI's own data with the MusicTUI output sent a SpanDAC request")
         XCTAssertEqual(r.sourceBuilt.value, 0, "Music.app mode built a SpanDAC client")
         XCTAssertNil(r.scene.message)
     }

@@ -170,4 +170,27 @@ final class DiscoverSweepTests: XCTestCase {
             XCTAssertFalse(discoverCaptureDecision(name: n, keepName: "", protected: names))
         }
     }
+
+    // MARK: - SpanDAC data (score: data route and output, C-ADD)
+
+    /// With SpanDAC data the container is made by SpanDAC and played by its
+    /// persistent ID, but the sweep is unchanged: it deletes whole Discover
+    /// containers by their name prefix and never a track, so the songs a play
+    /// added stay in the library. The persistent-ID scripts delete nothing.
+    func testDiscoverSweepStillRemovesOnlyTheContainer() {
+        let hex = "0000000000000F01"
+        for script in [discoverSweepScript(), discoverSweepScript(protectedNames: ["__discover__ x — y"])] {
+            let deletes = script.components(separatedBy: "\n").filter { $0.contains("delete") }
+            XCTAssertEqual(deletes.map { $0.trimmingCharacters(in: .whitespaces) },
+                           ["delete (every user playlist whose name is nm)"])
+            XCTAssertTrue(script.contains("nm starts with \"\(discoverPlaylistPrefix)\""))
+            XCTAssertFalse(script.contains("track"), "the sweep never touches a track")
+        }
+        let spandacScripts = discoverPlayScripts(persistentID: hex, disableShuffle: true)
+            + [discoverTrackCountScript(persistentID: hex), discoverConfirmationScript(persistentID: hex)]
+        for script in spandacScripts {
+            XCTAssertFalse(script.contains("delete"), script)
+        }
+        XCTAssertEqual(spandacScripts.filter { $0.contains(hex) }.count, 3, "play, count and confirm name the identity")
+    }
 }

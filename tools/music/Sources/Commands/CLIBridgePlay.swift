@@ -80,65 +80,33 @@ func bridgePlayExtraWordsRefusal(flag: String) -> String {
 /// `music play` with Bridge selected.
 func bridgePlayCommand(_ session: CLIBridgeSession, args: [String], playlist: String?, album: String?,
                        song: String?, artist: String?, json: Bool, env: CLIBridgeEnv) throws {
-    if let refusal = artistWithLooseWordsRefusal(artist: artist, args: args,
-                                                 song: song, album: album, playlist: playlist) {
-        throw ActionError(message: refusal)
-    }
-    let named = [playlist, album, song, artist].compactMap { $0 }.count
-    let artistNarrowsOne = named == 2 && artist != nil && (album != nil || song != nil)
-    guard named <= 1 || artistNarrowsOne else {
-        throw ActionError(message: bridgePlayOneSelectionRefusal)
-    }
-
-    let onWarming: (TimeInterval) -> Void = { _ in env.err(cliBridgeWarmingProgress) }
-    let selection: BridgeSelection
-    let kind: BridgePlayResultKind
-    var shuffle = false
-
-    switch PlayForm(args: args, playlist: playlist, album: album, song: song, artist: artist) {
-    case .playlist(let name):
-        shuffle = try bridgeLoneShuffle(args, flag: "playlist")
-        try refuseBlank(name, "Playlist")
-        selection = try resolveBridgePlaylistSelection(provider: session.provider, name: name, shuffle: shuffle,
-                                                       budget: session.budget, sleep: env.sleep, onWarming: onWarming)
-        kind = .playlist
-    case .album(let name):
-        shuffle = try bridgeLoneShuffle(args, flag: "album")
-        try refuseBlank(name, "Album")
-        selection = try resolveBridgeAlbumSelection(provider: session.provider, name: name, artist: artist,
-                                                    shuffle: shuffle, budget: session.budget,
-                                                    sleep: env.sleep, onWarming: onWarming)
-        kind = .album
-    case .song(let title):
-        guard args.isEmpty else { throw ActionError(message: bridgePlayExtraWordsRefusal(flag: "song")) }
-        try refuseBlank(title, "Song")
-        selection = try resolveBridgeSongSelection(provider: session.provider, title: title, artist: artist,
-                                                   budget: session.budget, sleep: env.sleep, onWarming: onWarming)
-        kind = .song
-    case .artist(let name):
-        // Loose words were refused above, in the shipped words.
-        try refuseBlank(name, "Artist")
-        selection = try resolveBridgeArtistSelection(provider: session.provider, name: name,
-                                                     budget: session.budget, sleep: env.sleep, onWarming: onWarming)
-        kind = .artist
+    let form = PlayForm(args: args, playlist: playlist, album: album, song: song, artist: artist)
+    switch form {
     case .index(let index):
+        try refuseNamedFormMisuse(args: args, playlist: playlist, album: album, song: song, artist: artist)
         try bridgePlayIndex(session, index: index, json: json, env: env)
         return
     case .resume:
+        try refuseNamedFormMisuse(args: args, playlist: playlist, album: album, song: song, artist: artist)
         _ = try session.mutate { try sendBridgeRef(.resume, to: $0) }
         bridgeShowAfterMutation(session, json: json, env: env)
         return
     case .catalogLink:
+        try refuseNamedFormMisuse(args: args, playlist: playlist, album: album, song: song, artist: artist)
         try bridgePlaySongLink(session, link: args[0], json: json, env: env)
         return
     case .words:
+        try refuseNamedFormMisuse(args: args, playlist: playlist, album: album, song: song, artist: artist)
         // The matrix refuses these before any Bridge request; if the route
         // ever changed without a body, refuse rather than guess.
-        throw ActionError(message: cliBridgeNotServedReason(playAction(args: args, playlist: playlist, album: album,
-                                                                       song: song, artist: artist)))
+        throw ActionError(message: cliBridgeNotServedReason(form.action))
+    case .playlist, .album, .song, .artist:
+        break
     }
 
-    switch selection {
+    let named = try resolveNamedPlay(session, args: args, playlist: playlist, album: album, song: song,
+                                     artist: artist, env: env)
+    switch named.selection.ids(shuffle: named.shuffle) {
     case .refused(let why):
         throw ActionError(message: why)
     case .play(let label, let ids, let startRequired, let skippedVideos):
@@ -149,11 +117,187 @@ func bridgePlayCommand(_ session: CLIBridgeSession, args: [String], playlist: St
         }
         bridgeShowAfterMutation(
             session, json: json, env: env,
-            resultLines: bridgePlayResultLines(kind: kind, label: label, sent: ids.count,
+            resultLines: bridgePlayResultLines(kind: named.kind, label: label, sent: ids.count,
                                                skippedUnavailable: skipped, skippedVideos: skippedVideos,
-                                               shuffle: shuffle),
-            resultJSON: bridgePlayResultJSON(kind: kind, sent: ids.count,
+                                               shuffle: named.shuffle),
+            resultJSON: bridgePlayResultJSON(kind: named.kind, sent: ids.count,
                                              skippedUnavailable: skipped, skippedVideos: skippedVideos))
+    }
+}
+
+/// The refusals every form checks before anything else (S7's order):
+/// `--artist` with loose words, and more than one selection flag.
+private func refuseNamedFormMisuse(args: [String], playlist: String?, album: String?,
+                                   song: String?, artist: String?) throws {
+    if let refusal = artistWithLooseWordsRefusal(artist: artist, args: args,
+                                                 song: song, album: album, playlist: playlist) {
+        throw ActionError(message: refusal)
+    }
+    let named = [playlist, album, song, artist].compactMap { $0 }.count
+    let artistNarrowsOne = named == 2 && artist != nil && (album != nil || song != nil)
+    guard named <= 1 || artistNarrowsOne else {
+        throw ActionError(message: bridgePlayOneSelectionRefusal)
+    }
+}
+
+/// A named `music play` form, resolved against SpanDAC's library: the rows,
+/// which form asked, and D4's lone `shuffle`.
+private struct NamedPlay {
+    let selection: BridgeRowSelection
+    let kind: BridgePlayResultKind
+    let shuffle: Bool
+}
+
+/// D4's name-and-play resolution for `--playlist/--album/--song/--artist`,
+/// shared by a SpanDAC output (which queues ids) and the MusicTUI output with
+/// SpanDAC data (which plays rows). Reads only, through `session.provider`,
+/// with the session's one warm-up budget; never mutates.
+private func resolveNamedPlay(_ session: CLIBridgeSession, args: [String], playlist: String?,
+                              album: String?, song: String?, artist: String?,
+                              env: CLIBridgeEnv) throws -> NamedPlay {
+    try refuseNamedFormMisuse(args: args, playlist: playlist, album: album, song: song, artist: artist)
+    let onWarming: (TimeInterval) -> Void = { _ in env.err(cliBridgeWarmingProgress) }
+    switch PlayForm(args: args, playlist: playlist, album: album, song: song, artist: artist) {
+    case .playlist(let name):
+        let shuffle = try bridgeLoneShuffle(args, flag: "playlist")
+        try refuseBlank(name, "Playlist")
+        return NamedPlay(selection: try resolveBridgePlaylistRows(provider: session.provider, name: name,
+                                                                  budget: session.budget, sleep: env.sleep,
+                                                                  onWarming: onWarming),
+                         kind: .playlist, shuffle: shuffle)
+    case .album(let name):
+        let shuffle = try bridgeLoneShuffle(args, flag: "album")
+        try refuseBlank(name, "Album")
+        return NamedPlay(selection: try resolveBridgeAlbumRows(provider: session.provider, name: name,
+                                                               artist: artist, budget: session.budget,
+                                                               sleep: env.sleep, onWarming: onWarming),
+                         kind: .album, shuffle: shuffle)
+    case .song(let title):
+        guard args.isEmpty else { throw ActionError(message: bridgePlayExtraWordsRefusal(flag: "song")) }
+        try refuseBlank(title, "Song")
+        return NamedPlay(selection: try resolveBridgeSongRows(provider: session.provider, title: title,
+                                                              artist: artist, budget: session.budget,
+                                                              sleep: env.sleep, onWarming: onWarming),
+                         kind: .song, shuffle: false)
+    case .artist(let name):
+        // Loose words were refused above, in the shipped words.
+        try refuseBlank(name, "Artist")
+        return NamedPlay(selection: try resolveBridgeArtistRows(provider: session.provider, name: name,
+                                                                budget: session.budget, sleep: env.sleep,
+                                                                onWarming: onWarming),
+                         kind: .artist, shuffle: false)
+    case .index, .resume, .catalogLink, .words:
+        // Callers route these forms elsewhere; refuse rather than guess.
+        throw ActionError(message: pickASpanDACOutput)
+    }
+}
+
+// MARK: - The MusicTUI output with SpanDAC data (score: data route and output, step 6)
+
+/// Where a `music play` invocation's row came from on the DATA axis, for the
+/// coordinator's choose-and-play rule (C-MATRIX column 4). Only column 4 needs
+/// one: every other column returns nil, and its bodies keep deciding by the
+/// cached row exactly as they ship. The ROW's origin decides, never the
+/// spelling of its id: a cached row read under MusicTUI's own data is
+/// `.openData`, which the coordinator refuses with the CLI's "from before the
+/// switch" sentence.
+func cliPlayOrigin(_ form: PlayForm, env: CLIBridgeEnv) throws -> PlayOrigin? {
+    guard case .consistent(.spandacMac, .musicApp) = env.routing.selection else { return nil }
+    switch form {
+    case .playlist, .album, .song, .artist:
+        return .spandacLibrary
+    case .catalogLink:
+        return .spandacCatalogue
+    case .index(let index):
+        let row = try ResultCache.row(index: index, in: env.cache.readSongs())
+        switch row.origin {
+        case .bridgeLibrary:     return .spandacLibrary
+        case .bridgeCatalog:     return .spandacCatalogue
+        case .catalog, .library: return .openData(resultNumber: index)
+        }
+    case .words, .resume:
+        return nil
+    }
+}
+
+/// CHOSEN wording: SpanDAC on this Mac cannot serve MusicTUI's music data
+/// right now. Unlike `cliBridgeNotReadySentence` it offers no output switch:
+/// the MusicTUI output is already selected, and the data comes from this Mac.
+func cliSpanDACDataNotReadySentence(_ readiness: SourceReadiness) -> String {
+    let label = readiness.label
+    let closed = label.hasSuffix(".") || label.hasSuffix("!") || label.hasSuffix("?") ? label : label + "."
+    return closed + " MusicTUI gets its music data from SpanDAC on this Mac."
+}
+
+/// `music play` on the MusicTUI output with SpanDAC data, on the path the
+/// coordinator named from the row's origin. Library rows (the named forms,
+/// and `play N` of a SpanDAC library row) go to `env.libraryPlay`; a catalogue
+/// song (`play N` of a SpanDAC catalogue row, or an Apple Music song link)
+/// goes to `env.cataloguePlay`. Both are called inside the output lock. Names,
+/// and a cached row's identity (`prepare`), are resolved against SpanDAC's
+/// library on this Mac BEFORE the lock, under the selection stamped here, and
+/// nothing here ever sends a request to a SpanDAC output: the MusicTUI output
+/// is what plays.
+func musicTUIPlayCommand(_ path: MusicTUIPlayPath, args: [String], playlist: String?, album: String?,
+                         song: String?, artist: String?, json: Bool, env: CLIBridgeEnv) throws {
+    let form = PlayForm(args: args, playlist: playlist, album: album, song: song, artist: artist)
+    try refuseNamedFormMisuse(args: args, playlist: playlist, album: album, song: song, artist: artist)
+    // The stamp: what this command routed on, before any read.
+    let stamp = env.routing.selection
+    switch (path, form) {
+    case (.handoff, .playlist), (.handoff, .album), (.handoff, .song), (.handoff, .artist):
+        let client = env.routing.dataClient()
+        let readiness = cliDataReadiness(client)
+        guard readiness == .ready else {
+            throw ActionError(message: cliSpanDACDataNotReadySentence(readiness))
+        }
+        let session = CLIBridgeSession(client: client, env: env)
+        let named = try resolveNamedPlay(session, args: args, playlist: playlist, album: album, song: song,
+                                         artist: artist, env: env)
+        switch named.selection {
+        case .refused(let why):
+            throw ActionError(message: why)
+        case .rows(let label, let rows, _, _):
+            let request = CLIMusicTUILibraryPlayRequest(kind: named.kind, label: label, rows: rows, startAt: 1,
+                                                        shuffle: named.shuffle, resultNumber: nil, json: json,
+                                                        selectionAtRead: stamp)
+            let prepared = try env.libraryPlay.prepare(request, env: env)
+            try cliMusicTUIMutation(env: env) { try env.libraryPlay.play(prepared, env: env) }
+        }
+
+    case (.handoff, .index(let index)), (.add, .index(let index)):
+        let row = try ResultCache.row(index: index, in: env.cache.readSongs())
+        switch (path, bridgeRef(forCachedRow: row, index: index)) {
+        case (_, .refuse(let why)):
+            throw ActionError(message: why)
+        case (.handoff, .queue(.libraryQueue(let ids, _))) where ids.count == 1:
+            let musicRow = MusicRow(id: ids[0], title: row.title, artist: row.artist,
+                                    album: row.album.isEmpty ? nil : row.album, kind: .song)
+            let request = CLIMusicTUILibraryPlayRequest(kind: .song, label: row.title, rows: [musicRow], startAt: 1,
+                                                        shuffle: false, resultNumber: index, json: json,
+                                                        selectionAtRead: stamp)
+            // The identity walk, outside the output lock (it can take the
+            // whole warm-up budget); `play` re-checks the stamp under it.
+            let prepared = try env.libraryPlay.prepare(request, env: env)
+            try cliMusicTUIMutation(env: env) { try env.libraryPlay.play(prepared, env: env) }
+        case (.add, .queue(.catalogueQueue(let ids))) where ids.count == 1:
+            let request = CLIMusicTUICataloguePlayRequest(catalogueID: ids[0], title: row.title, artist: row.artist,
+                                                          album: row.album.isEmpty ? nil : row.album,
+                                                          resultNumber: index, json: json)
+            try cliMusicTUIMutation(env: env) { try env.cataloguePlay.play(request, env: env) }
+        default:
+            // The row's origin and the path disagree: refuse, never guess.
+            throw ActionError(message: pickASpanDACOutput)
+        }
+
+    case (.add, .catalogLink):
+        guard let id = appleMusicSongID(from: args[0]) else { throw ActionError(message: pickASpanDACOutput) }
+        let request = CLIMusicTUICataloguePlayRequest(catalogueID: id, title: nil, artist: nil, album: nil,
+                                                      resultNumber: nil, json: json)
+        try cliMusicTUIMutation(env: env) { try env.cataloguePlay.play(request, env: env) }
+
+    default:
+        throw ActionError(message: pickASpanDACOutput)
     }
 }
 

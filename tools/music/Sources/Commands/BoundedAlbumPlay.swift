@@ -43,12 +43,19 @@ enum ContainerPlayOutcome: Equatable {
 /// does not use: it sees the ids read back from the container itself and can
 /// reject the build before a note is played. Returning false rolls the
 /// container back and reports `.buildFailed`.
+///
+/// `confirmOrder` is the stricter form for a caller whose ORDER is part of
+/// what was chosen (an album or playlist played by identity): it sees the ids
+/// in the container's own track order, the order that will play, and nil when
+/// the read failed. A permutation of the right songs is a different play and
+/// must be rejected there. Both hooks must pass; either failing rolls back.
 func playBoundedContainer(name: String,
                           seed: ContainerSeed,
                           uuid: String,
                           run: ScriptRunner,
                           launch: @escaping ProcessLauncher = detachedLaunch,
-                          confirm: (Set<String>?) -> Bool = { _ in true })
+                          confirm: (Set<String>?) -> Bool = { _ in true },
+                          confirmOrder: ([String]?) -> Bool = { _ in true })
     -> ContainerPlayOutcome {
 
     switch buildContainer(name: name, seed: seed, run: run) {
@@ -90,13 +97,14 @@ func playBoundedContainer(name: String,
         // because an unreadable id set cannot confirm anything.
         verbose("container \(name): could not read track ids; watcher will run context-only")
     }
-    let ids = parseContainerTrackIDs(idsRaw ?? "")
+    let orderedIDs = parseContainerTrackIDsInOrder(idsRaw ?? "")
+    let ids = Set(orderedIDs)
 
     // Fail closed BEFORE playing. A caller that cannot confirm what it built
     // must not fall through to playing something else. `confirm` sees nil when
     // the read itself failed, so it can tell "unknown" from "wrong" — those are
     // different states with different messages.
-    guard confirm(idsRaw == nil ? nil : ids) else {
+    guard confirm(idsRaw == nil ? nil : ids), confirmOrder(idsRaw == nil ? nil : orderedIDs) else {
         let removed = run(playlistDeleteScript(name: name)) != nil
         verbose("container \(name): identity confirmation failed; rolled back")
         return .buildFailed(containerRemoved: removed)

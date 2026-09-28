@@ -1,14 +1,18 @@
 import Foundation
 
-/// One call that would leave the process: an AppleScript run or a REST request.
+/// One call that would leave the process: an AppleScript run, a REST request,
+/// or a process launch (score: data route and output, C-START — starting or
+/// bringing forward the Mac-hosted alternate source).
 enum ExternalCall: Equatable, CustomStringConvertible {
     case appleScript(script: String)
     case http(method: String, path: String)
+    case launchApp(bundleID: String)
 
     var description: String {
         switch self {
         case .appleScript(let script): return "osascript: \(script.prefix(80))"
         case .http(let method, let path): return "\(method) \(path)"
+        case .launchApp(let bundleID): return "open -b \(bundleID)"
         }
     }
 }
@@ -19,11 +23,13 @@ struct ExternalCallBlocked: Error, LocalizedError {
     var errorDescription: String? { "Test tripwire blocked \(call)" }
 }
 
-/// A test-only tripwire at the two process funnels (`AppleScriptBackend.run`,
-/// `RESTAPIBackend.get`/`post`). Production never arms it, and unarmed it is a
-/// lock and a flag read. A test arms it so that every AppleScript or REST call
-/// is recorded and throws before any `Process` or `URLSession` runs: "0
-/// AppleScript/REST calls" is then a count, not an inference (score S3).
+/// A test-only tripwire at the process funnels (`AppleScriptBackend.run`,
+/// `RESTAPIBackend.get`/`post`, and the Mac SpanDAC launch/bring-forward call
+/// in `MacSpanDACStarter.swift`). Production never arms it, and unarmed it is a
+/// lock and a flag read. A test arms it so that every AppleScript, REST or
+/// launch call is recorded and throws before any `Process` or `URLSession`
+/// runs: "0 AppleScript/REST/launch calls" is then a count, not an inference
+/// (score S3; score: data route and output, C-START).
 final class ExternalCallTripwire: @unchecked Sendable {
     static let shared = ExternalCallTripwire()
 

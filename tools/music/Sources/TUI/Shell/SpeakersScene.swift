@@ -26,22 +26,30 @@ func speakerRows(from devices: [[String: Any]]) -> [SpeakerRow] {
 // MARK: - The Output tab's rows
 
 /// What the Output tab lists, in order: the SPANDAC section (this Mac first,
-/// then SpanDACs on the network), then the MUSIC.APP section (speakers, or a
-/// stand-in Music.app row when there are none), then EQ and Visualizer.
+/// then SpanDACs on the network), then the MUSICTUI section (speakers, or a
+/// stand-in MusicTUI row when there are none), then EQ and Visualizer.
 ///
 /// **Choosing a SpanDAC row IS choosing SpanDAC.** There is no separate
 /// "output mode" row any more: the Mac's row is `PlaybackMode.source`, a
 /// network row is `.networkSource(sourceID)`, and a speaker (or the stand-in)
-/// is Music.app.
+/// is the MusicTUI output (`PlaybackMode.musicApp` internally).
+///
+/// These are the rows the cursor can reach. Before MusicTUI has switched to
+/// SpanDAC for music data, the network SpanDACs are drawn but are not rows,
+/// and with no SpanDAC on this Mac its row is not either.
 enum OutputTabRow: Equatable {
     /// This Mac's own SpanDAC, `PlaybackMode.source`. Always row 1.
     case spandacMac
     /// A SpanDAC on the network, keyed by its `sourceID`, never by its name:
     /// two devices with the same name are two rows.
     case spandac(String)
-    /// Stands in for Music.app when there are no speakers to list, so
-    /// Music.app can always be chosen.
+    /// Stands in for the MusicTUI output when there are no speakers to
+    /// list, so it can always be chosen.
     case musicApp
+    /// "Stop using SpanDAC for music data": the way back to MusicTUI's own
+    /// music data, offered once the person has switched (or while a stored
+    /// SpanDAC output waits on the switch).
+    case stopUsingSpanDAC
     case speaker(Int)        // index into the SpeakerRow array
     case eqPower
     case eq
@@ -49,10 +57,24 @@ enum OutputTabRow: Equatable {
     case visualizer
 }
 
+/// Where "Stop using SpanDAC for music data" sits, if anywhere.
+enum StopUsingPlacement: Equatable {
+    case none
+    /// The last row of the SPANDAC section.
+    case endOfSection
+    /// The first row of the tab, drawn amber: SpanDAC on this Mac is missing,
+    /// not allowed Apple Music, did not start, or a stored SpanDAC output is
+    /// waiting on the switch.
+    case top
+}
+
 func outputTabRows(speakerCount: Int, expanded: Bool, presetNames: [String],
-                   spandacIDs: [String] = []) -> [OutputTabRow] {
-    var rows: [OutputTabRow] = [.spandacMac]
+                   spandacIDs: [String] = [], macRow: Bool = true,
+                   stopUsing: StopUsingPlacement = .none) -> [OutputTabRow] {
+    var rows: [OutputTabRow] = stopUsing == .top ? [.stopUsingSpanDAC] : []
+    if macRow { rows.append(.spandacMac) }
     rows += spandacIDs.map { .spandac($0) }
+    if stopUsing == .endOfSection { rows.append(.stopUsingSpanDAC) }
     if speakerCount == 0 {
         rows.append(.musicApp)
     } else {
@@ -176,6 +198,10 @@ func spandacRowDetail(state: SpanDACRowState, output: SourceOutputInfo?, device:
                                 tone: .warning)
     case .forgetPrompt:
         return SpanDACRowDetail(text: "forget? y / n", tone: .warning)
+    case .needsMacSpanDAC:
+        // Compile-only arm (C-SEED-ROW): a later step owns this row's real
+        // wording and behaviour.
+        return SpanDACRowDetail(text: "needs SpanDAC on this Mac first", tone: .warning)
     }
 }
 
@@ -187,7 +213,8 @@ func playingThroughText(mode: PlaybackMode, activeSpeakers: [String], spandacDev
     -> (path: String, problem: String?) {
     let arrow = " \u{2192} "
     guard mode.usesSource else {
-        return (activeSpeakers.isEmpty ? "Music.app" : "Music.app" + arrow + activeSpeakers.joined(separator: ", "), nil)
+        let name = musicTUIOutputName
+        return (activeSpeakers.isEmpty ? name : name + arrow + activeSpeakers.joined(separator: ", "), nil)
     }
     var path = "SpanDAC" + arrow + spandacDevice
     if state == .ready {
@@ -242,6 +269,8 @@ final class SpeakersScene: Scene {
     /// Keys for the row under the cursor. The shell adds the tab keys, the
     /// playback globals and `q Quit` around this.
     var footerHint: String {
+        if showingSwitchScreen { return SpanDACSwitchCopy.keys }
+        if askingStopUsing { return stopUsingSpanDACKeys }
         if spandac?.awaitingAnswer == true { return "y Yes  n No  Esc Cancel" }
         if spandac?.isPairing == true { return "Esc Cancel pairing" }
         let move = "\u{2191}\u{2193} Move"
@@ -250,15 +279,27 @@ final class SpeakersScene: Scene {
         let row = display.indices.contains(cursor) ? display[cursor] : nil
         switch row {
         case .spandacMac?:
+            guard dataSwitched else {
+                // Before the switch, Enter on this Mac's row is about music
+                // data: switch, start SpanDAC, or open it for access.
+                switch macDataState {
+                case .ready: return "\(move)   Enter Switch to SpanDAC   \(always)"
+                case .notRunning, .startFailed: return "\(move)   Enter Start SpanDAC   \(always)"
+                case .needsAccess: return "\(move)   Enter Open SpanDAC   \(always)"
+                default: return "\(move)   \(always)"
+                }
+            }
             return "\(move)   Enter Play here   \(always)"
+        case .stopUsingSpanDAC?:
+            return "\(move)   Enter Stop using SpanDAC   \(always)"
         case .spandac?:
             let forget = currentSpanDACRow?.paired == true ? "   f Forget" : ""
             return "\(move)   Enter Play here\(forget)   \(always)"
         case .speaker?:
-            let enter = routing.mode.usesSource ? "Enter Use Music.app" : "Enter Toggle"
+            let enter = routing.mode.usesSource ? "Enter Use \(musicTUIOutputName)" : "Enter Toggle"
             return "\(move)   \(enter)   \u{2190}\u{2192} Volume   \(always)"
         case .musicApp?:
-            return "\(move)   Enter Use Music.app   \(always)"
+            return "\(move)   Enter Use \(musicTUIOutputName)   \(always)"
         case .eq?, .preset?:
             return "\(move)   Enter Select   \u{2190}\u{2192} Preset   \(always)"
         case .eqPower?, .visualizer?, nil:
@@ -268,9 +309,53 @@ final class SpeakersScene: Scene {
 
     private var spandacIDs: [String] { spandacRows.map(\.sourceID) }
 
+    /// The rows the cursor can reach. Before the switch to SpanDAC data the
+    /// network SpanDACs are drawn but are not rows, and with no SpanDAC on
+    /// this Mac its row is not one either.
     private var displayRows: [OutputTabRow] {
-        outputTabRows(speakerCount: rows.count, expanded: eqExpanded,
-                      presetNames: pickerPresetNames, spandacIDs: spandacIDs)
+        let switched = dataSwitched
+        return outputTabRows(speakerCount: rows.count, expanded: eqExpanded,
+                             presetNames: pickerPresetNames, spandacIDs: switched ? spandacIDs : [],
+                             macRow: switched || macDataState != .notInstalled,
+                             stopUsing: stopUsingPlacement)
+    }
+
+    /// Test-only: the rows the cursor can reach, in order.
+    var displayRowsForTest: [OutputTabRow] { displayRows }
+
+    /// Test-only: the coordinator this tab switches through.
+    var routingForTest: RoutingCoordinator { routing }
+
+    // MARK: Music data: the switch, and the way back
+
+    /// MusicTUI gets its music data from SpanDAC on this Mac: the person
+    /// switched. Until then the Mac row is about switching, and SpanDACs on
+    /// the network cannot be chosen (the Mac app is a prerequisite).
+    private var dataSwitched: Bool { routing.data == .spandacMac }
+
+    /// A stored SpanDAC output waiting on the switch (C-REPAIR): nothing plays
+    /// until the person switches or stops using SpanDAC here.
+    private var outputBlocked: Bool {
+        if case .outputBlocked = routing.selection { return true }
+        return false
+    }
+
+    /// This Mac's row before the switch.
+    private var macDataState: MacDataRowState {
+        macDataRowState(readiness: bridgeReadiness, installed: macInstalled,
+                        starting: startInFlight, startOutcome: startOutcome)
+    }
+
+    /// "Stop using SpanDAC for music data": offered once switched, or while
+    /// blocked; at the top, amber, when it is the way out of trouble.
+    private var stopUsingPlacement: StopUsingPlacement {
+        guard dataSwitched || outputBlocked else { return .none }
+        let trouble = outputBlocked
+            || macInstalled == false
+            || macSpanDACNeedsAccess(bridgeReadiness)
+            || startOutcome == .notAuthorized
+            || startOutcome == .timedOut
+        return trouble ? .top : .endOfSection
     }
 
     /// The network SpanDAC under the cursor, if the cursor is on one.
@@ -320,7 +405,7 @@ final class SpeakersScene: Scene {
     /// `bridgeReadiness`, by `tick()` only.
     private var macOutput: SourceOutputInfo? = nil
     private let readinessLock = NSLock()
-    private var inboxReadiness: (readiness: SourceReadiness, output: SourceOutputInfo?)? = nil   // guarded by readinessLock
+    private var inboxReadiness: (readiness: SourceReadiness, output: SourceOutputInfo?, installed: Bool?)? = nil   // guarded by readinessLock
     private var readinessInFlight = false
     private var lastReadinessKick = Date.distantPast   // clock(), tick()-thread only
     private var lastCountdownSecond = 0                // tick()-thread only
@@ -341,6 +426,36 @@ final class SpeakersScene: Scene {
     /// Test-only: fires after selectMode's action body finishes (either branch).
     /// Never read or set by production code.
     var selectModeFinishedForTest: (() -> Void)?
+
+    /// Test-only: fires after a switch-screen answer or a stop-using answer has
+    /// run (either outcome). Never read or set by production code.
+    var dataActionFinishedForTest: (() -> Void)?
+
+    /// Whether SpanDAC on this Mac is installed (LaunchServices or its socket,
+    /// or it answered). Nil until first asked. Written in `tick()` only.
+    private var macInstalled: Bool? = nil
+    /// The switch screen is up. Main loop only.
+    private var showingSwitchScreen = false
+    /// The switch screen has shown itself once in this process; after that
+    /// only Enter on this Mac's row shows it.
+    private var switchScreenAutoShown = false
+    /// Enter on "Stop using SpanDAC for music data" asked; y or n answers.
+    private var askingStopUsing = false
+    /// Why the last "Stop using" could not leave the SpanDAC output.
+    private var stopUsingProblem: String? = nil
+    /// A start this tab asked for is running, and how the last one ended.
+    /// Main loop only; the outcome arrives through `inboxStart`.
+    private var startInFlight = false
+    private var startOutcome: MacSpanDACStartOutcome? = nil
+    private var inboxStart: MacSpanDACStartOutcome? = nil        // guarded by readinessLock
+    private var inboxStopProblem: String?? = nil                 // guarded by readinessLock
+    /// Whether SpanDAC on this Mac's control socket exists. Injectable so a
+    /// test never looks at the real one; with "not running", its absence is
+    /// what lets "Stop using" leave a SpanDAC on this Mac that is not there.
+    private let macSocketExists: () -> Bool
+
+    /// Test-only: the switch screen is up.
+    var isShowingSwitchScreen: Bool { showingSwitchScreen }
 
     /// Test-only: the speakers as last loaded or toggled.
     var speakerRowsForTest: [SpeakerRow] { rows }
@@ -388,7 +503,10 @@ final class SpeakersScene: Scene {
          clock: @escaping () -> Date = Date.init,
          fetchSpeakers: @escaping () throws -> [[String: Any]] = fetchSpeakerDevices,
          fetchEQ: @escaping (AppleScriptBackend) throws -> EQSnapshot = { try fetchEQSnapshot($0, openWindow: false) },
-         fetchVisualizer: @escaping (AppleScriptBackend) throws -> Bool = visualizerStatus) {
+         fetchVisualizer: @escaping (AppleScriptBackend) throws -> Bool = visualizerStatus,
+         macSocketExists: @escaping () -> Bool = {
+             FileManager.default.fileExists(atPath: SourceAppStationSearch.socketPath)
+         }) {
         self.backend = backend
         self.status = status
         self.actions = actions
@@ -401,6 +519,7 @@ final class SpeakersScene: Scene {
         self.fetchSpeakers = fetchSpeakers
         self.fetchEQ = fetchEQ
         self.fetchVisualizer = fetchVisualizer
+        self.macSocketExists = macSocketExists
         spandac?.onPairedAndReady = { [weak self] id, name in self?.pairedAndReady(id, name: name) }
     }
 
@@ -420,9 +539,10 @@ final class SpeakersScene: Scene {
     /// version wrote `bridgeReadiness` directly from `ActionRunner`'s background
     /// queue while `render` read it on the main loop — a data race that happened
     /// to be invisible because the write never ran at all.
-    private func publishReadiness(_ readiness: SourceReadiness, output: SourceOutputInfo?) {
+    private func publishReadiness(_ readiness: SourceReadiness, output: SourceOutputInfo?,
+                                  installed: Bool? = nil) {
         readinessLock.lock()
-        inboxReadiness = (readiness, output)
+        inboxReadiness = (readiness, output, installed)
         readinessLock.unlock()
     }
 
@@ -452,9 +572,13 @@ final class SpeakersScene: Scene {
         readinessProbeCount += 1
         lastReadinessKick = clock()
         let make = makeSourceClient
+        let starter = routing.macStarter
         DispatchQueue.global().async { [weak self] in
             let (readiness, output) = Self.readMacStatus(make())
-            self?.publishReadiness(readiness, output: output)
+            // Installed: LaunchServices or its socket knows it, or it just
+            // answered. Asking never starts it.
+            let answered = readiness != .checking && readiness != .notRunning
+            self?.publishReadiness(readiness, output: output, installed: answered || starter.isInstalled)
         }
     }
 
@@ -471,6 +595,144 @@ final class SpeakersScene: Scene {
             return
         }
         selectMode(.networkSource(sourceID), name: name, onlyIfEpoch: pending.epoch)
+    }
+
+    /// Starts SpanDAC on this Mac for a person's Enter: a new attempt, off the
+    /// main loop, one at a time. The outcome comes back through the inbox;
+    /// on ready the switch screen follows.
+    private func startMacSpanDAC() {
+        guard !startInFlight else { return }
+        startInFlight = true
+        startOutcome = nil
+        let starter = routing.macStarter
+        DispatchQueue.global().async { [weak self] in
+            starter.newAttempt()
+            let outcome = starter.ensureStarted()
+            guard let self else { return }
+            self.readinessLock.lock()
+            self.inboxStart = outcome
+            self.readinessLock.unlock()
+        }
+    }
+
+    /// Applies a finished start and a stop-using reason. Main loop only.
+    private func drainDataInbox() -> Bool {
+        readinessLock.lock()
+        let start = inboxStart; inboxStart = nil
+        let problem = inboxStopProblem; inboxStopProblem = nil
+        readinessLock.unlock()
+        var changed = false
+        if let start {
+            startInFlight = false
+            changed = true
+            if start == .ready {
+                startOutcome = nil
+                // Ask again now rather than at the next re-probe.
+                lastReadinessKick = .distantPast
+                if !dataSwitched { showingSwitchScreen = true }
+            } else {
+                startOutcome = start
+            }
+        }
+        if let problem {
+            stopUsingProblem = problem
+            changed = true
+        }
+        return changed
+    }
+
+    /// The switch screen's Enter: SpanDAC on this Mac becomes MusicTUI's
+    /// music data source. The coordinator re-reads readiness inside its
+    /// boundary; music data needs SpanDAC answering and allowed Apple Music,
+    /// not a DAC. The output does not change (a stored SpanDAC output that
+    /// was waiting becomes live).
+    private func acceptSpanDACData() {
+        let make = makeSourceClient
+        actions.run("SpanDAC") { [weak self] in
+            guard let self else { return }
+            defer { self.dataActionFinishedForTest?() }
+            let result = try self.routing.acceptSpanDACData(readiness: {
+                macDataReadiness(Self.readMacStatus(make()).0)
+            })
+            if case .switched = result { self.status.post(switchedToSpanDACData) }
+        }
+    }
+
+    /// The switch screen's Esc: "Not now", remembered, so the screen never
+    /// shows itself again. Nothing switches.
+    private func declineSpanDACData() {
+        guard routing.ceremony == .neverShown else { return }
+        actions.run("SpanDAC") { [weak self] in
+            guard let self else { return }
+            defer { self.dataActionFinishedForTest?() }
+            try self.routing.declineSpanDACData()
+        }
+    }
+
+    /// "Stop using SpanDAC for music data", after the person's y. When the
+    /// output is a SpanDAC it is left first, through the normal switch: its
+    /// pause must be confirmed, except that SpanDAC on this Mac that is not
+    /// running (LaunchServices) AND has no socket counts as paused (C-REPAIR).
+    /// Then data returns to MusicTUI's own. If the output could not be left,
+    /// data still returns and the row says why; the person can try again.
+    private func stopUsingSpanDAC() {
+        let starter = routing.macStarter
+        let socketExists = macSocketExists
+        actions.run("SpanDAC") { [weak self] in
+            guard let self else { return }
+            defer { self.dataActionFinishedForTest?() }
+            let client = self.makeSourceClient()
+            let clientFor: (PlaybackMode) -> SourceAppClient = { mode in
+                guard let id = mode.networkSourceID else { return client }
+                return self.makeNetworkClient?(id) ?? .failing(.notPaired)
+            }
+            let macAbsent = { !starter.isRunning && !socketExists() }
+            let result: StopUsingSpanDACResult
+            do {
+                result = try self.routing.stopUsingSpanDACData(
+                    pauseOutgoing: { outgoing in
+                        switch outgoing {
+                        case .musicApp:
+                            return try confirmMusicAppNotPlaying(session: liveMusicAppPauseSession,
+                                                                 isRunning: liveMusicAppMayBeRunning)
+                        case .source:
+                            if (try? confirmBridgeNotPlaying(client.control)) == true { return true }
+                            return macAbsent()
+                        case .networkSource:
+                            return try confirmBridgeNotPlaying(clientFor(outgoing).control)
+                        }
+                    },
+                    dropQueue: { outgoing in
+                        switch outgoing {
+                        case .musicApp: break
+                        case .source:
+                            // Nothing to drop in a SpanDAC that is not there.
+                            do { try client.control.stop() } catch { if !macAbsent() { throw error } }
+                        case .networkSource:
+                            try clientFor(outgoing).control.stop()
+                        }
+                    })
+            } catch let error as ActionError {
+                self.publishStopProblem(error.message)
+                throw error
+            }
+            switch result {
+            case .alreadyOpen:
+                self.publishStopProblem(nil)
+            case .stopped:
+                self.publishStopProblem(nil)
+                self.status.post(backToMusicTUIData)
+            case .outputStillBlocked(let why):
+                self.publishStopProblem(why)
+                self.status.post(why, error: true)
+            }
+        }
+    }
+
+    private func publishStopProblem(_ problem: String?) {
+        readinessLock.lock()
+        inboxStopProblem = .some(problem)
+        readinessLock.unlock()
     }
 
     /// Choosing a row. Ruling 12.3's transaction lives in the coordinator:
@@ -539,7 +801,7 @@ final class SpeakersScene: Scene {
                 case .source, .musicApp:
                     let (readiness, output) = Self.readMacStatus(client)
                     self.publishReadiness(readiness, output: output)
-                    self.status.post(mode == .source ? "Output: SpanDAC · \(self.macName)" : "Output: Music.app")
+                    self.status.post(mode == .source ? "Output: SpanDAC · \(self.macName)" : "Output: \(musicTUIOutputName)")
                 }
             }
         }
@@ -576,6 +838,31 @@ final class SpeakersScene: Scene {
                 macOutput = freshReadiness.output
                 changed = true
             }
+            if let installed = freshReadiness.installed, installed != macInstalled {
+                macInstalled = installed
+                changed = true
+            }
+            // A status that reads ready for music data ends a failed start.
+            if startOutcome != nil, macDataReadiness(bridgeReadiness) == .ready {
+                startOutcome = nil
+                changed = true
+            }
+        }
+        if drainDataInbox() { changed = true }
+        // The switch screen shows itself ONCE, the first time SpanDAC on this
+        // Mac reads ready for music data while the person has never been
+        // asked (every install from before the data route included: no
+        // migration). After Esc, only Enter on this Mac's row shows it.
+        if !switchScreenAutoShown, !dataSwitched, routing.ceremony == .neverShown,
+           macDataReadiness(bridgeReadiness) == .ready {
+            switchScreenAutoShown = true
+            showingSwitchScreen = true
+            changed = true
+        }
+        // Switched meanwhile (another answer landed): nothing left to ask.
+        if showingSwitchScreen, dataSwitched {
+            showingSwitchScreen = false
+            changed = true
         }
 
         // Apply a landed fetch — unless the user mutated state after it started,
@@ -695,15 +982,97 @@ final class SpeakersScene: Scene {
         }
     }
 
+    /// "Stop using SpanDAC for music data", the question it asks, and why
+    /// the last answer could not leave a SpanDAC output, in lines of at most
+    /// `width` columns.
+    private func stopUsingLines(isCursor: Bool, prominent: Bool, width: Int) -> [String] {
+        var lines: [String] = []
+        if askingStopUsing {
+            var ask = wrapForOutputTab(stopUsingSpanDACAsk, width: width)
+            let keys = stopUsingSpanDACKeys
+            if let last = ask.last, last.count + 2 + keys.count <= width {
+                ask[ask.count - 1] = last + "  " + keys
+            } else {
+                ask.append(keys)
+            }
+            lines += ask.map { "\(ANSICode.bold)\(ANSICode.brightWhite)\($0)\(ANSICode.reset)" }
+        } else {
+            let text = truncText(stopUsingSpanDACText, to: width)
+            // Amber when prominent, under the cursor too (inverse amber).
+            let tone = prominent ? ANSICode.amber : ""
+            lines.append("\(isCursor ? ANSICode.inverse : "")\(tone)\(text)\(ANSICode.reset)")
+        }
+        if let problem = stopUsingProblem {
+            lines += wrapForOutputTab(problem, width: width).map { "\(ANSICode.amber)\($0)\(ANSICode.reset)" }
+        }
+        return lines
+    }
+
+    /// The one-time "Switch MusicTUI to SpanDAC?" screen: the whole tab, in a
+    /// box from 60 columns, every sentence whole (wrapped, never cut). The
+    /// keys are the footer's.
+    private func renderSwitchScreen(frame: ShellFrame) -> String {
+        var out = ""
+        let bottom = frame.bodyY + frame.bodyHeight - 1
+        var y = frame.bodyY
+        let boxed = frame.width >= 60
+        let boxWidth = max(0, frame.width - 4)
+        let textW = boxed ? max(0, boxWidth - 6) : max(0, frame.width - 4)
+
+        func line(_ content: String) {
+            guard y <= bottom else { return }
+            if boxed {
+                let pad = max(0, textW - visibleColumns(content))
+                out += ANSICode.moveTo(row: y, col: 3) + "\(ANSICode.cyan)\u{2502}\(ANSICode.reset)  "
+                    + content + String(repeating: " ", count: pad)
+                    + "  \(ANSICode.cyan)\u{2502}\(ANSICode.reset)"
+            } else {
+                out += ANSICode.moveTo(row: y, col: 3) + content
+            }
+            y += 1
+        }
+        func rule(_ left: String, _ right: String) {
+            guard boxed, y <= bottom else { return }
+            out += ANSICode.moveTo(row: y, col: 3)
+                + "\(ANSICode.cyan)\(left)\(String(repeating: "\u{2500}", count: max(0, boxWidth - 2)))\(right)\(ANSICode.reset)"
+            y += 1
+        }
+
+        rule("\u{256D}", "\u{256E}")
+        if boxed { line("") }
+        for piece in wrapForOutputTab(SpanDACSwitchCopy.eyebrow, width: textW) {
+            line("\(ANSICode.bold)\(ANSICode.cyan)\(piece)\(ANSICode.reset)")
+        }
+        line("")
+        for piece in wrapForOutputTab(SpanDACSwitchCopy.question, width: textW) {
+            line("\(ANSICode.bold)\(ANSICode.brightWhite)\(piece)\(ANSICode.reset)")
+        }
+        line("")
+        for point in SpanDACSwitchCopy.points {
+            for (i, piece) in wrapForOutputTab(point, width: textW).enumerated() {
+                guard i == 0, let sign = piece.first else { line(piece); continue }
+                let color = sign == "+" ? ANSICode.lime : ANSICode.cyan
+                line("\(color)\(sign)\(ANSICode.reset)\(piece.dropFirst())")
+            }
+        }
+        if boxed { line("") }
+        rule("\u{2570}", "\u{256F}")
+        return out
+    }
+
     func render(frame: ShellFrame, snapshot: NowPlayingSnapshot) -> String {
         var out = ""
         for r in frame.bodyY..<(frame.bodyY + frame.bodyHeight) {
             out += ANSICode.moveTo(row: r, col: 1) + ANSICode.clearLine
         }
         let bottom = frame.bodyY + frame.bodyHeight - 1
+        if showingSwitchScreen { return out + renderSwitchScreen(frame: frame) }
         let now = clock()
         var y = frame.bodyY
         let spanDACSelected = routing.mode.usesSource
+        let switched = dataSwitched
+        let blocked = outputBlocked
+        let noMacBox = !switched && macDataState == .notInstalled
 
         // Top line: where sound goes now.
         do {
@@ -714,10 +1083,13 @@ final class SpeakersScene: Scene {
                                                      activeSpeakers: rows.filter(\.active).map(\.name),
                                                      spandacDevice: selected.name, state: selected.state,
                                                      output: selected.output, now: now)
+            // A stored SpanDAC output waiting on the switch plays nothing
+            // (C-REPAIR); the line says so rather than the row's state.
+            let problemNow = blocked ? waitingOnTheSwitchToSpanDAC : problem
             let pathText = truncText(path, to: room)
             var line = "\(ANSICode.dim)\(label)\(ANSICode.reset)  \(ANSICode.bold)\(ANSICode.brightWhite)\(pathText)\(ANSICode.reset)"
             let left = room - pathText.count - 3
-            if let problem, left > 1 {
+            if let problem = problemNow, left > 1 {
                 let color = problem.hasPrefix("not ready") ? ANSICode.amber : ANSICode.dim
                 line += "   \(color)\(truncText(problem, to: left))\(ANSICode.reset)"
             }
@@ -726,6 +1098,20 @@ final class SpeakersScene: Scene {
         }
 
         let display = displayRows
+        let placement = stopUsingPlacement
+
+        // "Stop using SpanDAC for music data" leads the tab, amber, when it
+        // is the way out of trouble.
+        if placement == .top, y <= bottom {
+            let isCursor = display.first == .stopUsingSpanDAC && cursor == 0
+            for line in stopUsingLines(isCursor: isCursor, prominent: true, width: max(0, frame.width - 4)) {
+                guard y <= bottom else { break }
+                out += ANSICode.moveTo(row: y, col: 3) + line
+                y += 1
+            }
+            y += 1
+        }
+
         let nameW = 18
         let barW = 16
 
@@ -740,21 +1126,54 @@ final class SpeakersScene: Scene {
         // terminal keeps room for what the row says.
         let spandacNameW = min(nameW, max(4, ([macName] + spandacRows.map(\.name)).map(\.count).max() ?? 0))
 
+        // No SpanDAC on this Mac: the section is a dashed box that says so.
+        let side = noMacBox ? "\u{254E}" : "\u{2502}"
+        let (topLeft, topRight, bottomLeft, bottomRight, rule) = noMacBox
+            ? ("\u{250C}", "\u{2510}", "\u{2514}", "\u{2518}", "\u{254C}")
+            : ("\u{256D}", "\u{256E}", "\u{2570}", "\u{256F}", "\u{2500}")
+
         /// A line inside the box (or bare when not boxed), padded to the box.
         func sectionLine(_ content: String) -> String {
             guard boxed else { return ANSICode.moveTo(row: y, col: contentCol) + content }
             let pad = max(0, contentW - visibleColumns(content))
-            return ANSICode.moveTo(row: y, col: 3) + "\(ANSICode.cyan)\u{2502}\(ANSICode.reset) "
+            return ANSICode.moveTo(row: y, col: 3) + "\(ANSICode.cyan)\(side)\(ANSICode.reset) "
                 + content + String(repeating: " ", count: pad)
-                + " \(ANSICode.cyan)\u{2502}\(ANSICode.reset)"
+                + " \(ANSICode.cyan)\(side)\(ANSICode.reset)"
         }
 
         if boxed, y <= bottom {
             out += ANSICode.moveTo(row: y, col: 3)
-                + "\(ANSICode.cyan)\u{256D}\(String(repeating: "\u{2500}", count: max(0, boxWidth - 2)))\u{256E}\(ANSICode.reset)"
+                + "\(ANSICode.cyan)\(topLeft)\(String(repeating: rule, count: max(0, boxWidth - 2)))\(topRight)\(ANSICode.reset)"
             y += 1
         }
-        if y <= bottom {
+        if noMacBox {
+            if y <= bottom {
+                let note = truncText(NoMacSpanDACCopy.note, to: max(0, contentW - 9))
+                out += sectionLine("\(ANSICode.bold)\(ANSICode.cyan)\(NoMacSpanDACCopy.title)\(ANSICode.reset)  \(ANSICode.amber)\(note)\(ANSICode.reset)")
+                y += 1
+            }
+            for sentence in [NoMacSpanDACCopy.pitch, NoMacSpanDACCopy.install] {
+                for line in wrapForOutputTab(sentence, width: contentW) {
+                    guard y <= bottom else { break }
+                    out += sectionLine(sentence == NoMacSpanDACCopy.pitch ? line : "\(ANSICode.dim)\(line)\(ANSICode.reset)")
+                    y += 1
+                }
+            }
+            // SpanDACs seen on the network: drawn, never chosen.
+            if !spandacRows.isEmpty, y <= bottom {
+                out += sectionLine("")
+                y += 1
+            }
+            for row in spandacRows {
+                let detail = needsMacSpanDACDetail(macMissing: true)
+                for (i, line) in wrapForOutputTab("\(row.name)  \(detail.text)", width: max(0, contentW - 2)).enumerated() {
+                    guard y <= bottom else { break }
+                    let lead = i == 0 ? "\(dot(false)) " : "  "
+                    out += sectionLine(lead + "\(ANSICode.dim)\(line)\(ANSICode.reset)")
+                    y += 1
+                }
+            }
+        } else if y <= bottom {
             let subtitle = "lossless to your DAC \u{00B7} pick one and it plays there"
             let header = "\(ANSICode.bold)\(ANSICode.cyan)SPANDAC\(ANSICode.reset)  \(ANSICode.dim)\(truncText(subtitle, to: max(0, contentW - 9)))\(ANSICode.reset)"
             out += sectionLine(header)
@@ -768,15 +1187,16 @@ final class SpeakersScene: Scene {
             spandacSectionOpen = false
             if boxed, y <= bottom {
                 out += ANSICode.moveTo(row: y, col: 3)
-                    + "\(ANSICode.cyan)\u{2570}\(String(repeating: "\u{2500}", count: max(0, boxWidth - 2)))\u{256F}\(ANSICode.reset)"
+                    + "\(ANSICode.cyan)\(bottomLeft)\(String(repeating: rule, count: max(0, boxWidth - 2)))\(bottomRight)\(ANSICode.reset)"
                 y += 1
             }
-            y += 1   // a blank line before MUSIC.APP
+            y += 1   // a blank line before MUSICTUI
             guard y <= bottom else { return }
+            let title = musicTUIOutputName.uppercased()
             let subtitle = "this Mac and AirPlay speakers"
             let hint = "Enter on a speaker switches back"
-            let room = max(0, frame.width - 4 - "MUSIC.APP  ".count)
-            var header = "\(ANSICode.bold)\(ANSICode.cyan)MUSIC.APP\(ANSICode.reset)  \(ANSICode.dim)\(truncText(subtitle, to: room))\(ANSICode.reset)"
+            let room = max(0, frame.width - 4 - (title.count + 2))
+            var header = "\(ANSICode.bold)\(ANSICode.cyan)\(title)\(ANSICode.reset)  \(ANSICode.dim)\(truncText(subtitle, to: room))\(ANSICode.reset)"
             // While a SpanDAC plays, say how to come back: beside the heading
             // when it fits, on its own line when it does not.
             let hintInline = spanDACSelected && subtitle.count + 3 + hint.count <= room
@@ -817,9 +1237,32 @@ final class SpeakersScene: Scene {
             let isCursor = dispIdx == cursor
             switch dispRow {
             case .spandacMac:
-                let detail = spandacRowDetail(state: macRowState, output: macOutput, device: macName,
+                let detail: SpanDACRowDetail
+                if !switched {
+                    detail = macDataRowDetail(macDataState)
+                } else if macInstalled == false {
+                    detail = macDataRowDetail(.notInstalled)
+                } else {
+                    detail = spandacRowDetail(state: macRowState, output: macOutput, device: macName,
                                               isThisMac: true, now: now)
-                spandacLine(isCursor: isCursor, selected: routing.mode == .source, name: macName, detail: detail)
+                }
+                spandacLine(isCursor: isCursor, selected: routing.mode == .source && !blocked, name: macName, detail: detail)
+                // Before the switch, SpanDACs on the network are drawn under
+                // this Mac but cannot be chosen (C-SEED-ROW).
+                if !switched {
+                    for row in spandacRows {
+                        spandacLine(isCursor: false, selected: false, name: row.name,
+                                    detail: needsMacSpanDACDetail(macMissing: false))
+                    }
+                }
+
+            case .stopUsingSpanDAC:
+                guard placement == .endOfSection else { break }
+                for line in stopUsingLines(isCursor: isCursor, prominent: false, width: max(0, contentW - 2)) {
+                    guard y <= bottom else { break }
+                    out += sectionLine("  " + line)
+                    y += 1
+                }
 
             case .spandac(let id):
                 guard let row = spandacRows.first(where: { $0.sourceID == id }) else { break }
@@ -831,7 +1274,7 @@ final class SpeakersScene: Scene {
                 closeSpanDACSection()
                 guard y <= bottom else { break }
                 let selected = routing.mode == .musicApp
-                let title = "Music.app"
+                let title = musicTUIOutputName
                 let padTitle = title + String(repeating: " ", count: max(0, nameW - title.count))
                 let titleStr = isCursor ? "\(ANSICode.inverse)\(padTitle)\(ANSICode.reset)"
                                         : (selected ? "\(ANSICode.brightWhite)\(padTitle)\(ANSICode.reset)"
@@ -954,6 +1397,38 @@ final class SpeakersScene: Scene {
     }
 
     func handle(_ key: KeyPress) -> SceneAction {
+        // The switch screen and the stop-using question come before
+        // everything, before the vim aliases: they answer only their keys.
+        if showingSwitchScreen {
+            switch key {
+            case .enter:
+                showingSwitchScreen = false
+                acceptSpanDACData()
+                return .redraw
+            case .escape:
+                showingSwitchScreen = false
+                declineSpanDACData()
+                return .redraw
+            default:
+                return .none
+            }
+        }
+        if askingStopUsing {
+            switch key {
+            case .char("y"), .char("Y"):
+                askingStopUsing = false
+                stopUsingSpanDAC()
+                return .redraw
+            case .char("n"), .char("N"), .escape:
+                askingStopUsing = false
+                return .redraw
+            default:
+                return .none
+            }
+        }
+        // Rows can come and go with the data axis; keep the cursor on one.
+        if cursor >= displayRows.count { cursor = max(0, displayRows.count - 1) }
+
         // Vim aliases: j/k/h/l/g/G/ctrl-d/ctrl-u — this scene has no raw-text
         // capture mode, so the full list-scene set is safe everywhere.
         let key = vimAlias(key, listScene: true)
@@ -1014,13 +1489,38 @@ final class SpeakersScene: Scene {
             let currentRow = displayRows.indices.contains(cursor) ? displayRows[cursor] : nil
             switch currentRow {
             case .spandacMac:
+                // Before the switch, this row is about music data (C-CEREMONY):
+                // Enter asks to switch, starts SpanDAC, or opens it for
+                // access. Only ever on this keypress, never by itself.
+                if !dataSwitched {
+                    switch macDataState {
+                    case .ready:
+                        showingSwitchScreen = true
+                        return .redraw
+                    case .notRunning, .startFailed:
+                        startMacSpanDAC()
+                        return .redraw
+                    case .needsAccess:
+                        let starter = routing.macStarter
+                        DispatchQueue.global().async { starter.bringForward() }
+                        return .redraw
+                    default:
+                        return .none
+                    }
+                }
                 // Only a ready Mac row plays; any other state says why on the
                 // row itself, so Enter does nothing (no switch, no toast).
                 guard macRowState == .ready else { return .none }
                 selectMode(.source, name: macName)
                 return .redraw
+            case .stopUsingSpanDAC:
+                // Asks first; nothing happens until y.
+                askingStopUsing = true
+                return .redraw
             case .spandac(let id):
-                guard let spandac, let row = spandacRows.first(where: { $0.sourceID == id }) else { return .none }
+                // Never before the switch: SpanDAC on this Mac comes first.
+                guard dataSwitched,
+                      let spandac, let row = spandacRows.first(where: { $0.sourceID == id }) else { return .none }
                 switch row.state {
                 case .ready:
                     selectMode(.networkSource(id), name: row.name)
@@ -1043,7 +1543,8 @@ final class SpeakersScene: Scene {
                 return .redraw
             case .speaker(let i):
                 // While a SpanDAC plays, Enter on a speaker only switches back
-                // to Music.app: one keypress, one change (composer default).
+                // to the MusicTUI output: one keypress, one change (composer
+                // default).
                 if routing.mode.usesSource {
                     selectMode(.musicApp)
                     return .redraw

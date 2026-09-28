@@ -481,7 +481,17 @@ struct SourceAppClient {
     let control: SourceControlling
     let discover: DiscoverFeedReading
 
+    /// Where this client sends, and the command transport its members share
+    /// (not the library reads' longer-timeout one). For a caller that sends
+    /// ops no member models (SpanDAC's library add, lookup and playlist ops),
+    /// so they travel over this client's own connection, with whatever it
+    /// wraps around it, rather than one rebuilt from the path.
+    let path: String
+    let transport: (String, String) throws -> String
+
     init(path: String = SourceAppStationSearch.socketPath) {
+        self.path = path
+        transport = SourceAppStationSearch.sendOverUnixSocket
         playback = SourceAppPlayback(path: path)
         stationSearch = SourceAppStationSearch(path: path)
         control = SourceAppControl(path: path)
@@ -490,6 +500,8 @@ struct SourceAppClient {
 
     /// Seam for tests, matching the members' own.
     init(path: String, transport: @escaping (String, String) throws -> String) {
+        self.path = path
+        self.transport = transport
         playback = SourceAppPlayback(path: path, transport: transport)
         stationSearch = SourceAppStationSearch(path: path, transport: transport)
         control = SourceAppControl(path: path, transport: transport)
@@ -500,6 +512,8 @@ struct SourceAppClient {
     /// their own (a longer timeout), as the Unix client has.
     init(path: String, transport: @escaping (String, String) throws -> String,
          libraryTransport: @escaping (String, String) throws -> String) {
+        self.path = path
+        self.transport = transport
         playback = SourceAppPlayback(path: path, transport: transport)
         stationSearch = SourceAppStationSearch(path: path, transport: transport)
         control = SourceAppControl(path: path, transport: transport, libraryTransport: libraryTransport)
@@ -559,6 +573,41 @@ struct SourceStatus: Equatable {
     /// What the SpanDAC says is on its output. Nil when the reply carries no
     /// `output` key (a SpanDAC that predates it), which is read as before.
     var output: SourceOutputInfo? = nil
+}
+
+extension SourceStatus {
+    /// SpanDAC on this Mac as a DATA source: answering, authorized, speaking
+    /// this build's contract. A missing or still-checking DAC is the OUTPUT's
+    /// concern, never a reason to refuse a read or to keep waiting for a
+    /// start; `readiness` keeps the DAC for playing there.
+    ///
+    /// **Coupled, named rather than hidden:** the two DAC reasons are
+    /// `SourceAppControl.readiness(from:)`'s own sentences, matched only
+    /// together with the DAC state that produces them. That function checks
+    /// the contract and access BEFORE the DAC, so either problem still reads
+    /// as not ready here.
+    var dataReadiness: SourceReadiness {
+        switch (output?.dac, readiness) {
+        case (.notConnected?, .unavailable("plug in your DAC")),
+             (.unknown?, .unavailable("SpanDAC is still checking for a DAC")):
+            return .ready
+        default:
+            return readiness
+        }
+    }
+}
+
+/// The reason `SourceAppControl.readiness(from:)` gives when SpanDAC speaks a
+/// contract this build does not know. Produced and recognised only here, so
+/// the wording and the check cannot drift apart.
+func sourceContractMismatchReason(_ contract: Int) -> String {
+    "SpanDAC speaks a different version (\(contract)); update one of them"
+}
+
+/// Whether a readiness reason is `sourceContractMismatchReason`'s: a SpanDAC
+/// that answers but can never serve this build, however long it is given.
+func isSourceContractMismatch(_ reason: String) -> Bool {
+    reason.hasPrefix("SpanDAC speaks a different version (") && reason.hasSuffix("); update one of them")
 }
 
 /// One Library or Playlist row, by the triple the app joins on.
@@ -891,16 +940,27 @@ struct SourceAppControl: SourceControlling {
         case exactly(MusicRow.Kind)
     }
 
+    /// C-HANDOFF (score: data route and output, step 7): a library SONG row
+    /// may carry `alias`, the persistent ID SpanDAC reported, verbatim. Read
+    /// only from a song and only as text; absent, or on any other kind of row,
+    /// it is nil, and a play that needs it refuses rather than guesses.
+    private static func withAlias(_ row: MusicRow, from item: [String: Any]) -> MusicRow {
+        guard row.kind == .song, let alias = item["alias"] as? String else { return row }
+        var carried = row
+        carried.alias = alias
+        return carried
+    }
+
     /// One row, decoded under `policy`, or the reason the whole read fails.
     private func libraryRow(_ item: [String: Any], opName: String,
                             policy: LibraryRowPolicy) throws -> MusicRow? {
         switch (policy, readMusicRow(item)) {
         case (.anyKnownKind, .row(let row)):
-            return row
+            return Self.withAlias(row, from: item)
         case (.anyKnownKind, .unknownKind):
             return nil
         case (.exactly(let kind), .row(let row)) where row.kind == kind:
-            return row
+            return Self.withAlias(row, from: item)
         case (.exactly, .row(let row)):
             throw SourceAppError.malformedReply(
                 "SpanDAC's \(opName) list contains a row of kind \(row.kind.rawValue)")
@@ -963,6 +1023,8 @@ struct SourceAppControl: SourceControlling {
         for item in items {
             if let row = try libraryRow(item, opName: opName, policy: policy) { rows.append(row) }
         }
+        // C-HANDOFF's self-check: whether SpanDAC reports song identities at all.
+        LibraryAliasSelfCheck.shared.observe(rows)
 
         // C1a (D9/D11): ONLY `slice.libraryPlaylistTracks` carries this field,
         // and only that op requires it. An absent or negative count is a
@@ -1015,6 +1077,7 @@ struct SourceAppControl: SourceControlling {
         for item in items {
             if let row = try libraryRow(item, opName: opName, policy: policy) { rows.append(row) }
         }
+        LibraryAliasSelfCheck.shared.observe(rows)
         return MusicList(rows: rows, generation: generation,
                          stale: reply["stale"] as? Bool ?? false,
                          refreshing: reply["refreshing"] as? Bool ?? false)
@@ -1247,7 +1310,7 @@ struct SourceAppControl: SourceControlling {
     /// must never fall through to a speaker.
     func readiness(from status: [String: Any]) -> SourceReadiness {
         if let contract = status["contract"] as? Int, contract != sourceContractVersion {
-            return .unavailable("SpanDAC speaks a different version (\(contract)); update one of them")
+            return .unavailable(sourceContractMismatchReason(contract))
         }
         switch status["authorization"] as? String {
         case "authorized":     break

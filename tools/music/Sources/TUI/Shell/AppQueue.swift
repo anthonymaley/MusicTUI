@@ -91,10 +91,94 @@ final class AppQueueStore {
 /// Autoplay off this plays the one track and stops at its end, letting the poller
 /// drive the next. `current playlist` collapsing to the library (the 26.x bug) is
 /// irrelevant here — the app owns the queue, not Music.
+///
+/// A queue whose source is `persistentIDQueueSource` is addressed by persistent
+/// ID instead: `position` is then the entry's identity, and the track is found
+/// by it, never by a position or a name (score: data route and output, C-HANDOFF).
 @discardableResult
 func playQueueTrack(backend: AppleScriptBackend, playlist: String, position: Int) -> Bool {
+    if playlist == persistentIDQueueSource {
+        let script = persistentIDPlayScript(persistentIDOfQueueEntry(position))
+        return (try? syncRun { try await backend.runMusic(script) }) != nil
+    }
     let esc = escapeAppleScriptString(playlist)
     return (try? syncRun { try await backend.runMusic("play track \(position) of playlist \"\(esc)\"") }) != nil
+}
+
+// MARK: - Entries addressed by persistent ID (C-HANDOFF)
+//
+// A SpanDAC library play on the MusicTUI output is queued here with each entry
+// addressed by its track's persistent ID, so the poller's auto-advance,
+// next/previous, Now's jump, shuffle and the end-of-queue continuation all go
+// on playing exactly the verified tracks, through the same `(playlist,
+// position)` pair every one of them already hands to `playQueueTrack`.
+//
+// The encoding, stated plainly because it is compact rather than obvious:
+// - The queue's `playlistName` is `persistentIDQueueSource`, which no caller
+//   ever addresses as a playlist: `playQueueTrack` recognises it exactly.
+// - Each entry's `index` (the "source position" slot) holds the persistent ID's
+//   64 bits, reinterpreted as `Int`. `persistentIDOfQueueEntry` reads them back.
+//   `TrackListEntry` is not this file's to extend, and every consumer already
+//   carries `index` through shuffles, jumps and the saved queue untouched.
+//
+// Why it fails closed (it refuses to play rather than guess):
+// - `Int` is 64 bits on every Mac this package builds for (macOS 14 and
+//   later), so the reinterpretation round-trips every persistent ID bit for
+//   bit; text that is not sixteen hex digits never becomes an entry at all.
+// - An entry of this queue is only ever played by `persistentIDPlayScript`,
+//   which errors when more than one library track, or no track anywhere, has
+//   that identity. There is no position or name fallback.
+// - The one possible collision is a user playlist named exactly "Library"
+//   plus a NO-BREAK SPACE: its small positions would be read as 64-bit
+//   identities, which in practice match no track, so nothing plays.
+
+/// The source name of a queue addressed by persistent ID.
+///
+/// "Library" plus one trailing NO-BREAK SPACE: `isLibraryContextName` trims
+/// whitespace, so the end-of-queue continuation treats it as the library it
+/// plays from (`ContinuationSource.bounded`: the queue's own tracks, under its
+/// own title) and never looks up a playlist by this name, while it can never
+/// equal the plain "Library" the position-addressed queues use. A user
+/// playlist named exactly this, played from the Playlists tab, would be
+/// misread as identities: every such play would find no track and fail, never
+/// play a different one. `MusicTUIHandoffTests` pins both halves.
+let persistentIDQueueSource = "Library\u{00A0}"
+
+/// A queue entry addressed by `persistentID` (sixteen hex digits), or nil when
+/// it is not one.
+func persistentIDQueueEntry(persistentID: String, name: String, artist: String, album: String?) -> TrackListEntry? {
+    guard persistentID.count == 16, persistentID.allSatisfy(\.isHexDigit),
+          let bits = UInt64(persistentID, radix: 16) else { return nil }
+    return TrackListEntry(index: Int(Int64(bitPattern: bits)), name: name, artist: artist, isCurrent: false,
+                          album: album)
+}
+
+/// The persistent ID a `persistentIDQueueEntry` carries, as sixteen uppercase
+/// hex digits (Apple's Music app's own notation).
+func persistentIDOfQueueEntry(_ index: Int) -> String {
+    String(format: "%016llX", UInt64(bitPattern: Int64(index)))
+}
+
+/// Play the one track whose persistent ID is `persistentID`: in the library
+/// playlist, or, only when it is not there, the first user playlist holding it
+/// (one identity in several playlists is one track). More than one library
+/// track, or none anywhere, is an error: nothing plays.
+func persistentIDPlayScript(_ persistentID: String) -> String {
+    let pid = escapeAppleScriptString(persistentID)
+    return """
+    set hits to (every track of library playlist 1 whose persistent ID is "\(pid)")
+    if (count of hits) > 1 then error "More than one track has this identity." number -2700
+    if (count of hits) is 0 then
+        repeat with p in (every user playlist)
+            try
+                set hits to (every track of p whose persistent ID is "\(pid)")
+            end try
+            if (count of hits) > 0 then exit repeat
+        end repeat
+    end if
+    if (count of hits) is 0 then error "No track has this identity." number -1728
+    play item 1 of hits
+    """
 }
 
 /// Bulk-fetch a playlist's full ordered track list (name + artist per row). Two

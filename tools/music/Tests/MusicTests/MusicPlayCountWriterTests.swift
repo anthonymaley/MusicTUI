@@ -56,9 +56,9 @@ final class MusicPlayCountWriterTests: XCTestCase {
             (-600, .notRunning),
             (-609, .notRunning),
             (-1712, .timedOut),
-            (-1743, .failed("Music.app automation is not permitted for this terminal")),
-            (-10004, .failed("Music.app error -10004")),
-            (-1728, .failed("Music.app error -1728")),
+            (-1743, .failed("Automation of Apple's Music player is not permitted for this terminal")),
+            (-10004, .failed("Apple's Music player error -10004")),
+            (-1728, .failed("Apple's Music player error -1728")),
         ]
         for (code, expected) in cases {
             let s = FakeSession(matchCount: .failure(AEFailure(code: code, message: "m")))
@@ -144,7 +144,7 @@ final class MusicPlayCountWriterTests: XCTestCase {
                        .notSent(current: nil, reason: "timed out"))
         let t = FakeSession(states: [], playStateFailures: [AEFailure(code: -1743, message: "denied")])
         XCTAssertEqual(writer(t).writeDate(proc, persistentID: hex, expect: before, date: 1_790_200_000),
-                       .notSent(current: nil, reason: "Music.app automation is not permitted for this terminal"))
+                       .notSent(current: nil, reason: "Automation of Apple's Music player is not permitted for this terminal"))
         XCTAssertTrue(s.sets.isEmpty)
         XCTAssertTrue(t.sets.isEmpty)
     }

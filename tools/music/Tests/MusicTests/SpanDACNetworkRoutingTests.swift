@@ -129,7 +129,7 @@ final class SpanDACNetworkRoutingTests: XCTestCase {
                                               pauseOutgoing: { _ in XCTFail("paused before readiness"); return true },
                                               dropQueue: { _ in })) {
             XCTAssertEqual(($0 as? ActionError)?.message,
-                           "SpanDAC no longer recognises this Mac; pair again. Still using Music.app.")
+                           "SpanDAC no longer recognises this Mac; pair again. Still using MusicTUI.")
         }
         XCTAssertEqual(c.mode, .musicApp)
     }

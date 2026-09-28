@@ -92,7 +92,7 @@ final class BridgePlaylistsListSceneTests: XCTestCase {
 
         XCTAssertTrue(settleScene(s) { s.render(frame: frame, snapshot: idle).contains("Top 25 Most Played") })
         let out = s.render(frame: frame, snapshot: idle)
-        XCTAssertTrue(out.contains("Some Music.app playlists"), "the note never rendered: \(out)")
+        XCTAssertTrue(out.contains("Some of your playlists"), "the note never rendered: \(out)")
 
         // Two rows, so index 1 (the last) is reachable; further ↓ must not
         // move the cursor onto the note (it is not addressable as a row).
@@ -218,7 +218,7 @@ final class BridgePlaylistsListSceneTests: XCTestCase {
         let out = s.render(frame: frame, snapshot: idle)
         XCTAssertTrue(out.contains("Top 25 Most Played"))
         XCTAssertFalse(out.contains("SpanDAC library"), "a header named SpanDAC in Music.app mode: \(out)")
-        XCTAssertFalse(out.contains("Some Music.app playlists"), "the SpanDAC-only note showed in Music.app mode")
+        XCTAssertFalse(out.contains("Some of your playlists"), "the SpanDAC-only note showed in Music.app mode")
         XCTAssertEqual(wire.requestCount, 0, "Music.app mode reached the wire at all")
     }
 

@@ -43,4 +43,8 @@ enum SpanDACRowState: Equatable {
     /// Not seen, asleep, or no answer.
     case unreachable(String)
     case forgetPrompt
+    /// This row needs the Mac SpanDAC app set up first (C-SEED-ROW). Wording
+    /// and every other behaviour belong to a later step; this step only adds
+    /// the case so it compiles.
+    case needsMacSpanDAC
 }

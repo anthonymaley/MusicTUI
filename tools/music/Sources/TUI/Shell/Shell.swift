@@ -26,8 +26,23 @@ func shellFooterGlobals(mode: PlaybackMode) -> String {
         : "Space \u{23EF}  < > Skip  z Reshuffle  +/\u{2212} Vol"
 }
 
+/// Which library the Library and Playlists tabs read, from the DATA
+/// selection, never the output (score: data route and output, step 4).
+///
+/// With SpanDAC accepted as the data source, it is SpanDAC on this Mac's
+/// MusicKit library, whatever the output is: a SpanDAC on an iPhone or iPad
+/// is an output only, so its library is never read. Nil is MusicTUI's own
+/// data, the AppleScript path as shipped, and that includes a blocked stored
+/// output (C-REPAIR): `routing.data` reads `.open` there, so no SpanDAC
+/// client is constructed at all. Asked fresh at each load and each play, so
+/// a switch of data source is honoured mid-session. Module-internal so a
+/// test can prove the composition itself.
+func spanDACDataProvider(routing: RoutingCoordinator) -> MusicDataProvider? {
+    routing.data == .spandacMac ? BridgeMusicProvider(control: routing.dataClient().control) : nil
+}
+
 /// Opens the Playlists tab (C2, D7 item 5): which library it opens FROM
-/// follows the selected output, decided here rather than inside
+/// follows the data selection, decided here rather than inside
 /// `PlaylistsScene` so the Bridge branch is provable with no AppleScript
 /// reached — module-internal (not `private`) so a test can call it directly.
 ///
@@ -122,11 +137,12 @@ func runShell() {
         if let s = scenes[id] { return s }
         switch id {
         case .playlists:
-            // D7/C2: which library the tab opens from follows the selected
-            // output, decided by `openPlaylistsScene` so the Bridge branch is
-            // provable with no AppleScript reached — see its own doc comment.
+            // D7/C2: which library the tab opens from follows the DATA
+            // selection (`spanDACDataProvider`), decided by
+            // `openPlaylistsScene` so the SpanDAC branch is provable with no
+            // AppleScript reached — see its own doc comment.
             guard let scene = openPlaylistsScene(
-                bridgeSelected: routing.mode.usesSource, status: status,
+                bridgeSelected: routing.data == .spandacMac, status: status,
                 loadMusicAppPlaylists: { fetchUserPlaylistNames(backend: backend) },
                 build: { names, subscription in
                     PlaylistsScene(backend: backend, routing: routing,
@@ -136,12 +152,12 @@ func runShell() {
                                        : makePlaylistDataSources(backend: backend, names: names, artworkAPI: makeArtworkAPI()),
                                    appQueue: appQueue, status: status, actions: actions,
                                    kittyEnabled: kittyEnabled,
-                                   makeProvider: {
-                                       let mode = routing.mode
-                                       return mode.usesSource ? BridgeMusicProvider(control: routing.client(for: mode).control) : nil
-                                   },
+                                   makeProvider: { spanDACDataProvider(routing: routing) },
                                    loadMusicAppPlaylists: { fetchUserPlaylistNames(backend: backend) },
-                                   makeSources: { makePlaylistDataSources(backend: backend, names: $0, artworkAPI: makeArtworkAPI()) })
+                                   makeSources: { makePlaylistDataSources(backend: backend, names: $0, artworkAPI: makeArtworkAPI()) },
+                                   // A SpanDAC playlist on the MusicTUI output plays
+                                   // its owned songs by exact persistent ID.
+                                   handoff: liveMusicTUIHandoff(backend: backend, appQueue: appQueue, routing: routing))
                 }
             ) else { return nil }
             scenes[id] = scene
@@ -162,25 +178,27 @@ func runShell() {
             // "Library" (0.85s for 14k tracks, measured 2026-08-28). makeArtworkAPI()
             // is nil without both tokens and only feeds the cover ladder's REST
             // fallback; nil leaves covers on embedded-or-gradient, never a dead tab.
-            // The Songs list follows the Output tab: with Bridge selected it is
-            // Bridge's own MusicKit library, read and played by Bridge's ids
-            // ("two modes, two libraries", 2026-09-23). The factory is asked
-            // fresh at each load and each play, so a mid-session switch is
-            // honoured; nil is Music.app mode and the AppleScript path.
+            // The lists follow the DATA selection, not the output: with
+            // SpanDAC accepted as the data source they are SpanDAC on this
+            // Mac's own MusicKit library, read by its ids ("two modes, two
+            // libraries", 2026-09-23), whichever output plays them. The
+            // factory is asked fresh at each load and each play, so a
+            // mid-session switch is honoured; nil is MusicTUI's own data and
+            // the AppleScript path. Plays go to the OUTPUT through
+            // `routing.perform`; on the MusicTUI output a SpanDAC row goes to
+            // `handoff`.
             let scene = LibraryScene(backend: backend, routing: routing,
                                      sources: makeLibraryDataSources(backend: backend, artworkAPI: makeArtworkAPI()),
                                      appQueue: appQueue, status: status, actions: actions, kittyEnabled: kittyEnabled,
-                                     makeProvider: {
-                                         let mode = routing.mode
-                                         return mode.usesSource
-                                             ? BridgeMusicProvider(control: routing.client(for: mode).control)
-                                             : nil
-                                     })
+                                     makeProvider: { spanDACDataProvider(routing: routing) },
+                                     // Owned songs by exact persistent ID.
+                                     handoff: liveMusicTUIHandoff(backend: backend, appQueue: appQueue, routing: routing))
             scenes[id] = scene
             return scene
         case .discover:
-            // Why the door follows the mode: `discoverTabAdmitted`.
-            guard discoverTabAdmitted(mode: routing.mode,
+            // The door follows the DATA selection: SpanDAC data needs no
+            // user token, MusicTUI's own data does.
+            guard discoverTabAdmitted(selection: routing.selection,
                                       hasUserToken: AuthManager().userToken() != nil) else {
                 status.post(DiscoverScene.signInToBrowse, error: true)
                 return nil
@@ -196,7 +214,6 @@ func runShell() {
                                       // Always available; whether it is USED follows
                                       // the Output tab's selection, not an env var.
                                       routing: routing,
-                                      bridgeSelected: { routing.mode.usesSource },
                                       kittyEnabled: kittyEnabled)
             scenes[id] = scene
             return scene

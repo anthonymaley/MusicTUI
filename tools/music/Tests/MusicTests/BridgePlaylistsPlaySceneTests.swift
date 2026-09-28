@@ -822,13 +822,14 @@ final class BridgePlaylistsPlaySceneTests: XCTestCase {
         XCTAssertEqual(wire.requestCount, 0, "Music.app mode's p reached the wire")
     }
 
-    // MARK: - Codex before-push: playTrack checks routing.mode before any AppleScript read
+    // MARK: - Codex before-push: playTrack checks the data selection before any AppleScript read
 
-    /// The residual race the fix closes: the SCENE still thinks Music.app is
-    /// selected (`makeProvider()` nil, so `railSource == .musicApp` and Enter
-    /// routes to `playTrack`), but by the time the action actually runs on
-    /// `ActionRunner`'s queue, `routing.mode` already reads `.source` — the
-    /// output flipped to Bridge in between. `playTrack` must refuse WITHOUT
+    /// The residual race the fix closes: the SCENE still thinks MusicTUI's
+    /// own data is selected (`makeProvider()` nil, so `railSource == .musicApp`
+    /// and Enter routes to `playTrack`), but by the time the action actually
+    /// runs on `ActionRunner`'s queue, the coordinator's data selection
+    /// already reads SpanDAC (this coordinator predates the data axis, so a
+    /// `.source` output carries SpanDAC data) — the source switched in between. `playTrack` must refuse WITHOUT
     /// running `fetchPlaylistTracks`'s AppleScript first; `/usr/bin/true`
     /// alone can't prove that (it "succeeds" either way), so this counts real
     /// invocations with `AppleScriptCallCounter`.

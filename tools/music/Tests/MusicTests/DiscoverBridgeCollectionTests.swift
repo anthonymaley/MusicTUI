@@ -99,8 +99,7 @@ final class DiscoverBridgeCollectionTests: XCTestCase {
                              actions: ActionRunner(status: status),
                              api: RESTAPIBackend(developerToken: "d", userToken: "u", storefront: "us"),
                              lifecycle: lifecycle,
-                             routing: routing,
-                             bridgeSelected: { routing.mode == .source })
+                             routing: routing)
     }
 
     private func settle(_ check: @escaping () -> Bool, seconds: Double = 2.0) {
@@ -151,7 +150,7 @@ final class DiscoverBridgeCollectionTests: XCTestCase {
         settle { !created.ids.isEmpty }
 
         XCTAssertEqual(created.ids, ["801", "802", "803"])
-        XCTAssertTrue(wire.queued.isEmpty, "Music.app mode sent a SpanDAC request")
+        XCTAssertTrue(wire.queued.isEmpty, "MusicTUI's own data with the MusicTUI output sent a SpanDAC request")
     }
 
     // MARK: - Enter on a track row
@@ -193,7 +192,7 @@ final class DiscoverBridgeCollectionTests: XCTestCase {
         settle { !created.ids.isEmpty }
 
         XCTAssertEqual(created.ids, ["802", "803"])
-        XCTAssertTrue(wire.queued.isEmpty, "Music.app mode sent a SpanDAC request")
+        XCTAssertTrue(wire.queued.isEmpty, "MusicTUI's own data with the MusicTUI output sent a SpanDAC request")
     }
 
     // MARK: - Failures stay visible

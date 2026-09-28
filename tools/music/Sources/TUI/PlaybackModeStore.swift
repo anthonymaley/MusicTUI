@@ -1,8 +1,14 @@
-// Which backend MusicTUI drives, persisted at ~/.config/music/mode.json.
+// Which OUTPUT MusicTUI plays through, persisted at ~/.config/music/mode.json.
 //
 // Source Mode v1 (docs/plans/2026-09-12-source-mode-v1-spec.md, Anthony's GO
-// 2026-09-13). ONE selection governs both playback and catalogue access; there
-// is deliberately no second switch.
+// 2026-09-13) made this ONE selection govern both playback and catalogue
+// access. Since the data route (2026-09-28) it is the SOUND axis only: where
+// music data comes from is a second selection, in data.json beside this file
+// (`DataProviderStore`), and `RoutingCoordinator` combines the two
+// (`EffectiveSelection`). This file and its values are unchanged, so an older
+// build that rewrites mode.json cannot drop the data selection; a SpanDAC
+// output stored here with no accepted data selection fails closed
+// (`outputBlocked`).
 //
 // Its own file, NOT a field on AuthConfig, and that is load-bearing rather than
 // tidy: AuthConfig requires keyId, teamId, keyPath and storefront, so a user
@@ -15,18 +21,21 @@
 // own state.
 import Foundation
 
-/// Which player MusicTUI controls, and where its catalogue reads come from.
+/// Which player MusicTUI's sound goes to (`OutputSelection`). Where its
+/// catalogue and library reads come from is the data selection, not this.
 enum PlaybackMode: Equatable, Hashable {
-    /// Today's AppleScript player, AirPlay outputs, and the existing
-    /// developer-key and keyless paths. The default, always.
+    /// Today's AppleScript player and AirPlay outputs: the output a person
+    /// reads as "MusicTUI". The default, always.
     case musicApp
     /// The MusicTUISource app's MusicKit player, sent to the Mac's configured
-    /// output, with catalogue reads brokered through it and no developer key.
+    /// output. Its reads come from SpanDAC on this Mac once SpanDAC is the
+    /// accepted data source.
     case source
     /// SpanDAC on another device (an iPad), reached over the paired network
     /// link, named by its `spandac_id`. The same `slice.*` wire and the same
-    /// routing as `.source` (the pairing design, section 4.2); only the
-    /// carrier differs.
+    /// sound routing as `.source` (the pairing design, section 4.2); only the
+    /// carrier differs. It is an OUTPUT only: music data still comes from
+    /// SpanDAC on this Mac.
     case networkSource(String)
 
     /// The `mode` value in `mode.json`.

@@ -333,7 +333,7 @@ final class OutputLockTests: XCTestCase {
 
     func testModeChangedSentences() {
         XCTAssertEqual(OutputLock.cliModeChangedMessage(now: .musicApp),
-                       "Output changed to Music.app while this command ran; nothing was changed.")
+                       "Output changed to MusicTUI while this command ran; nothing was changed.")
         XCTAssertEqual(OutputLock.cliModeChangedMessage(now: .source),
                        "Output changed to SpanDAC on this Mac while this command ran; nothing was changed.")
         XCTAssertEqual(OutputLock.tuiModeChangedMessage,

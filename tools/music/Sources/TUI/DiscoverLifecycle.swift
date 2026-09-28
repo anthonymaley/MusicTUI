@@ -46,7 +46,12 @@ enum DiscoverLaunchSweep: Equatable {
     var isRunning: Bool { self == .running }
 }
 
-enum DiscoverFailureStage: Equatable { case create, readiness }
+/// `identity` is SpanDAC data only: the container was made, but no persistent
+/// ID to play it by arrived in time, or its tracks were not exactly the
+/// expected ones in the expected order, so nothing plays and the container is
+/// left for the sweep. `selectionChanged`, SpanDAC data only too: the output
+/// or the data source moved before the play, so nothing plays.
+enum DiscoverFailureStage: Equatable { case create, readiness, identity, selectionChanged }
 
 /// One transaction's position, with the protection each position carries
 /// (design §3.1). `protected` is derived from this, never stored beside it.
@@ -71,20 +76,28 @@ enum DiscoverTransactionState: Equatable {
     /// ambiguous about server acceptance, so a container may exist and a
     /// later sweep collects it.
     case failedBeforePlay(String, DiscoverFailureStage)
+    /// SpanDAC data only (score C-ADD): the request that makes the container
+    /// was sent and no classifiable answer came back (a timeout, a closed
+    /// socket, a lost reply, or SpanDAC's own `outcome: unknown`). The
+    /// container may exist, so it is PROTECTED while the attempt lives. Not
+    /// terminal: the attempt pauses here, and the person's next Enter resumes
+    /// it with the SAME name, never by itself.
+    case unknownOutcome(String)
 
     var name: String {
         switch self {
         case .minted(let n), .created(let n), .ready(let n), .playIssued(let n),
              .unconfirmed(let n), .playAmbiguous(let n), .confirmedPlaying(let n),
-             .failedBeforePlay(let n, _):
+             .failedBeforePlay(let n, _), .unknownOutcome(let n):
             return n
         }
     }
 
-    /// Design §3.1's protected column. Six states protect, two do not.
+    /// Design §3.1's protected column. Six states protect, two do not; with
+    /// SpanDAC data a seventh, `unknownOutcome`, protects too.
     var isProtected: Bool {
         switch self {
-        case .minted, .created, .ready, .playIssued, .unconfirmed, .playAmbiguous: return true
+        case .minted, .created, .ready, .playIssued, .unconfirmed, .playAmbiguous, .unknownOutcome: return true
         case .confirmedPlaying, .failedBeforePlay: return false
         }
     }
@@ -92,7 +105,7 @@ enum DiscoverTransactionState: Equatable {
     var isTerminal: Bool {
         switch self {
         case .unconfirmed, .playAmbiguous, .confirmedPlaying, .failedBeforePlay: return true
-        case .minted, .created, .ready, .playIssued: return false
+        case .minted, .created, .ready, .playIssued, .unknownOutcome: return false
         }
     }
 }
@@ -105,6 +118,17 @@ func discoverTransitionIsLegal(from: DiscoverTransactionState, to: DiscoverTrans
     case (.minted, .created), (.minted, .failedBeforePlay(_, .create)):
         return true
     case (.created, .ready), (.created, .failedBeforePlay(_, .readiness)):
+        return true
+    // SpanDAC data only. The container request's answer was lost: the attempt
+    // pauses, and resuming it re-sends the same name, whose answer is then
+    // classified like a first one.
+    case (.minted, .unknownOutcome),
+         (.unknownOutcome, .created), (.unknownOutcome, .failedBeforePlay(_, .create)),
+         (.unknownOutcome, .unknownOutcome):
+        return true
+    // SpanDAC data only: made, but with no persistent ID to play it by, or
+    // not exactly the expected tracks; or the selection moved before the play.
+    case (.created, .failedBeforePlay(_, .identity)), (.created, .failedBeforePlay(_, .selectionChanged)):
         return true
     case (.ready, .playIssued), (.ready, .playAmbiguous):
         return true
@@ -146,6 +170,13 @@ struct DiscoverScheduler {
     static let readinessCadence: TimeInterval = 0.5
     static let confirmationBound: TimeInterval = 3
     static let confirmationCadence: TimeInterval = 0.3
+    /// SpanDAC data only. A playlist SpanDAC has just made answers with no
+    /// persistent ID for a few seconds (observed live: a few seconds after the
+    /// create, the same ensure returned it). The same ensure, same name, is
+    /// re-sent at this cadence until the ID arrives or the window closes.
+    /// CHOSEN values: about once a second, for at most ten seconds.
+    static let aliasCadence: TimeInterval = 1
+    static let aliasWindow: TimeInterval = 10
 
     static func interval(for wait: DiscoverWait) -> TimeInterval {
         switch wait {
@@ -230,12 +261,20 @@ func discoverToastMessage(for outcome: DiscoverPlayOutcome, title: String) -> (t
         return ("Couldn't start '\(title)': \(message)", true)
     case .playFailed(let message):
         return ("Couldn't play '\(title)': \(message)", true)
+    case .outcomeUnknown:
+        return (discoverOutcomeUnknownText, true)
+    case .refused(let message):
+        return (message, true)
     }
 }
 
 // MARK: - Outcomes
 
-enum DiscoverRefusal: Equatable { case exiting }
+/// `libraryOpsNotOffered`: SpanDAC data only, the connected SpanDAC does not
+/// advertise the library ops, so nothing was minted or sent.
+/// `selectionChanged`: SpanDAC data only, MusicTUI did not have SpanDAC data
+/// on its own output when the play began, so nothing was minted or sent.
+enum DiscoverRefusal: Equatable { case exiting, libraryOpsNotOffered, selectionChanged }
 
 enum DiscoverPlayRequestOutcome: Equatable {
     /// Refused before minting: no name, no create, no footprint in Music.
@@ -282,6 +321,35 @@ final class DiscoverLifecycleCoordinator {
         var onExitWait: (() -> Void)? = nil
         /// Where the launch sweep body runs. Production: a global queue.
         var launchExecutor: (@escaping () -> Void) -> Void = { DispatchQueue.global().async(execute: $0) }
+        /// SpanDAC data only: the track count of the container with this
+        /// persistent ID (hex), read through AppleScript; 0 when unreadable.
+        var readCountByPersistentID: (_ hex: String) -> Int = { _ in 0 }
+        /// SpanDAC data only: `discoverConfirmationScript(persistentID:)`'s
+        /// answer for this persistent ID (hex).
+        var confirmReadByPersistentID: (_ hex: String) -> String = { _ in discoverNotYetToken }
+        /// SpanDAC data only: the persistent IDs of the container's tracks, in
+        /// the container's own order (the order it plays), for the container
+        /// with this persistent ID (hex); nil when the read failed.
+        var readContainerTrackIDsByPersistentID: (_ hex: String) -> [String]? = { _ in nil }
+        /// SpanDAC data only: the identity read behind `verifyExactTracks`,
+        /// for these persistent IDs (hex). Throws when the read failed.
+        var readTracksByPersistentID: (_ hexes: [String]) throws -> [String: [HandoffTrackHit]] = { _ in
+            throw ActionError(message: pickASpanDACOutput)
+        }
+    }
+
+    /// SpanDAC data only: the play attempt whose container name is in use. The
+    /// name is the token (`__discover__ <uuid> — <title>`): minted ONCE per
+    /// attempt and recorded here and in the transaction table BEFORE the first
+    /// request carries it. It is kept until the attempt ends in a confirmed
+    /// failure or a completed play; while it is `unknownOutcome`, every SpanDAC
+    /// play request resumes it with the same name rather than minting another.
+    private struct SpanDACAttempt {
+        let id: UUID
+        let name: String
+        let title: String
+        let catalogIDs: [String]
+        let disableShuffle: Bool
     }
 
     private let condition = NSCondition()
@@ -290,6 +358,7 @@ final class DiscoverLifecycleCoordinator {
     private var admissionState: DiscoverAdmission = .open
     private var launchSweepState: DiscoverLaunchSweep = .notStarted
     private var transactionTable: [UUID: DiscoverTransactionState] = [:]
+    private var spandacAttempt: SpanDACAttempt?
 
     init(seams: Seams) { self.seams = seams }
 
@@ -304,6 +373,9 @@ final class DiscoverLifecycleCoordinator {
     }
 
     var protectedNames: [String] { condition.lock(); defer { condition.unlock() }; return protectedNamesLocked() }
+
+    /// The token of the SpanDAC attempt still in use, if any. For tests.
+    var spandacAttemptName: String? { condition.lock(); defer { condition.unlock() }; return spandacAttempt?.name }
 
     // MARK: Launch sweep
 
@@ -353,10 +425,20 @@ final class DiscoverLifecycleCoordinator {
     /// Waits for admission and mints under the lock. Returns nil when refused.
     private func admit(title: String) -> (UUID, String)? {
         condition.lock()
+        guard awaitAdmissionLocked() else { condition.unlock(); return nil }
+        let (id, name) = mintLocked(title: title)
+        condition.unlock()
+        seams.onTransition?(id, .minted(name))
+        return (id, name)
+    }
+
+    /// Rule 1's wait. The caller holds the lock and still holds it on return.
+    /// False when admission is closed.
+    private func awaitAdmissionLocked() -> Bool {
         var toasted = false
         while true {
-            if admissionState == .closed { condition.unlock(); return nil }
-            if launchSweepState.isFinished { break }
+            if admissionState == .closed { return false }
+            if launchSweepState.isFinished { return true }
             seams.onAdmissionWait?()
             if toasted {
                 // Untimed: only the broadcast (completion or closure) ends it.
@@ -373,12 +455,158 @@ final class DiscoverLifecycleCoordinator {
                 toasted = true
             }
         }
+    }
+
+    /// Mints a name and records it as `minted`. Caller holds the lock.
+    private func mintLocked(title: String) -> (UUID, String) {
         let id = UUID()
         let name = discoverPlaylistPrefix + id.uuidString + discoverPlaylistNameSeparator + title
         transactionTable[id] = .minted(name)
-        condition.unlock()
-        seams.onTransition?(id, .minted(name))
         return (id, name)
+    }
+
+    // MARK: SpanDAC data: the container made by SpanDAC on this Mac
+
+    /// A Discover play on the MusicTUI output with SpanDAC as MusicTUI's data
+    /// source (score C-ADD). Admission, the readiness and confirmation cadence
+    /// and the sweeps are the shipped ones; three things differ:
+    ///
+    /// 1. The container is ensured by SpanDAC (`library.ensurePlaylist`) under
+    ///    a client-generated name, minted once per attempt and recorded before
+    ///    the first request.
+    /// 2. It is read, played and confirmed by the persistent ID SpanDAC
+    ///    returned, never by a name search. A playlist just made may answer
+    ///    without that ID: the same ensure, same name, is re-sent about once a
+    ///    second for up to ten seconds until it arrives. No ID in time, or a
+    ///    container that does not hold exactly the expected tracks in the
+    ///    expected order, plays nothing; neither does a routing stamp that
+    ///    moved since the request began, read again just before the play.
+    /// 3. A request whose outcome is unknown leaves the attempt in
+    ///    `unknownOutcome`, protected, and nothing retries by itself. The next
+    ///    request, which only a person's Enter makes, resumes that attempt and
+    ///    re-sends the SAME name: SpanDAC then finds the one playlist instead
+    ///    of making a second. A new name is minted only after a confirmed
+    ///    failure or a completed play.
+    ///
+    /// The web service is never used here, and no developer key is read.
+    func requestSpanDACPlay(title: String, catalogIDs: [String], disableShuffle: Bool,
+                            library: SpanDACLibraryAdding,
+                            currentStamp: @escaping () -> MusicTUIHandoffStamp?) -> DiscoverPlayRequestOutcome {
+        guard library.canAdd else {
+            seams.post(.outcome(.refused(updateSpanDACToPlayOnMusicTUI), title: title))
+            return .refused(.libraryOpsNotOffered)
+        }
+        // The stamp at entry, read again just before the one sound mutation.
+        guard let entryStamp = currentStamp() else {
+            seams.post(.outcome(.refused(sourceChangedNothingPlayed), title: title))
+            return .refused(.selectionChanged)
+        }
+        condition.lock()
+        guard awaitAdmissionLocked() else { condition.unlock(); return .refused(.exiting) }
+        let attempt: SpanDACAttempt
+        let minted: Bool
+        if let pending = spandacAttempt {
+            // Resume: the same token, never a second one.
+            attempt = pending
+            minted = false
+        } else {
+            let (id, name) = mintLocked(title: title)
+            attempt = SpanDACAttempt(id: id, name: name, title: title, catalogIDs: catalogIDs,
+                                     disableShuffle: disableShuffle)
+            spandacAttempt = attempt
+            minted = true
+        }
+        condition.unlock()
+        if minted { seams.onTransition?(attempt.id, .minted(attempt.name)) }
+        return .completed(runSpanDAC(attempt, library: library,
+                                     stampUnchanged: { currentStamp() == entryStamp }))
+    }
+
+    /// Ends the attempt in `state`: its token is spent, so the next request
+    /// mints anew.
+    private func finish(_ id: UUID, _ state: DiscoverTransactionState) -> DiscoverTransactionState {
+        transition(id, to: state)
+        return spent(id, state)
+    }
+
+    /// The attempt already reached `state`; spend its token.
+    private func spent(_ id: UUID, _ state: DiscoverTransactionState) -> DiscoverTransactionState {
+        condition.lock()
+        if spandacAttempt?.id == id { spandacAttempt = nil }
+        condition.unlock()
+        return state
+    }
+
+    private func runSpanDAC(_ attempt: SpanDACAttempt, library: SpanDACLibraryAdding,
+                            stampUnchanged: @escaping () -> Bool) -> DiscoverTransactionState {
+        let id = attempt.id, name = attempt.name, title = attempt.title
+
+        let ensured: (created: Bool, id: String, alias: String?)
+        do {
+            ensured = try library.ensurePlaylist(name: name, catalogueIDs: attempt.catalogIDs)
+        } catch SpanDACLibraryOpError.outcomeUnknown {
+            // The attempt and its token stay; nothing is re-sent by itself.
+            transition(id, to: .unknownOutcome(name))
+            seams.post(.outcome(.outcomeUnknown, title: title))
+            return .unknownOutcome(name)
+        } catch {
+            // Confirmed: SpanDAC or Apple refused, or nothing was sent.
+            let state = finish(id, .failedBeforePlay(name, .create))
+            seams.post(.outcome(spandacCreateFailureOutcome(error), title: title))
+            return state
+        }
+        transition(id, to: .created(name))
+
+        // Play by identity only. A playlist just made may answer without its
+        // persistent ID for a few seconds: the same ensure, same name, is
+        // re-sent until it arrives. None in time: nothing plays, and the
+        // container, now unprotected, is left for the sweep.
+        let alias = ensured.alias ?? awaitAlias(name: name, catalogIDs: attempt.catalogIDs,
+                                                playlistID: ensured.id, library: library)
+        guard let alias, let hex = persistentIDHex(fromAlias: alias) else {
+            let state = finish(id, .failedBeforePlay(name, .identity))
+            seams.post(.outcome(.refused(pickASpanDACOutput), title: title))
+            return state
+        }
+        let seams = self.seams
+        let state = readyPlayConfirm(
+            id: id, name: name, title: title, expected: attempt.catalogIDs.count,
+            readCount: { seams.readCountByPersistentID(hex) },
+            beforePlay: {
+                // Exactly the expected tracks, in the order they will play,
+                // then the stamp, last, just before the sound mutation.
+                guard discoverContainerHoldsExactly(
+                    catalogIDs: attempt.catalogIDs, containerHex: hex, library: library,
+                    tracks: ClosurePersistentIDReader(read: seams.readTracksByPersistentID),
+                    containerTrackIDs: seams.readContainerTrackIDsByPersistentID) else {
+                    return (.identity, .refused(pickASpanDACOutput))
+                }
+                guard stampUnchanged() else { return (.selectionChanged, .refused(sourceChangedNothingPlayed)) }
+                return nil
+            },
+            scripts: discoverPlayScripts(persistentID: hex, disableShuffle: attempt.disableShuffle),
+            confirmRead: { seams.confirmReadByPersistentID(hex) })
+        return spent(id, state)
+    }
+
+    /// Re-sends the SAME ensure (same name, same tracks; never a new name)
+    /// every `aliasCadence` until the reply carries the persistent ID, for at
+    /// most `aliasWindow`. The playlist exists, so each re-send finds it. A
+    /// reply that says it made a playlist, or names a different one, ends the
+    /// wait at once: that is not the playlist this attempt made. Anything
+    /// else that is not the ID (a lost or refused re-send) waits for the next.
+    private func awaitAlias(name: String, catalogIDs: [String], playlistID: String,
+                            library: SpanDACLibraryAdding) -> String? {
+        let scheduler = seams.scheduler
+        let deadline = scheduler.now().addingTimeInterval(DiscoverScheduler.aliasWindow)
+        while true {
+            let next = scheduler.now().addingTimeInterval(DiscoverScheduler.aliasCadence)
+            if next > deadline { return nil }
+            scheduler.delay(next)
+            guard let again = try? library.ensurePlaylist(name: name, catalogueIDs: catalogIDs) else { continue }
+            guard !again.created, again.id == playlistID else { return nil }
+            if let alias = again.alias { return alias }
+        }
     }
 
     private func transition(_ id: UUID, to state: DiscoverTransactionState) {
@@ -396,8 +624,6 @@ final class DiscoverLifecycleCoordinator {
 
     private func run(id: UUID, name: String, title: String,
                      catalogIDs: [String], disableShuffle: Bool) -> DiscoverTransactionState {
-        let scheduler = seams.scheduler
-
         // Create and seed in one request. The id it returns is not needed:
         // readiness polls by NAME through AppleScript, and playback plays the
         // playlist by name too.
@@ -410,13 +636,31 @@ final class DiscoverLifecycleCoordinator {
             return state
         }
         transition(id, to: .created(name))
+        return readyPlayConfirm(id: id, name: name, title: title, expected: catalogIDs.count,
+                                readCount: { self.seams.readCount(name) },
+                                scripts: discoverPlayScripts(playlistName: name, disableShuffle: disableShuffle),
+                                confirmRead: { self.seams.confirmRead(name) })
+    }
+
+    /// Readiness, play and confirmation, from `created` to a terminal state.
+    /// The container is addressed only through the three closures: by name on
+    /// the shipped path, by persistent ID with SpanDAC data.
+    ///
+    /// `beforePlay` runs once readiness is reached and before the play: nil
+    /// lets it play; a stage and outcome end it there, before anything plays.
+    private func readyPlayConfirm(id: UUID, name: String, title: String, expected: Int,
+                                  readCount: () -> Int,
+                                  beforePlay: () -> (DiscoverFailureStage, DiscoverPlayOutcome)? = { nil },
+                                  scripts: [String],
+                                  confirmRead: () -> String) -> DiscoverTransactionState {
+        let scheduler = seams.scheduler
 
         // Readiness: library adds return 202 and materialise asynchronously.
         let start = scheduler.now()
         pollLoop: while true {
-            let observed = seams.readCount(name)
+            let observed = readCount()
             let elapsed = scheduler.now().timeIntervalSince(start)
-            switch discoverReadiness(observed: observed, expected: catalogIDs.count,
+            switch discoverReadiness(observed: observed, expected: expected,
                                      elapsed: elapsed, timeout: DiscoverScheduler.readinessTimeout) {
             case .ready:
                 break pollLoop
@@ -429,13 +673,19 @@ final class DiscoverLifecycleCoordinator {
                 scheduler.delay(scheduler.now().addingTimeInterval(DiscoverScheduler.readinessCadence))
             }
         }
+        if let (stage, outcome) = beforePlay() {
+            let state = DiscoverTransactionState.failedBeforePlay(name, stage)
+            transition(id, to: state)
+            seams.post(.outcome(outcome, title: title))
+            return state
+        }
         transition(id, to: .ready(name))
 
         // Play the playlist itself, never a track position within it (see
         // `discoverPlayScripts`). A thrown play is AMBIGUOUS: Music may have
         // accepted the command, so the container stays protected.
         do {
-            try seams.play(discoverPlayScripts(playlistName: name, disableShuffle: disableShuffle))
+            try seams.play(scripts)
         } catch {
             let state = DiscoverTransactionState.playAmbiguous(name)
             transition(id, to: state)
@@ -454,7 +704,7 @@ final class DiscoverLifecycleCoordinator {
         // (t = 0, 0.3, …, 3.0), ordinarily one or two.
         let deadline = scheduler.deadline(.confirmation)
         while true {
-            if seams.confirmRead(name) == discoverConfirmedToken {
+            if confirmRead() == discoverConfirmedToken {
                 let state = DiscoverTransactionState.confirmedPlaying(name)
                 transition(id, to: state)
                 return state
@@ -513,6 +763,17 @@ final class DiscoverLifecycleCoordinator {
     }
 }
 
+/// The outcome a CONFIRMED SpanDAC container failure shows. A SpanDAC that
+/// does not offer the op says to update it; anything else is the create
+/// failure with SpanDAC's own sentence.
+func spandacCreateFailureOutcome(_ error: Error) -> DiscoverPlayOutcome {
+    switch error {
+    case SpanDACLibraryOpError.notOffered: return .refused(updateSpanDACToPlayOnMusicTUI)
+    case SpanDACLibraryOpError.failed(let detail): return .createFailed(detail)
+    default: return .createFailed(error.localizedDescription)
+    }
+}
+
 // MARK: - Production wiring
 
 /// Track count of a (possibly not-yet-visible) playlist, read through
@@ -562,6 +823,27 @@ func makeDiscoverLifecycleCoordinator(backend: AppleScriptBackend, status: Statu
                 status.post(m.text, error: m.isError)
             }
         },
-        scheduler: .live)
+        scheduler: .live,
+        readCountByPersistentID: { hex in
+            guard let raw = try? syncRun({ try await backend.runMusic(discoverTrackCountScript(persistentID: hex)) })
+            else { return 0 }
+            return Int(raw.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
+        },
+        confirmReadByPersistentID: { hex in
+            let script = discoverConfirmationScript(persistentID: hex)
+            let raw = try? syncRun { try await backend.runMusic(script, timeout: discoverConfirmationReadTimeout) }
+            return raw?.trimmingCharacters(in: .whitespacesAndNewlines) ?? discoverNotYetToken
+        },
+        readContainerTrackIDsByPersistentID: { hex in
+            guard let raw = try? syncRun({ try await backend.runMusic(discoverContainerTrackIDsScript(persistentID: hex)) })
+            else { return nil }
+            return parseContainerTrackIDsInOrder(raw)
+        },
+        readTracksByPersistentID: { hexes in
+            // CHOSEN: 60 s for one read of every track, as the hand-off's.
+            try AppleScriptPersistentIDReader(run: { script in
+                try syncRun { try await backend.runMusic(script, timeout: 60) }
+            }).tracks(persistentIDs: hexes)
+        })
     return DiscoverLifecycleCoordinator(seams: seams)
 }

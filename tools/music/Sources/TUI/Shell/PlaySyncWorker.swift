@@ -27,11 +27,11 @@ final class PlaySyncWorker {
     /// The longest `stop()` waits for a pass in progress.
     static let stopWaitSeconds: TimeInterval = 2
 
-    /// `Recorded 1 library play in Music.app` / `Recorded N library plays in Music.app`.
+    /// `Recorded 1 library play in Apple's Music player` / `Recorded N library plays in …`.
     static func recordedSentence(_ count: Int) -> String {
         count == 1
-            ? "Recorded 1 library play in Music.app"
-            : "Recorded \(count) library plays in Music.app"
+            ? "Recorded 1 library play in Apple's Music player"
+            : "Recorded \(count) library plays in Apple's Music player"
     }
 
     /// `1 play not recorded yet — run music sync-plays` / `N plays …`.

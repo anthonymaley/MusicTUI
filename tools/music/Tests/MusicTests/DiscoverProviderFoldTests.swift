@@ -147,8 +147,7 @@ final class DiscoverProviderFoldTests: XCTestCase {
         let scene = DiscoverScene(
             feed: feed, status: status, actions: actions,
             api: api ? RESTAPIBackend(developerToken: "d", userToken: "u", storefront: "us") : nil,
-            lifecycle: lifecycle(created), routing: routing, opener: opener,
-            bridgeSelected: { routing.mode == .source })
+            lifecycle: lifecycle(created), routing: routing, opener: opener)
         return Rig(scene: scene, wire: wire, feed: feed, opener: opener, status: status, actions: actions,
                    created: created)
     }
@@ -190,7 +189,7 @@ final class DiscoverProviderFoldTests: XCTestCase {
         XCTAssertEqual(r.scene.rails.map(\.title), ["Stations for You"])
         XCTAssertEqual(r.feed?.railLimits, [30])
         XCTAssertEqual(r.feed?.trackItems, [])
-        XCTAssertTrue(r.wire.requests.isEmpty, "Music.app mode sent a SpanDAC request")
+        XCTAssertTrue(r.wire.requests.isEmpty, "MusicTUI's own data with the MusicTUI output sent a SpanDAC request")
     }
 
     func testMusicAppDrillInIsOneFeedTrackReadAndNoWire() {

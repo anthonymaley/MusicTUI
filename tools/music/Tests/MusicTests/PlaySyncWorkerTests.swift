@@ -100,7 +100,7 @@ final class PlaySyncWorkerTests: XCTestCase {
         let log = PostLog()
         makeWorker(bridge: true, runner: runner, log: log).tickOnce()
         XCTAssertEqual(runner.calls, [.background])
-        XCTAssertEqual(log.items, [Posted(text: "Recorded 2 library plays in Music.app", error: false, ttl: 4)])
+        XCTAssertEqual(log.items, [Posted(text: "Recorded 2 library plays in Apple's Music player", error: false, ttl: 4)])
     }
 
     func testOneRecordedPostsTheSingularSentence() {
@@ -108,7 +108,7 @@ final class PlaySyncWorkerTests: XCTestCase {
         result.recorded = [entry(1, .done)]
         let log = PostLog()
         makeWorker(bridge: true, runner: FakeRunner(result: result), log: log).tickOnce()
-        XCTAssertEqual(log.items, [Posted(text: "Recorded 1 library play in Music.app", error: false, ttl: 4)])
+        XCTAssertEqual(log.items, [Posted(text: "Recorded 1 library play in Apple's Music player", error: false, ttl: 4)])
     }
 
     func testOneNewProblemPostsTheSingularErrorSentence() {
@@ -165,7 +165,7 @@ final class PlaySyncWorkerTests: XCTestCase {
         let log = PostLog()
         makeWorker(bridge: true, runner: FakeRunner(result: result), log: log).tickOnce()
         XCTAssertEqual(log.items, [
-            Posted(text: "Recorded 1 library play in Music.app", error: false, ttl: 4),
+            Posted(text: "Recorded 1 library play in Apple's Music player", error: false, ttl: 4),
             Posted(text: "1 play not recorded yet \u{2014} run music sync-plays", error: true, ttl: 6),
         ])
     }
@@ -301,7 +301,7 @@ final class PlaySyncWorkerTests: XCTestCase {
                                     post: { status.post($0, error: $1, ttl: $2) })
         worker.tickOnce()
         let toast = status.current()
-        XCTAssertEqual(toast?.text, "Recorded 2 library plays in Music.app")
+        XCTAssertEqual(toast?.text, "Recorded 2 library plays in Apple's Music player")
         XCTAssertEqual(toast?.isError, false)
     }
 }

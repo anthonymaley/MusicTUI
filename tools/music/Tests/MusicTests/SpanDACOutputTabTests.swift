@@ -668,7 +668,9 @@ final class SpanDACOutputTabTests: XCTestCase {
     // a fake (`FakeSpanDACOutputs`), the way discovery and pairing fill them;
     // pair-then-play is driven by calling `onPairedAndReady` directly. Every
     // switch here starts from a SpanDAC, so the outgoing pause goes through a
-    // stub and never reaches Music.app.
+    // stub and never reaches Music.app. Every scene here starts after the
+    // person switched MusicTUI to SpanDAC (`makeOutputTabScene`'s default), so
+    // the SPANDAC section ends with "Stop using SpanDAC for music data".
 
     private final class Finished {
         private let lock = NSLock()
@@ -724,7 +726,7 @@ final class SpanDACOutputTabTests: XCTestCase {
         let lines = screen(s)
         func line(_ needle: String) -> Int? { lines.firstIndex { $0.contains(needle) } }
         guard let header = line("SPANDAC"), let mac = line("1  Studio Mac"), let pad = line("2  Studio iPad"),
-              let music = line("MUSIC.APP"), let kitchen = line("Kitchen") else {
+              let music = line("MUSICTUI"), let kitchen = line("Kitchen") else {
             return XCTFail(lines.joined(separator: "\n"))
         }
         XCTAssertLessThan(header, mac)
@@ -931,13 +933,14 @@ final class SpanDACOutputTabTests: XCTestCase {
         let status = StatusStore()
         let s = scene(mode: .source, outputs: FakeSpanDACOutputs(), status: status,
                       speakers: [["name": "Kitchen", "selected": false, "volume": 40]])
-        XCTAssertTrue(screen(s).contains { $0.contains("MUSIC.APP") && $0.contains("Enter on a speaker switches back") })
+        XCTAssertTrue(screen(s).contains { $0.contains("MUSICTUI") && $0.contains("Enter on a speaker switches back") })
         let finished = watch(s)
-        put(s, at: 1)
+        // Row 2: "Stop using SpanDAC for music data" ends the SPANDAC section.
+        put(s, at: 2)
         XCTAssertEqual(s.handle(.enter), .redraw)
         XCTAssertTrue(waitFor(finished, count: 1))
         XCTAssertEqual(modeOnDisk(), .musicApp)
-        XCTAssertEqual(status.current()?.text, "Output: Music.app")
+        XCTAssertEqual(status.current()?.text, "Output: MusicTUI")
         XCTAssertEqual(s.speakerRowsForTest.map(\.active), [false], "the speaker was not toggled too")
     }
 
@@ -947,7 +950,7 @@ final class SpanDACOutputTabTests: XCTestCase {
         XCTAssertFalse(screen(s).contains { $0.contains("switches back") })
         let finished = watch(s)
         let before = modeBytes()
-        put(s, at: 1)
+        put(s, at: 2)
         XCTAssertEqual(s.handle(.enter), .redraw)
         XCTAssertEqual(s.speakerRowsForTest.map(\.active), [true])
         usleep(300_000)
@@ -959,9 +962,9 @@ final class SpanDACOutputTabTests: XCTestCase {
         let s = scene(mode: .source, outputs: FakeSpanDACOutputs())
         XCTAssertEqual(outputTabRows(speakerCount: 0, expanded: false, presetNames: []),
                        [.spandacMac, .musicApp, .eqPower, .eq, .visualizer])
-        XCTAssertTrue(screen(s).contains { $0.contains("Music.app") && $0.contains("this Mac") })
+        XCTAssertTrue(screen(s).contains { $0.contains("MusicTUI") && $0.contains("this Mac") })
         let finished = watch(s)
-        put(s, at: 1)
+        put(s, at: 2)
         XCTAssertEqual(s.handle(.enter), .redraw)
         XCTAssertTrue(waitFor(finished, count: 1))
         XCTAssertEqual(modeOnDisk(), .musicApp)
@@ -989,7 +992,7 @@ final class SpanDACOutputTabTests: XCTestCase {
         ]
         let music = scene(mode: .musicApp, outputs: FakeSpanDACOutputs(), speakers: speakers)
         XCTAssertEqual(screen(music).first { !$0.isEmpty }?.trimmingCharacters(in: .whitespaces),
-                       "Playing through  Music.app \u{2192} Kitchen, Living Room")
+                       "Playing through  MusicTUI \u{2192} Kitchen, Living Room")
 
         let fake = FakeSpanDACOutputs([spandacRow(ipad, "Studio iPad", .ready, output: ssl)])
         let network = scene(mode: .networkSource(ipad), outputs: fake)
@@ -1069,7 +1072,9 @@ final class SpanDACOutputTabTests: XCTestCase {
         put(s, at: 2)
         XCTAssertEqual(s.footerHint, "\(move)   Enter Play here   \(always)")
         put(s, at: 3)
-        XCTAssertEqual(s.footerHint, "\(move)   Enter Use Music.app   \u{2190}\u{2192} Volume   \(always)")
+        XCTAssertEqual(s.footerHint, "\(move)   Enter Stop using SpanDAC   \(always)")
+        put(s, at: 4)
+        XCTAssertEqual(s.footerHint, "\(move)   Enter Use MusicTUI   \u{2190}\u{2192} Volume   \(always)")
         fake.isPairing = true
         XCTAssertEqual(s.footerHint, "Esc Cancel pairing")
         fake.isPairing = false
@@ -1078,7 +1083,7 @@ final class SpanDACOutputTabTests: XCTestCase {
 
         let music = scene(mode: .musicApp, outputs: FakeSpanDACOutputs(),
                           speakers: [["name": "Kitchen", "selected": true, "volume": 50]])
-        put(music, at: 1)
+        put(music, at: 2)
         XCTAssertEqual(music.footerHint, "\(move)   Enter Toggle   \u{2190}\u{2192} Volume   \(always)")
     }
 }

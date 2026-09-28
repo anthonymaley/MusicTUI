@@ -120,9 +120,15 @@ func containerTrackIDsScript(name: String) -> String {
 }
 
 func parseContainerTrackIDs(_ raw: String) -> Set<String> {
-    Set(raw.split(separator: asFieldSep)
+    Set(parseContainerTrackIDsInOrder(raw))
+}
+
+/// The container's persistent IDs in the container's own track order, which
+/// is the order it plays. `containerTrackIDsScript` reads them in that order.
+func parseContainerTrackIDsInOrder(_ raw: String) -> [String] {
+    raw.split(separator: asFieldSep)
         .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-        .filter { !$0.isEmpty })
+        .filter { !$0.isEmpty }
 }
 
 enum AlbumContainerBuildResult: Equatable {

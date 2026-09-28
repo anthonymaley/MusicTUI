@@ -55,7 +55,7 @@ final class MigrationReadCacheTests: XCTestCase {
         guard case .refuse(let why) = bridgeRef(forCachedRow: row, index: 1) else {
             return XCTFail("a \(origin) row became a SpanDAC reference", file: file, line: line)
         }
-        XCTAssertEqual(why, "Result 1 came from a Music.app or catalogue listing, so SpanDAC can't play it by its own id. With SpanDAC selected, run: music search \"Angel\"  then  music play N",
+        XCTAssertEqual(why, "Result 1 came from a MusicTUI or catalogue listing, so SpanDAC can't play it by its own id. With SpanDAC selected, run: music search \"Angel\"  then  music play N",
                        file: file, line: line)
 
         let before = h.io.out.count

@@ -310,13 +310,20 @@ func makeDiscoverFeed() -> DiscoverFeed? {
 
 /// Whether the Discover tab opens at all.
 ///
-/// The WEB SERVICE needs a user token (both its endpoints are /v1/me/), so with
-/// Music.app selected no sign-in means no tab, exactly as before. Bridge reads
-/// the feed with no keys (DoD 6), so with Bridge selected the door is open. A
-/// switch to Music.app after that is answered by the scene itself, in words.
+/// The door follows the DATA selection, not the output (score: data route and
+/// output, step 5). The WEB SERVICE needs a user token (both its endpoints are
+/// /v1/me/), so with MusicTUI's own data no sign-in means no tab, exactly as
+/// before. SpanDAC on this Mac reads the feed with no keys, so once a person
+/// has accepted SpanDAC as the data source the door is open, whatever the
+/// output is. A blocked output (C-REPAIR) reads MusicTUI's own data, so it
+/// needs the sign-in like open data does. A later change of data source is
+/// answered by the scene itself, in words.
 ///
 /// Pure and out here so the door is testable: as a guard inside the shell it
 /// could be reverted with every scene-level test still green (Codex S2).
-func discoverTabAdmitted(mode: PlaybackMode, hasUserToken: Bool) -> Bool {
-    mode.usesSource || hasUserToken
+/// `hasUserToken` is only asked when the selection does not already open the
+/// door, so SpanDAC data never reads the token file.
+func discoverTabAdmitted(selection: EffectiveSelection, hasUserToken: @autoclosure () -> Bool) -> Bool {
+    if case .consistent(.spandacMac, _) = selection { return true }
+    return hasUserToken()
 }

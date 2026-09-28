@@ -64,14 +64,14 @@ final class RadioBridgeCallSiteTests: XCTestCase {
         s.execute(.play(station))
 
         XCTAssertEqual(opener.opened.count, 1, "Music.app mode did not open the station URL")
-        XCTAssertTrue(wire.sent.isEmpty, "Music.app mode sent a SpanDAC request")
+        XCTAssertTrue(wire.sent.isEmpty, "MusicTUI's own data with the MusicTUI output sent a SpanDAC request")
     }
 
     /// Ruling 17: a station Apple's catalogue does not carry refuses, in the
     /// app's own words, and is never played on Music.app instead.
     func testAnUnresolvableStationRefusesWithoutFallingBack() {
         let wire = Wire()
-        wire.reply = #"{"ok":false,"op":"slice.playStation","error":{"kind":"unresolvable","detail":"'BBC Radio 1' isn't in Apple Music's catalogue, so SpanDAC can't play it. Switch Output to Music.app to play this station."}}"#
+        wire.reply = #"{"ok":false,"op":"slice.playStation","error":{"kind":"unresolvable","detail":"'BBC Radio 1' isn't in Apple Music's catalogue, so SpanDAC can't play it. Switch Output to MusicTUI to play this station."}}"#
         let opener = RecordingOpener()
         let s = scene(mode: .source, wire: wire, opener: opener)
 
@@ -81,7 +81,7 @@ final class RadioBridgeCallSiteTests: XCTestCase {
 
         let message = s.message ?? ""
         XCTAssertTrue(message.contains("BBC Radio 1"), "got: \(message)")
-        XCTAssertTrue(message.contains("Music.app"),
+        XCTAssertTrue(message.contains("MusicTUI"),
                       "the refusal must say where it CAN play: \(message)")
         XCTAssertTrue(opener.opened.isEmpty,
                       "a refused station was played on Music.app anyway — that is the fallback ruling 17 forbids")

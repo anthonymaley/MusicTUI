@@ -844,7 +844,7 @@ struct PlaylistCreate: ParsableCommand {
         // Mixed selection only: the strategy sends a pure library selection to AppleScript, so a REST create here always carried at least one catalog track and will sync.
         if !libraryRows.isEmpty {
             guard waitForLocalPlaylist(backend: backend, name: name, minTracks: songs.count) else {
-                errorOut("✗ '\(name)' did not appear in Music.app in time; library rows not added: \(libraryRows.map { "\($0.title) by \($0.artist)" }.joined(separator: ", "))")
+                errorOut("✗ '\(name)' did not appear in Apple's Music player in time; library rows not added: \(libraryRows.map { "\($0.title) by \($0.artist)" }.joined(separator: ", "))")
                 throw ExitCode.failure
             }
             (added, failed) = duplicateLibraryRows(libraryRows, toPlaylist: name, backend: backend)

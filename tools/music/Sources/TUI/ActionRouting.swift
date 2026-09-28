@@ -334,13 +334,13 @@ func cliBridgeNotServedReason(_ action: MusicTUIAction) -> String {
     // so the reason names what is missing rather than "yet". The
     // current-track variants never reach here; they keep their own reason.
     case .suggest:
-        return "SpanDAC output is selected, and music suggest needs Apple Music account reads SpanDAC doesn't serve. Switch Output to Music.app to use it."
+        return "SpanDAC output is selected, and music suggest needs Apple Music account reads SpanDAC doesn't serve. Switch Output to MusicTUI to use it."
     case .newReleases:
-        return "SpanDAC output is selected, and music new-releases needs a catalogue artist lookup SpanDAC doesn't serve. Switch Output to Music.app to use it."
+        return "SpanDAC output is selected, and music new-releases needs a catalogue artist lookup SpanDAC doesn't serve. Switch Output to MusicTUI to use it."
     default:
         break
     }
-    return "SpanDAC output is selected, and \(cliBridgeNotServedWhat(action)) isn't available from the CLI on SpanDAC yet. Use MusicTUI, or switch Output to Music.app."
+    return "SpanDAC output is selected, and \(cliBridgeNotServedWhat(action)) isn't available from the CLI on SpanDAC yet. Use it from the TUI, or switch Output to MusicTUI."
 }
 
 /// The `<what>` in D7's sentence, per action. Every case is named, so a new
@@ -406,14 +406,17 @@ private func cliBridgeNotServedWhat(_ action: MusicTUIAction) -> String {
 /// Anthony's ruling of 2026-09-16. Deliberately NOT the 12.14 wording: the verb
 /// is not deferred, its target is unresolvable, and naming a song fixes it.
 let currentTrackIsStaleInBridge =
-    "SpanDAC output is selected, so Music.app's current track is not what you are hearing. Name the song explicitly, or switch Output to Music.app."
+    "SpanDAC output is selected, so MusicTUI's current track is not what you are hearing. Name the song explicitly, or switch Output to MusicTUI."
 
 /// The matrix. Every case decided; nothing defaults.
 func routeAction(_ action: MusicTUIAction,
                  in mode: PlaybackMode,
                  from surface: InvocationSurface) -> ActionRoute {
     // Binding rule 1: an install that never opens Output behaves exactly as it
-    // ships. Everything that is not purely local goes to Music.app.
+    // ships. Everything that is not purely local goes to Music.app. Since the
+    // data axis (C-EPOCH) that holds only BEFORE a person accepts SpanDAC as
+    // MusicTUI's data source; this function is the SOUND column the two-axis
+    // `routeAction(_:selection:from:)` starts from.
     guard mode.usesSource else {
         switch action {
         case .radioFavourite, .radioAddURL, .auth,
@@ -479,11 +482,17 @@ func routeAction(_ action: MusicTUIAction,
     case .collectionShuffle:
         return .source
 
-    // Binding rule 9's carve-out: the Library LISTING stays on AppleScript in
-    // BOTH modes (Anthony's ruling 12.1), so both modes show the same library.
-    // A read chosen in advance and identical in both modes is the opposite of a
-    // silent fallback, which is what rule 3 forbids.
-    // `r` in Library retries that same listing read.
+    // STALE ROWS, kept as they are (score: data route and output, step 1).
+    // They were binding rule 9's carve-out, "the Library listing stays on
+    // AppleScript in both modes" (ruling 12.1). The scenes no longer do that:
+    // since "two modes, two libraries" (2026-09-23) the Library Songs list and
+    // the Playlists tab read SpanDAC's own MusicKit library whenever a SpanDAC
+    // output is selected, through the shell's `makeProvider`, which never
+    // routes these rows. `searchLibrary` has no TUI invoker at all, and
+    // Library's `r` (`libraryRetry`) re-runs whichever listing the scene
+    // holds. So nothing reaches Music.app through these values in the TUI;
+    // they are not changed here, only reported. The data axis
+    // (`routeAction(_:selection:from:)`) reads them from SpanDAC.
     case .playlistListing, .searchLibrary, .libraryRetry:
         return .musicApp
 
@@ -503,17 +512,17 @@ func routeAction(_ action: MusicTUIAction,
 
     // Refused, each with what to do instead.
     case .persistentShuffleMode, .persistentRepeatMode:
-        return .refused("Shuffle and repeat modes are Music.app only for now.")
+        return .refused("Shuffle and repeat modes are MusicTUI only for now.")
     case .volume:
-        return .refused("Volume is Music.app only; the source plays at the Mac's output level.")
+        return .refused("Volume is MusicTUI only; the source plays at the Mac's output level.")
     case .loveTrack, .addToLibrary, .addCurrentTrackToPlaylist,
          .removeCurrentTrackFromPlaylist, .playlistWrite:
-        return .refused("Library changes are Music.app only in this version.")
+        return .refused("Library changes are MusicTUI only in this version.")
     case .cliMix:
         // Codex B1: mix calls api.createPlaylist and populates it.
-        return .refused("mix creates a playlist, which is Music.app only in this version.")
+        return .refused("mix creates a playlist, which is MusicTUI only in this version.")
     case .playlistTemp:
-        return .refused("Temporary playlists exist to bound Music.app; the source builds its own queue.")
+        return .refused("Temporary playlists exist to bound Apple's Music player; the source builds its own queue.")
     case .similar, .similarToCurrentTrack, .suggest, .suggestFromCurrentTrack:
         return .refused("Not available through SpanDAC in this version.")
 
@@ -532,13 +541,272 @@ func routeAction(_ action: MusicTUIAction,
     /// routed it to the source, which would have shipped a jump that silently
     /// did the wrong thing against a queue the TUI cannot address yet.
     case .queueJump:
-        return .refused("Jumping to a queue row is Music.app only in this version.")
+        return .refused("Jumping to a queue row is MusicTUI only in this version.")
 
     case .genius:
-        return .refused("Genius is a Music.app feature.")
+        return .refused("Genius is a feature of Apple's Music player.")
     case .airplayRoute:
         // Anthony, 2026-09-13: "airplay stays in TUI. the point of the bridge is
         // DAC not airplay."
-        return .refused("AirPlay applies in Music.app mode; the source plays to the Mac's wired output.")
+        return .refused("AirPlay applies on the MusicTUI output; the source plays to the Mac's wired output.")
+    }
+}
+
+// MARK: - Data route and output: two axes (C-MATRIX)
+//
+// Where MusicTUI's music DATA comes from (MusicTUI's own AppleScript and web
+// API, or SpanDAC on this Mac) is a separate selection from where SOUND goes
+// (the MusicTUI output, or a SpanDAC output). `routeAction(_:in:from:)` above is
+// unchanged and remains the sound column the two-axis matrix starts from;
+// callers that have not moved to the two axes keep compiling against it.
+//
+// Four columns, every action decided in each:
+//  1. open data, MusicTUI output: exactly as shipped.
+//  2. `outputBlocked` (C-REPAIR): reads run the open column; every sound action
+//     refuses; nothing reaches a SpanDAC.
+//  3. SpanDAC data, a SpanDAC output: today's SpanDAC column on the sound axis,
+//     and every read from the Mac's own SpanDAC, never the network device.
+//  4. SpanDAC data, the MusicTUI output: reads from the Mac's SpanDAC; sound on
+//     the MusicTUI output; a SpanDAC row plays by the path its ORIGIN names.
+// There is no fallback on either axis.
+
+/// Where an action's music DATA comes from.
+enum DataRoute: Equatable {
+    /// MusicTUI's own data: AppleScript, and the web API with a developer key,
+    /// as shipped.
+    case open
+    /// SpanDAC on this Mac, over its Unix socket. Never a network SpanDAC.
+    case spandacMac
+    /// The action reads no music data.
+    case none
+    /// Not served on the data axis, with a reason. Never a fallback to open.
+    case refused(String)
+}
+
+/// Both halves of a routing decision.
+struct RoutedAction: Equatable {
+    let data: DataRoute
+    /// `.musicApp` is the MusicTUI output and `.source` the selected SpanDAC
+    /// output, as in `routeAction(_:in:from:)`. For an action that only READS
+    /// data, `.source` means "served by SpanDAC": `RoutingCoordinator.perform`
+    /// hands such a read the Mac's DATA client, because a read has no output.
+    let sound: ActionRoute
+}
+
+/// Where a row being played came from, on the DATA axis. Decides which path a
+/// choose-and-play takes on the MusicTUI output with SpanDAC data (column 4),
+/// and refuses a row whose data source has since changed. The ROW's origin
+/// decides, never the spelling of its id.
+enum PlayOrigin: Equatable {
+    /// A SpanDAC library row: a song, an album, an artist's songs, a playlist.
+    case spandacLibrary
+    /// A SpanDAC catalogue row: a search result, an Apple Music song link, a
+    /// history row, a Discover track.
+    case spandacCatalogue
+    /// A Discover album, playlist or play-from-here slice read from SpanDAC.
+    case spandacDiscoverContainer
+    /// A row read under open data. `resultNumber` is the CLI's `N`.
+    case openData(resultNumber: Int?)
+
+    var isSpanDAC: Bool {
+        if case .openData = self { return false }
+        return true
+    }
+}
+
+/// Which body `RoutingCoordinator.perform` asks its `.musicApp` branch to run.
+/// The caller supplies every body; the coordinator only names the path.
+enum MusicTUIPlayPath: Equatable {
+    /// The shipped body, exactly as it ships.
+    case shipped
+    /// C-HANDOFF: a SpanDAC library row, played by exact persistent ID.
+    case handoff
+    /// C-ADD: a SpanDAC catalogue song, added to the library through SpanDAC
+    /// on this Mac, then played.
+    case add
+    /// C-ADD's container: a Discover album, playlist or play-from-here slice.
+    case addContainer
+    /// A radio station, opened by its share URL (looked up by id through the
+    /// data provider when the row has none). Never by name.
+    case stationURL
+}
+
+extension MusicTUIAction {
+
+    /// Reads MusicTUI's music DATA and changes nothing: the actions C-MATRIX
+    /// routes on the data axis. `nowStatus` is not here: it reads what the
+    /// selected OUTPUT is playing.
+    var readsMusicData: Bool {
+        switch self {
+        case .playlistListing, .discoverFeed, .discoverRefresh, .catalogSearch, .searchLibrary,
+             .radioSearch, .recent, .rotation, .radioCatalogueBrowse, .radioStationLookup,
+             .newReleases, .newReleasesLikeCurrentTrack, .similar, .similarToCurrentTrack,
+             .suggest, .suggestFromCurrentTrack, .libraryRetry:
+            return true
+        case .playPause, .next, .previous, .seek, .stop, .queueJump, .collectionShuffle,
+             .persistentShuffleMode, .persistentRepeatMode, .volume,
+             .libraryPlay, .playlistPlay, .discoverTrackPlay, .discoverPlayAll, .radioStationPlay,
+             .cliPlayResume, .cliPlayIndex, .cliPlayPlaylist, .cliPlayAlbum, .cliPlaySong, .cliPlayArtist,
+             .cliPlayQuery, .cliPlayCatalogSong, .nowStatus,
+             .loveTrack, .addToLibrary, .addCurrentTrackToPlaylist, .removeCurrentTrackFromPlaylist,
+             .playlistWrite, .playlistTemp, .playlistShare, .cliMix, .radioFavourite, .radioAddURL,
+             .genius, .airplayRoute, .eq, .visualizer, .quiet,
+             .libraryArtistTierFilter, .playlistsOpenNowPlaying, .auth:
+            return false
+        }
+    }
+
+    /// Plays something chosen from music data: a row, a named item, free
+    /// words, a station. Its data route is the provider the chosen thing
+    /// belongs to.
+    var playsChosenMusic: Bool {
+        switch self {
+        case .libraryPlay, .playlistPlay, .discoverTrackPlay, .discoverPlayAll,
+             .cliPlayIndex, .cliPlayPlaylist, .cliPlayAlbum, .cliPlaySong, .cliPlayArtist,
+             .cliPlayCatalogSong, .cliPlayQuery, .playlistTemp, .radioStationPlay:
+            return true
+        default:
+            return false
+        }
+    }
+}
+
+/// C-MATRIX column 4's "Sound on the MusicTUI output as shipped": transport,
+/// modes, queue, the current-track verbs and Apple's Music app settings. In
+/// `outputBlocked` (C-REPAIR) every one of these refuses.
+let musicTUIOutputVerbs: Set<MusicTUIAction> = [
+    .playPause, .next, .previous, .seek, .stop, .volume, .persistentShuffleMode,
+    .persistentRepeatMode, .queueJump, .quiet, .collectionShuffle, .cliPlayResume, .nowStatus,
+    .airplayRoute, .eq, .visualizer, .genius, .loveTrack, .addCurrentTrackToPlaylist,
+    .removeCurrentTrackFromPlaylist,
+]
+
+/// C-REPAIR's refusal for every sound action while a stored SpanDAC output
+/// waits on accepted data. CHOSEN wording (score default).
+let finishSwitchingToSpanDAC =
+    "MusicTUI hasn't finished switching to SpanDAC. Open Output to finish, or stop using SpanDAC there."
+
+/// Column 4's data-axis refusal: no fallback to the web API. CHOSEN wording.
+let notAvailableWithSpanDACData = "Not available with SpanDAC data in this version."
+
+/// C-EPOCH: a read-then-play whose stamp moved. CHOSEN wording.
+let sourceChangedNothingPlayed = "Output or MusicTUI's music source changed; nothing was played."
+
+/// `switchMode` to a SpanDAC output without accepted data. CHOSEN wording.
+let switchMusicTUIToSpanDACFirst = "Switch MusicTUI to SpanDAC first. Still using MusicTUI."
+
+/// A TUI row read under open data, played after the switch to SpanDAC data.
+let listFromBeforeSpanDACSwitch =
+    "This list is from before MusicTUI switched to SpanDAC. It is reloading; try again in a moment."
+
+/// The CLI's form of the same refusal, for `music play N`.
+func resultFromBeforeSpanDACSwitch(_ number: Int) -> String {
+    "Result \(number) came from before MusicTUI switched to SpanDAC; search again."
+}
+
+/// The matrix on both axes. Every action decided in every column; nothing
+/// defaults. `routeAction(_:in:from:)` stays the sound column it starts from.
+func routeAction(_ action: MusicTUIAction,
+                 selection: EffectiveSelection,
+                 from surface: InvocationSurface) -> RoutedAction {
+    switch selection {
+    case .consistent(.open, .musicApp):
+        // Column 1: exactly as shipped.
+        let dataRoute: DataRoute = action.readsMusicData || action.playsChosenMusic ? .open : .none
+        return RoutedAction(data: dataRoute, sound: routeAction(action, in: .musicApp, from: surface))
+
+    case .outputBlocked:
+        return routeWhileOutputBlocked(action, from: surface)
+
+    case .consistent(.open, _):
+        // A SpanDAC output with open data cannot be committed (C-REPAIR); if
+        // it is ever represented, it fails closed exactly as blocked.
+        return routeWhileOutputBlocked(action, from: surface)
+
+    case .consistent(.spandacMac, .musicApp):
+        return routeOnMusicTUIWithSpanDACData(action, from: surface)
+
+    case .consistent(.spandacMac, let output):
+        // Column 3: today's SpanDAC column on the sound axis; reads from the
+        // Mac's own SpanDAC whatever the output is (Anthony, 09:44).
+        let sound = routeAction(action, in: output, from: surface)
+        if case .refused(let why) = sound {
+            return RoutedAction(data: action.readsMusicData ? .refused(why) : .none, sound: sound)
+        }
+        let dataRoute: DataRoute = action.readsMusicData || action.playsChosenMusic ? .spandacMac : .none
+        return RoutedAction(data: dataRoute, sound: sound)
+    }
+}
+
+/// Column 2 (C-REPAIR). Reads run the open column; every sound action, the
+/// MusicTUI-output verbs and the reads seeded from the MusicTUI output's
+/// current track refuse (the stored SpanDAC output may still be what the
+/// person hears, so that current track may not be); library management and
+/// MusicTUI's own state run as shipped. Nothing reaches a SpanDAC.
+private func routeWhileOutputBlocked(_ action: MusicTUIAction,
+                                     from surface: InvocationSurface) -> RoutedAction {
+    if action.touchesPlayback || musicTUIOutputVerbs.contains(action) || action.readsMusicAppCurrentTrack {
+        let refused = ActionRoute.refused(finishSwitchingToSpanDAC)
+        return RoutedAction(data: action.readsMusicData ? .refused(finishSwitchingToSpanDAC) : .none, sound: refused)
+    }
+    let shipped = routeAction(action, in: .musicApp, from: surface)
+    return RoutedAction(data: action.readsMusicData ? .open : .none, sound: shipped)
+}
+
+/// Column 4: SpanDAC data, the MusicTUI output. Exhaustive, so a new action
+/// cannot compile without a decision here.
+private func routeOnMusicTUIWithSpanDACData(_ action: MusicTUIAction,
+                                            from surface: InvocationSurface) -> RoutedAction {
+    let shipped = routeAction(action, in: .musicApp, from: surface)
+    let refusedRead = RoutedAction(data: .refused(notAvailableWithSpanDACData),
+                                   sound: .refused(notAvailableWithSpanDACData))
+    switch action {
+
+    // Reads from SpanDAC on this Mac. Served exactly where the SpanDAC column
+    // serves the same read from SpanDAC on the same surface ("as dispatched
+    // today"): the CLI's `new-releases`, which no SpanDAC op serves (Part 2
+    // P8), refuses here rather than falling back to the web API. The three
+    // listing rows the SpanDAC column still sends to `.musicApp` (stale, see
+    // there) are SpanDAC reads here: Library, Albums, Artists and Playlists
+    // come from MusicKit once SpanDAC is the data source.
+    case .discoverFeed, .discoverRefresh, .catalogSearch, .radioSearch, .radioCatalogueBrowse,
+         .radioStationLookup, .recent, .rotation, .newReleases, .similar, .playlistListing,
+         .searchLibrary, .libraryRetry:
+        switch routeAction(action, in: .source, from: surface) {
+        case .source, .musicApp: return RoutedAction(data: .spandacMac, sound: .source)
+        case .refused, .unaffected: return refusedRead
+        }
+
+    // Refused on the data axis: no fallback to the web API.
+    case .similarToCurrentTrack, .suggest, .suggestFromCurrentTrack, .newReleasesLikeCurrentTrack:
+        return refusedRead
+
+    // Sound on the MusicTUI output, as shipped.
+    case .playPause, .next, .previous, .seek, .stop, .volume, .persistentShuffleMode,
+         .persistentRepeatMode, .queueJump, .quiet, .collectionShuffle, .cliPlayResume, .nowStatus,
+         .airplayRoute, .eq, .visualizer, .genius, .loveTrack, .addCurrentTrackToPlaylist,
+         .removeCurrentTrackFromPlaylist:
+        return RoutedAction(data: .none, sound: shipped)
+
+    // Library management keeps its shipped body (`cliBridgeExceptions`); a
+    // SpanDAC row fed to one is refused by that body, not here.
+    case .addToLibrary, .playlistWrite, .playlistShare, .cliMix:
+        return RoutedAction(data: .none, sound: shipped)
+
+    // Choose-and-play on the MusicTUI output. NOT the shipped body: the path
+    // is the row's origin's (`RoutingCoordinator.perform`'s `origin`). The
+    // station path plays by URL.
+    case .libraryPlay, .playlistPlay, .discoverTrackPlay, .discoverPlayAll, .cliPlayIndex,
+         .cliPlayPlaylist, .cliPlayAlbum, .cliPlaySong, .cliPlayArtist, .cliPlayCatalogSong,
+         .radioStationPlay:
+        return RoutedAction(data: .spandacMac, sound: .musicApp)
+
+    // Free words and temporary playlists name no SpanDAC row.
+    case .cliPlayQuery, .playlistTemp:
+        return RoutedAction(data: .none, sound: .refused(pickASpanDACOutput))
+
+    // MusicTUI's own state and navigation.
+    case .radioFavourite, .radioAddURL, .auth, .libraryArtistTierFilter, .playlistsOpenNowPlaying:
+        return RoutedAction(data: .none, sound: .unaffected)
     }
 }

@@ -126,3 +126,72 @@ func bridgeRadioPlayCommand(_ session: CLIBridgeSession, query: [String], statio
     _ = try session.mutate { try sendBridgeRef(.station(id: id, name: name), to: $0) }
     env.out("▶ \(name)")
 }
+
+// MARK: - radio play on the MusicTUI output with SpanDAC data
+
+/// `music radio play` on the MusicTUI output with SpanDAC data (score: data
+/// route and output, C-MATRIX column 4): chosen exactly as with a SpanDAC
+/// output (a station URL, then favourites by D8's rule, then ONE station
+/// search through SpanDAC on this Mac, never a pick between two), and then
+/// played the MusicTUI output's own way, by opening the station's share URL.
+///
+/// A station whose URL is missing or not a station URL is looked up by its id
+/// through SpanDAC (`slice.station`); if that finds none, it refuses with
+/// `pickASpanDACOutput`. Never by name. The open runs inside the output lock.
+func musicTUIRadioPlayCommand(query: [String], stations: StationStore, opener: Opener,
+                              env: CLIBridgeEnv) throws {
+    let input = query.joined(separator: " ").trimmingCharacters(in: .whitespaces)
+    guard !input.isEmpty else { throw ActionError(message: "Name or URL required.") }
+
+    var chosen: Station
+    var session: CLIBridgeSession?
+    /// SpanDAC on this Mac, as a DATA source, opened at most once.
+    func dataSession() throws -> CLIBridgeSession {
+        if let session { return session }
+        let client = env.routing.dataClient()
+        let readiness = cliDataReadiness(client)
+        guard readiness == .ready else {
+            throw ActionError(message: cliSpanDACDataNotReadySentence(readiness))
+        }
+        let made = CLIBridgeSession(client: client, env: env)
+        session = made
+        return made
+    }
+
+    if ["http://", "https://", "music://"].contains(where: { input.hasPrefix($0) }) {
+        guard let p = parseStationURL(input), stationPlayURL(input) != nil else {
+            throw ActionError(message: "Not an Apple Music station URL.")
+        }
+        chosen = Station(id: p.id, name: displayNameFromSlug(p.slug), url: input, isLive: nil, artworkURL: nil)
+    } else {
+        switch bridgeFavouriteMatch(input, in: stations.favorites()) {
+        case .one(let favourite):
+            chosen = favourite
+        case .ambiguous(let matches):
+            throw ActionError(message: bridgeAmbiguousFavouritesRefusal(query: input, matches: matches))
+        case .none:
+            let hits = try dataSession().provider.searchStations(term: input, limit: bridgeRadioSearchLimit)
+            switch hits.count {
+            case 0:
+                env.err(radioNoStationFoundSentence(input))
+                return
+            case 1:
+                chosen = hits[0]
+            default:
+                throw ActionError(message: bridgeAmbiguousStationsRefusal(query: input, hits: hits))
+            }
+        }
+    }
+
+    if stationPlayURL(chosen.url) == nil {
+        guard let found = try dataSession().provider.station(id: chosen.id),
+              stationPlayURL(found.url) != nil else {
+            throw ActionError(message: pickASpanDACOutput)
+        }
+        chosen = found
+    }
+
+    let station = chosen
+    try cliMusicTUIMutation(env: env) { try playStation(station, via: opener) }
+    env.out("▶ \(station.name)")
+}

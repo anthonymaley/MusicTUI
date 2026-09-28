@@ -43,20 +43,75 @@ struct CLIBridgeEnv {
     let err: (String) -> Void
     /// The warm-up wait. Injected so tests never sleep.
     let sleep: (TimeInterval) -> Void
+    /// Plays SpanDAC LIBRARY rows on the MusicTUI output (column 4). Refuses
+    /// until a later step replaces `liveCLIMusicTUILibraryPlay()`.
+    var libraryPlay: CLIMusicTUILibraryPlaying = liveCLIMusicTUILibraryPlay()
+    /// Plays a SpanDAC CATALOGUE song on the MusicTUI output (column 4).
+    /// Refuses until a later step replaces `liveCLIMusicTUICataloguePlay()`.
+    var cataloguePlay: CLIMusicTUICataloguePlaying = liveCLIMusicTUICataloguePlay()
 
-    /// The production composition: `~/.config/music/mode.json`, the output
-    /// lock beside it, the real result cache, stdout and stderr.
+    /// The production composition: `~/.config/music/mode.json` and
+    /// `data.json` beside it, both read ONCE by the coordinator (the output
+    /// and MusicTUI's data source, C-AXES), the output lock beside them, the
+    /// real result cache, stdout and stderr.
+    ///
+    /// Reads with SpanDAC data go to SpanDAC on this Mac, which a read may
+    /// start once; `Starting SpanDAC…` goes to stderr only, never stdout and
+    /// never into `--json` (`CLIAnnouncingStarter`). Nothing constructs a
+    /// SpanDAC client here: the coordinator builds one only for a branch that
+    /// uses it, so open data and a blocked output never build one.
     static func live() -> CLIBridgeEnv {
         let store = PlaybackModeStore()
-        let routing = RoutingCoordinator.live(store: store, surface: .cli)
         let err: (String) -> Void = { line in
             FileHandle.standardError.write(Data((line + "\n").utf8))
         }
+        let starter = CLIAnnouncingStarter(liveMacSpanDACStarter(), err: err)
+        let routing = RoutingCoordinator.live(store: store, surface: .cli, starter: starter)
         routing.outputLock?.onWaiting { err(cliOutputLockWaitingProgress) }
         return CLIBridgeEnv(routing: routing, modeStore: store, cache: ResultCache(),
                             out: { print($0) }, err: err,
                             sleep: { Thread.sleep(forTimeInterval: $0) })
     }
+
+    /// The same env with stdout replaced, seams and all.
+    func with(out: @escaping (String) -> Void) -> CLIBridgeEnv {
+        var copy = CLIBridgeEnv(routing: routing, modeStore: modeStore, cache: cache,
+                                out: out, err: err, sleep: sleep)
+        copy.libraryPlay = libraryPlay
+        copy.cataloguePlay = cataloguePlay
+        return copy
+    }
+}
+
+/// Starts SpanDAC on this Mac for a CLI read, saying so on stderr, once per
+/// process, the first time a start is asked for. Everything else is the
+/// wrapped starter's.
+final class CLIAnnouncingStarter: MacSpanDACStarting {
+    private let wrapped: MacSpanDACStarting
+    private let err: (String) -> Void
+    private let lock = NSLock()
+    private var announced = false
+
+    init(_ wrapped: MacSpanDACStarting, err: @escaping (String) -> Void) {
+        self.wrapped = wrapped
+        self.err = err
+    }
+
+    var isInstalled: Bool { wrapped.isInstalled }
+    var isRunning: Bool { wrapped.isRunning }
+    var isStarting: Bool { wrapped.isStarting }
+
+    func ensureStarted() -> MacSpanDACStartOutcome {
+        lock.lock()
+        let first = !announced
+        announced = true
+        lock.unlock()
+        if first { err(startingSpanDAC) }
+        return wrapped.ensureStarted()
+    }
+
+    func bringForward() { wrapped.bringForward() }
+    func newAttempt() { wrapped.newAttempt() }
 }
 
 /// Stderr, once, when a command starts waiting on the output lock.
@@ -70,7 +125,7 @@ let cliBridgeWarmingProgress = "SpanDAC is preparing your library; waiting…"
 func cliBridgeNotReadySentence(_ readiness: SourceReadiness) -> String {
     let label = readiness.label
     let closed = label.hasSuffix(".") || label.hasSuffix("!") || label.hasSuffix("?") ? label : label + "."
-    return closed + " Switch Output to Music.app to use Music.app instead."
+    return closed + " Switch Output to \(musicTUIOutputName) to play there instead."
 }
 
 // MARK: - Classification
@@ -135,21 +190,48 @@ final class CLIBridgeSession {
 
 /// D1. Route `action` through the coordinator and run exactly one branch.
 ///
-/// - `.musicApp` and `.unaffected`: the shipped body, verbatim. For a
-///   `requiresOutputLock` action it runs inside the output lock with the mode
-///   revalidated (section 5, deviation 1). Its errors pass through untouched.
+/// The coordinator routes on BOTH selections it read once at construction:
+/// the output and MusicTUI's data source (score: data route and output,
+/// C-MATRIX). `cliDispatch` itself reads neither.
+///
+/// - `.musicApp` on the shipped path, and `.unaffected`: the shipped body,
+///   verbatim. For a `requiresOutputLock` action it runs inside the output
+///   lock with the mode revalidated (section 5, deviation 1). Its errors pass
+///   through untouched.
+/// - `.musicApp` on any other path (column 4: SpanDAC data, the MusicTUI
+///   output, a choose-and-play whose `origin` names the path): `musicTUI`
+///   with that path. A verb with no `musicTUI` body refuses with
+///   `pickASpanDACOutput`. Its errors are printed like SpanDAC's own.
 /// - `.source`: readiness first; not ready prints D5's sentence and sends
-///   nothing further. Then `bridge` with a fresh `CLIBridgeSession`. Bridge
-///   errors are printed in their own words; an `ExitCode` the body threw after
-///   printing passes through.
+///   nothing further. Then `bridge` with a fresh `CLIBridgeSession` on the
+///   client the coordinator handed over: the OUTPUT's for a play, SpanDAC on
+///   this Mac for a pure read. Bridge errors are printed in their own words;
+///   an `ExitCode` the body threw after printing passes through.
 /// - `.refused`: prints exactly what `refuseInBridge` prints, exits 1.
+///
+/// `origin` says where the row being played came from on the DATA axis,
+/// read before routing (a failure to read it is printed like any other); nil
+/// for anything that is not a choose-and-play, and for every column but 4,
+/// where the bodies keep deciding by the cached row as they ship.
 func cliDispatch(_ action: MusicTUIAction, json: Bool, env: CLIBridgeEnv,
+                 origin: () throws -> PlayOrigin? = { nil },
                  musicApp: () throws -> Void,
+                 musicTUI: ((MusicTUIPlayPath) throws -> Void)? = nil,
                  bridge: (CLIBridgeSession) throws -> Void) throws {
     do {
+        let origin = try origin()
         try env.routing.perform(
-            action,
-            musicApp: {
+            action, expecting: env.routing.stamp, origin: origin,
+            musicApp: { path in
+                guard path == .shipped else {
+                    guard let musicTUI else { throw ActionError(message: pickASpanDACOutput) }
+                    do {
+                        try musicTUI(path)
+                    } catch let exit as ExitCode {
+                        throw CLIPassThrough(error: exit)
+                    }
+                    return
+                }
                 if requiresOutputLock(action) {
                     try cliUnderOutputLock(expecting: env.routing.mode, env: env) {
                         try CLIPassThrough.wrap(musicApp)
@@ -159,7 +241,7 @@ func cliDispatch(_ action: MusicTUIAction, json: Bool, env: CLIBridgeEnv,
                 }
             },
             source: { client in
-                let readiness = client.readiness()
+                let readiness = cliReadiness(for: action, client: client, env: env)
                 guard readiness == .ready else {
                     throw ActionError(message: cliBridgeNotReadySentence(readiness))
                 }
@@ -176,6 +258,38 @@ func cliDispatch(_ action: MusicTUIAction, json: Bool, env: CLIBridgeEnv,
     } catch {
         env.out(cliFailureText(cliErrorMessage(error), json: json))
         throw ExitCode.failure
+    }
+}
+
+/// Run `body`, a play on the MusicTUI output that is not the shipped body,
+/// inside the output lock with the mode revalidated, exactly as a shipped
+/// playback body runs. Lock refusals are `ActionError`s in the CLI's words;
+/// `body`'s own errors are rethrown as thrown.
+func cliMusicTUIMutation<T>(env: CLIBridgeEnv, _ body: () throws -> T) throws -> T {
+    try cliUnderOutputLock(expecting: env.routing.mode, env: env, body)
+}
+
+/// Which readiness gates a `.source` branch. A pure read with SpanDAC data
+/// asks SpanDAC on this Mac only for DATA (`perform` hands it the data
+/// client, whatever the output is), so this Mac's DAC does not matter there
+/// (`cliDataReadiness`), even when sound goes to a SpanDAC on the network or
+/// on this Mac. Everything else plays, and keeps the shipped readiness, DAC
+/// included.
+private func cliReadiness(for action: MusicTUIAction, client: SourceAppClient,
+                          env: CLIBridgeEnv) -> SourceReadiness {
+    guard action.readsMusicData, env.routing.data == .spandacMac else {
+        return client.readiness()
+    }
+    return cliDataReadiness(client)
+}
+
+/// SpanDAC on this Mac as a DATA source (`SourceStatus.dataReadiness`): a
+/// missing or still-checking DAC is not a reason to refuse a read.
+func cliDataReadiness(_ client: SourceAppClient) -> SourceReadiness {
+    do {
+        return try client.control.status().dataReadiness
+    } catch {
+        return SourceReadiness.from(error)
     }
 }
 

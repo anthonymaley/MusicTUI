@@ -83,6 +83,10 @@ final class DiscoverLifecycleTests: XCTestCase {
         var onToast: ((DiscoverToast) -> Void)?
         var onAdmissionWait: (() -> Void)?
         var onExitWait: (() -> Void)?
+        /// SpanDAC data: the container's tracks as AppleScript reads them, and
+        /// the identity read, both from the fake library a test wires in.
+        var containerTrackIDs: ((String) -> [String]?)?
+        var trackReader: PersistentIDTrackReading?
 
         private let lock = NSLock()
         private(set) var exitScripts: [String] = []
@@ -137,7 +141,24 @@ final class DiscoverLifecycleTests: XCTestCase {
                 },
                 onAdmissionWait: { [self] in self.onAdmissionWait?() },
                 onExitWait: { [self] in self.onExitWait?() },
-                launchExecutor: { body in Thread(block: body).start() })
+                launchExecutor: { body in Thread(block: body).start() },
+                readCountByPersistentID: { [self] hex in
+                    self.rec.add("readCountByID:\(hex)")
+                    return self.readCountValue
+                },
+                confirmReadByPersistentID: { [self] hex in
+                    self.rec.add("confirmReadByID:\(hex)")
+                    return self.confirmResponder(hex)
+                },
+                readContainerTrackIDsByPersistentID: { [self] hex in
+                    self.rec.add("readTrackIDsByID:\(hex)")
+                    return self.containerTrackIDs?(hex) ?? nil
+                },
+                readTracksByPersistentID: { [self] hexes in
+                    self.rec.add("verifyTracks")
+                    guard let reader = self.trackReader else { throw SeamError(text: "no reader") }
+                    return try reader.tracks(persistentIDs: hexes)
+                })
             coordinator = DiscoverLifecycleCoordinator(seams: seams)
         }
 
@@ -151,6 +172,7 @@ final class DiscoverLifecycleTests: XCTestCase {
             case .playAmbiguous: return "playAmbiguous"
             case .confirmedPlaying: return "confirmedPlaying"
             case .failedBeforePlay(_, let stage): return "failedBeforePlay(\(stage))"
+            case .unknownOutcome: return "unknownOutcome"
             }
         }
 
@@ -164,9 +186,14 @@ final class DiscoverLifecycleTests: XCTestCase {
                 case .createFailed: return "createFailed"
                 case .notReady: return "notReady"
                 case .playFailed: return "playFailed"
+                case .outcomeUnknown: return "outcomeUnknown"
+                case .refused: return "refused"
                 }
             }
         }
+
+        var allToasts: [DiscoverToast] { lock.lock(); defer { lock.unlock() }; return toasts }
+        var allMintedNames: [String] { lock.lock(); defer { lock.unlock() }; return mintedNames }
 
         var singleMintedName: String? { lock.lock(); defer { lock.unlock() }; return mintedNames.count == 1 ? mintedNames[0] : nil }
         var exitSweepCount: Int { lock.lock(); defer { lock.unlock() }; return exitScripts.count }
@@ -750,5 +777,318 @@ final class DiscoverLifecycleTests: XCTestCase {
         XCTAssertEqual(run(state: "playing", context: nil), discoverNotYetToken, "an unreadable context is not confirmation")
         XCTAssertEqual(run(state: "stopped", context: name), discoverNotYetToken, "the right context in the wrong state is not confirmation")
         XCTAssertEqual(run(state: "paused", context: name), discoverNotYetToken)
+    }
+}
+
+// MARK: - SpanDAC data: the container made by SpanDAC on this Mac (C-ADD)
+
+/// With SpanDAC as MusicTUI's data source, a Discover container is ensured by
+/// SpanDAC under a client-minted name and played by the persistent ID SpanDAC
+/// returns. `FakeSpanDACMac` keeps the ensure op's semantics (exact name, one
+/// create, the second call finding the first) and can lose a reply after
+/// carrying the request out; the real wire client classifies its answers.
+extension DiscoverLifecycleTests {
+
+    private func spandac(_ f: Fixture) -> FakeSpanDACMac {
+        f.coordinator.completeLaunchSweep(.swept)
+        let mac = FakeSpanDACMac(library: FakeAppleLibrary())
+        f.containerTrackIDs = { [unowned mac] in mac.containerTrackIDs($0) }
+        f.trackReader = mac.library.persistentIDReader
+        return mac
+    }
+
+    private static let steadyStamp = MusicTUIHandoffStamp(epoch: 1, dataEpoch: 1)
+
+    private func request(_ f: Fixture, _ mac: FakeSpanDACMac, title: String = "Kid A",
+                         ids: [String] = ["1"],
+                         stamp: @escaping () -> MusicTUIHandoffStamp? = { steadyStamp }) -> DiscoverPlayRequestOutcome {
+        f.coordinator.requestSpanDACPlay(title: title, catalogIDs: ids, disableShuffle: true, library: mac.client,
+                                         currentStamp: stamp)
+    }
+
+    private func ensured(_ mac: FakeSpanDACMac) -> [String] {
+        mac.ops("slice.libraryEnsurePlaylist").compactMap { $0["name"] as? String }
+    }
+
+    func testDiscoverContainerIsEnsuredBySpanDACAndPlayedByPersistentID() {
+        let f = Fixture()
+        let mac = spandac(f)
+
+        let r = request(f, mac, ids: ["1"])
+
+        guard case .completed(.confirmedPlaying(let name)) = r else { return XCTFail("\(r)") }
+        XCTAssertEqual(ensured(mac), [name], "ensured under the minted name")
+        XCTAssertEqual(mac.ops("slice.libraryEnsurePlaylist").first?["ids"] as? [String], ["1"])
+        XCTAssertTrue(name.hasPrefix(discoverPlaylistPrefix) && name.hasSuffix(discoverPlaylistNameSeparator + "Kid A"))
+        let hex = String(format: "%016llX", 0xF01 as UInt64)
+        let events = f.rec.all
+        XCTAssertFalse(events.contains("create"), "the web-service create never runs with SpanDAC data")
+        XCTAssertFalse(events.contains("readCount"), "never read by name")
+        XCTAssertFalse(events.contains("confirmRead"), "never confirmed by name")
+        XCTAssertTrue(events.contains("readCountByID:\(hex)"))
+        XCTAssertTrue(events.contains("confirmReadByID:\(hex)"))
+        XCTAssertEqual(discoverPlayScripts(persistentID: hex, disableShuffle: true),
+                       ["set shuffle enabled to false", "play (first user playlist whose persistent ID is \"\(hex)\")"])
+        XCTAssertFalse(discoverPlayScripts(persistentID: hex, disableShuffle: true).contains { $0.contains(name) },
+                       "the play addresses the identity, never the name")
+        XCTAssertNil(f.coordinator.spandacAttemptName, "a completed play spends the token")
+        XCTAssertEqual(f.allToasts.last, .outcome(.playing(title: "Kid A"), title: "Kid A"))
+    }
+
+    func testTheTokenIsMintedOncePerAttemptAndRecordedBeforeTheFirstRequest() {
+        let f = Fixture()
+        let mac = spandac(f)
+        var atRequest: [(protected: [String], attempt: String?)] = []
+        mac.onEnsure = { _ in atRequest.append((f.coordinator.protectedNames, f.coordinator.spandacAttemptName)) }
+        mac.ensures = [.applyThenLoseReply]
+
+        _ = request(f, mac)
+        _ = request(f, mac)
+
+        let names = ensured(mac)
+        XCTAssertEqual(f.allMintedNames.count, 1, "one attempt, one token")
+        XCTAssertEqual(names, [f.allMintedNames[0], f.allMintedNames[0]])
+        XCTAssertEqual(atRequest.count, 2)
+        for seen in atRequest {
+            XCTAssertEqual(seen.protected, [names[0]], "recorded, and protected, before the request went out")
+            XCTAssertEqual(seen.attempt, names[0])
+        }
+    }
+
+    func testALostEnsureReplyEntersUnknownOutcomeAndNeverRetriesByItself() {
+        let f = Fixture()
+        let mac = spandac(f)
+        mac.ensures = [.applyThenLoseReply]
+
+        let r = request(f, mac)
+
+        guard case .completed(.unknownOutcome(let name)) = r else { return XCTFail("\(r)") }
+        XCTAssertEqual(ensured(mac), [name], "exactly one request: nothing retries by itself")
+        XCTAssertEqual(f.allToasts.last, .outcome(.outcomeUnknown, title: "Kid A"))
+        XCTAssertEqual(discoverToastMessage(for: .outcomeUnknown, title: "Kid A").text,
+                       "Couldn't confirm SpanDAC made the playlist. Press Enter again to check.")
+        XCTAssertFalse(f.rec.all.contains { $0.hasPrefix("readCountByID") || $0 == "play" }, "nothing played")
+        XCTAssertEqual(f.coordinator.transactions.values.first, .unknownOutcome(name))
+        XCTAssertEqual(f.coordinator.spandacAttemptName, name, "the attempt lives on")
+
+        // SpanDAC's own `outcome: unknown` is the same state.
+        let g = Fixture()
+        let mac2 = spandac(g)
+        mac2.ensures = [.unknownReply]
+        guard case .completed(.unknownOutcome) = request(g, mac2) else { return XCTFail("outcome unknown") }
+    }
+
+    /// The reply to the first ensure is lost after SpanDAC made the playlist.
+    /// The person's Enter re-sends the SAME name: SpanDAC finds the one
+    /// playlist (`created:false`), makes nothing, and it plays.
+    func testEnterAfterUnknownOutcomeReconcilesWithTheSameToken() {
+        let f = Fixture()
+        let mac = spandac(f)
+        mac.ensures = [.applyThenLoseReply]
+
+        guard case .completed(.unknownOutcome(let name)) = request(f, mac) else { return XCTFail("first") }
+        XCTAssertEqual(mac.creates, 1)
+
+        // A request from another row resumes the pending attempt: its token,
+        // its tracks, its title.
+        let r = request(f, mac, title: "Another Row", ids: ["9", "8"])
+
+        guard case .completed(.confirmedPlaying(let played)) = r else { return XCTFail("\(r)") }
+        XCTAssertEqual(played, name)
+        XCTAssertEqual(ensured(mac), [name, name])
+        XCTAssertEqual(mac.ops("slice.libraryEnsurePlaylist").last?["ids"] as? [String], ["1"])
+        XCTAssertEqual(mac.creates, 1, "the same-token re-send created nothing")
+        XCTAssertEqual(mac.playlists.count, 1, "one playlist in the library")
+        XCTAssertEqual(f.allMintedNames, [name])
+    }
+
+    func testANewTokenOnlyAfterAConfirmedFailureOrACompletedPlay() {
+        let f = Fixture()
+        let mac = spandac(f)
+
+        // Completed play, then a new attempt: a new token.
+        _ = request(f, mac)
+        _ = request(f, mac)
+        XCTAssertEqual(Set(ensured(mac)).count, 2)
+
+        // Confirmed failure, then a new attempt: a new token.
+        mac.ensures = [.refuse("Apple Music didn't make that playlist.")]
+        guard case .completed(.failedBeforePlay(_, .create)) = request(f, mac) else { return XCTFail("refused") }
+        _ = request(f, mac)
+        XCTAssertEqual(Set(ensured(mac)).count, 4)
+
+        // Unknown outcome, then a new request: the same token.
+        mac.ensures = [.loseBeforeApply]
+        _ = request(f, mac)
+        _ = request(f, mac)
+        let names = ensured(mac)
+        XCTAssertEqual(names[4], names[5])
+        XCTAssertEqual(Set(names).count, 5)
+        XCTAssertEqual(f.allMintedNames.count, 5)
+    }
+
+    func testADuplicateNameRefusalPlaysNothing() {
+        let f = Fixture()
+        let mac = spandac(f)
+        mac.duplicateName = true
+
+        let r = request(f, mac)
+
+        guard case .completed(.failedBeforePlay(_, .create)) = r else { return XCTFail("\(r)") }
+        XCTAssertEqual(f.allToasts.last, .outcome(.createFailed("More than one playlist has this name; nothing was created."),
+                                                  title: "Kid A"))
+        XCTAssertFalse(f.rec.all.contains { $0.hasPrefix("readCountByID") || $0 == "play" })
+        XCTAssertNil(f.coordinator.spandacAttemptName, "a confirmed failure spends the token")
+    }
+
+    // MARK: A playlist just made answers with no persistent ID at first
+
+    /// Observed live: the create reply carries `alias: null`, and a few seconds
+    /// later the SAME ensure (same name) answers `created: false` with it.
+    /// The client re-sends that same ensure about once a second; on the third
+    /// re-send the ID arrives, the tracks check out in order, and it plays.
+    func testAliasArrivingOnTheThirdReEnsurePlaysExactly() {
+        let f = Fixture()
+        let mac = spandac(f)
+        mac.aliasAfterEnsures = 3
+        f.readCountValue = 3
+        let start = f.clock.now
+
+        let r = request(f, mac, ids: ["1", "2", "3"])
+
+        guard case .completed(.confirmedPlaying(let name)) = r else { return XCTFail("\(r)") }
+        XCTAssertEqual(ensured(mac), Array(repeating: name, count: 4), "the create, then three re-sends of the SAME name")
+        XCTAssertEqual(mac.creates, 1, "the re-sends made nothing")
+        XCTAssertEqual(f.allMintedNames, [name], "one token throughout")
+        let hex = String(format: "%016llX", 0xF01 as UInt64)
+        let events = f.rec.all
+        XCTAssertTrue(events.contains("readTrackIDsByID:\(hex)"), "the container's tracks were read back")
+        XCTAssertTrue(events.contains("verifyTracks"), "each identity was checked")
+        let play = events.firstIndex(of: "play")
+        XCTAssertNotNil(play)
+        XCTAssertLessThan(events.firstIndex(of: "readTrackIDsByID:\(hex)") ?? .max, play ?? -1, "checked before the play")
+        XCTAssertLessThan(events.firstIndex(of: "verifyTracks") ?? .max, play ?? -1)
+        XCTAssertEqual(f.clock.now.timeIntervalSince(start), 3 * DiscoverScheduler.aliasCadence, accuracy: 0.001,
+                       "one re-send a second, on the injected clock")
+        XCTAssertEqual(f.allToasts.last, .outcome(.playing(title: "Kid A"), title: "Kid A"))
+    }
+
+    /// The ID never arrives: after ten seconds of re-sending the same name the
+    /// play refuses with the existing sentence, plays nothing, and never makes
+    /// a second playlist or mints a second token.
+    func testAliasNeverArrivingRefusesWithTheSameTokenAndNoSecondCreate() {
+        let f = Fixture()
+        let mac = spandac(f)
+        mac.playlistAlias = false
+        let start = f.clock.now
+
+        let r = request(f, mac)
+
+        guard case .completed(.failedBeforePlay(let name, .identity)) = r else { return XCTFail("\(r)") }
+        let names = ensured(mac)
+        XCTAssertEqual(names.count, 1 + Int(DiscoverScheduler.aliasWindow / DiscoverScheduler.aliasCadence),
+                       "the create, then one re-send a second for ten seconds")
+        XCTAssertEqual(Set(names), [name], "the same token throughout")
+        XCTAssertEqual(f.allMintedNames, [name])
+        XCTAssertEqual(mac.creates, 1, "no second create")
+        XCTAssertLessThanOrEqual(f.clock.now.timeIntervalSince(start), DiscoverScheduler.aliasWindow)
+        XCTAssertEqual(f.allToasts.last, .outcome(.refused(pickASpanDACOutput), title: "Kid A"))
+        XCTAssertFalse(f.rec.all.contains { $0.hasPrefix("readCountByID") || $0 == "play" }, "nothing played")
+        XCTAssertFalse(f.coordinator.protectedNames.contains(name), "left for the sweep")
+        XCTAssertNil(f.coordinator.spandacAttemptName)
+    }
+
+    /// The ID arrives, but the playlist does not hold exactly the expected
+    /// tracks in the expected order: nothing plays.
+    func testAliasArrivingWithDifferentTracksRefuses() {
+        let f = Fixture()
+        let mac = spandac(f)
+        mac.aliasAfterEnsures = 1
+        mac.containerOrder = { Array($0.reversed()) }
+        f.readCountValue = 2
+
+        let r = request(f, mac, ids: ["1", "2"])
+
+        guard case .completed(.failedBeforePlay(_, .identity)) = r else { return XCTFail("\(r)") }
+        XCTAssertEqual(f.allToasts.last, .outcome(.refused(pickASpanDACOutput), title: "Kid A"))
+        XCTAssertFalse(f.rec.all.contains("play"), "nothing played")
+
+        // A missing track is a different playlist too.
+        let g = Fixture()
+        let mac2 = spandac(g)
+        mac2.containerOrder = { Array($0.dropLast()) }
+        g.readCountValue = 2
+        guard case .completed(.failedBeforePlay(_, .identity)) = request(g, mac2, ids: ["1", "2"]) else {
+            return XCTFail("a missing track")
+        }
+        XCTAssertFalse(g.rec.all.contains("play"))
+    }
+
+    /// The output or the data source moves while the client waits for the ID:
+    /// the stamp read just before the play differs, so nothing plays.
+    func testASelectionChangeDuringTheWaitPlaysNothing() {
+        let f = Fixture()
+        let mac = spandac(f)
+        mac.aliasAfterEnsures = 3
+        f.readCountValue = 2
+        let lock = NSLock()
+        var current: MusicTUIHandoffStamp? = Self.steadyStamp
+        mac.onEnsure = { _ in
+            // The switch lands between the second and third re-send.
+            if mac.ops("slice.libraryEnsurePlaylist").count == 3 {
+                lock.lock(); current = MusicTUIHandoffStamp(epoch: 2, dataEpoch: 1); lock.unlock()
+            }
+        }
+
+        let r = request(f, mac, ids: ["1", "2"], stamp: { lock.lock(); defer { lock.unlock() }; return current })
+
+        guard case .completed(.failedBeforePlay(_, .selectionChanged)) = r else { return XCTFail("\(r)") }
+        XCTAssertEqual(f.allToasts.last, .outcome(.refused(sourceChangedNothingPlayed), title: "Kid A"))
+        XCTAssertFalse(f.rec.all.contains("play"), "nothing played")
+        XCTAssertEqual(mac.creates, 1)
+
+        // No SpanDAC data on the MusicTUI output at the keypress: refused
+        // before anything is minted or sent.
+        let g = Fixture()
+        let mac2 = spandac(g)
+        XCTAssertEqual(request(g, mac2, stamp: { nil }), .refused(.selectionChanged))
+        XCTAssertEqual(g.allMintedNames, [])
+        XCTAssertEqual(mac2.ops("slice.libraryEnsurePlaylist").count, 0)
+        XCTAssertEqual(g.allToasts.last, .outcome(.refused(sourceChangedNothingPlayed), title: "Kid A"))
+    }
+
+    func testTheSweepNeverRemovesAnUnknownOutcomeContainer() {
+        let f = Fixture()
+        let mac = spandac(f)
+        mac.ensures = [.applyThenLoseReply]
+        guard case .completed(.unknownOutcome(let name)) = request(f, mac) else { return XCTFail("unknown") }
+
+        XCTAssertTrue(DiscoverTransactionState.unknownOutcome(name).isProtected)
+        XCTAssertEqual(f.beginExit(), .swept(protected: [name]))
+        XCTAssertTrue(f.lastExitScript?.contains(protectedClause(name)) ?? false)
+    }
+
+    func testASpanDACWithoutTheLibraryOpsIsRefusedBeforeMinting() {
+        let f = Fixture()
+        let mac = spandac(f)
+        mac.offersOps = false
+
+        XCTAssertEqual(request(f, mac), .refused(.libraryOpsNotOffered))
+        XCTAssertEqual(f.allMintedNames, [])
+        XCTAssertEqual(f.allToasts.last, .outcome(.refused(updateSpanDACToPlayOnMusicTUI), title: "Kid A"))
+    }
+
+    func testTheSpanDACTransitionsAreLegalAndNoOthers() {
+        let n = "x"
+        for (from, to) in [(DiscoverTransactionState.minted(n), DiscoverTransactionState.unknownOutcome(n)),
+                           (.unknownOutcome(n), .created(n)), (.unknownOutcome(n), .failedBeforePlay(n, .create)),
+                           (.unknownOutcome(n), .unknownOutcome(n)), (.created(n), .failedBeforePlay(n, .identity)),
+                           (.created(n), .failedBeforePlay(n, .selectionChanged))] {
+            XCTAssertTrue(discoverTransitionIsLegal(from: from, to: to), "\(from) -> \(to)")
+        }
+        XCTAssertFalse(discoverTransitionIsLegal(from: .unknownOutcome(n), to: .ready(n)))
+        XCTAssertFalse(discoverTransitionIsLegal(from: .unknownOutcome(n), to: .confirmedPlaying(n)))
+        XCTAssertFalse(DiscoverTransactionState.unknownOutcome(n).isTerminal)
+        XCTAssertFalse(DiscoverTransactionState.failedBeforePlay(n, .identity).isProtected)
     }
 }

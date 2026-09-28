@@ -29,7 +29,7 @@ import Foundation
 
 /// D10, verbatim.
 let bridgeDiscoverRecentRefusal =
-    "SpanDAC doesn't serve the Recently Played rail. Switch Output to Music.app to use music discover --recent."
+    "SpanDAC doesn't serve the Recently Played rail. Switch Output to MusicTUI to use music discover --recent."
 
 /// What the Bridge feed is asked for: the Discover tab's own rail limit
 /// (`DiscoverScene`), so the CLI curates from the same feed the TUI does.

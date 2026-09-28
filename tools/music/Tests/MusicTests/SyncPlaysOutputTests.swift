@@ -45,7 +45,7 @@ final class SyncPlaysOutputTests: XCTestCase {
         let out = renderSyncPlays(result(fetch: .ok(newPlays: 1),
                                          recorded: [entry("Teardrop", "Massive Attack")]), json: false)
         XCTAssertEqual(out.text, """
-            Recorded 1 library play in Music.app.
+            Recorded 1 library play in Apple's Music player.
               Teardrop — Massive Attack
             """)
         XCTAssertEqual(out.exit, 0)
@@ -57,7 +57,7 @@ final class SyncPlaysOutputTests: XCTestCase {
                         entry("Roads", "Portishead", seq: 3)]
         let out = renderSyncPlays(result(fetch: .ok(newPlays: 3), recorded: recorded), json: false)
         XCTAssertEqual(out.text, """
-            Recorded 3 library plays in Music.app.
+            Recorded 3 library plays in Apple's Music player.
               Teardrop — Massive Attack
               Angel — Massive Attack
               Roads — Portishead
@@ -78,14 +78,14 @@ final class SyncPlaysOutputTests: XCTestCase {
     func testWaitingOneWithMusicNotRunning() {
         let out = renderSyncPlays(result(fetch: .ok(newPlays: 1), musicRunning: false, waiting: 1), json: false)
         XCTAssertEqual(out.text,
-                       "1 play waiting: Music.app is not running. Open Music.app and run music sync-plays again.")
+                       "1 play waiting: Apple's Music player is not running. Open it and run music sync-plays again.")
         XCTAssertEqual(out.exit, 1)
     }
 
     func testWaitingSeveralWithMusicNotRunning() {
         let out = renderSyncPlays(result(fetch: .ok(newPlays: 4), musicRunning: false, waiting: 4), json: false)
         XCTAssertEqual(out.text,
-                       "4 plays waiting: Music.app is not running. Open Music.app and run music sync-plays again.")
+                       "4 plays waiting: Apple's Music player is not running. Open it and run music sync-plays again.")
         XCTAssertEqual(out.exit, 1)
     }
 
@@ -103,7 +103,7 @@ final class SyncPlaysOutputTests: XCTestCase {
                   musicAccess: .failed(MusicAccessSentence.libraryNotLoaded)),
             json: false)
         XCTAssertEqual(out.text,
-                       "1 play waiting: Music.app's library hasn't finished loading. Run music sync-plays again.")
+                       "1 play waiting: the library in Apple's Music player hasn't finished loading. Run music sync-plays again.")
         XCTAssertEqual(out.exit, 1)
     }
 
@@ -113,7 +113,7 @@ final class SyncPlaysOutputTests: XCTestCase {
                   musicAccess: .failed(MusicAccessSentence.noMatch)),
             json: false)
         XCTAssertEqual(out.text,
-                       "1 play waiting: the track could not be found in Music.app when it came time to write. "
+                       "1 play waiting: the track could not be found in Apple's Music player when it came time to write. "
                        + "Run music sync-plays again.")
         XCTAssertEqual(out.exit, 1)
     }
@@ -124,7 +124,7 @@ final class SyncPlaysOutputTests: XCTestCase {
                   musicAccess: .failed("some other AppleEvent failure.")),
             json: false)
         XCTAssertEqual(out.text,
-                       "1 play waiting: Music.app could not be accessed (some other AppleEvent failure). "
+                       "1 play waiting: Apple's Music player could not be accessed (some other AppleEvent failure). "
                        + "Run music sync-plays again.")
         XCTAssertEqual(out.exit, 1)
     }
@@ -137,7 +137,7 @@ final class SyncPlaysOutputTests: XCTestCase {
         let out = renderSyncPlays(result(unconfirmed: unconfirmed), json: false)
         XCTAssertEqual(out.text, """
             Nothing new to record.
-            Waiting for Music.app to confirm (2):
+            Waiting for Apple's Music player to confirm (2):
               Teardrop — Massive Attack
               Roads — Portishead
               These, and later plays of the same songs, are checked again on every sync.
@@ -171,7 +171,7 @@ final class SyncPlaysOutputTests: XCTestCase {
         let out = renderSyncPlays(result(fetch: .ledgerReplaced,
                                          recorded: [entry("Teardrop", "Massive Attack")]), json: false)
         XCTAssertEqual(out.text, """
-            Recorded 1 library play in Music.app.
+            Recorded 1 library play in Apple's Music player.
               Teardrop — Massive Attack
             SpanDAC's play record was replaced; plays it held before could not all be read.
             """)
@@ -244,7 +244,7 @@ final class SyncPlaysOutputTests: XCTestCase {
         r.recorded = [entry("Teardrop", "Massive Attack")]
         let out = renderSyncPlays(r, json: false)
         XCTAssertEqual(out.text, """
-            Recorded 1 library play in Music.app.
+            Recorded 1 library play in Apple's Music player.
               Teardrop — Massive Attack
             The play-sync journal at \(path) could not be saved, so the sync stopped; \
             nothing more was changed. Keep this file: it is what stops plays being counted twice.
@@ -282,11 +282,11 @@ final class SyncPlaysOutputTests: XCTestCase {
         XCTAssertEqual(out.text, """
             Nothing new to record.
             Not recorded (5):
-              A — One: SpanDAC could not identify it in Music.app
-              B — Two: SpanDAC could not identify it in Music.app
-              C — Three: not in your Music.app library
-              D — Four: matches more than one Music.app track
-              E — Five: Music.app's play count changed during the write; left as it was
+              A — One: SpanDAC could not identify it in Apple's Music player
+              B — Two: SpanDAC could not identify it in Apple's Music player
+              C — Three: not in your library in Apple's Music player
+              D — Four: matches more than one track in Apple's Music player
+              E — Five: the play count in Apple's Music player changed during the write; left as it was
             """)
         XCTAssertEqual(out.exit, 0)
     }
@@ -384,7 +384,7 @@ final class SyncPlaysOutputTests: XCTestCase {
     func testAbstract() {
         XCTAssertEqual(SyncPlays.configuration.commandName, "sync-plays")
         XCTAssertEqual(SyncPlays.configuration.abstract,
-                       "Record library songs SpanDAC played to the end in Music.app's play counts.")
+                       "Record library songs SpanDAC played to the end in the play counts of Apple's Music player.")
     }
 
     private final class RecordingRunner: PlaySyncRunning {
