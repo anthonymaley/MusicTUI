@@ -99,8 +99,7 @@ final class DiscoverBridgeCollectionTests: XCTestCase {
                              actions: ActionRunner(status: status),
                              api: RESTAPIBackend(developerToken: "d", userToken: "u", storefront: "us"),
                              lifecycle: lifecycle,
-                             routing: routing,
-                             bridgeSelected: { routing.mode == .source })
+                             routing: routing)
     }
 
     private func settle(_ check: @escaping () -> Bool, seconds: Double = 2.0) {

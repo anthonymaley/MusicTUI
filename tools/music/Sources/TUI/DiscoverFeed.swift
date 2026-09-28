@@ -321,16 +321,9 @@ func makeDiscoverFeed() -> DiscoverFeed? {
 ///
 /// Pure and out here so the door is testable: as a guard inside the shell it
 /// could be reverted with every scene-level test still green (Codex S2).
-func discoverTabAdmitted(selection: EffectiveSelection, hasUserToken: Bool) -> Bool {
+/// `hasUserToken` is only asked when the selection does not already open the
+/// door, so SpanDAC data never reads the token file.
+func discoverTabAdmitted(selection: EffectiveSelection, hasUserToken: @autoclosure () -> Bool) -> Bool {
     if case .consistent(.spandacMac, _) = selection { return true }
-    return hasUserToken
-}
-
-/// The door's form from before the data axis, when data followed the output.
-/// Kept ONLY so the shell's composition compiles until it asks the selection
-/// form above; delete it once nothing calls it. It cannot tell a blocked
-/// output from accepted data, so no new caller may use it.
-@available(*, deprecated, message: "The Discover door follows the data selection: use discoverTabAdmitted(selection:hasUserToken:)")
-func discoverTabAdmitted(mode: PlaybackMode, hasUserToken: Bool) -> Bool {
-    mode.usesSource || hasUserToken
+    return hasUserToken()
 }

@@ -147,8 +147,7 @@ final class DiscoverProviderFoldTests: XCTestCase {
         let scene = DiscoverScene(
             feed: feed, status: status, actions: actions,
             api: api ? RESTAPIBackend(developerToken: "d", userToken: "u", storefront: "us") : nil,
-            lifecycle: lifecycle(created), routing: routing, opener: opener,
-            bridgeSelected: { routing.mode == .source })
+            lifecycle: lifecycle(created), routing: routing, opener: opener)
         return Rig(scene: scene, wire: wire, feed: feed, opener: opener, status: status, actions: actions,
                    created: created)
     }
