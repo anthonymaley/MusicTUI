@@ -155,9 +155,9 @@ func runShell() {
                                    makeProvider: { spanDACDataProvider(routing: routing) },
                                    loadMusicAppPlaylists: { fetchUserPlaylistNames(backend: backend) },
                                    makeSources: { makePlaylistDataSources(backend: backend, names: $0, artworkAPI: makeArtworkAPI()) },
-                                   // A SpanDAC playlist on the MusicTUI output: a
-                                   // refusal until owned songs play by persistent ID.
-                                   handoff: RefusingHandoff())
+                                   // A SpanDAC playlist on the MusicTUI output plays
+                                   // its owned songs by exact persistent ID.
+                                   handoff: liveMusicTUIHandoff(backend: backend, appQueue: appQueue, routing: routing))
                 }
             ) else { return nil }
             scenes[id] = scene
@@ -191,8 +191,8 @@ func runShell() {
                                      sources: makeLibraryDataSources(backend: backend, artworkAPI: makeArtworkAPI()),
                                      appQueue: appQueue, status: status, actions: actions, kittyEnabled: kittyEnabled,
                                      makeProvider: { spanDACDataProvider(routing: routing) },
-                                     // A refusal until owned songs play by persistent ID.
-                                     handoff: RefusingHandoff())
+                                     // Owned songs by exact persistent ID.
+                                     handoff: liveMusicTUIHandoff(backend: backend, appQueue: appQueue, routing: routing))
             scenes[id] = scene
             return scene
         case .discover:
