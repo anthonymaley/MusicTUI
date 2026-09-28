@@ -354,6 +354,51 @@ final class MusicTUIHandoffTests: XCTestCase {
         }
     }
 
+    /// The container read back holds exactly the verified songs, but in a
+    /// different order: that is a different album than the one chosen, so the
+    /// play refuses, nothing plays, and the container is rolled back.
+    func testCLIContainerReadBackInAnotherOrderRefusesAndRollsBack() throws {
+        let tracks = "{\"ok\":true,\"op\":\"slice.libraryAlbumTracks\",\"generation\":1,\"items\":["
+            + "{\"id\":\"l.1\",\"title\":\"Angel\",\"artist\":\"Massive Attack\",\"album\":\"Mezzanine\",\"kind\":\"song\",\"alias\":\"\(a1)\"},"
+            + "{\"id\":\"l.2\",\"title\":\"Risingson\",\"artist\":\"Massive Attack\",\"album\":\"Mezzanine\",\"kind\":\"song\",\"alias\":\"\(a2)\"}"
+            + "]}"
+        let h = CLIDataRouteHarness(
+            output: .musicApp, data: .accepted,
+            dataReplies: ["slice.status": [CLIHandoffReplies.readyWithoutADAC],
+                          "slice.libraryAlbums": [CLIBridgeLibraryReplies.page(op: "slice.libraryAlbums", kind: "album",
+                                                                               [("a.1", "Mezzanine", "Massive Attack", "")])],
+                          "slice.libraryAlbumTracks": [tracks]],
+            recordSeams: false)
+        let library = FakePersistentIDLibrary([
+            h1: [inLibrary(h1, "Angel", db: "101", at: 11)],
+            h2: [inLibrary(h2, "Risingson", db: "102", at: 12)],
+        ])
+        // Same two songs, read back in the opposite order.
+        let runner = CLIContainerRunner(ids: [h2, h1])
+        var launches = 0
+        var shown: [Bool] = []
+        var env = h.env
+        env.libraryPlay = PersistentIDCLILibraryPlay(library: library, run: runner.run,
+                                                     launch: { _, _ in launches += 1; return true },
+                                                     selfCheck: LibraryAliasSelfCheck(),
+                                                     afterPlay: { shown.append($0) })
+
+        let r = tripwired {
+            try runPlay(args: [], playlist: nil, album: "Mezzanine", song: nil, artist: nil, json: false,
+                        env: env, musicAppDeps: PlayMusicAppDeps(readSongs: { XCTFail("shipped body"); return [] },
+                                                                 resolveIndexed: { _, _ in XCTFail("shipped body") }))
+        }
+        XCTAssertNotNil(r.error, "a reordered container must refuse")
+        XCTAssertEqual(r.calls, [])
+        XCTAssertEqual(runner.builds, [[11, 12]], "built in the verified order")
+        XCTAssertEqual(runner.plays, [], "nothing played")
+        XCTAssertEqual(launches, 0, "no watcher for a container that never played")
+        XCTAssertEqual(shown, [])
+        XCTAssertTrue(runner.scripts.last?.hasPrefix("delete (every user playlist whose name is") == true,
+                      "the container is rolled back: \(runner.scripts.last ?? "none")")
+        XCTAssertEqual(h.io.out.last, albumOutcomeMessage(.buildFailed(containerRemoved: true), title: "Mezzanine"))
+    }
+
     // MARK: - Further pins
 
     func testAStampThatMovedBeforeThePlayPlaysNothing() {

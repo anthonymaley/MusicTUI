@@ -48,7 +48,8 @@ struct RefusingCLIMusicTUILibraryPlay: CLIMusicTUILibraryPlaying {
 /// check), then the verified tracks play on the MusicTUI output through the
 /// CLI's shipped bounded container: a temporary playlist seeded from the
 /// library playlist, whose tracks are read back and must be EXACTLY the
-/// verified identities before it plays, and which the shipped watcher removes.
+/// verified identities, in the order that will play, before it plays, and which
+/// the shipped watcher removes.
 ///
 /// A one-shot command has no app-owned queue to drive, which is why the CLI
 /// uses the container rather than the TUI's queue. The container duplicates
@@ -84,14 +85,16 @@ struct PersistentIDCLILibraryPlay: CLIMusicTUILibraryPlaying {
 
         let order = request.shuffle ? Array(zip(indices, verified.map(\.persistentID))).shuffled()
                                     : Array(zip(indices, verified.map(\.persistentID)))
-        let expected = Set(order.map(\.1))
+        // The exact order that will play, shuffled or not: the container is
+        // confirmed against this sequence, never against the set of songs.
+        let expected = order.map(\.1)
         // The shipped album path sweeps stale containers first; so does this.
         _ = run(albumStaleSweepScript())
         let uuid = UUID().uuidString
         let outcome = playBoundedContainer(name: albumContainerName(title: request.label, uuid: uuid),
                                            seed: .libraryIndices(order.map(\.0)), uuid: uuid,
                                            run: run, launch: launch,
-                                           confirm: { ids in ids == expected })
+                                           confirmOrder: { ids in ids == expected })
         let failure: BoundedAlbumOutcome
         switch outcome {
         case .playing:
