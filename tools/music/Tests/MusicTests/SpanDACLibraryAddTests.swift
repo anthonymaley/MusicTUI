@@ -86,6 +86,28 @@ final class FakeAppleLibrary {
         }
     }
 
+    /// A song added to a playlist SpanDAC makes: the playlist's track is the
+    /// library copy (one persistent ID), made now when the song is not owned.
+    func ownForPlaylist(_ id: String) -> String {
+        lock.lock(); defer { lock.unlock() }
+        if let pid = owned[id] { return pid }
+        let meta = catalogue[id] ?? (name: "Song \(id)", artist: "Artist", album: "Album")
+        let pid = mint()
+        tracks.append(Track(pid: pid, name: meta.name, artist: meta.artist, album: meta.album, visibleAfter: 0))
+        owned[id] = pid
+        return pid
+    }
+
+    /// The identity read (`persistentIDVerificationScript`) through this
+    /// library's own script answers.
+    var persistentIDReader: AppleScriptPersistentIDReader {
+        struct Unreadable: Error {}
+        return AppleScriptPersistentIDReader(run: { [unowned self] script in
+            guard let out = self.answer(script) else { throw Unreadable() }
+            return out
+        })
+    }
+
     func lookupAlias(_ id: String) -> String? {
         lock.lock(); defer { lock.unlock() }
         guard aliasVisible, let pid = owned[id] else { return nil }
@@ -166,6 +188,11 @@ final class FakeSpanDACMac {
     var ensures: [Write] = []
     var duplicateName = false
     var playlistAlias = true
+    /// How many ensure replies for one playlist carry `alias: null` before it
+    /// is reported (a playlist just made has no persistent ID for a moment).
+    var aliasAfterEnsures = 0
+    /// Rewrites a playlist's track order as AppleScript reads it back.
+    var containerOrder: (([String]) -> [String])?
     /// Runs inside an ensure before it answers (how a test looks at the
     /// coordinator's state at the moment the request is made).
     var onEnsure: ((String) -> Void)?
@@ -174,6 +201,17 @@ final class FakeSpanDACMac {
     private(set) var requests: [[String: Any]] = []
     private(set) var playlists: [String: (id: String, pid: String)] = [:]
     private(set) var creates = 0
+    private var ensureCounts: [String: Int] = [:]
+    /// Playlist persistent ID -> its tracks' persistent IDs, in order.
+    private var playlistTracks: [String: [String]] = [:]
+
+    /// The playlist's track persistent IDs as AppleScript reads them, in the
+    /// playlist's order; nil when no playlist has this persistent ID.
+    func containerTrackIDs(_ hex: String) -> [String]? {
+        lock.lock(); defer { lock.unlock() }
+        guard let ids = playlistTracks[hex] else { return nil }
+        return containerOrder?(ids) ?? ids
+    }
 
     init(library: FakeAppleLibrary) { self.library = library }
 
@@ -219,12 +257,19 @@ final class FakeSpanDACMac {
                 if self.playlists[name] == nil {
                     self.creates += 1
                     created = true
-                    self.playlists[name] = ("p.\(self.creates)", String(format: "%016llX", 0xF00 + UInt64(self.creates)))
+                    let pid = String(format: "%016llX", 0xF00 + UInt64(self.creates))
+                    self.playlists[name] = ("p.\(self.creates)", pid)
+                    self.lock.unlock()
+                    let tracks = ids.map { self.library.ownForPlaylist($0) }
+                    self.lock.lock()
+                    self.playlistTracks[pid] = tracks
                 }
+                self.ensureCounts[name, default: 0] += 1
             }, ok: {
                 self.lock.lock(); defer { self.lock.unlock() }
                 let p = self.playlists[name]!
-                let alias = self.playlistAlias ? "\"\(FakeAppleLibrary.alias(p.pid))\"" : "null"
+                let reported = self.playlistAlias && self.ensureCounts[name, default: 0] > self.aliasAfterEnsures
+                let alias = reported ? "\"\(FakeAppleLibrary.alias(p.pid))\"" : "null"
                 return #"{"ok":true,"op":"slice.libraryEnsurePlaylist","created":\#(created),"playlist":{"id":"\#(p.id)","alias":\#(alias)}}"#
             })
         default:
