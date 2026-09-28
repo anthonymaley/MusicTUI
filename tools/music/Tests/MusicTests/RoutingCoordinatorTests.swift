@@ -55,8 +55,8 @@ final class RoutingCoordinatorTests: XCTestCase {
 
     // MARK: 1
 
-    /// DoD 7 as it stood with ONE selection. Codex 39 restated it for two
-    /// axes: OPEN DATA never constructs a SpanDAC client
+    /// DoD 7 as it stood with ONE selection. With two selections (data and
+    /// output) it reads: OPEN DATA never constructs a SpanDAC client
     /// (`DataOutputRoutingTests.testOpenDataModeNeverConstructsASourceClient`);
     /// the MusicTUI output WITH SpanDAC data does, for its reads. This
     /// coordinator is composed without a data store, so data follows the

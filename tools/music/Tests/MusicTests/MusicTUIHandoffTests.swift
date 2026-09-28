@@ -354,6 +354,51 @@ final class MusicTUIHandoffTests: XCTestCase {
         }
     }
 
+    /// The container read back holds exactly the verified songs, but in a
+    /// different order: that is a different album than the one chosen, so the
+    /// play refuses, nothing plays, and the container is rolled back.
+    func testCLIContainerReadBackInAnotherOrderRefusesAndRollsBack() throws {
+        let tracks = "{\"ok\":true,\"op\":\"slice.libraryAlbumTracks\",\"generation\":1,\"items\":["
+            + "{\"id\":\"l.1\",\"title\":\"Angel\",\"artist\":\"Massive Attack\",\"album\":\"Mezzanine\",\"kind\":\"song\",\"alias\":\"\(a1)\"},"
+            + "{\"id\":\"l.2\",\"title\":\"Risingson\",\"artist\":\"Massive Attack\",\"album\":\"Mezzanine\",\"kind\":\"song\",\"alias\":\"\(a2)\"}"
+            + "]}"
+        let h = CLIDataRouteHarness(
+            output: .musicApp, data: .accepted,
+            dataReplies: ["slice.status": [CLIHandoffReplies.readyWithoutADAC],
+                          "slice.libraryAlbums": [CLIBridgeLibraryReplies.page(op: "slice.libraryAlbums", kind: "album",
+                                                                               [("a.1", "Mezzanine", "Massive Attack", "")])],
+                          "slice.libraryAlbumTracks": [tracks]],
+            recordSeams: false)
+        let library = FakePersistentIDLibrary([
+            h1: [inLibrary(h1, "Angel", db: "101", at: 11)],
+            h2: [inLibrary(h2, "Risingson", db: "102", at: 12)],
+        ])
+        // Same two songs, read back in the opposite order.
+        let runner = CLIContainerRunner(ids: [h2, h1])
+        var launches = 0
+        var shown: [Bool] = []
+        var env = h.env
+        env.libraryPlay = PersistentIDCLILibraryPlay(library: library, run: runner.run,
+                                                     launch: { _, _ in launches += 1; return true },
+                                                     selfCheck: LibraryAliasSelfCheck(),
+                                                     afterPlay: { shown.append($0) })
+
+        let r = tripwired {
+            try runPlay(args: [], playlist: nil, album: "Mezzanine", song: nil, artist: nil, json: false,
+                        env: env, musicAppDeps: PlayMusicAppDeps(readSongs: { XCTFail("shipped body"); return [] },
+                                                                 resolveIndexed: { _, _ in XCTFail("shipped body") }))
+        }
+        XCTAssertNotNil(r.error, "a reordered container must refuse")
+        XCTAssertEqual(r.calls, [])
+        XCTAssertEqual(runner.builds, [[11, 12]], "built in the verified order")
+        XCTAssertEqual(runner.plays, [], "nothing played")
+        XCTAssertEqual(launches, 0, "no watcher for a container that never played")
+        XCTAssertEqual(shown, [])
+        XCTAssertTrue(runner.scripts.last?.hasPrefix("delete (every user playlist whose name is") == true,
+                      "the container is rolled back: \(runner.scripts.last ?? "none")")
+        XCTAssertEqual(h.io.out.last, albumOutcomeMessage(.buildFailed(containerRemoved: true), title: "Mezzanine"))
+    }
+
     // MARK: - Further pins
 
     func testAStampThatMovedBeforeThePlayPlaysNothing() {
@@ -484,6 +529,82 @@ final class MusicTUIHandoffTests: XCTestCase {
         XCTAssertNotNil(gone.error)
         XCTAssertEqual(h.io.out.last, pickASpanDACOutput)
         XCTAssertEqual(runner.builds, [[11]], "nothing more was built or played")
+    }
+
+    /// `music play N` of a cached SpanDAC library row reads the row's identity
+    /// from SpanDAC's library, a walk that can take the whole warm-up budget.
+    /// That walk runs BEFORE the output lock: an output change made while it
+    /// is blocked goes through at once instead of waiting behind it. And a
+    /// change of output or of MusicTUI's music source during the walk is seen
+    /// under the lock, before anything is built, so nothing plays.
+    func testCLIPlayNWalksTheLibraryOutsideTheOutputLock() throws {
+        let songs = "{\"ok\":true,\"op\":\"slice.librarySongs\",\"generation\":1,\"total\":1,\"next_cursor\":null,\"items\":["
+            + "{\"id\":\"l.1\",\"title\":\"Angel\",\"artist\":\"Massive Attack\",\"album\":\"Mezzanine\",\"kind\":\"song\",\"alias\":\"\(a1)\"}"
+            + "]}"
+        final class DuringWalk { var action: (() -> Void)? }
+
+        func run(_ during: @escaping (CLIDataRouteHarness) -> Void)
+            -> (harness: CLIDataRouteHarness, runner: CLIContainerRunner, error: Error?) {
+            let hook = DuringWalk()
+            let wire = BridgeLibraryReadsWire(["slice.status": [CLIHandoffReplies.readyWithoutADAC],
+                                               "slice.librarySongs": [songs]])
+            let h = CLIDataRouteHarness(output: .musicApp, data: .accepted,
+                                        dataTransport: { path, line in
+                                            if line.contains("\"slice.librarySongs\"") { hook.action?() }
+                                            return try wire.transport(path, line)
+                                        },
+                                        recordSeams: false)
+            hook.action = { [unowned h] in during(h) }
+            try? h.env.cache.writeSongs([SongResult(index: 1, title: "Angel", artist: "Massive Attack",
+                                                    album: "Mezzanine", catalogId: "", origin: .bridgeLibrary,
+                                                    bridgeID: "l.1")])
+            let runner = CLIContainerRunner(ids: [h1])
+            var env = h.env
+            env.libraryPlay = PersistentIDCLILibraryPlay(library: FakePersistentIDLibrary(mezzanineHits()),
+                                                         run: runner.run, launch: { _, _ in true },
+                                                         selfCheck: LibraryAliasSelfCheck(), afterPlay: { _ in })
+            let r = tripwired {
+                try runPlay(args: ["1"], playlist: nil, album: nil, song: nil, artist: nil, json: false, env: env,
+                            musicAppDeps: PlayMusicAppDeps(readSongs: { XCTFail("shipped body"); return [] },
+                                                           resolveIndexed: { _, _ in XCTFail("shipped body") }))
+            }
+            XCTAssertEqual(r.calls, [])
+            return (h, runner, r.error)
+        }
+
+        // 1. While the walk is blocked, another process's output change takes
+        //    the output lock at once (as a separate descriptor, on another
+        //    thread, exactly as a second process would).
+        var mutated = false
+        var lockError: Error?
+        let ok = run { h in
+            let path = h.env.routing.outputLock!.path
+            let done = DispatchSemaphore(value: 0)
+            DispatchQueue.global().async {
+                do { try OutputLock(path: path).withLock(timeout: 0.5) { mutated = true } } catch { lockError = error }
+                done.signal()
+            }
+            _ = done.wait(timeout: .now() + 5)
+        }
+        XCTAssertNil(lockError, "an output change waited behind the library walk")
+        XCTAssertTrue(mutated, "the output change ran during the walk")
+        XCTAssertNil(ok.error)
+        XCTAssertEqual(ok.runner.builds, [[11]], "the play itself still went ahead")
+
+        // 2. MusicTUI stops using SpanDAC for music data during the walk.
+        let stopped = run { h in XCTAssertTrue(DataProviderStore(path: h.dataPath).stopUsingSpanDAC()) }
+        XCTAssertNotNil(stopped.error)
+        XCTAssertEqual(stopped.harness.io.out.last, sourceChangedNothingPlayed)
+        XCTAssertEqual(stopped.runner.builds, [], "nothing built")
+        XCTAssertEqual(stopped.runner.plays, [], "nothing played")
+        XCTAssertEqual(stopped.runner.scripts, [], "no AppleScript mutation at all")
+
+        // 3. The output changes to a SpanDAC during the walk.
+        let moved = run { h in XCTAssertTrue(PlaybackModeStore(path: h.modePath).set(.source)) }
+        XCTAssertNotNil(moved.error)
+        XCTAssertEqual(moved.runner.builds, [])
+        XCTAssertEqual(moved.runner.plays, [])
+        XCTAssertEqual(moved.runner.scripts, [])
     }
 }
 

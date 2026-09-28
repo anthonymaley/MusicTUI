@@ -1,6 +1,6 @@
 // tools/music/Tests/MusicTests/PersistedStateRepairTests.swift
 //
-// C-REPAIR (Codex 40, blocker 1): a stored SpanDAC output with anything but
+// C-REPAIR: a stored SpanDAC output with anything but
 // the accepted data state is `outputBlocked`, and fails closed. Each fixture
 // writes mode.json and data.json byte for byte as a crash, a downgrade, a hand
 // edit or an older build could leave them, then proves, with a counting data

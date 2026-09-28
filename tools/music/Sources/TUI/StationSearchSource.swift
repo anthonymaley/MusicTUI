@@ -597,6 +597,19 @@ extension SourceStatus {
     }
 }
 
+/// The reason `SourceAppControl.readiness(from:)` gives when SpanDAC speaks a
+/// contract this build does not know. Produced and recognised only here, so
+/// the wording and the check cannot drift apart.
+func sourceContractMismatchReason(_ contract: Int) -> String {
+    "SpanDAC speaks a different version (\(contract)); update one of them"
+}
+
+/// Whether a readiness reason is `sourceContractMismatchReason`'s: a SpanDAC
+/// that answers but can never serve this build, however long it is given.
+func isSourceContractMismatch(_ reason: String) -> Bool {
+    reason.hasPrefix("SpanDAC speaks a different version (") && reason.hasSuffix("); update one of them")
+}
+
 /// One Library or Playlist row, by the triple the app joins on.
 ///
 /// No id: MusicTUI's persistent id means nothing to the app, and the app's
@@ -1297,7 +1310,7 @@ struct SourceAppControl: SourceControlling {
     /// must never fall through to a speaker.
     func readiness(from status: [String: Any]) -> SourceReadiness {
         if let contract = status["contract"] as? Int, contract != sourceContractVersion {
-            return .unavailable("SpanDAC speaks a different version (\(contract)); update one of them")
+            return .unavailable(sourceContractMismatchReason(contract))
         }
         switch status["authorization"] as? String {
         case "authorized":     break

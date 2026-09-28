@@ -181,6 +181,35 @@ final class MacSpanDACStarterTests: XCTestCase {
                        .notAuthorized)
     }
 
+    // MARK: - Contract mismatch
+
+    /// SpanDAC on this Mac answers, but speaks a contract this build does not
+    /// know. Waiting cannot fix that, so the start stops at the first probe
+    /// with a sentence that says what to do, never polling to the 15 s bound
+    /// and never reading as "didn't start". It is sticky like any failure.
+    func testAContractMismatchIsATerminalNotCompatibleResult() {
+        let reply = #"{"ok":true,"status":{"playback":"idle","authorization":"authorized","contract":\#(sourceContractVersion + 1),"output":{"dac":"connected"}}}"#
+        let client = SourceAppClient(path: "/nonexistent/starter-probe.sock", transport: { _, _ in reply })
+        let expected = "SpanDAC on this Mac is a different version from MusicTUI. Update SpanDAC, then try again."
+        XCTAssertEqual(liveMacSpanDACProbe(client: client), .failed(expected))
+
+        let clock = FakeClock()
+        var probes = 0
+        var launches = 0
+        let starter = makeStarter(launch: { _ in launches += 1 },
+                                  probe: { probes += 1; return liveMacSpanDACProbe(client: client) },
+                                  clock: clock.asClock)
+        let outcome = starter.ensureStarted()
+        XCTAssertEqual(outcome, .failed(expected))
+        XCTAssertEqual(outcome.sentence, expected)
+        XCTAssertEqual(clock.waits, [], "no polling")
+        XCTAssertEqual(probes, 1)
+        // Sticky: no second launch or probe until a person asks again.
+        XCTAssertEqual(starter.ensureStarted(), .failed(expected))
+        XCTAssertEqual(launches, 1)
+        XCTAssertEqual(probes, 1)
+    }
+
     // MARK: - Authorization
 
     func testNotAuthorizedIsReportedAndNeverPrompts() {

@@ -148,16 +148,25 @@ private let macSpanDACNotAuthorizedSentences: Set<String> = [
     "SpanDAC could not read its Apple Music access",
 ]
 
+/// What a person reads when SpanDAC on this Mac answers but speaks a
+/// different contract from this MusicTUI. CHOSEN wording.
+let macSpanDACNotCompatibleSentence =
+    "SpanDAC on this Mac is a different version from MusicTUI. Update SpanDAC, then try again."
+
 /// The live probe: one `slice.status` over the Mac's own Unix socket.
 /// Starting SpanDAC on this Mac is for music DATA, so this reads
 /// `dataReadiness`: SpanDAC answering with Apple Music access is ready, with
 /// or without a DAC (a DAC is the output's concern, never the data's).
-/// Access problems stop polling; anything else keeps polling, as before.
+/// Access problems and a contract mismatch stop polling (neither is fixed by
+/// waiting; a mismatch is a terminal failure with `macSpanDACNotCompatibleSentence`);
+/// anything else keeps polling, as before.
 func liveMacSpanDACProbe(client: SourceAppClient = SourceAppClient()) -> MacSpanDACProbe {
     do {
         switch try client.control.status().dataReadiness {
         case .ready:
             return .ready
+        case .unavailable(let reason) where isSourceContractMismatch(reason):
+            return .failed(macSpanDACNotCompatibleSentence)
         case .unavailable(let reason) where macSpanDACNotAuthorizedSentences.contains(reason):
             return .notAuthorized
         case .unavailable, .checking:

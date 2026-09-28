@@ -233,14 +233,17 @@ func cliSpanDACDataNotReadySentence(_ readiness: SourceReadiness) -> String {
 /// coordinator named from the row's origin. Library rows (the named forms,
 /// and `play N` of a SpanDAC library row) go to `env.libraryPlay`; a catalogue
 /// song (`play N` of a SpanDAC catalogue row, or an Apple Music song link)
-/// goes to `env.cataloguePlay`. Both are called inside the output lock. Names
-/// are resolved against SpanDAC's library on this Mac BEFORE the lock, and
+/// goes to `env.cataloguePlay`. Both are called inside the output lock. Names,
+/// and a cached row's identity (`prepare`), are resolved against SpanDAC's
+/// library on this Mac BEFORE the lock, under the selection stamped here, and
 /// nothing here ever sends a request to a SpanDAC output: the MusicTUI output
 /// is what plays.
 func musicTUIPlayCommand(_ path: MusicTUIPlayPath, args: [String], playlist: String?, album: String?,
                          song: String?, artist: String?, json: Bool, env: CLIBridgeEnv) throws {
     let form = PlayForm(args: args, playlist: playlist, album: album, song: song, artist: artist)
     try refuseNamedFormMisuse(args: args, playlist: playlist, album: album, song: song, artist: artist)
+    // The stamp: what this command routed on, before any read.
+    let stamp = env.routing.selection
     switch (path, form) {
     case (.handoff, .playlist), (.handoff, .album), (.handoff, .song), (.handoff, .artist):
         let client = env.routing.dataClient()
@@ -256,8 +259,10 @@ func musicTUIPlayCommand(_ path: MusicTUIPlayPath, args: [String], playlist: Str
             throw ActionError(message: why)
         case .rows(let label, let rows, _, _):
             let request = CLIMusicTUILibraryPlayRequest(kind: named.kind, label: label, rows: rows, startAt: 1,
-                                                        shuffle: named.shuffle, resultNumber: nil, json: json)
-            try cliMusicTUIMutation(env: env) { try env.libraryPlay.play(request, env: env) }
+                                                        shuffle: named.shuffle, resultNumber: nil, json: json,
+                                                        selectionAtRead: stamp)
+            let prepared = try env.libraryPlay.prepare(request, env: env)
+            try cliMusicTUIMutation(env: env) { try env.libraryPlay.play(prepared, env: env) }
         }
 
     case (.handoff, .index(let index)), (.add, .index(let index)):
@@ -269,8 +274,12 @@ func musicTUIPlayCommand(_ path: MusicTUIPlayPath, args: [String], playlist: Str
             let musicRow = MusicRow(id: ids[0], title: row.title, artist: row.artist,
                                     album: row.album.isEmpty ? nil : row.album, kind: .song)
             let request = CLIMusicTUILibraryPlayRequest(kind: .song, label: row.title, rows: [musicRow], startAt: 1,
-                                                        shuffle: false, resultNumber: index, json: json)
-            try cliMusicTUIMutation(env: env) { try env.libraryPlay.play(request, env: env) }
+                                                        shuffle: false, resultNumber: index, json: json,
+                                                        selectionAtRead: stamp)
+            // The identity walk, outside the output lock (it can take the
+            // whole warm-up budget); `play` re-checks the stamp under it.
+            let prepared = try env.libraryPlay.prepare(request, env: env)
+            try cliMusicTUIMutation(env: env) { try env.libraryPlay.play(prepared, env: env) }
         case (.add, .queue(.catalogueQueue(let ids))) where ids.count == 1:
             let request = CLIMusicTUICataloguePlayRequest(catalogueID: ids[0], title: row.title, artist: row.artist,
                                                           album: row.album.isEmpty ? nil : row.album,

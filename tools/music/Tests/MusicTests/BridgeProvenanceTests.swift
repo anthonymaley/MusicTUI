@@ -44,7 +44,7 @@ final class BridgeProvenanceTests: XCTestCase {
     // MARK: - musicAppIndexRoute(forCachedRow:index:)
 
     func testMusicAppRefusesBridgeRowsAndReResolvesTheRest() {
-        let refusal = "Result 5 came from SpanDAC's library, which the MusicTUI output can't play by identity. Search again with Output set to MusicTUI, or switch Output to SpanDAC."
+        let refusal = "Result 5 came from SpanDAC's library, and that saved result can't be used on this route. Search again and pick from the current list, or switch Output to a SpanDAC."
         XCTAssertEqual(musicAppIndexRoute(forCachedRow: .row(5, .bridgeLibrary, bridgeID: "9"), index: 5), .refuse(refusal))
         XCTAssertEqual(musicAppIndexRoute(forCachedRow: .row(5, .bridgeLibrary), index: 5), .refuse(refusal))
         XCTAssertEqual(musicAppIndexRoute(forCachedRow: .row(5, .catalog), index: 5), .reResolveByTitle)
@@ -54,7 +54,7 @@ final class BridgeProvenanceTests: XCTestCase {
     /// D10: Music.app refuses a Bridge catalogue row in its own words, with or
     /// without its id; it is never re-resolved by title.
     func testMusicAppRefusesBridgeCatalogueRows() {
-        let refusal = "Result 5 came from SpanDAC's catalogue search, which the MusicTUI output can't play by identity. Search again with Output set to MusicTUI, or switch Output to SpanDAC."
+        let refusal = "Result 5 came from SpanDAC's catalogue search, and that saved result can't be used on this route. Search again and pick from the current list, or switch Output to a SpanDAC."
         XCTAssertEqual(musicAppIndexRoute(forCachedRow: .row(5, .bridgeCatalog, bridgeID: "1440"), index: 5), .refuse(refusal))
         XCTAssertEqual(musicAppIndexRoute(forCachedRow: .row(5, .bridgeCatalog), index: 5), .refuse(refusal))
     }
