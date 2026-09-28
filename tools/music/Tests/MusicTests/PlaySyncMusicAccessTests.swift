@@ -145,8 +145,8 @@ final class PlaySyncMusicAccessTests: XCTestCase {
 
         let out = renderSyncPlays(result, json: false)
         XCTAssertEqual(out.text,
-            "1 play waiting: Music.app could not be accessed "
-            + "(Music.app automation is not permitted for this terminal). Run music sync-plays again.")
+            "1 play waiting: Apple's Music player could not be accessed "
+            + "(Automation of Apple's Music player is not permitted for this terminal). Run music sync-plays again.")
         XCTAssertEqual(out.exit, 1)
 
         let body = try json(renderSyncPlays(result, json: true).text)
@@ -164,8 +164,8 @@ final class PlaySyncMusicAccessTests: XCTestCase {
         let out = SyncPlays.perform(h.engine, json: false)
 
         XCTAssertEqual(out.text,
-            "2 plays waiting: Music.app could not be accessed "
-            + "(Music.app automation is not permitted for this terminal). Run music sync-plays again.")
+            "2 plays waiting: Apple's Music player could not be accessed "
+            + "(Automation of Apple's Music player is not permitted for this terminal). Run music sync-plays again.")
         XCTAssertEqual(out.exit, 1)
         XCTAssertEqual(h.entries().map(\.state), [.pending, .pending])
     }
@@ -180,7 +180,7 @@ final class PlaySyncMusicAccessTests: XCTestCase {
         XCTAssertEqual(result.waiting, 1)
         XCTAssertEqual(h.entries().map(\.state), [.pending])
         let out = renderSyncPlays(result, json: false)
-        XCTAssertEqual(out.text, "1 play waiting: Music.app did not answer in time. Run music sync-plays again.")
+        XCTAssertEqual(out.text, "1 play waiting: Apple's Music player did not answer in time. Run music sync-plays again.")
         XCTAssertEqual(out.exit, 1)
     }
 
@@ -196,8 +196,8 @@ final class PlaySyncMusicAccessTests: XCTestCase {
         XCTAssertEqual(h.entries().map(\.state), [.pending])
         let out = renderSyncPlays(result, json: false)
         XCTAssertEqual(out.text,
-            "1 play waiting: Music.app quit while plays were being recorded. "
-            + "Open Music.app and run music sync-plays again.")
+            "1 play waiting: Apple's Music player quit while plays were being recorded. "
+            + "Open Apple's Music player and run music sync-plays again.")
         XCTAssertEqual(out.exit, 1)
     }
 
@@ -216,8 +216,8 @@ final class PlaySyncMusicAccessTests: XCTestCase {
         XCTAssertEqual(h.entries().map(\.state), [.unresolved])
         let out = renderSyncPlays(result, json: false)
         XCTAssertEqual(out.text, """
-            Music.app quit while plays were being recorded. Open Music.app and run music sync-plays again.
-            Waiting for Music.app to confirm (1):
+            Apple's Music player quit while plays were being recorded. Open Apple's Music player and run music sync-plays again.
+            Waiting for Apple's Music player to confirm (1):
               Are You Awake? — Artist
               These, and later plays of the same songs, are checked again on every sync.
             """)
@@ -241,8 +241,8 @@ final class PlaySyncMusicAccessTests: XCTestCase {
         XCTAssertNil(entry?.reason)
         let out = renderSyncPlays(result, json: false)
         XCTAssertEqual(out.text,
-            "1 play waiting: Music.app could not be accessed "
-            + "(Music.app automation is not permitted for this terminal). Run music sync-plays again.")
+            "1 play waiting: Apple's Music player could not be accessed "
+            + "(Automation of Apple's Music player is not permitted for this terminal). Run music sync-plays again.")
         XCTAssertEqual(out.exit, 1)
     }
 
@@ -255,7 +255,7 @@ final class PlaySyncMusicAccessTests: XCTestCase {
         XCTAssertEqual(result.musicAccess, .timedOut)
         XCTAssertEqual(h.entries().map(\.state), [.pending])
         XCTAssertEqual(renderSyncPlays(result, json: false).text,
-                       "1 play waiting: Music.app did not answer in time. Run music sync-plays again.")
+                       "1 play waiting: Apple's Music player did not answer in time. Run music sync-plays again.")
     }
 
     func testRetainedWriteRefusedBeforeTheSetCallKeepsItsTargetAndSaysWhy() {
@@ -295,7 +295,7 @@ final class PlaySyncMusicAccessTests: XCTestCase {
         XCTAssertEqual(h.entries().first?.state, .pending)
         XCTAssertEqual(h.entries().first?.phase, .dateOnly)
         XCTAssertEqual(renderSyncPlays(result, json: false).text,
-                       "1 play waiting: Music.app did not answer in time. Run music sync-plays again.")
+                       "1 play waiting: Apple's Music player did not answer in time. Run music sync-plays again.")
     }
 
     // MARK: Nothing failed
@@ -354,8 +354,8 @@ final class PlaySyncWorkerMusicAccessTests: XCTestCase {
     }
 
     private let deniedToast = Toast(
-        text: "Plays waiting: Music.app could not be accessed "
-            + "(Music.app automation is not permitted for this terminal) \u{2014} run music sync-plays",
+        text: "Plays waiting: Apple's Music player could not be accessed "
+            + "(Automation of Apple's Music player is not permitted for this terminal) \u{2014} run music sync-plays",
         error: true, ttl: PlaySyncWorker.problemTTL)
 
     func testTheSameFailureOnEveryTickIsSaidOnce() {
@@ -365,9 +365,9 @@ final class PlaySyncWorkerMusicAccessTests: XCTestCase {
 
     func testEachWordingOfTheReason() {
         XCTAssertEqual(run([result(access: .timedOut)]).map(\.text),
-                       ["Plays waiting: Music.app did not answer in time \u{2014} run music sync-plays"])
+                       ["Plays waiting: Apple's Music player did not answer in time \u{2014} run music sync-plays"])
         XCTAssertEqual(run([result(access: .notRunning)]).map(\.text),
-                       ["Plays waiting: Music.app quit while plays were being recorded \u{2014} run music sync-plays"])
+                       ["Plays waiting: Apple's Music player quit while plays were being recorded \u{2014} run music sync-plays"])
     }
 
     func testADifferentReasonIsSaidAgain() {
@@ -375,7 +375,7 @@ final class PlaySyncWorkerMusicAccessTests: XCTestCase {
                           result(access: .timedOut)])
         XCTAssertEqual(toasts.map(\.text), [
             deniedToast.text,
-            "Plays waiting: Music.app did not answer in time \u{2014} run music sync-plays",
+            "Plays waiting: Apple's Music player did not answer in time \u{2014} run music sync-plays",
         ])
     }
 

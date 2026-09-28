@@ -396,9 +396,9 @@ final class ActionRoutingTests: XCTestCase {
             XCTAssertFalse(requiresOutputLock(action), "\(action) is a read")
         }
         XCTAssertEqual(routeAction(.suggest, in: .source, from: .cli),
-                       .refused("SpanDAC output is selected, and music suggest needs Apple Music account reads SpanDAC doesn't serve. Switch Output to Music.app to use it."))
+                       .refused("SpanDAC output is selected, and music suggest needs Apple Music account reads SpanDAC doesn't serve. Switch Output to MusicTUI to use it."))
         XCTAssertEqual(routeAction(.newReleases, in: .source, from: .cli),
-                       .refused("SpanDAC output is selected, and music new-releases needs a catalogue artist lookup SpanDAC doesn't serve. Switch Output to Music.app to use it."))
+                       .refused("SpanDAC output is selected, and music new-releases needs a catalogue artist lookup SpanDAC doesn't serve. Switch Output to MusicTUI to use it."))
         for action in [MusicTUIAction.discoverFeed, .playlistListing, .similar, .suggest, .newReleases] {
             XCTAssertEqual(routeAction(action, in: .musicApp, from: .cli), .musicApp, "\(action)")
         }
@@ -513,10 +513,10 @@ final class ActionRoutingTests: XCTestCase {
         XCTAssertEqual(cliBridgeNotServedReason(.persistentShuffleMode),
                        "Shuffle and repeat modes are MusicTUI only for now.")
         XCTAssertEqual(routeAction(.cliPlayQuery, in: .source, from: .cli),
-                       .refused("SpanDAC output is selected, and music play <words> isn't available from the CLI on SpanDAC yet. Use MusicTUI, or switch Output to Music.app."))
+                       .refused("SpanDAC output is selected, and music play <words> isn't available from the CLI on SpanDAC yet. Use it from the TUI, or switch Output to MusicTUI."))
         XCTAssertEqual(routeAction(.cliPlayCatalogSong, in: .source, from: .cli), .source, "P6: dispatched")
         XCTAssertEqual(cliBridgeNotServedReason(.radioStationPlay),
-                       "SpanDAC output is selected, and music radio play isn't available from the CLI on SpanDAC yet. Use MusicTUI, or switch Output to Music.app.")
+                       "SpanDAC output is selected, and music radio play isn't available from the CLI on SpanDAC yet. Use it from the TUI, or switch Output to MusicTUI.")
     }
 
     /// 12.14's v1 sentence is deleted (S6): no source file names it or says
@@ -713,7 +713,7 @@ final class ActionRoutingTests: XCTestCase {
         guard case .refused(let reason) = routeAction(.playlistTemp, in: .source, from: .cli) else {
             return XCTFail("playlist temp starts Music.app playback and must refuse")
         }
-        XCTAssertEqual(reason, "SpanDAC output is selected, and music playlist temp isn't available from the CLI on SpanDAC yet. Use MusicTUI, or switch Output to Music.app.")
+        XCTAssertEqual(reason, "SpanDAC output is selected, and music playlist temp isn't available from the CLI on SpanDAC yet. Use it from the TUI, or switch Output to MusicTUI.")
     }
 
     /// A split variant pair must not both claim the same behaviour: the point of

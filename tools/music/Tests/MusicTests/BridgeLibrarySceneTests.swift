@@ -760,7 +760,7 @@ final class BridgeLibrarySceneTests: XCTestCase {
             XCTAssertTrue(settle(s) { s.render(frame: frame, snapshot: idle).contains(row) },
                           "\(sub) never loaded its rows")
             let out = s.render(frame: frame, snapshot: idle)
-            XCTAssertFalse(out.contains("Music.app library"), "\(sub) named a library: \(out)")
+            XCTAssertFalse(out.contains("MusicTUI library"), "\(sub) named a library: \(out)")
             XCTAssertFalse(out.contains("SpanDAC library"), "\(sub) named SpanDAC: \(out)")
         }
         XCTAssertTrue(wire.sent("slice.librarySongs").isEmpty, "Music.app mode asked SpanDAC for the library")

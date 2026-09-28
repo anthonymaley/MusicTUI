@@ -334,13 +334,13 @@ func cliBridgeNotServedReason(_ action: MusicTUIAction) -> String {
     // so the reason names what is missing rather than "yet". The
     // current-track variants never reach here; they keep their own reason.
     case .suggest:
-        return "SpanDAC output is selected, and music suggest needs Apple Music account reads SpanDAC doesn't serve. Switch Output to Music.app to use it."
+        return "SpanDAC output is selected, and music suggest needs Apple Music account reads SpanDAC doesn't serve. Switch Output to MusicTUI to use it."
     case .newReleases:
-        return "SpanDAC output is selected, and music new-releases needs a catalogue artist lookup SpanDAC doesn't serve. Switch Output to Music.app to use it."
+        return "SpanDAC output is selected, and music new-releases needs a catalogue artist lookup SpanDAC doesn't serve. Switch Output to MusicTUI to use it."
     default:
         break
     }
-    return "SpanDAC output is selected, and \(cliBridgeNotServedWhat(action)) isn't available from the CLI on SpanDAC yet. Use MusicTUI, or switch Output to Music.app."
+    return "SpanDAC output is selected, and \(cliBridgeNotServedWhat(action)) isn't available from the CLI on SpanDAC yet. Use it from the TUI, or switch Output to MusicTUI."
 }
 
 /// The `<what>` in D7's sentence, per action. Every case is named, so a new
@@ -522,7 +522,7 @@ func routeAction(_ action: MusicTUIAction,
         // Codex B1: mix calls api.createPlaylist and populates it.
         return .refused("mix creates a playlist, which is MusicTUI only in this version.")
     case .playlistTemp:
-        return .refused("Temporary playlists exist to bound Apple's Music app; the source builds its own queue.")
+        return .refused("Temporary playlists exist to bound Apple's Music player; the source builds its own queue.")
     case .similar, .similarToCurrentTrack, .suggest, .suggestFromCurrentTrack:
         return .refused("Not available through SpanDAC in this version.")
 
@@ -544,7 +544,7 @@ func routeAction(_ action: MusicTUIAction,
         return .refused("Jumping to a queue row is MusicTUI only in this version.")
 
     case .genius:
-        return .refused("Genius is a feature of Apple's Music app.")
+        return .refused("Genius is a feature of Apple's Music player.")
     case .airplayRoute:
         // Anthony, 2026-09-13: "airplay stays in TUI. the point of the bridge is
         // DAC not airplay."

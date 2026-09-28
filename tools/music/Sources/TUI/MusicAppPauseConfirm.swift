@@ -50,7 +50,7 @@ func confirmMusicAppNotPlaying(session: () -> MusicAppPauseSession?,
     guard isRunning() else { return true }
     guard let session = session() else {
         guard !isRunning() else {
-            throw MusicAppPauseUnconfirmed(reason: "Music.app is running but could not be reached")
+            throw MusicAppPauseUnconfirmed(reason: "Apple's Music player is running but could not be reached")
         }
         return true
     }
@@ -216,7 +216,7 @@ final class ScriptingBridgeMusicAppPauseSession: MusicAppPauseSession {
     /// error too.
     private func stage<T>(_ body: () -> T?) throws -> T {
         guard app.isRunning else {
-            throw MusicAppPauseUnconfirmed(reason: "Music.app is no longer running")
+            throw MusicAppPauseUnconfirmed(reason: "Apple's Music player is no longer running")
         }
         capture.reset()
         let value = body()

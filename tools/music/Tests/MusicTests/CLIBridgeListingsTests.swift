@@ -127,7 +127,7 @@ final class CLIBridgeListingsTests: XCTestCase {
             XCTAssertEqual(error as? ExitCode, .failure)
             XCTAssertEqual(calls, [])
             XCTAssertEqual(h.seen.ops, ["slice.status"], "readiness only; no slice.recommendations")
-            let expected = "SpanDAC doesn't serve the Recently Played rail. Switch Output to Music.app to use music discover --recent."
+            let expected = "SpanDAC doesn't serve the Recently Played rail. Switch Output to MusicTUI to use music discover --recent."
             XCTAssertEqual(h.io.out, [cliFailureText(expected, json: asJSON)])
         }
     }
@@ -429,9 +429,9 @@ final class CLIBridgeListingsTests: XCTestCase {
     // MARK: - suggest, new-releases (Q1 default: refused)
 
     static let suggestRefusal =
-        "SpanDAC output is selected, and music suggest needs Apple Music account reads SpanDAC doesn't serve. Switch Output to Music.app to use it."
+        "SpanDAC output is selected, and music suggest needs Apple Music account reads SpanDAC doesn't serve. Switch Output to MusicTUI to use it."
     static let newReleasesRefusal =
-        "SpanDAC output is selected, and music new-releases needs a catalogue artist lookup SpanDAC doesn't serve. Switch Output to Music.app to use it."
+        "SpanDAC output is selected, and music new-releases needs a catalogue artist lookup SpanDAC doesn't serve. Switch Output to MusicTUI to use it."
 
     func testSuggestAndNewReleasesRefuseOnBridgeBeforeAnyRequest() {
         let cases: [(MusicTUIAction, String)] = [

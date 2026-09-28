@@ -10,7 +10,7 @@ import Foundation
 struct SyncPlays: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "sync-plays",
-        abstract: "Record library songs SpanDAC played to the end in Music.app's play counts.")
+        abstract: "Record library songs SpanDAC played to the end in the play counts of Apple's Music player.")
 
     @Flag(name: .long, help: "Output JSON") var json = false
 
@@ -38,41 +38,41 @@ struct SyncPlays: ParsableCommand {
 
 enum SyncPlaysSentence {
     static func recorded(_ n: Int) -> String {
-        n == 1 ? "Recorded 1 library play in Music.app."
-               : "Recorded \(n) library plays in Music.app."
+        n == 1 ? "Recorded 1 library play in Apple's Music player."
+               : "Recorded \(n) library plays in Apple's Music player."
     }
     static let nothingNew = "Nothing new to record."
     static func musicNotRunning(waiting n: Int) -> String {
         (n == 1 ? "1 play waiting" : "\(n) plays waiting")
-            + ": Music.app is not running. Open Music.app and run music sync-plays again."
+            + ": Apple's Music player is not running. Open it and run music sync-plays again."
     }
     /// Why Music.app, found running, could not be read or written. Shared
     /// with the TUI's status line.
     static func musicAccessCause(_ error: MusicAccessError) -> String {
         switch error {
-        case .notRunning: return "Music.app quit while plays were being recorded"
-        case .timedOut: return "Music.app did not answer in time"
+        case .notRunning: return "Apple's Music player quit while plays were being recorded"
+        case .timedOut: return "Apple's Music player did not answer in time"
         case .failed(let detail):
             if detail == MusicAccessSentence.libraryNotLoaded {
-                return "Music.app's library hasn't finished loading"
+                return "the library in Apple's Music player hasn't finished loading"
             }
             if detail == MusicAccessSentence.noMatch {
-                return "the track could not be found in Music.app when it came time to write"
+                return "the track could not be found in Apple's Music player when it came time to write"
             }
             var trimmed = detail.trimmingCharacters(in: .whitespacesAndNewlines)
             if trimmed.hasSuffix(".") { trimmed.removeLast() }
-            return "Music.app could not be accessed (\(trimmed))"
+            return "Apple's Music player could not be accessed (\(trimmed))"
         }
     }
     /// `1 play waiting: <cause>. <next step>`; with nothing waiting (only
     /// unconfirmed writes), the cause alone.
     static func musicAccessFailed(_ error: MusicAccessError, waiting n: Int) -> String {
         let prefix = n == 0 ? "" : (n == 1 ? "1 play waiting: " : "\(n) plays waiting: ")
-        let next = error == .notRunning ? "Open Music.app and run music sync-plays again."
+        let next = error == .notRunning ? "Open Apple's Music player and run music sync-plays again."
                                         : "Run music sync-plays again."
         return prefix + musicAccessCause(error) + ". " + next
     }
-    static func unconfirmedHeader(_ n: Int) -> String { "Waiting for Music.app to confirm (\(n)):" }
+    static func unconfirmedHeader(_ n: Int) -> String { "Waiting for Apple's Music player to confirm (\(n)):" }
     static let unconfirmedFooter = "  These, and later plays of the same songs, are checked again on every sync."
     static let bridgeNotRunning = "SpanDAC is not running, so no new plays could be read."
     static let bridgeTooOld = "SpanDAC is older than this MusicTUI and does not record plays — update SpanDAC."
@@ -102,12 +102,12 @@ enum SyncPlaysSentence {
 
     /// Why a play was set aside, by its state and reason.
     static func why(_ entry: PlaySyncEntry) -> String {
-        if entry.state == .conflict { return "Music.app's play count changed during the write; left as it was" }
+        if entry.state == .conflict { return "the play count in Apple's Music player changed during the write; left as it was" }
         switch entry.reason {
-        case "no_alias", "bad_alias": return "SpanDAC could not identify it in Music.app"
-        case "not_found": return "not in your Music.app library"
-        case "ambiguous": return "matches more than one Music.app track"
-        case "conflict": return "Music.app's play count changed during the write; left as it was"
+        case "no_alias", "bad_alias": return "SpanDAC could not identify it in Apple's Music player"
+        case "not_found": return "not in your library in Apple's Music player"
+        case "ambiguous": return "matches more than one track in Apple's Music player"
+        case "conflict": return "the play count in Apple's Music player changed during the write; left as it was"
         default: return "could not be recorded"
         }
     }
