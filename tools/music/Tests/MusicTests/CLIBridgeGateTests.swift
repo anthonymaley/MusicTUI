@@ -22,7 +22,7 @@ final class CLIBridgeGateTests: XCTestCase {
             XCTAssertEqual(cliBridgeRefusal(action, mode: .source), cliBridgeNotServedReason(action), "\(action)")
         }
         XCTAssertEqual(cliBridgeRefusal(.cliPlayQuery, mode: .source),
-                       "Bridge output is selected, and music play <words> isn't available from the CLI on Bridge yet. Use MusicTUI, or switch Output to Music.app.")
+                       "SpanDAC output is selected, and music play <words> isn't available from the CLI on SpanDAC yet. Use MusicTUI, or switch Output to Music.app.")
     }
 
     /// A dispatched verb is not gated. If one ever were, "go ahead as it
@@ -129,7 +129,7 @@ final class CLIBridgeGateTests: XCTestCase {
             guard let firstLine = firstLineOfRun(command, in: source)
             else { return XCTFail("\(command) not found in \(file)") }
             XCTAssertTrue(firstLine.contains("try refuseInBridge("),
-                          "\(command).run() must ask the Bridge gate first; it starts with: \(firstLine)")
+                          "\(command).run() must ask the SpanDAC gate first; it starts with: \(firstLine)")
         }
     }
 

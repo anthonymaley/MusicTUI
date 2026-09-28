@@ -42,7 +42,9 @@ final class RoutingCoordinator {
     }
 
     private let store: PlaybackModeStore
-    private let makeSource: () -> SourceAppClient
+    /// Builds the client for a source-backed mode: the Mac's own SpanDAC for
+    /// `.source`, the paired network link for `.networkSource`.
+    private let makeSource: (PlaybackMode) -> SourceAppClient
 
     /// The cross-process output lock (slice 3, D6), exposed read-only so the
     /// CLI can take it directly around a playback mutation. The CLI's mutation
@@ -63,7 +65,9 @@ final class RoutingCoordinator {
     /// slow AppleScript round trip holding `order`.
     private let state = NSLock()
     private var current: PlaybackMode
-    private var source: SourceAppClient?
+    /// The client built for `current`, and the mode it was built for, so a
+    /// switch between two SpanDACs never reuses the other's client.
+    private var source: (mode: PlaybackMode, client: SourceAppClient)?
     private var reachedBoundary: (() -> Void)?
 
     /// Slice 3 Part 2, D3. Starts at 0; incremented exactly once per
@@ -82,13 +86,25 @@ final class RoutingCoordinator {
     /// the truth for the life of the process, and only a switch changes it.
     init(store: PlaybackModeStore,
          surface: InvocationSurface,
-         makeSource: @escaping () -> SourceAppClient,
+         makeSourceFor: @escaping (PlaybackMode) -> SourceAppClient,
          outputLock: OutputLock? = nil) {
         self.store = store
         self.surface = surface
-        self.makeSource = makeSource
+        self.makeSource = makeSourceFor
         self.outputLock = outputLock
         self.current = store.mode()
+    }
+
+    /// `makeSource` builds the Mac's own SpanDAC client. A SpanDAC on the
+    /// network is refused as not paired: a coordinator composed this way was
+    /// never given a way to reach one, and it must not guess (fail closed).
+    convenience init(store: PlaybackModeStore,
+                     surface: InvocationSurface,
+                     makeSource: @escaping () -> SourceAppClient,
+                     outputLock: OutputLock? = nil) {
+        self.init(store: store, surface: surface, makeSourceFor: { mode in
+            mode.networkSourceID == nil ? makeSource() : .failing(.notPaired)
+        }, outputLock: outputLock)
     }
 
     /// The composition both processes use: the TUI once at launch with `.tui`,
@@ -98,7 +114,15 @@ final class RoutingCoordinator {
     /// store's mode.json, so a temp store gets a temp lock.
     static func live(store: PlaybackModeStore = PlaybackModeStore(),
                      surface: InvocationSurface) -> RoutingCoordinator {
-        RoutingCoordinator(store: store, surface: surface, makeSource: { SourceAppClient() }, outputLock: OutputLock(path: store.lockPath))
+        RoutingCoordinator(store: store, surface: surface, makeSourceFor: { SourceAppClient.selected(for: $0) }, outputLock: OutputLock(path: store.lockPath))
+    }
+
+    /// A client for `mode`, built by this coordinator's factory. CONSTRUCTION
+    /// only, outside the ordering boundary: for a caller that reads (the Now
+    /// poller, a scene's provider) and has already decided from `mode` that a
+    /// source is selected. Routing an ACTION still goes through `perform`.
+    func client(for mode: PlaybackMode) -> SourceAppClient {
+        makeSource(mode)
     }
 
     var mode: PlaybackMode {
@@ -213,9 +237,14 @@ final class RoutingCoordinator {
             let outgoing = mode
             guard target != outgoing else { return .alreadyInMode }
 
-            let ready = target == .source ? readiness() : .ready
+            let ready = target.usesSource ? readiness() : .ready
             guard outputModeSelectable(target, readiness: ready) else {
-                throw ActionError(message: "Bridge is \(ready.label); still using \(name(outgoing))")
+                // A SpanDAC on the network's reasons are whole sentences.
+                if target.networkSourceID != nil {
+                    let why = ready.label.trimmingCharacters(in: CharacterSet(charactersIn: "."))
+                    throw ActionError(message: "\(why). Still using \(name(outgoing)).")
+                }
+                throw ActionError(message: "SpanDAC on this Mac is \(ready.label); still using \(name(outgoing))")
             }
 
             let paused = (try? pauseOutgoing(outgoing)) ?? false
@@ -267,14 +296,17 @@ final class RoutingCoordinator {
     }
 
     /// The factory runs OUTSIDE `state`, so a factory that reads `mode` cannot
-    /// deadlock. `order` is already held, so two clients are never built.
+    /// deadlock. `order` is already held, so two clients are never built. The
+    /// cache is per mode: after a switch from one SpanDAC to another, the old
+    /// one's client is never handed out.
     private func sourceClient() -> SourceAppClient {
+        let now = mode
         state.lock()
         let cached = source
         state.unlock()
-        if let cached { return cached }
-        let made = makeSource()
-        state.lock(); source = made; state.unlock()
+        if let cached, cached.mode == now { return cached.client }
+        let made = makeSource(now)
+        state.lock(); source = (now, made); state.unlock()
         return made
     }
 
@@ -286,12 +318,13 @@ final class RoutingCoordinator {
     }
 
     /// The name a PERSON reads. Ruling 12.15 (2026-09-15): the user-facing
-    /// output is **Bridge**; the app and the internal components keep the name
+    /// output is **SpanDAC**; the app and the internal components keep the name
     /// MusicTUI Source. Type names are deliberately not renamed with it.
     private func name(_ mode: PlaybackMode) -> String {
         switch mode {
         case .musicApp: return "Music.app"
-        case .source:   return "Bridge"
+        case .source:   return "SpanDAC on this Mac"
+        case .networkSource: return "SpanDAC"
         }
     }
 

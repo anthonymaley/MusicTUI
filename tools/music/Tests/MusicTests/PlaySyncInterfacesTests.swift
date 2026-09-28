@@ -83,8 +83,8 @@ final class PlaySyncInterfacesTests: XCTestCase {
     }
 
     func testLedgerChangedReadsAsReplacedRecord() {
-        XCTAssertEqual(SourceAppError.ledgerChanged("x").message, "Bridge's play record was replaced")
+        XCTAssertEqual(SourceAppError.ledgerChanged("x").message, "SpanDAC's play record was replaced")
         XCTAssertEqual(SourceReadiness.from(SourceAppError.ledgerChanged("x")),
-                       .unavailable("Bridge's play record was replaced"))
+                       .unavailable("SpanDAC's play record was replaced"))
     }
 }

@@ -148,7 +148,7 @@ final class BridgeListFeed<Row> {
             self.walking = false
             self.pendingWarming = false   // over, one way or the other
             if let error {
-                self.pendingFailure = error.errorDescription ?? "Bridge couldn't read your library"
+                self.pendingFailure = error.errorDescription ?? "SpanDAC couldn't read your library"
             } else {
                 self.pendingDone = true
             }

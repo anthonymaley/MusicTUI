@@ -179,28 +179,28 @@ protocol MusicDataProvider: DiscoverProviding, StationProviding, CataloguePlayin
 /// implement only the three original methods) keeps compiling untouched. Each
 /// default is exactly the sentence `BridgeMusicProvider` gives for an older
 /// Bridge's `unknown_op` (D6), so a provider that genuinely does not implement
-/// these reports the same "update Bridge" a contract mismatch would.
+/// these reports the same "update SpanDAC" a contract mismatch would.
 extension MusicDataProvider {
     func libraryAlbums(cursor: String?, limit: Int) throws -> MusicPage {
-        throw MusicProviderError.notImplemented("This Bridge build can't list your albums — update Bridge")
+        throw MusicProviderError.notImplemented("This SpanDAC build can't list your albums — update SpanDAC")
     }
     func libraryArtists(cursor: String?, limit: Int) throws -> MusicPage {
-        throw MusicProviderError.notImplemented("This Bridge build can't list your artists — update Bridge")
+        throw MusicProviderError.notImplemented("This SpanDAC build can't list your artists — update SpanDAC")
     }
     func albumTracks(albumID: String) throws -> MusicList {
-        throw MusicProviderError.notImplemented("This Bridge build can't list an album's tracks — update Bridge")
+        throw MusicProviderError.notImplemented("This SpanDAC build can't list an album's tracks — update SpanDAC")
     }
     func artistAlbums(artistID: String) throws -> MusicList {
-        throw MusicProviderError.notImplemented("This Bridge build can't list an artist's albums — update Bridge")
+        throw MusicProviderError.notImplemented("This SpanDAC build can't list an artist's albums — update SpanDAC")
     }
     func artistSongs(artistID: String) throws -> MusicList {
-        throw MusicProviderError.notImplemented("This Bridge build can't play an artist — update Bridge")
+        throw MusicProviderError.notImplemented("This SpanDAC build can't play an artist — update SpanDAC")
     }
     func libraryPlaylists(cursor: String?, limit: Int) throws -> MusicPage {
-        throw MusicProviderError.notImplemented("This Bridge build can't list your playlists — update Bridge")
+        throw MusicProviderError.notImplemented("This SpanDAC build can't list your playlists — update SpanDAC")
     }
     func playlistTracks(playlistID: String, cursor: String?, limit: Int) throws -> MusicPage {
-        throw MusicProviderError.notImplemented("This Bridge build can't list a playlist's tracks — update Bridge")
+        throw MusicProviderError.notImplemented("This SpanDAC build can't list a playlist's tracks — update SpanDAC")
     }
     /// F4/C4: a provider written before `for_queue` existed (every fake in
     /// `BridgeLibraryPlaySceneTests`/`BridgePlaylistsPlaySceneTests` predating
@@ -214,7 +214,7 @@ extension MusicDataProvider {
     /// Addendum U: a provider that predates `skipped_unavailable` (every
     /// `MusicDataProvider` test double written before this step) still plays
     /// correctly through its own `play(ids:)` — it just never reports a skip,
-    /// which is exactly the "older Bridge" default D6 already established for
+    /// which is exactly the "older SpanDAC" default D6 already established for
     /// this field. `startRequired` is accepted, not read: a provider this old
     /// predates `start_required` too, so there is nowhere for it to go.
     func playReportingSkips(ids: [String], startRequired: Bool) throws -> (queue: BridgeNow.Queue, skippedUnavailable: Int) {
@@ -237,13 +237,13 @@ extension MusicDataProvider {
     var catalogueAvailable: Bool { true }
 
     func discoverRails(limit: Int) throws -> [DiscoverRail] {
-        throw MusicProviderError.notImplemented("This Bridge build can't show Discover — update Bridge")
+        throw MusicProviderError.notImplemented("This SpanDAC build can't show Discover — update SpanDAC")
     }
     func containerTracks(for item: DiscoverItem) throws -> [DiscoverItem] {
-        throw MusicProviderError.notImplemented("This Bridge build can't list a Discover item's tracks — update Bridge")
+        throw MusicProviderError.notImplemented("This SpanDAC build can't list a Discover item's tracks — update SpanDAC")
     }
     func searchStations(term: String, limit: Int) throws -> [Station] {
-        throw MusicProviderError.notImplemented("This Bridge build can't search stations — update Bridge")
+        throw MusicProviderError.notImplemented("This SpanDAC build can't search stations — update SpanDAC")
     }
     func liveStations() throws -> [Station] {
         throw MusicProviderError.notImplemented(BridgeMusicProvider.unsupportedSentence(forWireOp: "slice.liveStations"))
@@ -256,10 +256,10 @@ extension MusicDataProvider {
         throw MusicProviderError.notImplemented(BridgeMusicProvider.unsupportedSentence(forWireOp: "slice.station"))
     }
     func playStation(id: String, name: String, url: String?) throws {
-        throw MusicProviderError.notImplemented("This Bridge build can't play a station — update Bridge")
+        throw MusicProviderError.notImplemented("This SpanDAC build can't play a station — update SpanDAC")
     }
     func playCatalogue(ids: [String]) throws -> Int {
-        throw MusicProviderError.notImplemented("This Bridge build can't play catalogue songs — update Bridge")
+        throw MusicProviderError.notImplemented("This SpanDAC build can't play catalogue songs — update SpanDAC")
     }
     func searchCatalogue(term: String, limit: Int) throws -> [CatalogueRecord] {
         throw MusicProviderError.notImplemented(BridgeMusicProvider.unsupportedSentence(forWireOp: "slice.search"))
@@ -372,7 +372,7 @@ enum LibraryWarmUp {
     /// What a list, or a play, says when it has run out of patience. Distinct
     /// from the "still going" line, because a person needs to know it has
     /// STOPPED.
-    static let gaveUp = "Bridge is still preparing your library"
+    static let gaveUp = "SpanDAC is still preparing your library"
 }
 
 /// One warm-up budget, spent across however many requests share it, in seconds
@@ -503,7 +503,7 @@ func bridgeQueueIDs(_ rows: [MusicRow], shuffle: Bool, startAt: Int) -> [String]
 /// `PlaylistsScene`), so the plural rule is written once.
 func bridgeUnavailableSongsNotice(_ n: Int) -> String {
     guard n > 0 else { return "" }
-    return n == 1 ? "1 song isn't available to Bridge." : "\(n) songs aren't available to Bridge."
+    return n == 1 ? "1 song isn't available to SpanDAC." : "\(n) songs aren't available to SpanDAC."
 }
 
 /// A count a person reads, grouped in threes: 15646 → "15,646".

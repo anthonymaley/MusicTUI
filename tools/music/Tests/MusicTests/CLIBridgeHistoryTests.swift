@@ -142,7 +142,7 @@ final class CLIBridgeHistoryTests: XCTestCase {
         XCTAssertEqual(h.io.out.count, 1)
         let doc = try XCTUnwrap(cliJSON(h.io.out.first))
         let items = try XCTUnwrap(doc["items"] as? [[String: Any]])
-        XCTAssertEqual(items.count, 6, "every item, in Bridge's order")
+        XCTAssertEqual(items.count, 6, "every item, in SpanDAC's order")
         XCTAssertEqual(items.map { $0["type"] as? String },
                        ["songs", "library-songs", "library-songs", "library-playlists", "albums", "songs"])
         XCTAssertEqual(Set(items[3].keys), ["type", "name", "artist", "album"], "as shipped")
@@ -211,7 +211,7 @@ final class CLIBridgeHistoryTests: XCTestCase {
         let h = H(.source, ["slice.status": [ready], "slice.heavyRotation": [unknown]])
         let (error, _) = run(.rotation, h)
         XCTAssertEqual(error as? ExitCode, .failure)
-        XCTAssertEqual(h.io.out, ["This Bridge build can't show heavy rotation — update Bridge"])
+        XCTAssertEqual(h.io.out, ["This SpanDAC build can't show heavy rotation — update SpanDAC"])
     }
 
     func testWarmingIsRetriedOnTheCommandsOneBudget() {

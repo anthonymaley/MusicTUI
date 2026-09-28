@@ -98,7 +98,7 @@ final class CLIBridgeTransportCommandTests: XCTestCase {
         let body = Body(h.lockPath)
         let (_, calls) = try withTripwire { try runNow(json: false, env: h.env, musicApp: { _ in body.run() }) }
         XCTAssertEqual(h.io.out, bridgeNowLines(SourceAppControl(path: "/nonexistent", transport: { _, _ in playing }).statusForTest()))
-        XCTAssertEqual(h.io.out.first, "Teardrop \u{2014} Massive Attack [Bridge]")
+        XCTAssertEqual(h.io.out.first, "Teardrop \u{2014} Massive Attack [SpanDAC]")
         XCTAssertEqual(h.seen.ops, ["slice.status", "slice.status"], "readiness, then the one read")
         XCTAssertEqual(h.seen.locked("slice.status"), [false, false], "a read takes no lock")
         XCTAssertEqual(body.runs, 0)
@@ -193,7 +193,7 @@ final class CLIBridgeTransportCommandTests: XCTestCase {
             let (h, error) = pause(after: [status(state)],
                                    pauseReply: CLIBridgeReplies.refused("did not reach paused within 3s"))
             XCTAssertNil(error, state)
-            XCTAssertEqual(h.io.out, ["Nothing playing on Bridge."], state)
+            XCTAssertEqual(h.io.out, ["Nothing playing on SpanDAC."], state)
             XCTAssertEqual(h.wire.sent("slice.pause").count, 1)
         }
     }
@@ -201,7 +201,7 @@ final class CLIBridgeTransportCommandTests: XCTestCase {
     func testPauseOnBridgeStillPlayingFails() {
         let (h, error) = pause(after: [status("playing", title: "Teardrop")])
         XCTAssertEqual(error as? ExitCode, .failure)
-        XCTAssertEqual(h.io.out, ["Bridge is still playing."])
+        XCTAssertEqual(h.io.out, ["SpanDAC is still playing."])
         XCTAssertEqual(h.wire.sent("slice.pause").count, 1)
     }
 
@@ -211,7 +211,7 @@ final class CLIBridgeTransportCommandTests: XCTestCase {
     func testPauseOnBridgeWithAnUnreadableStatusFailsAndIsNotResent() {
         for (reply, message) in [(#"{"ok":true,"status":{}}"#, SourceAppError.unreadable.message),
                                  (CLIBridgeReplies.warming(retryAfter: 1),
-                                  SourceAppError.warming("Bridge is reading your library", retryAfter: 1).message)] {
+                                  SourceAppError.warming("SpanDAC is reading your library", retryAfter: 1).message)] {
             let (h, error) = pause(after: [reply])
             XCTAssertEqual(error as? ExitCode, .failure)
             XCTAssertEqual(h.io.out, [message])
@@ -270,7 +270,7 @@ final class CLIBridgeTransportCommandTests: XCTestCase {
             let h = harness(.source, ["slice.status": [ready, CLIBridgeReplies.warming(retryAfter: 1)],
                                       "slice.next": [ok]])
             XCTAssertNoThrow(try runSkip(json: asJSON, env: h.env, musicApp: { _ in XCTFail() }))
-            let message = SourceAppError.warming("Bridge is reading your library", retryAfter: 1).message
+            let message = SourceAppError.warming("SpanDAC is reading your library", retryAfter: 1).message
             XCTAssertEqual(h.wire.sent("slice.next").count, 1)
             XCTAssertEqual(h.io.sleeps, [])
             if asJSON {
@@ -281,7 +281,7 @@ final class CLIBridgeTransportCommandTests: XCTestCase {
                 XCTAssertEqual(h.io.err, [])
             } else {
                 XCTAssertEqual(h.io.out, [])
-                XCTAssertEqual(h.io.err, ["Bridge accepted the request, but its status couldn't be read: \(message)"])
+                XCTAssertEqual(h.io.err, ["SpanDAC accepted the request, but its status couldn't be read: \(message)"])
             }
         }
     }
@@ -317,10 +317,10 @@ final class CLIBridgeTransportCommandTests: XCTestCase {
 
     func testSeekOnBridgeAbsoluteAndRelative() throws {
         let cases: [(String, String, String, [String: Any])] = [
-            ("1:30", "Seeked to 1:30 on Bridge.", "position", ["position": 90]),
-            ("90", "Seeked to 1:30 on Bridge.", "position", ["position": 90]),
-            ("+30", "Seeked +30s on Bridge.", "offset", ["offset": 30]),
-            ("-15", "Seeked -15s on Bridge.", "offset", ["offset": -15]),
+            ("1:30", "Seeked to 1:30 on SpanDAC.", "position", ["position": 90]),
+            ("90", "Seeked to 1:30 on SpanDAC.", "position", ["position": 90]),
+            ("+30", "Seeked +30s on SpanDAC.", "offset", ["offset": 30]),
+            ("-15", "Seeked -15s on SpanDAC.", "offset", ["offset": -15]),
         ]
         for (arg, text, key, requested) in cases {
             for asJSON in [false, true] {
@@ -419,7 +419,7 @@ final class CLIBridgeTransportCommandTests: XCTestCase {
         let h = harness(.musicApp)
         XCTAssertThrowsError(try withTripwire { try runSeek(position: "banana", json: false, env: h.env) }) {
             XCTAssertEqual(($0 as? ValidationError)?.message, seekPositionUsage,
-                           "the Bridge branch's sentence is the shipped one")
+                           "the SpanDAC branch's sentence is the shipped one")
         }
         XCTAssertEqual(h.io.out, [])
     }
@@ -451,7 +451,7 @@ final class CLIBridgeTransportCommandTests: XCTestCase {
             }
             XCTAssertEqual(h.io.out, [cliBridgeNotServedReason(action)], name)
             XCTAssertEqual(ran, 0, name)
-            XCTAssertEqual(h.wire.requestCount, 0, "\(name) sent a Bridge request")
+            XCTAssertEqual(h.wire.requestCount, 0, "\(name) sent a SpanDAC request")
             XCTAssertEqual(calls, [], name)
             XCTAssertTrue(S.isFree(h.lockPath), name)
         }

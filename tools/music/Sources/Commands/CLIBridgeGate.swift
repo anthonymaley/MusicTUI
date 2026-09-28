@@ -24,7 +24,7 @@ func cliBridgeRefusal(_ action: MusicTUIAction, mode: PlaybackMode) -> String? {
 /// What a gated verb says if the matrix serves its action through Bridge: the
 /// verb should be dispatching, and nothing was changed.
 let cliGateOnDispatchedAction =
-    "Internal error: this command is served through Bridge but was not dispatched there; nothing was changed."
+    "Internal error: this command is served through SpanDAC but was not dispatched there; nothing was changed."
 
 /// Refuse `action` if the selected output says so: print the reason (as JSON
 /// under `--json`) and exit non-zero. Music.app selected returns immediately.

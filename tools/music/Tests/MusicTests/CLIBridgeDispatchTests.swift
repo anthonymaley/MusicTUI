@@ -38,7 +38,7 @@ final class CLIBridgeDispatchTests: XCTestCase {
         let (_, calls) = try withTripwire {
             try cliDispatch(.next, json: false, env: env,
                             musicApp: { runs += 1; heldDuringBody = !S.isFree(lockPath) },
-                            bridge: { _ in XCTFail("the Bridge branch ran in Music.app mode") })
+                            bridge: { _ in XCTFail("the SpanDAC branch ran in Music.app mode") })
         }
         XCTAssertEqual(runs, 1)
         XCTAssertEqual(heldDuringBody, true, "a playback action's Music.app body must run inside the lock")
@@ -143,14 +143,14 @@ final class CLIBridgeDispatchTests: XCTestCase {
         let env = CLIBridgeEnv.test(mode: .source, wire: wire, io: io)
         let lockPath = env.routing.outputLock!.path
         var held: Bool?
-        try cliDispatch(.next, json: false, env: env, musicApp: { XCTFail("Music.app ran on Bridge") },
+        try cliDispatch(.next, json: false, env: env, musicApp: { XCTFail("Music.app ran on SpanDAC") },
                         bridge: { session in
                             try session.mutate { control in
                                 held = !S.isFree(lockPath)
                                 try control.next()
                             }
                         })
-        XCTAssertEqual(held, true, "the Bridge mutation runs inside the output lock")
+        XCTAssertEqual(held, true, "the SpanDAC mutation runs inside the output lock")
         XCTAssertEqual(wire.sent("slice.next").count, 1)
         XCTAssertTrue(S.isFree(lockPath))
         XCTAssertEqual(io.out, [])
@@ -166,7 +166,7 @@ final class CLIBridgeDispatchTests: XCTestCase {
                                                  bridge: { _ in bridgeRan = true })) {
                 XCTAssertEqual($0 as? ExitCode, .failure)
             }
-            let sentence = "Bridge was denied Apple Music access. Switch Output to Music.app to use Music.app instead."
+            let sentence = "SpanDAC was denied Apple Music access. Switch Output to Music.app to use Music.app instead."
             if json {
                 XCTAssertEqual(io.out.count, 1)
                 let doc = try? JSONSerialization.jsonObject(with: Data(io.out[0].utf8)) as? [String: Any]
@@ -184,7 +184,7 @@ final class CLIBridgeDispatchTests: XCTestCase {
         let io = CLIBridgeTestIO()
         let env = CLIBridgeEnv(test: .source, io: io, transport: { _, _ in throw SourceAppError.notRunning })
         XCTAssertThrowsError(try cliDispatch(.next, json: false, env: env, musicApp: {}, bridge: { _ in XCTFail() }))
-        XCTAssertEqual(io.out, ["Bridge is not running. Switch Output to Music.app to use Music.app instead."])
+        XCTAssertEqual(io.out, ["SpanDAC is not running. Switch Output to Music.app to use Music.app instead."])
     }
 
     func testABridgeErrorIsPrintedInItsOwnWords() {
@@ -214,10 +214,10 @@ final class CLIBridgeDispatchTests: XCTestCase {
         let io = CLIBridgeTestIO()
         let env = CLIBridgeEnv.test(mode: .source, wire: wire, io: io)
         XCTAssertThrowsError(try cliDispatch(.playPause, json: false, env: env, musicApp: {},
-                                             bridge: { _ in env.out("Bridge is still playing."); throw ExitCode.failure })) {
+                                             bridge: { _ in env.out("SpanDAC is still playing."); throw ExitCode.failure })) {
             XCTAssertEqual($0 as? ExitCode, .failure)
         }
-        XCTAssertEqual(io.out, ["Bridge is still playing."])
+        XCTAssertEqual(io.out, ["SpanDAC is still playing."])
     }
 
     // MARK: warming (D5)
@@ -252,7 +252,7 @@ final class CLIBridgeDispatchTests: XCTestCase {
                                              bridge: { try $0.mutate { try $0.next() } })) {
             XCTAssertEqual($0 as? ExitCode, .failure)
         }
-        XCTAssertEqual(wire.sent("slice.next").count, 1, "the retry must not reach Bridge after a switch")
+        XCTAssertEqual(wire.sent("slice.next").count, 1, "the retry must not reach SpanDAC after a switch")
         XCTAssertEqual(io.out, [OutputLock.cliModeChangedMessage(now: .musicApp)])
         XCTAssertTrue(S.isFree(env.routing.outputLock!.path))
     }

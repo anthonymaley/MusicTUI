@@ -211,7 +211,7 @@ private final class PassRun {
                 try retireLedger()
                 if replaced {
                     replacedTwice = true
-                    failure = .failed("Bridge's play record was replaced again while it was being read.")
+                    failure = .failed("SpanDAC's play record was replaced again while it was being read.")
                     break fetching
                 }
                 replaced = true
@@ -225,11 +225,11 @@ private final class PassRun {
             }
 
             if let current = journal.ledgerID, current != page.ledgerID {
-                failure = .failed("Bridge answered from a different play record than the one asked for.")
+                failure = .failed("SpanDAC answered from a different play record than the one asked for.")
                 break fetching
             }
             if page.more && page.nextAfter <= after {
-                failure = .failed("Bridge's play record page did not move forward.")
+                failure = .failed("SpanDAC's play record page did not move forward.")
                 break fetching
             }
 
@@ -238,7 +238,7 @@ private final class PassRun {
                 let playKey = key(page.ledgerID, play.seq)
                 if let existing = known[playKey] {
                     if existing == play.playID { continue }   // delivered again: already captured
-                    failure = .failed("Bridge's play record gave play \(play.seq) two different identities; "
+                    failure = .failed("SpanDAC's play record gave play \(play.seq) two different identities; "
                                       + "nothing more was read.")
                     break fetching
                 }

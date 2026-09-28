@@ -270,7 +270,7 @@ final class BridgePlaylistsPlaySceneTests: XCTestCase {
     /// second page read and — because the whole action throws before ever
     /// building the id list — no `slice.queue` sent at all.
     func testPageOneTooLargeRefusalReachesTheFooterVerbatimWithNoSecondPageAndNoQueue() {
-        let sentence = "'Chill' has 767 songs Bridge can play, which is more than the 100 Bridge can queue."
+        let sentence = "'Chill' has 767 songs SpanDAC can play, which is more than the 100 SpanDAC can queue."
         let refusal = """
         {"ok":false,"op":"slice.libraryPlaylistTracks","error":{"kind":"too_large","detail":"\(sentence)"}}
         """
@@ -339,7 +339,7 @@ final class BridgePlaylistsPlaySceneTests: XCTestCase {
     func test101RowPlaylistSendsAll101IdsAndBridgesOver100SentenceReachesTheFooterVerbatim() {
         let ids = (1...101).map { "i.\($0)" }
         let refusal = """
-        {"ok":false,"op":"slice.queue","error":{"kind":"bad_request","detail":"A queue holds at most 100 songs in Bridge; 101 were requested."}}
+        {"ok":false,"op":"slice.queue","error":{"kind":"bad_request","detail":"A queue holds at most 100 songs in SpanDAC; 101 were requested."}}
         """
         let wire = BridgeLibraryReadsWire(["slice.libraryPlaylists": [onePlaylistPage], "slice.queue": [refusal]])
         wire.script("slice.libraryPlaylistTracks", [tracksPage(ids.map { ($0, $0, "Art") })])
@@ -354,13 +354,13 @@ final class BridgePlaylistsPlaySceneTests: XCTestCase {
         XCTAssertEqual(req["start_required"] as? Bool, false,
                        "a whole-playlist `p` must send start_required explicitly as false")
         XCTAssertTrue(settleScene(s) {
-            status.current()?.text == "A queue holds at most 100 songs in Bridge; 101 were requested."
+            status.current()?.text == "A queue holds at most 100 songs in SpanDAC; 101 were requested."
         }, "the over-100 sentence never reached the footer verbatim: \(String(describing: status.current()?.text))")
     }
 
     func testRepeatedTitleReachesTheFooterInBridgesWords() {
         let refusal = """
-        {"ok":false,"op":"slice.queue","error":{"kind":"repeated_title","detail":"That playlist holds one song twice, so Bridge can't play it."}}
+        {"ok":false,"op":"slice.queue","error":{"kind":"repeated_title","detail":"That playlist holds one song twice, so SpanDAC can't play it."}}
         """
         let wire = BridgeLibraryReadsWire(["slice.libraryPlaylists": [onePlaylistPage], "slice.queue": [refusal]])
         wire.script("slice.libraryPlaylistTracks", [tracksPage([("i.a", "A", "Art"), ("i.a", "A", "Art")])])
@@ -370,13 +370,13 @@ final class BridgePlaylistsPlaySceneTests: XCTestCase {
         XCTAssertTrue(settleScene(s) { s.render(frame: frame, snapshot: idle).contains("Chill") })
         _ = s.handle(.char("p"))
         XCTAssertTrue(settleScene(s) {
-            status.current()?.text == "That playlist holds one song twice, so Bridge can't play it."
+            status.current()?.text == "That playlist holds one song twice, so SpanDAC can't play it."
         })
     }
 
     func testUnsupportedItemAndNotInLibraryOnADrillInShowInThePaneAndPSendsNoQueue() {
-        for (kind, detail) in [("unsupported_item", "1 of 5 items in that playlist aren't songs, and Bridge plays only songs."),
-                               ("not_in_library", "1 of 4 tracks in that playlist aren't in your library, so Bridge can't play them.")] {
+        for (kind, detail) in [("unsupported_item", "1 of 5 items in that playlist aren't songs, and SpanDAC plays only songs."),
+                               ("not_in_library", "1 of 4 tracks in that playlist aren't in your library, so SpanDAC can't play them.")] {
             let failure = """
             {"ok":false,"op":"slice.libraryPlaylistTracks","error":{"kind":"\(kind)","detail":"\(detail)"}}
             """
@@ -400,7 +400,7 @@ final class BridgePlaylistsPlaySceneTests: XCTestCase {
                                    status: status, width: 120)
         XCTAssertTrue(settleScene(s) { s.render(frame: frame, snapshot: idle).contains("Chill") })
         _ = s.handle(.char("p"))
-        XCTAssertTrue(settleScene(s) { status.current()?.text == "'Chill' has no songs Bridge can play." })
+        XCTAssertTrue(settleScene(s) { status.current()?.text == "'Chill' has no songs SpanDAC can play." })
         XCTAssertTrue(wire.sent("slice.queue").isEmpty)
     }
 
@@ -442,7 +442,7 @@ final class BridgePlaylistsPlaySceneTests: XCTestCase {
         XCTAssertEqual(req["start_required"] as? Bool, false,
                        "a whole-playlist `p` must send start_required explicitly as false")
         XCTAssertTrue(settleScene(s) {
-            status.current()?.text == "Playing 40 of 42 from 'Chill' on Bridge: 2 videos skipped."
+            status.current()?.text == "Playing 40 of 42 from 'Chill' on SpanDAC: 2 videos skipped."
         }, "got: \(String(describing: status.current()?.text))")
     }
 
@@ -467,7 +467,7 @@ final class BridgePlaylistsPlaySceneTests: XCTestCase {
         // be true.
         XCTAssertEqual(req["start_required"] as? Bool, true)
         XCTAssertTrue(settleScene(s) {
-            status.current()?.text == "Playing 'Chill' on Bridge from track 5 \u{2014} 36 tracks; 2 videos in this playlist skipped."
+            status.current()?.text == "Playing 'Chill' on SpanDAC from track 5 \u{2014} 36 tracks; 2 videos in this playlist skipped."
         }, "got: \(String(describing: status.current()?.text))")
     }
 
@@ -501,7 +501,7 @@ final class BridgePlaylistsPlaySceneTests: XCTestCase {
         // The denominator is the ORIGINAL whole-playlist count (40 songs + 2
         // videos = 42), never reduced by skippedUnavailable too.
         XCTAssertTrue(settleScene(s) {
-            status.current()?.text == "Playing 39 of 42 from 'Chill' on Bridge: 2 videos skipped. 1 song isn't available to Bridge."
+            status.current()?.text == "Playing 39 of 42 from 'Chill' on SpanDAC: 2 videos skipped. 1 song isn't available to SpanDAC."
         }, "got: \(String(describing: status.current()?.text))")
     }
 
@@ -521,26 +521,26 @@ final class BridgePlaylistsPlaySceneTests: XCTestCase {
         _ = s.handle(.char("p"))
         XCTAssertTrue(settleScene(s) { !wire.sent("slice.queue").isEmpty })
         XCTAssertTrue(settleScene(s) {
-            status.current()?.text == "Playing 40 of 42 from 'Chill' on Bridge: 2 videos skipped."
+            status.current()?.text == "Playing 40 of 42 from 'Chill' on SpanDAC: 2 videos skipped."
         }, "got: \(String(describing: status.current()?.text))")
     }
 
     func testWithOneVideoSkippedTheFooterSaysOneVideo() {
         XCTAssertEqual(
             bridgePlaylistPlayMessage(name: "Chill", queued: 24, skippedVideos: 1, skippedUnavailable: 0, startAt: 1, shuffle: false),
-            "Playing 24 of 25 from 'Chill' on Bridge: 1 video skipped.")
+            "Playing 24 of 25 from 'Chill' on SpanDAC: 1 video skipped.")
     }
 
     func testWithZeroSkippedTheFooterIsUnchanged() {
         XCTAssertEqual(
             bridgePlaylistPlayMessage(name: "Chill", queued: 10, skippedVideos: 0, skippedUnavailable: 0, startAt: 1, shuffle: false),
-            "Playing 'Chill' on Bridge \u{2014} 10 tracks.")
+            "Playing 'Chill' on SpanDAC \u{2014} 10 tracks.")
     }
 
     func test101SongPlaylistWith2SkippedVideosPOverBoundKeepsBridgesSentenceVerbatimWithNoSkipNotice() {
         let ids = (1...101).map { "i.\($0)" }
         let refusal = """
-        {"ok":false,"op":"slice.queue","error":{"kind":"bad_request","detail":"A queue holds at most 100 songs in Bridge; 101 were requested."}}
+        {"ok":false,"op":"slice.queue","error":{"kind":"bad_request","detail":"A queue holds at most 100 songs in SpanDAC; 101 were requested."}}
         """
         let wire = BridgeLibraryReadsWire(["slice.libraryPlaylists": [onePlaylistPage], "slice.queue": [refusal]])
         wire.script("slice.libraryPlaylistTracks", [tracksPage(ids.map { ($0, $0, "Art") }, total: 101, skipped: 2)])
@@ -552,21 +552,21 @@ final class BridgePlaylistsPlaySceneTests: XCTestCase {
         XCTAssertTrue(settleScene(s) { !wire.sent("slice.queue").isEmpty })
         XCTAssertEqual((wire.sent("slice.queue").first?["library_ids"] as? [String])?.count, 101)
         XCTAssertTrue(settleScene(s) {
-            status.current()?.text == "A queue holds at most 100 songs in Bridge; 101 were requested."
+            status.current()?.text == "A queue holds at most 100 songs in SpanDAC; 101 were requested."
         }, "got: \(String(describing: status.current()?.text)) — the sentence must be verbatim with no skip notice")
     }
 
     func testBridgePlaylistPlayMessageAllFormsAndBothPlurals() {
         XCTAssertEqual(bridgePlaylistPlayMessage(name: "X", queued: 1, skippedVideos: 0, skippedUnavailable: 0, startAt: 1, shuffle: false),
-                       "Playing 'X' on Bridge \u{2014} 1 tracks.")
+                       "Playing 'X' on SpanDAC \u{2014} 1 tracks.")
         XCTAssertEqual(bridgePlaylistPlayMessage(name: "X", queued: 24, skippedVideos: 2, skippedUnavailable: 0, startAt: 1, shuffle: false),
-                       "Playing 24 of 26 from 'X' on Bridge: 2 videos skipped.")
+                       "Playing 24 of 26 from 'X' on SpanDAC: 2 videos skipped.")
         XCTAssertEqual(bridgePlaylistPlayMessage(name: "X", queued: 24, skippedVideos: 2, skippedUnavailable: 0, startAt: 1, shuffle: true),
-                       "Playing 24 of 26 from 'X' on Bridge: 2 videos skipped.")
+                       "Playing 24 of 26 from 'X' on SpanDAC: 2 videos skipped.")
         XCTAssertEqual(bridgePlaylistPlayMessage(name: "X", queued: 36, skippedVideos: 2, skippedUnavailable: 0, startAt: 5, shuffle: false),
-                       "Playing 'X' on Bridge from track 5 \u{2014} 36 tracks; 2 videos in this playlist skipped.")
+                       "Playing 'X' on SpanDAC from track 5 \u{2014} 36 tracks; 2 videos in this playlist skipped.")
         XCTAssertEqual(bridgePlaylistPlayMessage(name: "X", queued: 1, skippedVideos: 2, skippedUnavailable: 0, startAt: 40, shuffle: false),
-                       "Playing 'X' on Bridge from track 40 \u{2014} 1 track; 2 videos in this playlist skipped.")
+                       "Playing 'X' on SpanDAC from track 40 \u{2014} 1 track; 2 videos in this playlist skipped.")
     }
 
     /// Addendum U (U-R6): the unavailable-song notice composes AFTER
@@ -577,17 +577,17 @@ final class BridgePlaylistsPlaySceneTests: XCTestCase {
         // v == 0: the plain form, with the notice trailing it.
         XCTAssertEqual(
             bridgePlaylistPlayMessage(name: "X", queued: 25, skippedVideos: 0, skippedUnavailable: 1, startAt: 1, shuffle: false),
-            "Playing 'X' on Bridge \u{2014} 24 tracks. 1 song isn't available to Bridge.")
+            "Playing 'X' on SpanDAC \u{2014} 24 tracks. 1 song isn't available to SpanDAC.")
         // v > 0, whole playlist: the "N of M" form. M is the ORIGINAL
         // whole-playlist member count (queued + skippedVideos), never
         // reduced by skippedUnavailable too — 25 + 2 = 27, not 26.
         XCTAssertEqual(
             bridgePlaylistPlayMessage(name: "X", queued: 25, skippedVideos: 2, skippedUnavailable: 1, startAt: 1, shuffle: false),
-            "Playing 24 of 27 from 'X' on Bridge: 2 videos skipped. 1 song isn't available to Bridge.")
+            "Playing 24 of 27 from 'X' on SpanDAC: 2 videos skipped. 1 song isn't available to SpanDAC.")
         // v > 0, from track k: the "from track k" form, with the notice trailing it.
         XCTAssertEqual(
             bridgePlaylistPlayMessage(name: "X", queued: 38, skippedVideos: 2, skippedUnavailable: 2, startAt: 5, shuffle: false),
-            "Playing 'X' on Bridge from track 5 \u{2014} 36 tracks; 2 videos in this playlist skipped. 2 songs aren't available to Bridge.")
+            "Playing 'X' on SpanDAC from track 5 \u{2014} 36 tracks; 2 videos in this playlist skipped. 2 songs aren't available to SpanDAC.")
     }
 
     // MARK: - Warming (two-zone: keeps the scripted warming sequence exclusive to the read under test)
@@ -684,7 +684,7 @@ final class BridgePlaylistsPlaySceneTests: XCTestCase {
         for c in "Top 25" { _ = s.handle(.char(c)) }
         _ = s.handle(.enter)
         XCTAssertTrue(settleScene(s) {
-            s.render(frame: frame, snapshot: idle).contains("Bridge is still preparing your library - press r to retry")
+            s.render(frame: frame, snapshot: idle).contains("SpanDAC is still preparing your library - press r to retry")
         }, "it never gave up visibly")
 
         wire.script("slice.libraryPlaylists", [retryPage])

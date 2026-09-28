@@ -67,7 +67,7 @@ final class NowPlayingScene: Scene {
         // Bridge has no control grid and no Up Next list, so seek and Quiet are
         // what remain. `x` became a Now key in its own right on 2026-09-22
         // (spec 6.2's row); it pauses Bridge, never Music.app (ruling 12.7).
-        if routing.mode == .source { return "[ ] Seek  x Quiet" }
+        if routing.mode.usesSource { return "[ ] Seek  x Quiet" }
         return gridFocused
             ? "\u{2191}\u{2193} Row  Enter Set  \u{2192} Up Next  [ ] Seek  \u{2014} controls"
             : "\u{2191}\u{2193} Browse  \u{2190} Controls  Enter Jump  [ ] Seek  l \u{2665}"
@@ -538,7 +538,7 @@ final class NowPlayingScene: Scene {
     private func renderBridgeEmpty(_ bridge: BridgeNow, frame: ShellFrame, into base: String) -> String {
         var out = base
         out += ANSICode.moveTo(row: frame.bodyY + 1, col: 3)
-        out += truncText(bridgeStatusLine(bridge) ?? "Nothing playing on Bridge.", to: frame.width - 6)
+        out += truncText(bridgeStatusLine(bridge) ?? "Nothing playing on SpanDAC.", to: frame.width - 6)
         out += ANSICode.moveTo(row: frame.bodyY + 2, col: 3)
         out += "\(ANSICode.dim)Press \(ANSICode.reset)4\(ANSICode.dim) to browse playlists, \(ANSICode.reset)3\(ANSICode.dim) for Library.\(ANSICode.reset)"
         return out
@@ -562,7 +562,7 @@ final class NowPlayingScene: Scene {
         y += 1
         if y <= bottom {
             out += ANSICode.moveTo(row: y, col: x)
-                + "\(ANSICode.dim)\(truncText("Shuffle and repeat are not available on Bridge.", to: width))\(ANSICode.reset)"
+                + "\(ANSICode.dim)\(truncText("Shuffle and repeat aren't available on SpanDAC.", to: width))\(ANSICode.reset)"
         }
         return out
     }
@@ -637,7 +637,7 @@ final class NowPlayingScene: Scene {
         // The label is the queue's human-facing name ("Moon Safari"), never its
         // addressable source ("Library") — that distinction is the whole point
         // of ContinuationSource.
-        let opts: [(String, String)] = continuationOptions(bridge: routing.mode == .source).map { action in
+        let opts: [(String, String)] = continuationOptions(bridge: routing.mode.usesSource).map { action in
             switch action {
             case .shuffle:
                 let shuffleTarget = continuationSourceNow()?.label ?? seedTitle
@@ -697,7 +697,7 @@ final class NowPlayingScene: Scene {
                 // the exact defect class the fail-closed sweep removed. Giving
                 // Bridge a remembered collection is new state and its own
                 // decision, so it is not taken here.
-                if routing.mode == .source { throw bridgeNotWiredYet("Collection shuffle") }
+                if routing.mode.usesSource { throw bridgeNotWiredYet("Collection shuffle") }
                 let ok: Bool
                 switch source {
                 case .bounded(let label, let src, let tracks):
@@ -727,7 +727,7 @@ final class NowPlayingScene: Scene {
                     // Music.app: the pause is attempted, then its own status
                     // decides, and only a player still going is an error.
                     source: { try require(try confirmBridgeNotPlaying($0.control),
-                                          "Couldn't pause Bridge.") },
+                                          "Couldn't pause SpanDAC.") },
                     unaffected: {})
             }
         }
@@ -773,7 +773,7 @@ final class NowPlayingScene: Scene {
         // Continuation menu intercepts its keys when active.
         if menuShownLastFrame {
             if let action = continuationAction(for: key),
-               continuationOptions(bridge: routing.mode == .source).contains(action) {
+               continuationOptions(bridge: routing.mode.usesSource).contains(action) {
                 act(on: action)
                 manualMenu = false
                 dismissedSeed = pendingSeedTitle   // don't re-show this queue-end's menu
@@ -810,7 +810,7 @@ final class NowPlayingScene: Scene {
 
         // Bridge draws no grid, so nothing may focus it: the grid keys become
         // no-ops, and a focus left over from Music.app mode is dropped.
-        if routing.mode == .source {
+        if routing.mode.usesSource {
             gridFocused = false
             if case .left = key { return .none }
         }

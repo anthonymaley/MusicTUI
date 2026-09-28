@@ -85,7 +85,7 @@ final class CLIInventoryTests: XCTestCase {
         Row(invocation: "shuffle", command: "Shuffle", letter: .refused, enforcement: .route(.persistentShuffleMode), owner: "S6"),
         Row(invocation: "repeat", command: "Repeat_", letter: .refused, enforcement: .route(.persistentRepeatMode), owner: "S6"),
         Row(invocation: "play <words> (and any non-song Apple Music link)", command: "Play", letter: .refused, enforcement: .route(.cliPlayQuery), owner: "S7 (Q1: refuse)"),
-        Row(invocation: "add N (Bridge library or catalogue row)", command: "Add", letter: .refused, enforcement: .provenance(.addToLibrary), owner: "S3, P6 (Q3: refuse)"),
+        Row(invocation: "add N (SpanDAC library or catalogue row)", command: "Add", letter: .refused, enforcement: .provenance(.addToLibrary), owner: "S3, P6 (Q3: refuse)"),
         Row(invocation: "add --to P (no song)", command: "Add", letter: .refused, enforcement: .route(.addCurrentTrackToPlaylist), owner: "existing"),
         Row(invocation: "remove", command: "Remove", letter: .refused, enforcement: .route(.removeCurrentTrackFromPlaylist), owner: "existing"),
         Row(invocation: "love", command: "Love", letter: .refused, enforcement: .route(.loveTrack), owner: "existing"),
@@ -114,7 +114,7 @@ final class CLIInventoryTests: XCTestCase {
         Row(invocation: "rotation", command: "Rotation", letter: .served, enforcement: .route(.rotation), owner: "S8, P9 (D9 pass: served)"),
 
         // Named exceptions: run as shipped.
-        Row(invocation: "add --id X / add <query> / add N (non-Bridge row)", command: "Add", letter: .exception, enforcement: .route(.addToLibrary), owner: "—"),
+        Row(invocation: "add --id X / add <query> / add N (non-SpanDAC row)", command: "Add", letter: .exception, enforcement: .route(.addToLibrary), owner: "—"),
         Row(invocation: "playlist create", command: "PlaylistCreate", letter: .exception, enforcement: .route(.playlistWrite), owner: "—"),
         Row(invocation: "playlist delete", command: "PlaylistDelete", letter: .exception, enforcement: .route(.playlistWrite), owner: "—"),
         Row(invocation: "playlist add", command: "PlaylistAdd", letter: .exception, enforcement: .route(.playlistWrite), owner: "—"),
@@ -201,7 +201,7 @@ final class CLIInventoryTests: XCTestCase {
                     XCTAssertEqual(bridge, .source, label)
                     XCTAssertTrue(cliDispatchedOnBridge.contains(action), label)
                 case .refused:
-                    guard case .refused(let why) = bridge else { XCTFail("\(label) must refuse on Bridge"); continue }
+                    guard case .refused(let why) = bridge else { XCTFail("\(label) must refuse on SpanDAC"); continue }
                     XCTAssertFalse(why.isEmpty, label)
                     XCTAssertFalse(cliBridgeExceptions.contains(action), label)
                 case .exception:
@@ -265,7 +265,7 @@ final class CLIInventoryTests: XCTestCase {
             case .refused(let why):
                 XCTAssertFalse(why.isEmpty, "\(action)")
             case .musicApp, .unaffected:
-                XCTFail("\(action) was retired by \(step) but still runs its shipped backend on Bridge")
+                XCTFail("\(action) was retired by \(step) but still runs its shipped backend on SpanDAC")
             }
             let rows = inventory.filter {
                 if case .route(let a) = $0.enforcement { return a == action } else { return false }
@@ -372,7 +372,7 @@ final class CLIInventoryTests: XCTestCase {
                 XCTAssertEqual(body.map { $0.hasPrefix("try cliDispatch(") }, true,
                                "\(command): \(verb) must start with try cliDispatch(")
             } else {
-                XCTFail("\(command).run() must ask the Bridge gate first; it starts with: \(first)")
+                XCTFail("\(command).run() must ask the SpanDAC gate first; it starts with: \(first)")
             }
         }
     }

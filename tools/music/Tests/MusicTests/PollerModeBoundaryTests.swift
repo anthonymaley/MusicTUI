@@ -40,8 +40,8 @@ final class PollerModeBoundaryTests: XCTestCase {
         let factory = Factory()
         let (poller, store) = poller(mode: .source, factory: factory)
         poller.tick()
-        XCTAssertGreaterThan(factory.calls, 0, "Bridge mode must ask Bridge for the state it shows")
-        XCTAssertNotNil(store.read().bridge, "the snapshot must carry Bridge's own state")
+        XCTAssertGreaterThan(factory.calls, 0, "SpanDAC mode must ask SpanDAC for the state it shows")
+        XCTAssertNotNil(store.read().bridge, "the snapshot must carry SpanDAC's own state")
     }
 
     /// Music.app selected: the poller never builds a Bridge client, and the
@@ -50,7 +50,7 @@ final class PollerModeBoundaryTests: XCTestCase {
         let factory = Factory()
         let (poller, store) = poller(mode: .musicApp, factory: factory)
         poller.tick()
-        XCTAssertEqual(factory.calls, 0, "Music.app mode built a Bridge client")
-        XCTAssertNil(store.read().bridge, "a Music.app snapshot must carry no Bridge state")
+        XCTAssertEqual(factory.calls, 0, "Music.app mode built a SpanDAC client")
+        XCTAssertNil(store.read().bridge, "a Music.app snapshot must carry no SpanDAC state")
     }
 }

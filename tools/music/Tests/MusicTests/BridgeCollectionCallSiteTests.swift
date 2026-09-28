@@ -108,7 +108,7 @@ final class BridgeCollectionCallSiteTests: XCTestCase {
         s.playAlbum(title: "Album", artist: "A", shuffle: false)
         settleStatus(status)
 
-        XCTAssertTrue(wire.queued.isEmpty, "a Music.app-sourced album reached Bridge's wire")
+        XCTAssertTrue(wire.queued.isEmpty, "a Music.app-sourced album reached SpanDAC's wire")
         XCTAssertEqual(status.current()?.text, LibraryProvenance.bridgeSelectedMusicAppList)
         XCTAssertEqual(status.current()?.isError, true)
     }
@@ -125,7 +125,7 @@ final class BridgeCollectionCallSiteTests: XCTestCase {
         // Give the action the same window the Bridge tests get.
         settle(wire, expecting: 1, seconds: 0.6)
 
-        XCTAssertTrue(wire.queued.isEmpty, "Music.app mode sent a Bridge request")
+        XCTAssertTrue(wire.queued.isEmpty, "Music.app mode sent a SpanDAC request")
     }
 
     // MARK: - Artist play
@@ -143,7 +143,7 @@ final class BridgeCollectionCallSiteTests: XCTestCase {
         s.playArtist(name: "A", shuffle: false)
         settleStatus(status)
 
-        XCTAssertTrue(wire.queued.isEmpty, "a Music.app-sourced artist reached Bridge's wire")
+        XCTAssertTrue(wire.queued.isEmpty, "a Music.app-sourced artist reached SpanDAC's wire")
         XCTAssertEqual(status.current()?.text, LibraryProvenance.bridgeSelectedMusicAppList)
         XCTAssertEqual(status.current()?.isError, true)
     }
@@ -156,7 +156,7 @@ final class BridgeCollectionCallSiteTests: XCTestCase {
         s.playArtist(name: "A", shuffle: false)
         settle(wire, expecting: 1, seconds: 0.6)
 
-        XCTAssertTrue(wire.queued.isEmpty, "Music.app mode sent a Bridge request")
+        XCTAssertTrue(wire.queued.isEmpty, "Music.app mode sent a SpanDAC request")
     }
 
     // C3 item 8: `testABridgeRefusalReachesTheFooterInItsOwnWords` moved to

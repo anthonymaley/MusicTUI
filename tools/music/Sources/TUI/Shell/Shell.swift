@@ -21,7 +21,7 @@ func makeArtworkAPI() -> RESTAPIBackend? {
 /// shuffle has no set to shuffle, and MusicKit exposes no player volume), so
 /// listing them would advertise keys that only ever answer with a refusal.
 func shellFooterGlobals(mode: PlaybackMode) -> String {
-    mode == .source
+    mode.usesSource
         ? "Space \u{23EF}  < > Skip"
         : "Space \u{23EF}  < > Skip  z Reshuffle  +/\u{2212} Vol"
 }
@@ -126,7 +126,7 @@ func runShell() {
             // output, decided by `openPlaylistsScene` so the Bridge branch is
             // provable with no AppleScript reached — see its own doc comment.
             guard let scene = openPlaylistsScene(
-                bridgeSelected: routing.mode == .source, status: status,
+                bridgeSelected: routing.mode.usesSource, status: status,
                 loadMusicAppPlaylists: { fetchUserPlaylistNames(backend: backend) },
                 build: { names, subscription in
                     PlaylistsScene(backend: backend, routing: routing,
@@ -137,7 +137,8 @@ func runShell() {
                                    appQueue: appQueue, status: status, actions: actions,
                                    kittyEnabled: kittyEnabled,
                                    makeProvider: {
-                                       routing.mode == .source ? BridgeMusicProvider(control: SourceAppClient().control) : nil
+                                       let mode = routing.mode
+                                       return mode.usesSource ? BridgeMusicProvider(control: routing.client(for: mode).control) : nil
                                    },
                                    loadMusicAppPlaylists: { fetchUserPlaylistNames(backend: backend) },
                                    makeSources: { makePlaylistDataSources(backend: backend, names: $0, artworkAPI: makeArtworkAPI()) })
@@ -146,7 +147,14 @@ func runShell() {
             scenes[id] = scene
             return scene
         case .speakers:
-            let scene = SpeakersScene(backend: backend, status: status, actions: actions, routing: routing)
+            // SpanDACs on the network: reached through the coordinator's own
+            // factory, so the Output tab and every other surface build the
+            // same client for the same SpanDAC.
+            let spandac = SpanDACOutputs(makeClient: { routing.client(for: .networkSource($0)) },
+                                         post: { text, error, ttl in status.post(text, error: error, ttl: ttl) })
+            let scene = SpeakersScene(backend: backend, status: status, actions: actions, routing: routing,
+                                      makeNetworkClient: { routing.client(for: .networkSource($0)) },
+                                      spandac: spandac)
             scenes[id] = scene
             return scene
         case .library:
@@ -163,8 +171,9 @@ func runShell() {
                                      sources: makeLibraryDataSources(backend: backend, artworkAPI: makeArtworkAPI()),
                                      appQueue: appQueue, status: status, actions: actions, kittyEnabled: kittyEnabled,
                                      makeProvider: {
-                                         routing.mode == .source
-                                             ? BridgeMusicProvider(control: SourceAppClient().control)
+                                         let mode = routing.mode
+                                         return mode.usesSource
+                                             ? BridgeMusicProvider(control: routing.client(for: mode).control)
                                              : nil
                                      })
             scenes[id] = scene
@@ -187,7 +196,7 @@ func runShell() {
                                       // Always available; whether it is USED follows
                                       // the Output tab's selection, not an env var.
                                       routing: routing,
-                                      bridgeSelected: { routing.mode == .source },
+                                      bridgeSelected: { routing.mode.usesSource },
                                       kittyEnabled: kittyEnabled)
             scenes[id] = scene
             return scene
@@ -225,6 +234,10 @@ func runShell() {
     // own (not the poller's, not this input loop), and only while Bridge is the
     // selected output. It never launches Music.app: with Music.app not running,
     // plays wait for the next pass.
+    //
+    // The Mac's own SpanDAC only (`.source`), deliberately not a SpanDAC on the
+    // network: `feed` reads THIS Mac's play record, and plays made on another
+    // device are not in it. Recording those is its own decision.
     let playSync = PlaySyncWorker(
         isBridgeSelected: { routing.mode == .source },
         runner: PlaySyncEngine(paths: .live,
@@ -408,7 +421,7 @@ func runShell() {
             // (playQueueTrack is false only on an osascript ERROR, i.e. transient;
             // rolling back keeps the position honest and the next press retries.)
             case .next:
-                if routing.mode == .source {
+                if routing.mode.usesSource {
                     actions.run("Skip") {
                         try routing.perform(.next, musicApp: {},
                                             source: { try $0.control.next() },
@@ -425,7 +438,7 @@ func runShell() {
                     actions.run("Skip") { _ = try syncRun { try await backend.runMusic("next track") } }
                 }
             case .prev:
-                if routing.mode == .source {
+                if routing.mode.usesSource {
                     actions.run("Back") {
                         try routing.perform(.previous, musicApp: {},
                                             source: { try $0.control.previous() },

@@ -436,7 +436,7 @@ final class DiscoverScene: Scene {
             try require(!catalogIDs.isEmpty, "'\(title)': no tracks to play.")
             try self.route(.discoverPlayAll, catalogIDs: catalogIDs, disableShuffle: false,
                        musicAppTitle: title,
-                       bridgeToast: "Playing '\(title)' on Bridge — \(catalogIDs.count) tracks.")
+                       bridgeToast: "Playing '\(title)' on SpanDAC — \(catalogIDs.count) tracks.")
         }
     }
 
@@ -448,8 +448,8 @@ final class DiscoverScene: Scene {
             try self.route(.discoverTrackPlay, catalogIDs: catalogIDs, disableShuffle: true,
                        musicAppTitle: containerTitle,
                        bridgeToast: catalogIDs.count == 1
-                           ? "Playing \(trackName) on Bridge."
-                           : "Playing \(trackName) on Bridge — \(catalogIDs.count) tracks.")
+                           ? "Playing \(trackName) on SpanDAC."
+                           : "Playing \(trackName) on SpanDAC — \(catalogIDs.count) tracks.")
         }
     }
 
@@ -694,7 +694,7 @@ final class DiscoverScene: Scene {
         // 2026-09-22 by DoD 6's rename-away control, with `config.json` and
         // `user-token` moved aside. A fourth Music.app precondition checked
         // outside the Music.app branch, after the three step 3 removed.
-        if feed == nil, routing.mode != .source {
+        if feed == nil, !routing.mode.usesSource {
             out += ANSICode.moveTo(row: y, col: 3)
             return out + "\(ANSICode.dim)Sign in to see your Discover feed (music auth setup).\(ANSICode.reset)"
         }

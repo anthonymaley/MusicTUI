@@ -16,13 +16,43 @@
 import Foundation
 
 /// Which player MusicTUI controls, and where its catalogue reads come from.
-enum PlaybackMode: String, Codable, Equatable {
+enum PlaybackMode: Equatable, Hashable {
     /// Today's AppleScript player, AirPlay outputs, and the existing
     /// developer-key and keyless paths. The default, always.
-    case musicApp = "music_app"
+    case musicApp
     /// The MusicTUISource app's MusicKit player, sent to the Mac's configured
     /// output, with catalogue reads brokered through it and no developer key.
-    case source = "musictui_source"
+    case source
+    /// SpanDAC on another device (an iPad), reached over the paired network
+    /// link, named by its `spandac_id`. The same `slice.*` wire and the same
+    /// routing as `.source` (the pairing design, section 4.2); only the
+    /// carrier differs.
+    case networkSource(String)
+
+    /// The `mode` value in `mode.json`.
+    var storedValue: String {
+        switch self {
+        case .musicApp: return "music_app"
+        case .source: return "musictui_source"
+        case .networkSource: return "spandac_network"
+        }
+    }
+
+    /// True for every output a SpanDAC serves over the `slice.*` wire, on this
+    /// Mac or on the network: the question almost every caller means when it
+    /// asks "is SpanDAC selected".
+    var usesSource: Bool {
+        switch self {
+        case .musicApp: return false
+        case .source, .networkSource: return true
+        }
+    }
+
+    /// The SpanDAC this mode names, when it names one on the network.
+    var networkSourceID: String? {
+        if case .networkSource(let id) = self { return id }
+        return nil
+    }
 }
 
 final class PlaybackModeStore {
@@ -43,6 +73,9 @@ final class PlaybackModeStore {
 
     private struct Stored: Codable {
         let mode: String
+        /// The `spandac_id` a `spandac_network` selection names. Absent for
+        /// the other two values, so their files are byte-identical to before.
+        var target: String?
     }
 
     /// Music.app unless a stored selection says otherwise.
@@ -53,13 +86,26 @@ final class PlaybackModeStore {
     /// the shipping behaviour is the safe direction. An unknown value
     /// specifically matters for downgrades: a future mode must not be honoured
     /// by a build that cannot serve it.
+    ///
+    /// **`spandac_network` is a new VALUE, not a field beside
+    /// `musictui_source`** (the pairing design, 4.2). An older build decodes an
+    /// unknown value as Music.app, by the rule above; a field would be dropped
+    /// by its decoder and it would quietly drive the Mac's own socket instead
+    /// of the device the person chose. A `spandac_network` with no usable
+    /// `target` cannot be served either, so it reads as the default too.
     func mode() -> PlaybackMode {
         lock.lock(); defer { lock.unlock() }
         guard let data = FileManager.default.contents(atPath: path),
-              let stored = try? JSONDecoder().decode(Stored.self, from: data),
-              let mode = PlaybackMode(rawValue: stored.mode)
+              let stored = try? JSONDecoder().decode(Stored.self, from: data)
         else { return .musicApp }
-        return mode
+        switch stored.mode {
+        case "music_app": return .musicApp
+        case "musictui_source": return .source
+        case "spandac_network":
+            guard let target = stored.target, SpanDACPair.isCanonicalID(target) else { return .musicApp }
+            return .networkSource(target)
+        default: return .musicApp
+        }
     }
 
     /// Written atomically. A bare write truncates then refills, so a crash
@@ -71,7 +117,8 @@ final class PlaybackModeStore {
         lock.lock(); defer { lock.unlock() }
         let dir = (path as NSString).deletingLastPathComponent
         try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
-        guard let data = try? JSONEncoder().encode(Stored(mode: mode.rawValue)) else { return false }
+        guard let data = try? JSONEncoder().encode(Stored(mode: mode.storedValue, target: mode.networkSourceID))
+        else { return false }
         do {
             try data.write(to: URL(fileURLWithPath: path), options: .atomic)
             return true

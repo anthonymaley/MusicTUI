@@ -63,7 +63,7 @@ struct CLIBridgeEnv {
 let cliOutputLockWaitingProgress = "Waiting for an Output switch to finish…"
 
 /// Stderr, each time Bridge answers `warming` before a mutation.
-let cliBridgeWarmingProgress = "Bridge is preparing your library; waiting…"
+let cliBridgeWarmingProgress = "SpanDAC is preparing your library; waiting…"
 
 /// D5: what a command says when Bridge is selected and not ready. Nothing
 /// further is sent.

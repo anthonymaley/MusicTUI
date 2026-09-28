@@ -334,13 +334,13 @@ func cliBridgeNotServedReason(_ action: MusicTUIAction) -> String {
     // so the reason names what is missing rather than "yet". The
     // current-track variants never reach here; they keep their own reason.
     case .suggest:
-        return "Bridge output is selected, and music suggest needs Apple Music account reads Bridge doesn't serve. Switch Output to Music.app to use it."
+        return "SpanDAC output is selected, and music suggest needs Apple Music account reads SpanDAC doesn't serve. Switch Output to Music.app to use it."
     case .newReleases:
-        return "Bridge output is selected, and music new-releases needs a catalogue artist lookup Bridge doesn't serve. Switch Output to Music.app to use it."
+        return "SpanDAC output is selected, and music new-releases needs a catalogue artist lookup SpanDAC doesn't serve. Switch Output to Music.app to use it."
     default:
         break
     }
-    return "Bridge output is selected, and \(cliBridgeNotServedWhat(action)) isn't available from the CLI on Bridge yet. Use MusicTUI, or switch Output to Music.app."
+    return "SpanDAC output is selected, and \(cliBridgeNotServedWhat(action)) isn't available from the CLI on SpanDAC yet. Use MusicTUI, or switch Output to Music.app."
 }
 
 /// The `<what>` in D7's sentence, per action. Every case is named, so a new
@@ -406,7 +406,7 @@ private func cliBridgeNotServedWhat(_ action: MusicTUIAction) -> String {
 /// Anthony's ruling of 2026-09-16. Deliberately NOT the 12.14 wording: the verb
 /// is not deferred, its target is unresolvable, and naming a song fixes it.
 let currentTrackIsStaleInBridge =
-    "Bridge output is selected, so Music.app's current track is not what you are hearing. Name the song explicitly, or switch Output to Music.app."
+    "SpanDAC output is selected, so Music.app's current track is not what you are hearing. Name the song explicitly, or switch Output to Music.app."
 
 /// The matrix. Every case decided; nothing defaults.
 func routeAction(_ action: MusicTUIAction,
@@ -414,7 +414,7 @@ func routeAction(_ action: MusicTUIAction,
                  from surface: InvocationSurface) -> ActionRoute {
     // Binding rule 1: an install that never opens Output behaves exactly as it
     // ships. Everything that is not purely local goes to Music.app.
-    guard mode == .source else {
+    guard mode.usesSource else {
         switch action {
         case .radioFavourite, .radioAddURL, .auth,
              .libraryArtistTierFilter, .playlistsOpenNowPlaying:
@@ -515,7 +515,7 @@ func routeAction(_ action: MusicTUIAction,
     case .playlistTemp:
         return .refused("Temporary playlists exist to bound Music.app; the source builds its own queue.")
     case .similar, .similarToCurrentTrack, .suggest, .suggestFromCurrentTrack:
-        return .refused("Not available through Bridge in this version.")
+        return .refused("Not available through SpanDAC in this version.")
 
     /// `new-releases` itself is brokered and served; the `--like-current`
     /// variant is not, because its SEED is Music.app's current track and Bridge
@@ -525,7 +525,7 @@ func routeAction(_ action: MusicTUIAction,
     case .rotation:
         // CLI-only: no TUI key reaches this row. From the CLI, the clause above
         // dispatches it to Bridge (`slice.heavyRotation`, Part 2 P9); this TUI
-        // column stays refused (D10). Ruling 12.15: a person reads "Bridge".
+        // column stays refused (D10). Ruling 12.15: a person reads "SpanDAC".
         return .refused("Heavy rotation is on the command line only in this version: music rotation.")
     /// Ruling 12.13 (2026-09-15) deferred the queue-row jump from v1. Spec 6.2
     /// and DoD 3 require a VISIBLE refusal: `933e85d` predates the narrowing and

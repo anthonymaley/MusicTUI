@@ -2,7 +2,7 @@ import XCTest
 @testable import music
 
 /// Leaving Bridge for Music.app, after the 2026-09-22 gate found the Output tab
-/// refusing with "Couldn't confirm Bridge paused" whenever Bridge was idle.
+/// refusing with "Couldn't confirm SpanDAC paused" whenever SpanDAC was idle.
 ///
 /// An idle Bridge answers `slice.pause` with `bad_request` "did not reach paused
 /// within 3s" (reproduced by hand that day), and the old check threw on it

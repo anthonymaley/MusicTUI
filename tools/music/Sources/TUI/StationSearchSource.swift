@@ -65,17 +65,21 @@ enum SourceAppError: Error, Equatable {
     /// additive, so an older peer answers `unknown_op` for the five slice-2
     /// reads rather than reading as wholly incompatible. Carries the op name;
     /// the caller decides on the KIND, never the prose, and turns this into its
-    /// own "update Bridge" sentence per op.
+    /// own "update SpanDAC" sentence per op.
     case unsupported(String)
     /// The play-record cursor the caller sent belongs to a record Bridge no
     /// longer has. A restart, not a refusal: the caller asks again from the
     /// beginning. Carries Bridge's sentence, for display only.
     case ledgerChanged(String)
     /// Bridge is handling too many requests at once. Decoded on the kind so
-    /// it never renders as "Bridge refused" — the caller did nothing wrong,
+    /// it never renders as "SpanDAC refused" — the caller did nothing wrong,
     /// and the fix is to wait, not to change the request. No auto-retry
     /// here: the caller decides when to try again.
     case busy
+    /// A SpanDAC on the network could not be found, reached, agreed with or
+    /// read from. Carries the structured reason, so the Output tab can show a
+    /// short note and everything else the whole sentence.
+    case link(SpanDACLinkFailure)
 
     /// Deliberately short: it renders inside Radio's one-line message strip
     /// beside a `✗`, not in a log.
@@ -84,23 +88,24 @@ enum SourceAppError: Error, Equatable {
         // Op-neutral on purpose: `send` decodes this kind for EVERY op, and only
         // the library read knows it is about a library. A surface with something
         // better to say says it from the detail this case still carries.
-        case .warming:       return "Bridge is not ready yet"
+        case .warming:       return "SpanDAC is not ready yet"
         case .staleGeneration: return "Your library changed while it was being read"
         // The detail is already a whole sentence naming Bridge and the fault.
         case .malformedReply(let d): return d
-        case .notRunning:    return "Bridge is not running"
-        case .notAuthorized: return "Bridge has no Apple Music access"
-        case .refused(let d): return "Bridge refused: \(d)"
-        case .unreadable:    return "Bridge sent an unreadable reply"
-        case .timedOut:      return "Bridge did not answer in time"
-        case .socketUnavailable(let d): return "Bridge's control socket is unusable: \(d)"
-        case .didNotStart(let s): return "Bridge did not start playback (\(s))"
+        case .notRunning:    return "SpanDAC is not running"
+        case .notAuthorized: return "SpanDAC has no Apple Music access"
+        case .refused(let d): return "SpanDAC refused: \(d)"
+        case .unreadable:    return "SpanDAC sent an unreadable reply"
+        case .timedOut:      return "SpanDAC did not answer in time"
+        case .socketUnavailable(let d): return "SpanDAC's control socket is unusable: \(d)"
+        case .didNotStart(let s): return "SpanDAC did not start playback (\(s))"
         // Op-neutral, like `.warming`: a surface that can name the op (the
         // Output tab, `BridgeMusicProvider`) says something more specific from
         // the op it asked for rather than from this generic line.
-        case .unsupported: return "Bridge doesn't serve that yet — update Bridge"
-        case .ledgerChanged: return "Bridge's play record was replaced"
-        case .busy: return "Bridge is busy; try again in a moment."
+        case .unsupported: return "SpanDAC doesn't serve that yet — update SpanDAC"
+        case .ledgerChanged: return "SpanDAC's play record was replaced"
+        case .busy: return "SpanDAC is busy; try again in a moment."
+        case .link(let failure): return failure.sentence
         }
     }
 
@@ -491,12 +496,22 @@ struct SourceAppClient {
         discover = BridgeDiscoverFeed(path: path, transport: transport)
     }
 
+    /// The same, with the library reads and `slice.queue` on a transport of
+    /// their own (a longer timeout), as the Unix client has.
+    init(path: String, transport: @escaping (String, String) throws -> String,
+         libraryTransport: @escaping (String, String) throws -> String) {
+        playback = SourceAppPlayback(path: path, transport: transport)
+        stationSearch = SourceAppStationSearch(path: path, transport: transport)
+        control = SourceAppControl(path: path, transport: transport, libraryTransport: libraryTransport)
+        discover = BridgeDiscoverFeed(path: path, transport: transport)
+    }
+
     /// Bridge's readiness for the Output tab. Never throws: a tab that cannot
     /// render its own status is worse than one showing why.
     ///
     /// **Every failure keeps its own words.** This was `(try?  …) ?? .notRunning`,
     /// which turned a permission error, a timeout, a malformed reply and a
-    /// missing app into one sentence — and printed "Bridge is not running" over a
+    /// missing app into one sentence — and printed "SpanDAC is not running" over a
     /// running Bridge on 2026-09-16. A `try?` here is not a shortcut; it is the
     /// defect.
     func readiness() -> SourceReadiness {
@@ -514,7 +529,7 @@ struct SourceAppClient {
 /// to come, and a person meets a clear sentence instead of silence or a crash.
 /// Every one of these must be gone before v1 is done.
 func bridgeNotWiredYet(_ what: String) -> ActionError {
-    ActionError(message: "\(what) is not wired to Bridge yet")
+    ActionError(message: "\(what) is not wired to SpanDAC yet")
 }
 
 // MARK: - Control: status, transport and queue
@@ -541,6 +556,9 @@ struct SourceStatus: Equatable {
     /// Playback position, 0-based within the PRESENT entries. A different
     /// quantity from `queuePresent`, which counts songs ready while building.
     var queueIndex: Int? = nil
+    /// What the SpanDAC says is on its output. Nil when the reply carries no
+    /// `output` key (a SpanDAC that predates it), which is read as before.
+    var output: SourceOutputInfo? = nil
 }
 
 /// One Library or Playlist row, by the triple the app joins on.
@@ -572,7 +590,7 @@ func bridgeRows(from tracks: [TrackListEntry], named name: String) throws -> [So
     }
     guard rows.count == tracks.count else {
         throw ActionError(
-            message: "\(tracks.count - rows.count) of \(tracks.count) tracks in '\(name)' have no album, so Bridge cannot identify them")
+            message: "\(tracks.count - rows.count) of \(tracks.count) tracks in '\(name)' have no album, so SpanDAC cannot identify them")
     }
     return rows
 }
@@ -728,7 +746,7 @@ struct SourceAppControl: SourceControlling {
     /// Measured 2026-09-23: Bridge drains its MusicKit library in ~6.4s and
     /// caches it. With the cache expired, the first page paid for that drain
     /// inline and blew the shared 10s timeout, and a person opening the Library
-    /// tab saw "Bridge did not answer in time" over an empty list. Bridge now
+    /// tab saw "SpanDAC did not answer in time" over an empty list. SpanDAC now
     /// serves the last snapshot immediately and refreshes behind it, so this is
     /// a SAFETY MARGIN rather than the fix — a cold start with no snapshot at
     /// all answers `warming` in milliseconds and is retried on its own hint,
@@ -783,7 +801,8 @@ struct SourceAppControl: SourceControlling {
                             queuePresent: queue?["present"] as? Int,
                             queueReason: queue?["reason"] as? String,
                             queueBuiltBeforeFailure: queue?["built_before_failure"] as? Int,
-                            queueIndex: queue?["index"] as? Int)
+                            queueIndex: queue?["index"] as? Int,
+                            output: Self.outputInfo(from: status))
     }
 
     /// Contract 3. The reply's rows carry MusicKit LIBRARY ids, which is the
@@ -884,11 +903,11 @@ struct SourceAppControl: SourceControlling {
             return row
         case (.exactly, .row(let row)):
             throw SourceAppError.malformedReply(
-                "Bridge's \(opName) list contains a row of kind \(row.kind.rawValue)")
+                "SpanDAC's \(opName) list contains a row of kind \(row.kind.rawValue)")
         case (.exactly, .unknownKind(let kind)):
-            throw SourceAppError.malformedReply("Bridge's \(opName) list contains a row of kind \(kind)")
+            throw SourceAppError.malformedReply("SpanDAC's \(opName) list contains a row of kind \(kind)")
         case (_, .malformed(let what)):
-            throw SourceAppError.malformedReply("Bridge's \(opName) page contains \(what)")
+            throw SourceAppError.malformedReply("SpanDAC's \(opName) page contains \(what)")
         }
     }
 
@@ -914,13 +933,13 @@ struct SourceAppControl: SourceControlling {
         let reply = try send(body, over: libraryTransport)
 
         guard let items = reply["items"] as? [[String: Any]] else {
-            throw SourceAppError.malformedReply("Bridge's \(opName) page is missing items")
+            throw SourceAppError.malformedReply("SpanDAC's \(opName) page is missing items")
         }
         guard let generation = reply["generation"] as? Int else {
-            throw SourceAppError.malformedReply("Bridge's \(opName) page is missing generation")
+            throw SourceAppError.malformedReply("SpanDAC's \(opName) page is missing generation")
         }
         guard let total = reply["total"] as? Int else {
-            throw SourceAppError.malformedReply("Bridge's \(opName) page is missing total")
+            throw SourceAppError.malformedReply("SpanDAC's \(opName) page is missing total")
         }
         // A MISSING key and an explicit null are different claims: null says
         // "this is the last page", absent says nothing at all. Read as one they
@@ -929,7 +948,7 @@ struct SourceAppControl: SourceControlling {
         // gives `NSNull` for an explicit null and nothing for an absent key,
         // which is exactly the distinction needed.
         guard let cursorValue = reply["next_cursor"] else {
-            throw SourceAppError.malformedReply("Bridge's \(opName) page is missing next_cursor")
+            throw SourceAppError.malformedReply("SpanDAC's \(opName) page is missing next_cursor")
         }
         let nextCursor: String?
         switch cursorValue {
@@ -937,7 +956,7 @@ struct SourceAppControl: SourceControlling {
         case let text as String:   nextCursor = text
         default:
             throw SourceAppError.malformedReply(
-                "Bridge's \(opName) page has a next_cursor that is neither text nor null")
+                "SpanDAC's \(opName) page has a next_cursor that is neither text nor null")
         }
 
         var rows: [MusicRow] = []
@@ -953,11 +972,11 @@ struct SourceAppControl: SourceControlling {
         var skippedVideos = 0
         if readsSkippedVideos {
             guard let raw = reply["skipped_videos"] else {
-                throw SourceAppError.malformedReply("Bridge's \(opName) page is missing skipped_videos")
+                throw SourceAppError.malformedReply("SpanDAC's \(opName) page is missing skipped_videos")
             }
             guard let skipped = raw as? Int, skipped >= 0 else {
                 throw SourceAppError.malformedReply(
-                    "Bridge's \(opName) page has a skipped_videos that is not a count")
+                    "SpanDAC's \(opName) page has a skipped_videos that is not a count")
             }
             skippedVideos = skipped
         }
@@ -987,10 +1006,10 @@ struct SourceAppControl: SourceControlling {
         let reply = try send(["op": op, "id": id], over: libraryTransport)
 
         guard let generation = reply["generation"] as? Int else {
-            throw SourceAppError.malformedReply("Bridge's \(opName) reply is missing generation")
+            throw SourceAppError.malformedReply("SpanDAC's \(opName) reply is missing generation")
         }
         guard let items = reply["items"] as? [[String: Any]] else {
-            throw SourceAppError.malformedReply("Bridge's \(opName) reply is missing items")
+            throw SourceAppError.malformedReply("SpanDAC's \(opName) reply is missing items")
         }
         var rows: [MusicRow] = []
         for item in items {
@@ -1054,7 +1073,7 @@ struct SourceAppControl: SourceControlling {
         guard let raw = reply["skipped_unavailable"] else { return 0 }
         guard CFGetTypeID(raw as CFTypeRef) != CFBooleanGetTypeID(),
               let skipped = raw as? Int, skipped >= 0, skipped < sent else {
-            throw SourceAppError.malformedReply("Bridge's queue reply has a skipped_unavailable that is not a count")
+            throw SourceAppError.malformedReply("SpanDAC's queue reply has a skipped_unavailable that is not a count")
         }
         return skipped
     }
@@ -1218,17 +1237,49 @@ struct SourceAppControl: SourceControlling {
     // MARK: - private
 
     /// Ready only when the app says it is authorised AND speaks a contract this
-    /// build knows. Anything else carries the reason a person reads on Output.
-    private func readiness(from status: [String: Any]) -> SourceReadiness {
+    /// build knows AND, when it reports its output, a DAC is connected there.
+    /// Anything else carries the reason a person reads on Output.
+    ///
+    /// **Absent and unknown are different.** No `output` key is an older
+    /// SpanDAC and is read exactly as before. An explicit `unknown` is a newer
+    /// one that has not read its DAC yet: not ready, so the routing transaction
+    /// and the CLI refuse it too. SpanDAC is DAC-only, and an unknown output
+    /// must never fall through to a speaker.
+    func readiness(from status: [String: Any]) -> SourceReadiness {
         if let contract = status["contract"] as? Int, contract != sourceContractVersion {
-            return .unavailable("Bridge speaks a different version (\(contract)); update one of them")
+            return .unavailable("SpanDAC speaks a different version (\(contract)); update one of them")
         }
         switch status["authorization"] as? String {
-        case "authorized":     return .ready
-        case "not_determined": return .unavailable("Bridge has not been granted Apple Music access yet")
-        case "denied":         return .unavailable("Bridge was denied Apple Music access")
+        case "authorized":     break
+        case "not_determined": return .unavailable("SpanDAC has not been granted Apple Music access yet")
+        case "denied":         return .unavailable("SpanDAC was denied Apple Music access")
         case "restricted":     return .unavailable("Apple Music access is restricted on this Mac")
-        default:               return .unavailable("Bridge could not read its Apple Music access")
+        default:               return .unavailable("SpanDAC could not read its Apple Music access")
+        }
+        switch Self.outputInfo(from: status)?.dac {
+        case nil, .connected?: return .ready
+        case .notConnected?:   return .unavailable("plug in your DAC")
+        case .unknown?:        return .unavailable("SpanDAC is still checking for a DAC")
+        }
+    }
+
+    /// The optional `output` object of `slice.status`: `dac` is `connected`,
+    /// `not_connected` or `unknown`; `name` and `max_rate_hz` only beside a
+    /// connected DAC. No key (or null) is nil. A key this build cannot read
+    /// is `unknown`, never connected.
+    static func outputInfo(from status: [String: Any]) -> SourceOutputInfo? {
+        guard let raw = status["output"], !(raw is NSNull) else { return nil }
+        guard let output = raw as? [String: Any] else {
+            return SourceOutputInfo(dac: .unknown, name: nil, maxRateHz: nil)
+        }
+        switch output["dac"] as? String {
+        case "connected":
+            return SourceOutputInfo(dac: .connected, name: output["name"] as? String,
+                                    maxRateHz: output["max_rate_hz"] as? Int)
+        case "not_connected":
+            return SourceOutputInfo(dac: .notConnected, name: nil, maxRateHz: nil)
+        default:
+            return SourceOutputInfo(dac: .unknown, name: nil, maxRateHz: nil)
         }
     }
 
@@ -1267,7 +1318,7 @@ struct SourceAppControl: SourceControlling {
                 // is the decoder every paged library read and control op goes
                 // through, so it is the one most likely to see "busy" under
                 // real load. Decoded on the kind so it never renders as
-                // "Bridge refused" (Anthony/controller, 2026-09-25).
+                // "SpanDAC refused" (Anthony/controller, 2026-09-25).
                 throw SourceAppError.busy
             case "warming":
                 // The ONE refusal that carries a number, so it cannot survive as
@@ -1288,11 +1339,11 @@ struct SourceAppControl: SourceControlling {
             case "unknown_op":
                 // An OLDER Bridge that predates this op (D6, additive contract).
                 // Carries the op name, not the prose, so the caller can say
-                // which capability is missing rather than "Bridge refused".
+                // which capability is missing rather than "SpanDAC refused".
                 throw SourceAppError.unsupported(op)
             case "unavailable":
                 // Addendum U (U-R4): "None of those songs are available to
-                // Bridge." and "'<title>' isn't available to Bridge." —
+                // SpanDAC." and "'<title>' isn't available to SpanDAC." —
                 // decoded on the kind explicitly (not left to fall into
                 // `default` unnoticed) so the mapping is intentional and its
                 // own test pins it, even though the outcome is the same as
@@ -1343,7 +1394,7 @@ extension SourceAppControl: CompletedPlaysReading {
     static func completedPlaysPage(from reply: [String: Any], ledgerID requested: String?,
                                    after: Int, limit: Int) throws -> CompletedPlaysPage {
         func bad(_ what: String) -> SourceAppError {
-            .malformedReply("Bridge's play record page \(what)")
+            .malformedReply("SpanDAC's play record page \(what)")
         }
 
         guard let ledger = reply["ledger_id"] as? String else { throw bad("is missing ledger_id") }

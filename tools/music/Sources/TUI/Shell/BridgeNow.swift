@@ -99,8 +99,8 @@ struct BridgeLinkTracker {
 /// the settle window after a command, then a queue still being built.
 func bridgeStatusLine(_ b: BridgeNow) -> String? {
     switch b.link {
-    case .checking:      return "Checking Bridge\u{2026}"
-    case .notResponding: return "Bridge is not responding."
+    case .checking:      return "Checking SpanDAC\u{2026}"
+    case .notResponding: return "SpanDAC is not responding."
     case .unavailable(let reason): return reason.hasSuffix(".") ? reason : reason + "."
     case .answering:     break
     }

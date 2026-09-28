@@ -2,7 +2,7 @@ import XCTest
 @testable import music
 
 /// The Output tab's Bridge readiness, after the 2026-09-16 gate found it
-/// reporting "Bridge is not running" while Bridge was running and answering.
+/// reporting "SpanDAC is not running" while SpanDAC was running and answering.
 ///
 /// The defect was not protocol drift: a direct `slice.status` returned
 /// `authorization:"authorized"`, `contract:2`. `refreshBridgeReadiness()` was
@@ -33,7 +33,8 @@ final class BridgeReadinessTests: XCTestCase {
     /// defaults; the counter is opt-in instrumentation for the one test that
     /// asserts on it.
     private func scene(reply: @escaping (String, String) throws -> String,
-                        refreshCounter: RefreshCallCounter? = nil) -> SpeakersScene {
+                        refreshCounter: RefreshCallCounter? = nil,
+                        clock: @escaping () -> Date = Date.init) -> SpeakersScene {
         let store = PlaybackModeStore(path: NSTemporaryDirectory() + "mode-\(UUID().uuidString).json")
         return SpeakersScene(backend: AppleScriptBackend(executable: "/usr/bin/true"),
                              status: StatusStore(),
@@ -42,6 +43,8 @@ final class BridgeReadinessTests: XCTestCase {
                                                          makeSource: { SourceAppClient(path: "/nonexistent",
                                                                                        transport: reply) }),
                              makeSourceClient: { SourceAppClient(path: "/nonexistent", transport: reply) },
+                             macName: "Studio Mac",
+                             clock: clock,
                              fetchSpeakers: {
                                  refreshCounter?.bumpSpeakers()
                                  return []
@@ -82,7 +85,7 @@ final class BridgeReadinessTests: XCTestCase {
     func testEnteringTheTabProbesOnceAndDeliversTheResult() {
         let s = scene(reply: { _, _ in self.authorized })
         _ = s.tick(snapshot: NowPlayingSnapshot(outcome: .stopped, history: [], surrounding: []))
-        XCTAssertGreaterThan(s.readinessProbeCount, 0, "entering the tab never asked Bridge anything")
+        XCTAssertGreaterThan(s.readinessProbeCount, 0, "entering the tab never asked SpanDAC anything")
         settle(s)
         XCTAssertEqual(s.bridgeReadinessForTest, .ready)
     }
@@ -102,16 +105,42 @@ final class BridgeReadinessTests: XCTestCase {
         XCTAssertEqual(s.bridgeReadinessForTest, .ready)
     }
 
-    /// It asks on entry, not on a timer. A tab left open must not keep hitting
-    /// the socket.
-    func testItDoesNotPollWhileTheTabStaysOpen() {
-        let s = scene(reply: { _, _ in self.authorized })
+    /// The Mac's row asks again every `macReprobeInterval` while the tab is
+    /// shown, so a row that could not play turns ready by itself. This
+    /// REVERSES the earlier rule, pinned here as "it does not poll while the
+    /// tab stays open": the agreed pairing redesign makes readiness a
+    /// heartbeat while the tab is on screen. What stays: never a tight spin
+    /// (one probe in flight, and none before the interval), and never while
+    /// the tab is hidden (only `tick()` asks, and hidden tabs are not ticked).
+    func testTheMacRowReprobesWhileTheTabIsShown() {
+        var now = Date(timeIntervalSinceReferenceDate: 1_000)
+        let s = scene(reply: { _, _ in self.authorized }, clock: { now })
         _ = s.tick(snapshot: NowPlayingSnapshot(outcome: .stopped, history: [], surrounding: []))
         settle(s)
         let afterEntry = s.readinessProbeCount
-        for _ in 0..<40 { _ = s.tick(snapshot: NowPlayingSnapshot(outcome: .stopped, history: [], surrounding: [])) }   // same sitting, no gap
-        XCTAssertEqual(s.readinessProbeCount, afterEntry,
-                       "readiness is polling: it must be asked on entry, not on a heartbeat")
+        XCTAssertEqual(afterEntry, 1)
+
+        // Same sitting, no time passed: no new probe, however often it ticks.
+        for _ in 0..<40 { _ = s.tick(snapshot: NowPlayingSnapshot(outcome: .stopped, history: [], surrounding: [])) }
+        XCTAssertEqual(s.readinessProbeCount, afterEntry, "it must not spin against the socket")
+
+        // Hidden: nothing ticks, so nothing asks, however long it stays hidden.
+        now = now.addingTimeInterval(60)
+        XCTAssertEqual(s.readinessProbeCount, afterEntry)
+
+        // Shown again past the interval: it asks, once.
+        _ = s.tick(snapshot: NowPlayingSnapshot(outcome: .stopped, history: [], surrounding: []))
+        XCTAssertEqual(s.readinessProbeCount, afterEntry + 1)
+        for _ in 0..<5 { _ = s.tick(snapshot: NowPlayingSnapshot(outcome: .stopped, history: [], surrounding: [])) }
+        XCTAssertEqual(s.readinessProbeCount, afterEntry + 1, "one probe in flight, none before the next interval")
+
+        // And every interval after that.
+        let deadline = Date().addingTimeInterval(2)
+        while s.hasPendingReadinessForTest == false && Date() < deadline { usleep(10_000) }
+        now = now.addingTimeInterval(SpeakersScene.macReprobeInterval)
+        _ = s.tick(snapshot: NowPlayingSnapshot(outcome: .stopped, history: [], surrounding: []))
+        _ = s.tick(snapshot: NowPlayingSnapshot(outcome: .stopped, history: [], surrounding: []))
+        XCTAssertEqual(s.readinessProbeCount, afterEntry + 2)
     }
 
     /// `tick()`'s speaker/EQ/visualizer refresh must go through the injected
@@ -140,12 +169,12 @@ final class BridgeReadinessTests: XCTestCase {
     /// bug and a missing app print the same sentence.
     func testEachFailureKeepsItsOwnReason() {
         let cases: [(SourceAppError, String)] = [
-            (.notRunning, "Bridge is not running"),
-            (.notAuthorized, "Bridge has no Apple Music access"),
-            (.refused("queue_invalid"), "Bridge refused: queue_invalid"),
-            (.timedOut, "Bridge did not answer in time"),
-            (.socketUnavailable("permission denied"), "Bridge's control socket is unusable: permission denied"),
-            (.unreadable, "Bridge sent a reply this build could not read"),
+            (.notRunning, "SpanDAC is not running"),
+            (.notAuthorized, "SpanDAC has no Apple Music access"),
+            (.refused("queue_invalid"), "SpanDAC refused: queue_invalid"),
+            (.timedOut, "SpanDAC did not answer in time"),
+            (.socketUnavailable("permission denied"), "SpanDAC's control socket is unusable: permission denied"),
+            (.unreadable, "SpanDAC sent a reply this build could not read"),
         ]
         var seen = Set<String>()
         for (error, expected) in cases {
@@ -190,7 +219,7 @@ final class BridgeReadinessTests: XCTestCase {
         let s = scene(reply: { _, _ in denied })
         _ = s.tick(snapshot: NowPlayingSnapshot(outcome: .stopped, history: [], surrounding: []))
         settle(s)
-        XCTAssertEqual(s.bridgeReadinessForTest, .unavailable("Bridge was denied Apple Music access"))
+        XCTAssertEqual(s.bridgeReadinessForTest, .unavailable("SpanDAC was denied Apple Music access"))
     }
 
     // MARK: - The real client path, not just the mapping function
@@ -198,15 +227,15 @@ final class BridgeReadinessTests: XCTestCase {
     /// `SourceReadiness.from(_:)` being right proves nothing if the client never
     /// calls it. This drives `SourceAppClient.readiness()` itself — the code the
     /// Output tab actually runs — with a transport that throws each error in
-    /// turn. Before this fix every row here returned "Bridge is not running".
+    /// turn. Before this fix every row here returned "SpanDAC is not running".
     func testTheClientPathClassifiesEveryThrownError() {
         let cases: [(SourceAppError, String)] = [
-            (.notRunning, "Bridge is not running"),
-            (.notAuthorized, "Bridge has no Apple Music access"),
-            (.refused("queue_invalid"), "Bridge refused: queue_invalid"),
-            (.timedOut, "Bridge did not answer in time"),
-            (.socketUnavailable("permission denied"), "Bridge's control socket is unusable: permission denied"),
-            (.unreadable, "Bridge sent a reply this build could not read"),
+            (.notRunning, "SpanDAC is not running"),
+            (.notAuthorized, "SpanDAC has no Apple Music access"),
+            (.refused("queue_invalid"), "SpanDAC refused: queue_invalid"),
+            (.timedOut, "SpanDAC did not answer in time"),
+            (.socketUnavailable("permission denied"), "SpanDAC's control socket is unusable: permission denied"),
+            (.unreadable, "SpanDAC sent a reply this build could not read"),
         ]
         var seen = Set<String>()
         for (thrown, expected) in cases {
@@ -226,7 +255,7 @@ final class BridgeReadinessTests: XCTestCase {
         let client = SourceAppClient(path: "/nonexistent",
                                      transport: { _, _ in #"{"ok":true,"op":"slice.status"}"# })
         XCTAssertEqual(client.readiness(),
-                       .unavailable("Bridge sent a reply this build could not read"))
+                       .unavailable("SpanDAC sent a reply this build could not read"))
     }
 
     // MARK: - A completed switch publishes, it does not assign
@@ -261,7 +290,9 @@ final class BridgeReadinessTests: XCTestCase {
                                   fetchEQ: { _ in EQSnapshot(enabled: false, current: nil, presets: []) },
                                   fetchVisualizer: { _ in false })
 
-        // Cursor starts on the Music.app row, which is the switch TARGET here.
+        // The cursor starts on row 1 (this Mac). With no speakers loaded yet,
+        // row 2 is the stand-in Music.app row, which is the switch TARGET here.
+        _ = scene.handle(.down)
         let before = scene.bridgeReadinessForTest
         // A fixed wall-clock poll here raced under full-suite load (P7):
         // GCD scheduling of selectMode's action body competes with every
@@ -280,7 +311,7 @@ final class BridgeReadinessTests: XCTestCase {
 
         _ = scene.tick(snapshot: NowPlayingSnapshot(outcome: .stopped, history: [], surrounding: []))
         XCTAssertEqual(scene.bridgeReadinessForTest,
-                       .unavailable("Bridge was denied Apple Music access"),
+                       .unavailable("SpanDAC was denied Apple Music access"),
                        "tick did not apply the switch's published readiness")
         XCTAssertFalse(scene.hasPendingReadinessForTest, "tick left the inbox undrained")
     }

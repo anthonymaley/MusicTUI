@@ -47,7 +47,7 @@ enum CLIBridgeReplies {
     }
     static let ok = #"{"ok":true}"#
     static func warming(retryAfter: Double) -> String {
-        #"{"ok":false,"error":{"kind":"warming","detail":"Bridge is reading your library","retry_after":"# + "\(retryAfter)}}"
+        #"{"ok":false,"error":{"kind":"warming","detail":"SpanDAC is reading your library","retry_after":"# + "\(retryAfter)}}"
     }
     static func refused(_ detail: String) -> String {
         #"{"ok":false,"error":{"kind":"bad_request","detail":""# + detail + #""}}"#

@@ -18,7 +18,9 @@ let package = Package(
         .testTarget(
             name: "MusicTests",
             dependencies: ["music"],
-            path: "Tests/MusicTests"
+            path: "Tests/MusicTests",
+            // Read by path (`#filePath`), like the other fixtures here.
+            exclude: ["Fixtures"]
         ),
     ]
 )

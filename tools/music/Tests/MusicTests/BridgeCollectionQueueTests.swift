@@ -111,7 +111,7 @@ final class BridgeCollectionQueueTests: XCTestCase {
         XCTAssertThrowsError(try bridgeRows(from: tracks, named: "Mixed")) { error in
             let message = (error as? ActionError)?.message ?? "\(error)"
             XCTAssertEqual(message,
-                           "2 of 3 tracks in 'Mixed' have no album, so Bridge cannot identify them")
+                           "2 of 3 tracks in 'Mixed' have no album, so SpanDAC cannot identify them")
         }
     }
 

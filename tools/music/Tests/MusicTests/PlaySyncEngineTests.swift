@@ -86,7 +86,7 @@ private final class FakeFeed: CompletedPlaysReading {
         if let error = errors[index] { throw error }
         if let override { return try override(requested, after, limit) }
         if let requested, requested != ledgerID {
-            throw SourceAppError.ledgerChanged("Bridge's play record was replaced; read it again from the start.")
+            throw SourceAppError.ledgerChanged("SpanDAC's play record was replaced; read it again from the start.")
         }
         let page = Array(plays.filter { $0.seq > after }.prefix(limit))
         let next = page.last?.seq ?? after
@@ -1231,8 +1231,8 @@ final class PlaySyncEngineTests: XCTestCase {
         XCTAssertEqual(h.pass().fetch, .bridgeTooOld)
         XCTAssertEqual(h.entry(1)?.state, .done, "apply continues after a failed fetch")
 
-        h.feed.errors[2] = .malformedReply("Bridge's play record page is missing plays")
-        XCTAssertEqual(h.pass().fetch, .failed("Bridge's play record page is missing plays"))
+        h.feed.errors[2] = .malformedReply("SpanDAC's play record page is missing plays")
+        XCTAssertEqual(h.pass().fetch, .failed("SpanDAC's play record page is missing plays"))
         XCTAssertEqual(h.pass(inspector: nil).fetch, .ok(newPlays: 0))
         XCTAssertEqual(h.engine(useFeed: false).pass(.explicit).fetch, .skipped)
     }

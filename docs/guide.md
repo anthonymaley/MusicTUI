@@ -258,13 +258,13 @@ apple-music/
 │   │   │   ├── AuthManager.swift
 │   │   │   ├── JWTGenerator.swift
 │   │   │   └── AuthPage.swift
-│   │   ├── PlaySync/                  # recording Bridge's finished library plays in Music.app (journal, writer)
+│   │   ├── PlaySync/                  # recording SpanDAC's finished library plays in Music.app (journal, writer)
 │   │   ├── Commands/
 │   │   │   ├── PlaybackCommands.swift     # play/pause/skip/back/stop/now/seek/shuffle/repeat
 │   │   │   ├── PlayParser.swift           # play arg parser: query/speakers/volume/shuffle
 │   │   │   ├── PlayResolution.swift       # play query resolution order
 │   │   │   ├── LoveCommands.swift         # love/unlove
-│   │   │   ├── SyncPlaysCommand.swift     # sync-plays: record Bridge plays in Music.app
+│   │   │   ├── SyncPlaysCommand.swift     # sync-plays: record SpanDAC plays in Music.app
 │   │   │   ├── HistoryCommands.swift      # recent/rotation
 │   │   │   ├── SpeakerCommands.swift
 │   │   │   ├── VolumeCommands.swift
@@ -276,16 +276,16 @@ apple-music/
 │   │   │   ├── RadioCommands.swift        # radio list/play/add/search
 │   │   │   ├── DiscoveryCommands.swift
 │   │   │   ├── MixCommand.swift
-│   │   │   ├── CLIBridgeGate.swift        # gates a verb into Music.app's body or a Bridge one
+│   │   │   ├── CLIBridgeGate.swift        # gates a verb into Music.app's body or a SpanDAC one
 │   │   │   ├── CLIBridgeDispatch.swift    # the CLI's one dispatch seam: mode read, output lock, mutate
-│   │   │   ├── CLIBridgeTransport.swift   # Bridge now/pause/skip/back/stop/seek
-│   │   │   ├── CLIBridgePlay.swift        # Bridge `music play` (resume/N/playlist/album/song/artist/catalog song link)
-│   │   │   ├── CLIBridgeSelection.swift   # matches a name against Bridge's own library
-│   │   │   ├── CLIBridgeNow.swift         # pure now/play-result rendering for Bridge output
+│   │   │   ├── CLIBridgeTransport.swift   # SpanDAC now/pause/skip/back/stop/seek
+│   │   │   ├── CLIBridgePlay.swift        # SpanDAC `music play` (resume/N/playlist/album/song/artist/catalog song link)
+│   │   │   ├── CLIBridgeSelection.swift   # matches a name against SpanDAC's own library
+│   │   │   ├── CLIBridgeNow.swift         # pure now/play-result rendering for SpanDAC output
 │   │   │   ├── CLIBridgeReads.swift       # pure renderers: catalog search, station search, discover, playlist/history reads
-│   │   │   ├── CLIBridgeListings.swift    # Bridge `discover`/`playlist list`/`playlist tracks`/`similar`
-│   │   │   ├── CLIBridgeRadio.swift       # Bridge `radio search`/`radio add` lookup/`radio play` (never auto-picks)
-│   │   │   └── BridgePlaybackRef.swift    # a cached row → a Bridge play request, by origin (D3, D6)
+│   │   │   ├── CLIBridgeListings.swift    # SpanDAC `discover`/`playlist list`/`playlist tracks`/`similar`
+│   │   │   ├── CLIBridgeRadio.swift       # SpanDAC `radio search`/`radio add` lookup/`radio play` (never auto-picks)
+│   │   │   └── BridgePlaybackRef.swift    # a cached row → a SpanDAC play request, by origin (D3, D6)
 │   │   ├── Models/
 │   │   │   ├── OutputFormat.swift
 │   │   │   └── ResultCache.swift
@@ -302,7 +302,7 @@ apple-music/
 │   │       ├── StationStore.swift         # local favorites (stations.json)
 │   │       ├── StationPlayback.swift      # https:// → music:// URL rewrite
 │   │       ├── OutputLock.swift           # cross-process lock: a TUI Output switch and a CLI playback change can't race
-│   │       ├── MusicAppPauseConfirm.swift # confirms Music.app actually paused before the switch commits to Bridge
+│   │       ├── MusicAppPauseConfirm.swift # confirms Music.app actually paused before the switch commits to SpanDAC
 │   │       ├── PlaylistBrowserModel.swift, PlaylistDataSources.swift
 │   │       ├── NowPlayingTUI.swift, TUILayout.swift
 │   │       ├── ListPicker.swift, MultiSelectList.swift, VolumeMixer.swift

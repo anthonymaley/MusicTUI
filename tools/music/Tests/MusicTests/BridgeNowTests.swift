@@ -67,8 +67,8 @@ final class BridgeNowTests: XCTestCase {
     }
 
     func testAnUnreadyReplyShowsItsReasonAtOnce() {
-        for reason in ["Bridge was denied Apple Music access",
-                       "Bridge speaks a different version (3); update one of them"] {
+        for reason in ["SpanDAC was denied Apple Music access",
+                       "SpanDAC speaks a different version (3); update one of them"] {
             let b = bridgeNow(from: status(readiness: .unavailable(reason)))
             XCTAssertEqual(b.link, .unavailable(reason))
             XCTAssertEqual(bridgeStatusLine(b), reason + ".")
@@ -99,7 +99,7 @@ final class BridgeNowTests: XCTestCase {
         XCTAssertEqual(gone.playback, "stopped")
         XCTAssertEqual(gone.queue, BridgeNow.Queue.none)
         XCTAssertNil(gone.index)
-        XCTAssertEqual(bridgeStatusLine(gone), "Bridge is not responding.")
+        XCTAssertEqual(bridgeStatusLine(gone), "SpanDAC is not responding.")
         XCTAssertFalse(t.inGrace)
     }
 
@@ -116,7 +116,7 @@ final class BridgeNowTests: XCTestCase {
         let b = t.record(.failure(Down()))
         XCTAssertEqual(b, BridgeNow.empty)
         XCTAssertEqual(b.link, .checking)
-        XCTAssertEqual(bridgeStatusLine(b), "Checking Bridge\u{2026}")
+        XCTAssertEqual(bridgeStatusLine(b), "Checking SpanDAC\u{2026}")
     }
 
     // MARK: - Lines
@@ -127,8 +127,8 @@ final class BridgeNowTests: XCTestCase {
     }
 
     func testEveryStatusString() {
-        XCTAssertEqual(bridgeStatusLine(now(link: .checking)), "Checking Bridge\u{2026}")
-        XCTAssertEqual(bridgeStatusLine(now(link: .notResponding)), "Bridge is not responding.")
+        XCTAssertEqual(bridgeStatusLine(now(link: .checking)), "Checking SpanDAC\u{2026}")
+        XCTAssertEqual(bridgeStatusLine(now(link: .notResponding)), "SpanDAC is not responding.")
         XCTAssertEqual(bridgeStatusLine(now(link: .unavailable("Nope"))), "Nope.")
         XCTAssertEqual(bridgeStatusLine(now(queue: .invalid(reason: "r", built: 2, requested: 9))),
                        "Stopped: r. 2 of 9 built.")
@@ -147,7 +147,7 @@ final class BridgeNowTests: XCTestCase {
         let building = BridgeNow.Queue.building(ready: 3, requested: 10)
         let invalid = BridgeNow.Queue.invalid(reason: "r", built: 2, requested: 9)
         XCTAssertEqual(bridgeStatusLine(now(link: .checking, playback: "loading", queue: invalid)),
-                       "Checking Bridge\u{2026}", "link comes first")
+                       "Checking SpanDAC\u{2026}", "link comes first")
         XCTAssertEqual(bridgeStatusLine(now(link: .unavailable("x"), queue: building)), "x.")
         XCTAssertEqual(bridgeStatusLine(now(playback: "loading", queue: invalid)),
                        "Stopped: r. 2 of 9 built.", "invalid before loading")
@@ -225,7 +225,7 @@ final class BridgeNowTests: XCTestCase {
     func testBridgeFooterAndGridKeys() {
         let s = scene(mode: .source)
         XCTAssertEqual(s.footerHint, "[ ] Seek  x Quiet")
-        XCTAssertEqual(s.handle(.left), .none, "← must not focus a grid Bridge does not draw")
+        XCTAssertEqual(s.handle(.left), .none, "← must not focus a grid SpanDAC does not draw")
         XCTAssertEqual(s.footerHint, "[ ] Seek  x Quiet")
         XCTAssertEqual(shellFooterGlobals(mode: .source), "Space \u{23EF}  < > Skip")
     }
@@ -244,7 +244,7 @@ final class BridgeNowTests: XCTestCase {
         XCTAssertTrue(out.contains("What next?"))
         XCTAssertTrue(out.contains("[P]  Playlist"))
         XCTAssertTrue(out.contains("[X]  Quiet"))
-        XCTAssertFalse(out.contains("Shuffle  "), "Bridge menu must not offer Shuffle")
+        XCTAssertFalse(out.contains("Shuffle  "), "SpanDAC menu must not offer Shuffle")
         // `s` is swallowed while the menu is up: no action, no refusal, menu stays.
         XCTAssertEqual(s.handle(.char("s")), .none)
         s.tick(snapshot: snap)
@@ -268,13 +268,13 @@ final class BridgeNowTests: XCTestCase {
         var snap = NowPlayingSnapshot(outcome: .stopped, history: [], surrounding: [])
         snap.bridge = BridgeNow(link: .answering, playback: "idle", title: "", artist: "", queue: .none, index: nil)
         var out = plain(s.render(frame: frame, snapshot: snap))
-        XCTAssertTrue(out.contains("Nothing playing on Bridge."))
+        XCTAssertTrue(out.contains("Nothing playing on SpanDAC."))
         XCTAssertTrue(out.contains("Press 4 to browse playlists, 3 for Library."))
         XCTAssertFalse(out.contains("z to shuffle"))
 
         snap.bridge = BridgeNow(link: .notResponding, playback: "stopped", title: "", artist: "", queue: .none, index: nil)
         out = plain(s.render(frame: frame, snapshot: snap))
-        XCTAssertTrue(out.contains("Bridge is not responding."))
+        XCTAssertTrue(out.contains("SpanDAC is not responding."))
         XCTAssertFalse(out.contains("Nothing playing"))
     }
 
@@ -290,7 +290,7 @@ final class BridgeNowTests: XCTestCase {
         XCTAssertTrue(out.contains("Teardrop"))
         XCTAssertTrue(out.contains("Building queue: 4 of 12 ready."))
         XCTAssertTrue(out.contains("Song 2 of 12"))
-        XCTAssertTrue(out.contains("Shuffle and repeat are not available on Bridge."))
+        XCTAssertTrue(out.contains("Shuffle and repeat aren't available on SpanDAC."))
         XCTAssertFalse(out.contains("Up Next"))
         XCTAssertFalse(out.contains("Stale"))
         XCTAssertFalse(out.contains("Order") || out.contains("Genius"), "the control grid was drawn")
@@ -426,7 +426,7 @@ final class NowQuietKeyTests: XCTestCase {
         let status = StatusStore()
         _ = scene(status: status, reply: reply(playback: "playing")).handle(.char("x"))
         let toast = settle(status)
-        XCTAssertEqual(toast?.text, "Couldn't pause Bridge.")
+        XCTAssertEqual(toast?.text, "Couldn't pause SpanDAC.")
         XCTAssertTrue(toast?.isError ?? false)
     }
 }

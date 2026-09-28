@@ -103,7 +103,7 @@ final class DiscoverBridgeFeedBindingTests: XCTestCase {
             .contains("Loading") })
         let out = s.render(frame: shellLayout(width: 120, height: 40), snapshot: idle)
         XCTAssertFalse(out.contains("Sign in to see your Discover feed"),
-                       "Bridge serves this feed with no key at all")
+                       "SpanDAC serves this feed with no key at all")
         XCTAssertTrue(out.contains("Stations For You"), "the app's rails must render: \(out.prefix(300))")
     }
 
@@ -155,7 +155,7 @@ final class DiscoverBridgeFeedBindingTests: XCTestCase {
         settle(s) { !web.urls.isEmpty }
 
         XCTAssertTrue(web.urls.first?.contains("/v1/me/recommendations") ?? false)
-        XCTAssertTrue(wire.requests.isEmpty, "Music.app mode sent a Bridge request")
+        XCTAssertTrue(wire.requests.isEmpty, "Music.app mode sent a SpanDAC request")
     }
 
     /// No automatic fallback either way: Bridge selected means Bridge is read,
@@ -169,9 +169,9 @@ final class DiscoverBridgeFeedBindingTests: XCTestCase {
 
         settle(s) { s.loadFailure != nil }
 
-        XCTAssertTrue(web.urls.isEmpty, "a Bridge failure fell back to the web service")
+        XCTAssertTrue(web.urls.isEmpty, "a SpanDAC failure fell back to the web service")
         XCTAssertTrue(s.loadFailure?.contains("Discover is unavailable right now.") ?? false,
-                      "Bridge's own reason was lost; got: \(s.loadFailure ?? "nil")")
+                      "SpanDAC's own reason was lost; got: \(s.loadFailure ?? "nil")")
     }
 
     /// Music.app mode with no sign-in must say so. Before this it sat on
@@ -227,7 +227,7 @@ final class DiscoverBridgeFeedBindingTests: XCTestCase {
 
         XCTAssertTrue(web.urls.contains { $0.contains("/playlists/pl.u-abc?include=tracks") },
                       "got: \(web.urls)")
-        XCTAssertTrue(wire.requests.isEmpty, "Music.app mode sent a Bridge request")
+        XCTAssertTrue(wire.requests.isEmpty, "Music.app mode sent a SpanDAC request")
     }
 
     // MARK: - Play, with no keys

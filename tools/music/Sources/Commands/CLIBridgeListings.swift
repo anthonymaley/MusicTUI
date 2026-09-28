@@ -29,7 +29,7 @@ import Foundation
 
 /// D10, verbatim.
 let bridgeDiscoverRecentRefusal =
-    "Bridge doesn't serve the Recently Played rail. Switch Output to Music.app to use music discover --recent."
+    "SpanDAC doesn't serve the Recently Played rail. Switch Output to Music.app to use music discover --recent."
 
 /// What the Bridge feed is asked for: the Discover tab's own rail limit
 /// (`DiscoverScene`), so the CLI curates from the same feed the TUI does.
@@ -141,7 +141,7 @@ func bridgePlaylistTracksCommand(_ session: CLIBridgeSession, name: String, json
 
 /// S4's not-found sentence for a playlist (`CLIBridgeSelection.swift`), verbatim.
 func bridgePlaylistNotFoundRefusal(_ query: String) -> String {
-    "No playlist named '\(query)' in your Bridge library."
+    "No playlist named '\(query)' in your SpanDAC library."
 }
 
 /// S4's ambiguity sentence for playlists (`CLIBridgeSelection.swift`),
@@ -149,7 +149,7 @@ func bridgePlaylistNotFoundRefusal(_ query: String) -> String {
 /// pins this copy against `resolveBridgePlaylistSelection`'s own refusal.
 func bridgeAmbiguousPlaylistsRefusal(query: String, matches: [MusicRow]) -> String {
     let shown = matches.prefix(5).map { $0.artist.isEmpty ? $0.title : "\($0.title) — \($0.artist)" }.joined(separator: "; ")
-    var message = "'\(query)' matches \(matches.count) playlists in your Bridge library: \(shown)"
+    var message = "'\(query)' matches \(matches.count) playlists in your SpanDAC library: \(shown)"
     if matches.count > 5 { message += "; and \(matches.count - 5) more" }
     return message + ". Use the exact name."
 }

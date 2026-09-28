@@ -197,9 +197,12 @@ final class PlaybackPoller {
     /// honest reading, and the screen shows no progress. What it DOES report —
     /// queue phase and counts, position, readiness — travels in
     /// `snapshot.bridge` for the Now tab to draw.
-    private func tickFromBridge() {
+    private func tickFromBridge(_ mode: PlaybackMode) {
+        // The Mac's own SpanDAC through the injected factory, exactly as
+        // before; a SpanDAC on the network through the coordinator's.
+        let client = mode == .source ? makeSourceClient() : (routing?.client(for: mode) ?? .failing(.notPaired))
         let result: Result<SourceStatus, Error>
-        do { result = .success(try makeSourceClient().control.status()) }
+        do { result = .success(try client.control.status()) }
         catch { result = .failure(error) }
         let bridge = bridgeLink.record(result)
 
@@ -340,8 +343,8 @@ final class PlaybackPoller {
         // Bridge owns playback in Source Mode, so Now must read IT. Until this,
         // the screen said "Nothing playing" while Bridge played — the poller was
         // faithfully reporting Music.app, which was paused and correct to be.
-        if routing?.mode == .source {
-            tickFromBridge()
+        if let routing, routing.mode.usesSource {
+            tickFromBridge(routing.mode)
             return
         }
         defer { syncQueuePersistence() }

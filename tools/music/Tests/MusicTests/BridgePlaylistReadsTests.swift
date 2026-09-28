@@ -293,9 +293,9 @@ final class BridgePlaylistReadsTests: XCTestCase {
 
     func testUnsupportedItemNotInLibraryLibraryChangedAndUpstreamAreRefusedWithTheirDetailVerbatim() {
         let cases: [(kind: String, detail: String)] = [
-            ("unsupported_item", "1 of 25 items in that playlist aren't songs, and Bridge plays only songs."),
-            ("not_in_library", "1 of 25 tracks in that playlist aren't in your library, so Bridge can't play them."),
-            ("library_changed", "1 of 25 tracks of that playlist aren't in Bridge's copy of your library yet. Bridge is re-reading your library; try again in a moment."),
+            ("unsupported_item", "1 of 25 items in that playlist aren't songs, and SpanDAC plays only songs."),
+            ("not_in_library", "1 of 25 tracks in that playlist aren't in your library, so SpanDAC can't play them."),
+            ("library_changed", "1 of 25 tracks of that playlist aren't in SpanDAC's copy of your library yet. SpanDAC is re-reading your library; try again in a moment."),
             ("upstream", "Couldn't read that playlist from your library."),
         ]
         for c in cases {
@@ -319,9 +319,9 @@ final class BridgePlaylistReadsTests: XCTestCase {
         }
         let expectations: [(call: (BridgeMusicProvider) throws -> Void, op: String, sentence: String)] = [
             ({ _ = try $0.libraryPlaylists(cursor: nil, limit: 100) }, "slice.libraryPlaylists",
-             "This Bridge build can't list your playlists — update Bridge"),
+             "This SpanDAC build can't list your playlists — update SpanDAC"),
             ({ _ = try $0.playlistTracks(playlistID: "pl1", cursor: nil, limit: 500) }, "slice.libraryPlaylistTracks",
-             "This Bridge build can't list a playlist's tracks — update Bridge"),
+             "This SpanDAC build can't list a playlist's tracks — update SpanDAC"),
         ]
         for e in expectations {
             let wire = Wire([unknownOp(e.op)])
@@ -352,11 +352,11 @@ final class BridgePlaylistReadsTests: XCTestCase {
         let p = BeforePartB()
         XCTAssertThrowsError(try p.libraryPlaylists(cursor: nil, limit: 100)) { error in
             XCTAssertEqual(error as? MusicProviderError,
-                           .notImplemented("This Bridge build can't list your playlists — update Bridge"))
+                           .notImplemented("This SpanDAC build can't list your playlists — update SpanDAC"))
         }
         XCTAssertThrowsError(try p.playlistTracks(playlistID: "pl1", cursor: nil, limit: 500)) { error in
             XCTAssertEqual(error as? MusicProviderError,
-                           .notImplemented("This Bridge build can't list a playlist's tracks — update Bridge"))
+                           .notImplemented("This SpanDAC build can't list a playlist's tracks — update SpanDAC"))
         }
     }
 
@@ -453,7 +453,7 @@ final class BridgePlaylistReadsTests: XCTestCase {
     func testQueueWithNoSkippedUnavailableFieldReadsZero() throws {
         let wire = Wire([queueReply(skippedUnavailable: nil)])
         let skipped = try control(wire).queue(libraryIDs: ["i.a"])
-        XCTAssertEqual(skipped, 0, "an older Bridge's reply, with no field at all, must read as 0")
+        XCTAssertEqual(skipped, 0, "an older SpanDAC's reply, with no field at all, must read as 0")
     }
 
     func testQueueWithANegativeOrNonIntegerSkippedUnavailableIsUnreadable() {
@@ -507,8 +507,8 @@ final class BridgePlaylistReadsTests: XCTestCase {
     /// generic failure.
     func testQueueRefusalKindUnavailableShowsTheDetailVerbatim() {
         let cases = [
-            "None of those songs are available to Bridge.",
-            "'Urban Jungles' isn't available to Bridge.",
+            "None of those songs are available to SpanDAC.",
+            "'Urban Jungles' isn't available to SpanDAC.",
         ]
         for detail in cases {
             let wire = Wire(["""

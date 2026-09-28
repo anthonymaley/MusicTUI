@@ -70,7 +70,7 @@ final class CLIBridgeCataloguePlayTests: XCTestCase {
         XCTAssertNil(queue["library_ids"], "never a library id")
         XCTAssertEqual(Set(queue.keys), ["op", "ids"])
         XCTAssertEqual(h.seen.locked("slice.queue"), [true], "the mutation holds the output lock")
-        XCTAssertEqual(Array(h.io.out.dropFirst(before)), ["Playing 'Teardrop' on Bridge."] + playingLines)
+        XCTAssertEqual(Array(h.io.out.dropFirst(before)), ["Playing 'Teardrop' on SpanDAC."] + playingLines)
         XCTAssertTrue(OutputLockTestSupport.isFree(h.lockPath))
     }
 
@@ -98,7 +98,7 @@ final class CLIBridgeCataloguePlayTests: XCTestCase {
         XCTAssertEqual(queue["ids"] as? [String], ["1440857781"], "the song id from ?i=, never the album id")
         XCTAssertNil(queue["library_ids"])
         XCTAssertEqual(h.seen.locked("slice.queue"), [true])
-        XCTAssertEqual(h.io.out, ["Playing Apple Music song 1440857781 on Bridge."] + playingLines)
+        XCTAssertEqual(h.io.out, ["Playing Apple Music song 1440857781 on SpanDAC."] + playingLines)
     }
 
     /// The `/song/<slug>/<id>` share form (found at a live gate 2026-09-25,
@@ -115,7 +115,7 @@ final class CLIBridgeCataloguePlayTests: XCTestCase {
             let queue = try XCTUnwrap(h.seen.bodies("slice.queue").first, link)
             XCTAssertEqual(queue["ids"] as? [String], ["1440857781"], link)
             XCTAssertNil(queue["library_ids"], link)
-            XCTAssertEqual(h.io.out, ["Playing Apple Music song 1440857781 on Bridge."] + playingLines, link)
+            XCTAssertEqual(h.io.out, ["Playing Apple Music song 1440857781 on SpanDAC."] + playingLines, link)
         }
     }
 
@@ -152,7 +152,7 @@ final class CLIBridgeCataloguePlayTests: XCTestCase {
                                                             album: "Mezzanine")], origin: .catalog))
         let (error, calls) = play(h, ["1"])
         XCTAssertEqual(error as? ExitCode, .failure)
-        XCTAssertEqual(h.io.out, ["Result 1 came from a Music.app or catalogue listing, so Bridge can't play it by its own id. With Bridge selected, run: music search \"Angel\"  then  music play N"])
+        XCTAssertEqual(h.io.out, ["Result 1 came from a Music.app or catalogue listing, so SpanDAC can't play it by its own id. With SpanDAC selected, run: music search \"Angel\"  then  music play N"])
         XCTAssertEqual(h.wire.sent("slice.queue").count, 0)
         XCTAssertEqual(calls, [])
     }
@@ -181,7 +181,7 @@ final class CLIBridgeCataloguePlayTests: XCTestCase {
 
     // MARK: - add and playlist writes (Q3 default: refused; P6A is out)
 
-    private let refusal = "Result(s) 1 came from Bridge. Adding Bridge rows to your library or a playlist isn't supported yet; search again with Output set to Music.app."
+    private let refusal = "Result(s) 1 came from SpanDAC. Adding SpanDAC rows to your library or a playlist isn't supported yet; search again with Output set to Music.app."
 
     private func writeCatalogueRow(_ b: BoundaryHarness) throws {
         try b.cache.writeSongs([SongResult(index: 1, title: "Angel", artist: "Massive Attack", album: "Mezzanine",

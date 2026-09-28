@@ -31,11 +31,11 @@ func bridgeNowLines(_ status: SourceStatus) -> [String] {
     let artist = status.artist ?? ""
     var lines: [String] = []
     if !title.isEmpty {
-        lines.append(artist.isEmpty ? "\(title) [Bridge]" : "\(title) \u{2014} \(artist) [Bridge]")
+        lines.append(artist.isEmpty ? "\(title) [SpanDAC]" : "\(title) \u{2014} \(artist) [SpanDAC]")
     } else if b.queue == .none, status.playback == "idle" || status.playback == "stopped" {
-        lines.append("Nothing playing on Bridge.")
+        lines.append("Nothing playing on SpanDAC.")
     } else {
-        lines.append("Bridge is \(status.playback).")
+        lines.append("SpanDAC is \(status.playback).")
     }
     if let statusLine = bridgeStatusLine(b) { lines.append(statusLine) }
     if let positionLine = bridgePositionLine(b) { lines.append(positionLine) }
@@ -78,12 +78,12 @@ func bridgePlayResultLines(kind: BridgePlayResultKind, label: String, sent: Int,
                                           skippedUnavailable: skippedUnavailable, startAt: 1, shuffle: shuffle)]
     case .album, .artist:
         let queued = sent - skippedUnavailable
-        var line = "Playing '\(label)' on Bridge \u{2014} \(queued) tracks."
+        var line = "Playing '\(label)' on SpanDAC \u{2014} \(queued) tracks."
         let notice = bridgeUnavailableSongsNotice(skippedUnavailable)
         if !notice.isEmpty { line += " " + notice }
         return [line]
     case .song:
-        return ["Playing '\(label)' on Bridge."]
+        return ["Playing '\(label)' on SpanDAC."]
     }
 }
 

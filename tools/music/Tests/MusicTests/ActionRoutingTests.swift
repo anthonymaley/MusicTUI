@@ -257,8 +257,8 @@ final class ActionRoutingTests: XCTestCase {
     func testTheDispatchedSetIsExactlyS7sPlusP6s() {
         XCTAssertEqual(cliDispatchedOnBridge, s7Dispatched)
         XCTAssertFalse(cliDispatchedOnBridge.contains(.cliPlayQuery), "Q1: plain music play <words> refuses")
-        XCTAssertTrue(cliDispatchedOnBridge.contains(.cliPlayCatalogSong), "P6: song links play through Bridge")
-        XCTAssertTrue(cliDispatchedOnBridge.contains(.catalogSearch), "P6: catalogue search reads Bridge")
+        XCTAssertTrue(cliDispatchedOnBridge.contains(.cliPlayCatalogSong), "P6: song links play through SpanDAC")
+        XCTAssertTrue(cliDispatchedOnBridge.contains(.catalogSearch), "P6: catalogue search reads SpanDAC")
         XCTAssertFalse(cliDispatchedOnBridge.contains(.collectionShuffle))
     }
 
@@ -269,7 +269,7 @@ final class ActionRoutingTests: XCTestCase {
         for action in MusicTUIAction.allCases {
             let route = routeAction(action, in: .source, from: .cli)
             if s7Dispatched.contains(action) {
-                XCTAssertEqual(route, .source, "\(action) is dispatched to Bridge")
+                XCTAssertEqual(route, .source, "\(action) is dispatched to SpanDAC")
             } else if action.readsMusicAppCurrentTrack {
                 XCTAssertEqual(route, .refused(currentTrackIsStaleInBridge), "\(action)")
             } else if cliBridgeExceptions.contains(action) {
@@ -391,9 +391,9 @@ final class ActionRoutingTests: XCTestCase {
             XCTAssertFalse(requiresOutputLock(action), "\(action) is a read")
         }
         XCTAssertEqual(routeAction(.suggest, in: .source, from: .cli),
-                       .refused("Bridge output is selected, and music suggest needs Apple Music account reads Bridge doesn't serve. Switch Output to Music.app to use it."))
+                       .refused("SpanDAC output is selected, and music suggest needs Apple Music account reads SpanDAC doesn't serve. Switch Output to Music.app to use it."))
         XCTAssertEqual(routeAction(.newReleases, in: .source, from: .cli),
-                       .refused("Bridge output is selected, and music new-releases needs a catalogue artist lookup Bridge doesn't serve. Switch Output to Music.app to use it."))
+                       .refused("SpanDAC output is selected, and music new-releases needs a catalogue artist lookup SpanDAC doesn't serve. Switch Output to Music.app to use it."))
         for action in [MusicTUIAction.discoverFeed, .playlistListing, .similar, .suggest, .newReleases] {
             XCTAssertEqual(routeAction(action, in: .musicApp, from: .cli), .musicApp, "\(action)")
         }
@@ -468,7 +468,7 @@ final class ActionRoutingTests: XCTestCase {
     func testVolumeAndSpeakersRefuseOnBridgeWithTheirTuiReasons() {
         for action in [MusicTUIAction.volume, .airplayRoute] {
             guard case .refused = routeAction(action, in: .source, from: .cli) else {
-                return XCTFail("\(action) must refuse from the CLI on Bridge")
+                return XCTFail("\(action) must refuse from the CLI on SpanDAC")
             }
             XCTAssertEqual(routeAction(action, in: .source, from: .cli),
                            routeAction(action, in: .source, from: .tui), "\(action) keeps its TUI-table reason")
@@ -486,7 +486,7 @@ final class ActionRoutingTests: XCTestCase {
         where action.surfaces.contains(.cli) && action.touchesPlayback && !s7Dispatched.contains(action) {
             checked += 1
             guard case .refused(let reason) = routeAction(action, in: .source, from: .cli) else {
-                XCTFail("\(action) is a playback-changing CLI verb Bridge does not serve yet; it must refuse")
+                XCTFail("\(action) is a playback-changing CLI verb SpanDAC does not serve yet; it must refuse")
                 continue
             }
             XCTAssertEqual(reason, cliBridgeNotServedReason(action), "\(action)")
@@ -506,10 +506,10 @@ final class ActionRoutingTests: XCTestCase {
         XCTAssertEqual(cliBridgeNotServedReason(.persistentShuffleMode),
                        "Shuffle and repeat modes are Music.app only for now.")
         XCTAssertEqual(routeAction(.cliPlayQuery, in: .source, from: .cli),
-                       .refused("Bridge output is selected, and music play <words> isn't available from the CLI on Bridge yet. Use MusicTUI, or switch Output to Music.app."))
+                       .refused("SpanDAC output is selected, and music play <words> isn't available from the CLI on SpanDAC yet. Use MusicTUI, or switch Output to Music.app."))
         XCTAssertEqual(routeAction(.cliPlayCatalogSong, in: .source, from: .cli), .source, "P6: dispatched")
         XCTAssertEqual(cliBridgeNotServedReason(.radioStationPlay),
-                       "Bridge output is selected, and music radio play isn't available from the CLI on Bridge yet. Use MusicTUI, or switch Output to Music.app.")
+                       "SpanDAC output is selected, and music radio play isn't available from the CLI on SpanDAC yet. Use MusicTUI, or switch Output to Music.app.")
     }
 
     /// 12.14's v1 sentence is deleted (S6): no source file names it or says
@@ -596,7 +596,7 @@ final class ActionRoutingTests: XCTestCase {
         let tuiColumnUnchanged: [MusicTUIAction: ActionRoute] = [
             .searchLibrary: .musicApp,
             .playlistListing: .musicApp,
-            .similar: .refused("Not available through Bridge in this version."),
+            .similar: .refused("Not available through SpanDAC in this version."),
             .rotation: .refused("Heavy rotation is on the command line only in this version: music rotation."),
         ]
         for action in s7Dispatched {
@@ -706,7 +706,7 @@ final class ActionRoutingTests: XCTestCase {
         guard case .refused(let reason) = routeAction(.playlistTemp, in: .source, from: .cli) else {
             return XCTFail("playlist temp starts Music.app playback and must refuse")
         }
-        XCTAssertEqual(reason, "Bridge output is selected, and music playlist temp isn't available from the CLI on Bridge yet. Use MusicTUI, or switch Output to Music.app.")
+        XCTAssertEqual(reason, "SpanDAC output is selected, and music playlist temp isn't available from the CLI on SpanDAC yet. Use MusicTUI, or switch Output to Music.app.")
     }
 
     /// A split variant pair must not both claim the same behaviour: the point of

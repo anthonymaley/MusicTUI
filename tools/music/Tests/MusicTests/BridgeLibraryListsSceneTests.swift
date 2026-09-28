@@ -36,7 +36,7 @@ final class BridgeLibraryListsSceneTests: XCTestCase {
         goToSubView(s, .albums)
         XCTAssertTrue(settleScene(s) { s.render(frame: frame, snapshot: idle).contains("In Rainbows") })
         XCTAssertTrue(s.render(frame: frame, snapshot: idle).contains("Mezzanine"))
-        XCTAssertEqual(spy.count("onAlbums"), 0, "Albums asked Music.app instead of Bridge")
+        XCTAssertEqual(spy.count("onAlbums"), 0, "Albums asked Music.app instead of SpanDAC")
     }
 
     func testBridgeArtistsCarryBridgeIdsAndTheSpyIsNeverAsked() {
@@ -46,7 +46,7 @@ final class BridgeLibraryListsSceneTests: XCTestCase {
 
         goToSubView(s, .artists)
         XCTAssertTrue(settleScene(s) { s.render(frame: frame, snapshot: idle).contains("Radiohead") })
-        XCTAssertEqual(spy.count("onArtists"), 0, "Artists asked Music.app instead of Bridge")
+        XCTAssertEqual(spy.count("onArtists"), 0, "Artists asked Music.app instead of SpanDAC")
     }
 
     func testTheHeadersShowBridgesOwnCounts() {
@@ -54,9 +54,9 @@ final class BridgeLibraryListsSceneTests: XCTestCase {
         let s = libraryTestScene(flag: BridgeSelectedFlag(true), wire: wire, spy: LibraryAppleScriptSpy())
 
         goToSubView(s, .albums)
-        XCTAssertTrue(settleScene(s) { s.render(frame: frame, snapshot: idle).contains("Albums \u{2014} Bridge library (2)") })
+        XCTAssertTrue(settleScene(s) { s.render(frame: frame, snapshot: idle).contains("Albums \u{2014} SpanDAC library (2)") })
         goToSubView(s, .artists)
-        XCTAssertTrue(settleScene(s) { s.render(frame: frame, snapshot: idle).contains("Artists \u{2014} Bridge library (1)") })
+        XCTAssertTrue(settleScene(s) { s.render(frame: frame, snapshot: idle).contains("Artists \u{2014} SpanDAC library (1)") })
     }
 
     // MARK: - Warming and failure
@@ -100,7 +100,7 @@ final class BridgeLibraryListsSceneTests: XCTestCase {
 
         goToSubView(s, .albums)
         XCTAssertTrue(settleScene(s) {
-            s.render(frame: frame, snapshot: idle).contains("Bridge is still preparing your library - press r to retry")
+            s.render(frame: frame, snapshot: idle).contains("SpanDAC is still preparing your library - press r to retry")
         }, "it never gave up visibly")
     }
 
@@ -115,13 +115,13 @@ final class BridgeLibraryListsSceneTests: XCTestCase {
         goToSubView(s, .albums)
         XCTAssertTrue(settleScene(s) {
             s.render(frame: frame, snapshot: idle).contains("press r to retry")
-        }, "the Bridge failure never showed")
+        }, "the SpanDAC failure never showed")
         XCTAssertEqual(spy.count("onAlbums"), 0)
 
         wire.script("slice.libraryAlbums", [albumPage])
         _ = s.handle(.char("r"))
         XCTAssertTrue(settleScene(s) { s.render(frame: frame, snapshot: idle).contains("In Rainbows") },
-                      "r did not re-walk Bridge")
+                      "r did not re-walk SpanDAC")
         XCTAssertEqual(spy.count("onAlbums"), 0, "the retry read Music.app")
     }
 
@@ -135,9 +135,9 @@ final class BridgeLibraryListsSceneTests: XCTestCase {
 
         goToSubView(s, .albums)
         XCTAssertTrue(settleScene(s) {
-            s.render(frame: frame, snapshot: idle).contains("This Bridge build can't list your albums \u{2014} update Bridge")
+            s.render(frame: frame, snapshot: idle).contains("This SpanDAC build can't list your albums \u{2014} update SpanDAC")
         })
-        XCTAssertEqual(spy.count("onAlbums"), 0, "an older-Bridge refusal fell back to Music.app")
+        XCTAssertEqual(spy.count("onAlbums"), 0, "an older-SpanDAC refusal fell back to Music.app")
     }
 
     // MARK: - Live gate (2026-09-24): the same filter + warm-up-retry defect, checked here
@@ -171,7 +171,7 @@ final class BridgeLibraryListsSceneTests: XCTestCase {
         for c in "Mezzanine" { _ = s.handle(.char(c)) }
         _ = s.handle(.enter)
         XCTAssertTrue(settleScene(s) {
-            s.render(frame: frame, snapshot: idle).contains("Bridge is still preparing your library - press r to retry")
+            s.render(frame: frame, snapshot: idle).contains("SpanDAC is still preparing your library - press r to retry")
         }, "it never gave up visibly")
 
         wire.script("slice.libraryAlbums", [albumPage])   // "In Rainbows" at 0, "Mezzanine" at 1
@@ -220,7 +220,7 @@ final class BridgeLibraryListsSceneTests: XCTestCase {
         XCTAssertTrue(settleScene(s) { s.render(frame: frame, snapshot: idle).contains("Nude") })
 
         let out = s.render(frame: frame, snapshot: idle)
-        XCTAssertFalse(out.contains("Bridge library"), "a header named Bridge in Music.app mode: \(out)")
+        XCTAssertFalse(out.contains("SpanDAC library"), "a header named SpanDAC in Music.app mode: \(out)")
         XCTAssertEqual(wire.requestCount, 0, "Music.app mode reached the wire at all")
     }
 
@@ -239,9 +239,9 @@ final class BridgeLibraryListsSceneTests: XCTestCase {
         wire.script("slice.libraryAlbums", [albumPage])
         flag.selected = true
         XCTAssertTrue(settleScene(s) { !wire.sent("slice.libraryAlbums").isEmpty },
-                      "the flip never asked Bridge for albums")
+                      "the flip never asked SpanDAC for albums")
         XCTAssertTrue(settleScene(s) { s.render(frame: frame, snapshot: idle).contains("In Rainbows") },
-                      "Albums never reloaded from Bridge")
+                      "Albums never reloaded from SpanDAC")
         let out = s.render(frame: frame, snapshot: idle)
         XCTAssertFalse(out.contains("Music.app Album"), "the old Music.app rows were still on screen: \(out)")
     }
@@ -261,7 +261,7 @@ final class BridgeLibraryListsSceneTests: XCTestCase {
         XCTAssertTrue(settleScene(s) { s.render(frame: frame, snapshot: idle).contains("Music.app Album") },
                       "Albums never reloaded from Music.app")
         XCTAssertEqual(wire.sent("slice.libraryAlbums").count, bridgeRequestsBeforeFlip,
-                       "the flip back to Music.app asked Bridge again")
+                       "the flip back to Music.app asked SpanDAC again")
     }
 
     /// A Songs walk from Bridge, flipped mid-walk (page 2 gated), never shows
@@ -300,7 +300,7 @@ final class BridgeLibraryListsSceneTests: XCTestCase {
         Thread.sleep(forTimeInterval: 0.2)
         for _ in 0..<10 { _ = s.tick(snapshot: idle) }
         let out = s.render(frame: frame, snapshot: idle)
-        XCTAssertFalse(out.contains("Nude"), "a Bridge row landed after the list had reset to Music.app: \(out)")
+        XCTAssertFalse(out.contains("Nude"), "a SpanDAC row landed after the list had reset to Music.app: \(out)")
     }
 
     /// Same property as the Songs test above, for the Albums LIST walk (not
@@ -343,7 +343,7 @@ final class BridgeLibraryListsSceneTests: XCTestCase {
         for _ in 0..<10 { _ = s.tick(snapshot: idle) }
         let out = s.render(frame: frame, snapshot: idle)
         XCTAssertFalse(out.contains("In Rainbows") || out.contains("Stale Second Page"),
-                       "a Bridge album landed after the list had reset to Music.app: \(out)")
+                       "a SpanDAC album landed after the list had reset to Music.app: \(out)")
     }
 
     // MARK: - `/` filtering on Bridge Albums and Artists (live-gate finding, 2026-09-23)
