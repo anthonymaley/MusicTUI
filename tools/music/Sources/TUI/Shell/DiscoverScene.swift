@@ -163,17 +163,13 @@ final class DiscoverScene: Scene {
         }
     }
 
-    /// `bridgeSelected` is NOT read: it answered "is a SpanDAC the OUTPUT",
-    /// which no longer says where Discover's DATA comes from. The scene asks
-    /// `routing` instead. The parameter stays only so existing callers compile
-    /// until they drop it.
+    /// Where Discover's data comes from is asked of `routing`, never inferred
+    /// from the output.
     init(feed: DiscoverFeedReading?, status: StatusStore, actions: ActionRunner, api: RESTAPIBackend?,
          lifecycle: DiscoverLifecycleCoordinator, routing: RoutingCoordinator,
          opener: Opener = SystemOpener(),
-         bridgeSelected: @escaping () -> Bool = { false },
          kittyEnabled: Bool = false) {
         self.routing = routing
-        _ = bridgeSelected
         self.feed = feed
         self.status = status
         self.actions = actions

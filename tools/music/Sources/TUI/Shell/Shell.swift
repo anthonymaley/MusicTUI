@@ -197,12 +197,9 @@ func runShell() {
             return scene
         case .discover:
             // The door follows the DATA selection: SpanDAC data needs no
-            // user token, MusicTUI's own data does (the rule
-            // `discoverTabAdmitted` states for the output today). Written
-            // out here rather than through that function so this file does
-            // not depend on its signature while the Discover step moves it
-            // to the data selection; the two say the same thing.
-            guard routing.data == .spandacMac || AuthManager().userToken() != nil else {
+            // user token, MusicTUI's own data does.
+            guard discoverTabAdmitted(selection: routing.selection,
+                                      hasUserToken: AuthManager().userToken() != nil) else {
                 status.post(DiscoverScene.signInToBrowse, error: true)
                 return nil
             }
@@ -217,8 +214,6 @@ func runShell() {
                                       // Always available; whether it is USED follows
                                       // the Output tab's selection, not an env var.
                                       routing: routing,
-                                      // The data selection, not the output.
-                                      bridgeSelected: { routing.data == .spandacMac },
                                       kittyEnabled: kittyEnabled)
             scenes[id] = scene
             return scene

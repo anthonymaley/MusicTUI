@@ -561,6 +561,28 @@ struct SourceStatus: Equatable {
     var output: SourceOutputInfo? = nil
 }
 
+extension SourceStatus {
+    /// SpanDAC on this Mac as a DATA source: answering, authorized, speaking
+    /// this build's contract. A missing or still-checking DAC is the OUTPUT's
+    /// concern, never a reason to refuse a read or to keep waiting for a
+    /// start; `readiness` keeps the DAC for playing there.
+    ///
+    /// **Coupled, named rather than hidden:** the two DAC reasons are
+    /// `SourceAppControl.readiness(from:)`'s own sentences, matched only
+    /// together with the DAC state that produces them. That function checks
+    /// the contract and access BEFORE the DAC, so either problem still reads
+    /// as not ready here.
+    var dataReadiness: SourceReadiness {
+        switch (output?.dac, readiness) {
+        case (.notConnected?, .unavailable("plug in your DAC")),
+             (.unknown?, .unavailable("SpanDAC is still checking for a DAC")):
+            return .ready
+        default:
+            return readiness
+        }
+    }
+}
+
 /// One Library or Playlist row, by the triple the app joins on.
 ///
 /// No id: MusicTUI's persistent id means nothing to the app, and the app's

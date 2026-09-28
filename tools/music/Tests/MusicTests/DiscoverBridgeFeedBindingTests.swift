@@ -84,8 +84,7 @@ final class DiscoverBridgeFeedBindingTests: XCTestCase {
                                          makeSource: { SourceAppClient(path: "/nonexistent",
                                                                        transport: wire.transport) })
         return DiscoverScene(feed: feed, status: status, actions: ActionRunner(status: status),
-                             api: api, lifecycle: lifecycle(), routing: routing,
-                             bridgeSelected: { routing.mode == .source })
+                             api: api, lifecycle: lifecycle(), routing: routing)
     }
 
     private let idle = NowPlayingSnapshot(outcome: .stopped, history: [], surrounding: [])

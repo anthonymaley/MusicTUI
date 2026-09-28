@@ -269,37 +269,27 @@ func cliMusicTUIMutation<T>(env: CLIBridgeEnv, _ body: () throws -> T) throws ->
     try cliUnderOutputLock(expecting: env.routing.mode, env: env, body)
 }
 
-/// Which readiness gates a `.source` branch. A pure read with SpanDAC data on
-/// the MusicTUI output asks SpanDAC on this Mac only for DATA, so its DAC does
-/// not matter there (`cliDataReadiness`); everything else keeps the shipped
-/// readiness, DAC included.
+/// Which readiness gates a `.source` branch. A pure read with SpanDAC data
+/// asks SpanDAC on this Mac only for DATA (`perform` hands it the data
+/// client, whatever the output is), so this Mac's DAC does not matter there
+/// (`cliDataReadiness`), even when sound goes to a SpanDAC on the network or
+/// on this Mac. Everything else plays, and keeps the shipped readiness, DAC
+/// included.
 private func cliReadiness(for action: MusicTUIAction, client: SourceAppClient,
                           env: CLIBridgeEnv) -> SourceReadiness {
-    guard case .consistent(.spandacMac, .musicApp) = env.routing.selection, action.readsMusicData else {
+    guard action.readsMusicData, env.routing.data == .spandacMac else {
         return client.readiness()
     }
     return cliDataReadiness(client)
 }
 
-/// SpanDAC on this Mac as a DATA source: answering, authorized, speaking this
-/// build's contract. A missing or still-checking DAC is not a reason to
-/// refuse a read. **Coupled, named rather than hidden:** the two DAC reasons
-/// are `SourceAppControl.readiness(from:)`'s own sentences, matched only
-/// together with the DAC state that produces them, so a contract or access
-/// problem (checked before the DAC there) still refuses.
+/// SpanDAC on this Mac as a DATA source (`SourceStatus.dataReadiness`): a
+/// missing or still-checking DAC is not a reason to refuse a read.
 func cliDataReadiness(_ client: SourceAppClient) -> SourceReadiness {
-    let status: SourceStatus
     do {
-        status = try client.control.status()
+        return try client.control.status().dataReadiness
     } catch {
         return SourceReadiness.from(error)
-    }
-    switch (status.output?.dac, status.readiness) {
-    case (.notConnected?, .unavailable("plug in your DAC")),
-         (.unknown?, .unavailable("SpanDAC is still checking for a DAC")):
-        return .ready
-    default:
-        return status.readiness
     }
 }
 

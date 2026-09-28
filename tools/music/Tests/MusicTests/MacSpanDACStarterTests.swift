@@ -159,6 +159,28 @@ final class MacSpanDACStarterTests: XCTestCase {
         XCTAssertEqual(launchCount, 2)
     }
 
+    // MARK: - Data readiness never depends on a DAC
+
+    /// Starting SpanDAC on this Mac is for music DATA: once it answers with
+    /// Apple Music access, a Mac with no DAC (or one it is still checking
+    /// for) is ready at the first probe, not after the 15 s bound. Access
+    /// still matters.
+    func testAStartOnAMacWithoutADACIsReady() {
+        func client(dac: String, authorization: String = "authorized") -> SourceAppClient {
+            let reply = #"{"ok":true,"status":{"playback":"idle","authorization":"\#(authorization)","contract":\#(sourceContractVersion),"output":{"dac":"\#(dac)"}}}"#
+            return SourceAppClient(path: "/nonexistent/starter-probe.sock", transport: { _, _ in reply })
+        }
+        for dac in ["not_connected", "unknown"] {
+            XCTAssertEqual(liveMacSpanDACProbe(client: client(dac: dac)), .ready, dac)
+            let clock = FakeClock()
+            let starter = makeStarter(probe: { liveMacSpanDACProbe(client: client(dac: dac)) }, clock: clock.asClock)
+            XCTAssertEqual(starter.ensureStarted(), .ready, dac)
+            XCTAssertEqual(clock.waits, [], "\(dac): ready at the first probe, no polling")
+        }
+        XCTAssertEqual(liveMacSpanDACProbe(client: client(dac: "not_connected", authorization: "denied")),
+                       .notAuthorized)
+    }
+
     // MARK: - Authorization
 
     func testNotAuthorizedIsReportedAndNeverPrompts() {

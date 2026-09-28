@@ -478,6 +478,46 @@ final class CLIDataRouteTests: XCTestCase {
         XCTAssertEqual(io.err, [startingSpanDAC])
     }
 
+    // MARK: - Data readiness never depends on a DAC
+
+    /// With a SpanDAC OUTPUT selected, a pure read still asks only SpanDAC on
+    /// this Mac for DATA. Whether this Mac has a DAC is the output's concern,
+    /// so a Mac with none still serves a search, whether sound goes to an
+    /// iPhone or to this Mac.
+    func testDataReadsIgnoreTheMacDACWhenTheOutputIsAnIPhone() throws {
+        for output in [PlaybackMode.networkSource("D2C4A6E8-1B3D-4F5A-8C7E-9A0B2C4D6E8F"), .source] {
+            let label = "\(output)"
+            let h = CLIDataRouteHarness(output: output, data: .accepted,
+                                        dataReplies: ["slice.status": [readyWithoutADAC], "slice.search": [C.mixed]])
+            XCTAssertEqual(h.env.routing.selection, .consistent(data: .spandacMac, output: output), label)
+            let (error, calls) = search(h, ["angel"])
+            XCTAssertNil(error, "\(label): no DAC on this Mac is no reason to refuse a DATA read")
+            XCTAssertEqual(calls, [], label)
+            XCTAssertEqual(h.io.out.filter { $0.contains("DAC") }, [], "\(label): no DAC refusal printed")
+            XCTAssertEqual(h.dataWire.requests.compactMap { $0["op"] as? String }, ["slice.status", "slice.search"], label)
+            XCTAssertEqual(h.outputWire.requestCount, 0, label)
+            XCTAssertEqual(h.outputClientsBuilt, 0, "\(label): a read never builds an output client")
+            XCTAssertEqual(try h.env.cache.readSongs().map(\.origin), [.bridgeCatalog, .bridgeCatalog], label)
+        }
+    }
+
+    /// OUTPUT readiness is unchanged: playing on this Mac's SpanDAC still
+    /// needs its DAC, and nothing is sent to play without one.
+    func testPlayingOnTheMacSpanDACStillNeedsItsDAC() throws {
+        let h = CLIDataRouteHarness(output: .source, data: .accepted,
+                                    dataReplies: ["slice.status": [readyWithoutADAC]],
+                                    outputReplies: ["slice.status": [readyWithoutADAC]])
+        try cacheRows(h, [SongResult(index: 1, title: "Angel", artist: "Massive Attack", album: "Mezzanine",
+                                     catalogId: "", origin: .bridgeCatalog, bridgeID: "1440857781")])
+        let (error, calls) = play(h, ["1"])
+        XCTAssertNotNil(error, "no DAC: the play refuses")
+        XCTAssertEqual(calls, [])
+        XCTAssertEqual(h.io.out, [cliBridgeNotReadySentence(.unavailable("plug in your DAC"))])
+        XCTAssertEqual(h.outputWire.requests.compactMap { $0["op"] as? String }, ["slice.status"],
+                       "only the readiness check reaches the output; nothing plays")
+        XCTAssertEqual(h.dataWire.requestCount, 0)
+    }
+
     // MARK: - Blocked state
 
     func testBlockedStateCLIRefusesSoundAndReadsOpen() throws {
