@@ -46,7 +46,7 @@ final class RecordingCataloguePlay: CLIMusicTUICataloguePlaying {
 }
 
 /// A starter that never launches anything and answers a fixed outcome.
-final class FakeMacStarter: MacSpanDACStarting {
+final class CLIFakeMacStarter: MacSpanDACStarting {
     let outcome: MacSpanDACStartOutcome
     private(set) var starts = 0
     init(_ outcome: MacSpanDACStartOutcome) { self.outcome = outcome }
@@ -446,7 +446,7 @@ final class CLIDataRouteTests: XCTestCase {
 
     func testStartingSpanDACNeverReachesStdoutOrJSON() throws {
         let io = CLIBridgeTestIO()
-        let fake = FakeMacStarter(.ready)
+        let fake = CLIFakeMacStarter(.ready)
         let starter = CLIAnnouncingStarter(fake, err: io.writeErr)
         let wire = BridgeLibraryReadsWire(["slice.status": [readyWithoutADAC], "slice.search": [C.mixed]])
         var running = false
