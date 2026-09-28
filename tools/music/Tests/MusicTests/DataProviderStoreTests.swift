@@ -52,6 +52,19 @@ final class DataProviderStoreTests: XCTestCase {
         XCTAssertEqual(DataProviderStore(path: unknown).read().data, .open)
     }
 
+    func testSpanDACDataWithoutAnAcceptedSwitchReadsOpen() throws {
+        for ceremony in ["declined", "never_shown", "", "from_the_future"] {
+            let path = dataPath(in: tempDir())
+            try "{\"data\":\"spandac_mac\",\"ceremony\":\"\(ceremony)\"}"
+                .write(toFile: path, atomically: true, encoding: .utf8)
+            XCTAssertEqual(DataProviderStore(path: path).read().data, .open,
+                           "spandac_mac with ceremony '\(ceremony)' must not read as SpanDAC data")
+        }
+        let noCeremony = dataPath(in: tempDir())
+        try "{\"data\":\"spandac_mac\"}".write(toFile: noCeremony, atomically: true, encoding: .utf8)
+        XCTAssertEqual(DataProviderStore(path: noCeremony).read().data, .open)
+    }
+
     func testAcceptIsAtomicAndReadsBack() {
         let path = dataPath(in: tempDir())
         XCTAssertTrue(DataProviderStore(path: path).accept())

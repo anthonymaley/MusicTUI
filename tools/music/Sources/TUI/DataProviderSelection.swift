@@ -70,18 +70,18 @@ final class DataProviderStore {
               let stored = try? JSONDecoder().decode(Stored.self, from: raw)
         else { return (.open, .neverShown) }
 
-        let data: DataProviderSelection
-        switch stored.data {
-        case "spandac_mac": data = .spandacMac
-        default: data = .open
-        }
-
         let ceremony: SwitchCeremonyState
         switch stored.ceremony {
         case "declined": ceremony = .declined
         case "accepted": ceremony = .accepted
         default: ceremony = .neverShown
         }
+
+        // SpanDAC data only when the person accepted the switch: a file that
+        // names SpanDAC under any other ceremony state (declined, never shown,
+        // unknown) is not an accepted data state and reads as open.
+        let data: DataProviderSelection =
+            (stored.data == "spandac_mac" && ceremony == .accepted) ? .spandacMac : .open
         return (data, ceremony)
     }
 
