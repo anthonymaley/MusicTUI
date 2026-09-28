@@ -530,6 +530,82 @@ final class MusicTUIHandoffTests: XCTestCase {
         XCTAssertEqual(h.io.out.last, pickASpanDACOutput)
         XCTAssertEqual(runner.builds, [[11]], "nothing more was built or played")
     }
+
+    /// `music play N` of a cached SpanDAC library row reads the row's identity
+    /// from SpanDAC's library, a walk that can take the whole warm-up budget.
+    /// That walk runs BEFORE the output lock: an output change made while it
+    /// is blocked goes through at once instead of waiting behind it. And a
+    /// change of output or of MusicTUI's music source during the walk is seen
+    /// under the lock, before anything is built, so nothing plays.
+    func testCLIPlayNWalksTheLibraryOutsideTheOutputLock() throws {
+        let songs = "{\"ok\":true,\"op\":\"slice.librarySongs\",\"generation\":1,\"total\":1,\"next_cursor\":null,\"items\":["
+            + "{\"id\":\"l.1\",\"title\":\"Angel\",\"artist\":\"Massive Attack\",\"album\":\"Mezzanine\",\"kind\":\"song\",\"alias\":\"\(a1)\"}"
+            + "]}"
+        final class DuringWalk { var action: (() -> Void)? }
+
+        func run(_ during: @escaping (CLIDataRouteHarness) -> Void)
+            -> (harness: CLIDataRouteHarness, runner: CLIContainerRunner, error: Error?) {
+            let hook = DuringWalk()
+            let wire = BridgeLibraryReadsWire(["slice.status": [CLIHandoffReplies.readyWithoutADAC],
+                                               "slice.librarySongs": [songs]])
+            let h = CLIDataRouteHarness(output: .musicApp, data: .accepted,
+                                        dataTransport: { path, line in
+                                            if line.contains("\"slice.librarySongs\"") { hook.action?() }
+                                            return try wire.transport(path, line)
+                                        },
+                                        recordSeams: false)
+            hook.action = { [unowned h] in during(h) }
+            try? h.env.cache.writeSongs([SongResult(index: 1, title: "Angel", artist: "Massive Attack",
+                                                    album: "Mezzanine", catalogId: "", origin: .bridgeLibrary,
+                                                    bridgeID: "l.1")])
+            let runner = CLIContainerRunner(ids: [h1])
+            var env = h.env
+            env.libraryPlay = PersistentIDCLILibraryPlay(library: FakePersistentIDLibrary(mezzanineHits()),
+                                                         run: runner.run, launch: { _, _ in true },
+                                                         selfCheck: LibraryAliasSelfCheck(), afterPlay: { _ in })
+            let r = tripwired {
+                try runPlay(args: ["1"], playlist: nil, album: nil, song: nil, artist: nil, json: false, env: env,
+                            musicAppDeps: PlayMusicAppDeps(readSongs: { XCTFail("shipped body"); return [] },
+                                                           resolveIndexed: { _, _ in XCTFail("shipped body") }))
+            }
+            XCTAssertEqual(r.calls, [])
+            return (h, runner, r.error)
+        }
+
+        // 1. While the walk is blocked, another process's output change takes
+        //    the output lock at once (as a separate descriptor, on another
+        //    thread, exactly as a second process would).
+        var mutated = false
+        var lockError: Error?
+        let ok = run { h in
+            let path = h.env.routing.outputLock!.path
+            let done = DispatchSemaphore(value: 0)
+            DispatchQueue.global().async {
+                do { try OutputLock(path: path).withLock(timeout: 0.5) { mutated = true } } catch { lockError = error }
+                done.signal()
+            }
+            _ = done.wait(timeout: .now() + 5)
+        }
+        XCTAssertNil(lockError, "an output change waited behind the library walk")
+        XCTAssertTrue(mutated, "the output change ran during the walk")
+        XCTAssertNil(ok.error)
+        XCTAssertEqual(ok.runner.builds, [[11]], "the play itself still went ahead")
+
+        // 2. MusicTUI stops using SpanDAC for music data during the walk.
+        let stopped = run { h in XCTAssertTrue(DataProviderStore(path: h.dataPath).stopUsingSpanDAC()) }
+        XCTAssertNotNil(stopped.error)
+        XCTAssertEqual(stopped.harness.io.out.last, sourceChangedNothingPlayed)
+        XCTAssertEqual(stopped.runner.builds, [], "nothing built")
+        XCTAssertEqual(stopped.runner.plays, [], "nothing played")
+        XCTAssertEqual(stopped.runner.scripts, [], "no AppleScript mutation at all")
+
+        // 3. The output changes to a SpanDAC during the walk.
+        let moved = run { h in XCTAssertTrue(PlaybackModeStore(path: h.modePath).set(.source)) }
+        XCTAssertNotNil(moved.error)
+        XCTAssertEqual(moved.runner.builds, [])
+        XCTAssertEqual(moved.runner.plays, [])
+        XCTAssertEqual(moved.runner.scripts, [])
+    }
 }
 
 /// A status with no DAC on this Mac: a data read must not care.

@@ -27,13 +27,32 @@ struct CLIMusicTUILibraryPlayRequest: Equatable {
     /// `music play N`'s `N`, when the rows came from the result cache.
     let resultNumber: Int?
     let json: Bool
+    /// The output and data selection the rows were read under, captured
+    /// before any read (C-EPOCH's stamp for a one-shot process). Under the
+    /// output lock both files are read again and must still say exactly this
+    /// before anything is changed.
+    var selectionAtRead: EffectiveSelection = .consistent(data: .spandacMac, output: .musicApp)
 }
 
-/// Plays SpanDAC library rows on the MusicTUI output. Called inside the
-/// output lock, with the mode revalidated; it must play exactly the rows it is
-/// given or refuse the whole request.
+/// Plays SpanDAC library rows on the MusicTUI output.
+///
+/// `prepare` runs BEFORE the output lock: any read of SpanDAC's library the
+/// request still needs happens there, so a slow read never holds up an
+/// output change. `play` runs inside the output lock, with the mode
+/// revalidated; it must play exactly the rows it is given or refuse the whole
+/// request, and it never reads SpanDAC's library.
 protocol CLIMusicTUILibraryPlaying {
+    func prepare(_ request: CLIMusicTUILibraryPlayRequest, env: CLIBridgeEnv) throws
+        -> CLIMusicTUILibraryPlayRequest
     func play(_ request: CLIMusicTUILibraryPlayRequest, env: CLIBridgeEnv) throws
+}
+
+extension CLIMusicTUILibraryPlaying {
+    /// Nothing to read: the request goes to `play` as it is.
+    func prepare(_ request: CLIMusicTUILibraryPlayRequest, env: CLIBridgeEnv) throws
+        -> CLIMusicTUILibraryPlayRequest {
+        request
+    }
 }
 
 /// Refuses every request with `pickASpanDACOutput`, playing nothing.
@@ -59,7 +78,8 @@ struct RefusingCLIMusicTUILibraryPlay: CLIMusicTUILibraryPlaying {
 /// `music play N` of a cached SpanDAC library row carries no alias (the result
 /// cache does not store one), so the row's identity is read again from
 /// SpanDAC's library on this Mac, keyed by the row's own id (never its name).
-/// A row SpanDAC no longer lists refuses.
+/// That walk is `prepare`, outside the output lock. A row SpanDAC no longer
+/// lists refuses; a row it lists without an identity refuses in `play`.
 struct PersistentIDCLILibraryPlay: CLIMusicTUILibraryPlaying {
     let library: PersistentIDTrackReading
     let run: ScriptRunner
@@ -68,18 +88,29 @@ struct PersistentIDCLILibraryPlay: CLIMusicTUILibraryPlaying {
     /// What the command shows once playback started (the shipped now line).
     let afterPlay: (Bool) -> Void
 
+    func prepare(_ request: CLIMusicTUILibraryPlayRequest, env: CLIBridgeEnv) throws
+        -> CLIMusicTUILibraryPlayRequest {
+        guard request.resultNumber != nil else { return request }
+        return CLIMusicTUILibraryPlayRequest(kind: request.kind, label: request.label,
+                                             rows: try rowsWithTheirIdentity(request.rows, env: env),
+                                             startAt: request.startAt, shuffle: request.shuffle,
+                                             resultNumber: request.resultNumber, json: request.json,
+                                             selectionAtRead: request.selectionAtRead)
+    }
+
     func play(_ request: CLIMusicTUILibraryPlayRequest, env: CLIBridgeEnv) throws {
         let refused = ActionError(message: pickASpanDACOutput)
-        let rows = request.resultNumber == nil ? request.rows : try rowsWithTheirIdentity(request.rows, env: env)
-        let verified = try verifyHandoffTracks(rows: rows, title: request.label, library: library,
+        let verified = try verifyHandoffTracks(rows: request.rows, title: request.label, library: library,
                                                selfCheck: selfCheck)
         let indices = verified.compactMap(\.libraryIndex)
         guard indices.count == verified.count else { throw refused }
 
         // C-EPOCH for a one-shot process: both files, read again inside the
-        // output lock, just before the one sound mutation.
-        guard case .consistent(.spandacMac, .musicApp) = effectiveSelection(
-            data: DataProviderStore(beside: env.modeStore), modes: env.modeStore) else {
+        // output lock, just before the first AppleScript mutation, must still
+        // be the selection the rows were read under, and that selection must
+        // be SpanDAC data on the MusicTUI output.
+        let now = effectiveSelection(data: DataProviderStore(beside: env.modeStore), modes: env.modeStore)
+        guard now == request.selectionAtRead, case .consistent(.spandacMac, .musicApp) = now else {
             throw ActionError(message: sourceChangedNothingPlayed)
         }
 
