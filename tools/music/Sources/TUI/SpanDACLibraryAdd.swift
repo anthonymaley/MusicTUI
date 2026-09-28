@@ -181,45 +181,15 @@ struct SpanDACLibraryAdd: SpanDACLibraryAdding {
 }
 
 extension SourceAppClient {
-    /// The library ops over the socket THIS client talks to, with the same
-    /// bounded start-once-and-retry the Mac data client has
-    /// (`retryingOnceAfterAStart`; safe for a write, because it retries only a
-    /// request that never reached a running SpanDAC).
-    ///
-    /// The client keeps its transport private, and the file that holds it
-    /// belongs to another change, so the socket is learned by asking the
-    /// client's own control to address a request and stopping it before
-    /// anything is sent. The ops therefore go to the socket this client was
-    /// built for and no other: a test's client, whose socket does not exist,
-    /// can never reach a real SpanDAC through them.
-    func libraryWrites(starter: MacSpanDACStarting) -> SpanDACLibraryAdding {
-        guard let path = socketPath else { return UnreachableLibraryOps() }
-        return SpanDACLibraryAdd(
-            path: path,
-            transport: retryingOnceAfterAStart(SourceAppStationSearch.sendOverUnixSocket, starter: starter))
-    }
-
-    /// The socket path the control member addresses, read without sending.
-    var socketPath: String? {
-        struct Addressed: Error { let path: String }
-        guard let control = control as? SourceAppControl else { return nil }
-        do {
-            _ = try control.send(["op": "slice.status"], over: { path, _ in throw Addressed(path: path) })
-        } catch let addressed as Addressed {
-            return addressed.path
-        } catch {}
-        return nil
-    }
-}
-
-/// A client whose socket could not be learned: offers nothing, sends nothing.
-struct UnreachableLibraryOps: SpanDACLibraryAdding {
-    private static let error = SpanDACLibraryOpError.failed("MusicTUI couldn't reach SpanDAC's library ops.")
-    var canAdd: Bool { false }
-    func add(catalogueIDs: [String]) throws { throw Self.error }
-    func lookup(catalogueIDs: [String]) throws -> [String: String?] { throw Self.error }
-    func ensurePlaylist(name: String, catalogueIDs: [String]) throws -> (created: Bool, id: String, alias: String?) {
-        throw Self.error
+    /// The library ops over THIS client's own path and command transport, so
+    /// they reach exactly the SpanDAC its other requests reach, with whatever
+    /// the client wraps around that transport: the data client's bounded
+    /// start-once-and-retry (`retryingOnceAfterAStart`; safe for a write,
+    /// because it retries only a request that never reached a running
+    /// SpanDAC). A test's client carries a fake transport, so the ops go to
+    /// that fake and can never reach a real SpanDAC.
+    func libraryWrites() -> SpanDACLibraryAdding {
+        SpanDACLibraryAdd(path: path, transport: transport)
     }
 }
 

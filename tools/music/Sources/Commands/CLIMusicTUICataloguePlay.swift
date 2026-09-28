@@ -62,7 +62,7 @@ struct SpanDACCLICataloguePlay: CLIMusicTUICataloguePlaying {
                                         artist: request.artist, album: request.album)
         let player = SpanDACCataloguePlayer(seams: seams)
         let ops = library?(env)
-            ?? env.routing.dataClient().libraryWrites(starter: env.routing.macStarter)
+            ?? env.routing.dataClient().libraryWrites()
         switch player.play(song, library: ops) {
         case .playing(_, let note):
             // The note is the shipped one; `--json` keeps stdout a document.
