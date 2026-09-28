@@ -33,7 +33,8 @@ final class BridgeReadinessTests: XCTestCase {
     /// defaults; the counter is opt-in instrumentation for the one test that
     /// asserts on it.
     private func scene(reply: @escaping (String, String) throws -> String,
-                        refreshCounter: RefreshCallCounter? = nil) -> SpeakersScene {
+                        refreshCounter: RefreshCallCounter? = nil,
+                        clock: @escaping () -> Date = Date.init) -> SpeakersScene {
         let store = PlaybackModeStore(path: NSTemporaryDirectory() + "mode-\(UUID().uuidString).json")
         return SpeakersScene(backend: AppleScriptBackend(executable: "/usr/bin/true"),
                              status: StatusStore(),
@@ -42,6 +43,8 @@ final class BridgeReadinessTests: XCTestCase {
                                                          makeSource: { SourceAppClient(path: "/nonexistent",
                                                                                        transport: reply) }),
                              makeSourceClient: { SourceAppClient(path: "/nonexistent", transport: reply) },
+                             macName: "Studio Mac",
+                             clock: clock,
                              fetchSpeakers: {
                                  refreshCounter?.bumpSpeakers()
                                  return []
@@ -102,16 +105,42 @@ final class BridgeReadinessTests: XCTestCase {
         XCTAssertEqual(s.bridgeReadinessForTest, .ready)
     }
 
-    /// It asks on entry, not on a timer. A tab left open must not keep hitting
-    /// the socket.
-    func testItDoesNotPollWhileTheTabStaysOpen() {
-        let s = scene(reply: { _, _ in self.authorized })
+    /// The Mac's row asks again every `macReprobeInterval` while the tab is
+    /// shown, so a row that could not play turns ready by itself. This
+    /// REVERSES the earlier rule, pinned here as "it does not poll while the
+    /// tab stays open": the agreed pairing redesign makes readiness a
+    /// heartbeat while the tab is on screen. What stays: never a tight spin
+    /// (one probe in flight, and none before the interval), and never while
+    /// the tab is hidden (only `tick()` asks, and hidden tabs are not ticked).
+    func testTheMacRowReprobesWhileTheTabIsShown() {
+        var now = Date(timeIntervalSinceReferenceDate: 1_000)
+        let s = scene(reply: { _, _ in self.authorized }, clock: { now })
         _ = s.tick(snapshot: NowPlayingSnapshot(outcome: .stopped, history: [], surrounding: []))
         settle(s)
         let afterEntry = s.readinessProbeCount
-        for _ in 0..<40 { _ = s.tick(snapshot: NowPlayingSnapshot(outcome: .stopped, history: [], surrounding: [])) }   // same sitting, no gap
-        XCTAssertEqual(s.readinessProbeCount, afterEntry,
-                       "readiness is polling: it must be asked on entry, not on a heartbeat")
+        XCTAssertEqual(afterEntry, 1)
+
+        // Same sitting, no time passed: no new probe, however often it ticks.
+        for _ in 0..<40 { _ = s.tick(snapshot: NowPlayingSnapshot(outcome: .stopped, history: [], surrounding: [])) }
+        XCTAssertEqual(s.readinessProbeCount, afterEntry, "it must not spin against the socket")
+
+        // Hidden: nothing ticks, so nothing asks, however long it stays hidden.
+        now = now.addingTimeInterval(60)
+        XCTAssertEqual(s.readinessProbeCount, afterEntry)
+
+        // Shown again past the interval: it asks, once.
+        _ = s.tick(snapshot: NowPlayingSnapshot(outcome: .stopped, history: [], surrounding: []))
+        XCTAssertEqual(s.readinessProbeCount, afterEntry + 1)
+        for _ in 0..<5 { _ = s.tick(snapshot: NowPlayingSnapshot(outcome: .stopped, history: [], surrounding: [])) }
+        XCTAssertEqual(s.readinessProbeCount, afterEntry + 1, "one probe in flight, none before the next interval")
+
+        // And every interval after that.
+        let deadline = Date().addingTimeInterval(2)
+        while s.hasPendingReadinessForTest == false && Date() < deadline { usleep(10_000) }
+        now = now.addingTimeInterval(SpeakersScene.macReprobeInterval)
+        _ = s.tick(snapshot: NowPlayingSnapshot(outcome: .stopped, history: [], surrounding: []))
+        _ = s.tick(snapshot: NowPlayingSnapshot(outcome: .stopped, history: [], surrounding: []))
+        XCTAssertEqual(s.readinessProbeCount, afterEntry + 2)
     }
 
     /// `tick()`'s speaker/EQ/visualizer refresh must go through the injected
@@ -261,7 +290,9 @@ final class BridgeReadinessTests: XCTestCase {
                                   fetchEQ: { _ in EQSnapshot(enabled: false, current: nil, presets: []) },
                                   fetchVisualizer: { _ in false })
 
-        // Cursor starts on the Music.app row, which is the switch TARGET here.
+        // The cursor starts on row 1 (this Mac). With no speakers loaded yet,
+        // row 2 is the stand-in Music.app row, which is the switch TARGET here.
+        _ = scene.handle(.down)
         let before = scene.bridgeReadinessForTest
         // A fixed wall-clock poll here raced under full-suite load (P7):
         // GCD scheduling of selectMode's action body competes with every

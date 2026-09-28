@@ -27,26 +27,29 @@ final class SpeakerRowTests: XCTestCase {
     }
 
     func testDisplayRowsCollapsed() {
-        let rows = speakersDisplayRows(speakerCount: 2, expanded: false,
-                                       presetNames: ["Nightclub", "Manual"],
-                                       showModes: false)
-        XCTAssertEqual(rows, [.speaker(0), .speaker(1), .eqPower, .eq, .visualizer])
+        let rows = outputTabRows(speakerCount: 2, expanded: false,
+                                 presetNames: ["Nightclub", "Manual"])
+        XCTAssertEqual(rows, [.spandacMac, .speaker(0), .speaker(1), .eqPower, .eq, .visualizer])
     }
 
     func testDisplayRowsExpanded() {
-        let rows = speakersDisplayRows(speakerCount: 1, expanded: true,
-                                       presetNames: ["Nightclub", "Manual"],
-                                       showModes: false)
-        XCTAssertEqual(rows, [.speaker(0), .eqPower, .eq,
+        let rows = outputTabRows(speakerCount: 1, expanded: true,
+                                 presetNames: ["Nightclub", "Manual"])
+        XCTAssertEqual(rows, [.spandacMac, .speaker(0), .eqPower, .eq,
                               .preset("Nightclub"), .preset("Manual"), .visualizer])
     }
 
-    /// Ruling 12.4: mode selection lives on Output, ABOVE the speakers, because
-    /// it is the only control that changes where audio goes.
+    /// Where sound goes is chosen first. There is no separate mode row any
+    /// more: the SPANDAC section leads, this Mac as row 1 and the network
+    /// SpanDACs after it by sourceID, in the order given; Music.app's
+    /// speakers follow, or a stand-in Music.app row when there are none.
     func testOutputModeRowsComeFirst() {
-        let rows = speakersDisplayRows(speakerCount: 2, expanded: false,
-                                       presetNames: ["Nightclub"])
-        XCTAssertEqual(Array(rows.prefix(2)), [.mode(.musicApp), .mode(.source)])
-        XCTAssertEqual(rows.dropFirst(2).first, .speaker(0))
+        let rows = outputTabRows(speakerCount: 2, expanded: false,
+                                 presetNames: ["Nightclub"], spandacIDs: ["B", "A"])
+        XCTAssertEqual(Array(rows.prefix(3)), [.spandacMac, .spandac("B"), .spandac("A")])
+        XCTAssertEqual(rows.dropFirst(3).first, .speaker(0))
+        XCTAssertFalse(rows.contains(.musicApp), "the stand-in appears only with no speakers")
+        XCTAssertEqual(outputTabRows(speakerCount: 0, expanded: false, presetNames: []),
+                       [.spandacMac, .musicApp, .eqPower, .eq, .visualizer])
     }
 }
