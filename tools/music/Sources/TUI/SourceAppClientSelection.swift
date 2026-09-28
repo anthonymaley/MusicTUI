@@ -4,6 +4,11 @@
 // `SourceAppClient()` for "the source" now ask here, so the Mac's own SpanDAC
 // (the Unix socket) and a SpanDAC on the network (paired TLS) are chosen in
 // one place and every `SourceControlling` method above them is untouched.
+//
+// This is the OUTPUT's client. Music DATA never comes through it: the data
+// client is always SpanDAC on this Mac (`SourceAppClient.macData(starter:)`,
+// composed by `RoutingCoordinator.live`), even when the output is a network
+// SpanDAC, which is an output only.
 import Foundation
 
 extension SourceAppClient {

@@ -237,8 +237,8 @@ final class OutputLockSwitchTests: XCTestCase {
         XCTAssertThrowsError(try c.switchMode(to: .source, readiness: { .ready },
                                               pauseOutgoing: { _ in true },
                                               dropQueue: { _ in throw SourceAppError.notRunning })) { error in
-            XCTAssertEqual((error as? ActionError)?.message, "Couldn't clear Music.app's queue; still using it",
-                           "the shipped message changed")
+            XCTAssertEqual((error as? ActionError)?.message, "Couldn't clear MusicTUI's queue; still using it",
+                           "the message changed (the non-SpanDAC output reads as MusicTUI)")
         }
         XCTAssertEqual(c.mode, .musicApp)
         XCTAssertEqual(s.mode(), .musicApp)

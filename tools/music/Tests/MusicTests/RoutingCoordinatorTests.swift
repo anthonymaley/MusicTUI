@@ -55,6 +55,12 @@ final class RoutingCoordinatorTests: XCTestCase {
 
     // MARK: 1
 
+    /// DoD 7 as it stood with ONE selection. Codex 39 restated it for two
+    /// axes: OPEN DATA never constructs a SpanDAC client
+    /// (`DataOutputRoutingTests.testOpenDataModeNeverConstructsASourceClient`);
+    /// the MusicTUI output WITH SpanDAC data does, for its reads. This
+    /// coordinator is composed without a data store, so data follows the
+    /// output and this stays the open-data case.
     func testMusicAppModeNeverInvokesTheSourceFactory() throws {
         let r = Recorder()
         let c = coordinator(mode: .musicApp, recorder: r)
@@ -346,7 +352,7 @@ final class RoutingCoordinatorTests: XCTestCase {
         guard case .refused(let reason) = routeAction(.persistentShuffleMode, in: .source, from: .cli) else {
             return XCTFail("shuffle mode must still refuse from the CLI in Source Mode")
         }
-        XCTAssertEqual(reason, "Shuffle and repeat modes are Music.app only for now.")
+        XCTAssertEqual(reason, "Shuffle and repeat modes are MusicTUI only for now.")
         do {
             try c.perform(.persistentShuffleMode, musicApp: { r.append("musicApp") },
                           source: { _ in r.append("source") }, unaffected: { r.append("unaffected") })
