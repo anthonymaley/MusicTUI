@@ -118,6 +118,13 @@ final class SceneLifecycleLog {
     var played: [[String]] { lock.lock(); defer { lock.unlock() }; return _played }
     func create(_ ids: [String]) { lock.lock(); _created.append(ids); lock.unlock() }
     func play(_ scripts: [String]) { lock.lock(); _played.append(scripts); lock.unlock() }
+    /// The fake SpanDAC whose playlists and library the container's read-back
+    /// and identity check see.
+    private var _mac: FakeSpanDACMac?
+    var mac: FakeSpanDACMac? {
+        get { lock.lock(); defer { lock.unlock() }; return _mac }
+        set { lock.lock(); _mac = newValue; lock.unlock() }
+    }
 }
 
 final class DiscoverDataRouteTests: XCTestCase {
@@ -132,7 +139,12 @@ final class DiscoverDataRouteTests: XCTestCase {
             scheduler: DiscoverScheduler(now: { Date() }, deadline: { _ in Date() }, delay: { _ in }),
             // SpanDAC data: the container SpanDAC made is ready and confirmed.
             readCountByPersistentID: { _ in 100 },
-            confirmReadByPersistentID: { _ in discoverConfirmedToken })
+            confirmReadByPersistentID: { _ in discoverConfirmedToken },
+            readContainerTrackIDsByPersistentID: { log.mac?.containerTrackIDs($0) },
+            readTracksByPersistentID: { hexes in
+                guard let mac = log.mac else { throw Stop.stop }
+                return try mac.library.persistentIDReader.tracks(persistentIDs: hexes)
+            })
         let c = DiscoverLifecycleCoordinator(seams: seams)
         c.completeLaunchSweep(.swept)
         return c
@@ -264,6 +276,7 @@ final class DiscoverDataRouteTests: XCTestCase {
         let mac = FakeSpanDACMac(library: FakeAppleLibrary())
         let s = scene(rig)
         s.scene.libraryOps = mac.client
+        s.log.mac = mac
         loadRails(s)
 
         s.scene.playAllFromRail(playlistRow)

@@ -524,7 +524,8 @@ final class DiscoverScene: Scene {
                         // axis), and the lifecycle posts its own outcome.
                         _ = lifecycle.requestSpanDACPlay(title: musicAppTitle, catalogIDs: catalogIDs,
                                                          disableShuffle: disableShuffle,
-                                                         library: libraryOps())
+                                                         library: libraryOps(),
+                                                         currentStamp: { routing.musicTUISpanDACStamp })
                     case .add:
                         // One Discover track with SpanDAC data: added through
                         // SpanDAC on this Mac, then exactly that song plays.

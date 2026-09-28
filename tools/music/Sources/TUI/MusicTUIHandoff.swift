@@ -316,9 +316,16 @@ func liveMusicTUIHandoff(backend: AppleScriptBackend, appQueue: AppQueueStore,
             playQueueTrack(backend: backend, playlist: queue.playlistName, position: queue.currentSourcePosition)
         }),
         selfCheck: .shared,
-        currentStamp: {
-            guard routing.selection == .consistent(data: .spandacMac, output: .musicApp) else { return nil }
-            let stamp = routing.stamp
-            return MusicTUIHandoffStamp(epoch: stamp.epoch, dataEpoch: stamp.dataEpoch)
-        })
+        currentStamp: { routing.musicTUISpanDACStamp })
+}
+
+extension RoutingCoordinator {
+    /// Both routing epochs while MusicTUI has SpanDAC data on its own output;
+    /// nil otherwise. A play by persistent ID reads it on entry and again just
+    /// before its one sound mutation: a stamp that moved plays nothing.
+    var musicTUISpanDACStamp: MusicTUIHandoffStamp? {
+        guard selection == .consistent(data: .spandacMac, output: .musicApp) else { return nil }
+        let stamp = self.stamp
+        return MusicTUIHandoffStamp(epoch: stamp.epoch, dataEpoch: stamp.dataEpoch)
+    }
 }

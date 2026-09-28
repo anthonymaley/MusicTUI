@@ -103,6 +103,54 @@ func discoverTrackCountScript(persistentID hex: String) -> String {
     "return (count of tracks of (first user playlist whose persistent ID is \"\(hex)\")) as text"
 }
 
+/// The persistent IDs of the container's tracks, in the container's own
+/// order (the order it plays), for the container with this persistent ID.
+/// The same output form as `containerTrackIDsScript`, so
+/// `parseContainerTrackIDsInOrder` reads it.
+func discoverContainerTrackIDsScript(persistentID hex: String) -> String {
+    """
+    set fs to (ASCII character 31)
+    set pl to (first user playlist whose persistent ID is "\(hex)")
+    set total to count of tracks of pl
+    if total is 0 then return ""
+    set ids to persistent ID of every track of pl
+    set out to ""
+    repeat with i from 1 to total
+        set out to out & (item i of ids)
+        if i < total then set out to out & fs
+    end repeat
+    return out
+    """
+}
+
+/// True only when the container SpanDAC made holds EXACTLY the expected
+/// tracks, in the expected order, each one a single identity. The expected
+/// identities are SpanDAC's own lookup of the catalogue ids; each must be in
+/// the library (`verifyExactTracks`, the one identity check), and the
+/// container's tracks read back in its own order must equal them one for one.
+/// Anything short of that, including any read that failed, is false. Never a
+/// title search.
+func discoverContainerHoldsExactly(catalogIDs: [String], containerHex: String,
+                                   library: SpanDACLibraryAdding,
+                                   tracks: PersistentIDTrackReading,
+                                   containerTrackIDs: (String) -> [String]?) -> Bool {
+    guard !catalogIDs.isEmpty, let aliases = try? library.lookup(catalogueIDs: catalogIDs) else { return false }
+    var expected: [String] = []
+    for id in catalogIDs {
+        guard let alias = aliases[id] ?? nil, let hex = persistentIDHex(fromAlias: alias) else { return false }
+        expected.append(hex)
+    }
+    guard let verified = try? verifyExactTracks(expected.map { ($0, nil) }, library: tracks),
+          verified.count == expected.count else { return false }
+    return containerTrackIDs(containerHex) == expected
+}
+
+/// A `PersistentIDTrackReading` over a closure (the lifecycle's seam).
+struct ClosurePersistentIDReader: PersistentIDTrackReading {
+    let read: ([String]) throws -> [String: [HandoffTrackHit]]
+    func tracks(persistentIDs: [String]) throws -> [String: [HandoffTrackHit]] { try read(persistentIDs) }
+}
+
 /// Rule 3's confirmation read, by identity: `player state` is
 /// `nowPlayingReadyState` AND the current playlist's persistent ID is the
 /// container's, compared inside AppleScript. Both reads are inside `try`, so
