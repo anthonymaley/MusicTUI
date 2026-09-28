@@ -273,8 +273,24 @@ final class BridgeReadinessTests: XCTestCase {
         let path = NSTemporaryDirectory() + "mode-\(UUID().uuidString).json"
         let store = PlaybackModeStore(path: path)
         store.set(.source)
+        // The probe gate. `tick()` drains the inbox and THEN starts the Mac
+        // row's own status probe, which answers through this same client off
+        // the main loop. Ungated, that answer could land in the inbox between
+        // `tick()` returning and the last assertion, and read as "tick left
+        // the inbox undrained" (a race in this test, not in the scene). Once
+        // the switch has finished, every call on this client waits here until
+        // the assertions are done, so the probe cannot refill the inbox early.
+        let gateLock = NSLock()
+        var gated = false
+        let probeGate = DispatchSemaphore(value: 0)
+        defer {
+            gateLock.lock(); gated = false; gateLock.unlock()
+            probeGate.signal()
+        }
         let client = { SourceAppClient(path: "/nonexistent", transport: { _, _ in
-            #"{"ok":true,"op":"slice.status","status":{"playback":"idle","contract":3,"authorization":"denied"}}"#
+            gateLock.lock(); let wait = gated; gateLock.unlock()
+            if wait { _ = probeGate.wait(timeout: .now() + 10) }
+            return #"{"ok":true,"op":"slice.status","status":{"playback":"idle","contract":3,"authorization":"denied"}}"#
         }) }
         // Inert closures (P6's seam): this test builds its SpeakersScene
         // directly rather than through scene(reply:), and the trailing tick()
@@ -319,7 +335,11 @@ final class BridgeReadinessTests: XCTestCase {
         XCTAssertEqual(scene.bridgeReadinessForTest, before,
                        "the switch wrote bridgeReadiness directly instead of publishing it")
 
+        gateLock.lock(); gated = true; gateLock.unlock()
+        let probesBefore = scene.readinessProbeCount
         _ = scene.tick(snapshot: NowPlayingSnapshot(outcome: .stopped, history: [], surrounding: []))
+        XCTAssertEqual(scene.readinessProbeCount, probesBefore + 1,
+                       "tick is expected to start the probe the gate holds")
         XCTAssertEqual(scene.bridgeReadinessForTest,
                        .unavailable("SpanDAC was denied Apple Music access"),
                        "tick did not apply the switch's published readiness")
