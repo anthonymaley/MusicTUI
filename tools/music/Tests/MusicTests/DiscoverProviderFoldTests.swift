@@ -190,7 +190,7 @@ final class DiscoverProviderFoldTests: XCTestCase {
         XCTAssertEqual(r.scene.rails.map(\.title), ["Stations for You"])
         XCTAssertEqual(r.feed?.railLimits, [30])
         XCTAssertEqual(r.feed?.trackItems, [])
-        XCTAssertTrue(r.wire.requests.isEmpty, "Music.app mode sent a SpanDAC request")
+        XCTAssertTrue(r.wire.requests.isEmpty, "MusicTUI's own data with the MusicTUI output sent a SpanDAC request")
     }
 
     func testMusicAppDrillInIsOneFeedTrackReadAndNoWire() {

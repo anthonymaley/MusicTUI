@@ -343,9 +343,28 @@ final class PlaybackPoller {
         // Bridge owns playback in Source Mode, so Now must read IT. Until this,
         // the screen said "Nothing playing" while Bridge played — the poller was
         // faithfully reporting Music.app, which was paused and correct to be.
-        if let routing, routing.mode.usesSource {
-            tickFromBridge(routing.mode)
-            return
+        //
+        // Now follows the OUTPUT only (score: data route and output, step 5):
+        // SpanDAC data with the MusicTUI output reads MusicTUI's own player,
+        // never SpanDAC. A blocked output (C-REPAIR) builds no SpanDAC client
+        // and asks no player: the stored SpanDAC may still be what the person
+        // hears, so neither answer would be honest, and Now says why instead.
+        if let routing {
+            switch routing.selection {
+            case .consistent(.spandacMac, let output) where output.usesSource:
+                tickFromBridge(output)
+                return
+            case .outputBlocked:
+                store.write(NowPlayingSnapshot(outcome: .stopped, history: [], surrounding: []))
+                return
+            case .consistent(.open, let output) where output.usesSource:
+                // Never committed (C-REPAIR); it fails closed exactly as
+                // blocked if it is ever represented.
+                store.write(NowPlayingSnapshot(outcome: .stopped, history: [], surrounding: []))
+                return
+            case .consistent:
+                break
+            }
         }
         defer { syncQueuePersistence() }
         switch pollNowPlaying(backend: backend) {

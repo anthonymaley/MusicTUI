@@ -107,7 +107,18 @@ final class DiscoverScene: Scene {
     // must never run on the UI loop.
     private let inboxLock = NSLock()
     private var fetchStarted = false
+    /// `routing.dataEpoch` when the rails fetch was started (tick thread). A
+    /// move reloads the tab: rows from before a change of data source are not
+    /// left on screen to be played (C-MATRIX's "from before" rule).
+    private var fetchDataEpoch = 0
     private var railsInbox: [DiscoverRail]?      // guarded by inboxLock
+    private var railsReadInbox: RowsRead?        // guarded by inboxLock
+    private var tracksReadInbox: RowsRead?       // guarded by inboxLock
+    /// Where the rows on screen were read (tick/handle thread only). A play
+    /// carries the read's data epoch and origin into `routing.perform`, which
+    /// checks both inside its boundary before anything plays (C-EPOCH).
+    private var railsRead: RowsRead?
+    private var tracksRead: RowsRead?
     private var railsFailed = false          // guarded by inboxLock
     private var railsFailure: String?        // guarded by inboxLock
     private var tracksFailure: String?       // guarded by inboxLock
@@ -134,28 +145,35 @@ final class DiscoverScene: Scene {
     // geometry change alone is enough to force a delete+redraw.
     private var lastPlaced: ArtPlacement? = nil
 
-    /// TEMPORARY, and nil in every shipping path. When present, a track-level
-    /// Enter sends ONE catalog id to the MusicTUISource app instead of building
-    /// a `__discover__` container in Music.app. Injected rather than read from
-    /// the environment here, so `MUSICTUI_SOURCE_APP` keeps exactly one read
-    /// site in `Shell.swift` (Anthony's bound, 2026-09-09).
-    /// Whether Bridge is the selected output, asked at the moment of use.
-    ///
-    /// Was `sourcePlayback != nil`, i.e. the `MUSICTUI_SOURCE_APP` env var: the
-    /// dogfood switch. Routing now follows the Output tab, so a person selects
-    /// Bridge and Discover plays there, with no environment variable involved.
-    private let bridgeSelected: () -> Bool
-    /// Where a play goes, decided inside the coordinator's own lock rather than
-    /// by reading `bridgeSelected()` and hoping the mode holds still.
+    /// Where a read or a play goes, decided inside the coordinator's own lock
+    /// on both axes (score: data route and output): the rails follow the DATA
+    /// selection, a play follows the OUTPUT and the row's origin. The scene
+    /// reads `routing.selection` itself and never infers data from the output.
     private let routing: RoutingCoordinator
 
+    /// Where a list of rows came from: the data epoch it was read under, and
+    /// whether SpanDAC on this Mac served it.
+    struct RowsRead: Equatable {
+        let dataEpoch: Int
+        let spandacData: Bool
+
+        init<P>(_ choice: ProviderChoice<P>) {
+            dataEpoch = choice.dataEpoch
+            if case .consistent(.spandacMac, _) = choice.selection { spandacData = true } else { spandacData = false }
+        }
+    }
+
+    /// `bridgeSelected` is NOT read: it answered "is a SpanDAC the OUTPUT",
+    /// which no longer says where Discover's DATA comes from. The scene asks
+    /// `routing` instead. The parameter stays only so existing callers compile
+    /// until they drop it.
     init(feed: DiscoverFeedReading?, status: StatusStore, actions: ActionRunner, api: RESTAPIBackend?,
          lifecycle: DiscoverLifecycleCoordinator, routing: RoutingCoordinator,
          opener: Opener = SystemOpener(),
          bridgeSelected: @escaping () -> Bool = { false },
          kittyEnabled: Bool = false) {
         self.routing = routing
-        self.bridgeSelected = bridgeSelected
+        _ = bridgeSelected
         self.feed = feed
         self.status = status
         self.actions = actions
@@ -225,8 +243,7 @@ final class DiscoverScene: Scene {
     }
 
     var footerHint: String {
-        discoverFooterHint(selection, canGoBack: canGoBack, canRefresh: canRefresh,
-                           sourceApp: bridgeSelected())
+        discoverFooterHint(selection, canGoBack: canGoBack, canRefresh: canRefresh)
     }
 
     // MARK: - Input
@@ -298,38 +315,7 @@ final class DiscoverScene: Scene {
         case .item(let item):
             switch item.detail {
             case .station:
-                do {
-                    // The same station row, routed: `p` on a Radio favourite and
-                    // Enter on a Discover station row reach the same op.
-                    //
-                    // The share URL is how MUSIC.APP plays a station, so needing
-                    // one is that branch's precondition. A row Bridge sent
-                    // carries none, and checked out here it refused every such
-                    // row before the coordinator was ever asked.
-                    try routing.perform(.radioStationPlay,
-                        musicApp: {
-                            guard let url = item.url else {
-                                throw ActionError(message: "That station has no play URL.")
-                            }
-                            try playStation(Station(id: item.id, name: item.name, url: url,
-                                                    isLive: nil, artworkURL: item.artworkURL),
-                                            via: opener)
-                        },
-                        source: {
-                            // D2: the provider rethrows `SourceAppError`
-                            // unchanged, so the refusal below reads as before.
-                            try BridgeMusicProvider(control: $0.control)
-                                .playStation(id: item.id, name: item.name, url: item.url)
-                        },
-                        unaffected: {})
-                    status.post("Playing \(item.name)")
-                } catch let error as SourceAppError {
-                    status.post(error.message, error: true)
-                } catch let error as ActionError {
-                    status.post(error.message, error: true)
-                } catch {
-                    status.post("Could not play \(item.name).", error: true)
-                }
+                playStationRow(item)
                 return .redraw
             case .album, .playlist:
                 drillIn(item)
@@ -381,10 +367,10 @@ final class DiscoverScene: Scene {
     /// `→` deliberately does not reach here (`discoverRightArrowActivates`).
     private func playFromHere() -> SceneAction {
         guard case .tracks(let container) = current.level else { return .none }
-        // A Music.app precondition: Bridge plays with no keys. Read here only to
-        // keep Music.app's immediate refusal exactly as it was; `route` checks
-        // again inside the Music.app branch, where the mode cannot move.
-        guard api != nil || bridgeSelected() else {
+        // The shipped path's precondition: SpanDAC data plays with no keys.
+        // Read here only to keep the shipped immediate refusal exactly as it
+        // was; `route` checks again inside that branch, where nothing moves.
+        guard api != nil || !shippedPathNeedsTheSignIn else {
             status.post(Self.signInToPlay, error: true)
             return .redraw
         }
@@ -403,8 +389,15 @@ final class DiscoverScene: Scene {
             return .redraw
         }
         playCatalogSlice(catalogIDs: ids, containerTitle: container.name,
-                         trackName: trackRows[cursorIndex].name)
+                         trackName: trackRows[cursorIndex].name, read: tracksRead)
         return .push(.nowPlaying)
+    }
+
+    /// Whether a play here would take the shipped path, which needs the REST
+    /// backend: MusicTUI's own data on the MusicTUI output. Every other column
+    /// is decided by `routing.perform`, keys or no keys.
+    private var shippedPathNeedsTheSignIn: Bool {
+        routing.selection == .consistent(data: .open, output: .musicApp)
     }
 
     /// `p` on an album/playlist rail row: there is no cached track list yet —
@@ -415,20 +408,28 @@ final class DiscoverScene: Scene {
     /// dispatch off the input loop for their own fetches.
     // Internal, not private, so the routing binding is reachable from a test.
     func playAllFromRail(_ item: DiscoverItem) {
-        // See `playFromHere` for why this door reads the mode.
-        guard api != nil || bridgeSelected() else {
+        // See `playFromHere` for why this door reads the selection.
+        guard api != nil || !shippedPathNeedsTheSignIn else {
             status.post(Self.signInToPlay, error: true)
             return
         }
         let title = item.name
+        // The output epoch at the keypress: a play pressed for one output
+        // never runs on another. The rail row's own read gives the data half.
+        let keypressEpoch = routing.epoch
+        let railRead = railsRead
         actions.run("Play") {
             // Two decisions, in order, neither nested in the other: which feed
-            // to READ the tracks from, then where to PLAY them. A TUI mode
-            // switch runs on this same serial queue, so none can land between
-            // them; and both feeds yield catalogue ids either way.
+            // to READ the tracks from (the DATA selection), then where to PLAY
+            // them (the OUTPUT). Both feeds yield catalogue ids either way. A
+            // switch that lands between them moves the stamp, and `perform`
+            // refuses before anything plays.
             let tracks: [DiscoverItem]
+            let read: RowsRead
             do {
-                tracks = try self.chooseFeed(.discoverFeed).containerTracks(for: item)
+                let choice = try self.chooseFeed(.discoverFeed)
+                tracks = try choice.provider.containerTracks(for: item)
+                read = railRead ?? RowsRead(choice)
             } catch let error as SourceAppError {
                 throw ActionError(message: error.message)
             }
@@ -436,42 +437,77 @@ final class DiscoverScene: Scene {
             try require(!catalogIDs.isEmpty, "'\(title)': no tracks to play.")
             try self.route(.discoverPlayAll, catalogIDs: catalogIDs, disableShuffle: false,
                        musicAppTitle: title,
-                       bridgeToast: "Playing '\(title)' on SpanDAC — \(catalogIDs.count) tracks.")
+                       bridgeToast: "Playing '\(title)' on SpanDAC — \(catalogIDs.count) tracks.",
+                       expecting: (epoch: keypressEpoch, dataEpoch: read.dataEpoch),
+                       origin: Self.origin(of: read, singleTrack: false))
         }
     }
 
     /// Play a catalogue slice: the selected Discover row through the container's
     /// tail. Internal, not private, so the routing binding is reachable from a
     /// test.
-    func playCatalogSlice(catalogIDs: [String], containerTitle: String, trackName: String) {
+    ///
+    /// `read` is where the track list came from. Without one there is no
+    /// earlier read to stamp and no origin, so a play that needs an origin (a
+    /// SpanDAC row on the MusicTUI output) refuses rather than guessing.
+    func playCatalogSlice(catalogIDs: [String], containerTitle: String, trackName: String,
+                          read: RowsRead? = nil) {
+        let expecting = read.map { (epoch: routing.epoch, dataEpoch: $0.dataEpoch) }
+        let origin = read.map { Self.origin(of: $0, singleTrack: catalogIDs.count == 1) }
         actions.run("Play") {
             try self.route(.discoverTrackPlay, catalogIDs: catalogIDs, disableShuffle: true,
                        musicAppTitle: containerTitle,
                        bridgeToast: catalogIDs.count == 1
                            ? "Playing \(trackName) on SpanDAC."
-                           : "Playing \(trackName) on SpanDAC — \(catalogIDs.count) tracks.")
+                           : "Playing \(trackName) on SpanDAC — \(catalogIDs.count) tracks.",
+                       expecting: expecting, origin: origin)
         }
+    }
+
+    /// C-MATRIX's row origins for Discover: a SpanDAC single track is a
+    /// catalogue row; an album, playlist or play-from-here slice of more than
+    /// one track is a container. A row read under MusicTUI's own data is
+    /// `openData`, which the coordinator refuses once data is SpanDAC's.
+    static func origin(of read: RowsRead, singleTrack: Bool) -> PlayOrigin {
+        guard read.spandacData else { return .openData(resultNumber: nil) }
+        return singleTrack ? .spandacCatalogue : .spandacDiscoverContainer
     }
 
     /// The one place a Discover play chooses its destination.
     ///
-    /// Both branches are real, so there is deliberately no `if bridgeSelected()`
-    /// here: the coordinator reads the mode inside its own lock, which is what
-    /// stops a switch that commits mid-action from driving the wrong player.
-    /// Reading `bridgeSelected()` and then acting is the race the coordinator
-    /// exists to close.
+    /// Every branch is decided by the coordinator, so there is deliberately no
+    /// read of the selection here: the coordinator reads both axes inside its
+    /// own lock, which is what stops a switch that commits mid-action from
+    /// driving the wrong player. Reading the selection and then acting is the
+    /// race the coordinator exists to close.
+    ///
+    /// `expecting` is the read's stamp: checked inside the coordinator's
+    /// boundary before any branch runs, so the lifecycle is never asked to
+    /// play a list whose output or data source has moved (C-EPOCH).
     private func route(_ action: MusicTUIAction, catalogIDs: [String], disableShuffle: Bool,
-                       musicAppTitle: String, bridgeToast: String) throws {
+                       musicAppTitle: String, bridgeToast: String,
+                       expecting: (epoch: Int, dataEpoch: Int)?, origin: PlayOrigin?) throws {
         let lifecycle = self.lifecycle
         let routing = self.routing
         let status = self.status
         let hasAPI = api != nil
         do {
-            try routing.perform(action,
-                musicApp: {
-                    try require(hasAPI, Self.signInToPlay)
-                    _ = lifecycle.requestPlay(title: musicAppTitle, catalogIDs: catalogIDs,
-                                              disableShuffle: disableShuffle)
+            try routing.perform(action, expecting: expecting, origin: origin,
+                musicApp: { path in
+                    switch path {
+                    case .shipped:
+                        try require(hasAPI, Self.signInToPlay)
+                        _ = lifecycle.requestPlay(title: musicAppTitle, catalogIDs: catalogIDs,
+                                                  disableShuffle: disableShuffle)
+                    case .add, .addContainer, .handoff, .stationURL:
+                        // A SpanDAC row on the MusicTUI output: the lifecycle
+                        // needs a SpanDAC way to make its container (and a
+                        // single track a SpanDAC add), which a later change
+                        // brings. Until then it refuses, and the web-service
+                        // container path is never used for SpanDAC data (no
+                        // fallback on either axis).
+                        throw ActionError(message: pickASpanDACOutput)
+                    }
                 },
                 source: {
                     // The skip count is not shown here: the toast is today's.
@@ -485,6 +521,106 @@ final class DiscoverScene: Scene {
             // "unresolvable" alike.
             throw ActionError(message: error.message)
         }
+    }
+
+    /// Enter on a station row. The same station op Radio's Enter reaches.
+    ///
+    /// On the MusicTUI output a station plays by its share URL. A row SpanDAC
+    /// sent carries none, so with SpanDAC data it is looked up BY ID through
+    /// the data provider first, off the input loop; no URL from that lookup
+    /// refuses. Never by name, and never on another output. Every other path
+    /// runs at once, as it ships: MusicTUI's own data needs the row's URL, and
+    /// a SpanDAC output plays the station by id.
+    private func playStationRow(_ item: DiscoverItem) {
+        let read = railsRead
+        let expecting = read.map { (epoch: routing.epoch, dataEpoch: $0.dataEpoch) }
+        let origin = read.map { Self.origin(of: $0, singleTrack: true) }
+        if item.url == nil, routing.selection == .consistent(data: .spandacMac, output: .musicApp) {
+            lookUpThenPlayStation(item, expecting: expecting, origin: origin)
+            return
+        }
+        do {
+            try performStationPlay(item, url: item.url, expecting: expecting, origin: origin)
+            status.post("Playing \(item.name)")
+        } catch let error as SourceAppError {
+            status.post(error.message, error: true)
+        } catch let error as ActionError {
+            status.post(error.message, error: true)
+        } catch {
+            status.post("Could not play \(item.name).", error: true)
+        }
+    }
+
+    /// The lookup is a round trip, so it runs on the action queue. The lookup
+    /// is a READ (the data axis, `choose`), and the play after it is stamped
+    /// with the rows' read: a switch that lands while it is in flight plays
+    /// nothing.
+    private func lookUpThenPlayStation(_ item: DiscoverItem, expecting: (epoch: Int, dataEpoch: Int)?,
+                                       origin: PlayOrigin?) {
+        // No rows read means no stamp; the lookup's own choice gives one.
+        let keypressEpoch = routing.epoch
+        let routing = self.routing
+        let opener = self.opener
+        let status = self.status
+        actions.run("Play") {
+            let choice: ProviderChoice<StationProviding> = try routing.choose(.radioStationLookup,
+                musicApp: { OpenMusicProvider(discover: nil, catalog: nil, opener: opener) },
+                source: { BridgeMusicProvider(control: $0.control) })
+            guard choice.provider.catalogueAvailable else { throw ActionError(message: pickASpanDACOutput) }
+            let found: Station?
+            do {
+                found = try choice.provider.station(id: item.id)
+            } catch {
+                throw ActionError(message: Self.words(for: error) ?? "Could not look up \(item.name).")
+            }
+            guard let url = found?.url, stationPlayURL(url) != nil else {
+                throw ActionError(message: pickASpanDACOutput)
+            }
+            do {
+                try self.performStationPlay(item, url: url,
+                                            expecting: expecting ?? (epoch: keypressEpoch, dataEpoch: choice.dataEpoch),
+                                            origin: origin ?? Self.origin(of: RowsRead(choice), singleTrack: true))
+            } catch let error as SourceAppError {
+                throw ActionError(message: error.message)
+            } catch is StationError {
+                throw ActionError(message: "Could not play \(item.name).")
+            }
+            status.post("Playing \(item.name)")
+        }
+    }
+
+    /// One station play, routed on both axes. `url` is the row's own, or the
+    /// one a lookup by id returned.
+    private func performStationPlay(_ item: DiscoverItem, url: String?,
+                                    expecting: (epoch: Int, dataEpoch: Int)?, origin: PlayOrigin?) throws {
+        let opener = self.opener
+        try routing.perform(.radioStationPlay, expecting: expecting, origin: origin,
+            musicApp: { path in
+                switch path {
+                case .shipped:
+                    // MusicTUI's own data: the share URL is how the MusicTUI
+                    // output plays a station, so needing one is this branch's
+                    // precondition, exactly as it ships.
+                    guard let url = item.url else {
+                        throw ActionError(message: "That station has no play URL.")
+                    }
+                    try playStation(Station(id: item.id, name: item.name, url: url,
+                                            isLive: nil, artworkURL: item.artworkURL), via: opener)
+                case .stationURL:
+                    guard let url else { throw ActionError(message: pickASpanDACOutput) }
+                    try playStation(Station(id: item.id, name: item.name, url: url,
+                                            isLive: nil, artworkURL: item.artworkURL), via: opener)
+                case .add, .addContainer, .handoff:
+                    throw ActionError(message: pickASpanDACOutput)
+                }
+            },
+            source: {
+                // D2: the provider rethrows `SourceAppError` unchanged, so the
+                // refusal reads as before. A SpanDAC output plays by id.
+                try BridgeMusicProvider(control: $0.control)
+                    .playStation(id: item.id, name: item.name, url: item.url)
+            },
+            unaffected: {})
     }
 
     // MARK: - Fetching
@@ -511,13 +647,18 @@ final class DiscoverScene: Scene {
     /// is `open`, the shipped feed wrapped; Bridge is `BridgeMusicProvider`.
     /// Discover keeps its documented tolerance of a result from the output
     /// just left (D3), so the choice's epoch is not checked here.
-    private func chooseFeed(_ action: MusicTUIAction) throws -> DiscoverProviding {
+    ///
+    /// **Routed by the DATA selection** (score: data route and output): with
+    /// SpanDAC data the coordinator hands the Mac's own SpanDAC, whatever the
+    /// output is; a blocked output reads MusicTUI's own data. The choice
+    /// carries the stamp and selection a later play checks.
+    private func chooseFeed(_ action: MusicTUIAction) throws -> ProviderChoice<DiscoverProviding> {
         let choice: ProviderChoice<DiscoverProviding> = try routing.choose(action,
             musicApp: { self.open },
             source: { BridgeMusicProvider(control: $0.control) })
-        // Music.app mode with no sign-in: the only state with no feed at all.
+        // MusicTUI's own data with no sign-in: the only state with no feed.
         guard choice.provider.feedAvailable else { throw ActionError(message: Self.signInToBrowse) }
-        return choice.provider
+        return choice
     }
 
     /// Music.app mode's provider: the feed this scene was given, wrapped (D4),
@@ -534,7 +675,23 @@ final class DiscoverScene: Scene {
     private static func words(for error: Error) -> String? {
         if let error = error as? SourceAppError { return error.message }
         if let error = error as? ActionError { return error.message }
+        if let error = error as? MusicProviderError { return error.errorDescription }
         return nil
+    }
+
+    /// `refresh` without the toast: the rows go, and the next tick reads the
+    /// rails again from the data source now selected.
+    private func reloadForANewDataSource() {
+        loaded = false
+        failed = false
+        loadFailure = nil
+        fetchStarted = false
+        rails = []
+        trackRows = []
+        railsRead = nil
+        tracksRead = nil
+        feedVersion += 1
+        stack = [DiscoverFrameState(level: .root, cursor: DiscoverCursor())]
     }
 
     private func refresh() {
@@ -563,8 +720,11 @@ final class DiscoverScene: Scene {
             guard let self else { return }
             var fetched: [DiscoverItem] = []
             var failure: String? = nil
+            var read: RowsRead? = nil
             do {
-                fetched = try self.chooseFeed(.discoverFeed).containerTracks(for: item)
+                let choice = try self.chooseFeed(.discoverFeed)
+                fetched = try choice.provider.containerTracks(for: item)
+                read = RowsRead(choice)
             } catch {
                 // This was `try?`, which turned every refusal into an empty list
                 // that rendered as "No tracks." A web-service failure still does;
@@ -574,6 +734,7 @@ final class DiscoverScene: Scene {
             self.inboxLock.lock()
             self.tracksInbox = fetched
             self.tracksFailure = failure
+            self.tracksReadInbox = read
             self.inboxLock.unlock()
         }
     }
@@ -581,15 +742,27 @@ final class DiscoverScene: Scene {
     func tick(snapshot: NowPlayingSnapshot) -> Bool {
         var changed = false
 
+        // A change of data source since the rails were fetched: what is on
+        // screen came from the source just left, so it goes and is read again
+        // from the new one. Its rows could not play anyway (C-EPOCH).
+        if fetchStarted, routing.dataEpoch != fetchDataEpoch {
+            reloadForANewDataSource()
+            changed = true
+        }
+
         if !fetchStarted {
             fetchStarted = true
+            fetchDataEpoch = routing.dataEpoch
             DispatchQueue.global().async { [weak self] in
                 guard let self else { return }
                 var fetched: [DiscoverRail] = []
                 var failed = false
                 var failure: String? = nil
+                var read: RowsRead? = nil
                 do {
-                    fetched = try self.chooseFeed(.discoverFeed).discoverRails(limit: 30)
+                    let choice = try self.chooseFeed(.discoverFeed)
+                    fetched = try choice.provider.discoverRails(limit: 30)
+                    read = RowsRead(choice)
                 } catch {
                     failed = true
                     failure = Self.words(for: error)
@@ -598,6 +771,7 @@ final class DiscoverScene: Scene {
                 self.railsInbox = fetched
                 self.railsFailed = failed
                 self.railsFailure = failure
+                self.railsReadInbox = read
                 self.inboxLock.unlock()
             }
         }
@@ -606,17 +780,22 @@ final class DiscoverScene: Scene {
         let incomingRails = railsInbox
         let incomingFailed = railsFailed
         let incomingFailure = railsFailure
+        let incomingRailsRead = railsReadInbox
         railsInbox = nil
+        railsReadInbox = nil
         let incomingTracks = tracksInbox
         let incomingTracksFailure = tracksFailure
+        let incomingTracksRead = tracksReadInbox
         tracksInbox = nil
         tracksFailure = nil
+        tracksReadInbox = nil
         let artLanded = artDirty
         artDirty = false
         inboxLock.unlock()
 
         if let incomingRails {
             rails = incomingRails
+            railsRead = incomingRailsRead
             feedVersion += 1
             loaded = true
             failed = incomingFailed || incomingRails.isEmpty
@@ -626,6 +805,7 @@ final class DiscoverScene: Scene {
         }
         if let incomingTracks {
             trackRows = incomingTracks
+            tracksRead = incomingTracksRead
             feedVersion += 1
             tracksInFlight = false
             // A refusal to open goes where every other Discover refusal goes.
@@ -688,13 +868,13 @@ final class DiscoverScene: Scene {
         out += "\(ANSICode.bold)\(ANSICode.cyan)\(truncText(levelTitle, to: width))\(ANSICode.reset)"
         y += 2
 
-        // The web-service feed's absence means "sign in" only in Music.app mode.
-        // With Bridge selected the rails come from the app and need no key, so
-        // this door used to hide a working feed behind a sign-in line: found
-        // 2026-09-22 by DoD 6's rename-away control, with `config.json` and
-        // `user-token` moved aside. A fourth Music.app precondition checked
-        // outside the Music.app branch, after the three step 3 removed.
-        if feed == nil, !routing.mode.usesSource {
+        // The web-service feed's absence means "sign in" only with MusicTUI's
+        // own data. With SpanDAC data the rails come from SpanDAC on this Mac
+        // and need no key, whatever the output, so this door used to hide a
+        // working feed behind a sign-in line: found 2026-09-22 by DoD 6's
+        // rename-away control, with `config.json` and `user-token` moved
+        // aside. It follows the DATA selection, never the output.
+        if feed == nil, routing.data != .spandacMac {
             out += ANSICode.moveTo(row: y, col: 3)
             return out + "\(ANSICode.dim)Sign in to see your Discover feed (music auth setup).\(ANSICode.reset)"
         }
