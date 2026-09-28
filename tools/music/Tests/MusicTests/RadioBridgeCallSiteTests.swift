@@ -71,7 +71,7 @@ final class RadioBridgeCallSiteTests: XCTestCase {
     /// app's own words, and is never played on Music.app instead.
     func testAnUnresolvableStationRefusesWithoutFallingBack() {
         let wire = Wire()
-        wire.reply = #"{"ok":false,"op":"slice.playStation","error":{"kind":"unresolvable","detail":"'BBC Radio 1' isn't in Apple Music's catalogue, so SpanDAC can't play it. Switch Output to Music.app to play this station."}}"#
+        wire.reply = #"{"ok":false,"op":"slice.playStation","error":{"kind":"unresolvable","detail":"'BBC Radio 1' isn't in Apple Music's catalogue, so SpanDAC can't play it. Switch Output to MusicTUI to play this station."}}"#
         let opener = RecordingOpener()
         let s = scene(mode: .source, wire: wire, opener: opener)
 

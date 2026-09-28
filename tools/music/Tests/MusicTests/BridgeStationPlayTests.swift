@@ -60,7 +60,7 @@ final class BridgeStationPlayTests: XCTestCase {
     /// caller intact rather than being reduced to a label.
     func testAnUnresolvableStationRefusalKeepsItsOwnWords() {
         let wire = Wire()
-        wire.reply = #"{"ok":false,"op":"slice.playStation","error":{"kind":"unresolvable","detail":"'BBC Radio 1' isn't in Apple Music's catalogue, so SpanDAC can't play it. Switch Output to Music.app to play this station."}}"#
+        wire.reply = #"{"ok":false,"op":"slice.playStation","error":{"kind":"unresolvable","detail":"'BBC Radio 1' isn't in Apple Music's catalogue, so SpanDAC can't play it. Switch Output to MusicTUI to play this station."}}"#
 
         XCTAssertThrowsError(try control(wire).playStation(id: "ra.1", named: "BBC Radio 1")) { error in
             guard case SourceAppError.refused(let detail) = error else {
