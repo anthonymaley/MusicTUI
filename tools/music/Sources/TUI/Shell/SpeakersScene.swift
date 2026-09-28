@@ -23,39 +23,6 @@ func speakerRows(from devices: [[String: Any]]) -> [SpeakerRow] {
     }
 }
 
-// MARK: - The previous layout (no longer drawn)
-
-/// The Output tab's rows as they were before the SPANDAC section: two output
-/// mode rows, then network SpanDACs, then speakers.
-///
-/// **Not drawn any more.** The scene draws `OutputTabRow` instead. This stays,
-/// unchanged, only because a test outside the scene's own tests still pins
-/// it; delete it together with that test.
-enum SpeakersDisplayRow: Equatable {
-    case mode(PlaybackMode)
-    case spandac(String)
-    case speaker(Int)        // index into the SpeakerRow array
-    case eqPower
-    case eq
-    case preset(String)
-    case visualizer
-}
-
-/// See `SpeakersDisplayRow`: the previous layout, no longer drawn.
-func speakersDisplayRows(speakerCount: Int, expanded: Bool,
-                         presetNames: [String],
-                         showModes: Bool = true,
-                         spandacIDs: [String] = []) -> [SpeakersDisplayRow] {
-    var rows: [SpeakersDisplayRow] = showModes ? [.mode(.musicApp), .mode(.source)] : []
-    if showModes { rows += spandacIDs.map { .spandac($0) } }
-    rows += (0..<speakerCount).map { .speaker($0) }
-    rows.append(.eqPower)
-    rows.append(.eq)
-    if expanded { rows += presetNames.map { .preset($0) } }
-    rows.append(.visualizer)
-    return rows
-}
-
 // MARK: - The Output tab's rows
 
 /// What the Output tab lists, in order: the SPANDAC section (this Mac first,

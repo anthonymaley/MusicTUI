@@ -231,12 +231,13 @@ final class SpanDACOutputTabTests: XCTestCase {
         XCTAssertEqual(rows.first?.state, .unreachable("not found on this network"))
     }
 
-    /// With nothing paired and nothing seen, the tab is exactly as before.
-    func testWithNoSpanDACsTheTabRowsAreUnchanged() {
-        XCTAssertEqual(speakersDisplayRows(speakerCount: 2, expanded: false, presetNames: []),
-                       speakersDisplayRows(speakerCount: 2, expanded: false, presetNames: [], spandacIDs: []))
-        XCTAssertEqual(speakersDisplayRows(speakerCount: 1, expanded: false, presetNames: [], spandacIDs: [ipad]),
-                       [.mode(.musicApp), .mode(.source), .spandac(ipad), .speaker(0), .eqPower, .eq, .visualizer])
+    /// With no SpanDACs on the network, the tab is just the Mac's row
+    /// followed by the Music.app section.
+    func testWithNoSpanDACsTheTabIsJustTheMusicAppSection() {
+        XCTAssertEqual(outputTabRows(speakerCount: 2, expanded: false, presetNames: []),
+                       [.spandacMac, .speaker(0), .speaker(1), .eqPower, .eq, .visualizer])
+        XCTAssertEqual(outputTabRows(speakerCount: 1, expanded: false, presetNames: [], spandacIDs: [ipad]),
+                       [.spandacMac, .spandac(ipad), .speaker(0), .eqPower, .eq, .visualizer])
     }
 
     // MARK: - Probes
@@ -971,7 +972,7 @@ final class SpanDACOutputTabTests: XCTestCase {
         let s = scene(mode: .source, outputs: fake, speakers: [["name": "Kitchen", "selected": true, "volume": 50]])
         for width in [100, 60] {
             let text = screen(s, width: width).joined(separator: "\n")
-            XCTAssertFalse(text.contains("SpanDAC (this Mac)"), text)
+            XCTAssertFalse(text.contains("SpanDAC on this Mac"), text)
             XCTAssertFalse(text.contains("Select a SpanDAC and press Enter to pair"), text)
             XCTAssertFalse(text.contains("AirPlay Outputs"), text)
             XCTAssertFalse(text.contains("tap Pair"), text)

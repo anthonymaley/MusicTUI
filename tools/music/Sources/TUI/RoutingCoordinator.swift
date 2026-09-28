@@ -244,7 +244,7 @@ final class RoutingCoordinator {
                     let why = ready.label.trimmingCharacters(in: CharacterSet(charactersIn: "."))
                     throw ActionError(message: "\(why). Still using \(name(outgoing)).")
                 }
-                throw ActionError(message: "SpanDAC (this Mac) is \(ready.label); still using \(name(outgoing))")
+                throw ActionError(message: "SpanDAC on this Mac is \(ready.label); still using \(name(outgoing))")
             }
 
             let paused = (try? pauseOutgoing(outgoing)) ?? false
@@ -323,7 +323,7 @@ final class RoutingCoordinator {
     private func name(_ mode: PlaybackMode) -> String {
         switch mode {
         case .musicApp: return "Music.app"
-        case .source:   return "SpanDAC (this Mac)"
+        case .source:   return "SpanDAC on this Mac"
         case .networkSource: return "SpanDAC"
         }
     }

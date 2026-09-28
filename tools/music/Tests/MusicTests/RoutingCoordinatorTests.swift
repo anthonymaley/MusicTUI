@@ -426,8 +426,8 @@ final class RoutingCoordinatorTests: XCTestCase {
                                               pauseOutgoing: { _ in false },
                                               dropQueue: { _ in })) { error in
             let message = (error as? ActionError)?.message ?? ""
-            XCTAssertTrue(message.contains("SpanDAC (this Mac)"),
-                          "the outgoing player is not named SpanDAC (this Mac): \(message)")
+            XCTAssertTrue(message.contains("SpanDAC on this Mac"),
+                          "the outgoing player is not named SpanDAC on this Mac: \(message)")
         }
     }
 }
