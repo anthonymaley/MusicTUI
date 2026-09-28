@@ -96,7 +96,15 @@ final class PlaylistsScene: Scene {
     // C2: the provider seam and its two supporting factories, plus the two
     // injected side effects (rule 15/D10) so tests never depend on the real
     // clock or the real terminal.
+    /// Non-nil while SpanDAC is MusicTUI's data source (the shell's
+    /// `spanDACDataProvider`): the rail is SpanDAC on this Mac's library,
+    /// whichever output is selected.
     private let makeProvider: () -> MusicDataProvider?
+    /// How a SpanDAC playlist plays on the MusicTUI output (C-HANDOFF). The
+    /// shell passes the refusing stub until owned songs play by persistent ID.
+    private let handoff: MusicTUIHandoff
+    /// `routing.dataEpoch` as of the last provenance check.
+    private var provenanceDataEpoch: Int
     private let loadMusicAppPlaylists: () -> (names: [String], subscription: Set<String>)
     private let makeSources: ([String]) -> PlaylistDataSources
     private let warmUpSleep: (TimeInterval) -> Void
@@ -258,9 +266,12 @@ final class PlaylistsScene: Scene {
          makeProvider: @escaping () -> MusicDataProvider? = { nil },
          loadMusicAppPlaylists: @escaping () -> (names: [String], subscription: Set<String>) = { ([], []) },
          makeSources: @escaping ([String]) -> PlaylistDataSources = { _ in .empty },
+         handoff: MusicTUIHandoff = RefusingHandoff(),
          warmUpSleep: @escaping (TimeInterval) -> Void = { Thread.sleep(forTimeInterval: $0) },
          screenWidth: @escaping () -> Int = { ScreenFrame.current().width }) {
         self.routing = routing
+        self.handoff = handoff
+        self.provenanceDataEpoch = routing.dataEpoch
         self.backend = backend
         self.playlists = playlists
         self.subscriptionNames = subscriptionNames
@@ -455,12 +466,17 @@ final class PlaylistsScene: Scene {
 
     // MARK: - D7: provenance
 
-    /// Once per tick, before anything else, compute which library the
-    /// selected output implies and reset the rail if its recorded source no
-    /// longer matches. Returns whether it reset, so the caller redraws.
+    /// Once per tick, before anything else, compute which library the DATA
+    /// selection implies and reset the rail if its recorded source no longer
+    /// matches, or if the data source changed since it loaded (a moved
+    /// `routing.dataEpoch`). An output switch alone resets nothing. Returns
+    /// whether it reset, so the caller redraws.
     private func applyProvenance() -> Bool {
         let want: ListSource = makeProvider() != nil ? .bridge : .musicApp
-        guard let source = railSource, source != want else { return false }
+        let dataEpoch = routing.dataEpoch
+        let dataMoved = dataEpoch != provenanceDataEpoch
+        provenanceDataEpoch = dataEpoch
+        guard let source = railSource, source != want || dataMoved else { return false }
         resetRail(newWant: want)
         return true
     }
@@ -1034,7 +1050,11 @@ final class PlaylistsScene: Scene {
         let routing = self.routing
         let status = self.status
         let warmUpSleep = self.warmUpSleep
+        let handoff = self.handoff
         let epoch = railEpoch   // rule 10: this action's own epoch, captured now
+        // C-EPOCH: stamped at the keypress; a switch that commits while the
+        // playlist is read plays nothing.
+        let stamp = routing.stamp
         actions.run("Play") { [self] in
             do {
                 guard let provider = makeProvider() else {
@@ -1084,13 +1104,22 @@ final class PlaylistsScene: Scene {
 
                 // Addendum U: set only on the attempt that actually succeeds.
                 var skippedUnavailable = 0
+                var handedOff = false
                 _ = try retryingWhileWarming(budget: budget, onWarming: onWarming, sleep: warmUpSleep) {
-                    try routing.perform(.playlistPlay, musicApp: {
-                        throw ActionError(message: "Output changed to Music.app before '\(name)' could play on SpanDAC; nothing was played.")
-                    }, source: { _ in
-                        skippedUnavailable = try provider.playReportingSkips(
+                    // A SpanDAC output plays the ids on THAT output's client;
+                    // the MusicTUI output hands the rows to the hand-off.
+                    try routing.perform(.playlistPlay, expecting: stamp, origin: .spandacLibrary, musicApp: { path in
+                        guard path == .handoff else { throw ActionError(message: pickASpanDACOutput) }
+                        try playThroughHandoff(handoff, rows: finalRows, startAt: startAt, shuffle: shuffle, title: name)
+                        handedOff = true
+                    }, source: { client in
+                        skippedUnavailable = try spanDACOutputPlayer(client).playReportingSkips(
                             ids: ids, startRequired: startRequired).skippedUnavailable
                     }, unaffected: {})
+                }
+                if handedOff {
+                    status.post(LibraryProvenance.playingOnMusicTUI(name))
+                    return
                 }
                 status.post(bridgePlaylistPlayMessage(name: name, queued: ids.count, skippedVideos: finalSkipped,
                                                        skippedUnavailable: skippedUnavailable,
@@ -1135,39 +1164,57 @@ final class PlaylistsScene: Scene {
         let pos = trackIndex + 1
         let store = self.appQueue
         let backend = self.backend
+        let makeProvider = self.makeProvider
+        let stamp = routing.stamp
         actions.run("Play") { [routing] in
             // C3 item 7 / Codex before-push (reorder, ruled): checked FIRST,
-            // before any Music.app read — a residual race (the mode flipped
-            // between the keypress's own provenance check and this action
-            // finally running on the action queue) must refuse without
+            // before any AppleScript read — a residual race (the data source
+            // switched between the keypress's own provenance check and this
+            // action finally running on the action queue) must refuse without
             // running `fetchPlaylistTracks`'s AppleScript, not just before
-            // resolving by name. Still read live, at execution time, not
-            // captured at the keypress.
-            if routing.mode.usesSource {
-                throw ActionError(message: LibraryProvenance.bridgeSelectedMusicAppList)
-            }
+            // resolving by name; so must a blocked stored output (C-REPAIR).
+            // Still read live, at execution time.
+            try refuseOpenDataPlayBeforeReading(.playlistPlay, routing: routing, spanDACData: makeProvider() != nil)
             let tracks = fetchPlaylistTracks(backend: backend, playlist: name)
             try require(!tracks.isEmpty, "Couldn't load tracks for '\(name)'.")
             try require(pos >= 1 && pos <= tracks.count, "Track \(pos) is out of range.")
-            store.set(AppQueue(playlistName: name, tracks: tracks, currentIndex: pos))
-            try require(playQueueTrack(backend: backend, playlist: name, position: pos), "Couldn't play '\(name)'.")
+            // The coordinator decides again, inside its lock and against the
+            // keypress's stamp: a row from MusicTUI's own data plays only
+            // while MusicTUI's own data is still the source.
+            try routing.perform(.playlistPlay, expecting: stamp, origin: .openData(resultNumber: nil),
+                musicApp: { path in
+                    guard path == .shipped else { throw ActionError(message: pickASpanDACOutput) }
+                    store.set(AppQueue(playlistName: name, tracks: tracks, currentIndex: pos))
+                    try require(playQueueTrack(backend: backend, playlist: name, position: pos), "Couldn't play '\(name)'.")
+                },
+                source: { _ in throw ActionError(message: LibraryProvenance.bridgeSelectedMusicAppList) },
+                unaffected: {})
         }
     }
     private func playPlaylist(shuffle: Bool) {
-        // Whole-playlist play uses Music's native (gapless) queue — relinquish the
-        // app-owned queue so the poller reads Music's context again.
-        appQueue.clear()
         let esc = escapeAppleScriptString(playlists[plCursor])
         let name = playlists[plCursor]
+        let makeProvider = self.makeProvider
+        let store = self.appQueue
+        let stamp = routing.stamp
         actions.run("Play") { [routing] in
-            if routing.mode.usesSource {
-                // C3 item 7: same residual-race refusal as playTrack above.
-                throw ActionError(message: LibraryProvenance.bridgeSelectedMusicAppList)
-            }
-            try require((try? syncRun { try await self.backend.runMusic("set shuffle enabled to \(shuffle)") }) != nil,
-                        "Couldn't set shuffle for '\(name)'.")
-            try require((try? syncRun { try await self.backend.runMusic("play playlist \"\(esc)\"") }) != nil,
-                        "Couldn't play '\(name)'.")
+            // C3 item 7: same residual-race refusal as playTrack above.
+            try refuseOpenDataPlayBeforeReading(.playlistPlay, routing: routing, spanDACData: makeProvider() != nil)
+            try routing.perform(.playlistPlay, expecting: stamp, origin: .openData(resultNumber: nil),
+                musicApp: { path in
+                    guard path == .shipped else { throw ActionError(message: pickASpanDACOutput) }
+                    // Whole-playlist play uses Music's native (gapless) queue —
+                    // relinquish the app-owned queue so the poller reads
+                    // Music's context again. Inside the branch, so a refused
+                    // play leaves the queue as it was.
+                    store.clear()
+                    try require((try? syncRun { try await self.backend.runMusic("set shuffle enabled to \(shuffle)") }) != nil,
+                                "Couldn't set shuffle for '\(name)'.")
+                    try require((try? syncRun { try await self.backend.runMusic("play playlist \"\(esc)\"") }) != nil,
+                                "Couldn't play '\(name)'.")
+                },
+                source: { _ in throw ActionError(message: LibraryProvenance.bridgeSelectedMusicAppList) },
+                unaffected: {})
         }
     }
 

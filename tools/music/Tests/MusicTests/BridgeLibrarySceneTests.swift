@@ -206,11 +206,15 @@ final class BridgeLibrarySceneTests: XCTestCase {
         }
     }
 
-    private func routing(_ mode: PlaybackMode) -> RoutingCoordinator {
+    /// The OUTPUT client answers from the same canned wire as the provider:
+    /// since the data route a SpanDAC row plays on the client `perform` hands
+    /// its `.source` branch (the selected output's), not on the data client
+    /// the list was read through.
+    private func routing(_ mode: PlaybackMode, wire: Wire) -> RoutingCoordinator {
         let store = PlaybackModeStore(path: NSTemporaryDirectory() + "mode-\(UUID().uuidString).json")
         store.set(mode)
         return RoutingCoordinator(store: store, surface: .tui,
-                                  makeSource: { SourceAppClient(path: "/nonexistent") })
+                                  makeSource: { SourceAppClient(path: "/nonexistent", transport: wire.transport) })
     }
 
     /// Every warm-up wait this scene took, instead of taking it. A bounded
@@ -225,7 +229,7 @@ final class BridgeLibrarySceneTests: XCTestCase {
     /// The production shape of the factory: a provider only in Bridge mode.
     private func scene(mode: PlaybackMode, wire: Wire, spy: AppleScriptSpy,
                        status: StatusStore, waits: Waits = Waits()) -> LibraryScene {
-        let route = routing(mode)
+        let route = routing(mode, wire: wire)
         return LibraryScene(backend: AppleScriptBackend(executable: "/usr/bin/true"), routing: route,
                             sources: spy.sources(), appQueue: AppQueueStore(),
                             status: status, actions: ActionRunner(status: status),
