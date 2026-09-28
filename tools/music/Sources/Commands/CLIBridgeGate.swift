@@ -9,16 +9,38 @@ import Foundation
 /// side effect. Verbs Bridge serves dispatch instead (`CLIBridgeDispatch.swift`,
 /// slice 3 S6 onward).
 ///
-/// Pure: the mode is passed in. `nil` means go ahead exactly as the verb ships.
+/// Pure: both selections are passed in, as one `EffectiveSelection` (score:
+/// data route and output, C-MATRIX), and the SOUND half of the two-axis
+/// matrix decides. `nil` means go ahead exactly as the verb ships.
 /// **A `.source` route is never "go ahead":** a gated verb has no Bridge
-/// branch, so going ahead would run Music.app with Bridge selected, a silent
-/// fallback. It refuses instead (fail closed).
-func cliBridgeRefusal(_ action: MusicTUIAction, mode: PlaybackMode) -> String? {
-    switch routeAction(action, in: mode, from: .cli) {
+/// branch, so going ahead would run the MusicTUI output's body with a SpanDAC
+/// selected, a silent fallback. It refuses instead (fail closed).
+func cliBridgeRefusal(_ action: MusicTUIAction, selection: EffectiveSelection) -> String? {
+    switch routeAction(action, selection: selection, from: .cli).sound {
     case .refused(let why): return why
     case .source:           return cliGateOnDispatchedAction
     case .musicApp, .unaffected: return nil
     }
+}
+
+/// The form that names an output only, as every caller did before the data
+/// axis: MusicTUI's own data with the MusicTUI output, SpanDAC data with a
+/// SpanDAC output (the coordinator's composition without a data store). For
+/// callers that state a mode outright; the CLI's own gate reads both files.
+func cliBridgeRefusal(_ action: MusicTUIAction, mode: PlaybackMode) -> String? {
+    cliBridgeRefusal(action, selection: selectionNamingOutputOnly(mode))
+}
+
+/// Both selections as read from disk, once, for a gated verb: mode.json and
+/// data.json beside it (C-AXES, C-REPAIR). Reads never write.
+func liveCLISelection() -> EffectiveSelection {
+    let modes = PlaybackModeStore()
+    return effectiveSelection(data: DataProviderStore(beside: modes), modes: modes)
+}
+
+/// See `cliBridgeRefusal(_:mode:)`.
+private func selectionNamingOutputOnly(_ mode: PlaybackMode) -> EffectiveSelection {
+    mode == .musicApp ? .consistent(data: .open, output: mode) : .consistent(data: .spandacMac, output: mode)
 }
 
 /// What a gated verb says if the matrix serves its action through Bridge: the
@@ -26,13 +48,21 @@ func cliBridgeRefusal(_ action: MusicTUIAction, mode: PlaybackMode) -> String? {
 let cliGateOnDispatchedAction =
     "Internal error: this command is served through SpanDAC but was not dispatched there; nothing was changed."
 
-/// Refuse `action` if the selected output says so: print the reason (as JSON
-/// under `--json`) and exit non-zero. Music.app selected returns immediately.
+/// Refuse `action` if the two selections say so: print the reason (as JSON
+/// under `--json`) and exit non-zero. Where the matrix runs the verb as it
+/// ships, this returns immediately. The default reads mode.json and
+/// data.json once (`liveCLISelection`).
 func refuseInBridge(_ action: MusicTUIAction, json: Bool = false,
-                    mode: PlaybackMode = PlaybackModeStore().mode()) throws {
-    guard let why = cliBridgeRefusal(action, mode: mode) else { return }
+                    selection: EffectiveSelection = liveCLISelection()) throws {
+    guard let why = cliBridgeRefusal(action, selection: selection) else { return }
     print(cliFailureText(why, json: json))
     throw ExitCode.failure
+}
+
+/// `refuseInBridge` for a caller that states an output only
+/// (`cliBridgeRefusal(_:mode:)`).
+func refuseInBridge(_ action: MusicTUIAction, json: Bool = false, mode: PlaybackMode) throws {
+    try refuseInBridge(action, json: json, selection: selectionNamingOutputOnly(mode))
 }
 
 /// One CLI failure as printed: the sentence, or `{"ok":false,"error":…}` under

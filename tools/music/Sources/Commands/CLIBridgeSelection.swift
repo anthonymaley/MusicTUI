@@ -24,6 +24,26 @@ enum BridgeSelection: Equatable {
     case refused(String)
 }
 
+/// The same resolution before it becomes ids: the SpanDAC library rows
+/// themselves, in SpanDAC's order and never shuffled. The MusicTUI output with
+/// SpanDAC data plays ROWS (score: data route and output, step 6), so it
+/// needs them; a SpanDAC output queues ids (`ids(shuffle:)`).
+enum BridgeRowSelection: Equatable {
+    case rows(label: String, rows: [MusicRow], startRequired: Bool, skippedVideos: Int)
+    case refused(String)
+
+    /// D4's ids for a SpanDAC output: shuffled or in order, from the first row.
+    func ids(shuffle: Bool) -> BridgeSelection {
+        switch self {
+        case .refused(let why):
+            return .refused(why)
+        case .rows(let label, let rows, let startRequired, let skippedVideos):
+            return .play(label: label, ids: bridgeQueueIDs(rows, shuffle: shuffle, startAt: 1),
+                         startRequired: startRequired, skippedVideos: skippedVideos)
+        }
+    }
+}
+
 /// D4's name rule, exact-then-unique-substring, both sides folded through
 /// `normalizeAlbumTitle` — title identity, the same function `--album`
 /// matching already uses, deliberately not `normalizeCredit` (a row's own
@@ -105,6 +125,15 @@ func resolveBridgePlaylistSelection(provider: MusicDataProvider, name: String, s
                                     budget: WarmUpBudget = WarmUpBudget(),
                                     sleep: @escaping (TimeInterval) -> Void = { Thread.sleep(forTimeInterval: $0) },
                                     onWarming: @escaping (TimeInterval) -> Void = { _ in }) throws -> BridgeSelection {
+    try resolveBridgePlaylistRows(provider: provider, name: name, budget: budget, sleep: sleep,
+                                  onWarming: onWarming).ids(shuffle: shuffle)
+}
+
+/// `--playlist NAME`, as rows.
+func resolveBridgePlaylistRows(provider: MusicDataProvider, name: String,
+                               budget: WarmUpBudget = WarmUpBudget(),
+                               sleep: @escaping (TimeInterval) -> Void = { Thread.sleep(forTimeInterval: $0) },
+                               onWarming: @escaping (TimeInterval) -> Void = { _ in }) throws -> BridgeRowSelection {
     var rows: [MusicRow] = []
     if let error = walkLibraryPages(fetch: provider.libraryPlaylists,
                                     onPage: { page in rows.append(contentsOf: page.rows); return true },
@@ -134,8 +163,7 @@ func resolveBridgePlaylistSelection(provider: MusicDataProvider, name: String, s
             throw error
         }
         guard !trackRows.isEmpty else { return .refused(bridgeNoSongsMessage(name: row.title)) }
-        let ids = bridgeQueueIDs(trackRows, shuffle: shuffle, startAt: 1)
-        return .play(label: row.title, ids: ids, startRequired: false, skippedVideos: skippedVideos)
+        return .rows(label: row.title, rows: trackRows, startRequired: false, skippedVideos: skippedVideos)
     }
 }
 
@@ -144,6 +172,15 @@ func resolveBridgeAlbumSelection(provider: MusicDataProvider, name: String, arti
                                  budget: WarmUpBudget = WarmUpBudget(),
                                  sleep: @escaping (TimeInterval) -> Void = { Thread.sleep(forTimeInterval: $0) },
                                  onWarming: @escaping (TimeInterval) -> Void = { _ in }) throws -> BridgeSelection {
+    try resolveBridgeAlbumRows(provider: provider, name: name, artist: artist, budget: budget, sleep: sleep,
+                               onWarming: onWarming).ids(shuffle: shuffle)
+}
+
+/// `--album NAME [--artist A]`, as rows.
+func resolveBridgeAlbumRows(provider: MusicDataProvider, name: String, artist: String?,
+                            budget: WarmUpBudget = WarmUpBudget(),
+                            sleep: @escaping (TimeInterval) -> Void = { Thread.sleep(forTimeInterval: $0) },
+                            onWarming: @escaping (TimeInterval) -> Void = { _ in }) throws -> BridgeRowSelection {
     var rows: [MusicRow] = []
     if let error = walkLibraryPages(fetch: provider.libraryAlbums,
                                     onPage: { page in rows.append(contentsOf: page.rows); return true },
@@ -162,8 +199,7 @@ func resolveBridgeAlbumSelection(provider: MusicDataProvider, name: String, arti
             try provider.albumTracks(albumID: row.id)
         }
         guard !list.rows.isEmpty else { return .refused(bridgeNoSongsMessage(name: row.title)) }
-        let ids = bridgeQueueIDs(list.rows, shuffle: shuffle, startAt: 1)
-        return .play(label: row.title, ids: ids, startRequired: false, skippedVideos: 0)
+        return .rows(label: row.title, rows: list.rows, startRequired: false, skippedVideos: 0)
     }
 }
 
@@ -173,6 +209,15 @@ func resolveBridgeArtistSelection(provider: MusicDataProvider, name: String,
                                   budget: WarmUpBudget = WarmUpBudget(),
                                   sleep: @escaping (TimeInterval) -> Void = { Thread.sleep(forTimeInterval: $0) },
                                   onWarming: @escaping (TimeInterval) -> Void = { _ in }) throws -> BridgeSelection {
+    try resolveBridgeArtistRows(provider: provider, name: name, budget: budget, sleep: sleep,
+                                onWarming: onWarming).ids(shuffle: false)
+}
+
+/// `--artist NAME`, as rows.
+func resolveBridgeArtistRows(provider: MusicDataProvider, name: String,
+                             budget: WarmUpBudget = WarmUpBudget(),
+                             sleep: @escaping (TimeInterval) -> Void = { Thread.sleep(forTimeInterval: $0) },
+                             onWarming: @escaping (TimeInterval) -> Void = { _ in }) throws -> BridgeRowSelection {
     var rows: [MusicRow] = []
     if let error = walkLibraryPages(fetch: provider.libraryArtists,
                                     onPage: { page in rows.append(contentsOf: page.rows); return true },
@@ -190,7 +235,7 @@ func resolveBridgeArtistSelection(provider: MusicDataProvider, name: String,
             try provider.artistSongs(artistID: row.id)
         }
         guard !list.rows.isEmpty else { return .refused(bridgeNoSongsMessage(name: row.title)) }
-        return .play(label: row.title, ids: list.rows.map(\.id), startRequired: false, skippedVideos: 0)
+        return .rows(label: row.title, rows: list.rows, startRequired: false, skippedVideos: 0)
     }
 }
 
@@ -200,6 +245,15 @@ func resolveBridgeSongSelection(provider: MusicDataProvider, title: String, arti
                                 budget: WarmUpBudget = WarmUpBudget(),
                                 sleep: @escaping (TimeInterval) -> Void = { Thread.sleep(forTimeInterval: $0) },
                                 onWarming: @escaping (TimeInterval) -> Void = { _ in }) throws -> BridgeSelection {
+    try resolveBridgeSongRows(provider: provider, title: title, artist: artist, budget: budget, sleep: sleep,
+                              onWarming: onWarming).ids(shuffle: false)
+}
+
+/// `--song T [--artist A]`, as rows: exactly one.
+func resolveBridgeSongRows(provider: MusicDataProvider, title: String, artist: String?,
+                           budget: WarmUpBudget = WarmUpBudget(),
+                           sleep: @escaping (TimeInterval) -> Void = { Thread.sleep(forTimeInterval: $0) },
+                           onWarming: @escaping (TimeInterval) -> Void = { _ in }) throws -> BridgeRowSelection {
     var rows: [MusicRow] = []
     if let error = walkLibraryPages(fetch: provider.librarySongs,
                                     onPage: { page in rows.append(contentsOf: page.rows); return true },
@@ -214,7 +268,7 @@ func resolveBridgeSongSelection(provider: MusicDataProvider, title: String, arti
         return .refused(bridgeAmbiguousMessage(query: title, kindPlural: "songs", rows: matches,
                                                suggestArtist: true, songHint: true))
     case .one(let row):
-        return .play(label: row.title, ids: [row.id], startRequired: true, skippedVideos: 0)
+        return .rows(label: row.title, rows: [row], startRequired: true, skippedVideos: 0)
     }
 }
 
