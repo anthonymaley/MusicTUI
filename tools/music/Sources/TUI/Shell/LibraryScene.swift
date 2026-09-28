@@ -344,6 +344,10 @@ final class LibraryScene: Scene {
     /// serialises Music.app's bulk reads; a Bridge walk contends for none of
     /// them, so it is kept out of that budget entirely and guarded here.
     private var bridgeWalkInFlight = false
+    /// The rows a SpanDAC songs walk delivered, by id, under `inboxLock`, so a
+    /// song played on the MusicTUI output reaches the hand-off as the row
+    /// SpanDAC gave, not one rebuilt from the list's display fields.
+    private var bridgeSongRowsByID: [String: MusicRow] = [:]
     private var artistsPending: [LibraryArtist] = []
     private var artistsDone = false
     // Tagged with the requested artistID (a since-abandoned artist's slow
@@ -383,15 +387,25 @@ final class LibraryScene: Scene {
     private let resolveAlbum: (AppleScriptBackend, String, String) -> AlbumResolution
     private let resolveArtist: (AppleScriptBackend, String) -> AlbumResolution
 
-    /// Where the Songs list's rows and playback come from, asked FRESH at each
-    /// load and each play so a mid-session output switch is honoured.
+    /// Where the lists' rows come from, asked FRESH at each load and each play
+    /// so a mid-session switch of data source is honoured.
     ///
-    /// Non-nil means Bridge is the selected output: the rows are Bridge's own
-    /// MusicKit library and a row plays by the id Bridge gave it ("two modes,
-    /// two libraries", Anthony 2026-09-23). Nil means Music.app mode and the
-    /// AppleScript path below, unchanged. The default returns nil, so nothing
-    /// that does not ask for a provider gets one.
+    /// Non-nil means SpanDAC is MusicTUI's data source: the rows are SpanDAC
+    /// on this Mac's own MusicKit library, whichever output is selected, and a
+    /// row plays by the id SpanDAC gave it ("two modes, two libraries",
+    /// Anthony 2026-09-23). Nil means MusicTUI's own data and the AppleScript
+    /// path below, unchanged. The default returns nil, so nothing that does
+    /// not ask for a provider gets one. The shell's is `spanDACDataProvider`.
     private let makeProvider: () -> MusicDataProvider?
+
+    /// How a SpanDAC library row plays on the MusicTUI output (C-HANDOFF):
+    /// `RoutingCoordinator.perform` names that path, and this runs it. The
+    /// shell passes the refusing stub until owned songs play by persistent ID.
+    private let handoff: MusicTUIHandoff
+
+    /// `routing.dataEpoch` as of this scene's last provenance check: a switch
+    /// of data source moves it, and every list loaded before it resets.
+    private var provenanceDataEpoch: Int
 
     /// How the Bridge walk waits out a "not ready yet". A seam for the same
     /// reason `resolveAlbum` is one: the bounded-retry rule is worth a test, and
@@ -415,11 +429,14 @@ final class LibraryScene: Scene {
          resolveArtist: @escaping (AppleScriptBackend, String) -> AlbumResolution
              = { resolveArtistPlaybackTracks(backend: $0, artist: $1) },
          makeProvider: @escaping () -> MusicDataProvider? = { nil },
+         handoff: MusicTUIHandoff = RefusingHandoff(),
          warmUpSleep: @escaping (TimeInterval) -> Void = { Thread.sleep(forTimeInterval: $0) },
          resultCache: ResultCache = ResultCache()) {
         self.resolveAlbum = resolveAlbum
         self.resolveArtist = resolveArtist
         self.makeProvider = makeProvider
+        self.handoff = handoff
+        self.provenanceDataEpoch = routing.dataEpoch
         self.warmUpSleep = warmUpSleep
         self.resultCache = resultCache
         self.routing = routing
@@ -660,6 +677,7 @@ final class LibraryScene: Scene {
                     self.inboxLock.lock()
                     defer { self.inboxLock.unlock() }
                     guard self.songsWalkEpoch == epoch else { return false }   // reset since -> stop
+                    for row in page.rows { self.bridgeSongRowsByID[row.id] = row }
                     if self.songsAwaitingReplacement {
                         // First page of the new generation: it REPLACES what is
                         // on screen, wholesale, in one drain.
@@ -903,21 +921,30 @@ final class LibraryScene: Scene {
 
     // MARK: provenance (D7)
 
-    /// Once per tick, compute which library the selected output implies and
+    /// Once per tick, compute which library the DATA selection implies and
     /// reset any list whose recorded source no longer matches it. Called
     /// before the inbox drain and the lazy-loader kicks below, so a list this
     /// tick resets is also reloaded from the right source this same tick.
     /// Returns whether anything reset, so the caller knows to redraw and post
     /// the one shared message.
+    ///
+    /// Provenance tracks the DATA selection (score: data route and output,
+    /// step 4): `makeProvider` follows it, and a moved `routing.dataEpoch`
+    /// resets every loaded list even when the kind reads the same (stopped
+    /// and accepted again while this tab was not ticking). An output switch
+    /// alone resets nothing: a SpanDAC list is still SpanDAC on this Mac's.
     private func applyProvenance() -> Bool {
         let want: ListSource = makeProvider() != nil ? .bridge : .musicApp
+        let dataEpoch = routing.dataEpoch
+        let dataMoved = dataEpoch != provenanceDataEpoch
+        provenanceDataEpoch = dataEpoch
         var resetAny = false
-        if let source = songsSource, source != want { resetSongsList(); resetAny = true }
-        if let source = albumsSource, source != want { resetAlbumsList(); resetAny = true }
-        if let source = artistsSource, source != want { resetArtistsList(); resetAny = true }
+        if let source = songsSource, source != want || dataMoved { resetSongsList(); resetAny = true }
+        if let source = albumsSource, source != want || dataMoved { resetAlbumsList(); resetAny = true }
+        if let source = artistsSource, source != want || dataMoved { resetArtistsList(); resetAny = true }
         if resetAny {
             clearAlbumCentricCaches()
-            status.post("Output changed \u{2014} showing \(want == .bridge ? "SpanDAC's" : "the Music.app") library")
+            status.post(want == .bridge ? LibraryProvenance.bridgeLibraryShown : LibraryProvenance.musicAppLibraryShown)
         }
         return resetAny
     }
@@ -932,6 +959,7 @@ final class LibraryScene: Scene {
         bridgeWarming = false
         songsSource = nil
         songsWalkEpoch += 1
+        inboxLock.lock(); bridgeSongRowsByID = [:]; inboxLock.unlock()
         if nav.subView == .songs { returnToRoot(.songs) }
     }
 
@@ -1566,6 +1594,9 @@ final class LibraryScene: Scene {
     /// played after switching to Music.app does (rule 3, both directions).
     private func dispatchAlbumPlay(id: String, title: String, artist: String, shuffle: Bool, startAt: Int,
                                    startRequired: Bool) {
+        // C-EPOCH: stamped at the keypress, the moment the person chose from
+        // the list on screen; anything this play reads after it (an album's
+        // tracks) is checked against it before anything plays.
         if currentAlbumSource == .bridge {
             playBridgeAlbum(albumID: id, title: title, shuffle: shuffle, startAt: startAt,
                             startRequired: startRequired, rows: bridgeTracks[id])
@@ -1621,10 +1652,12 @@ final class LibraryScene: Scene {
         let status = self.status
         let resolve = self.resolveAlbum
         let makeProvider = self.makeProvider
+        let stamp = routing.stamp
         actions.run("Play") {
-            if makeProvider() != nil {
-                throw ActionError(message: LibraryProvenance.bridgeSelectedMusicAppList)
-            }
+            // Before any AppleScript read: a list from before the switch to
+            // SpanDAC data, or a blocked stored output (C-REPAIR), refuses
+            // here and reads nothing.
+            try refuseOpenDataPlayBeforeReading(.libraryPlay, routing: routing, spanDACData: makeProvider() != nil)
             // Binding rule 9's named exception: the library READ stays on
             // AppleScript in BOTH modes, so the two branches resolve from the
             // same rows and cannot play a different album than the one listed.
@@ -1643,12 +1676,12 @@ final class LibraryScene: Scene {
                 unavailable: "'\(title)': no tracks available to play yet.",
                 notFound: "Couldn't load '\(title)'."))
             do {
-                // Both branches are real, so there is deliberately no
-                // `if routing.mode.usesSource` above: the coordinator picks the
-                // destination inside its own lock. An outer check would leave a
-                // no-op Music.app branch for a switch that commits mid-action.
-                try routing.perform(.libraryPlay,
-                    musicApp: {
+                // The coordinator picks the destination inside its own lock,
+                // against the keypress's stamp; the row's origin is MusicTUI's
+                // own data, so any other data source refuses it there.
+                try routing.perform(.libraryPlay, expecting: stamp, origin: .openData(resultNumber: nil),
+                    musicApp: { path in
+                        guard path == .shipped else { throw ActionError(message: pickASpanDACOutput) }
                         let ordered = shuffle ? res.tracks.shuffled() : res.tracks
                         let idx = shuffle ? 1 : min(max(1, startAt), ordered.count)
                         store.set(AppQueue(playlistName: "Library", tracks: ordered, currentIndex: idx, displayName: title))
@@ -1661,9 +1694,8 @@ final class LibraryScene: Scene {
                         }
                     },
                     source: { _ in
-                        // The join is gone: a Music.app-sourced list played
-                        // while Bridge is selected refuses rather than joining
-                        // Bridge on `(title, artist, album)`.
+                        // The join is gone: a list from MusicTUI's own data
+                        // never reaches SpanDAC on `(title, artist, album)`.
                         throw ActionError(message: LibraryProvenance.bridgeSelectedMusicAppList)
                     },
                     unaffected: {})
@@ -1698,11 +1730,16 @@ final class LibraryScene: Scene {
         let provider = makeProvider()
         let status = self.status
         let warmUpSleep = self.warmUpSleep
+        let handoff = self.handoff
+        let stamp = routing.stamp
+        inboxLock.lock()
+        let songRow = bridgeSongRowsByID[id]
+        inboxLock.unlock()
         actions.run("Play") {
-            // Bridge mode: the row plays by the id Bridge gave it. No
+            // SpanDAC data: the row plays by the id SpanDAC gave it. No
             // `(title, artist, album)` triple is built, and no album is required
             // — the whole reason a row with no album used to refuse.
-            if let provider {
+            if provider != nil {
                 do {
                     // A cold Bridge answers a queue with `warming` rather than
                     // blocking for its drain, so the play waits on the hint
@@ -1722,15 +1759,22 @@ final class LibraryScene: Scene {
                             status.post("Preparing your library \u{2014} '\(title)' will play when it's ready\u{2026}")
                         },
                         sleep: warmUpSleep) {
-                        // The destination is still chosen inside the
-                        // coordinator's lock, not by the `if` above: a switch
-                        // that commits between the keypress and this closure
-                        // must not reach the wrong player. The musicApp branch
-                        // is deliberately empty — a switch to Music.app
-                        // mid-action plays nothing rather than playing a row
-                        // from a library it is no longer showing.
-                        try routing.perform(.libraryPlay, musicApp: {},
-                            source: { _ in _ = try provider.play(ids: [id]) },
+                        // The destination is chosen inside the coordinator's
+                        // lock, against the keypress's stamp: a switch that
+                        // commits between the keypress and this closure plays
+                        // nothing. A SpanDAC output plays the row by its id on
+                        // THAT output's client; the MusicTUI output hands the
+                        // row to the hand-off (C-HANDOFF), never a title search.
+                        try routing.perform(.libraryPlay, expecting: stamp, origin: .spandacLibrary,
+                            musicApp: { path in
+                                guard path == .handoff else { throw ActionError(message: pickASpanDACOutput) }
+                                // The row SpanDAC gave; rebuilt only if the walk's
+                                // record is gone, which can only lose what the
+                                // hand-off needs, so it can only refuse.
+                                let row = songRow ?? MusicRow(id: id, title: title, artist: artist, album: nil, kind: .song)
+                                try playThroughHandoff(handoff, rows: [row], startAt: 1, shuffle: shuffle, title: title)
+                            },
+                            source: { client in _ = try spanDACOutputPlayer(client).play(ids: [id]) },
                             unaffected: {})
                     }
                 } catch let error as MusicProviderError {
@@ -1742,13 +1786,12 @@ final class LibraryScene: Scene {
                 }
                 return
             }
-            if routing.mode.usesSource {
-                // C3 item 8: the join is gone. This is a Music.app-sourced
-                // song (no provider, checked above) played while Bridge is
-                // selected — rule 3, no silent fallback in either direction.
-                // After this, this file sends no title-and-credit queue shape at all.
-                throw ActionError(message: LibraryProvenance.bridgeSelectedMusicAppList)
-            }
+            // C3 item 8: the join is gone. A song from MusicTUI's own data
+            // never reaches SpanDAC: a blocked stored output refuses here,
+            // before any AppleScript read, and the coordinator decides again
+            // below. After this, this file sends no title-and-credit queue
+            // shape at all.
+            try refuseOpenDataPlayBeforeReading(.libraryPlay, routing: routing, spanDACData: false)
             // Same credit drift as playAlbum: the song row's artist is the library
             // credit and can differ from the stored credit (comma vs ampersand,
             // per-track soloists), so the strict name+artist clause matches nothing.
@@ -1759,9 +1802,15 @@ final class LibraryScene: Scene {
                 unavailable: "'\(title)' isn't available to play yet.",
                 notFound: "Couldn't play '\(title)'."))
             let one = Array(res.tracks.prefix(1))
-            store.set(AppQueue(playlistName: "Library", tracks: one, currentIndex: 1, displayName: title))
-            try require(playQueueTrack(backend: backend, playlist: "Library", position: one[0].index),
-                        "Couldn't play '\(title)'.")
+            try routing.perform(.libraryPlay, expecting: stamp, origin: .openData(resultNumber: nil),
+                musicApp: { path in
+                    guard path == .shipped else { throw ActionError(message: pickASpanDACOutput) }
+                    store.set(AppQueue(playlistName: "Library", tracks: one, currentIndex: 1, displayName: title))
+                    try require(playQueueTrack(backend: backend, playlist: "Library", position: one[0].index),
+                                "Couldn't play '\(title)'.")
+                },
+                source: { _ in throw ActionError(message: LibraryProvenance.bridgeSelectedMusicAppList) },
+                unaffected: {})
         }
     }
 
@@ -1778,10 +1827,9 @@ final class LibraryScene: Scene {
         let status = self.status
         let resolve = self.resolveArtist
         let makeProvider = self.makeProvider
+        let stamp = routing.stamp
         actions.run("Play") {
-            if makeProvider() != nil {
-                throw ActionError(message: LibraryProvenance.bridgeSelectedMusicAppList)
-            }
+            try refuseOpenDataPlayBeforeReading(.libraryPlay, routing: routing, spanDACData: makeProvider() != nil)
             // Rule 9's named exception again: the read runs in both modes.
             //
             // `name` is the library credit (album artist, else artist), so the
@@ -1797,8 +1845,9 @@ final class LibraryScene: Scene {
                 unavailable: "'\(name)': no tracks available to play yet.",
                 notFound: "Couldn't load '\(name)'."))
             do {
-                try routing.perform(.libraryPlay,
-                    musicApp: {
+                try routing.perform(.libraryPlay, expecting: stamp, origin: .openData(resultNumber: nil),
+                    musicApp: { path in
+                        guard path == .shipped else { throw ActionError(message: pickASpanDACOutput) }
                         let ordered = shuffle ? res.tracks.shuffled() : res.tracks
                         store.set(AppQueue(playlistName: "Library", tracks: ordered, currentIndex: 1, displayName: name))
                         try require(playQueueTrack(backend: backend, playlist: "Library", position: ordered[0].index),
@@ -1829,11 +1878,12 @@ final class LibraryScene: Scene {
         let status = self.status
         let makeProvider = self.makeProvider
         let sleep = self.warmUpSleep
+        let handoff = self.handoff
+        let stamp = routing.stamp
         actions.run("Play") {
             guard let provider = makeProvider() else {
-                // Output changed to Music.app between the keypress and this
-                // closure running: the list WAS Bridge's, but Bridge is no
-                // longer selected.
+                // MusicTUI stopped using SpanDAC for music data between the
+                // keypress and this closure running: the list WAS SpanDAC's.
                 throw ActionError(message: LibraryProvenance.musicAppSelectedBridgeList)
             }
             do {
@@ -1851,17 +1901,25 @@ final class LibraryScene: Scene {
                 // Addendum U: how many of `ids` Bridge dropped as unavailable,
                 // set only on the attempt that actually succeeds (U-R5/U-R6).
                 var skippedUnavailable = 0
+                var handedOff = false
                 try retryingWhileWarming(budget: budget, onWarming: onWarming, sleep: sleep) {
-                    try routing.perform(.libraryPlay,
-                        musicApp: {
-                            throw ActionError(message:
-                                "Output changed to Music.app before '\(title)' could play on SpanDAC; nothing was played.")
+                    // Stamped at the keypress: a switch that committed while
+                    // the tracks were read plays nothing (C-EPOCH).
+                    try routing.perform(.libraryPlay, expecting: stamp, origin: .spandacLibrary,
+                        musicApp: { path in
+                            guard path == .handoff else { throw ActionError(message: pickASpanDACOutput) }
+                            try playThroughHandoff(handoff, rows: trackRows, startAt: startAt, shuffle: shuffle, title: title)
+                            handedOff = true
                         },
-                        source: { _ in
-                            skippedUnavailable = try provider.playReportingSkips(
+                        source: { client in
+                            skippedUnavailable = try spanDACOutputPlayer(client).playReportingSkips(
                                 ids: ids, startRequired: startRequired).skippedUnavailable
                         },
                         unaffected: {})
+                }
+                if handedOff {
+                    status.post(LibraryProvenance.playingOnMusicTUI(title))
+                    return
                 }
                 let queuedCount = ids.count - skippedUnavailable
                 var footer = "Playing '\(title)' on SpanDAC \u{2014} \(queuedCount) tracks."
@@ -1885,6 +1943,8 @@ final class LibraryScene: Scene {
         let status = self.status
         let makeProvider = self.makeProvider
         let sleep = self.warmUpSleep
+        let handoff = self.handoff
+        let stamp = routing.stamp
         actions.run("Play") {
             guard let provider = makeProvider() else {
                 throw ActionError(message: LibraryProvenance.musicAppSelectedBridgeList)
@@ -1903,17 +1963,23 @@ final class LibraryScene: Scene {
                 // always whole-collection — there is no track-level entry for
                 // an artist, so `startRequired` is always false.
                 var skippedUnavailable = 0
+                var handedOff = false
                 try retryingWhileWarming(budget: budget, onWarming: onWarming, sleep: sleep) {
-                    try routing.perform(.libraryPlay,
-                        musicApp: {
-                            throw ActionError(message:
-                                "Output changed to Music.app before '\(name)' could play on SpanDAC; nothing was played.")
+                    try routing.perform(.libraryPlay, expecting: stamp, origin: .spandacLibrary,
+                        musicApp: { path in
+                            guard path == .handoff else { throw ActionError(message: pickASpanDACOutput) }
+                            try playThroughHandoff(handoff, rows: songRows, startAt: 1, shuffle: shuffle, title: name)
+                            handedOff = true
                         },
-                        source: { _ in
-                            skippedUnavailable = try provider.playReportingSkips(
+                        source: { client in
+                            skippedUnavailable = try spanDACOutputPlayer(client).playReportingSkips(
                                 ids: ids, startRequired: false).skippedUnavailable
                         },
                         unaffected: {})
+                }
+                if handedOff {
+                    status.post(LibraryProvenance.playingOnMusicTUI(name))
+                    return
                 }
                 let queuedCount = ids.count - skippedUnavailable
                 var footer = "Playing '\(name)' on SpanDAC \u{2014} \(queuedCount) tracks."
@@ -2094,7 +2160,7 @@ final class LibraryScene: Scene {
     /// (`applyProvenance` resets `*Source` to nil, and the SAME tick's lazy
     /// load fills it back in — see D7). In steady state Albums and Artists
     /// follow Songs to whichever library is selected.
-    private var tabShowsTwoLibraries: Bool { songsFromBridge || routing.mode.usesSource }
+    private var tabShowsTwoLibraries: Bool { songsFromBridge || routing.data == .spandacMac }
 
     /// Which library the showing list is reading, and how big it is once that is
     /// known.

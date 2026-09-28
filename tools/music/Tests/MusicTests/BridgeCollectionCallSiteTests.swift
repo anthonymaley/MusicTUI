@@ -125,7 +125,7 @@ final class BridgeCollectionCallSiteTests: XCTestCase {
         // Give the action the same window the Bridge tests get.
         settle(wire, expecting: 1, seconds: 0.6)
 
-        XCTAssertTrue(wire.queued.isEmpty, "Music.app mode sent a SpanDAC request")
+        XCTAssertTrue(wire.queued.isEmpty, "open data on the MusicTUI output (matrix column 1) sent a SpanDAC request")
     }
 
     // MARK: - Artist play
@@ -156,7 +156,7 @@ final class BridgeCollectionCallSiteTests: XCTestCase {
         s.playArtist(name: "A", shuffle: false)
         settle(wire, expecting: 1, seconds: 0.6)
 
-        XCTAssertTrue(wire.queued.isEmpty, "Music.app mode sent a SpanDAC request")
+        XCTAssertTrue(wire.queued.isEmpty, "open data on the MusicTUI output (matrix column 1) sent a SpanDAC request")
     }
 
     // C3 item 8: `testABridgeRefusalReachesTheFooterInItsOwnWords` moved to
