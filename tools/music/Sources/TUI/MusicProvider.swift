@@ -29,6 +29,13 @@ struct MusicRow: Equatable {
     /// kind — the memberwise default keeps every existing call site
     /// source-compatible.
     var trackCount: Int? = nil
+    /// The persistent ID SpanDAC reported for a LIBRARY song row, verbatim
+    /// (a signed decimal, rewritten to hex only by `persistentIDHex(fromAlias:)`).
+    /// `nil` when SpanDAC sent none, and on every other kind of row: albums,
+    /// artists and playlists never carry one, their songs do. It is the one
+    /// identity the MusicTUI output plays a SpanDAC library row by
+    /// (`MusicTUIHandoff.swift`); nothing compares it to `id`.
+    var alias: String? = nil
 }
 
 /// One container's rows: complete, or refused — never paged and never partial

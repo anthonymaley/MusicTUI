@@ -913,16 +913,27 @@ struct SourceAppControl: SourceControlling {
         case exactly(MusicRow.Kind)
     }
 
+    /// C-HANDOFF (score: data route and output, step 7): a library SONG row
+    /// may carry `alias`, the persistent ID SpanDAC reported, verbatim. Read
+    /// only from a song and only as text; absent, or on any other kind of row,
+    /// it is nil, and a play that needs it refuses rather than guesses.
+    private static func withAlias(_ row: MusicRow, from item: [String: Any]) -> MusicRow {
+        guard row.kind == .song, let alias = item["alias"] as? String else { return row }
+        var carried = row
+        carried.alias = alias
+        return carried
+    }
+
     /// One row, decoded under `policy`, or the reason the whole read fails.
     private func libraryRow(_ item: [String: Any], opName: String,
                             policy: LibraryRowPolicy) throws -> MusicRow? {
         switch (policy, readMusicRow(item)) {
         case (.anyKnownKind, .row(let row)):
-            return row
+            return Self.withAlias(row, from: item)
         case (.anyKnownKind, .unknownKind):
             return nil
         case (.exactly(let kind), .row(let row)) where row.kind == kind:
-            return row
+            return Self.withAlias(row, from: item)
         case (.exactly, .row(let row)):
             throw SourceAppError.malformedReply(
                 "SpanDAC's \(opName) list contains a row of kind \(row.kind.rawValue)")
@@ -985,6 +996,8 @@ struct SourceAppControl: SourceControlling {
         for item in items {
             if let row = try libraryRow(item, opName: opName, policy: policy) { rows.append(row) }
         }
+        // C-HANDOFF's self-check: whether SpanDAC reports song identities at all.
+        LibraryAliasSelfCheck.shared.observe(rows)
 
         // C1a (D9/D11): ONLY `slice.libraryPlaylistTracks` carries this field,
         // and only that op requires it. An absent or negative count is a
@@ -1037,6 +1050,7 @@ struct SourceAppControl: SourceControlling {
         for item in items {
             if let row = try libraryRow(item, opName: opName, policy: policy) { rows.append(row) }
         }
+        LibraryAliasSelfCheck.shared.observe(rows)
         return MusicList(rows: rows, generation: generation,
                          stale: reply["stale"] as? Bool ?? false,
                          refreshing: reply["refreshing"] as? Bool ?? false)
