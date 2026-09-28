@@ -113,8 +113,11 @@ final class SceneRecordingOpener: Opener {
 final class SceneLifecycleLog {
     private let lock = NSLock()
     private var _created: [[String]] = []
+    private var _played: [[String]] = []
     var created: [[String]] { lock.lock(); defer { lock.unlock() }; return _created }
+    var played: [[String]] { lock.lock(); defer { lock.unlock() }; return _played }
     func create(_ ids: [String]) { lock.lock(); _created.append(ids); lock.unlock() }
+    func play(_ scripts: [String]) { lock.lock(); _played.append(scripts); lock.unlock() }
 }
 
 final class DiscoverDataRouteTests: XCTestCase {
@@ -125,8 +128,11 @@ final class DiscoverDataRouteTests: XCTestCase {
         enum Stop: Error { case stop }
         let seams = DiscoverLifecycleCoordinator.Seams(
             runSweep: { _ in }, create: { _, ids in log.create(ids); throw Stop.stop }, readCount: { _ in 0 },
-            play: { _ in }, confirmRead: { _ in "" }, post: { _ in },
-            scheduler: DiscoverScheduler(now: { Date() }, deadline: { _ in Date() }, delay: { _ in }))
+            play: { log.play($0) }, confirmRead: { _ in "" }, post: { _ in },
+            scheduler: DiscoverScheduler(now: { Date() }, deadline: { _ in Date() }, delay: { _ in }),
+            // SpanDAC data: the container SpanDAC made is ready and confirmed.
+            readCountByPersistentID: { _ in 100 },
+            confirmReadByPersistentID: { _ in discoverConfirmedToken })
         let c = DiscoverLifecycleCoordinator(seams: seams)
         c.completeLaunchSweep(.swept)
         return c
@@ -248,25 +254,37 @@ final class DiscoverDataRouteTests: XCTestCase {
     // MARK: - Plays on the MusicTUI output with SpanDAC data
 
     /// A Discover album, playlist or play-from-here slice on the MusicTUI
-    /// output with SpanDAC data takes the container path. Until that path
-    /// lands (a later step gives the lifecycle a SpanDAC create), it refuses
-    /// with the score's sentence: nothing is created by the web service, and
-    /// nothing is queued on any SpanDAC.
-    func testDiscoverPlayOnMusicTUIOutputRefusesUntilTheContainerPathLands() {
+    /// output with SpanDAC data takes the container path (step 10): the
+    /// lifecycle has SpanDAC on this Mac ensure the container under its minted
+    /// name, then plays it by the persistent ID SpanDAC returned. Nothing is
+    /// created by the web service, and nothing is queued on any SpanDAC. A
+    /// play with no read to stamp still refuses: it would be a guess.
+    func testDiscoverPlayOnMusicTUIOutputGoesThroughTheLifecycle() {
         let rig = SceneDataRig(output: .musicApp, accepted: true)
+        let mac = FakeSpanDACMac(library: FakeAppleLibrary())
         let s = scene(rig)
+        s.scene.libraryOps = mac.client
         loadRails(s)
 
         s.scene.playAllFromRail(playlistRow)
         drain(s.actions)
-        XCTAssertEqual(s.status.current()?.text, pickASpanDACOutput)
-        XCTAssertEqual(s.status.current()?.isError, true)
+
+        let ensures = mac.ops("slice.libraryEnsurePlaylist")
+        XCTAssertEqual(ensures.count, 1, "ensured by SpanDAC on this Mac")
+        XCTAssertEqual(ensures.first?["ids"] as? [String], ["901", "902"])
+        XCTAssertEqual(rig.sent("slice.containerTracks").map(\.tag), ["mac-data"])
+        let name = ensures.first?["name"] as? String ?? ""
+        XCTAssertTrue(name.hasPrefix(discoverPlaylistPrefix) && name.hasSuffix(discoverPlaylistNameSeparator + "Boom Bap"),
+                      name)
+        XCTAssertEqual(s.log.played, [discoverPlayScripts(persistentID: "0000000000000F01", disableShuffle: false)],
+                       "played by the persistent ID SpanDAC returned")
+        XCTAssertEqual(s.log.created, [], "the web-service container path ran with SpanDAC data")
 
         s.scene.playCatalogSlice(catalogIDs: ["901", "902"], containerTitle: "Boom Bap", trackName: "T1")
         drain(s.actions)
         XCTAssertEqual(s.status.current()?.text, pickASpanDACOutput)
+        XCTAssertEqual(mac.ops("slice.libraryEnsurePlaylist").count, 1)
 
-        XCTAssertEqual(s.log.created, [], "the web-service container path ran with SpanDAC data")
         XCTAssertEqual(rig.sent("slice.queue").count, 0)
         XCTAssertEqual(rig.outputBuilt, [])
         XCTAssertEqual(s.opener.opened, [])
