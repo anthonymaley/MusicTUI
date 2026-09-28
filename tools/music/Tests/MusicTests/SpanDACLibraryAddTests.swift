@@ -111,11 +111,19 @@ final class FakeAppleLibrary {
             return "1"
         }
         if script.contains("set ids to persistent ID") { return seeded.last }
-        if script.contains("set hits to") {
-            let p = pid(in: script) ?? "?"
-            log("verify:\(p)")
-            let hits = tracks.filter { $0.pid == p && $0.visibleAfter < nameReads + 1 }
-            return hits.isEmpty ? "0\u{1F}" : "\(hits.count)\u{1F}\(hits[0].name)"
+        if script.contains("repeat with idRef in {") {
+            // The one identity check's read: a line per track found.
+            let list = script.components(separatedBy: "repeat with idRef in {").dropFirst().first?
+                .components(separatedBy: "}").first ?? ""
+            let fs = "\u{1F}"
+            var out = ""
+            for p in list.components(separatedBy: ", ").map({ $0.trimmingCharacters(in: CharacterSet(charactersIn: "\"")) }) {
+                log("verify:\(p)")
+                for (i, t) in tracks.enumerated() where t.pid == p && t.visibleAfter < nameReads + 1 {
+                    out += [p, "L", "db\(i)", "\(i + 1)", t.name].joined(separator: fs) + "\n"
+                }
+            }
+            return out
         }
         if script.contains("whose name contains") {
             nameReads += 1
@@ -589,6 +597,27 @@ final class SpanDACLibraryAddTests: XCTestCase {
         XCTAssertEqual(calls, [])
         XCTAssertFalse(h.dataWire.requests.contains { spandacLibraryOpNames.contains($0["op"] as? String ?? "") })
         XCTAssertEqual(h.io.out, [updateSpanDACToPlayOnMusicTUI])
+    }
+
+    /// A found-owned or just-added song is checked by the SAME identity check
+    /// as a library row: the same read, exactly one track, the title when one
+    /// is known, and nothing on a failed read.
+    func testAnAliasIsVerifiedByTheOneIdentityCheck() {
+        let alias = FakeAppleLibrary.alias("00000000000000A1")
+        let hex = "00000000000000A1", fs = "\u{1F}"
+        func line(_ db: String, _ name: String) -> String { [hex, "L", db, "7", name].joined(separator: fs) + "\n" }
+        var scripts: [String] = []
+        func verify(_ title: String?, _ answer: String?) -> (hex: String, name: String)? {
+            verifySpanDACAlias(alias, title: title, run: { scripts.append($0); return answer })
+        }
+        XCTAssertEqual(verify("Teardrop", line("1", "Teardrop"))?.name, "Teardrop")
+        XCTAssertEqual(scripts, [persistentIDVerificationScript([hex])], "the hand-off's own read")
+        XCTAssertEqual(verify(nil, line("1", "Teardrop"))?.hex, hex, "a song link has no title to check")
+        XCTAssertNil(verify("Teardrop", line("1", "Angel")), "the title must match")
+        XCTAssertNil(verify("Teardrop", line("1", "Teardrop") + line("2", "Teardrop")), "two tracks is ambiguous")
+        XCTAssertNil(verify("Teardrop", ""), "not found")
+        XCTAssertNil(verify("Teardrop", nil), "a failed read verifies nothing")
+        XCTAssertNil(verifySpanDACAlias("not-a-number", title: nil, run: { _ in XCTFail("read"); return nil }))
     }
 
     // MARK: The CLI

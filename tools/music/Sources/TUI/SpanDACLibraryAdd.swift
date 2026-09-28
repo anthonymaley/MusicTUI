@@ -195,43 +195,20 @@ extension SourceAppClient {
 
 // MARK: - Verifying a persistent-ID alias
 
-/// The AppleScript read that checks one persistent ID: how many tracks carry
-/// it (the library playlist first, then the first user playlist holding it;
-/// one persistent ID in several playlists is one track), and the first one's
-/// name. Reads only. `hex` is `persistentIDHex(fromAlias:)`'s output.
-func spandacAliasVerificationScript(hex: String) -> String {
-    """
-    set fs to (ASCII character 31)
-    set hits to (every track of playlist "Library" whose persistent ID is "\(hex)")
-    set n to count of hits
-    if n is 0 then
-        repeat with p in (every user playlist)
-            try
-                set more to (every track of p whose persistent ID is "\(hex)")
-                if (count of more) > 0 then
-                    set hits to more
-                    set n to 1
-                    exit repeat
-                end if
-            end try
-        end repeat
-    end if
-    if n is 0 then return "0" & fs
-    return (n as text) & fs & (name of item 1 of hits)
-    """
-}
-
-/// One alias, verified: it parses, exactly one track carries it, and, when a
-/// title is known, that track's name equals it (CHOSEN guard, score C-HANDOFF:
-/// it can only refuse). Returns the hex persistent ID and the track's name, or
-/// nil for anything short of that. Never a title search.
-func verifySpanDACAlias(_ alias: String, title: String?, run: ScriptRunner) -> (hex: String, name: String)? {
-    guard let hex = persistentIDHex(fromAlias: alias),
-          let raw = run(spandacAliasVerificationScript(hex: hex)) else { return nil }
-    let fields = raw.trimmingCharacters(in: .newlines)
-        .split(separator: "\u{1F}", maxSplits: 1, omittingEmptySubsequences: false).map(String.init)
-    guard fields.count == 2, Int(fields[0].trimmingCharacters(in: .whitespaces)) == 1 else { return nil }
-    let name = fields[1]
-    if let title, name != title { return nil }
-    return (hex, name)
+/// One alias, verified by the one identity check (`verifyExactTracks`): it
+/// parses, exactly one track carries it, and, when a title is known, that
+/// track's name equals it. Returns the hex persistent ID and the track's name,
+/// or nil for anything short of that, including a read that failed. Never a
+/// title search.
+func verifySpanDACAlias(_ alias: String, title: String?, run: @escaping ScriptRunner) -> (hex: String, name: String)? {
+    struct ReadFailed: Error {}
+    guard let hex = persistentIDHex(fromAlias: alias) else { return nil }
+    let reader = AppleScriptPersistentIDReader(run: { script in
+        guard let out = run(script) else { throw ReadFailed() }
+        return out
+    })
+    guard let found = try? verifyExactTracks([(hex, title)], library: reader), let hit = found.first else {
+        return nil
+    }
+    return (hex, hit.name)
 }
