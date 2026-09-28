@@ -176,6 +176,10 @@ func spandacRowDetail(state: SpanDACRowState, output: SourceOutputInfo?, device:
                                 tone: .warning)
     case .forgetPrompt:
         return SpanDACRowDetail(text: "forget? y / n", tone: .warning)
+    case .needsMacSpanDAC:
+        // Compile-only arm (C-SEED-ROW): a later step owns this row's real
+        // wording and behaviour.
+        return SpanDACRowDetail(text: "needs SpanDAC on this Mac first", tone: .warning)
     }
 }
 
