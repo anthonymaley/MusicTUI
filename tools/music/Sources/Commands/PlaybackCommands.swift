@@ -74,9 +74,17 @@ func runPlay(args: [String], playlist: String?, album: String?, song: String?, a
              json: Bool, verbose: Bool = false, env: CLIBridgeEnv, musicAppDeps: PlayMusicAppDeps) throws {
     try cliDispatch(playAction(args: args, playlist: playlist, album: album, song: song, artist: artist),
                     json: json, env: env,
+                    origin: {
+                        try cliPlayOrigin(PlayForm(args: args, playlist: playlist, album: album, song: song,
+                                                   artist: artist), env: env)
+                    },
                     musicApp: {
                         try playViaMusicApp(args: args, playlist: playlist, album: album, song: song,
                                             artist: artist, json: json, verbose: verbose, deps: musicAppDeps)
+                    },
+                    musicTUI: { path in
+                        try musicTUIPlayCommand(path, args: args, playlist: playlist, album: album, song: song,
+                                                artist: artist, json: json, env: env)
                     },
                     bridge: {
                         try bridgePlayCommand($0, args: args, playlist: playlist, album: album, song: song,

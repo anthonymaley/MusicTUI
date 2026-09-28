@@ -51,6 +51,10 @@ func runRadioPlay(query: [String], env: CLIBridgeEnv, opener: Opener = SystemOpe
                         if let musicApp { try musicApp(query) }
                         else { try radioPlayViaMusicApp(query: query, opener: opener, stations: stations) }
                     },
+                    musicTUI: { path in
+                        guard path == .stationURL else { throw ActionError(message: pickASpanDACOutput) }
+                        try musicTUIRadioPlayCommand(query: query, stations: stations, opener: opener, env: env)
+                    },
                     bridge: { try bridgeRadioPlayCommand($0, query: query, stations: stations, env: env) })
 }
 
@@ -116,8 +120,7 @@ func runRadioAdd(url: String, env: CLIBridgeEnv, stations: StationStore = Statio
     var resolved: Station?
     // The lookup's own refusals and failures degrade to the slug name, so the
     // dispatch prints nothing: `out` is silenced for it alone.
-    let quiet = CLIBridgeEnv(routing: env.routing, modeStore: env.modeStore, cache: env.cache,
-                             out: { _ in }, err: env.err, sleep: env.sleep)
+    let quiet = env.with(out: { _ in })
     try? cliDispatch(.radioStationLookup, json: false, env: quiet,
                      musicApp: { resolved = musicAppLookup(p.id) },
                      bridge: { resolved = bridgeRadioStationLookup($0, id: p.id) })
