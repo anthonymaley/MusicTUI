@@ -120,6 +120,17 @@ func playQueueTrack(backend: AppleScriptBackend, playlist: String, position: Int
 //   64 bits, reinterpreted as `Int`. `persistentIDOfQueueEntry` reads them back.
 //   `TrackListEntry` is not this file's to extend, and every consumer already
 //   carries `index` through shuffles, jumps and the saved queue untouched.
+//
+// Why it fails closed (it refuses to play rather than guess):
+// - `Int` is 64 bits on every Mac this package builds for (macOS 14 and
+//   later), so the reinterpretation round-trips every persistent ID bit for
+//   bit; text that is not sixteen hex digits never becomes an entry at all.
+// - An entry of this queue is only ever played by `persistentIDPlayScript`,
+//   which errors when more than one library track, or no track anywhere, has
+//   that identity. There is no position or name fallback.
+// - The one possible collision is a user playlist named exactly "Library"
+//   plus a NO-BREAK SPACE: its small positions would be read as 64-bit
+//   identities, which in practice match no track, so nothing plays.
 
 /// The source name of a queue addressed by persistent ID.
 ///
