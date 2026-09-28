@@ -331,7 +331,10 @@ final class CLIDataRouteTests: XCTestCase {
         XCTAssertFalse(h.dataWire.requests.contains { ["slice.queue", "slice.play", "slice.playStation"].contains($0["op"] as? String ?? "") },
                        "the Mac's data socket is only read")
 
-        // Production's seams refuse, with the score's sentence, and play nothing.
+        // Production's seams play nothing here: the library seam refuses with
+        // the score's sentence; the catalogue seam (step 10) asks SpanDAC on
+        // this Mac over the data client's own socket, which does not exist in
+        // this harness, so it is offered no library ops and says so.
         let shipped = CLIDataRouteHarness(output: .musicApp, data: .accepted, recordSeams: false)
         try cacheRows(shipped, [SongResult(index: 1, title: "Angel", artist: "Massive Attack", album: "Mezzanine",
                                            catalogId: "", origin: .bridgeLibrary, bridgeID: "l.1"),
@@ -342,7 +345,7 @@ final class CLIDataRouteTests: XCTestCase {
             XCTAssertEqual(refused.error as? ExitCode, .failure, n)
             XCTAssertEqual(refused.calls, [], n)
         }
-        XCTAssertEqual(shipped.io.out, [pickASpanDACOutput, pickASpanDACOutput])
+        XCTAssertEqual(shipped.io.out, [pickASpanDACOutput, updateSpanDACToPlayOnMusicTUI])
         XCTAssertEqual(shipped.outputClientsBuilt, 0)
     }
 

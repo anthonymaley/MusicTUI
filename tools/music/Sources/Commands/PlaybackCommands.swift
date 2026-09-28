@@ -545,6 +545,12 @@ func firstPlayablePosition(_ rows: [LibraryAlbumRow]) -> Int? {
 /// `whose name contains` query is a fraction of that, and the row we are
 /// looking for matches the title by construction.
 func libraryRowsMatchingTitle(backend: AppleScriptBackend, title: String) -> [LibraryRowIdentity]? {
+    libraryRowsMatchingTitle(run: { script in try? syncRun({ try await backend.runMusic(script) }) }, title: title)
+}
+
+/// The same read through any script runner, so a caller that must never reach
+/// Apple's Music app in a test (the SpanDAC add path) can hand in a fake.
+func libraryRowsMatchingTitle(run: ScriptRunner, title: String) -> [LibraryRowIdentity]? {
     let esc = escapeAppleScriptString(title)
     // The row count is emitted alongside the records so an incomplete read is
     // detectable. A per-row `try` that swallowed a property error used to drop
@@ -563,7 +569,7 @@ func libraryRowsMatchingTitle(backend: AppleScriptBackend, title: String) -> [Li
     end repeat
     return out
     """
-    guard let raw = try? syncRun({ try await backend.runMusic(script) }) else { return nil }
+    guard let raw = run(script) else { return nil }
     var records = raw.split(separator: "\u{1E}", omittingEmptySubsequences: true).map(String.init)
     guard !records.isEmpty, let expected = Int(records.removeFirst().trimmingCharacters(in: .whitespacesAndNewlines))
     else { return nil }
@@ -613,21 +619,245 @@ func addCatalogRowAndPlayBounded(backend: AppleScriptBackend,
             })
     }
 
+    let result = playResolvedCatalogRow(
+        resolution, title: title, note: { print($0) },
+        run: { script in try? syncRun { try await backend.runMusic(script) } },
+        launch: detachedLaunch)
+    if result == .playing { return true }
+    if case .refused(let message?) = result { print(message) }
+    throw ExitCode.failure
+}
+
+/// What an add-then-play came to, for a caller that must not print (the TUI)
+/// as much as for one that does. `refused` carries the shipped sentence, or
+/// nil where the shipped path printed nothing.
+enum CatalogAddPlayResult: Equatable {
+    case playing
+    case refused(String?)
+}
+
+/// The tail of `addCatalogRowAndPlayBounded`, shared by the REST and the
+/// SpanDAC adds: play exactly the resolved row, or say why not. Nothing here
+/// decides anything new; it is the shipped tail with its printing handed in.
+func playResolvedCatalogRow(_ resolution: CatalogRowResolution, title: String,
+                            note: (String) -> Void, run: ScriptRunner,
+                            launch: @escaping ProcessLauncher) -> CatalogAddPlayResult {
     guard case .resolved(let identifier, let viaPreExisting) = resolution else {
-        if let message = catalogRowResolutionMessage(resolution, title: title) { print(message) }
-        throw ExitCode.failure
+        return .refused(catalogRowResolutionMessage(resolution, title: title))
     }
     // Say what kind of match this was. Choosing a row the user already owned is
     // metadata resolution, not catalog identity, and the difference is theirs
     // to know rather than ours to smooth over.
-    if viaPreExisting { print(preExistingResolutionNote(title: title)) }
+    if viaPreExisting { note(preExistingResolutionNote(title: title)) }
 
-    let outcome = playBoundedSongByIdentifier(
-        title: title, identifier: identifier,
-        run: { script in try? syncRun { try await backend.runMusic(script) } })
-    if outcome == .playing { return true }
-    if let message = songOutcomeMessage(outcome, title: title) { print(message) }
-    throw ExitCode.failure
+    let outcome = playBoundedSongByIdentifier(title: title, identifier: identifier, run: run, launch: launch)
+    if outcome == .playing { return .playing }
+    return .refused(songOutcomeMessage(outcome, title: title))
+}
+
+// MARK: - Adding through SpanDAC on this Mac (score: data route and output, C-ADD)
+
+/// A catalogue song the MusicTUI output is asked to play with SpanDAC as
+/// MusicTUI's data source. `title` is nil for an Apple Music song link, which
+/// names only the id.
+struct SpanDACCatalogueSong: Equatable {
+    let catalogueID: String
+    let title: String?
+    let artist: String?
+    let album: String?
+}
+
+/// What one SpanDAC add-then-play came to. Nothing is printed by the player;
+/// the TUI and the CLI each say it their own way.
+enum SpanDACCataloguePlayOutcome: Equatable {
+    /// Playing exactly that song. `note` is the shipped pre-existing-match
+    /// note, when the row was chosen by metadata.
+    case playing(title: String, note: String?)
+    /// Nothing played, for the reason given.
+    case refused(String)
+    /// The add was sent and its outcome is unknown. Nothing played, nothing is
+    /// retried by itself; the next request for this song reconciles first.
+    case outcomeUnknown(title: String)
+}
+
+/// AppleScript and time, for the add-then-play path. The live value reaches
+/// Apple's Music app; tests hand in fakes.
+struct CatalogAddPlaySeams {
+    var run: ScriptRunner
+    var launch: ProcessLauncher
+    var wait: (Double) -> Void
+    /// The shipped "Syncing library..." status around the resolver (CLI); the
+    /// TUI passes it through unchanged, since stderr is its screen.
+    var progress: (() -> CatalogRowResolution) -> CatalogRowResolution = { $0() }
+
+    static func live(backend: AppleScriptBackend, showsProgress: Bool) -> CatalogAddPlaySeams {
+        var seams = CatalogAddPlaySeams(
+            run: { script in try? syncRun { try await backend.runMusic(script) } },
+            launch: detachedLaunch,
+            wait: { seconds in try? syncRun { try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000)) } })
+        if showsProgress {
+            seams.progress = { (body: () -> CatalogRowResolution) -> CatalogRowResolution in
+                withStatus("Syncing library...") { body() }
+            }
+        }
+        return seams
+    }
+}
+
+/// `addCatalogRowAndPlayBounded` with SpanDAC making the add (Anthony
+/// 2026-09-28: not-owned songs keep the existing add-then-play path, SpanDAC
+/// on this Mac makes the add, no developer key). The preference order:
+///
+/// 1. Ask SpanDAC first (`libraryLookup`). A song already owned whose alias
+///    verifies (exactly one track, same name) plays by it with NO add.
+/// 2. Otherwise read the baseline BEFORE the add (unreadable: refuse before
+///    adding), add through SpanDAC, then poll the lookup inside the resolver's
+///    own wait budget: an alias that appears and verifies plays.
+/// 3. Otherwise the shipped set-difference result decides, with its ambiguity
+///    and not-found refusals exactly as shipped.
+///
+/// Only a CONFIRMED failed add refuses outright. An add whose outcome is
+/// unknown is remembered with the baseline taken before it: nothing retries by
+/// itself, and the next request for the same song (a person's retry) looks it
+/// up first, plays it if the add landed, and otherwise adds again against that
+/// SAME baseline, never a new one (a re-add is harmless: adding an owned song
+/// changes nothing). No developer key or user token is read on this path.
+final class SpanDACCataloguePlayer {
+    let seams: CatalogAddPlaySeams
+    /// The resolver's schedule, as shipped: 20 attempts at 0.5 s.
+    static let attempts = 20
+    static let interval = 0.5
+
+    /// Catalogue id → the baseline taken before its FIRST add, for an add whose
+    /// outcome is unknown. `nil` baseline: a song link, which has no title to
+    /// read one by.
+    private let lock = NSLock()
+    private var unknown: [String: Set<String>?] = [:]
+
+    init(seams: CatalogAddPlaySeams) { self.seams = seams }
+
+    /// Whether an add for this song is waiting to be reconciled. For tests.
+    func isAwaitingReconciliation(_ catalogueID: String) -> Bool {
+        lock.lock(); defer { lock.unlock() }; return unknown[catalogueID] != nil
+    }
+
+    func play(_ song: SpanDACCatalogueSong, library: SpanDACLibraryAdding) -> SpanDACCataloguePlayOutcome {
+        let id = song.catalogueID
+        let label = song.title ?? "that song"
+        guard library.canAdd else { return .refused(updateSpanDACToPlayOnMusicTUI) }
+
+        // (1) Already owned, by identity. After an add whose outcome was
+        // unknown, this is the reconciliation: the add landed, so nothing is
+        // added again and nothing is left to reconcile.
+        switch verifiedAlias(song, library: library) {
+        case .failure(let why): return .refused(why.sentence)
+        case .success(let found?):
+            lock.lock(); unknown[id] = nil; lock.unlock()
+            return playByIdentity(found, song: song)
+        case .success(nil): break
+        }
+
+        // The baseline: the one taken before the FIRST add, if there was one.
+        lock.lock(); let earlier = unknown[id]; lock.unlock()
+        let baseline: Set<String>?
+        if let earlier {
+            baseline = earlier
+        } else if let title = song.title {
+            guard let rows = libraryRowsMatchingTitle(run: seams.run, title: title) else {
+                return .refused("Could not read your library, so '\(title)' was not added and nothing was played.")
+            }
+            baseline = Set(rows.map { $0.persistentID })
+        } else {
+            baseline = nil
+        }
+
+        // (2) The add. Never retried here.
+        do {
+            try library.add(catalogueIDs: [id])
+        } catch SpanDACLibraryOpError.outcomeUnknown {
+            lock.lock(); unknown[id] = .some(baseline); lock.unlock()
+            return .outcomeUnknown(title: label)
+        } catch {
+            lock.lock(); unknown[id] = nil; lock.unlock()
+            if case SpanDACLibraryOpError.notOffered = error { return .refused(updateSpanDACToPlayOnMusicTUI) }
+            return .refused("SpanDAC couldn't add '\(label)' to your library, so nothing was played. "
+                            + (error.localizedDescription))
+        }
+        lock.lock(); unknown[id] = nil; lock.unlock()
+
+        // (3) Resolve: an alias that appears and verifies wins; the shipped
+        // set difference decides otherwise. The lookup runs at each of the
+        // resolver's own reads, inside its own wait budget. Once an alias has
+        // verified, the resolver's remaining reads return at once and its
+        // result is not used.
+        var byAlias: (hex: String, name: String)?
+        func pollAlias() {
+            guard byAlias == nil, case .success(let found?) = verifiedAlias(song, library: library) else { return }
+            byAlias = found
+        }
+        guard let title = song.title, let baseline else {
+            // A song link: no title to read a baseline by, so only its
+            // identity can say which track the add made.
+            for attempt in 1...Self.attempts {
+                pollAlias()
+                if let found = byAlias { return playByIdentity(found, song: song) }
+                if attempt < Self.attempts { seams.wait(Self.interval) }
+            }
+            return .refused("Added \(label) to your library, but it had not appeared there after "
+                            + "\(Self.attempts) checks, so nothing was played. It should be there shortly; "
+                            + "try playing it again.")
+        }
+        let resolution = seams.progress {
+            resolveAddedCatalogRow(
+                title: title, artist: song.artist ?? "", album: song.album ?? "", idsBefore: baseline,
+                attempts: Self.attempts,
+                readRows: {
+                    pollAlias()
+                    return byAlias == nil ? libraryRowsMatchingTitle(run: seams.run, title: title) : nil
+                },
+                wait: { seconds in if byAlias == nil { seams.wait(seconds) } },
+                interval: Self.interval)
+        }
+        if let found = byAlias { return playByIdentity(found, song: song) }
+
+        var note: String?
+        switch playResolvedCatalogRow(resolution, title: title, note: { note = $0 },
+                                      run: seams.run, launch: seams.launch) {
+        case .playing: return .playing(title: title, note: note)
+        case .refused(let why): return .refused(why ?? "Could not play '\(title)'.")
+        }
+    }
+
+    /// The lookup, verified. `success(nil)`: not owned, or an alias that does
+    /// not verify (which the add path then handles as shipped).
+    private func verifiedAlias(_ song: SpanDACCatalogueSong,
+                               library: SpanDACLibraryAdding) -> Result<(hex: String, name: String)?, LookupFailed> {
+        let found: [String: String?]
+        do {
+            found = try library.lookup(catalogueIDs: [song.catalogueID])
+        } catch SpanDACLibraryOpError.notOffered {
+            return .failure(LookupFailed(updateSpanDACToPlayOnMusicTUI))
+        } catch {
+            return .failure(LookupFailed("SpanDAC couldn't check your library, so nothing was played. "
+                                         + error.localizedDescription))
+        }
+        guard case .some(.some(let alias)) = found[song.catalogueID] else { return .success(nil) }
+        return .success(verifySpanDACAlias(alias, title: song.title, run: seams.run))
+    }
+
+    private func playByIdentity(_ found: (hex: String, name: String),
+                                song: SpanDACCatalogueSong) -> SpanDACCataloguePlayOutcome {
+        let title = song.title ?? found.name
+        let outcome = playBoundedSongByIdentifier(title: title, identifier: found.hex,
+                                                  run: seams.run, launch: seams.launch)
+        if outcome == .playing { return .playing(title: title, note: nil) }
+        return .refused(songOutcomeMessage(outcome, title: title) ?? "Could not play '\(title)'.")
+    }
+
+    struct LookupFailed: Error {
+        let sentence: String
+        init(_ sentence: String) { self.sentence = sentence }
+    }
 }
 
 func addCatalogSongAndPlay(

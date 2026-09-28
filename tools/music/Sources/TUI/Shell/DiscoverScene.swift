@@ -151,6 +151,16 @@ final class DiscoverScene: Scene {
     /// reads `routing.selection` itself and never infers data from the output.
     private let routing: RoutingCoordinator
 
+    /// Plays a single Discover track on the MusicTUI output with SpanDAC data:
+    /// SpanDAC on this Mac adds it, then exactly that song plays (C-ADD). Held
+    /// for the scene's life so an add whose outcome was unknown is reconciled
+    /// on the person's next Enter. Internal so a test can hand in fakes.
+    var cataloguePlayer = SpanDACCataloguePlayer(seams: .live(backend: AppleScriptBackend(), showsProgress: false))
+
+    /// SpanDAC's library ops. Nil in production: SpanDAC on this Mac, over the
+    /// data client's own socket. A test hands in a fake.
+    var libraryOps: SpanDACLibraryAdding?
+
     /// Where a list of rows came from: the data epoch it was read under, and
     /// whether SpanDAC on this Mac served it.
     struct RowsRead: Equatable {
@@ -385,7 +395,8 @@ final class DiscoverScene: Scene {
             return .redraw
         }
         playCatalogSlice(catalogIDs: ids, containerTitle: container.name,
-                         trackName: trackRows[cursorIndex].name, read: tracksRead)
+                         trackName: trackRows[cursorIndex].name, trackArtist: trackRows[cursorIndex].subtitle,
+                         read: tracksRead)
         return .push(.nowPlaying)
     }
 
@@ -447,7 +458,7 @@ final class DiscoverScene: Scene {
     /// earlier read to stamp and no origin, so a play that needs an origin (a
     /// SpanDAC row on the MusicTUI output) refuses rather than guessing.
     func playCatalogSlice(catalogIDs: [String], containerTitle: String, trackName: String,
-                          read: RowsRead? = nil) {
+                          trackArtist: String? = nil, read: RowsRead? = nil) {
         let expecting = read.map { (epoch: routing.epoch, dataEpoch: $0.dataEpoch) }
         let origin = read.map { Self.origin(of: $0, singleTrack: catalogIDs.count == 1) }
         actions.run("Play") {
@@ -456,7 +467,8 @@ final class DiscoverScene: Scene {
                        bridgeToast: catalogIDs.count == 1
                            ? "Playing \(trackName) on SpanDAC."
                            : "Playing \(trackName) on SpanDAC — \(catalogIDs.count) tracks.",
-                       expecting: expecting, origin: origin)
+                       expecting: expecting, origin: origin,
+                       track: (title: trackName, artist: trackArtist))
         }
     }
 
@@ -480,13 +492,22 @@ final class DiscoverScene: Scene {
     /// `expecting` is the read's stamp: checked inside the coordinator's
     /// boundary before any branch runs, so the lifecycle is never asked to
     /// play a list whose output or data source has moved (C-EPOCH).
+    ///
+    /// `track` is the single track's own title and artist, which the SpanDAC
+    /// add path needs to find the row the add made; nil for a container.
     private func route(_ action: MusicTUIAction, catalogIDs: [String], disableShuffle: Bool,
                        musicAppTitle: String, bridgeToast: String,
-                       expecting: (epoch: Int, dataEpoch: Int)?, origin: PlayOrigin?) throws {
+                       expecting: (epoch: Int, dataEpoch: Int)?, origin: PlayOrigin?,
+                       track: (title: String, artist: String?)? = nil) throws {
         let lifecycle = self.lifecycle
         let routing = self.routing
         let status = self.status
+        let player = self.cataloguePlayer
+        let injectedOps = self.libraryOps
         let hasAPI = api != nil
+        func libraryOps() -> SpanDACLibraryAdding {
+            injectedOps ?? routing.dataClient().libraryWrites(starter: routing.macStarter)
+        }
         do {
             try routing.perform(action, expecting: expecting, origin: origin,
                 musicApp: { path in
@@ -495,13 +516,30 @@ final class DiscoverScene: Scene {
                         try require(hasAPI, Self.signInToPlay)
                         _ = lifecycle.requestPlay(title: musicAppTitle, catalogIDs: catalogIDs,
                                                   disableShuffle: disableShuffle)
-                    case .add, .addContainer, .handoff, .stationURL:
-                        // A SpanDAC row on the MusicTUI output: the lifecycle
-                        // needs a SpanDAC way to make its container (and a
-                        // single track a SpanDAC add), which a later change
-                        // brings. Until then it refuses, and the web-service
-                        // container path is never used for SpanDAC data (no
-                        // fallback on either axis).
+                    case .addContainer:
+                        // A Discover container with SpanDAC data: SpanDAC on
+                        // this Mac makes it, and it plays by the identity
+                        // SpanDAC returned. The web-service container path is
+                        // never used for SpanDAC data (no fallback on either
+                        // axis), and the lifecycle posts its own outcome.
+                        _ = lifecycle.requestSpanDACPlay(title: musicAppTitle, catalogIDs: catalogIDs,
+                                                         disableShuffle: disableShuffle,
+                                                         library: libraryOps())
+                    case .add:
+                        // One Discover track with SpanDAC data: added through
+                        // SpanDAC on this Mac, then exactly that song plays.
+                        guard catalogIDs.count == 1, let track else { throw ActionError(message: pickASpanDACOutput) }
+                        let song = SpanDACCatalogueSong(catalogueID: catalogIDs[0], title: track.title,
+                                                        artist: track.artist, album: nil)
+                        switch player.play(song, library: libraryOps()) {
+                        case .playing(let title, let note):
+                            status.post(note.map { "Playing \(title). \($0)" } ?? "Playing \(title)")
+                        case .refused(let why):
+                            throw ActionError(message: why)
+                        case .outcomeUnknown(let title):
+                            throw ActionError(message: Self.addOutcomeUnknown(title))
+                        }
+                    case .handoff, .stationURL:
                         throw ActionError(message: pickASpanDACOutput)
                     }
                 },
@@ -622,6 +660,12 @@ final class DiscoverScene: Scene {
     // MARK: - Fetching
 
     static let signInToPlay = "Sign in to play Discover music (music auth setup)."
+
+    /// Said when SpanDAC could not confirm a single track's add (CHOSEN
+    /// wording, the container sentence's twin).
+    static func addOutcomeUnknown(_ title: String) -> String {
+        "Couldn't confirm SpanDAC added '\(title)'. Press Enter again to check."
+    }
     static let signInToBrowse = "Sign in to see your Discover feed (music auth setup)."
 
     /// Which feed THIS read uses, asked of the coordinator rather than fixed at

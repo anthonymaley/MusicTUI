@@ -76,6 +76,52 @@ func discoverPlayScripts(playlistName: String, disableShuffle: Bool) -> [String]
     return scripts
 }
 
+// MARK: - A container addressed by persistent ID (SpanDAC data)
+
+/// The same two commands as `discoverPlayScripts`, addressing the container by
+/// the persistent ID SpanDAC returned for it instead of by its name. With
+/// SpanDAC as MusicTUI's data source the container is made by SpanDAC on this
+/// Mac (`slice.libraryEnsurePlaylist`), and it is played, read and confirmed by
+/// that identity only: never by a name search, so a same-named playlist can
+/// never be the one that plays.
+///
+/// `hex` is `persistentIDHex(fromAlias:)`'s output: sixteen uppercase hex
+/// digits, so it needs no escaping.
+func discoverPlayScripts(persistentID hex: String, disableShuffle: Bool) -> [String] {
+    var scripts: [String] = []
+    if disableShuffle {
+        scripts.append("set shuffle enabled to false")
+    }
+    scripts.append("play (first user playlist whose persistent ID is \"\(hex)\")")
+    return scripts
+}
+
+/// Track count of the container with this persistent ID. A playlist
+/// AppleScript cannot see yet fails the script, which the caller reads as 0,
+/// exactly as the by-name count does.
+func discoverTrackCountScript(persistentID hex: String) -> String {
+    "return (count of tracks of (first user playlist whose persistent ID is \"\(hex)\")) as text"
+}
+
+/// Rule 3's confirmation read, by identity: `player state` is
+/// `nowPlayingReadyState` AND the current playlist's persistent ID is the
+/// container's, compared inside AppleScript. Both reads are inside `try`, so
+/// an unreadable context is `notyet`, never confirmation.
+func discoverConfirmationScript(persistentID hex: String) -> String {
+    """
+        set stateText to ""
+        set ctxID to ""
+        try
+            set stateText to player state as text
+        end try
+        try
+            set ctxID to persistent ID of current playlist
+        end try
+        if stateText is "\(nowPlayingReadyState)" and ctxID is "\(hex)" then return "\(discoverConfirmedToken)"
+        return "\(discoverNotYetToken)"
+        """
+}
+
 // MARK: - The transaction's outcome
 
 /// What a play attempt resolved to, for the toast. The transaction itself is
@@ -94,7 +140,21 @@ enum DiscoverPlayOutcome: Equatable {
     case createFailed(String)
     case notReady                  // materialization timed out; playlist left behind
     case playFailed(String)
+    /// SpanDAC data only: the request to make the container may or may not
+    /// have been carried out (a timeout, a closed socket, a lost reply, or
+    /// SpanDAC's own `outcome: unknown`). Nothing played; the person's next
+    /// Enter re-sends the SAME name, which finds the playlist rather than
+    /// making a second one.
+    case outcomeUnknown
+    /// SpanDAC data only: refused with a sentence of its own, and nothing
+    /// played (a container with no persistent ID, or a SpanDAC that does not
+    /// offer the library ops).
+    case refused(String)
 }
+
+/// What the person reads when SpanDAC could not confirm it made the
+/// container (CHOSEN wording, score C-ADD).
+let discoverOutcomeUnknownText = "Couldn't confirm SpanDAC made the playlist. Press Enter again to check."
 
 func isExpiredToken(_ error: Error) -> Bool {
     guard let authError = error as? AuthError else { return false }
