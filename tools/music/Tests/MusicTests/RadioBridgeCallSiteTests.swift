@@ -81,7 +81,7 @@ final class RadioBridgeCallSiteTests: XCTestCase {
 
         let message = s.message ?? ""
         XCTAssertTrue(message.contains("BBC Radio 1"), "got: \(message)")
-        XCTAssertTrue(message.contains("Music.app"),
+        XCTAssertTrue(message.contains("MusicTUI"),
                       "the refusal must say where it CAN play: \(message)")
         XCTAssertTrue(opener.opened.isEmpty,
                       "a refused station was played on Music.app anyway — that is the fallback ruling 17 forbids")

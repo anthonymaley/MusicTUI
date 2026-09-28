@@ -67,7 +67,7 @@ final class BridgeStationPlayTests: XCTestCase {
                 return XCTFail("expected a refusal, got \(error)")
             }
             XCTAssertTrue(detail.contains("BBC Radio 1"), "got: \(detail)")
-            XCTAssertTrue(detail.contains("Music.app"),
+            XCTAssertTrue(detail.contains("MusicTUI"),
                           "the refusal must say where it CAN be played: \(detail)")
         }
     }
