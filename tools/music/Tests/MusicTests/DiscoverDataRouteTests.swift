@@ -361,6 +361,24 @@ final class DiscoverDataRouteTests: XCTestCase {
         XCTAssertEqual(rig.sent("slice.station").count, 1)
         XCTAssertEqual(s.status.current()?.text, sourceChangedNothingPlayed)
         XCTAssertEqual(s.opener.opened, [])
+
+        // An OUTPUT switch in flight: the data source is unchanged, so only the
+        // stamp can tell, and the station is not played on the new output.
+        let rig2 = SceneDataRig(output: .musicApp, accepted: true)
+        let s2 = scene(rig2)
+        loadRails(s2)
+        rig2.during["slice.station"] = {
+            _ = try? s2.routing.switchMode(to: .source, readiness: { .ready },
+                                           pauseOutgoing: { _ in true }, dropQueue: { _ in })
+        }
+
+        _ = s2.scene.handle(.enter)
+        drain(s2.actions)
+
+        XCTAssertEqual(s2.routing.mode, .source, "the switch itself must have landed")
+        XCTAssertEqual(s2.status.current()?.text, sourceChangedNothingPlayed)
+        XCTAssertEqual(s2.opener.opened, [])
+        XCTAssertEqual(rig2.sent("slice.playStation").count, 0)
     }
 
     /// On a SpanDAC output the station still plays there, by id, as before.
