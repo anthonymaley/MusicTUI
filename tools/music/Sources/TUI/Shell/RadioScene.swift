@@ -9,6 +9,12 @@
 // `BridgeMusicProvider` with Bridge selected. Every async result carries the
 // epoch its provider was chosen at, and one from before a committed output
 // switch is dropped when it drains (D3). Favourites stay local in both modes.
+//
+// Two axes (score: data route and output, step 5): every read follows the
+// DATA selection (SpanDAC on this Mac once accepted, whatever the output), and
+// a station play follows the OUTPUT. The stamp a result carries is both epochs,
+// so a change of data source drops and re-reads the lists exactly as an
+// output switch does. On the MusicTUI output a station plays by its share URL.
 import Foundation
 
 final class RadioScene: Scene {
@@ -30,10 +36,34 @@ final class RadioScene: Scene {
     private var searchHits: [Station] = []
     private(set) var liveLoaded = false
     private(set) var personalLoaded = false
-    /// The routing epoch Live and Personal were fetched for. When
-    /// `routing.epoch` moves (a committed output switch), both lists are
-    /// cleared and fetched again from the new output (D3).
-    private var browseEpoch: Int
+    /// The routing stamp Live and Personal were fetched for. When either epoch
+    /// moves (a committed output switch, or a change of data source), both
+    /// lists are cleared and fetched again (D3, C-EPOCH).
+    private var browseStamp: Stamp
+
+    /// Both routing epochs, read together: the output's and the data
+    /// source's. Each only ever grows.
+    struct Stamp: Equatable {
+        let epoch: Int
+        let dataEpoch: Int
+
+        init(epoch: Int, dataEpoch: Int) { self.epoch = epoch; self.dataEpoch = dataEpoch }
+        init(_ stamp: (epoch: Int, dataEpoch: Int)) { self.init(epoch: stamp.epoch, dataEpoch: stamp.dataEpoch) }
+
+        /// At least as new on both axes.
+        func isAtLeast(_ other: Stamp) -> Bool { epoch >= other.epoch && dataEpoch >= other.dataEpoch }
+    }
+
+    /// Where a list of stations was read: its stamp, and whether SpanDAC on
+    /// this Mac served it. A play from that list carries both into
+    /// `routing.perform`, which refuses once either has moved.
+    private struct ListRead {
+        let stamp: Stamp
+        let spandacData: Bool
+    }
+    private var liveRead: ListRead?
+    private var personalRead: ListRead?
+    private var searchRead: ListRead?
     /// Which async results were dropped as stale ("live", "personal",
     /// "search", "lookup"), in drain order. Main-thread only. Nothing reads it
     /// but tests: a drop is otherwise silent by design, and a test has to be
@@ -77,9 +107,9 @@ final class RadioScene: Scene {
     // station(id:) enriches it in the background. store.add() replaces-by-id,
     // so a landed enrichment can only upgrade the existing favorite in place,
     // never duplicate it.
-    private var resolveInbox: (epoch: Int, station: Station)? = nil
+    private var resolveInbox: (stamp: Stamp, station: Station)? = nil
     // commitSearch's search path.
-    private var searchInbox: (epoch: Int, term: String, hits: [Station], failure: String?)? = nil
+    private var searchInbox: (stamp: Stamp, spandacData: Bool, term: String, hits: [Station], failure: String?)? = nil
     /// How many posts each inbox has been OFFERED ("live", "personal",
     /// "lookup", "search"), accepted or not. Under `inboxLock`. Nothing reads
     /// it but tests: it is how a test knows a background post has been written
@@ -95,7 +125,8 @@ final class RadioScene: Scene {
     /// mode included, since a REST failure is no longer swallowed into an
     /// empty list (D4, personal-radio defect fix).
     private struct BrowsePost {
-        let epoch: Int
+        let stamp: Stamp
+        let spandacData: Bool
         let stations: [Station]
         let failure: String?
     }
@@ -124,7 +155,7 @@ store: StationStore, catalog: RadioCatalog?,
         self.catalog = catalog
         self.opener = opener
         self.kittyEnabled = kittyEnabled
-        self.browseEpoch = routing.epoch
+        self.browseStamp = Stamp(routing.stamp)
     }
 
     /// Music.app mode's provider: the catalogue and opener this scene was
@@ -160,6 +191,17 @@ store: StationStore, catalog: RadioCatalog?,
         case .favorites: return store.favorites()
         case .live:      return live
         case .personal:  return personal
+        }
+    }
+
+    /// The read behind the rows on screen: the search's, or the sub-view's.
+    /// Favourites are local, so nil.
+    private var currentListRead: ListRead? {
+        if !searchHits.isEmpty { return searchRead }
+        switch nav.subView {
+        case .favorites: return nil
+        case .live:      return liveRead
+        case .personal:  return personalRead
         }
     }
 
@@ -253,9 +295,26 @@ store: StationStore, catalog: RadioCatalog?,
             // A station Apple's catalogue does not carry refuses here and is
             // never played on Music.app instead (ruling 17). The refusal says so
             // in its own words, which is why they are not replaced with a label.
+            //
+            // On the MusicTUI output the station opens by its share URL, with
+            // MusicTUI's own data (as it ships) and with SpanDAC data alike. A
+            // row from a list carries that list's read, so a play whose output
+            // or data source moved since plays nothing; a favourite is local
+            // and has no read.
+            let read = currentListRead
+            let opener = self.opener
             do {
                 try routing.perform(.radioStationPlay,
-                    musicApp: { try playStation(s, via: opener) },
+                    expecting: read.map { (epoch: routing.epoch, dataEpoch: $0.stamp.dataEpoch) },
+                    origin: read.map { $0.spandacData ? .spandacCatalogue : .openData(resultNumber: nil) },
+                    musicApp: { path in
+                        switch path {
+                        case .shipped, .stationURL:
+                            try playStation(s, via: opener)
+                        case .add, .addContainer, .handoff:
+                            throw ActionError(message: pickASpanDACOutput)
+                        }
+                    },
                     source: {
                         // D2: the provider rethrows `SourceAppError`
                         // unchanged, so the refusal below reads as before.
@@ -330,8 +389,8 @@ store: StationStore, catalog: RadioCatalog?,
             guard let self else { return }
             self.inboxLock.lock()
             self.offered["lookup", default: 0] += 1
-            if Self.mayReplace(self.resolveInbox?.epoch, with: choice.epoch) {
-                self.resolveInbox = (choice.epoch, resolved)
+            if Self.mayReplace(self.resolveInbox?.stamp, with: Stamp(choice.stamp)) {
+                self.resolveInbox = (Stamp(choice.stamp), resolved)
             }
             self.inboxLock.unlock()
         }
@@ -372,7 +431,8 @@ store: StationStore, catalog: RadioCatalog?,
         message = "Searching \u{201C}\(input)\u{201D}\u{2026}"
         let term = input
         let provider = choice.provider
-        let epoch = choice.epoch
+        let stamp = Stamp(choice.stamp)
+        let spandacData = Self.servedBySpanDAC(choice)
         Thread.detachNewThread { [weak self] in
             var hits: [Station] = []
             var failure: String? = nil
@@ -392,8 +452,8 @@ store: StationStore, catalog: RadioCatalog?,
             guard let self else { return }
             self.inboxLock.lock()
             self.offered["search", default: 0] += 1
-            if Self.mayReplace(self.searchInbox?.epoch, with: epoch) {
-                self.searchInbox = (epoch, term, hits, failure)
+            if Self.mayReplace(self.searchInbox?.stamp, with: stamp) {
+                self.searchInbox = (stamp, spandacData, term, hits, failure)
             }
             self.inboxLock.unlock()
         }
@@ -407,9 +467,16 @@ store: StationStore, catalog: RadioCatalog?,
     /// new output's post could land first and the old output's after it; the
     /// stale one took the slot, the drain dropped it, the fetch flags stayed
     /// set, and the fresh result was lost with no retry. Call under `inboxLock`.
-    private static func mayReplace(_ storedEpoch: Int?, with incoming: Int) -> Bool {
-        guard let storedEpoch else { return true }
-        return incoming >= storedEpoch
+    private static func mayReplace(_ stored: Stamp?, with incoming: Stamp) -> Bool {
+        guard let stored else { return true }
+        return incoming.isAtLeast(stored)
+    }
+
+    /// Whether SpanDAC on this Mac served a choice: accepted data, whatever
+    /// the output.
+    private static func servedBySpanDAC<P>(_ choice: ProviderChoice<P>) -> Bool {
+        if case .consistent(.spandacMac, _) = choice.selection { return true }
+        return false
     }
 
     /// One Live or Personal read. The CHOICE runs here, on the fetch thread,
@@ -426,7 +493,7 @@ store: StationStore, catalog: RadioCatalog?,
         let routing = self.routing
         let open = self.open
         let catalog = self.catalog
-        let requested = browseEpoch
+        let requested = browseStamp
         Thread.detachNewThread { [weak self] in
             let post: BrowsePost
             do {
@@ -437,26 +504,28 @@ store: StationStore, catalog: RadioCatalog?,
                     which == .live ? try provider.liveStations() : try provider.personalStations()
                 }
                 do {
-                    post = BrowsePost(epoch: choice.epoch, stations: try read(), failure: nil)
+                    post = BrowsePost(stamp: Stamp(choice.stamp), spandacData: Self.servedBySpanDAC(choice),
+                                      stations: try read(), failure: nil)
                 } catch {
                     if which == .personal, choice.mode == .musicApp,
                        Self.isAuthStatus(error), catalog?.hasUserToken() != true {
-                        post = BrowsePost(epoch: choice.epoch, stations: [],
+                        post = BrowsePost(stamp: Stamp(choice.stamp), spandacData: false, stations: [],
                                            failure: "Personal stations need a Music User Token. Run: music auth")
                     } else {
-                        post = BrowsePost(epoch: choice.epoch, stations: [], failure: Self.words(for: error))
+                        post = BrowsePost(stamp: Stamp(choice.stamp), spandacData: Self.servedBySpanDAC(choice),
+                                          stations: [], failure: Self.words(for: error))
                     }
                 }
             } catch {
-                post = BrowsePost(epoch: requested, stations: [], failure: Self.words(for: error))
+                post = BrowsePost(stamp: requested, spandacData: false, stations: [], failure: Self.words(for: error))
             }
             guard let self else { return }
             self.inboxLock.lock()
             self.offered[which == .live ? "live" : "personal", default: 0] += 1
             if which == .live {
-                if Self.mayReplace(self.liveInbox?.epoch, with: post.epoch) { self.liveInbox = post }
+                if Self.mayReplace(self.liveInbox?.stamp, with: post.stamp) { self.liveInbox = post }
             } else {
-                if Self.mayReplace(self.personalInbox?.epoch, with: post.epoch) { self.personalInbox = post }
+                if Self.mayReplace(self.personalInbox?.stamp, with: post.stamp) { self.personalInbox = post }
             }
             self.inboxLock.unlock()
         }
@@ -487,14 +556,14 @@ store: StationStore, catalog: RadioCatalog?,
     func tick(snapshot: NowPlayingSnapshot) -> Bool {
         var changed = false
 
-        // A committed output switch since the lists were fetched: they came
-        // from the output just left, so they go, and are fetched again from
-        // the new one (D3). Read once, and every drain below is judged against
-        // the same value.
-        let epoch = routing.epoch
-        if epoch != browseEpoch {
-            browseEpoch = epoch
+        // A committed output switch or a change of data source since the
+        // lists were fetched: they go, and are fetched again (D3, C-EPOCH).
+        // Read once, and every drain below is judged against the same value.
+        let stamp = Stamp(routing.stamp)
+        if stamp != browseStamp {
+            browseStamp = stamp
             live = []; personal = []
+            liveRead = nil; personalRead = nil
             liveLoaded = false; personalLoaded = false
             liveFetchStarted = false; personalFetchStarted = false
             changed = true
@@ -523,28 +592,30 @@ store: StationStore, catalog: RadioCatalog?,
         inboxLock.unlock()
 
         if let freshLive {
-            if freshLive.epoch != epoch { staleDrops.append("live") }
+            if freshLive.stamp != stamp { staleDrops.append("live") }
             else {
                 live = freshLive.stations; liveLoaded = true; changed = true
+                liveRead = ListRead(stamp: freshLive.stamp, spandacData: freshLive.spandacData)
                 if let failure = freshLive.failure { message = "✗ " + failure }
             }
         }
         if let freshPersonal {
-            if freshPersonal.epoch != epoch { staleDrops.append("personal") }
+            if freshPersonal.stamp != stamp { staleDrops.append("personal") }
             else {
                 personal = freshPersonal.stations; personalLoaded = true; changed = true
+                personalRead = ListRead(stamp: freshPersonal.stamp, spandacData: freshPersonal.spandacData)
                 if let failure = freshPersonal.failure { message = "✗ " + failure }
             }
         }
         if let freshResolve {
-            if freshResolve.epoch != epoch { staleDrops.append("lookup") }
+            if freshResolve.stamp != stamp { staleDrops.append("lookup") }
             else {
                 try? store.add(freshResolve.station)
                 message = "★ \(freshResolve.station.name)"
                 changed = true
             }
         }
-        if let freshSearch, freshSearch.epoch != epoch {
+        if let freshSearch, freshSearch.stamp != stamp {
             staleDrops.append("search")
             searchInFlight = false
             searchHits = []
@@ -553,6 +624,7 @@ store: StationStore, catalog: RadioCatalog?,
         } else if let freshSearch {
             searchInFlight = false
             searchHits = freshSearch.hits
+            searchRead = ListRead(stamp: freshSearch.stamp, spandacData: freshSearch.spandacData)
             message = freshSearch.failure.map { "✗ \($0)" }
                 ?? (freshSearch.hits.isEmpty
                     ? "No stations for \u{201C}\(freshSearch.term)\u{201D} — try pasting the station URL"
@@ -568,10 +640,10 @@ store: StationStore, catalog: RadioCatalog?,
     /// catalog/token nothing will ever load, so this reads false forever rather
     /// than spinning — Favorites (the only sub-view this applies to: false) must
     /// always work with no network and no token. With Bridge selected a list
-    /// always loads (or fails in words). Display only: the mode read here
-    /// decides no route.
+    /// always loads (or fails in words). Display only: the data selection read
+    /// here decides no route. SpanDAC data needs no key, whatever the output.
     private var loading: Bool {
-        guard routing.mode.usesSource || catalog != nil else { return false }
+        guard routing.data == .spandacMac || catalog != nil else { return false }
         switch nav.subView {
         case .favorites: return false
         case .live: return !liveLoaded

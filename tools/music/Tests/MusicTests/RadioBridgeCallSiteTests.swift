@@ -64,7 +64,7 @@ final class RadioBridgeCallSiteTests: XCTestCase {
         s.execute(.play(station))
 
         XCTAssertEqual(opener.opened.count, 1, "Music.app mode did not open the station URL")
-        XCTAssertTrue(wire.sent.isEmpty, "Music.app mode sent a SpanDAC request")
+        XCTAssertTrue(wire.sent.isEmpty, "MusicTUI's own data with the MusicTUI output sent a SpanDAC request")
     }
 
     /// Ruling 17: a station Apple's catalogue does not carry refuses, in the

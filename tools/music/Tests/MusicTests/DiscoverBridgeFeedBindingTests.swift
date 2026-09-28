@@ -155,7 +155,7 @@ final class DiscoverBridgeFeedBindingTests: XCTestCase {
         settle(s) { !web.urls.isEmpty }
 
         XCTAssertTrue(web.urls.first?.contains("/v1/me/recommendations") ?? false)
-        XCTAssertTrue(wire.requests.isEmpty, "Music.app mode sent a SpanDAC request")
+        XCTAssertTrue(wire.requests.isEmpty, "MusicTUI's own data with the MusicTUI output sent a SpanDAC request")
     }
 
     /// No automatic fallback either way: Bridge selected means Bridge is read,
@@ -227,7 +227,7 @@ final class DiscoverBridgeFeedBindingTests: XCTestCase {
 
         XCTAssertTrue(web.urls.contains { $0.contains("/playlists/pl.u-abc?include=tracks") },
                       "got: \(web.urls)")
-        XCTAssertTrue(wire.requests.isEmpty, "Music.app mode sent a SpanDAC request")
+        XCTAssertTrue(wire.requests.isEmpty, "MusicTUI's own data with the MusicTUI output sent a SpanDAC request")
     }
 
     // MARK: - Play, with no keys
