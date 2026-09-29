@@ -52,6 +52,12 @@ enum LibraryProvenance {
     static func playingOnMusicTUI(_ title: String) -> String {
         "Playing '\(title)' on \(musicTUIOutputName)."
     }
+
+    /// The same, followed by what the hand-off skipped as no longer
+    /// available, when it skipped anything (ruling, 2026-09-24).
+    static func playingOnMusicTUI(_ title: String, report: HandoffPlayReport) -> String {
+        [playingOnMusicTUI(title), report.notice].compactMap { $0 }.joined(separator: " ")
+    }
 }
 
 /// Before a play from a list read under MusicTUI's own data reads anything
@@ -88,10 +94,12 @@ func spanDACOutputPlayer(_ client: SourceAppClient) -> MusicDataProvider {
 /// output, so its refusal reaches the footer in its own words: the shell's
 /// `ActionRunner` shows an `ActionError`'s message and reduces any other error
 /// to "Play failed.", which would hide `pickASpanDACOutput`.
-func playThroughHandoff(_ handoff: MusicTUIHandoff, rows: [MusicRow], startAt: Int,
-                        shuffle: Bool, title: String) throws {
+@discardableResult
+func playThroughHandoff(_ handoff: MusicTUIHandoff, rows: [MusicRow], startAt: Int, startRequired: Bool,
+                        shuffle: Bool, title: String) throws -> HandoffPlayReport {
     do {
-        try handoff.playLibrary(rows: rows, startAt: startAt, shuffle: shuffle, title: title)
+        return try handoff.playLibrary(rows: rows, startAt: startAt, startRequired: startRequired,
+                                       shuffle: shuffle, title: title)
     } catch let error as ActionError {
         throw error
     } catch {

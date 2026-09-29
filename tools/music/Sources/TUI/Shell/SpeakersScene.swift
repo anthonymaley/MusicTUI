@@ -1055,6 +1055,19 @@ final class SpeakersScene: Scene {
                 line("\(color)\(sign)\(ANSICode.reset)\(piece.dropFirst())")
             }
         }
+        // The keys sit in the box, under the promise, as on the agreed canvas:
+        // in the footer alone they were fifteen lines away and read as absent
+        // (Anthony, 2026-09-28 22:05).
+        line("")
+        let enter = "\(ANSICode.inverse) \(SpanDACSwitchCopy.enterKey) \(ANSICode.reset)"
+        let esc = "\(ANSICode.dim)\(SpanDACSwitchCopy.escKey)\(ANSICode.reset)"
+        // One line when it fits (26 + 6 + 12 visible columns), else two.
+        if textW >= SpanDACSwitchCopy.enterKey.count + 2 + 6 + SpanDACSwitchCopy.escKey.count {
+            line(enter + "      " + esc)
+        } else {
+            line(enter)
+            line(esc)
+        }
         if boxed { line("") }
         rule("\u{2570}", "\u{256F}")
         return out

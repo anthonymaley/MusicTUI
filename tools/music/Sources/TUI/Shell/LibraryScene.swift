@@ -1772,7 +1772,9 @@ final class LibraryScene: Scene {
                                 // record is gone, which can only lose what the
                                 // hand-off needs, so it can only refuse.
                                 let row = songRow ?? MusicRow(id: id, title: title, artist: artist, album: nil, kind: .song)
-                                try playThroughHandoff(handoff, rows: [row], startAt: 1, shuffle: shuffle, title: title)
+                                // One song, picked: unavailable refuses by name.
+                                try playThroughHandoff(handoff, rows: [row], startAt: 1, startRequired: true,
+                                                       shuffle: shuffle, title: title)
                             },
                             source: { client in _ = try spanDACOutputPlayer(client).play(ids: [id]) },
                             unaffected: {})
@@ -1901,15 +1903,16 @@ final class LibraryScene: Scene {
                 // Addendum U: how many of `ids` Bridge dropped as unavailable,
                 // set only on the attempt that actually succeeds (U-R5/U-R6).
                 var skippedUnavailable = 0
-                var handedOff = false
+                var handedOff: HandoffPlayReport?
                 try retryingWhileWarming(budget: budget, onWarming: onWarming, sleep: sleep) {
                     // Stamped at the keypress: a switch that committed while
                     // the tracks were read plays nothing (C-EPOCH).
                     try routing.perform(.libraryPlay, expecting: stamp, origin: .spandacLibrary,
                         musicApp: { path in
                             guard path == .handoff else { throw ActionError(message: pickASpanDACOutput) }
-                            try playThroughHandoff(handoff, rows: trackRows, startAt: startAt, shuffle: shuffle, title: title)
-                            handedOff = true
+                            handedOff = try playThroughHandoff(handoff, rows: trackRows, startAt: startAt,
+                                                               startRequired: startRequired,
+                                                               shuffle: shuffle, title: title)
                         },
                         source: { client in
                             skippedUnavailable = try spanDACOutputPlayer(client).playReportingSkips(
@@ -1917,8 +1920,8 @@ final class LibraryScene: Scene {
                         },
                         unaffected: {})
                 }
-                if handedOff {
-                    status.post(LibraryProvenance.playingOnMusicTUI(title))
+                if let handedOff {
+                    status.post(LibraryProvenance.playingOnMusicTUI(title, report: handedOff))
                     return
                 }
                 let queuedCount = ids.count - skippedUnavailable
@@ -1963,13 +1966,14 @@ final class LibraryScene: Scene {
                 // always whole-collection — there is no track-level entry for
                 // an artist, so `startRequired` is always false.
                 var skippedUnavailable = 0
-                var handedOff = false
+                var handedOff: HandoffPlayReport?
                 try retryingWhileWarming(budget: budget, onWarming: onWarming, sleep: sleep) {
                     try routing.perform(.libraryPlay, expecting: stamp, origin: .spandacLibrary,
                         musicApp: { path in
                             guard path == .handoff else { throw ActionError(message: pickASpanDACOutput) }
-                            try playThroughHandoff(handoff, rows: songRows, startAt: 1, shuffle: shuffle, title: name)
-                            handedOff = true
+                            handedOff = try playThroughHandoff(handoff, rows: songRows, startAt: 1,
+                                                               startRequired: false,
+                                                               shuffle: shuffle, title: name)
                         },
                         source: { client in
                             skippedUnavailable = try spanDACOutputPlayer(client).playReportingSkips(
@@ -1977,8 +1981,8 @@ final class LibraryScene: Scene {
                         },
                         unaffected: {})
                 }
-                if handedOff {
-                    status.post(LibraryProvenance.playingOnMusicTUI(name))
+                if let handedOff {
+                    status.post(LibraryProvenance.playingOnMusicTUI(name, report: handedOff))
                     return
                 }
                 let queuedCount = ids.count - skippedUnavailable

@@ -305,7 +305,8 @@ final class CLIDataRouteTests: XCTestCase {
         XCTAssertEqual(h.library.requests, [CLIMusicTUILibraryPlayRequest(
             kind: .song, label: "Angel",
             rows: [MusicRow(id: "l.1", title: "Angel", artist: "Massive Attack", album: "Mezzanine", kind: .song)],
-            startAt: 1, shuffle: false, resultNumber: 1, json: false)])
+            // Picked: an unavailable song refuses by name, as on a SpanDAC output.
+            startAt: 1, shuffle: false, resultNumber: 1, json: false, startRequired: true)])
 
         r = play(h, ["2"])
         XCTAssertNil(r.error); XCTAssertEqual(r.calls, [])
@@ -347,6 +348,34 @@ final class CLIDataRouteTests: XCTestCase {
         }
         XCTAssertEqual(shipped.io.out, [pickASpanDACOutput, updateSpanDACToPlayOnMusicTUI])
         XCTAssertEqual(shipped.outputClientsBuilt, 0)
+    }
+
+    /// `music play N` and a named song on the MusicTUI output with SpanDAC
+    /// data and no DAC on this Mac: both reach the MusicTUI play seams, with
+    /// no DAC refusal printed and nothing sent to any SpanDAC output.
+    func testCLIPlayOnMusicTUIOutputWithoutADAC() throws {
+        let h = CLIDataRouteHarness(
+            output: .musicApp, data: .accepted,
+            dataReplies: ["slice.status": [readyWithoutADAC, readyWithoutADAC],
+                          "slice.librarySongs": [L.songs([("l.9", "Teardrop", "Massive Attack", "Mezzanine")])]])
+        try cacheRows(h, [
+            SongResult(index: 1, title: "Angel", artist: "Massive Attack", album: "Mezzanine", catalogId: "",
+                       origin: .bridgeLibrary, bridgeID: "l.1"),
+            SongResult(index: 2, title: "Teardrop", artist: "Massive Attack", album: "", catalogId: "",
+                       origin: .bridgeCatalog, bridgeID: "1440857999"),
+        ])
+
+        for n in ["1", "2"] {
+            let r = play(h, [n])
+            XCTAssertNil(r.error, n); XCTAssertEqual(r.calls, [], n)
+        }
+        let named = play(h, song: "Teardrop")
+        XCTAssertNil(named.error)
+        XCTAssertEqual(h.library.requests.map { $0.rows.map(\.id) }, [["l.1"], ["l.9"]])
+        XCTAssertEqual(h.catalogue.requests.map(\.catalogueID), ["1440857999"])
+        XCTAssertEqual(h.io.out.filter { $0.contains("DAC") }, [], "no DAC refusal printed")
+        XCTAssertEqual(h.outputClientsBuilt, 0)
+        XCTAssertEqual(h.outputWire.requestCount, 0)
     }
 
     // MARK: - radio play opens the station URL

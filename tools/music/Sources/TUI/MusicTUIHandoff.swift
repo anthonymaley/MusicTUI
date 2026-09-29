@@ -10,8 +10,14 @@
 // `persistentIDHex(fromAlias:)` rewrites to hex notation; a change of
 // notation, never a mapping this client computes).
 //
-// The rule, all or nothing:
-// - Every track must carry an alias that parses.
+// Unavailable songs are skipped with a notice (ruling, 2026-09-24): a song
+// row SpanDAC sends with NO alias is one Apple no longer has available, so it
+// is left out, counted, and the rest play, as on the SpanDAC output: a
+// picked song that is unavailable refuses by name, a whole play skips
+// anywhere (row 1 included), and no playable song at all refuses.
+//
+// For the rest, the rule is all or nothing:
+// - Every remaining track's alias must parse.
 // - One read (AppleScript, read-only) looks every identity up: the library
 //   playlist first; only when it is not there, every user playlist. Each must
 //   be exactly ONE track (one persistent ID found in several playlists is one
@@ -19,10 +25,10 @@
 //   can only refuse).
 // - Only then is the queue built, addressed by persistent ID
 //   (`persistentIDQueueEntry`), and played.
-// - Any missing, unparsable, unresolved, ambiguous or mismatched track refuses
-//   the WHOLE play with `pickASpanDACOutput`. There is no partial queue (a
-//   queue silently missing songs is a different album from the one chosen)
-//   and no title search, ever.
+// - Any unparsable, unresolved, ambiguous or mismatched track refuses the
+//   WHOLE play with `pickASpanDACOutput`: an identity that is present but
+//   wrong is a safety matter, not availability. There is no silent partial
+//   queue (only the counted, announced skips above) and no title search, ever.
 //
 // The alias key MusicKit carries is undocumented, so the client checks it is
 // there at all: `LibraryAliasSelfCheck` watches the first SpanDAC library
@@ -53,6 +59,20 @@ struct HandoffTrackHit: Equatable {
     /// container is seeded by it and then confirmed by identity).
     let libraryIndex: Int?
     let name: String
+}
+
+/// What a hand-off played beyond its queue: the songs it left out because
+/// SpanDAC gave them no identity (Apple no longer has them available), under
+/// the 2026-09-24 ruling "unavailable songs are skipped with a notice".
+struct HandoffPlayReport: Equatable {
+    /// Songs skipped because they carried no identity.
+    var skippedUnavailable = 0
+
+    /// The sentence a person reads beside "Playing ...", or nil when nothing
+    /// was left out. The SpanDAC output's own wording.
+    var notice: String? {
+        skippedUnavailable > 0 ? bridgeUnavailableSongsNotice(skippedUnavailable) : nil
+    }
 }
 
 /// The read-only identity lookup behind the hand-off.
@@ -181,6 +201,48 @@ final class LibraryAliasSelfCheck {
     }
 }
 
+/// Library rows with the unavailable songs taken out, and where the play
+/// now starts (1-based, in `rows`).
+struct AvailableHandoffRows: Equatable {
+    let rows: [MusicRow]
+    let startAt: Int
+    let report: HandoffPlayReport
+}
+
+/// Refused when no song of a whole play is available: the SpanDAC output's
+/// own sentence.
+let noSongAvailableToSpanDAC = "None of those songs are available to SpanDAC."
+/// Refused when the picked song is not available: the SpanDAC output's own
+/// sentence shape.
+func songNotAvailableToSpanDAC(_ title: String) -> String { "'\(title)' isn't available to SpanDAC." }
+
+/// The 2026-09-24 ruling and its controller rulings, applied before any
+/// read, exactly as the SpanDAC output applies them: a SONG row with no alias
+/// is unavailable. A PICKED start row (`startRequired`) that is unavailable
+/// refuses by name; a whole play skips unavailable songs anywhere, row 1
+/// included, keeping the order; nothing available refuses. Only an ABSENT
+/// alias is unavailability: a present alias that does not parse, and any row
+/// that is not a song, are kept, so the identity check refuses them as it
+/// always has. `startAt` is 1-based.
+func availableHandoffRows(_ rows: [MusicRow], startAt: Int, startRequired: Bool, shuffle: Bool,
+                          title: String) throws -> AvailableHandoffRows {
+    guard !rows.isEmpty else { throw ActionError(message: pickASpanDACOutput) }
+    let unavailable: (MusicRow) -> Bool = { $0.kind == .song && $0.alias == nil }
+    let chosen = shuffle ? 0 : min(max(1, startAt), rows.count) - 1
+    if startRequired, !shuffle, unavailable(rows[chosen]) {
+        throw ActionError(message: songNotAvailableToSpanDAC(rows[chosen].title))
+    }
+    var kept: [MusicRow] = []
+    var start: Int?
+    for (i, row) in rows.enumerated() where !unavailable(row) {
+        if start == nil && i >= chosen { start = kept.count + 1 }
+        kept.append(row)
+    }
+    guard !kept.isEmpty else { throw ActionError(message: noSongAvailableToSpanDAC) }
+    return AvailableHandoffRows(rows: kept, startAt: start ?? 1,
+                                report: HandoffPlayReport(skippedUnavailable: rows.count - kept.count))
+}
+
 /// C-HANDOFF's check, shared by the TUI and the CLI: every row resolves to
 /// exactly one track by identity, or the whole play is refused. Reads only.
 func verifyHandoffTracks(rows: [MusicRow], title: String, library: PersistentIDTrackReading,
@@ -284,9 +346,17 @@ struct PersistentIDHandoff: MusicTUIHandoff {
     let selfCheck: LibraryAliasSelfCheck
     let currentStamp: () -> MusicTUIHandoffStamp?
 
-    func playLibrary(rows: [MusicRow], startAt: Int, shuffle: Bool, title: String) throws {
+    @discardableResult
+    func playLibrary(rows: [MusicRow], startAt: Int, startRequired: Bool, shuffle: Bool,
+                     title: String) throws -> HandoffPlayReport {
         guard let entry = currentStamp() else { throw ActionError(message: sourceChangedNothingPlayed) }
-        let verified = try verifyHandoffTracks(rows: rows, title: title, library: library, selfCheck: selfCheck)
+        // The self-check speaks first: a macOS that reports no identities
+        // at all is not a playlist of unavailable songs.
+        if let said = selfCheck.refusal() { throw ActionError(message: said) }
+        let available = try availableHandoffRows(rows, startAt: startAt, startRequired: startRequired,
+                                                 shuffle: shuffle, title: title)
+        let verified = try verifyHandoffTracks(rows: available.rows, title: title, library: library,
+                                               selfCheck: selfCheck)
         let entries = verified.compactMap {
             persistentIDQueueEntry(persistentID: $0.persistentID, name: $0.name, artist: $0.artist, album: $0.album)
         }
@@ -294,11 +364,12 @@ struct PersistentIDHandoff: MusicTUIHandoff {
         // The whole set is queued, as the shipped library plays do: shuffled
         // from the top, or in order from the chosen track.
         let ordered = shuffle ? entries.shuffled() : entries
-        let current = shuffle ? 1 : min(max(1, startAt), ordered.count)
+        let current = shuffle ? 1 : min(max(1, available.startAt), ordered.count)
         // C-EPOCH: re-read after the reads, before the one sound mutation.
         guard currentStamp() == entry else { throw ActionError(message: sourceChangedNothingPlayed) }
         try player.play(AppQueue(playlistName: persistentIDQueueSource, tracks: ordered, currentIndex: current,
                                  displayName: title))
+        return available.report
     }
 }
 

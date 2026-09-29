@@ -187,6 +187,9 @@ final class FakeSpanDACMac {
     var adds: [Write] = []
     var ensures: [Write] = []
     var duplicateName = false
+    /// What `slice.status` says about the DAC (`output.dac`); nil leaves the
+    /// `output` object out, as an older SpanDAC does.
+    var outputDAC: String?
     var playlistAlias = true
     /// How many ensure replies for one playlist carry `alias: null` before it
     /// is reported (a playlist just made has no persistent ID for a moment).
@@ -610,6 +613,39 @@ final class SpanDACLibraryAddTests: XCTestCase {
         XCTAssertEqual(calls, [])
     }
 
+    /// The same Discover track with no DAC on this Mac: the MusicTUI output
+    /// plays through Apple's Music player, so SpanDAC's DAC is not asked for.
+    /// SpanDAC adds the song and exactly that song plays; no DAC refusal.
+    func testCatalogueAddPlaysOnMusicTUIOutputWithoutADAC() throws {
+        let rig = SceneDataRig(output: .musicApp, accepted: true)
+        rig.replies["slice.status"] = noDACStatus
+        let routing = rig.coordinator()
+        let status = StatusStore()
+        let actions = ActionRunner(status: status)
+        let lib = FakeAppleLibrary()
+        lib.catalogue["901"] = ("T1", "A", "Boom Bap")
+        let mac = FakeSpanDACMac(library: lib)
+        mac.outputDAC = "not_connected"
+        let scene = DiscoverScene(feed: nil, status: status, actions: actions, api: nil,
+                                  lifecycle: inertLifecycle(), routing: routing, opener: SceneRecordingOpener())
+        scene.cataloguePlayer = SpanDACCataloguePlayer(seams: lib.seams)
+        scene.libraryOps = mac.client
+        let read = DiscoverScene.RowsRead(try routing.choose(.discoverFeed, musicApp: { 0 }, source: { _ in 1 }))
+
+        let calls = withTripwire {
+            scene.playCatalogSlice(catalogIDs: ["901"], containerTitle: "Boom Bap", trackName: "T1",
+                                   trackArtist: "A", read: read)
+            drain(actions)
+        }.calls
+
+        XCTAssertEqual(status.current()?.text, "Playing T1")
+        XCTAssertEqual(mac.ops("slice.libraryAdd").first?["ids"] as? [String], ["901"])
+        XCTAssertEqual(lib.allSeeded, [lib.owned["901"]!])
+        XCTAssertEqual(rig.sent("slice.queue").count, 0)
+        XCTAssertEqual(rig.outputBuilt, [])
+        XCTAssertEqual(calls, [])
+    }
+
     /// The library ops go over the DATA client's own path and transport, and
     /// no other: a test's client carries a fake transport, so they can never
     /// reach a real SpanDAC through them. The CLI's production seam, run on a
@@ -720,7 +756,10 @@ final class SpanDACLibraryAddTests: XCTestCase {
 
 extension FakeSpanDACMac {
     /// A `slice.status` reply that advertises the three library ops.
+    /// With `outputDAC` set, the reply also carries the `output` object, so a
+    /// test can stand in a SpanDAC with no DAC on its cable.
     var statusWithOps: String {
-        #"{"ok":true,"op":"slice.status","status":{"playback":"idle","authorization":"authorized","contract":3,"capabilities":["slice.status","slice.libraryAdd","slice.libraryLookup","slice.libraryEnsurePlaylist"]}}"#
+        let output = outputDAC.map { #","output":{"dac":"\#($0)"}"# } ?? ""
+        return #"{"ok":true,"op":"slice.status","status":{"playback":"idle","authorization":"authorized","contract":3,"capabilities":["slice.status","slice.libraryAdd","slice.libraryLookup","slice.libraryEnsurePlaylist"]\#(output)}}"#
     }
 }

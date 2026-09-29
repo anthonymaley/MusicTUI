@@ -11,7 +11,21 @@ import Foundation
 /// MusicTUI output by resolving each track to the exact track already owned,
 /// never by a title search.
 protocol MusicTUIHandoff {
-    func playLibrary(rows: [MusicRow], startAt: Int, shuffle: Bool, title: String) throws
+    /// Plays the rows, or refuses. The report says what was left out.
+    /// `startRequired` is true only when the person picked the start row
+    /// (the SpanDAC output's `start_required`): an unavailable pick refuses
+    /// by name, while a whole play skips unavailable songs anywhere.
+    @discardableResult
+    func playLibrary(rows: [MusicRow], startAt: Int, startRequired: Bool, shuffle: Bool,
+                     title: String) throws -> HandoffPlayReport
+}
+
+extension MusicTUIHandoff {
+    /// A whole play: no row was picked.
+    @discardableResult
+    func playLibrary(rows: [MusicRow], startAt: Int, shuffle: Bool, title: String) throws -> HandoffPlayReport {
+        try playLibrary(rows: rows, startAt: startAt, startRequired: false, shuffle: shuffle, title: title)
+    }
 }
 
 /// Refuses every call. The seeded default until a later step wires the real
@@ -20,7 +34,9 @@ struct RefusingHandoff: MusicTUIHandoff {
     struct Refused: Error, LocalizedError {
         var errorDescription: String? { pickASpanDACOutput }
     }
-    func playLibrary(rows: [MusicRow], startAt: Int, shuffle: Bool, title: String) throws {
+    @discardableResult
+    func playLibrary(rows: [MusicRow], startAt: Int, startRequired: Bool, shuffle: Bool,
+                     title: String) throws -> HandoffPlayReport {
         throw Refused()
     }
 }

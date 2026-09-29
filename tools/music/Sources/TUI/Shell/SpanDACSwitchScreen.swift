@@ -13,7 +13,7 @@ import Foundation
 // MARK: - The words
 
 /// The switch screen, as agreed on the canvas (Anthony's own edits, with the
-/// `=` line as amended on 2026-09-28). The keys are the tab's footer.
+/// `=` line as amended on 2026-09-28). The keys are drawn in the box and repeated in the tab's footer.
 ///
 /// The canvas's grey bottom line ("From now on MusicTUI gets its music data
 /// from SpanDAC. SpanDAC runs quietly in the background on this Mac; MusicTUI
@@ -28,6 +28,9 @@ enum SpanDACSwitchCopy {
         "= Your library and new music still play on MusicTUI and your speakers.",
     ]
     static let keys = "Enter Switch to SpanDAC   Esc Not now"
+    /// The same keys, drawn inside the box under the promise.
+    static let enterKey = "Enter  Switch to SpanDAC"
+    static let escKey = "Esc  Not now"
 }
 
 /// The SPANDAC section when SpanDAC is not on this Mac (canvas copy).
