@@ -490,11 +490,11 @@ final class PlaylistsScene: Scene {
     private func refuseIfProvenanceMismatch() -> Bool {
         let bridgeSelected = makeProvider() != nil
         if railSource == .bridge, !bridgeSelected {
-            status.post(LibraryProvenance.musicAppSelectedBridgeList, error: true)
+            status.post(LibraryProvenance.musicAppSelectedBridgeList, error: true, untilStateChange: true)
             return true
         }
         if railSource == .musicApp, bridgeSelected {
-            status.post(LibraryProvenance.bridgeSelectedMusicAppList, error: true)
+            status.post(LibraryProvenance.bridgeSelectedMusicAppList, error: true, untilStateChange: true)
             return true
         }
         return false
@@ -1119,12 +1119,16 @@ final class PlaylistsScene: Scene {
                     }, unaffected: {})
                 }
                 if let handedOff {
-                    status.post(LibraryProvenance.playingOnMusicTUI(name, report: handedOff))
+                    status.post(LibraryProvenance.playingOnMusicTUI(name, report: handedOff),
+                                untilStateChange: handedOff.notice != nil)
                     return
                 }
+                // Songs skipped as unavailable, or videos skipped, will not
+                // play: the sentence saying so stays until the next change.
                 status.post(bridgePlaylistPlayMessage(name: name, queued: ids.count, skippedVideos: finalSkipped,
                                                        skippedUnavailable: skippedUnavailable,
-                                                       startAt: startAt, shuffle: shuffle))
+                                                       startAt: startAt, shuffle: shuffle),
+                            untilStateChange: skippedUnavailable > 0 || finalSkipped > 0)
             } catch let e as MusicProviderError {
                 // Bridge's own words reach the footer — the over-100 bound,
                 // the repeated-title refusal, and every other refusal alike.

@@ -820,7 +820,8 @@ func makeDiscoverLifecycleCoordinator(backend: AppleScriptBackend, status: Statu
                 status.post(discoverStartupCleanupToastText)
             case .outcome(let outcome, let title):
                 let m = discoverToastMessage(for: outcome, title: title)
-                status.post(m.text, error: m.isError)
+                // Every error outcome means the play did not start: it stays.
+                status.post(m.text, error: m.isError, untilStateChange: m.isError)
             }
         },
         scheduler: .live,

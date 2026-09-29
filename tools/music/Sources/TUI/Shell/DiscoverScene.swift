@@ -377,7 +377,7 @@ final class DiscoverScene: Scene {
         // Read here only to keep the shipped immediate refusal exactly as it
         // was; `route` checks again inside that branch, where nothing moves.
         guard api != nil || !shippedPathNeedsTheSignIn else {
-            status.post(Self.signInToPlay, error: true)
+            status.post(Self.signInToPlay, error: true, untilStateChange: true)
             return .redraw
         }
         // At the tracks level every display row is a selectable item (`rows`
@@ -391,7 +391,7 @@ final class DiscoverScene: Scene {
         // play a DIFFERENT song than the one pointed at.
         let ids = discoverPlaySlice(catalogIDs: trackRows.map { $0.id }, from: cursorIndex)
         guard !ids.isEmpty else {
-            status.post("Couldn't tell which track to play from.", error: true)
+            status.post("Couldn't tell which track to play from.", error: true, untilStateChange: true)
             return .redraw
         }
         playCatalogSlice(catalogIDs: ids, containerTitle: container.name,
@@ -417,7 +417,7 @@ final class DiscoverScene: Scene {
     func playAllFromRail(_ item: DiscoverItem) {
         // See `playFromHere` for why this door reads the selection.
         guard api != nil || !shippedPathNeedsTheSignIn else {
-            status.post(Self.signInToPlay, error: true)
+            status.post(Self.signInToPlay, error: true, untilStateChange: true)
             return
         }
         let title = item.name
@@ -578,11 +578,11 @@ final class DiscoverScene: Scene {
             try performStationPlay(item, url: item.url, expecting: expecting, origin: origin)
             status.post("Playing \(item.name)")
         } catch let error as SourceAppError {
-            status.post(error.message, error: true)
+            status.post(error.message, error: true, untilStateChange: true)
         } catch let error as ActionError {
-            status.post(error.message, error: true)
+            status.post(error.message, error: true, untilStateChange: true)
         } catch {
-            status.post("Could not play \(item.name).", error: true)
+            status.post("Could not play \(item.name).", error: true, untilStateChange: true)
         }
     }
 

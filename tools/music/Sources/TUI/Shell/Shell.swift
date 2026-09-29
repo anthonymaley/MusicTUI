@@ -74,14 +74,18 @@ func runShell() {
     let store = NowPlayingStore()
     let appQueue = AppQueueStore()
     let queueStore = QueueStore()
-    let status = StatusStore()
-    let actions = ActionRunner(status: status)
-    let volumeDelta = DeltaAccumulator()
     // Source Mode's routing seam, composed once for this process. `.tui` is the
     // surface: ruling 12.14 refuses playback-changing CLI verbs while Bridge is
     // selected, and that distinction is only meaningful if each process says
     // which one it is.
     let routing = RoutingCoordinator.live(surface: .tui)
+    // A committed output or data-source switch clears a won't-play message.
+    let status = StatusStore(switchStamp: {
+        let stamp = routing.stamp
+        return StatusSwitchStamp(epoch: stamp.epoch, dataEpoch: stamp.dataEpoch)
+    })
+    let actions = ActionRunner(status: status)
+    let volumeDelta = DeltaAccumulator()
 
     let poller = PlaybackPoller(store: store, backend: backend, appQueue: appQueue, queueStore: queueStore,
                                 routing: routing)
@@ -236,7 +240,10 @@ func runShell() {
     func switchOrExplain(_ id: SceneID) {
         // Each ensureScene refusal owns its toast (Playlists: "No playlists found.";
         // Discover: "Sign in…"), so there is no generic cross-tab fallback here.
-        if ensureScene(id) != nil { router.switchTo(id); invalidateArtOnSwitch() }
+        guard ensureScene(id) != nil else { return }
+        // A tab the person chose is a state change: a won't-play message goes.
+        if id != router.active { status.stateChanged() }
+        router.switchTo(id); invalidateArtOnSwitch()
     }
 
     terminal.enterRawMode()
@@ -330,6 +337,8 @@ func runShell() {
             lastGeneration = generation
             needsRender = true
         }
+        // The next track playback reports clears a won't-play message.
+        status.observe(track: statusTrackKey(snap))
         // Toast appearing, changing, or expiring all repaint the footer.
         let toast = status.current()
         if toast != lastToast {
@@ -389,7 +398,7 @@ func runShell() {
             switch scene.handle(key) {
             case .none, .redraw: break
             case .push(let id): router.push(id); invalidateArtOnSwitch()
-            case .pop: router.pop(); invalidateArtOnSwitch()
+            case .pop: status.stateChanged(); router.pop(); invalidateArtOnSwitch()
             case .quit: return
             }
             continue
@@ -508,8 +517,12 @@ func runShell() {
         //    Esc means an internal back (.redraw) or leaving the scene (.pop).
         switch scene.handle(key) {
         case .none, .redraw: break
+        // `.push` is a scene's own play jumping to Now: that play already
+        // cleared any won't-play message at its keypress, and what it posts
+        // now is its own news, so the push does not clear it. `.pop` is the
+        // person leaving, and does.
         case .push(let id): router.push(id); invalidateArtOnSwitch()
-        case .pop: router.pop(); invalidateArtOnSwitch()
+        case .pop: status.stateChanged(); router.pop(); invalidateArtOnSwitch()
         case .quit: return
         }
     }

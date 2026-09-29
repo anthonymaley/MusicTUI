@@ -157,6 +157,8 @@ final class BridgeLibraryPlaySceneTests: XCTestCase {
         XCTAssertTrue(settleScene(s) {
             status.current()?.text == "Playing 'In Rainbows' on SpanDAC \u{2014} 2 tracks. 1 song isn't available to SpanDAC."
         }, "got: \(String(describing: status.current()?.text))")
+        // A song that will not play: the notice stays past any short timeout.
+        XCTAssertEqual(status.current(now: Date().addingTimeInterval(3600))?.staysUntilStateChange, true)
     }
 
     func testPOnAnArtistWithTwoUnavailableSongsAppendsThePluralNotice() {
@@ -203,6 +205,8 @@ final class BridgeLibraryPlaySceneTests: XCTestCase {
         XCTAssertTrue(settleScene(s) {
             status.current()?.text == "Playing 'In Rainbows' on SpanDAC \u{2014} 3 tracks."
         }, "got: \(String(describing: status.current()?.text))")
+        // Everything plays: a transient status, which still expires.
+        XCTAssertEqual(status.current()?.staysUntilStateChange, false)
     }
 
     // MARK: - Failures
