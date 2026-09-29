@@ -372,7 +372,8 @@ final class SpanDACSwitchOutputTabTests: XCTestCase {
                                            options: .regularExpression)
                      .trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }
-        XCTAssertEqual(words, agreed, lines(s).joined(separator: "\n"))
+        XCTAssertEqual(words, agreed + ["Enter  Switch to SpanDAC       Esc  Not now"],
+                       lines(s).joined(separator: "\n"))
         XCTAssertEqual(s.footerHint, "Enter Switch to SpanDAC   Esc Not now")
         for width in [60, 40] {
             let text = prose(s, width: width)
@@ -382,6 +383,27 @@ final class SpanDACSwitchOutputTabTests: XCTestCase {
         for width in [100, 60, 40] {
             XCTAssertFalse(lines(s, width: width).joined().contains("Music.app"))
         }
+    }
+
+    /// Anthony, 2026-09-28 22:05: with the keys only in the footer it "was not
+    /// clear you had to press enter to switch". They sit inside the box.
+    func testTheSwitchKeysAreInsideTheBoxAtEveryWidth() {
+        let s = scene(data: .none, answer: MacAnswer(ready))
+        XCTAssertTrue(tick(s) { s.isShowingSwitchScreen })
+        for width in [100, 60] {
+            let all = lines(s, width: width)
+            guard let top = all.firstIndex(where: { $0.contains("\u{256D}") }),
+                  let bottom = all.lastIndex(where: { $0.contains("\u{2570}") }) else {
+                return XCTFail("no box at \(width):\n" + all.joined(separator: "\n"))
+            }
+            let inside = all[top...bottom].joined(separator: "\n")
+            XCTAssertTrue(inside.contains("Enter  Switch to SpanDAC"), "\(width):\n\(inside)")
+            XCTAssertTrue(inside.contains("Esc  Not now"), "\(width):\n\(inside)")
+        }
+        // Narrow terminals draw no box; the keys still sit with the question.
+        let narrow = lines(s, width: 40).joined(separator: "\n")
+        XCTAssertTrue(narrow.contains("Enter  Switch to SpanDAC"), narrow)
+        XCTAssertTrue(narrow.contains("Esc  Not now"), narrow)
     }
 
     // MARK: SpanDAC on this Mac, installed and not switched
