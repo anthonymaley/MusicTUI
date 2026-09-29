@@ -388,6 +388,29 @@ final class DiscoverDataRouteTests: XCTestCase {
         XCTAssertEqual(rig.sent("slice.containerTracks").count, 0)
     }
 
+    /// The same inside "View all": the rail level is not a track list either,
+    /// so Enter on its last song plays exactly that song, stamped by the
+    /// rails' read (Codex review 50's suggested walk).
+    func testEnterOnASongInsideViewAllPlaysJustThatSong() {
+        let rig = SceneDataRig(output: .networkSource(SceneDataRig.ipad), accepted: true)
+        let items = (1...5).map { #"{"id":"s\#($0)","kind":"song","name":"Song \#($0)","subtitle":"A"}"# }
+        rig.replies["slice.recommendations"] = """
+        {"ok":true,"op":"slice.recommendations","rails":[{"title":"Songs For You","items":[\(items.joined(separator: ","))]}]}
+        """
+        let s = scene(rig)
+        loadRails(s)
+
+        _ = s.scene.handle(.end)     // four songs, then "View all"
+        _ = s.scene.handle(.enter)   // into the rail
+        _ = s.scene.handle(.end)     // its fifth song
+        XCTAssertEqual(s.scene.footerHint, "\u{2191}\u{2193} Move  Enter Play  \u{2190} Back")
+        _ = s.scene.handle(.enter)
+        drain(s.actions)
+
+        XCTAssertEqual(rig.sent("slice.queue").first?.body["ids"] as? [String], ["s5"])
+        XCTAssertEqual(rig.sent("slice.containerTracks").count, 0)
+    }
+
     // MARK: - Stations
 
     /// A Discover station row from SpanDAC carries no URL. On the MusicTUI
