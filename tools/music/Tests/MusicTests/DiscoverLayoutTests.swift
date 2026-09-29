@@ -117,8 +117,18 @@ final class DiscoverLayoutTests: XCTestCase {
     /// RAIL row and a track row is not one — the asymmetry is real, so the
     /// footer keeps advertising exactly one of the two keys here.
     func testTrackRowFooterMatchesTheAgreedGrammar() {
-        XCTAssertEqual(discoverFooterHint(.item(item(.song)), canGoBack: true, canRefresh: true),
+        XCTAssertEqual(discoverFooterHint(.item(item(.song)), canGoBack: true, canRefresh: false, inTrackList: true),
                        "\u{2191}\u{2193} Move  Enter Play from here  \u{2190} Back")
+    }
+
+    /// A song shown directly on a rail has no container to play on from, so
+    /// Enter plays that one song and the footer says so. At the top level `r`
+    /// still refreshes, so it is advertised there too.
+    func testRailSongFooterSaysPlay() {
+        XCTAssertEqual(discoverFooterHint(.item(item(.song)), canGoBack: false, canRefresh: true),
+                       "\u{2191}\u{2193} Move  Enter Play  r Refresh")
+        XCTAssertEqual(discoverFooterHint(.item(item(.song)), canGoBack: true, canRefresh: false),
+                       "\u{2191}\u{2193} Move  Enter Play  \u{2190} Back")
     }
 
     func testFooterShowsRefreshOnlyWhenCanRefreshIsTrue() {

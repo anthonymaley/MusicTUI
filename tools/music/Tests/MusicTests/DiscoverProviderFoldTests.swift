@@ -226,6 +226,26 @@ final class DiscoverProviderFoldTests: XCTestCase {
         XCTAssertTrue(r.wire.requests.isEmpty)
     }
 
+    /// MusicTUI's own data on the MusicTUI output: Enter on a song shown
+    /// directly on a rail builds the one-song container and plays it. Before
+    /// 2026-09-29 it did nothing.
+    func testMusicAppEnterOnARailSongPlaysJustThatSong() {
+        let song = DiscoverItem(id: "777", name: "Rail Song", subtitle: "Rail Artist", url: nil, artworkURL: nil,
+                                detail: .song)
+        let feed = Feed(rails: [DiscoverRail(id: "r1", title: "Songs for You", items: [song],
+                                             isRecentlyPlayed: false, resourceTypes: ["songs"])],
+                        tracks: [])
+        let r = rig(mode: .musicApp, feed: feed)
+        loadRails(r)
+
+        _ = r.scene.handle(.enter)
+        drain(r.actions)
+
+        XCTAssertEqual(r.created.created, [["777"]])
+        XCTAssertEqual(r.feed?.trackItems, [], "one song needs no container read")
+        XCTAssertTrue(r.wire.requests.isEmpty)
+    }
+
     func testMusicAppPlayAllReadsTheFeedAndBuildsTheContainer() {
         let r = rig(mode: .musicApp, feed: Self.webFeed())
         r.scene.playAllFromRail(Self.playlistRow)
