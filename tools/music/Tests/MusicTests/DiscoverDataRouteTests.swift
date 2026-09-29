@@ -337,6 +337,57 @@ final class DiscoverDataRouteTests: XCTestCase {
         XCTAssertEqual(rig.sent("slice.queue").first?.body["ids"] as? [String], ["901", "902"])
     }
 
+    // MARK: - A song shown directly on a rail
+
+    /// Heterogeneous rails show songs at the top level. Enter on one plays
+    /// exactly that song; before 2026-09-29 it did nothing on either data
+    /// source, because it reached the track-list-only "play from here".
+    private static let songRail = """
+    {"ok":true,"op":"slice.recommendations","rails":[{"title":"Songs For You","items":[
+      {"id":"777","kind":"song","name":"Rail Song","subtitle":"Rail Artist"},
+      {"id":"pl.u-abc","kind":"playlist","name":"Boom Bap","subtitle":"Apple Music Hip-Hop"}]}]}
+    """
+
+    /// SpanDAC data on the MusicTUI output: SpanDAC on this Mac adds the song,
+    /// and exactly that song plays. No container, nothing queued on a SpanDAC.
+    func testEnterOnARailSongWithSpanDACDataAddsAndPlaysIt() {
+        let rig = SceneDataRig(output: .musicApp, accepted: true)
+        rig.replies["slice.recommendations"] = Self.songRail
+        let lib = FakeAppleLibrary()
+        lib.catalogue["777"] = ("Rail Song", "Rail Artist", "Some Album")
+        let mac = FakeSpanDACMac(library: lib)
+        let s = scene(rig)
+        s.scene.cataloguePlayer = SpanDACCataloguePlayer(seams: lib.seams)
+        s.scene.libraryOps = mac.client
+        s.log.mac = mac
+        loadRails(s)
+
+        _ = s.scene.handle(.enter)
+        drain(s.actions)
+
+        XCTAssertEqual(s.status.current()?.text, "Playing Rail Song")
+        XCTAssertEqual(mac.ops("slice.libraryAdd").first?["ids"] as? [String], ["777"])
+        XCTAssertEqual(mac.ops("slice.libraryEnsurePlaylist").count, 0, "one song is not a container")
+        XCTAssertEqual(rig.sent("slice.containerTracks").count, 0)
+        XCTAssertEqual(rig.sent("slice.queue").count, 0)
+        XCTAssertEqual(rig.outputBuilt, [])
+    }
+
+    /// On a SpanDAC output, the one song is queued on the OUTPUT, alone.
+    func testEnterOnARailSongOnASpanDACOutputQueuesJustThatSong() {
+        let rig = SceneDataRig(output: .networkSource(SceneDataRig.ipad), accepted: true)
+        rig.replies["slice.recommendations"] = Self.songRail
+        let s = scene(rig)
+        loadRails(s)
+
+        _ = s.scene.handle(.enter)
+        drain(s.actions)
+
+        XCTAssertEqual(rig.sent("slice.queue").map(\.tag), ["output:\(SceneDataRig.ipad)"])
+        XCTAssertEqual(rig.sent("slice.queue").first?.body["ids"] as? [String], ["777"])
+        XCTAssertEqual(rig.sent("slice.containerTracks").count, 0)
+    }
+
     // MARK: - Stations
 
     /// A Discover station row from SpanDAC carries no URL. On the MusicTUI

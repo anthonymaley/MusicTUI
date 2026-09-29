@@ -11,6 +11,8 @@ import Foundation
 //   album, playlist (rail row) -> drills in to a track list. Does NOT play.
 //   track (inside a drill-in)  -> plays from that row to the container's end.
 //                                 `p` is still a no-op here (it acts on rail rows).
+//   song (directly on a rail)  -> plays that one song. There is no container
+//                                 to play on from (rails are heterogeneous).
 //
 // Catalog albums and playlists cannot be played without first adding them to the
 // library: music:// does nothing on a non-station URL, and the REST API has no
@@ -249,7 +251,8 @@ final class DiscoverScene: Scene {
     }
 
     var footerHint: String {
-        discoverFooterHint(selection, canGoBack: canGoBack, canRefresh: canRefresh)
+        discoverFooterHint(selection, canGoBack: canGoBack, canRefresh: canRefresh,
+                           inTrackList: { if case .tracks = current.level { return true }; return false }())
     }
 
     // MARK: - Input
@@ -327,10 +330,12 @@ final class DiscoverScene: Scene {
                 drillIn(item)
                 return .redraw
             case .song:
-                // Play from here: the container sliced from this row to its
-                // end. `p` on this same row is still a no-op (it plays a
-                // whole RAIL row, and a track row is not one).
-                return playFromHere()
+                // Inside a drill-in: play from here, the container sliced from
+                // this row to its end. On a rail: that one song, since a rail
+                // is not a container. `p` is a no-op on both (it plays a whole
+                // album/playlist RAIL row, and a song is not one).
+                if case .tracks = current.level { return playFromHere() }
+                return playRailSong(item)
             }
         }
     }
@@ -397,6 +402,20 @@ final class DiscoverScene: Scene {
         playCatalogSlice(catalogIDs: ids, containerTitle: container.name,
                          trackName: trackRows[cursorIndex].name, trackArtist: trackRows[cursorIndex].subtitle,
                          read: tracksRead)
+        return .push(.nowPlaying)
+    }
+
+    /// Enter on a song shown directly on a rail: exactly that song, through
+    /// the same single-track play as a one-row slice. The rails' own read
+    /// stamps it, so a play whose data or output moved since plays nothing.
+    private func playRailSong(_ item: DiscoverItem) -> SceneAction {
+        // See `playFromHere` for why this door reads the selection.
+        guard api != nil || !shippedPathNeedsTheSignIn else {
+            status.post(Self.signInToPlay, error: true, untilStateChange: true)
+            return .redraw
+        }
+        playCatalogSlice(catalogIDs: [item.id], containerTitle: item.name,
+                         trackName: item.name, trackArtist: item.subtitle, read: railsRead)
         return .push(.nowPlaying)
     }
 

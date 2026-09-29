@@ -42,7 +42,7 @@ func discoverLeftWidth(frameWidth: Int) -> Int {
 /// actually do with the key, so `r Refresh` is appended solely when
 /// `canRefresh` is true.
 func discoverFooterHint(_ selection: DiscoverSelection?, canGoBack: Bool, canRefresh: Bool,
-                        sourceApp: Bool = false) -> String {
+                        sourceApp: Bool = false, inTrackList: Bool = false) -> String {
     let back = canGoBack ? "  \u{2190} Back" : ""
     let refresh = canRefresh ? "  r Refresh" : ""
     switch selection {
@@ -52,6 +52,10 @@ func discoverFooterHint(_ selection: DiscoverSelection?, canGoBack: Bool, canRef
             return "\u{2191}\u{2193} Move  Enter Listen" + refresh + back
         case .album, .playlist:
             return "\u{2191}\u{2193} Move  Enter Browse  p Play" + refresh + back
+        case .song where !inTrackList:
+            // A song shown directly on a rail: Enter plays that one song.
+            // `p` is absent for the same reason as below.
+            return "\u{2191}\u{2193} Move  Enter Play" + refresh + back
         case .song:
             // Enter plays from this row to the container's end. `p` is
             // deliberately absent: it acts on a rail row, and a track row is
