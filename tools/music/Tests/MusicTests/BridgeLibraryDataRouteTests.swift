@@ -262,6 +262,8 @@ final class BridgeLibraryDataRouteTests: XCTestCase {
         let expected = LibraryProvenance.playingOnMusicTUI("Chill") + " 1 song isn't available to SpanDAC."
         XCTAssertTrue(settleScene(s) { r.status.current()?.text == expected },
                       "got: \(String(describing: r.status.current()?.text))")
+        XCTAssertEqual(r.status.current(now: Date().addingTimeInterval(3600))?.staysUntilStateChange, true,
+                       "a skipped song will not play: the notice stays")
         XCTAssertTrue(r.data.sent("slice.queue").isEmpty)
         XCTAssertEqual(r.built.outputModes, [])
     }

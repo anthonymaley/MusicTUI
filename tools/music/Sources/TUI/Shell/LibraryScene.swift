@@ -1690,7 +1690,8 @@ final class LibraryScene: Scene {
                         // Pre-release albums surface every planned track but only stream some;
                         // say so rather than silently playing a partial album.
                         if res.matched > ordered.count {
-                            status.post("Playing \(ordered.count) of \(res.matched) — the rest aren't available yet.")
+                            status.post("Playing \(ordered.count) of \(res.matched) — the rest aren't available yet.",
+                                        untilStateChange: true)
                         }
                     },
                     source: { _ in
@@ -1855,7 +1856,8 @@ final class LibraryScene: Scene {
                         try require(playQueueTrack(backend: backend, playlist: "Library", position: ordered[0].index),
                                     "Couldn't play '\(name)'.")
                         if res.matched > ordered.count {
-                            status.post("Playing \(ordered.count) of \(res.matched) — the rest aren't available yet.")
+                            status.post("Playing \(ordered.count) of \(res.matched) — the rest aren't available yet.",
+                                        untilStateChange: true)
                         }
                     },
                     source: { _ in
@@ -1921,13 +1923,14 @@ final class LibraryScene: Scene {
                         unaffected: {})
                 }
                 if let handedOff {
-                    status.post(LibraryProvenance.playingOnMusicTUI(title, report: handedOff))
+                    status.post(LibraryProvenance.playingOnMusicTUI(title, report: handedOff),
+                                untilStateChange: handedOff.notice != nil)
                     return
                 }
                 let queuedCount = ids.count - skippedUnavailable
                 var footer = "Playing '\(title)' on SpanDAC \u{2014} \(queuedCount) tracks."
                 if skippedUnavailable > 0 { footer += " " + bridgeUnavailableSongsNotice(skippedUnavailable) }
-                status.post(footer)
+                status.post(footer, untilStateChange: skippedUnavailable > 0)
             } catch let error as MusicProviderError {
                 throw ActionError(message: error.errorDescription ?? "Couldn't play '\(title)' on SpanDAC.")
             } catch let error as SourceAppError {
@@ -1982,13 +1985,14 @@ final class LibraryScene: Scene {
                         unaffected: {})
                 }
                 if let handedOff {
-                    status.post(LibraryProvenance.playingOnMusicTUI(name, report: handedOff))
+                    status.post(LibraryProvenance.playingOnMusicTUI(name, report: handedOff),
+                                untilStateChange: handedOff.notice != nil)
                     return
                 }
                 let queuedCount = ids.count - skippedUnavailable
                 var footer = "Playing '\(name)' on SpanDAC \u{2014} \(queuedCount) tracks."
                 if skippedUnavailable > 0 { footer += " " + bridgeUnavailableSongsNotice(skippedUnavailable) }
-                status.post(footer)
+                status.post(footer, untilStateChange: skippedUnavailable > 0)
             } catch let error as MusicProviderError {
                 throw ActionError(message: error.errorDescription ?? "Couldn't play '\(name)' on SpanDAC.")
             } catch let error as SourceAppError {

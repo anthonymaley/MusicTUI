@@ -724,7 +724,8 @@ final class SpeakersScene: Scene {
                 self.status.post(backToMusicTUIData)
             case .outputStillBlocked(let why):
                 self.publishStopProblem(why)
-                self.status.post(why, error: true)
+                // The output did not switch: it stays.
+                self.status.post(why, error: true, untilStateChange: true)
             }
         }
     }

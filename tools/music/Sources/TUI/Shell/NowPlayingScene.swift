@@ -755,7 +755,9 @@ final class NowPlayingScene: Scene {
     /// MusicTUI output keeps these keys as shipped.
     private func askMatrix(_ action: MusicTUIAction) -> Bool {
         if case .refused(let why) = routeAction(action, selection: routing.selection, from: .tui).sound {
-            status.post(why, error: true)
+            // A refused jump or Genius play means nothing started: it stays.
+            // A refused mode toggle or favorite is a transient status.
+            status.post(why, error: true, untilStateChange: action == .queueJump || action == .genius)
             return false
         }
         return true
