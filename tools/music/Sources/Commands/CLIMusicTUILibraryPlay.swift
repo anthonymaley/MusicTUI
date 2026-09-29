@@ -7,9 +7,12 @@
 // `music play --playlist/--album/--song/--artist` resolves its name against
 // SpanDAC's library on this Mac, and `music play N` of a row a SpanDAC library
 // search produced carries that row here. `PersistentIDCLILibraryPlay` plays
-// them by the exact persistent ID SpanDAC reported for each song (step 7), or
-// refuses the whole request with `pickASpanDACOutput`: nothing falls back to
-// a title search of Apple's Music app library.
+// them by the exact persistent ID SpanDAC reported for each song (step 7). A
+// song SpanDAC sends with no identity is no longer available and is skipped
+// with a notice (ruling, 2026-09-24); an identity that is present but does
+// not resolve to exactly one matching track refuses the whole request with
+// `pickASpanDACOutput`. Nothing falls back to a title search of Apple's Music
+// app library.
 import Foundation
 
 /// One request to play SpanDAC library rows on the MusicTUI output.
@@ -100,7 +103,13 @@ struct PersistentIDCLILibraryPlay: CLIMusicTUILibraryPlaying {
 
     func play(_ request: CLIMusicTUILibraryPlayRequest, env: CLIBridgeEnv) throws {
         let refused = ActionError(message: pickASpanDACOutput)
-        let verified = try verifyHandoffTracks(rows: request.rows, title: request.label, library: library,
+        // The TUI's own order: the self-check, then the unavailable songs
+        // (no identity) are skipped and counted, then every remaining one is
+        // verified. The container always plays from its first song.
+        if let said = selfCheck.refusal() { throw ActionError(message: said) }
+        let available = try availableHandoffRows(request.rows, startAt: 1, shuffle: request.shuffle,
+                                                 title: request.label)
+        let verified = try verifyHandoffTracks(rows: available.rows, title: request.label, library: library,
                                                selfCheck: selfCheck)
         let indices = verified.compactMap(\.libraryIndex)
         guard indices.count == verified.count else { throw refused }
@@ -129,6 +138,11 @@ struct PersistentIDCLILibraryPlay: CLIMusicTUILibraryPlaying {
         let failure: BoundedAlbumOutcome
         switch outcome {
         case .playing:
+            // The skip notice, on stdout beside the now line; on stderr
+            // under --json, so the JSON stays one document.
+            if let notice = available.report.notice {
+                if request.json { env.err(notice) } else { env.out(notice) }
+            }
             afterPlay(request.json)
             return
         case .buildFailed(let removed):   failure = .buildFailed(containerRemoved: removed)

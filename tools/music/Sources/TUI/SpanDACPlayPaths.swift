@@ -11,7 +11,9 @@ import Foundation
 /// MusicTUI output by resolving each track to the exact track already owned,
 /// never by a title search.
 protocol MusicTUIHandoff {
-    func playLibrary(rows: [MusicRow], startAt: Int, shuffle: Bool, title: String) throws
+    /// Plays the rows, or refuses. The report says what was left out.
+    @discardableResult
+    func playLibrary(rows: [MusicRow], startAt: Int, shuffle: Bool, title: String) throws -> HandoffPlayReport
 }
 
 /// Refuses every call. The seeded default until a later step wires the real
@@ -20,7 +22,8 @@ struct RefusingHandoff: MusicTUIHandoff {
     struct Refused: Error, LocalizedError {
         var errorDescription: String? { pickASpanDACOutput }
     }
-    func playLibrary(rows: [MusicRow], startAt: Int, shuffle: Bool, title: String) throws {
+    @discardableResult
+    func playLibrary(rows: [MusicRow], startAt: Int, shuffle: Bool, title: String) throws -> HandoffPlayReport {
         throw Refused()
     }
 }

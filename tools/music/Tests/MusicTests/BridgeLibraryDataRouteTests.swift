@@ -72,10 +72,14 @@ final class BridgeLibraryDataRouteTests: XCTestCase {
         private let lock = NSLock()
         private var recorded: [Call] = []
         var calls: [Call] { lock.lock(); defer { lock.unlock() }; return recorded }
-        func playLibrary(rows: [MusicRow], startAt: Int, shuffle: Bool, title: String) throws {
+        /// What every play reports back (nothing skipped unless a test says so).
+        var report = HandoffPlayReport()
+        func playLibrary(rows: [MusicRow], startAt: Int, shuffle: Bool, title: String) throws -> HandoffPlayReport {
             lock.lock()
             recorded.append(Call(ids: rows.map(\.id), startAt: startAt, shuffle: shuffle, title: title))
+            let report = self.report
             lock.unlock()
+            return report
         }
     }
 
@@ -233,6 +237,32 @@ final class BridgeLibraryDataRouteTests: XCTestCase {
         XCTAssertEqual(r.output.requestCount, 0)
         XCTAssertEqual(r.built.outputModes, [], "the MusicTUI output built a SpanDAC output client")
         XCTAssertEqual(r.counter.callCount, 0, "the scene itself reached AppleScript (the hand-off's to do)")
+    }
+
+    /// A SpanDAC playlist on the MusicTUI output whose hand-off skipped a song
+    /// that is no longer available: the footer says it is playing and how
+    /// many were skipped (ruling, 2026-09-24). The live shape, at the scene.
+    func testAPlaylistHandOffThatSkippedASongSaysSoOnTheFooter() {
+        let r = rig(output: .musicApp, data: .accepted)
+        r.data.script("slice.libraryPlaylists", [playlistPage])
+        r.data.script("slice.libraryPlaylistTracks", [playlistTracks])
+        r.handoff.report = HandoffPlayReport(skippedUnavailable: 1)
+        let routing = r.routing
+        let s = PlaylistsScene(backend: r.counter.backend, routing: routing, playlists: [], sources: .empty,
+                               appQueue: AppQueueStore(), status: r.status, actions: ActionRunner(status: r.status),
+                               metaCache: temporaryPlaylistMetaCache().cache,
+                               makeProvider: { spanDACDataProvider(routing: routing) },
+                               handoff: r.handoff, warmUpSleep: { _ in },
+                               screenWidth: { 120 })
+        XCTAssertTrue(settleScene(s) { s.railNamesForTest == ["Chill"] })
+        _ = s.handle(.char("p"))
+        XCTAssertTrue(wait { !r.handoff.calls.isEmpty }, "the playlist never reached the hand-off")
+        XCTAssertEqual(r.handoff.calls.first?.ids, ["p1", "p2"])
+        let expected = LibraryProvenance.playingOnMusicTUI("Chill") + " 1 song isn't available to SpanDAC."
+        XCTAssertTrue(settleScene(s) { r.status.current()?.text == expected },
+                      "got: \(String(describing: r.status.current()?.text))")
+        XCTAssertTrue(r.data.sent("slice.queue").isEmpty)
+        XCTAssertEqual(r.built.outputModes, [])
     }
 
     /// An owned song on the MusicTUI output with SpanDAC data and no DAC on

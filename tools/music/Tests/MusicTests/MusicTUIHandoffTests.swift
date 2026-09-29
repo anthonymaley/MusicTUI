@@ -99,14 +99,98 @@ final class MusicTUIHandoffTests: XCTestCase {
         XCTAssertEqual(q.tracks.map(\.artist), ["Massive Attack", "Massive Attack", "Massive Attack"])
     }
 
-    func testAMissingAliasRefusesTheWholePlay() {
-        let library = FakePersistentIDLibrary(mezzanineHits())
+    // MARK: - Unavailable songs are skipped with a notice (ruling, 2026-09-24)
+
+    /// A playlist of seven songs whose last, SpanDAC gives no identity: Apple's
+    /// Music player lists it as no longer available. The live shape.
+    private let gardenTitles = ["The Garden", "Pastoral", "Weeping", "Knowing", "Soundscape", "Finale", "Eleven"]
+    private func gardenRows(missing: Set<Int> = [6]) -> [MusicRow] {
+        gardenTitles.enumerated().map { i, t in
+            song("p.\(i + 1)", t, missing.contains(i) ? nil : "\(i + 1)", artist: "Bluecoats", album: nil)
+        }
+    }
+    private func gardenHex(_ i: Int) -> String { persistentIDHex(fromAlias: "\(i + 1)")! }
+    private func gardenHits() -> [String: [HandoffTrackHit]] {
+        var hits: [String: [HandoffTrackHit]] = [:]
+        for (i, t) in gardenTitles.enumerated().dropLast() {
+            hits[gardenHex(i)] = [inLibrary(gardenHex(i), t, db: "\(700 + i)", at: 300 + i)]
+        }
+        return hits
+    }
+
+    func testASongWithNoIdentityIsSkippedAndTheRestPlayInOrderWithANotice() {
+        let library = FakePersistentIDLibrary(gardenHits())
         let player = RecordingHandoffQueuePlayer()
-        let rows = [song("l.1", "Angel", a1), song("l.2", "Risingson", nil), song("l.3", "Teardrop", a3)]
-        let r = tripwired { try handoff(library, player).playLibrary(rows: rows, startAt: 1, shuffle: false, title: "Mezzanine") }
-        XCTAssertEqual(message(r.error), pickASpanDACOutput)
+        var report: HandoffPlayReport?
+        let r = tripwired {
+            report = try handoff(library, player).playLibrary(rows: gardenRows(), startAt: 1, shuffle: false,
+                                                               title: "The Garden of Love")
+        }
+        XCTAssertNil(r.error, "one unavailable song does not refuse the playlist")
         XCTAssertEqual(r.calls, [])
+        XCTAssertEqual(library.reads, [(0..<6).map(gardenHex)], "only the six with an identity are looked up")
+        XCTAssertEqual(player.queues.count, 1)
+        XCTAssertEqual(player.queues.first?.tracks.map { persistentIDOfQueueEntry($0.index) }, (0..<6).map(gardenHex),
+                       "the six play, in the playlist's order")
+        XCTAssertEqual(player.queues.first?.currentIndex, 1)
+        XCTAssertEqual(report?.skippedUnavailable, 1)
+        XCTAssertEqual(report?.notice, "1 song isn't available to SpanDAC.")
+    }
+
+    func testAChosenSongWithNoIdentityStartsAtTheNextPlayableSong() {
+        let library = FakePersistentIDLibrary(gardenHits())
+        let player = RecordingHandoffQueuePlayer()
+        // The third song has no identity (and neither has the seventh); Enter on it.
+        let rows = gardenRows(missing: [2, 6])
+        var report: HandoffPlayReport?
+        let r = tripwired {
+            report = try handoff(library, player).playLibrary(rows: rows, startAt: 3, shuffle: false,
+                                                               title: "The Garden of Love")
+        }
+        XCTAssertNil(r.error)
+        XCTAssertEqual(player.queues.first?.tracks.map(\.name), ["The Garden", "Pastoral", "Knowing", "Soundscape", "Finale"])
+        XCTAssertEqual(player.queues.first?.currentIndex, 3, "starts at the next playable song, Knowing")
+        XCTAssertEqual(report?.skippedUnavailable, 2)
+        XCTAssertEqual(report?.notice, "'Weeping' isn't available, so 'Knowing' plays first. 2 songs aren't available to SpanDAC.")
+    }
+
+    func testNoSongWithAnIdentityRefusesAndReadsNothing() {
+        let library = FakePersistentIDLibrary(gardenHits())
+        let player = RecordingHandoffQueuePlayer()
+        let r = tripwired {
+            try handoff(library, player).playLibrary(rows: gardenRows(missing: Set(0..<7)), startAt: 1, shuffle: false,
+                                                     title: "The Garden of Love")
+        }
+        XCTAssertEqual(message(r.error), "No song in 'The Garden of Love' is available to play.")
+        let one = tripwired {
+            try handoff(library, player).playLibrary(rows: [song("p.7", "Eleven", nil)], startAt: 1, shuffle: false,
+                                                     title: "Eleven")
+        }
+        XCTAssertEqual(message(one.error), "'Eleven' isn't available to play.")
+        // Picked last, with nothing playable after it: refused by name.
+        let last = tripwired {
+            try handoff(library, player).playLibrary(rows: gardenRows(), startAt: 7, shuffle: false,
+                                                     title: "The Garden of Love")
+        }
+        XCTAssertEqual(message(last.error), "'Eleven' isn't available to play.")
+        XCTAssertEqual(r.calls + one.calls + last.calls, [])
         XCTAssertEqual(library.reads, [], "refused before any read")
+        XCTAssertEqual(player.queues, [])
+    }
+
+    /// Availability is not identity: a song whose identity IS present but
+    /// resolves to no track, two tracks or another title still refuses the
+    /// whole play, even beside a skipped one.
+    func testAPresentButWrongIdentityStillRefusesTheWholePlay() {
+        var hits = gardenHits()
+        hits[gardenHex(1)] = [inLibrary(gardenHex(1), "Pastoral (Live)", db: "701", at: 301)]
+        let library = FakePersistentIDLibrary(hits)
+        let player = RecordingHandoffQueuePlayer()
+        let r = tripwired {
+            try handoff(library, player).playLibrary(rows: gardenRows(), startAt: 1, shuffle: false,
+                                                     title: "The Garden of Love")
+        }
+        XCTAssertEqual(message(r.error), pickASpanDACOutput)
         XCTAssertEqual(player.queues, [], "no partial queue")
     }
 
@@ -397,6 +481,46 @@ final class MusicTUIHandoffTests: XCTestCase {
         XCTAssertTrue(runner.scripts.last?.hasPrefix("delete (every user playlist whose name is") == true,
                       "the container is rolled back: \(runner.scripts.last ?? "none")")
         XCTAssertEqual(h.io.out.last, albumOutcomeMessage(.buildFailed(containerRemoved: true), title: "Mezzanine"))
+    }
+
+    /// `music play --album` of the live shape: seven songs, the last with no
+    /// identity. The six play in order through the bounded container, and the
+    /// command says one was skipped.
+    func testCLISkipsASongWithNoIdentityAndSaysSo() throws {
+        let items = gardenTitles.enumerated().map { i, t -> String in
+            let alias = i == 6 ? "null" : "\"\(i + 1)\""
+            return "{\"id\":\"p.\(i + 1)\",\"title\":\"\(t)\",\"artist\":\"Bluecoats\",\"album\":\"The Garden of Love\",\"kind\":\"song\",\"alias\":\(alias)}"
+        }
+        let tracks = "{\"ok\":true,\"op\":\"slice.libraryAlbumTracks\",\"generation\":1,\"items\":["
+            + items.joined(separator: ",") + "]}"
+        let h = CLIDataRouteHarness(
+            output: .musicApp, data: .accepted,
+            dataReplies: ["slice.status": [CLIHandoffReplies.readyWithoutADAC],
+                          "slice.libraryAlbums": [CLIBridgeLibraryReplies.page(op: "slice.libraryAlbums", kind: "album",
+                                                                               [("a.1", "The Garden of Love", "Bluecoats", "")])],
+                          "slice.libraryAlbumTracks": [tracks]],
+            recordSeams: false)
+        let library = FakePersistentIDLibrary(gardenHits())
+        let runner = CLIContainerRunner(ids: (0..<6).map(gardenHex))
+        var shown: [Bool] = []
+        var env = h.env
+        env.libraryPlay = PersistentIDCLILibraryPlay(library: library, run: runner.run, launch: { _, _ in true },
+                                                     selfCheck: LibraryAliasSelfCheck(),
+                                                     afterPlay: { shown.append($0) })
+
+        let r = tripwired {
+            try runPlay(args: [], playlist: nil, album: "The Garden of Love", song: nil, artist: nil, json: false,
+                        env: env, musicAppDeps: PlayMusicAppDeps(readSongs: { XCTFail("shipped body"); return [] },
+                                                                 resolveIndexed: { _, _ in XCTFail("shipped body") }))
+        }
+        XCTAssertNil(r.error)
+        XCTAssertEqual(r.calls, [])
+        XCTAssertEqual(library.reads, [(0..<6).map(gardenHex)])
+        XCTAssertEqual(runner.builds, [[300, 301, 302, 303, 304, 305]], "the six, in order")
+        XCTAssertEqual(runner.plays.count, 1)
+        XCTAssertEqual(shown, [false])
+        XCTAssertTrue(h.io.out.contains("1 song isn't available to SpanDAC."), "out: \(h.io.out)")
+        XCTAssertEqual(h.outputClientsBuilt, 0)
     }
 
     // MARK: - Further pins

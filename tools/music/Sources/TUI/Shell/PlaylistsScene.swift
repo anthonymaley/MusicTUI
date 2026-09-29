@@ -1104,21 +1104,21 @@ final class PlaylistsScene: Scene {
 
                 // Addendum U: set only on the attempt that actually succeeds.
                 var skippedUnavailable = 0
-                var handedOff = false
+                var handedOff: HandoffPlayReport?
                 _ = try retryingWhileWarming(budget: budget, onWarming: onWarming, sleep: warmUpSleep) {
                     // A SpanDAC output plays the ids on THAT output's client;
                     // the MusicTUI output hands the rows to the hand-off.
                     try routing.perform(.playlistPlay, expecting: stamp, origin: .spandacLibrary, musicApp: { path in
                         guard path == .handoff else { throw ActionError(message: pickASpanDACOutput) }
-                        try playThroughHandoff(handoff, rows: finalRows, startAt: startAt, shuffle: shuffle, title: name)
-                        handedOff = true
+                        handedOff = try playThroughHandoff(handoff, rows: finalRows, startAt: startAt,
+                                                           shuffle: shuffle, title: name)
                     }, source: { client in
                         skippedUnavailable = try spanDACOutputPlayer(client).playReportingSkips(
                             ids: ids, startRequired: startRequired).skippedUnavailable
                     }, unaffected: {})
                 }
-                if handedOff {
-                    status.post(LibraryProvenance.playingOnMusicTUI(name))
+                if let handedOff {
+                    status.post(LibraryProvenance.playingOnMusicTUI(name, report: handedOff))
                     return
                 }
                 status.post(bridgePlaylistPlayMessage(name: name, queued: ids.count, skippedVideos: finalSkipped,
