@@ -1772,7 +1772,9 @@ final class LibraryScene: Scene {
                                 // record is gone, which can only lose what the
                                 // hand-off needs, so it can only refuse.
                                 let row = songRow ?? MusicRow(id: id, title: title, artist: artist, album: nil, kind: .song)
-                                try playThroughHandoff(handoff, rows: [row], startAt: 1, shuffle: shuffle, title: title)
+                                // One song, picked: unavailable refuses by name.
+                                try playThroughHandoff(handoff, rows: [row], startAt: 1, startRequired: true,
+                                                       shuffle: shuffle, title: title)
                             },
                             source: { client in _ = try spanDACOutputPlayer(client).play(ids: [id]) },
                             unaffected: {})
@@ -1909,6 +1911,7 @@ final class LibraryScene: Scene {
                         musicApp: { path in
                             guard path == .handoff else { throw ActionError(message: pickASpanDACOutput) }
                             handedOff = try playThroughHandoff(handoff, rows: trackRows, startAt: startAt,
+                                                               startRequired: startRequired,
                                                                shuffle: shuffle, title: title)
                         },
                         source: { client in
@@ -1969,6 +1972,7 @@ final class LibraryScene: Scene {
                         musicApp: { path in
                             guard path == .handoff else { throw ActionError(message: pickASpanDACOutput) }
                             handedOff = try playThroughHandoff(handoff, rows: songRows, startAt: 1,
+                                                               startRequired: false,
                                                                shuffle: shuffle, title: name)
                         },
                         source: { client in

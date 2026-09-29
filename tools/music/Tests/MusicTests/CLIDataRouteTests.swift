@@ -305,7 +305,8 @@ final class CLIDataRouteTests: XCTestCase {
         XCTAssertEqual(h.library.requests, [CLIMusicTUILibraryPlayRequest(
             kind: .song, label: "Angel",
             rows: [MusicRow(id: "l.1", title: "Angel", artist: "Massive Attack", album: "Mezzanine", kind: .song)],
-            startAt: 1, shuffle: false, resultNumber: 1, json: false)])
+            // Picked: an unavailable song refuses by name, as on a SpanDAC output.
+            startAt: 1, shuffle: false, resultNumber: 1, json: false, startRequired: true)])
 
         r = play(h, ["2"])
         XCTAssertNil(r.error); XCTAssertEqual(r.calls, [])

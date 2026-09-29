@@ -95,10 +95,11 @@ func spanDACOutputPlayer(_ client: SourceAppClient) -> MusicDataProvider {
 /// `ActionRunner` shows an `ActionError`'s message and reduces any other error
 /// to "Play failed.", which would hide `pickASpanDACOutput`.
 @discardableResult
-func playThroughHandoff(_ handoff: MusicTUIHandoff, rows: [MusicRow], startAt: Int,
+func playThroughHandoff(_ handoff: MusicTUIHandoff, rows: [MusicRow], startAt: Int, startRequired: Bool,
                         shuffle: Bool, title: String) throws -> HandoffPlayReport {
     do {
-        return try handoff.playLibrary(rows: rows, startAt: startAt, shuffle: shuffle, title: title)
+        return try handoff.playLibrary(rows: rows, startAt: startAt, startRequired: startRequired,
+                                       shuffle: shuffle, title: title)
     } catch let error as ActionError {
         throw error
     } catch {

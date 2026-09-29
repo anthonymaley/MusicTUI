@@ -30,6 +30,9 @@ struct CLIMusicTUILibraryPlayRequest: Equatable {
     /// `music play N`'s `N`, when the rows came from the result cache.
     let resultNumber: Int?
     let json: Bool
+    /// The person picked the row (`play N`, `--song`): an unavailable one
+    /// refuses by name. False for a whole play, which skips anywhere.
+    var startRequired = false
     /// The output and data selection the rows were read under, captured
     /// before any read (C-EPOCH's stamp for a one-shot process). Under the
     /// output lock both files are read again and must still say exactly this
@@ -98,6 +101,7 @@ struct PersistentIDCLILibraryPlay: CLIMusicTUILibraryPlaying {
                                              rows: try rowsWithTheirIdentity(request.rows, env: env),
                                              startAt: request.startAt, shuffle: request.shuffle,
                                              resultNumber: request.resultNumber, json: request.json,
+                                             startRequired: request.startRequired,
                                              selectionAtRead: request.selectionAtRead)
     }
 
@@ -107,8 +111,8 @@ struct PersistentIDCLILibraryPlay: CLIMusicTUILibraryPlaying {
         // (no identity) are skipped and counted, then every remaining one is
         // verified. The container always plays from its first song.
         if let said = selfCheck.refusal() { throw ActionError(message: said) }
-        let available = try availableHandoffRows(request.rows, startAt: 1, shuffle: request.shuffle,
-                                                 title: request.label)
+        let available = try availableHandoffRows(request.rows, startAt: 1, startRequired: request.startRequired,
+                                                 shuffle: request.shuffle, title: request.label)
         let verified = try verifyHandoffTracks(rows: available.rows, title: request.label, library: library,
                                                selfCheck: selfCheck)
         let indices = verified.compactMap(\.libraryIndex)

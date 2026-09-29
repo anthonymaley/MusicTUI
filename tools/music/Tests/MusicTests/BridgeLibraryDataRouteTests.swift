@@ -74,7 +74,8 @@ final class BridgeLibraryDataRouteTests: XCTestCase {
         var calls: [Call] { lock.lock(); defer { lock.unlock() }; return recorded }
         /// What every play reports back (nothing skipped unless a test says so).
         var report = HandoffPlayReport()
-        func playLibrary(rows: [MusicRow], startAt: Int, shuffle: Bool, title: String) throws -> HandoffPlayReport {
+        func playLibrary(rows: [MusicRow], startAt: Int, startRequired: Bool, shuffle: Bool,
+                         title: String) throws -> HandoffPlayReport {
             lock.lock()
             recorded.append(Call(ids: rows.map(\.id), startAt: startAt, shuffle: shuffle, title: title))
             let report = self.report

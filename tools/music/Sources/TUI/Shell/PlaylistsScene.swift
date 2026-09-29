@@ -1111,6 +1111,7 @@ final class PlaylistsScene: Scene {
                     try routing.perform(.playlistPlay, expecting: stamp, origin: .spandacLibrary, musicApp: { path in
                         guard path == .handoff else { throw ActionError(message: pickASpanDACOutput) }
                         handedOff = try playThroughHandoff(handoff, rows: finalRows, startAt: startAt,
+                                                           startRequired: startRequired,
                                                            shuffle: shuffle, title: name)
                     }, source: { client in
                         skippedUnavailable = try spanDACOutputPlayer(client).playReportingSkips(

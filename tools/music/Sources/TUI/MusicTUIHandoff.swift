@@ -12,9 +12,9 @@
 //
 // Unavailable songs are skipped with a notice (ruling, 2026-09-24): a song
 // row SpanDAC sends with NO alias is one Apple no longer has available, so it
-// is left out, counted, and the rest play. The chosen first song, if it is
-// one, gives way to the next playable song after it, and the report says so.
-// No playable song at all refuses.
+// is left out, counted, and the rest play, as on the SpanDAC output: a
+// picked song that is unavailable refuses by name, a whole play skips
+// anywhere (row 1 included), and no playable song at all refuses.
 //
 // For the rest, the rule is all or nothing:
 // - Every remaining track's alias must parse.
@@ -67,20 +67,11 @@ struct HandoffTrackHit: Equatable {
 struct HandoffPlayReport: Equatable {
     /// Songs skipped because they carried no identity.
     var skippedUnavailable = 0
-    /// The chosen first song, when it was one of them.
-    var startSkipped: String?
-    /// The song that plays first instead of `startSkipped`.
-    var startsWith: String?
 
     /// The sentence a person reads beside "Playing ...", or nil when nothing
-    /// was left out. The count reuses the SpanDAC output's own wording.
+    /// was left out. The SpanDAC output's own wording.
     var notice: String? {
-        var parts: [String] = []
-        if let from = startSkipped, let to = startsWith {
-            parts.append("'\(from)' isn't available, so '\(to)' plays first.")
-        }
-        if skippedUnavailable > 0 { parts.append(bridgeUnavailableSongsNotice(skippedUnavailable)) }
-        return parts.isEmpty ? nil : parts.joined(separator: " ")
+        skippedUnavailable > 0 ? bridgeUnavailableSongsNotice(skippedUnavailable) : nil
     }
 }
 
@@ -218,38 +209,38 @@ struct AvailableHandoffRows: Equatable {
     let report: HandoffPlayReport
 }
 
-/// Refused when no song of a play is available (CHOSEN wording).
-func nothingAvailableToPlay(_ title: String) -> String { "No song in '\(title)' is available to play." }
-/// Refused when the one song asked for is not available (CHOSEN wording).
-func songNotAvailableToPlay(_ title: String) -> String { "'\(title)' isn't available to play." }
+/// Refused when no song of a whole play is available: the SpanDAC output's
+/// own sentence.
+let noSongAvailableToSpanDAC = "None of those songs are available to SpanDAC."
+/// Refused when the picked song is not available: the SpanDAC output's own
+/// sentence shape.
+func songNotAvailableToSpanDAC(_ title: String) -> String { "'\(title)' isn't available to SpanDAC." }
 
-/// The 2026-09-24 ruling, applied before any read: a SONG row with no alias
-/// is skipped and counted. Only an ABSENT alias is unavailability; a present
-/// alias that does not parse, and any row that is not a song, are kept, so
-/// the identity check refuses them as it always has. `startAt` is 1-based;
-/// a shuffled play has no chosen start. Refuses when nothing is left, and
-/// when the chosen song and everything after it are unavailable.
-func availableHandoffRows(_ rows: [MusicRow], startAt: Int, shuffle: Bool,
+/// The 2026-09-24 ruling and its controller rulings, applied before any
+/// read, exactly as the SpanDAC output applies them: a SONG row with no alias
+/// is unavailable. A PICKED start row (`startRequired`) that is unavailable
+/// refuses by name; a whole play skips unavailable songs anywhere, row 1
+/// included, keeping the order; nothing available refuses. Only an ABSENT
+/// alias is unavailability: a present alias that does not parse, and any row
+/// that is not a song, are kept, so the identity check refuses them as it
+/// always has. `startAt` is 1-based.
+func availableHandoffRows(_ rows: [MusicRow], startAt: Int, startRequired: Bool, shuffle: Bool,
                           title: String) throws -> AvailableHandoffRows {
     guard !rows.isEmpty else { throw ActionError(message: pickASpanDACOutput) }
     let unavailable: (MusicRow) -> Bool = { $0.kind == .song && $0.alias == nil }
     let chosen = shuffle ? 0 : min(max(1, startAt), rows.count) - 1
+    if startRequired, !shuffle, unavailable(rows[chosen]) {
+        throw ActionError(message: songNotAvailableToSpanDAC(rows[chosen].title))
+    }
     var kept: [MusicRow] = []
     var start: Int?
     for (i, row) in rows.enumerated() where !unavailable(row) {
         if start == nil && i >= chosen { start = kept.count + 1 }
         kept.append(row)
     }
-    guard !kept.isEmpty else {
-        throw ActionError(message: rows.count == 1 ? songNotAvailableToPlay(rows[0].title) : nothingAvailableToPlay(title))
-    }
-    guard let start else { throw ActionError(message: songNotAvailableToPlay(rows[chosen].title)) }
-    var report = HandoffPlayReport(skippedUnavailable: rows.count - kept.count)
-    if !shuffle, unavailable(rows[chosen]) {
-        report.startSkipped = rows[chosen].title
-        report.startsWith = kept[start - 1].title
-    }
-    return AvailableHandoffRows(rows: kept, startAt: start, report: report)
+    guard !kept.isEmpty else { throw ActionError(message: noSongAvailableToSpanDAC) }
+    return AvailableHandoffRows(rows: kept, startAt: start ?? 1,
+                                report: HandoffPlayReport(skippedUnavailable: rows.count - kept.count))
 }
 
 /// C-HANDOFF's check, shared by the TUI and the CLI: every row resolves to
@@ -356,12 +347,14 @@ struct PersistentIDHandoff: MusicTUIHandoff {
     let currentStamp: () -> MusicTUIHandoffStamp?
 
     @discardableResult
-    func playLibrary(rows: [MusicRow], startAt: Int, shuffle: Bool, title: String) throws -> HandoffPlayReport {
+    func playLibrary(rows: [MusicRow], startAt: Int, startRequired: Bool, shuffle: Bool,
+                     title: String) throws -> HandoffPlayReport {
         guard let entry = currentStamp() else { throw ActionError(message: sourceChangedNothingPlayed) }
         // The self-check speaks first: a macOS that reports no identities
         // at all is not a playlist of unavailable songs.
         if let said = selfCheck.refusal() { throw ActionError(message: said) }
-        let available = try availableHandoffRows(rows, startAt: startAt, shuffle: shuffle, title: title)
+        let available = try availableHandoffRows(rows, startAt: startAt, startRequired: startRequired,
+                                                 shuffle: shuffle, title: title)
         let verified = try verifyHandoffTracks(rows: available.rows, title: title, library: library,
                                                selfCheck: selfCheck)
         let entries = verified.compactMap {

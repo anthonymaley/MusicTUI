@@ -257,10 +257,10 @@ func musicTUIPlayCommand(_ path: MusicTUIPlayPath, args: [String], playlist: Str
         switch named.selection {
         case .refused(let why):
             throw ActionError(message: why)
-        case .rows(let label, let rows, _, _):
+        case .rows(let label, let rows, let startRequired, _):
             let request = CLIMusicTUILibraryPlayRequest(kind: named.kind, label: label, rows: rows, startAt: 1,
                                                         shuffle: named.shuffle, resultNumber: nil, json: json,
-                                                        selectionAtRead: stamp)
+                                                        startRequired: startRequired, selectionAtRead: stamp)
             let prepared = try env.libraryPlay.prepare(request, env: env)
             try cliMusicTUIMutation(env: env) { try env.libraryPlay.play(prepared, env: env) }
         }
@@ -275,7 +275,7 @@ func musicTUIPlayCommand(_ path: MusicTUIPlayPath, args: [String], playlist: Str
                                     album: row.album.isEmpty ? nil : row.album, kind: .song)
             let request = CLIMusicTUILibraryPlayRequest(kind: .song, label: row.title, rows: [musicRow], startAt: 1,
                                                         shuffle: false, resultNumber: index, json: json,
-                                                        selectionAtRead: stamp)
+                                                        startRequired: true, selectionAtRead: stamp)
             // The identity walk, outside the output lock (it can take the
             // whole warm-up budget); `play` re-checks the stamp under it.
             let prepared = try env.libraryPlay.prepare(request, env: env)

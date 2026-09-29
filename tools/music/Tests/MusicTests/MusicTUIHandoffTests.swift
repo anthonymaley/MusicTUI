@@ -118,13 +118,14 @@ final class MusicTUIHandoffTests: XCTestCase {
         return hits
     }
 
-    func testASongWithNoIdentityIsSkippedAndTheRestPlayInOrderWithANotice() {
+    /// A whole play skips anywhere, row 1 included, and keeps the order.
+    func testAWholePlaySkipsTheSongWithNoIdentityAndPlaysTheRestInOrder() {
         let library = FakePersistentIDLibrary(gardenHits())
         let player = RecordingHandoffQueuePlayer()
         var report: HandoffPlayReport?
         let r = tripwired {
-            report = try handoff(library, player).playLibrary(rows: gardenRows(), startAt: 1, shuffle: false,
-                                                               title: "The Garden of Love")
+            report = try handoff(library, player).playLibrary(rows: gardenRows(), startAt: 1, startRequired: false,
+                                                               shuffle: false, title: "The Garden of Love")
         }
         XCTAssertNil(r.error, "one unavailable song does not refuse the playlist")
         XCTAssertEqual(r.calls, [])
@@ -135,46 +136,63 @@ final class MusicTUIHandoffTests: XCTestCase {
         XCTAssertEqual(player.queues.first?.currentIndex, 1)
         XCTAssertEqual(report?.skippedUnavailable, 1)
         XCTAssertEqual(report?.notice, "1 song isn't available to SpanDAC.")
+
+        // Row 1 unavailable in a whole play: skipped too, the rest from the top.
+        library.hits[gardenHex(6)] = [inLibrary(gardenHex(6), "Eleven", db: "706", at: 306)]
+        let top = RecordingHandoffQueuePlayer()
+        let first = try? handoff(library, top).playLibrary(rows: gardenRows(missing: [0]), startAt: 1, startRequired: false,
+                                                           shuffle: false, title: "The Garden of Love")
+        XCTAssertEqual(top.queues.first?.tracks.map(\.name), Array(gardenTitles.dropFirst()))
+        XCTAssertEqual(top.queues.first?.currentIndex, 1)
+        XCTAssertEqual(first?.notice, "1 song isn't available to SpanDAC.")
     }
 
-    func testAChosenSongWithNoIdentityStartsAtTheNextPlayableSong() {
+    /// Enter on a playable song in the live shape: it plays from that song,
+    /// with the skip notice for the unavailable one elsewhere.
+    func testAPickedPlayableSongPlaysFromItWithTheNotice() {
         let library = FakePersistentIDLibrary(gardenHits())
         let player = RecordingHandoffQueuePlayer()
-        // The third song has no identity (and neither has the seventh); Enter on it.
-        let rows = gardenRows(missing: [2, 6])
         var report: HandoffPlayReport?
         let r = tripwired {
-            report = try handoff(library, player).playLibrary(rows: rows, startAt: 3, shuffle: false,
-                                                               title: "The Garden of Love")
+            report = try handoff(library, player).playLibrary(rows: gardenRows(), startAt: 3, startRequired: true,
+                                                               shuffle: false, title: "The Garden of Love")
         }
         XCTAssertNil(r.error)
-        XCTAssertEqual(player.queues.first?.tracks.map(\.name), ["The Garden", "Pastoral", "Knowing", "Soundscape", "Finale"])
-        XCTAssertEqual(player.queues.first?.currentIndex, 3, "starts at the next playable song, Knowing")
-        XCTAssertEqual(report?.skippedUnavailable, 2)
-        XCTAssertEqual(report?.notice, "'Weeping' isn't available, so 'Knowing' plays first. 2 songs aren't available to SpanDAC.")
+        XCTAssertEqual(player.queues.first?.tracks.map { persistentIDOfQueueEntry($0.index) }, (0..<6).map(gardenHex))
+        XCTAssertEqual(player.queues.first?.currentIndex, 3, "from the picked song, Weeping")
+        XCTAssertEqual(report?.notice, "1 song isn't available to SpanDAC.")
     }
 
-    func testNoSongWithAnIdentityRefusesAndReadsNothing() {
+    /// Enter on the unavailable song: refused by name, as the SpanDAC output
+    /// refuses it, and nothing is read or played.
+    func testAPickedSongWithNoIdentityRefusesByName() {
         let library = FakePersistentIDLibrary(gardenHits())
         let player = RecordingHandoffQueuePlayer()
         let r = tripwired {
-            try handoff(library, player).playLibrary(rows: gardenRows(missing: Set(0..<7)), startAt: 1, shuffle: false,
-                                                     title: "The Garden of Love")
+            try handoff(library, player).playLibrary(rows: gardenRows(), startAt: 7, startRequired: true,
+                                                     shuffle: false, title: "The Garden of Love")
         }
-        XCTAssertEqual(message(r.error), "No song in 'The Garden of Love' is available to play.")
+        XCTAssertEqual(message(r.error), "'Eleven' isn't available to SpanDAC.")
         let one = tripwired {
-            try handoff(library, player).playLibrary(rows: [song("p.7", "Eleven", nil)], startAt: 1, shuffle: false,
-                                                     title: "Eleven")
+            try handoff(library, player).playLibrary(rows: [song("p.7", "Eleven", nil)], startAt: 1, startRequired: true,
+                                                     shuffle: false, title: "Eleven")
         }
-        XCTAssertEqual(message(one.error), "'Eleven' isn't available to play.")
-        // Picked last, with nothing playable after it: refused by name.
-        let last = tripwired {
-            try handoff(library, player).playLibrary(rows: gardenRows(), startAt: 7, shuffle: false,
-                                                     title: "The Garden of Love")
-        }
-        XCTAssertEqual(message(last.error), "'Eleven' isn't available to play.")
-        XCTAssertEqual(r.calls + one.calls + last.calls, [])
+        XCTAssertEqual(message(one.error), "'Eleven' isn't available to SpanDAC.")
+        XCTAssertEqual(r.calls + one.calls, [])
         XCTAssertEqual(library.reads, [], "refused before any read")
+        XCTAssertEqual(player.queues, [], "nothing played")
+    }
+
+    func testAWholePlayWithNoSongAvailableRefuses() {
+        let library = FakePersistentIDLibrary(gardenHits())
+        let player = RecordingHandoffQueuePlayer()
+        let r = tripwired {
+            try handoff(library, player).playLibrary(rows: gardenRows(missing: Set(0..<7)), startAt: 1,
+                                                     startRequired: false, shuffle: false, title: "The Garden of Love")
+        }
+        XCTAssertEqual(message(r.error), "None of those songs are available to SpanDAC.")
+        XCTAssertEqual(r.calls, [])
+        XCTAssertEqual(library.reads, [])
         XCTAssertEqual(player.queues, [])
     }
 
@@ -521,6 +539,26 @@ final class MusicTUIHandoffTests: XCTestCase {
         XCTAssertEqual(shown, [false])
         XCTAssertTrue(h.io.out.contains("1 song isn't available to SpanDAC."), "out: \(h.io.out)")
         XCTAssertEqual(h.outputClientsBuilt, 0)
+    }
+
+    /// `music play N` / `--song` of a song with no identity: picked, so it is
+    /// refused by name before anything is read or built.
+    func testCLIPickedSongWithNoIdentityRefusesByName() throws {
+        let h = CLIDataRouteHarness(output: .musicApp, data: .accepted, dataReplies: [:], recordSeams: false)
+        let library = FakePersistentIDLibrary(gardenHits())
+        let runner = CLIContainerRunner(ids: [])
+        var shown: [Bool] = []
+        let play = PersistentIDCLILibraryPlay(library: library, run: runner.run, launch: { _, _ in true },
+                                              selfCheck: LibraryAliasSelfCheck(), afterPlay: { shown.append($0) })
+        let request = CLIMusicTUILibraryPlayRequest(kind: .song, label: "Eleven", rows: [gardenRows()[6]], startAt: 1,
+                                                    shuffle: false, resultNumber: nil, json: false, startRequired: true)
+        let r = tripwired { try play.play(request, env: h.env) }
+        XCTAssertEqual(message(r.error), "'Eleven' isn't available to SpanDAC.")
+        XCTAssertEqual(r.calls, [])
+        XCTAssertEqual(library.reads, [])
+        XCTAssertEqual(runner.builds, [])
+        XCTAssertEqual(runner.plays.count, 0)
+        XCTAssertEqual(shown, [])
     }
 
     // MARK: - Further pins
