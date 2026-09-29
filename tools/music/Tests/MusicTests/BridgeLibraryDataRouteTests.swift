@@ -235,6 +235,27 @@ final class BridgeLibraryDataRouteTests: XCTestCase {
         XCTAssertEqual(r.counter.callCount, 0, "the scene itself reached AppleScript (the hand-off's to do)")
     }
 
+    /// An owned song on the MusicTUI output with SpanDAC data and no DAC on
+    /// this Mac: it plays by persistent ID through the hand-off. Nothing asks
+    /// for a DAC, and nothing is sent to any SpanDAC to play.
+    func testOwnedSongPlaysOnMusicTUIOutputWithoutADAC() {
+        let r = rig(output: .musicApp, data: .accepted)
+        r.data.script("slice.status", Array(repeating: noDACStatus, count: 8))
+        r.data.script("slice.librarySongs", [songPage])
+        let s = libraryScene(r)
+
+        goToSubView(s, .songs)
+        XCTAssertTrue(settleScene(s) { s.songsForTest.map(\.id) == ["s1"] })
+        _ = s.handle(.enter)
+        XCTAssertTrue(wait { !r.handoff.calls.isEmpty }, "the song never reached the hand-off")
+        XCTAssertEqual(r.handoff.calls.first, HandoffSpy.Call(ids: ["s1"], startAt: 1, shuffle: false, title: "Nude"))
+        XCTAssertFalse(r.status.current()?.text.contains("DAC") ?? false,
+                       "got: \(String(describing: r.status.current()?.text))")
+        XCTAssertTrue(r.data.sent("slice.queue").isEmpty)
+        XCTAssertEqual(r.output.requestCount, 0)
+        XCTAssertEqual(r.built.outputModes, [])
+    }
+
     func testTheShellsDefaultHandoffRefusesAndPlaysNothing() {
         let r = rig(output: .musicApp, data: .accepted)
         r.data.script("slice.librarySongs", [songPage])
