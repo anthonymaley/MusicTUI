@@ -488,10 +488,15 @@ struct SourceAppClient {
     /// wraps around it, rather than one rebuilt from the path.
     let path: String
     let transport: (String, String) throws -> String
+    /// The transport for `slice.libraryAddPlaylist` alone: SpanDAC may take up to
+    /// 40 s to answer it, so it waits longer than a command does (W6).
+    let catalogPlaylistAddTransport: (String, String) throws -> String
 
     init(path: String = SourceAppStationSearch.socketPath) {
         self.path = path
         transport = SourceAppStationSearch.sendOverUnixSocket
+        catalogPlaylistAddTransport = SourceAppStationSearch.sender(
+            timeoutSeconds: spandacCatalogPlaylistAddTimeoutSeconds)
         playback = SourceAppPlayback(path: path)
         stationSearch = SourceAppStationSearch(path: path)
         control = SourceAppControl(path: path)
@@ -502,6 +507,7 @@ struct SourceAppClient {
     init(path: String, transport: @escaping (String, String) throws -> String) {
         self.path = path
         self.transport = transport
+        self.catalogPlaylistAddTransport = transport
         playback = SourceAppPlayback(path: path, transport: transport)
         stationSearch = SourceAppStationSearch(path: path, transport: transport)
         control = SourceAppControl(path: path, transport: transport)
@@ -511,9 +517,11 @@ struct SourceAppClient {
     /// The same, with the library reads and `slice.queue` on a transport of
     /// their own (a longer timeout), as the Unix client has.
     init(path: String, transport: @escaping (String, String) throws -> String,
-         libraryTransport: @escaping (String, String) throws -> String) {
+         libraryTransport: @escaping (String, String) throws -> String,
+         catalogPlaylistAddTransport: ((String, String) throws -> String)? = nil) {
         self.path = path
         self.transport = transport
+        self.catalogPlaylistAddTransport = catalogPlaylistAddTransport ?? libraryTransport
         playback = SourceAppPlayback(path: path, transport: transport)
         stationSearch = SourceAppStationSearch(path: path, transport: transport)
         control = SourceAppControl(path: path, transport: transport, libraryTransport: libraryTransport)
