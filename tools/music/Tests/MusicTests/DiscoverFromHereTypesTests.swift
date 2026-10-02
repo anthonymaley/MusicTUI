@@ -208,6 +208,25 @@ final class DiscoverFromHereTypesTests: XCTestCase {
         XCTAssertEqual(try JSONDecoder().decode(DiscoverCopyEntry.self, from: data), entry)
     }
 
+    func testRestorePendingIsAnOptionalSnakeCaseKeyThatOldJournalsDecodeWithout() throws {
+        var entry = DiscoverCopyEntry(
+            txn: "T3", playlistID: "pl.x", title: "Mix", state: .closed, hex: nil,
+            copiesRead: 0, watching: false, copySeen: false, toldAtLaunch: false,
+            priorShuffle: true, priorRepeat: "one", createdAt: 1, updatedAt: 1)
+        // Written before the field existed: no key, and it decodes as nil.
+        let old = try JSONEncoder().encode(entry)
+        let oldObject = try XCTUnwrap(JSONSerialization.jsonObject(with: old) as? [String: Any])
+        XCTAssertNil(oldObject["restore_pending"])
+        XCTAssertNil(try JSONDecoder().decode(DiscoverCopyEntry.self, from: old).restorePending)
+
+        entry.restorePending = true
+        let data = try JSONEncoder().encode(entry)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        XCTAssertEqual(object["restore_pending"] as? Bool, true)
+        XCTAssertNil(object["restorePending"])
+        XCTAssertEqual(try JSONDecoder().decode(DiscoverCopyEntry.self, from: data), entry)
+    }
+
     func testIsDeletable() {
         func entry(_ state: DiscoverCopyState, hex: String?) -> DiscoverCopyEntry {
             DiscoverCopyEntry(txn: "T", playlistID: "pl.x", title: "M", state: state, hex: hex,

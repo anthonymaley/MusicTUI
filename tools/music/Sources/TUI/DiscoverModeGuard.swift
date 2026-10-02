@@ -6,6 +6,13 @@ import Foundation
 // entry (`priorShuffle`, `priorRepeat`), written BEFORE anything is set, so a
 // crash leaves them recorded for reconcile. If the modes cannot be read or
 // set, nothing plays (`switchOff` answers false).
+//
+// The record is durable evidence: it is cleared only when he changed the modes
+// himself, or after a fresh read shows both recorded values back. A set's own
+// answer proves nothing either way. While our sets are in flight, and after
+// any restore or rollback that could not be verified, the entry is marked
+// `restorePending`: the recorded values then go back whatever the modes read,
+// because a half-set pair is ours, not a change of his.
 
 struct DiscoverModeGuard {
     struct Seams {
@@ -48,7 +55,14 @@ struct DiscoverModeGuard {
 
     /// Best effort: a failed clear leaves the record, which restore reads again.
     private func clearRecord(_ txn: String) {
-        _ = try? journal.update(txn: txn) { $0.priorShuffle = nil; $0.priorRepeat = nil }
+        _ = try? journal.update(txn: txn) {
+            $0.priorShuffle = nil; $0.priorRepeat = nil; $0.restorePending = nil
+        }
+    }
+
+    /// Best effort: the mark is normally already there, written before the sets.
+    private func markPending(_ txn: String) {
+        _ = try? journal.update(txn: txn) { $0.restorePending = true }
     }
 
     /// True when shuffle and song repeat are now (off, off) and his prior
@@ -82,14 +96,18 @@ struct DiscoverModeGuard {
             }
         }
 
-        // Record before setting anything.
+        // Record before setting anything, marked pending until the sets are
+        // verified: a crash between them leaves a restore to retry.
+        var marked = mine.restorePending == true
         if case .kept = source {} else {
             do {
                 try journal.update(txn: txn) {
                     $0.priorShuffle = shuffleToRecord
                     $0.priorRepeat = repeatToRecord
+                    $0.restorePending = true
                 }
             } catch { return false }
+            marked = true
         }
         if case .moved(let from) = source {
             // His originals now live on this entry only. If an older holder
@@ -97,13 +115,17 @@ struct DiscoverModeGuard {
             var cleared: [DiscoverCopyEntry] = []
             for entry in from {
                 do {
-                    try journal.update(txn: entry.txn) { $0.priorShuffle = nil; $0.priorRepeat = nil }
+                    try journal.update(txn: entry.txn) {
+                        $0.priorShuffle = nil; $0.priorRepeat = nil; $0.restorePending = nil
+                    }
                     cleared.append(entry)
                 } catch {
+                    // Nothing has been set yet: the modes are as they were read.
                     for undone in cleared {
                         _ = try? journal.update(txn: undone.txn) {
                             $0.priorShuffle = undone.priorShuffle
                             $0.priorRepeat = undone.priorRepeat
+                            $0.restorePending = undone.restorePending
                         }
                     }
                     clearRecord(txn)
@@ -112,22 +134,26 @@ struct DiscoverModeGuard {
             }
         }
 
-        // Undo of a failed attempt: modes back as they were read, and the
-        // record back to what it was before this call.
+        // Undo of a failed attempt: modes back as they were read, and, ONLY
+        // once a fresh read shows them back, the record back to what it was
+        // before this call. Unverified, the record stays on this entry,
+        // pending, for restore to retry.
         func giveUp(shuffleSet: Bool, repeatSet: Bool) -> Bool {
             if shuffleSet { _ = seams.setShuffle(current.shuffle) }
             if repeatSet { _ = seams.setRepeat(current.songRepeat) }
-            switch source {
-            case .kept:
-                break   // the record was his before this call and still is
-            case .fresh:
-                clearRecord(txn)
-            case .moved(let from):
-                clearRecord(txn)
+            if case .kept = source { return false }   // the record was his before this call and still is
+            guard let after = seams.read(),
+                  after.shuffle == current.shuffle, after.songRepeat == current.songRepeat else {
+                markPending(txn)
+                return false
+            }
+            clearRecord(txn)
+            if case .moved(let from) = source {
                 for entry in from {
                     _ = try? journal.update(txn: entry.txn) {
                         $0.priorShuffle = entry.priorShuffle
                         $0.priorRepeat = entry.priorRepeat
+                        $0.restorePending = entry.restorePending
                     }
                 }
             }
@@ -137,23 +163,43 @@ struct DiscoverModeGuard {
         guard seams.setShuffle(false) else { return giveUp(shuffleSet: true, repeatSet: false) }
         guard seams.setRepeat(.off) else { return giveUp(shuffleSet: true, repeatSet: true) }
         guard isOff(seams.read()) else { return giveUp(shuffleSet: true, repeatSet: true) }
+        // Verified (off, off): an ordinary record again, so a later change of
+        // his is read as his.
+        if marked {
+            do { try journal.update(txn: txn) { $0.restorePending = nil } }
+            catch { return giveUp(shuffleSet: true, repeatSet: true) }
+        }
         return true
     }
 
     /// Puts his recorded values back unless he changed them since. Idempotent;
-    /// works on an entry in any state.
+    /// works on an entry in any state. The record is cleared only after a
+    /// fresh read shows both values back; until then it stays, pending, and
+    /// the next call (reconcile's included) retries instead of reading a
+    /// half-restored pair as a change of his.
     func restore(txn: String) {
         guard let all = try? journal.entries(),
               let mine = all.first(where: { $0.txn == txn }),
               holdsPrior(mine) else { return }
         guard let current = seams.read() else { return }   // unreadable: leave it recorded
-        guard isOff(current) else {
-            clearRecord(txn)   // he changed them: his values stand
-            return
+        let wantRepeat = mine.priorRepeat.flatMap { RepeatMode(rawValue: $0) }
+        func isBack(_ modes: (shuffle: Bool, songRepeat: RepeatMode)) -> Bool {
+            (mine.priorShuffle == nil || modes.shuffle == mine.priorShuffle)
+                && (wantRepeat == nil || modes.songRepeat == wantRepeat)
         }
-        var ok = true
-        if let shuffle = mine.priorShuffle, !seams.setShuffle(shuffle) { ok = false }
-        if let raw = mine.priorRepeat, let mode = RepeatMode(rawValue: raw), !seams.setRepeat(mode) { ok = false }
-        if ok { clearRecord(txn) }
+        if mine.restorePending == true {
+            if isBack(current) { clearRecord(txn); return }
+        } else {
+            guard isOff(current) else {
+                clearRecord(txn)   // he changed them: his values stand
+                return
+            }
+            // Marked before the first set, so a crash or a failed set between
+            // the two is retried. If the mark cannot be written, set nothing.
+            guard (try? journal.update(txn: txn) { $0.restorePending = true }) != nil else { return }
+        }
+        if let shuffle = mine.priorShuffle { _ = seams.setShuffle(shuffle) }
+        if let mode = wantRepeat { _ = seams.setRepeat(mode) }
+        if let after = seams.read(), isBack(after) { clearRecord(txn) }
     }
 }

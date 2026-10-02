@@ -92,6 +92,10 @@ struct DiscoverCopyEntry: Codable, Equatable {
     var toldAtLaunch: Bool       // uncertain only: the launch repeat has been shown
     var priorShuffle: Bool?      // nil = nothing to restore
     var priorRepeat: String?     // RepeatMode.rawValue
+    /// True while his modes are known or feared not to be the recorded ones
+    /// because of a set of ours: the recorded values go back whatever the
+    /// modes read now. Absent in a journal written before this field.
+    var restorePending: Bool? = nil
     let createdAt: Int           // epoch seconds
     var updatedAt: Int
 
@@ -105,6 +109,7 @@ struct DiscoverCopyEntry: Codable, Equatable {
         case toldAtLaunch = "told_at_launch"
         case priorShuffle = "prior_shuffle"
         case priorRepeat = "prior_repeat"
+        case restorePending = "restore_pending"
         case createdAt = "created_at"
         case updatedAt = "updated_at"
     }
