@@ -97,18 +97,15 @@ struct DiscoverModeGuard {
         }
 
         // Record before setting anything, marked pending until the sets are
-        // verified: a crash between them leaves a restore to retry.
-        var marked = mine.restorePending == true
-        if case .kept = source {} else {
-            do {
-                try journal.update(txn: txn) {
-                    $0.priorShuffle = shuffleToRecord
-                    $0.priorRepeat = repeatToRecord
-                    $0.restorePending = true
-                }
-            } catch { return false }
-            marked = true
-        }
+        // verified: a crash between them leaves a restore to retry. A replay
+        // (`.kept`) writes the values it already holds, and the same mark.
+        do {
+            try journal.update(txn: txn) {
+                $0.priorShuffle = shuffleToRecord
+                $0.priorRepeat = repeatToRecord
+                $0.restorePending = true
+            }
+        } catch { return false }
         if case .moved(let from) = source {
             // His originals now live on this entry only. If an older holder
             // cannot be cleared, undo and change nothing.
@@ -141,14 +138,21 @@ struct DiscoverModeGuard {
         func giveUp(shuffleSet: Bool, repeatSet: Bool) -> Bool {
             if shuffleSet { _ = seams.setShuffle(current.shuffle) }
             if repeatSet { _ = seams.setRepeat(current.songRepeat) }
-            if case .kept = source { return false }   // the record was his before this call and still is
             guard let after = seams.read(),
                   after.shuffle == current.shuffle, after.songRepeat == current.songRepeat else {
                 markPending(txn)
                 return false
             }
-            clearRecord(txn)
-            if case .moved(let from) = source {
+            switch source {
+            case .kept:
+                // The record was his before this call and still is; only the
+                // mark goes back to what it was. If that write fails it stays
+                // pending, which restore then finishes.
+                _ = try? journal.update(txn: txn) { $0.restorePending = mine.restorePending }
+            case .fresh:
+                clearRecord(txn)
+            case .moved(let from):
+                clearRecord(txn)
                 for entry in from {
                     _ = try? journal.update(txn: entry.txn) {
                         $0.priorShuffle = entry.priorShuffle
@@ -165,10 +169,8 @@ struct DiscoverModeGuard {
         guard isOff(seams.read()) else { return giveUp(shuffleSet: true, repeatSet: true) }
         // Verified (off, off): an ordinary record again, so a later change of
         // his is read as his.
-        if marked {
-            do { try journal.update(txn: txn) { $0.restorePending = nil } }
-            catch { return giveUp(shuffleSet: true, repeatSet: true) }
-        }
+        do { try journal.update(txn: txn) { $0.restorePending = nil } }
+        catch { return giveUp(shuffleSet: true, repeatSet: true) }
         return true
     }
 
