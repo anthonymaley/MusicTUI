@@ -333,12 +333,9 @@ final class RoutingCoordinator {
                  musicApp: () throws -> Void,
                  source: (SourceAppClient) throws -> Void,
                  unaffected: () throws -> Void) throws {
-        try perform(action, expecting: nil, origin: nil,
-                    musicApp: { path in
-                        guard path == .shipped else { throw ActionError(message: pickASpanDACOutput) }
-                        try musicApp()
-                    },
-                    source: source, unaffected: unaffected)
+        try route(action, expecting: nil, origin: nil, shippedOnly: true,
+                  musicApp: { _ in try musicApp() },
+                  source: source, unaffected: unaffected)
     }
 
     /// Runs exactly one branch for `action`, routed on both axes now.
@@ -361,6 +358,23 @@ final class RoutingCoordinator {
                  musicApp: (MusicTUIPlayPath) throws -> Void,
                  source: (SourceAppClient) throws -> Void,
                  unaffected: () throws -> Void) throws {
+        try route(action, expecting: expecting, origin: origin, shippedOnly: false,
+                  musicApp: musicApp, source: source, unaffected: unaffected)
+    }
+
+    /// Both forms of `perform`. `shippedOnly` is the form whose `musicApp` body
+    /// is the shipped one: any other path refuses before the body runs.
+    ///
+    /// The play serial moves only once a chosen-music play is admitted: routed,
+    /// its path chosen, and its branch the next thing to run. A play refused
+    /// before that made no sound and supersedes no reservation.
+    private func route(_ action: MusicTUIAction,
+                       expecting: (epoch: Int, dataEpoch: Int)?,
+                       origin: PlayOrigin?,
+                       shippedOnly: Bool,
+                       musicApp: (MusicTUIPlayPath) throws -> Void,
+                       source: (SourceAppClient) throws -> Void,
+                       unaffected: () throws -> Void) throws {
         try exclusively {
             if let expecting, expecting != stamp {
                 throw ActionError(message: sourceChangedNothingPlayed)
@@ -369,16 +383,22 @@ final class RoutingCoordinator {
             let routed = routeAction(action, selection: now, from: surface)
             if case .refused(let why) = routed.sound { throw ActionError(message: why) }
             try refuseAStaleOrigin(origin, for: action, in: now)
-            if action.playsChosenMusic, routed.sound == .musicApp || routed.sound == .source {
+            func admitAPlay() {
+                guard action.playsChosenMusic else { return }
                 state.lock(); _playSerial += 1; state.unlock()
             }
             switch routed.sound {
             case .unaffected:
                 try unaffected()
             case .source:
-                try source(action.readsMusicData && routed.data == .spandacMac ? dataClient() : sourceClient())
+                let client = action.readsMusicData && routed.data == .spandacMac ? dataClient() : sourceClient()
+                admitAPlay()
+                try source(client)
             case .musicApp:
-                try musicApp(try musicTUIPath(for: action, origin: origin, in: now))
+                let path = try musicTUIPath(for: action, origin: origin, in: now)
+                if shippedOnly, path != .shipped { throw ActionError(message: pickASpanDACOutput) }
+                admitAPlay()
+                try musicApp(path)
             case .refused(let why):
                 throw ActionError(message: why)
             }

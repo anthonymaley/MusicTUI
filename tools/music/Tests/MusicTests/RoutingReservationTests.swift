@@ -377,4 +377,34 @@ final class RoutingReservationTests: XCTestCase {
         XCTAssertEqual(shipped, 2)
         XCTAssertEqual(open.playSerial, 2)
     }
+
+    func testAChosenMusicPlayThatThrowsBeforeItsBranchLeavesAReservationValid() throws {
+        let c = coordinator()
+        let reservation = try reserve(c)
+        XCTAssertEqual(c.playSerial, 1)
+
+        // No usable origin on the MusicTUI output with SpanDAC data: the path
+        // cannot be chosen, so no branch runs and nothing plays.
+        XCTAssertThrowsError(try c.perform(.libraryPlay, expecting: c.stamp, origin: nil,
+                                           musicApp: { _ in XCTFail("a play with no origin ran") },
+                                           source: { _ in XCTFail("a play with no origin ran") },
+                                           unaffected: { XCTFail("a play ran as unaffected") })) {
+            XCTAssertEqual(self.message($0), pickASpanDACOutput)
+        }
+        // The shipped-body form, whose body may not run on any other path.
+        XCTAssertThrowsError(try c.perform(.radioStationPlay,
+                                           musicApp: { XCTFail("the shipped body ran off its path") },
+                                           source: { _ in XCTFail("a MusicTUI-output play reached a SpanDAC") },
+                                           unaffected: { XCTFail("a play ran as unaffected") }))
+        XCTAssertEqual(c.playSerial, 1, "a play that reached no branch is not a play")
+
+        var ran = 0
+        XCTAssertEqual(try c.whileReserved(reservation) { ran += 1 }, .holds)
+        XCTAssertEqual(ran, 1)
+
+        // A play that does reach its branch still supersedes.
+        try play(c)
+        XCTAssertEqual(try c.whileReserved(reservation) { ran += 1 }, .superseded)
+        XCTAssertEqual(ran, 1)
+    }
 }
