@@ -327,11 +327,31 @@ struct DiscoverCopyReconciler {
 
     /// A restore marked pending is retried whatever the entry's state and
     /// whether or not its delete succeeded: his modes do not wait on a copy
-    /// that cannot be deleted. The one exception is a copy still playing,
-    /// whose modes stay off until it ends; the end handler restores then.
+    /// that cannot be deleted. But they are never put back while the entry's
+    /// copy may be playing, so a retry needs evidence that it is not:
+    ///   - a delete that answered deleted, already gone or kept is that
+    ///     evidence, and restores as it always did;
+    ///   - a spared copy is playing: nothing is restored, the end handler does it;
+    ///   - anything else for an entry with a copy (a failed delete, which may
+    ///     have failed before it read the player, or a state no delete is
+    ///     attempted in) restores only if one fresh look at the player shows
+    ///     it stopped, or in a readable playlist that is not this copy. If the
+    ///     look fails or shows this copy, nothing is restored, the mark stays,
+    ///     and a copy of ours goes back to the watcher so its end is handled;
+    ///   - an entry with no copy recorded has nothing that could be playing.
     private func reconcile(_ entry: DiscoverCopyEntry, atLaunch: Bool) {
         let modes = replay(entry, atLaunch: atLaunch)
-        if entry.restorePending == true, modes == .untouched { copy.restoreModes(entry.txn) }
+        guard entry.restorePending == true, modes == .untouched else { return }
+        guard let hex = entry.hex else {
+            copy.restoreModes(entry.txn)
+            return
+        }
+        switch discoverCopyObservation(copy.observePlayer(), hex: hex) {
+        case .stopped, .foreign:
+            copy.restoreModes(entry.txn)
+        case .inOurCopy, .unreadable:
+            if entry.state == .owned || entry.state == .listening { copy.adopt(entry.txn, hex) }
+        }
     }
 
     private func replay(_ entry: DiscoverCopyEntry, atLaunch: Bool) -> ModesReplay {

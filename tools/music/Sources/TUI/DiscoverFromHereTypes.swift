@@ -186,6 +186,9 @@ struct DiscoverCopySeams {
     var restoreModes: (_ txn: String) -> Void
     /// Hand a copy to the end watcher (S14, and reconcile's re-adopt).
     var adopt: (_ txn: String, _ hex: String) -> Void
+    /// One read-only look at the player (the end watcher's read: state,
+    /// current playlist, current track). nil = the read failed.
+    var observePlayer: () -> DiscoverCopyPlayerRead?
     /// Reconcile may ask SpanDAC for copies only while this is true.
     var spandacDataSelected: () -> Bool
     var now: () -> Date

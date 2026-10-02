@@ -130,6 +130,7 @@ func composeDiscoverCopyRuntime(_ parts: DiscoverCopyRuntimeParts)
         deleteIfOwned: { deleter.end(txn: $0) },
         restoreModes: { modeGuard.restore(txn: $0) },
         adopt: { watcher.adopt(txn: $0, hex: $1) },
+        observePlayer: { discoverCopyPlayerRead(fromScriptOutput: parts.run(discoverCopyObservationScript)) },
         spandacDataSelected: parts.spandacDataSelected,
         now: parts.now,
         log: parts.log)

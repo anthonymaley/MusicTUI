@@ -197,6 +197,8 @@ final class DiscoverCopyReconcileTests: XCTestCase {
     func testAPendingRestoreOnAnOwnedEntryIsRetriedThoughItsDeleteKeepsFailing() throws {
         let f = try seeded(pending(F.entry("O", .owned, hex: F.hexA, priorShuffle: true, priorRepeat: "all")))
         f.deleteResult = { _ in .failed }
+        // A failed delete proves nothing about the player: reconcile looks, and it is stopped.
+        f.playerRead = Self.stoppedRead
         // The real guard over a scripted player: a half-set pair, (off, all).
         var shuffle = false
         var songRepeat = RepeatMode.all
@@ -254,6 +256,7 @@ final class DiscoverCopyReconcileTests: XCTestCase {
             pending(F.entry("I", .intent, priorShuffle: false)))
         f.spandacSelected = false
         f.deleteResult = { _ in .failed }
+        f.playerRead = Self.stoppedRead     // the two entries with a copy need the player seen off it
         let before = try f.onDisk()
         for atLaunch in [true, false] {
             reconcile(f, atLaunch: atLaunch)
@@ -263,6 +266,75 @@ final class DiscoverCopyReconcileTests: XCTestCase {
         XCTAssertEqual(f.adoptCalls, [])
         XCTAssertEqual(f.toasts, [])
         XCTAssertEqual(try f.onDisk(), before)
+    }
+
+    private static let stoppedRead = DiscoverCopyPlayerRead(state: "stopped", playlistID: nil, trackID: nil)
+
+    func testAFailedDeleteWithOurCopyPlayingRestoresNothingAndWatchesItAgain() throws {
+        // He started the same copy again before the queued end ran, and the delete script failed.
+        for state in [DiscoverCopyState.owned, .listening] {
+            let f = try seeded(pending(F.entry("O", state, hex: F.hexA, priorShuffle: true, priorRepeat: "all")))
+            f.deleteResult = { _ in .failed }
+            f.playerRead = DiscoverCopyPlayerRead(state: "playing", playlistID: F.hexA, trackID: "T")
+            let before = try f.onDisk()
+            reconcile(f, atLaunch: false)
+            XCTAssertEqual(f.restoreCalls, [], "\(state): his modes must stay off while our copy plays")
+            XCTAssertEqual(f.adoptCalls, ["O:\(F.hexA)"], "\(state): its end must still be handled")
+            XCTAssertEqual(f.observeCalls, 1)
+            XCTAssertEqual(try f.onDisk(), before)
+            XCTAssertEqual(try f.onDisk().first?.restorePending, true)
+        }
+    }
+
+    func testAFailedDeleteWithAnUnreadablePlayerRestoresNothingAndKeepsThePendingMark() throws {
+        let reads: [DiscoverCopyPlayerRead?] = [
+            nil,
+            DiscoverCopyPlayerRead(state: "playing", playlistID: nil, trackID: nil),   // a station or stream
+            DiscoverCopyPlayerRead(state: "", playlistID: nil, trackID: nil),
+        ]
+        for read in reads {
+            let f = try seeded(
+                pending(F.entry("O", .owned, hex: F.hexA, priorShuffle: true)),
+                pending(F.entry("P", .preexisting, hex: "00000000000000CC", priorRepeat: "one")),
+                pending(F.entry("U", .uncertain, hex: "00000000000000DD", copySeen: true, told: true,
+                                priorShuffle: true)))
+            f.deleteResult = { _ in .failed }
+            f.playerRead = read
+            let before = try f.onDisk()
+            reconcile(f, atLaunch: false)
+            XCTAssertEqual(f.restoreCalls, [], "\(String(describing: read))")
+            // Only a copy of ours is handed back to the watcher.
+            XCTAssertEqual(f.adoptCalls, ["O:\(F.hexA)"], "\(String(describing: read))")
+            XCTAssertEqual(try f.onDisk(), before)
+        }
+    }
+
+    func testAFailedDeleteWithThePlayerStoppedOrInAnotherPlaylistRestores() throws {
+        let reads = [
+            Self.stoppedRead,
+            DiscoverCopyPlayerRead(state: "playing", playlistID: "00000000000000EE", trackID: "T"),
+            DiscoverCopyPlayerRead(state: "paused", playlistID: "00000000000000EE", trackID: nil),
+        ]
+        for read in reads {
+            let f = try seeded(pending(F.entry("O", .owned, hex: F.hexA, priorShuffle: true)))
+            f.deleteResult = { _ in .failed }
+            f.playerRead = read
+            reconcile(f, atLaunch: false)
+            XCTAssertEqual(f.restoreCalls, ["O"], "\(read)")
+            XCTAssertEqual(f.adoptCalls, [], "\(read)")
+        }
+    }
+
+    func testThePlayerIsLookedAtOnlyForAPendingRestoreWithNoOtherEvidence() throws {
+        let f = try seeded(F.entry("O", .owned, hex: F.hexA, priorShuffle: true),          // not pending
+                           pending(F.entry("S", .listening, hex: "00000000000000BB", priorShuffle: true)),
+                           pending(F.entry("C", .closed, priorShuffle: true)),
+                           pending(F.entry("I", .intent, priorShuffle: true)))               // no copy known
+        f.spandacSelected = false
+        f.deleteResult = { $0 == "S" ? .spared : .failed }
+        reconcile(f, atLaunch: false)
+        XCTAssertEqual(f.observeCalls, 0)
+        XCTAssertEqual(f.restoreCalls, ["C", "I"])
     }
 
     func testAPendingRestoreIsAttemptedOncePerEntryPerReconcile() throws {
