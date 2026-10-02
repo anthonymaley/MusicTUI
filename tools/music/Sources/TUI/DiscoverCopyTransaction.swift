@@ -318,23 +318,42 @@ struct DiscoverCopyReconciler {
         copy.log("discover copy reconcile: \(entries.count) entries, \(ms) ms")
     }
 
+    /// What replaying an entry's state did about his shuffle and repeat.
+    private enum ModesReplay {
+        case restoreAttempted
+        case playing        // the copy is the current playlist and not stopped
+        case untouched
+    }
+
+    /// A restore marked pending is retried whatever the entry's state and
+    /// whether or not its delete succeeded: his modes do not wait on a copy
+    /// that cannot be deleted. The one exception is a copy still playing,
+    /// whose modes stay off until it ends; the end handler restores then.
     private func reconcile(_ entry: DiscoverCopyEntry, atLaunch: Bool) {
+        let modes = replay(entry, atLaunch: atLaunch)
+        if entry.restorePending == true, modes == .untouched { copy.restoreModes(entry.txn) }
+    }
+
+    private func replay(_ entry: DiscoverCopyEntry, atLaunch: Bool) -> ModesReplay {
         let txn = entry.txn
         switch entry.state {
         case .closed:
-            if entry.priorShuffle != nil || entry.priorRepeat != nil { copy.restoreModes(txn) }
+            guard entry.priorShuffle != nil || entry.priorRepeat != nil else { return .untouched }
+            copy.restoreModes(txn)
+            return .restoreAttempted
 
         case .uncertain:
             // Never touched. He is told once, at the next launch.
-            guard atLaunch, !entry.toldAtLaunch else { return }
+            guard atLaunch, !entry.toldAtLaunch else { return .untouched }
             post(.outcome(.refused(uncertainText(title: entry.title, copySeen: entry.copySeen)),
                           title: entry.title))
             update(txn) { $0.toldAtLaunch = true }
+            return .untouched
 
         case .intent:
             // CH7: asking would start SpanDAC on this Mac; otherwise it waits.
-            guard copy.spandacDataSelected() else { return }
-            guard let found = try? copy.ops().copies(ofCatalogPlaylist: entry.playlistID) else { return }
+            guard copy.spandacDataSelected() else { return .untouched }
+            guard let found = try? copy.ops().copies(ofCatalogPlaylist: entry.playlistID) else { return .untouched }
             if found.isEmpty {
                 update(txn) { $0.state = .closed }
             } else {
@@ -346,9 +365,10 @@ struct DiscoverCopyReconciler {
                 }
                 post(.outcome(.refused(discoverCopyLeftText(playlist: entry.title)), title: entry.title))
             }
+            return .untouched
 
         case .owned, .listening, .preexisting:
-            guard let hex = entry.hex else { return }
+            guard let hex = entry.hex else { return .untouched }
             switch copy.deleteIfOwned(txn) {
             case .spared:
                 update(txn) {
@@ -356,13 +376,15 @@ struct DiscoverCopyReconciler {
                     if $0.state == .owned { $0.state = .listening }
                 }
                 copy.adopt(txn, hex)
+                return .playing
             case .deleted, .alreadyGone, .kept:
                 copy.restoreModes(txn)
                 if entry.state == .preexisting {
                     update(txn) { if $0.state == .preexisting { $0.state = .closed } }
                 }
+                return .restoreAttempted
             case .failed:
-                break   // left for the next reconcile
+                return .untouched   // the copy is left for the next reconcile
             }
         }
     }

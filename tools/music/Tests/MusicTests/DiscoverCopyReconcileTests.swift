@@ -186,6 +186,93 @@ final class DiscoverCopyReconcileTests: XCTestCase {
         XCTAssertEqual(f.deleteCalls, ["O", "P"])
     }
 
+    // MARK: a pending mode restore, whatever the entry's state
+
+    private func pending(_ entry: DiscoverCopyEntry) -> DiscoverCopyEntry {
+        var copy = entry
+        copy.restorePending = true
+        return copy
+    }
+
+    func testAPendingRestoreOnAnOwnedEntryIsRetriedThoughItsDeleteKeepsFailing() throws {
+        let f = try seeded(pending(F.entry("O", .owned, hex: F.hexA, priorShuffle: true, priorRepeat: "all")))
+        f.deleteResult = { _ in .failed }
+        // The real guard over a scripted player: a half-set pair, (off, all).
+        var shuffle = false
+        var songRepeat = RepeatMode.all
+        var setsWork = false
+        let guardian = DiscoverModeGuard(journal: f.journal, seams: DiscoverModeGuard.Seams(
+            read: { (shuffle, songRepeat) },
+            setShuffle: { on in if setsWork { shuffle = on }; return setsWork },
+            setRepeat: { mode in if setsWork { songRepeat = mode }; return setsWork }))
+        f.onRestore = { guardian.restore(txn: $0) }
+
+        // The restore cannot be verified yet: everything stays for the next reconcile.
+        reconcile(f, atLaunch: true)
+        XCTAssertEqual(f.deleteCalls, ["O"])
+        XCTAssertEqual(f.restoreCalls, ["O"])
+        var entry = try XCTUnwrap(try f.onDisk().first)
+        XCTAssertEqual(entry.priorShuffle, true)
+        XCTAssertEqual(entry.restorePending, true)
+        XCTAssertFalse(shuffle)
+
+        // Verified: the mark and his values are cleared; the entry stays for the delete retry.
+        setsWork = true
+        reconcile(f, atLaunch: false)
+        XCTAssertEqual(f.deleteCalls, ["O", "O"])
+        XCTAssertEqual(f.restoreCalls, ["O", "O"])
+        XCTAssertTrue(shuffle)
+        XCTAssertEqual(songRepeat, .all)
+        entry = try XCTUnwrap(try f.onDisk().first)
+        XCTAssertNil(entry.priorShuffle)
+        XCTAssertNil(entry.priorRepeat)
+        XCTAssertNil(entry.restorePending)
+        XCTAssertEqual(entry.state, .owned)
+        XCTAssertEqual(entry.hex, F.hexA)
+
+        // Nothing left to restore: only the delete is retried.
+        reconcile(f, atLaunch: false)
+        XCTAssertEqual(f.deleteCalls, ["O", "O", "O"])
+        XCTAssertEqual(f.restoreCalls, ["O", "O"])
+    }
+
+    func testAPendingRestoreWaitsWhileTheCopyIsStillPlaying() throws {
+        let f = try seeded(pending(F.entry("L", .listening, hex: F.hexA, watching: true,
+                                           priorShuffle: true, priorRepeat: "all")))
+        f.deleteResult = { _ in .spared }
+        reconcile(f, atLaunch: false)
+        XCTAssertEqual(f.restoreCalls, [], "our play is still on: the modes stay off until it ends")
+        XCTAssertEqual(f.adoptCalls, ["L:\(F.hexA)"])
+        XCTAssertEqual(try f.onDisk().first?.restorePending, true)
+        XCTAssertEqual(try f.onDisk().first?.priorShuffle, true)
+    }
+
+    func testAPendingRestoreOnAnUncertainOrPreexistingEntryIsRetriedAndNothingElseTouched() throws {
+        let f = try seeded(
+            pending(F.entry("U", .uncertain, hex: F.hexA, copySeen: true, told: true, priorShuffle: true)),
+            pending(F.entry("P", .preexisting, hex: "00000000000000CC", priorRepeat: "one")),
+            pending(F.entry("I", .intent, priorShuffle: false)))
+        f.spandacSelected = false
+        f.deleteResult = { _ in .failed }
+        let before = try f.onDisk()
+        for atLaunch in [true, false] {
+            reconcile(f, atLaunch: atLaunch)
+        }
+        XCTAssertEqual(f.restoreCalls, ["U", "P", "I", "U", "P", "I"])
+        XCTAssertEqual(f.deleteCalls, ["P", "P"], "an uncertain copy is never offered for deletion")
+        XCTAssertEqual(f.adoptCalls, [])
+        XCTAssertEqual(f.toasts, [])
+        XCTAssertEqual(try f.onDisk(), before)
+    }
+
+    func testAPendingRestoreIsAttemptedOncePerEntryPerReconcile() throws {
+        let f = try seeded(pending(F.entry("C", .closed, priorShuffle: true)),
+                           pending(F.entry("P", .preexisting, hex: "00000000000000CC", priorRepeat: "one")))
+        f.deleteResult = { _ in .kept }
+        reconcile(f, atLaunch: false)
+        XCTAssertEqual(f.restoreCalls, ["C", "P"])
+    }
+
     // MARK: every state at once, in order
 
     func testCrashReplayAcrossEveryState() throws {
