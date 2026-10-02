@@ -104,3 +104,43 @@ func dfhRows(_ lengths: [RowLength]) -> [DiscoverItem] {
                      url: nil, artworkURL: nil, detail: .song, length: length)
     }
 }
+
+/// The restore script's contract (amendment 3a rows 2-9) as ONE Swift call
+/// over a scripted Music.app: `modes` is what the first read sees (nil =
+/// unreadable), `player` the look (nil = every player read fails), and `apply`
+/// performs the recorded sets on the model and returns what a read-back reads
+/// (nil = unreadable). There is no hook between the look and the sets. It
+/// models the generated script line for line (`DiscoverModeRestoreScriptTests`
+/// walks the text and checks it answers the same), not Music.app.
+func dfhModeRestoreContract(_ request: DiscoverModeRestoreRequest,
+                            modes: (shuffle: Bool, songRepeat: RepeatMode)?,
+                            player: DiscoverCopyPlayerRead?,
+                            apply: (_ shuffle: Bool?, _ songRepeat: RepeatMode?)
+                                -> (shuffle: Bool, songRepeat: RepeatMode)?) -> DiscoverModeRestoreAnswer {
+    guard let modes else { return .modesUnreadable }
+    // A failed state read leaves the fallback, which is not `stopped`.
+    let state = player.flatMap { $0.state.isEmpty ? nil : $0.state } ?? unreadablePlayerStateFallback
+    let notStopped = state != "stopped"
+    let comparable: [String]?
+    if case .known(let hexes) = request.ours, hexes.allSatisfy(discoverCopyHexIsWellFormed) {
+        comparable = hexes
+    } else {
+        comparable = nil
+    }
+    if let hexes = comparable {
+        var current = player?.playlistID ?? ""
+        if current == "missing value" { current = "" }
+        if notStopped && current.isEmpty { return .held(current: nil) }
+        if notStopped && hexes.contains(current) { return .held(current: current) }
+    } else if notStopped {
+        return .held(current: nil)
+    }
+    if request.unlessHeChanged && (modes.shuffle || modes.songRepeat != .off) { return .changed }
+    if request.shuffle != nil || request.songRepeat != nil,
+       request.shuffle.map({ $0 == modes.shuffle }) ?? true,
+       request.songRepeat.map({ $0 == modes.songRepeat }) ?? true {
+        return .back
+    }
+    let after = apply(request.shuffle, request.songRepeat)
+    return .set(shuffle: after?.shuffle, songRepeat: after?.songRepeat)
+}

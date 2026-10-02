@@ -25,9 +25,6 @@ final class DFHC2Fixture {
 
     var spandacSelected = true
     var deleteResult: (String) -> DiscoverCopyDeleteResult = { _ in .kept }
-    /// What reconcile's look at the player answers; nil is a failed read.
-    var playerRead: DiscoverCopyPlayerRead?
-    private(set) var observeCalls = 0
     var onAdmissionWait: (() -> Void)?
     var onRestore: ((String) -> Void)?
     /// Nil runs the launch sweep body at once; otherwise the test holds it.
@@ -100,10 +97,6 @@ final class DFHC2Fixture {
                 onRestore?(txn)
             },
             adopt: { [self] txn, hex in adoptCalls.append("\(txn):\(hex)") },
-            observePlayer: { [self] in
-                observeCalls += 1
-                return playerRead
-            },
             spandacDataSelected: { [self] in spandacSelected },
             now: Date.init,
             log: { [self] line in logs.append(line) })

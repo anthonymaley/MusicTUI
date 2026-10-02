@@ -96,8 +96,9 @@ func composeDiscoverCopyRuntime(_ parts: DiscoverCopyRuntimeParts)
     let modeGuard = DiscoverModeGuard(journal: journal, seams: parts.modes)
     let deleter = DiscoverCopyDeleter(journal: journal, run: parts.run)
 
-    // The end handler re-adopts a spared copy, so it needs the watcher it is
-    // a seam of. Held weakly: the watcher owns the closure, not the reverse.
+    // The end handler re-adopts a spared copy, and hands a held restore's
+    // copy to the watcher, so it needs the watcher it is a seam of. Held
+    // weakly: the watcher owns the closure, not the reverse.
     final class WatcherBox { weak var watcher: DiscoverCopyWatcher? }
     let box = WatcherBox()
     let watcher = DiscoverCopyWatcher(seams: DiscoverCopyWatcher.Seams(
@@ -106,11 +107,20 @@ func composeDiscoverCopyRuntime(_ parts: DiscoverCopyRuntimeParts)
         enqueueEnd: { txn in
             parts.enqueue {
                 discoverCopyHandleEnd(txn: txn, deleter: deleter, journal: journal,
-                                      restoreModes: { modeGuard.restore(txn: $0) },
+                                      restoreModes: {
+                                          discoverCopySettleModes(txn: $0, modes: modeGuard,
+                                                                  adopt: { box.watcher?.adopt(txn: $0, hex: $1) },
+                                                                  log: parts.log)
+                                      },
                                       readopt: { box.watcher?.adopt(txn: $0, hex: $1) })
             }
         }))
     box.watcher = watcher
+    // Every other caller's one guarded restore.
+    let settle: (String) -> Void = { txn in
+        discoverCopySettleModes(txn: txn, modes: modeGuard,
+                                adopt: { watcher.adopt(txn: $0, hex: $1) }, log: parts.log)
+    }
 
     let seams = DiscoverCopySeams(
         ops: parts.ops,
@@ -121,16 +131,15 @@ func composeDiscoverCopyRuntime(_ parts: DiscoverCopyRuntimeParts)
                 sleep: parts.sleep,
                 gate: gate,
                 switchModesOff: { modeGuard.switchOff(txn: txn) },
-                restoreModes: { modeGuard.restore(txn: txn) },
+                restoreModes: { settle(txn) },
                 deleteIfOwned: { _ = deleter.end(txn: txn) },
                 commitListening: commitListening,
                 progress: progress,
                 log: parts.log)).run(hex: hex, request: request)
         },
         deleteIfOwned: { deleter.end(txn: $0) },
-        restoreModes: { modeGuard.restore(txn: $0) },
+        restoreModes: settle,
         adopt: { watcher.adopt(txn: $0, hex: $1) },
-        observePlayer: { discoverCopyPlayerRead(fromScriptOutput: parts.run(discoverCopyObservationScript)) },
         spandacDataSelected: parts.spandacDataSelected,
         now: parts.now,
         log: parts.log)
@@ -156,7 +165,7 @@ func makeDiscoverCopyRuntime(backend: AppleScriptBackend, routing: RoutingCoordi
             return false
         },
         player: AppleScriptDiscoverCopyPlayer(run: run),
-        modes: .live(backend: backend),
+        modes: .live(backend: backend, run: run),
         run: run,
         now: { Date() },
         sleep: { Thread.sleep(forTimeInterval: $0) },

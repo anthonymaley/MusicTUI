@@ -93,8 +93,9 @@ struct DiscoverCopyEntry: Codable, Equatable {
     var priorShuffle: Bool?      // nil = nothing to restore
     var priorRepeat: String?     // RepeatMode.rawValue
     /// True while his modes are known or feared not to be the recorded ones
-    /// because of a set of ours: the recorded values go back whatever the
-    /// modes read now. Absent in a journal written before this field.
+    /// because of a set of ours, and while a restore attempt's script is in
+    /// flight: the recorded values go back whatever the modes read now.
+    /// Absent in a journal written before this field.
     var restorePending: Bool? = nil
     let createdAt: Int           // epoch seconds
     var updatedAt: Int
@@ -186,9 +187,6 @@ struct DiscoverCopySeams {
     var restoreModes: (_ txn: String) -> Void
     /// Hand a copy to the end watcher (S14, and reconcile's re-adopt).
     var adopt: (_ txn: String, _ hex: String) -> Void
-    /// One read-only look at the player (the end watcher's read: state,
-    /// current playlist, current track). nil = the read failed.
-    var observePlayer: () -> DiscoverCopyPlayerRead?
     /// Reconcile may ask SpanDAC for copies only while this is true.
     var spandacDataSelected: () -> Bool
     var now: () -> Date

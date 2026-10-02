@@ -13,15 +13,215 @@ import Foundation
 // any restore or rollback that could not be verified, the entry is marked
 // `restorePending`: the recorded values then go back whatever the modes read,
 // because a half-set pair is ours, not a change of his.
+//
+// THE ONE WAY HIS MODES GO BACK is `restore(txn:)`, and it runs ONE Music.app
+// script (`discoverModeRestoreScript`). That script reads the two modes, then
+// looks at the player: if the player is not stopped and the current playlist
+// is any copy the journal names (every well-formed hex, in every state), or
+// cannot be read, it answers `held` and sets nothing. Only after that look, in
+// the same script, does it check for his own change (an ordinary record), set
+// the recorded values and read them back. One malformed hex anywhere in the
+// journal makes the script hold whenever the player is not stopped. No caller
+// has a guard of its own: every caller goes through `discoverCopySettleModes`,
+// which hands a held copy to the end watcher so its end brings the restore back.
+//
+// The rollback inside `switchOff` is not a restore. It writes back the values
+// it read at the top of the same call, never the record, so it bypasses the
+// player guard; it keeps the verified, pending discipline. Inside one process
+// a restore and a switch-off never overlap: one lock is held for the whole of
+// each. The look-then-write gap shrinks to the few Apple events inside one
+// script; it cannot be zero.
+
+// MARK: - What the restore script is asked and what it answers
+
+/// Every copy the journal names, in every state, as the restore script compares them.
+enum DiscoverOurCopies: Equatable {
+    case known([String])   // sorted, de-duplicated; every one passes discoverCopyHexIsWellFormed
+    case unknowable        // some entry's hex is non-nil and malformed: any playlist could be ours
+}
+
+/// All entries, every state. A nil hex is skipped; one malformed non-nil hex -> `.unknowable`.
+func discoverOurCopies(_ entries: [DiscoverCopyEntry]) -> DiscoverOurCopies {
+    var hexes = Set<String>()
+    for entry in entries {
+        guard let hex = entry.hex else { continue }
+        guard discoverCopyHexIsWellFormed(hex) else { return .unknowable }
+        hexes.insert(hex)
+    }
+    return .known(hexes.sorted())
+}
+
+struct DiscoverModeRestoreRequest: Equatable {
+    let shuffle: Bool?            // the recorded value to put back; nil = none recorded
+    let songRepeat: RepeatMode?   // nil = none recorded (or prior_repeat is not a raw value)
+    let ours: DiscoverOurCopies
+    let unlessHeChanged: Bool     // true for an ordinary record, false for a pending one
+}
+
+/// What the one script answered. Every case but `.set` and `.unknown` means NOTHING was set.
+enum DiscoverModeRestoreAnswer: Equatable {
+    case held(current: String?)   // `held|<ID>`, `held|`: a copy of ours may be playing
+    case modesUnreadable          // `unreadable`
+    case changed                  // `changed` (believed only when unlessHeChanged)
+    case back                     // `back`: already as recorded
+    case set(shuffle: Bool?, songRepeat: RepeatMode?)   // `set|<s>,<r>`: sets sent; this is the read-back
+    case unknown                  // nil, a timeout, or anything else: sets may have happened
+}
+
+let discoverModeHeldToken = "held"
+let discoverModeUnreadableToken = "unreadable"
+let discoverModeChangedToken = "changed"
+let discoverModeBackToken = "back"
+let discoverModeSetToken = "set"
+
+/// The hexes the script may compare the current playlist with, or nil when
+/// the request must be emitted in the unknowable form. A `.known` list holding
+/// anything that is not sixteen `0-9A-F` is treated as unknowable (defence in
+/// depth: `discoverOurCopies` never builds one), so no other text can reach
+/// the script.
+private func discoverModeComparableHexes(_ ours: DiscoverOurCopies) -> [String]? {
+    guard case .known(let hexes) = ours, hexes.allSatisfy(discoverCopyHexIsWellFormed) else { return nil }
+    return hexes
+}
+
+/// AppleScript body (no `tell` wrapper) for one restore attempt: read the
+/// modes, look at the player, decide, set only the recorded halves, read back.
+/// Every `return` that sets nothing comes before the first set. Each copy of
+/// ours is an explicit `currentID is "<HEX>"` comparison (no list membership
+/// test); the hexes are uppercase by validation. Never run by the tests.
+func discoverModeRestoreScript(_ request: DiscoverModeRestoreRequest) -> String {
+    var lines = [
+        "set shuffleNow to \"\"",
+        "try",
+        "    set shuffleNow to (shuffle enabled as text)",
+        "end try",
+        "set repeatNow to \"\"",
+        "try",
+        "    set repeatNow to (song repeat as text)",
+        "end try",
+        "if shuffleNow is \"\" then return \"\(discoverModeUnreadableToken)\"",
+        "if repeatNow is \"\" then return \"\(discoverModeUnreadableToken)\"",
+        "set stateText to \"\(unreadablePlayerStateFallback)\"",
+        "try",
+        "    set stateText to (player state as text)",
+        "end try",
+    ]
+    if let hexes = discoverModeComparableHexes(request.ours) {
+        lines += [
+            "set currentID to \"\"",
+            "try",
+            "    set currentID to (persistent ID of current playlist) as text",
+            "end try",
+            "if currentID is \"missing value\" then set currentID to \"\"",
+            "if stateText is not \"stopped\" and currentID is \"\" then return \"\(discoverModeHeldToken)|\"",
+        ]
+        if !hexes.isEmpty {
+            let terms = hexes.map { "currentID is \"\($0)\"" }.joined(separator: " or ")
+            lines.append("if stateText is not \"stopped\" and (\(terms)) then return \"\(discoverModeHeldToken)|\" & currentID")
+        }
+    } else {
+        lines.append("if stateText is not \"stopped\" then return \"\(discoverModeHeldToken)|\"")
+    }
+    if request.unlessHeChanged {
+        lines += [
+            "if shuffleNow is not \"false\" then return \"\(discoverModeChangedToken)\"",
+            "if repeatNow is not \"off\" then return \"\(discoverModeChangedToken)\"",
+        ]
+    }
+    var backTerms: [String] = []
+    if let shuffle = request.shuffle { backTerms.append("shuffleNow is \"\(shuffle)\"") }
+    if let mode = request.songRepeat { backTerms.append("repeatNow is \"\(mode.rawValue)\"") }
+    if !backTerms.isEmpty {
+        lines.append("if \(backTerms.joined(separator: " and ")) then return \"\(discoverModeBackToken)\"")
+    }
+    if let shuffle = request.shuffle {
+        lines += ["try", "    set shuffle enabled to \(shuffle)", "end try"]
+    }
+    if let mode = request.songRepeat {
+        lines += ["try", "    set song repeat to \(mode.rawValue)", "end try"]
+    }
+    lines += [
+        "set shuffleAfter to \"\"",
+        "try",
+        "    set shuffleAfter to (shuffle enabled as text)",
+        "end try",
+        "set repeatAfter to \"\"",
+        "try",
+        "    set repeatAfter to (song repeat as text)",
+        "end try",
+        "return \"\(discoverModeSetToken)|\" & shuffleAfter & \",\" & repeatAfter",
+    ]
+    return lines.joined(separator: "\n")
+}
+
+/// The restore script's output, trimmed. `held|` + an ID that is well-formed
+/// after uppercasing and one of `ours` -> `.held(current: ID)`; any other
+/// `held|` -> `.held(current: nil)`. `changed` is believed only when it was
+/// asked for. `set|<s>,<r>` needs exactly two fields. Anything else -> `.unknown`.
+func parseDiscoverModeRestoreAnswer(_ output: String?,
+                                    request: DiscoverModeRestoreRequest) -> DiscoverModeRestoreAnswer {
+    guard let output else { return .unknown }
+    let text = output.trimmingCharacters(in: .whitespacesAndNewlines)
+    let heldPrefix = discoverModeHeldToken + "|"
+    if text.hasPrefix(heldPrefix) {
+        let id = String(text.dropFirst(heldPrefix.count))
+            .trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        if discoverCopyHexIsWellFormed(id), case .known(let hexes) = request.ours, hexes.contains(id) {
+            return .held(current: id)
+        }
+        return .held(current: nil)
+    }
+    switch text {
+    case discoverModeUnreadableToken: return .modesUnreadable
+    case discoverModeChangedToken: return request.unlessHeChanged ? .changed : .unknown
+    case discoverModeBackToken: return .back
+    default: break
+    }
+    let setPrefix = discoverModeSetToken + "|"
+    guard text.hasPrefix(setPrefix) else { return .unknown }
+    let fields = text.dropFirst(setPrefix.count)
+        .split(separator: ",", omittingEmptySubsequences: false)
+        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+    guard fields.count == 2 else { return .unknown }
+    let shuffle: Bool?
+    switch fields[0] {
+    case "true": shuffle = true
+    case "false": shuffle = false
+    default: shuffle = nil
+    }
+    return .set(shuffle: shuffle, songRepeat: RepeatMode(rawValue: fields[1]))
+}
+
+/// The live form of `Seams.restore`: builds the script, runs it once, parses the answer.
+func discoverModeRestore(run: ScriptRunner, _ request: DiscoverModeRestoreRequest) -> DiscoverModeRestoreAnswer {
+    parseDiscoverModeRestoreAnswer(run(discoverModeRestoreScript(request)), request: request)
+}
+
+/// What one restore attempt did.
+enum DiscoverModeRestore: Equatable {
+    case nothingRecorded      // unknown txn, or no value to put back: no script, no write
+    case journalUnreadable    // no script, no write
+    case notMarked            // the pending mark could not be written: no script
+    case held(watch: String?) // nothing set; record and mark as before the call
+    case modesUnreadable      // nothing set; record and mark as before the call
+    case hisChange            // ordinary record, modes not (off, off): nothing set, record cleared
+    case restored             // read back as recorded (already, or after the sets): record cleared
+    case unverified           // sets may have happened, not read back as recorded: record kept, pending
+}
+
+// MARK: - The guard
 
 struct DiscoverModeGuard {
     struct Seams {
-        var read: () -> (shuffle: Bool, songRepeat: RepeatMode)?   // nil = unreadable
-        var setShuffle: (Bool) -> Bool                              // false = the set failed
-        var setRepeat: (RepeatMode) -> Bool
+        var read: () -> (shuffle: Bool, songRepeat: RepeatMode)?   // switchOff ONLY; nil = unreadable
+        var setShuffle: (Bool) -> Bool                              // switchOff ONLY; false = the set failed
+        var setRepeat: (RepeatMode) -> Bool                         // switchOff ONLY
+        /// restore ONLY: one Music.app operation that looks, decides, sets and reads back.
+        var restore: (DiscoverModeRestoreRequest) -> DiscoverModeRestoreAnswer
 
-        /// Wraps `fetchPlaybackModes`, `setShuffleEnabled` and `setSongRepeat`.
-        static func live(backend: AppleScriptBackend) -> Seams {
+        /// `read`/`setShuffle`/`setRepeat` wrap `fetchPlaybackModes`,
+        /// `setShuffleEnabled` and `setSongRepeat`; `restore` runs one script on `run`.
+        static func live(backend: AppleScriptBackend, run: @escaping ScriptRunner) -> Seams {
             Seams(
                 read: {
                     guard let modes = try? fetchPlaybackModes(backend) else { return nil }
@@ -32,12 +232,15 @@ struct DiscoverModeGuard {
                 },
                 setRepeat: { mode in
                     do { try setSongRepeat(backend, mode); return true } catch { return false }
-                })
+                },
+                restore: { discoverModeRestore(run: run, $0) })
         }
     }
 
     let journal: DiscoverCopyJournalStore
     let seams: Seams
+    /// A reference, so every copy of this struct that a closure captures shares it.
+    private let lock = NSLock()
 
     init(journal: DiscoverCopyJournalStore, seams: Seams) {
         self.journal = journal
@@ -67,7 +270,10 @@ struct DiscoverModeGuard {
 
     /// True when shuffle and song repeat are now (off, off) and his prior
     /// values are recorded on `txn`. False changes nothing that stays changed.
+    /// Holds the guard's lock throughout.
     func switchOff(txn: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
         guard let current = seams.read() else { return false }
         guard let all = try? journal.entries(),
               let mine = all.first(where: { $0.txn == txn }) else { return false }
@@ -131,10 +337,11 @@ struct DiscoverModeGuard {
             }
         }
 
-        // Undo of a failed attempt: modes back as they were read, and, ONLY
-        // once a fresh read shows them back, the record back to what it was
-        // before this call. Unverified, the record stays on this entry,
-        // pending, for restore to retry.
+        // Undo of a failed attempt: modes back to the values read at the top
+        // of THIS call (never the record, and with no player guard: see the
+        // file header), and, ONLY once a fresh read shows them back, the
+        // record back to what it was before this call. Unverified, the record
+        // stays on this entry, pending, for restore to retry.
         func giveUp(shuffleSet: Bool, repeatSet: Bool) -> Bool {
             if shuffleSet { _ = seams.setShuffle(current.shuffle) }
             if repeatSet { _ = seams.setRepeat(current.songRepeat) }
@@ -174,34 +381,81 @@ struct DiscoverModeGuard {
         return true
     }
 
-    /// Puts his recorded values back unless he changed them since. Idempotent;
-    /// works on an entry in any state. The record is cleared only after a
-    /// fresh read shows both values back; until then it stays, pending, and
-    /// the next call (reconcile's included) retries instead of reading a
-    /// half-restored pair as a change of his.
-    func restore(txn: String) {
-        guard let all = try? journal.entries(),
-              let mine = all.first(where: { $0.txn == txn }),
-              holdsPrior(mine) else { return }
-        guard let current = seams.read() else { return }   // unreadable: leave it recorded
+    /// The one guarded restore. Holds the guard's lock throughout; makes at
+    /// most ONE `seams.restore` call and touches Music.app in no other way.
+    /// The entry is marked pending before the script (unless it already is)
+    /// and cleared only when the read-back matches; when the script set
+    /// nothing, the mark this call wrote is taken back.
+    @discardableResult
+    func restore(txn: String) -> DiscoverModeRestore {
+        lock.lock()
+        defer { lock.unlock() }
+        let all: [DiscoverCopyEntry]
+        do { all = try journal.entries() } catch { return .journalUnreadable }
+        guard let mine = all.first(where: { $0.txn == txn }) else { return .nothingRecorded }
+        let wantShuffle = mine.priorShuffle
         let wantRepeat = mine.priorRepeat.flatMap { RepeatMode(rawValue: $0) }
-        func isBack(_ modes: (shuffle: Bool, songRepeat: RepeatMode)) -> Bool {
-            (mine.priorShuffle == nil || modes.shuffle == mine.priorShuffle)
-                && (wantRepeat == nil || modes.songRepeat == wantRepeat)
+        guard wantShuffle != nil || wantRepeat != nil else { return .nothingRecorded }
+
+        let wasPending = mine.restorePending == true
+        if !wasPending {
+            do { try journal.update(txn: txn) { $0.restorePending = true } } catch { return .notMarked }
         }
-        if mine.restorePending == true {
-            if isBack(current) { clearRecord(txn); return }
-        } else {
-            guard isOff(current) else {
-                clearRecord(txn)   // he changed them: his values stand
-                return
-            }
-            // Marked before the first set, so a crash or a failed set between
-            // the two is retried. If the mark cannot be written, set nothing.
-            guard (try? journal.update(txn: txn) { $0.restorePending = true }) != nil else { return }
+        /// Best effort: gives back the mark this call wrote, so an ordinary
+        /// record stays ordinary when nothing was set.
+        func unmark() {
+            guard !wasPending else { return }
+            _ = try? journal.update(txn: txn) { $0.restorePending = nil }
         }
-        if let shuffle = mine.priorShuffle { _ = seams.setShuffle(shuffle) }
-        if let mode = wantRepeat { _ = seams.setRepeat(mode) }
-        if let after = seams.read(), isBack(after) { clearRecord(txn) }
+
+        let ours = discoverOurCopies(all)
+        let answer = seams.restore(DiscoverModeRestoreRequest(
+            shuffle: wantShuffle, songRepeat: wantRepeat, ours: ours, unlessHeChanged: !wasPending))
+        switch answer {
+        case .held(let current):
+            unmark()
+            guard case .known = ours else { return .held(watch: nil) }
+            if let current { return .held(watch: current) }
+            if let hex = mine.hex, discoverCopyHexIsWellFormed(hex) { return .held(watch: hex) }
+            return .held(watch: nil)
+        case .modesUnreadable:
+            unmark()
+            return .modesUnreadable
+        case .changed:
+            // Only an ordinary record is asked about his change.
+            guard !wasPending else { return .unverified }
+            clearRecord(txn)
+            return .hisChange
+        case .back:
+            clearRecord(txn)
+            return .restored
+        case .set(let shuffle, let mode):
+            let shuffleBack = wantShuffle == nil || shuffle == wantShuffle
+            let repeatBack = wantRepeat == nil || mode == wantRepeat
+            guard shuffleBack, repeatBack else { return .unverified }
+            clearRecord(txn)
+            return .restored
+        case .unknown:
+            return .unverified
+        }
     }
+}
+
+/// Every caller's `restoreModes`: one guarded attempt. On `.held(watch: X)`
+/// the copy X goes to the end watcher (`adopt(txn, X)`), so its end brings the
+/// restore back; every reconcile retries it too. Logs any result other than
+/// `.nothingRecorded` and `.restored`.
+@discardableResult
+func discoverCopySettleModes(txn: String, modes: DiscoverModeGuard,
+                             adopt: (_ txn: String, _ hex: String) -> Void,
+                             log: (String) -> Void) -> DiscoverModeRestore {
+    let result = modes.restore(txn: txn)
+    switch result {
+    case .nothingRecorded, .restored:
+        break
+    default:
+        log("discover copy \(txn): mode restore \(result)")
+    }
+    if case .held(let watch?) = result { adopt(txn, watch) }
+    return result
 }

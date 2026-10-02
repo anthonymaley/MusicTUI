@@ -277,19 +277,23 @@ struct DiscoverCopyDeleter {
 }
 
 /// What the watcher's `enqueueEnd` runs, on the action queue so it can never
-/// interleave with a play transaction. `.spared` -> watch the copy again.
-/// `.deleted` / `.alreadyGone` / `.kept` -> the modes are put back, the entry
-/// stops being watched, and a `preexisting` entry closes. `.failed` -> nothing
-/// (the journal keeps it for reconcile).
+/// interleave with a play transaction. The delete runs first, then
+/// `restoreModes` for EVERY result: it is the one guarded restore, which holds
+/// while a copy of ours may be playing (a spared copy included) and keeps the
+/// record for later when it cannot finish. Then the bookkeeping per result:
+/// `.spared` -> watch the copy again. `.deleted` / `.alreadyGone` / `.kept` ->
+/// the entry stops being watched, and a `preexisting` entry closes. `.failed`
+/// -> nothing more (the journal keeps it for reconcile).
 func discoverCopyHandleEnd(txn: String, deleter: DiscoverCopyDeleter, journal: DiscoverCopyJournalStore,
                            restoreModes: (String) -> Void, readopt: (String, String) -> Void) {
-    switch deleter.end(txn: txn) {
+    let result = deleter.end(txn: txn)
+    restoreModes(txn)
+    switch result {
     case .spared:
         guard let entry = (try? journal.entries())?.first(where: { $0.txn == txn }),
               let hex = entry.hex else { return }
         readopt(txn, hex)
     case .deleted, .alreadyGone, .kept:
-        restoreModes(txn)
         guard let entry = (try? journal.entries())?.first(where: { $0.txn == txn }),
               entry.watching || entry.state == .preexisting else { return }
         _ = try? journal.update(txn: txn) { entry in

@@ -248,13 +248,15 @@ final class DiscoverCopySequencerTests: XCTestCase {
         XCTAssertEqual(h.count("switchModesOff"), 1)
     }
 
-    func testModesThatWillNotSwitchRefuseWithNoPlayAndNoRestore() {
+    func testModesThatWillNotSwitchRefuseWithNoPlayAndOfferTheRecordBack() {
         let h = Harness(k: 5)
         h.modesResult = false
         XCTAssertEqual(h.run(), .refused(.modes))
         XCTAssertTrue(h.player.commands.isEmpty)
         XCTAssertEqual(h.count("deleteIfOwned"), 1)
-        XCTAssertEqual(h.count("restoreModes"), 0, "the mode guard has already put back what it changed")
+        XCTAssertEqual(h.count("restoreModes"), 1, "a rollback left unverified is retried by the guarded restore")
+        XCTAssertEqual(h.names.filter { $0 == "restoreModes" || $0 == "deleteIfOwned" },
+                       ["restoreModes", "deleteIfOwned"])
         XCTAssertEqual(h.gate.calls, [.ran])
         XCTAssertEqual(h.stages, [.waitingForCopy])
     }
@@ -506,8 +508,7 @@ final class DiscoverCopySequencerTests: XCTestCase {
         let mismatch = Harness(k: 3)
         mismatch.player.trackK = DiscoverCopyTrack(title: "Other", artist: "Artist", durationMS: 200_000)
         let movedAtModes = Harness(k: 3, gate: [1: .sourceChanged])
-        let modes = Harness(k: 3); modes.modesResult = false
-        for h in [notReady, changed, unread, mismatch, movedAtModes, modes] {
+        for h in [notReady, changed, unread, mismatch, movedAtModes] {
             guard case .refused = h.run() else { return XCTFail("expected a refusal") }
             XCTAssertEqual(h.count("restoreModes"), 0)
             XCTAssertEqual(h.count("deleteIfOwned"), 1)

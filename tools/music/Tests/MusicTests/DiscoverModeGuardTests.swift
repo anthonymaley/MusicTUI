@@ -1,8 +1,10 @@
 import XCTest
 @testable import music
 
-/// A scripted Music.app for the mode guard: it holds the modes, records every
-/// set in `calls`, and can fail a named set or the read.
+/// A scripted Music.app for the mode guard: it holds the modes and the
+/// player, records every set in `calls`, and can fail a named set or the read.
+/// `switchOff` reaches it through `read`/`setShuffle`/`setRepeat`; `restore`
+/// reaches it only through `dfhModeRestoreContract`, the one-script contract.
 private final class ModeGuardFakeModes {
     var shuffle: Bool
     var songRepeat: RepeatMode
@@ -17,52 +19,80 @@ private final class ModeGuardFakeModes {
     /// set answers. Nil leaves the `fail…Set` flags in charge.
     var shuffleSet: ((Bool) -> (applied: Bool, ok: Bool))?
     var repeatSet: ((RepeatMode) -> (applied: Bool, ok: Bool))?
+    /// The player as the restore script's look sees it. Stopped by default.
+    var player: DiscoverCopyPlayerRead? = DiscoverCopyPlayerRead(state: "stopped", playlistID: nil, trackID: nil)
+    /// Replaces the contract's answer (a timeout, junk output).
+    var restoreAnswer: DiscoverModeRestoreAnswer?
+    private(set) var restoreRequests: [DiscoverModeRestoreRequest] = []
 
     init(shuffle: Bool, songRepeat: RepeatMode) {
         self.shuffle = shuffle
         self.songRepeat = songRepeat
     }
 
+    private func readNow() -> (shuffle: Bool, songRepeat: RepeatMode)? {
+        guard readable else { return nil }
+        if let readOverride, calls.count >= 2 { return readOverride(shuffle, songRepeat) }
+        return (shuffle, songRepeat)
+    }
+
+    private func set(shuffle on: Bool) -> Bool {
+        if calls.isEmpty { onFirstSet?() }
+        calls.append("shuffle:\(on)")
+        if let shuffleSet {
+            let answer = shuffleSet(on)
+            if answer.applied { shuffle = on }
+            return answer.ok
+        }
+        if failShuffleSet { return false }
+        shuffle = on
+        return true
+    }
+
+    private func set(repeat mode: RepeatMode) -> Bool {
+        if calls.isEmpty { onFirstSet?() }
+        calls.append("repeat:\(mode.rawValue)")
+        if let repeatSet {
+            let answer = repeatSet(mode)
+            if answer.applied { songRepeat = mode }
+            return answer.ok
+        }
+        if failRepeatSet { return false }
+        songRepeat = mode
+        return true
+    }
+
     var seams: DiscoverModeGuard.Seams {
         DiscoverModeGuard.Seams(
-            read: { [self] in
-                guard readable else { return nil }
-                if let readOverride, calls.count >= 2 { return readOverride(shuffle, songRepeat) }
-                return (shuffle, songRepeat)
-            },
-            setShuffle: { [self] on in
-                if calls.isEmpty { onFirstSet?() }
-                calls.append("shuffle:\(on)")
-                if let shuffleSet {
-                    let answer = shuffleSet(on)
-                    if answer.applied { shuffle = on }
-                    return answer.ok
+            read: { [self] in readNow() },
+            setShuffle: { [self] in set(shuffle: $0) },
+            setRepeat: { [self] in set(repeat: $0) },
+            restore: { [self] request in
+                restoreRequests.append(request)
+                let answer = dfhModeRestoreContract(request, modes: readNow(), player: player) { s, r in
+                    if let s { _ = set(shuffle: s) }
+                    if let r { _ = set(repeat: r) }
+                    return readNow()
                 }
-                if failShuffleSet { return false }
-                shuffle = on
-                return true
-            },
-            setRepeat: { [self] mode in
-                if calls.isEmpty { onFirstSet?() }
-                calls.append("repeat:\(mode.rawValue)")
-                if let repeatSet {
-                    let answer = repeatSet(mode)
-                    if answer.applied { songRepeat = mode }
-                    return answer.ok
-                }
-                if failRepeatSet { return false }
-                songRepeat = mode
-                return true
+                return restoreAnswer ?? answer
             })
     }
 }
 
+private let ownHex = "0123456789ABCDEF"
+private let otherHex = "00000000000000AA"
+
 private func modeGuardEntry(_ txn: String, shuffle: Bool? = nil, repeat mode: String? = nil,
-                            state: DiscoverCopyState = .listening, pending: Bool? = nil) -> DiscoverCopyEntry {
-    DiscoverCopyEntry(txn: txn, playlistID: "pl.x", title: "P", state: state, hex: "0123456789ABCDEF",
+                            state: DiscoverCopyState = .listening, pending: Bool? = nil,
+                            hex: String? = ownHex) -> DiscoverCopyEntry {
+    DiscoverCopyEntry(txn: txn, playlistID: "pl.x", title: "P", state: state, hex: hex,
                       copiesRead: 1, watching: false, copySeen: false, toldAtLaunch: false,
                       priorShuffle: shuffle, priorRepeat: mode, restorePending: pending,
                       createdAt: 1, updatedAt: 1)
+}
+
+private func playing(_ playlist: String?, _ state: String = "playing") -> DiscoverCopyPlayerRead {
+    DiscoverCopyPlayerRead(state: state, playlistID: playlist, trackID: "T")
 }
 
 final class DiscoverModeGuardTests: XCTestCase {
@@ -502,5 +532,258 @@ final class DiscoverModeGuardTests: XCTestCase {
         XCTAssertNil(entry(store, "A")?.priorShuffle)
         XCTAssertNil(entry(store, "A")?.priorRepeat)
         XCTAssertNil(entry(store, "A")?.restorePending)
+    }
+
+    // MARK: - The one guarded restore
+
+    func testAClosedPendingRecordWithOurCopyPlayingIsHeldNotRestoredAndKeepsItsMark() {
+        let modes = ModeGuardFakeModes(shuffle: false, songRepeat: .all)
+        modes.player = playing(ownHex)
+        let (guardian, store) = make(
+            [modeGuardEntry("A", shuffle: true, repeat: "one", state: .closed, pending: true)], modes)
+        XCTAssertEqual(guardian.restore(txn: "A"), .held(watch: ownHex))
+        XCTAssertEqual(modes.calls, [])
+        XCTAssertEqual(entry(store, "A")?.priorShuffle, true)
+        XCTAssertEqual(entry(store, "A")?.priorRepeat, "one")
+        XCTAssertEqual(entry(store, "A")?.restorePending, true)
+    }
+
+    func testAPausedOrPlayingCopyOfAnyJournalEntryHoldsTheRestore() {
+        for state in [DiscoverCopyState.intent, .owned, .listening, .preexisting, .uncertain, .closed] {
+            for playerState in ["playing", "paused"] {
+                let modes = ModeGuardFakeModes(shuffle: false, songRepeat: .off)
+                modes.player = playing(otherHex, playerState)
+                let other = modeGuardEntry("A", state: state, hex: state == .intent ? nil : otherHex)
+                let (guardian, store) = make([other, modeGuardEntry("B", shuffle: true, repeat: "all")], modes)
+                let expected: DiscoverModeRestore = state == .intent ? .restored : .held(watch: otherHex)
+                XCTAssertEqual(guardian.restore(txn: "B"), expected, "\(state) \(playerState)")
+                if state != .intent {
+                    XCTAssertEqual(modes.calls, [], "\(state) \(playerState)")
+                    XCTAssertEqual(entry(store, "B")?.priorShuffle, true)
+                }
+            }
+        }
+    }
+
+    func testAnUnreadableCurrentPlaylistWhileNotStoppedHoldsTheRestore() {
+        let reads: [DiscoverCopyPlayerRead?] = [
+            playing(nil), playing(nil, "paused"), playing("missing value"),
+            DiscoverCopyPlayerRead(state: "", playlistID: nil, trackID: nil),   // the state read failed too
+            nil,
+        ]
+        for read in reads {
+            for pending in [nil, true] as [Bool?] {
+                let modes = ModeGuardFakeModes(shuffle: false, songRepeat: .off)
+                modes.player = read
+                let (guardian, store) = make([modeGuardEntry("A", shuffle: true, repeat: "all", pending: pending)], modes)
+                XCTAssertEqual(guardian.restore(txn: "A"), .held(watch: ownHex), "\(String(describing: read))")
+                XCTAssertEqual(modes.calls, [])
+                XCTAssertEqual(entry(store, "A")?.restorePending, pending)
+            }
+        }
+    }
+
+    func testAStoppedPlayerOrAReadableForeignPlaylistLetsTheRestoreThrough() {
+        let reads = [DiscoverCopyPlayerRead(state: "stopped", playlistID: ownHex, trackID: nil),
+                     playing("00000000000000EE"), playing("00000000000000EE", "paused")]
+        for read in reads {
+            for pending in [nil, true] as [Bool?] {
+                let modes = ModeGuardFakeModes(shuffle: false, songRepeat: .off)
+                modes.player = read
+                let (guardian, store) = make([modeGuardEntry("A", shuffle: true, repeat: "all", pending: pending)], modes)
+                XCTAssertEqual(guardian.restore(txn: "A"), .restored, "\(read)")
+                XCTAssertEqual(modes.calls, ["shuffle:true", "repeat:all"])
+                XCTAssertNil(entry(store, "A")?.priorShuffle)
+                XCTAssertNil(entry(store, "A")?.priorRepeat)
+                XCTAssertNil(entry(store, "A")?.restorePending)
+            }
+        }
+    }
+
+    func testAMalformedHexAnywhereInTheJournalFailsClosed() {
+        for bad in ["0000abcd0000abcd", "XYZ"] {
+            for (read, expected) in [(playing("00000000000000EE"), DiscoverModeRestore.held(watch: nil)),
+                                     (DiscoverCopyPlayerRead(state: "stopped", playlistID: nil, trackID: nil), .restored)] {
+                let modes = ModeGuardFakeModes(shuffle: false, songRepeat: .off)
+                modes.player = read
+                let (guardian, _) = make([modeGuardEntry("X", state: .closed, hex: bad),
+                                          modeGuardEntry("A", shuffle: true, repeat: "all")], modes)
+                XCTAssertEqual(guardian.restore(txn: "A"), expected, "\(bad) \(read)")
+                XCTAssertEqual(modes.restoreRequests.map(\.ours), [.unknowable])
+            }
+        }
+    }
+
+    func testTheLookAndTheSetsAreOneSeamCall() {
+        let answers: [DiscoverModeRestoreAnswer] = [
+            .held(current: nil), .held(current: ownHex), .modesUnreadable, .changed, .back,
+            .set(shuffle: true, songRepeat: .all), .set(shuffle: false, songRepeat: nil), .unknown,
+        ]
+        for answer in answers {
+            for pending in [nil, true] as [Bool?] {
+                var calls = 0
+                let store = InMemoryDiscoverCopyJournalStore(
+                    entries: [modeGuardEntry("A", shuffle: true, repeat: "all", pending: pending)])
+                let guardian = DiscoverModeGuard(journal: store, seams: DiscoverModeGuard.Seams(
+                    read: { XCTFail("restore read the modes outside its one script"); return nil },
+                    setShuffle: { _ in XCTFail("restore set shuffle outside its one script"); return false },
+                    setRepeat: { _ in XCTFail("restore set repeat outside its one script"); return false },
+                    restore: { _ in calls += 1; return answer }))
+                guardian.restore(txn: "A")
+                XCTAssertEqual(calls, 1, "\(answer)")
+            }
+        }
+    }
+
+    func testAHeldOrdinaryRecordGivesBackTheMarkItWrote() {
+        let modes = ModeGuardFakeModes(shuffle: false, songRepeat: .off)
+        modes.player = playing(ownHex)
+        let (_, store) = make([modeGuardEntry("A", shuffle: true, repeat: "all")], modes)
+        var pendingDuringScript: Bool?
+        let inner = modes.seams.restore
+        let watched = DiscoverModeGuard(journal: store, seams: DiscoverModeGuard.Seams(
+            read: modes.seams.read, setShuffle: modes.seams.setShuffle, setRepeat: modes.seams.setRepeat,
+            restore: { pendingDuringScript = store.stored.first?.restorePending; return inner($0) }))
+        XCTAssertEqual(watched.restore(txn: "A"), .held(watch: ownHex))
+        XCTAssertEqual(pendingDuringScript, true, "marked while the script is in flight")
+        XCTAssertNil(entry(store, "A")?.restorePending, "an ordinary record stays ordinary")
+        XCTAssertEqual(store.events, ["entries", "update:A", "update:A"], "mark, then unmark")
+        XCTAssertEqual(entry(store, "A")?.priorShuffle, true)
+    }
+
+    func testAnOrdinaryRecordAsksForHisChangeAndAPendingOneDoesNot() {
+        for pending in [nil, true] as [Bool?] {
+            let modes = ModeGuardFakeModes(shuffle: true, songRepeat: .all)   // not (off, off)
+            let (guardian, store) = make([modeGuardEntry("A", shuffle: false, repeat: "one", pending: pending)], modes)
+            let result = guardian.restore(txn: "A")
+            XCTAssertEqual(modes.restoreRequests.map(\.unlessHeChanged), [pending != true])
+            if pending == true {
+                XCTAssertEqual(result, .restored)
+                XCTAssertEqual(modes.calls, ["shuffle:false", "repeat:one"])
+            } else {
+                XCTAssertEqual(result, .hisChange)
+                XCTAssertEqual(modes.calls, [], "his values stand")
+                XCTAssertTrue(modes.shuffle)
+                XCTAssertEqual(modes.songRepeat, .all)
+            }
+            XCTAssertNil(entry(store, "A")?.priorShuffle)
+        }
+    }
+
+    func testNoAnswerOrAWrongReadBackLeavesTheRecordPending() {
+        for answer in [DiscoverModeRestoreAnswer.unknown, .set(shuffle: true, songRepeat: .off),
+                       .set(shuffle: nil, songRepeat: nil)] {
+            let modes = ModeGuardFakeModes(shuffle: false, songRepeat: .off)
+            modes.restoreAnswer = answer
+            let (guardian, store) = make([modeGuardEntry("A", shuffle: true, repeat: "all")], modes)
+            XCTAssertEqual(guardian.restore(txn: "A"), .unverified, "\(answer)")
+            XCTAssertEqual(entry(store, "A")?.priorShuffle, true)
+            XCTAssertEqual(entry(store, "A")?.priorRepeat, "all")
+            XCTAssertEqual(entry(store, "A")?.restorePending, true)
+        }
+    }
+
+    func testAMarkThatCannotBeWrittenRunsNoScript() {
+        let modes = ModeGuardFakeModes(shuffle: false, songRepeat: .off)
+        let (guardian, store) = make([modeGuardEntry("A", shuffle: true, repeat: "all")], modes)
+        store.failWrites = { $0.hasPrefix("update:A") }
+        XCTAssertEqual(guardian.restore(txn: "A"), .notMarked)
+        XCTAssertEqual(modes.restoreRequests, [])
+        XCTAssertEqual(modes.calls, [])
+        XCTAssertEqual(entry(store, "A")?.priorShuffle, true)
+        XCTAssertNil(entry(store, "A")?.restorePending)
+    }
+
+    func testASwitchOffWaitsForARestoreInFlight() {
+        let entered = DispatchSemaphore(value: 0)
+        let release = DispatchSemaphore(value: 0)
+        let reached = DispatchSemaphore(value: 0)
+        let store = InMemoryDiscoverCopyJournalStore(entries: [
+            modeGuardEntry("A", shuffle: true, repeat: "all", state: .closed, hex: nil), modeGuardEntry("B"),
+        ])
+        let guardian = DiscoverModeGuard(journal: store, seams: DiscoverModeGuard.Seams(
+            read: { reached.signal(); return nil },      // switchOff answers false at once
+            setShuffle: { _ in false },
+            setRepeat: { _ in false },
+            restore: { _ in entered.signal(); release.wait(); return .back }))
+        let done = DispatchGroup()
+        DispatchQueue.global().async(group: done) { guardian.restore(txn: "A") }
+        XCTAssertEqual(entered.wait(timeout: .now() + 5), .success)
+        DispatchQueue.global().async(group: done) { _ = guardian.switchOff(txn: "B") }
+        XCTAssertEqual(reached.wait(timeout: .now() + 0.2), .timedOut, "switchOff must not read while a restore runs")
+        release.signal()
+        XCTAssertEqual(reached.wait(timeout: .now() + 5), .success)
+        XCTAssertEqual(done.wait(timeout: .now() + 5), .success)
+    }
+
+    func testTheRollbackBypassesThePlayerAndWritesOnlyWhatThisCallRead() {
+        let modes = ModeGuardFakeModes(shuffle: true, songRepeat: .one)
+        let (guardian, store) = replayed(modes)       // he set (on, all) during our play
+        modes.player = playing(ownHex)                // and our copy is still playing
+        modes.shuffleSet = { _ in (applied: true, ok: false) }
+        let before = modes.calls.count
+        XCTAssertFalse(guardian.switchOff(txn: "A"))
+        XCTAssertEqual(Array(modes.calls[before...]), ["shuffle:false", "shuffle:true"],
+                       "the rollback writes the (on, all) read at the top of this call, not the record (on, one)")
+        XCTAssertEqual(modes.restoreRequests, [], "switchOff never goes through the guarded restore")
+        XCTAssertTrue(modes.shuffle)
+        XCTAssertEqual(modes.songRepeat, .all)
+        XCTAssertEqual(entry(store, "A")?.priorRepeat, "one")
+    }
+
+    /// Residual (Codex 69.4): the rollback is pinned to the values read at
+    /// the start of its own call, so a change he makes DURING a failed
+    /// transition is overwritten by it.
+    func testTheRollbackWritesTheValuesReadAtTheStartOfItsCallOverAConcurrentChange() {
+        let modes = ModeGuardFakeModes(shuffle: true, songRepeat: .all)
+        let (guardian, store) = make([modeGuardEntry("A")], modes)
+        modes.repeatSet = { [unowned modes] mode in
+            if mode == .off { modes.songRepeat = .one }   // his own click lands mid-transition
+            return mode == .off ? (applied: false, ok: false) : (applied: true, ok: true)
+        }
+        XCTAssertFalse(guardian.switchOff(txn: "A"))
+        XCTAssertEqual(modes.calls, ["shuffle:false", "repeat:off", "shuffle:true", "repeat:all"])
+        XCTAssertEqual(modes.songRepeat, .all, "his concurrent 'one' is overwritten by the start-of-call 'all'")
+        XCTAssertNil(entry(store, "A")?.priorShuffle, "verified back to what the call read: the record is cleared")
+        XCTAssertEqual(modes.restoreRequests, [])
+    }
+
+    // MARK: - discoverCopySettleModes
+
+    private func settled(_ answer: DiscoverModeRestoreAnswer, entries: [DiscoverCopyEntry],
+                         txn: String = "A") -> (DiscoverModeRestore, [String], [String]) {
+        let store = InMemoryDiscoverCopyJournalStore(entries: entries)
+        let guardian = DiscoverModeGuard(journal: store, seams: DiscoverModeGuard.Seams(
+            read: { nil }, setShuffle: { _ in false }, setRepeat: { _ in false }, restore: { _ in answer }))
+        var adopted: [String] = []
+        var logs: [String] = []
+        let result = discoverCopySettleModes(txn: txn, modes: guardian, adopt: { adopted.append("\($0):\($1)") },
+                                             log: { logs.append($0) })
+        return (result, adopted, logs)
+    }
+
+    func testSettleWatchesTheCopyThatHeldIt() {
+        let holder = modeGuardEntry("A", shuffle: true, repeat: "all")
+        let other = modeGuardEntry("X", state: .closed, hex: otherHex)
+        XCTAssertEqual(settled(.held(current: otherHex), entries: [holder, other]).1, ["A:\(otherHex)"])
+        XCTAssertEqual(settled(.held(current: nil), entries: [holder]).1, ["A:\(ownHex)"], "its own copy")
+        for answer in [DiscoverModeRestoreAnswer.back, .unknown, .changed, .set(shuffle: true, songRepeat: .all),
+                       .modesUnreadable] {
+            let (result, adopted, logs) = settled(answer, entries: [holder])
+            XCTAssertEqual(adopted, [], "\(answer)")
+            XCTAssertEqual(logs.isEmpty, result == .restored, "\(answer) -> \(result)")
+        }
+    }
+
+    func testSettleWatchesNothingWhenTheHoldNamesNoUsableID() {
+        let unknowable = [modeGuardEntry("A", shuffle: true, repeat: "all"), modeGuardEntry("X", hex: "XYZ")]
+        let (first, adoptedA, _) = settled(.held(current: nil), entries: unknowable)
+        XCTAssertEqual(first, .held(watch: nil))
+        XCTAssertEqual(adoptedA, [])
+        let noHex = [modeGuardEntry("A", shuffle: true, repeat: "all", state: .closed, hex: nil)]
+        let (second, adoptedB, logs) = settled(.held(current: nil), entries: noHex)
+        XCTAssertEqual(second, .held(watch: nil))
+        XCTAssertEqual(adoptedB, [])
+        XCTAssertEqual(logs.count, 1)
     }
 }

@@ -390,12 +390,31 @@ final class DiscoverCopyDeleteTests: XCTestCase {
         return (restored, readopted)
     }
 
-    func testHandleEndSparedReadoptsAndRestoresNothing() {
+    func testHandleEndSparedReadoptsAndOffersTheRecord() {
         let (journal, runner, _) = rig(.listening, hex: hex, answers: ["spared"])
         let result = handle(journal, runner)
         XCTAssertEqual(result.readopted, ["A:\(hex)"])
-        XCTAssertEqual(result.restored, [])
+        XCTAssertEqual(result.restored, ["A"], "offered; the guarded restore holds while the copy plays")
         XCTAssertEqual(journal.stored, [entry(.listening, hex: hex)])
+    }
+
+    func testHandleEndOffersTheRecordWhateverTheDeleteAnswered() {
+        let cases: [(DiscoverCopyState, String?, DiscoverCopyDeleteResult)] = [
+            (.listening, "deleted", .deleted), (.listening, "gone", .alreadyGone), (.listening, "spared", .spared),
+            (.preexisting, "kept", .kept), (.listening, nil, .failed), (.listening, "still", .failed),
+        ]
+        for (state, answer, expected) in cases {
+            let (journal, runner, _) = rig(state, hex: hex, answers: [answer])
+            var order: [String] = []
+            discoverCopyHandleEnd(txn: "A", deleter: DiscoverCopyDeleter(journal: journal, run: { script in
+                                      order.append("script")
+                                      return runner.run(script)
+                                  }),
+                                  journal: journal,
+                                  restoreModes: { order.append("restore:\($0)") },
+                                  readopt: { _, _ in })
+            XCTAssertEqual(order, ["script", "restore:A"], "\(expected): the delete first, then one offer")
+        }
     }
 
     func testHandleEndDeletedRestoresAndCloses() {
@@ -435,11 +454,11 @@ final class DiscoverCopyDeleteTests: XCTestCase {
         XCTAssertFalse(journal.stored[0].watching)
     }
 
-    func testHandleEndFailedDoesNothing() {
+    func testHandleEndFailedOffersTheRecordAndChangesNothingElse() {
         for answer in [nil, "still"] as [String?] {
             let (journal, runner, _) = rig(.listening, hex: hex, answers: [answer])
             let result = handle(journal, runner)
-            XCTAssertEqual(result.restored, [])
+            XCTAssertEqual(result.restored, ["A"])
             XCTAssertEqual(result.readopted, [])
             XCTAssertEqual(journal.stored, [entry(.listening, hex: hex)], "the journal keeps it for reconcile")
             XCTAssertEqual(writes(journal), [])

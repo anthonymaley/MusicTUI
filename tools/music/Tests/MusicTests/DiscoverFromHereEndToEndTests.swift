@@ -37,6 +37,8 @@ final class DFH6World {
     var shuffle = true
     var songRepeat: RepeatMode = .all
     private(set) var modeSets: [String] = []
+    /// Every one-script restore attempt that reached his modes.
+    private(set) var restoreAttempts = 0
 
     // His library, as the deletion guard's script sees it.
     private(set) var inLibrary = false
@@ -82,7 +84,15 @@ final class DFH6World {
             modes: DiscoverModeGuard.Seams(
                 read: { [unowned self] in (shuffle, songRepeat) },
                 setShuffle: { [unowned self] on in modeSets.append("shuffle:\(on)"); shuffle = on; return true },
-                setRepeat: { [unowned self] mode in modeSets.append("repeat:\(mode.rawValue)"); songRepeat = mode; return true }),
+                setRepeat: { [unowned self] mode in modeSets.append("repeat:\(mode.rawValue)"); songRepeat = mode; return true },
+                restore: { [unowned self] request in
+                    restoreAttempts += 1
+                    return dfhModeRestoreContract(request, modes: (shuffle, songRepeat), player: playerRead) { s, r in
+                        if let s { modeSets.append("shuffle:\(s)"); shuffle = s }
+                        if let r { modeSets.append("repeat:\(r.rawValue)"); songRepeat = r }
+                        return (shuffle, songRepeat)
+                    }
+                }),
             run: { [unowned self] in run($0) },
             now: { [clock] in clock.now() },
             sleep: { [clock] in clock.advance($0) },
@@ -108,20 +118,26 @@ final class DFH6World {
         return DiscoverCopyTrack(title: row.name, artist: row.subtitle ?? "", durationMS: ms)
     }
 
+    /// The player as one read sees it: state, current playlist, current track.
+    var playerRead: DiscoverCopyPlayerRead {
+        let state: String
+        switch player.state {
+        case .stopped: state = "stopped"
+        case .playing: state = "playing"
+        case .paused: state = "paused"
+        }
+        let track = player.currentIndex.flatMap { player.ids.indices.contains($0) ? player.ids[$0] : nil }
+        return DiscoverCopyPlayerRead(state: state, playlistID: player.currentPlaylist, trackID: track)
+    }
+
     /// The fake `ScriptRunner`: the watcher's one read, and the deletion
     /// guard's script, answered from the model. Anything else fails.
     private func run(_ script: String) -> String? {
         onFake?("script")
         if script == discoverCopyObservationScript {
             scripts.append("observe")
-            let state: String
-            switch player.state {
-            case .stopped: state = "stopped"
-            case .playing: state = "playing"
-            case .paused: state = "paused"
-            }
-            let track = player.currentIndex.flatMap { player.ids.indices.contains($0) ? player.ids[$0] : nil } ?? ""
-            return "\(state)|\(player.currentPlaylist ?? "")|\(track)"
+            let read = playerRead
+            return "\(read.state)|\(read.playlistID ?? "")|\(read.trackID ?? "")"
         }
         for delete in [true, false] where script == discoverCopyEndScript(hex: Self.hex, delete: delete) {
             scripts.append(delete ? "end:delete" : "end:check")
@@ -448,6 +464,39 @@ final class DiscoverFromHereEndToEndTests: XCTestCase {
         XCTAssertEqual(world.shuffle, true)
         XCTAssertEqual(world.songRepeat, .all)
         XCTAssertEqual(world.entries().map(\.state), [.closed])
+    }
+
+    /// The 67.1 race through the production composition: the watcher signals
+    /// the end, he starts the same copy again before the queued end runs. The
+    /// delete spares it, the guarded restore holds, and his modes stay off
+    /// until that play ends too.
+    func testHeRestartsTheCopyBeforeTheQueuedEndRunsAndHisModesStayOffUntilItEnds() {
+        let world = DFH6World(rows: dfh6Rows(), selected: 0)
+        let lifecycle = world.lifecycle(status: status)
+        XCTAssertTrue(isListening(play(world, lifecycle, selected: 0)))
+        let setsAfterPlay = world.modeSets
+
+        _ = world.player.stop()
+        world.runtime.watcher.tick()
+        world.clock.advance(DiscoverCopyTiming.endEvidenceGap)
+        world.runtime.watcher.tick()
+        XCTAssertEqual(world.pendingEnds.count, 1, "the end is queued, not yet run")
+
+        world.player.state = .playing        // he restarts the copy from Music.app
+        world.runEnds()
+        XCTAssertEqual(world.deletes, [], "spared")
+        XCTAssertEqual(world.modeSets, setsAfterPlay, "held: nothing set while our copy plays")
+        XCTAssertEqual(world.shuffle, false)
+        XCTAssertEqual(world.songRepeat, .off)
+        XCTAssertEqual(world.entries().first?.priorShuffle, true)
+        XCTAssertNil(world.entries().first?.restorePending, "an ordinary record stays ordinary")
+
+        world.stopAndWatchTheEnd()
+        XCTAssertEqual(world.deletes, [DFH6World.hex])
+        XCTAssertEqual(world.shuffle, true)
+        XCTAssertEqual(world.songRepeat, .all)
+        XCTAssertEqual(world.entries().map(\.state), [.closed])
+        XCTAssertNil(world.entries().first?.priorShuffle)
     }
 
     // MARK: - Messages through the real StatusStore (item 7)

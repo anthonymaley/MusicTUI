@@ -165,7 +165,7 @@ final class DiscoverCopyReconcileTests: XCTestCase {
 
             let after = try f.onDisk()
             XCTAssertEqual(f.deleteCalls, ["O", "L", "P"], "\(result)")
-            XCTAssertEqual(f.restoreCalls, ["O", "L", "P"], "\(result)")
+            XCTAssertEqual(f.restoreCalls, [], "\(result): none of them holds a record")
             XCTAssertEqual(f.adoptCalls, [], "\(result)")
             // Reconcile closes only the preexisting one; the guard owns the rest.
             XCTAssertEqual(after.map(\.state), [.owned, .listening, .closed], "\(result)")
@@ -186,7 +186,7 @@ final class DiscoverCopyReconcileTests: XCTestCase {
         XCTAssertEqual(f.deleteCalls, ["O", "P"])
     }
 
-    // MARK: a pending mode restore, whatever the entry's state
+    // MARK: a recorded mode restore, whatever the entry's state
 
     private func pending(_ entry: DiscoverCopyEntry) -> DiscoverCopyEntry {
         var copy = entry
@@ -194,19 +194,43 @@ final class DiscoverCopyReconcileTests: XCTestCase {
         return copy
     }
 
+    /// A scripted Music.app: his modes, every set that reached them, and the player.
+    private final class Music68 {
+        var shuffle = false
+        var songRepeat = RepeatMode.all
+        var state = "stopped"
+        var current: String?
+        var setsWork = true
+        private(set) var sets: [String] = []
+        func set(shuffle on: Bool) { sets.append("shuffle:\(on)"); if setsWork { shuffle = on } }
+        func set(repeat mode: RepeatMode) { sets.append("repeat:\(mode.rawValue)"); if setsWork { songRepeat = mode } }
+    }
+
+    /// The real guard over `music`: restore reaches it only through the
+    /// one-script contract; switch-off is not exercised here.
+    private func guardOver(_ music: Music68, _ journal: DiscoverCopyJournalStore) -> DiscoverModeGuard {
+        DiscoverModeGuard(journal: journal, seams: DiscoverModeGuard.Seams(
+            read: { XCTFail("reconcile never switches off"); return nil },
+            setShuffle: { _ in XCTFail("reconcile never switches off"); return false },
+            setRepeat: { _ in XCTFail("reconcile never switches off"); return false },
+            restore: { request in
+                dfhModeRestoreContract(request, modes: (music.shuffle, music.songRepeat),
+                                       player: DiscoverCopyPlayerRead(state: music.state, playlistID: music.current,
+                                                                      trackID: nil)) { s, r in
+                    if let s { music.set(shuffle: s) }
+                    if let r { music.set(repeat: r) }
+                    return (music.shuffle, music.songRepeat)
+                }
+            }))
+    }
+
     func testAPendingRestoreOnAnOwnedEntryIsRetriedThoughItsDeleteKeepsFailing() throws {
         let f = try seeded(pending(F.entry("O", .owned, hex: F.hexA, priorShuffle: true, priorRepeat: "all")))
         f.deleteResult = { _ in .failed }
-        // A failed delete proves nothing about the player: reconcile looks, and it is stopped.
-        f.playerRead = Self.stoppedRead
-        // The real guard over a scripted player: a half-set pair, (off, all).
-        var shuffle = false
-        var songRepeat = RepeatMode.all
-        var setsWork = false
-        let guardian = DiscoverModeGuard(journal: f.journal, seams: DiscoverModeGuard.Seams(
-            read: { (shuffle, songRepeat) },
-            setShuffle: { on in if setsWork { shuffle = on }; return setsWork },
-            setRepeat: { mode in if setsWork { songRepeat = mode }; return setsWork }))
+        // The real guard over a scripted player, stopped: a half-set pair, (off, all).
+        let music = Music68()
+        music.setsWork = false
+        let guardian = guardOver(music, f.journal)
         f.onRestore = { guardian.restore(txn: $0) }
 
         // The restore cannot be verified yet: everything stays for the next reconcile.
@@ -216,15 +240,15 @@ final class DiscoverCopyReconcileTests: XCTestCase {
         var entry = try XCTUnwrap(try f.onDisk().first)
         XCTAssertEqual(entry.priorShuffle, true)
         XCTAssertEqual(entry.restorePending, true)
-        XCTAssertFalse(shuffle)
+        XCTAssertFalse(music.shuffle)
 
         // Verified: the mark and his values are cleared; the entry stays for the delete retry.
-        setsWork = true
+        music.setsWork = true
         reconcile(f, atLaunch: false)
         XCTAssertEqual(f.deleteCalls, ["O", "O"])
         XCTAssertEqual(f.restoreCalls, ["O", "O"])
-        XCTAssertTrue(shuffle)
-        XCTAssertEqual(songRepeat, .all)
+        XCTAssertTrue(music.shuffle)
+        XCTAssertEqual(music.songRepeat, .all)
         entry = try XCTUnwrap(try f.onDisk().first)
         XCTAssertNil(entry.priorShuffle)
         XCTAssertNil(entry.priorRepeat)
@@ -242,9 +266,16 @@ final class DiscoverCopyReconcileTests: XCTestCase {
         let f = try seeded(pending(F.entry("L", .listening, hex: F.hexA, watching: true,
                                            priorShuffle: true, priorRepeat: "all")))
         f.deleteResult = { _ in .spared }
+        let music = Music68()
+        music.state = "playing"
+        music.current = F.hexA
+        let guardian = guardOver(music, f.journal)
+        let seams = f.copySeams
+        f.onRestore = { discoverCopySettleModes(txn: $0, modes: guardian, adopt: seams.adopt, log: { _ in }) }
         reconcile(f, atLaunch: false)
-        XCTAssertEqual(f.restoreCalls, [], "our play is still on: the modes stay off until it ends")
-        XCTAssertEqual(f.adoptCalls, ["L:\(F.hexA)"])
+        XCTAssertEqual(f.restoreCalls, ["L"], "offered, and the primitive holds it")
+        XCTAssertEqual(music.sets, [], "our play is still on: the modes stay off until it ends")
+        XCTAssertEqual(f.adoptCalls, ["L:\(F.hexA)", "L:\(F.hexA)"], "the spared replay, then the held restore")
         XCTAssertEqual(try f.onDisk().first?.restorePending, true)
         XCTAssertEqual(try f.onDisk().first?.priorShuffle, true)
     }
@@ -256,7 +287,6 @@ final class DiscoverCopyReconcileTests: XCTestCase {
             pending(F.entry("I", .intent, priorShuffle: false)))
         f.spandacSelected = false
         f.deleteResult = { _ in .failed }
-        f.playerRead = Self.stoppedRead     // the two entries with a copy need the player seen off it
         let before = try f.onDisk()
         for atLaunch in [true, false] {
             reconcile(f, atLaunch: atLaunch)
@@ -268,81 +298,83 @@ final class DiscoverCopyReconcileTests: XCTestCase {
         XCTAssertEqual(try f.onDisk(), before)
     }
 
-    private static let stoppedRead = DiscoverCopyPlayerRead(state: "stopped", playlistID: nil, trackID: nil)
-
-    func testAFailedDeleteWithOurCopyPlayingRestoresNothingAndWatchesItAgain() throws {
-        // He started the same copy again before the queued end ran, and the delete script failed.
-        for state in [DiscoverCopyState.owned, .listening] {
-            let f = try seeded(pending(F.entry("O", state, hex: F.hexA, priorShuffle: true, priorRepeat: "all")))
-            f.deleteResult = { _ in .failed }
-            f.playerRead = DiscoverCopyPlayerRead(state: "playing", playlistID: F.hexA, trackID: "T")
-            let before = try f.onDisk()
-            reconcile(f, atLaunch: false)
-            XCTAssertEqual(f.restoreCalls, [], "\(state): his modes must stay off while our copy plays")
-            XCTAssertEqual(f.adoptCalls, ["O:\(F.hexA)"], "\(state): its end must still be handled")
-            XCTAssertEqual(f.observeCalls, 1)
-            XCTAssertEqual(try f.onDisk(), before)
-            XCTAssertEqual(try f.onDisk().first?.restorePending, true)
-        }
-    }
-
-    func testAFailedDeleteWithAnUnreadablePlayerRestoresNothingAndKeepsThePendingMark() throws {
-        let reads: [DiscoverCopyPlayerRead?] = [
-            nil,
-            DiscoverCopyPlayerRead(state: "playing", playlistID: nil, trackID: nil),   // a station or stream
-            DiscoverCopyPlayerRead(state: "", playlistID: nil, trackID: nil),
-        ]
-        for read in reads {
-            let f = try seeded(
-                pending(F.entry("O", .owned, hex: F.hexA, priorShuffle: true)),
-                pending(F.entry("P", .preexisting, hex: "00000000000000CC", priorRepeat: "one")),
-                pending(F.entry("U", .uncertain, hex: "00000000000000DD", copySeen: true, told: true,
-                                priorShuffle: true)))
-            f.deleteResult = { _ in .failed }
-            f.playerRead = read
-            let before = try f.onDisk()
-            reconcile(f, atLaunch: false)
-            XCTAssertEqual(f.restoreCalls, [], "\(String(describing: read))")
-            // Only a copy of ours is handed back to the watcher.
-            XCTAssertEqual(f.adoptCalls, ["O:\(F.hexA)"], "\(String(describing: read))")
-            XCTAssertEqual(try f.onDisk(), before)
-        }
-    }
-
-    func testAFailedDeleteWithThePlayerStoppedOrInAnotherPlaylistRestores() throws {
-        let reads = [
-            Self.stoppedRead,
-            DiscoverCopyPlayerRead(state: "playing", playlistID: "00000000000000EE", trackID: "T"),
-            DiscoverCopyPlayerRead(state: "paused", playlistID: "00000000000000EE", trackID: nil),
-        ]
-        for read in reads {
-            let f = try seeded(pending(F.entry("O", .owned, hex: F.hexA, priorShuffle: true)))
-            f.deleteResult = { _ in .failed }
-            f.playerRead = read
-            reconcile(f, atLaunch: false)
-            XCTAssertEqual(f.restoreCalls, ["O"], "\(read)")
-            XCTAssertEqual(f.adoptCalls, [], "\(read)")
-        }
-    }
-
-    func testThePlayerIsLookedAtOnlyForAPendingRestoreWithNoOtherEvidence() throws {
-        let f = try seeded(F.entry("O", .owned, hex: F.hexA, priorShuffle: true),          // not pending
-                           pending(F.entry("S", .listening, hex: "00000000000000BB", priorShuffle: true)),
-                           pending(F.entry("C", .closed, priorShuffle: true)),
-                           pending(F.entry("I", .intent, priorShuffle: true)))               // no copy known
-        f.spandacSelected = false
-        f.deleteResult = { $0 == "S" ? .spared : .failed }
-        reconcile(f, atLaunch: false)
-        XCTAssertEqual(f.observeCalls, 0)
-        XCTAssertEqual(f.restoreCalls, ["C", "I"])
-    }
-
     func testAPendingRestoreIsAttemptedOncePerEntryPerReconcile() throws {
         let f = try seeded(pending(F.entry("C", .closed, priorShuffle: true)),
                            pending(F.entry("P", .preexisting, hex: "00000000000000CC", priorRepeat: "one")))
         f.deleteResult = { _ in .kept }
         reconcile(f, atLaunch: false)
         XCTAssertEqual(f.restoreCalls, ["C", "P"])
+    }
+
+    func testReconcileOffersEveryRecordHolderOnceWhateverItsStateOrDeleteResult() throws {
+        let states: [DiscoverCopyState] = [.intent, .owned, .listening, .preexisting, .uncertain, .closed]
+        func hex(_ state: DiscoverCopyState, _ n: Int) -> String? {
+            state == .intent ? nil : String(format: "%016X", 0xC000 + n)
+        }
+        for result in [DiscoverCopyDeleteResult.spared, .deleted, .alreadyGone, .kept, .failed] {
+            for marked in [false, true] {
+                var entries: [DiscoverCopyEntry] = []
+                for (n, state) in states.enumerated() {
+                    var holder = F.entry("R-\(state.rawValue)", state, hex: hex(state, n), told: true,
+                                         priorShuffle: true, priorRepeat: "all")
+                    holder.restorePending = marked ? true : nil
+                    entries.append(holder)
+                    entries.append(F.entry("N-\(state.rawValue)", state, hex: hex(state, n + 10), told: true))
+                }
+                let f = F()
+                for entry in entries { try f.journal.insert(entry) }
+                f.spandacSelected = false
+                f.deleteResult = { _ in result }
+                reconcile(f, atLaunch: false)
+                XCTAssertEqual(f.restoreCalls, states.map { "R-\($0.rawValue)" }, "\(result), pending \(marked)")
+            }
+        }
+    }
+
+    func testAClosedPendingEntryWhoseCopyPlaysIsHeldAndWatchedThroughReconcile() throws {
+        let f = try seeded(pending(F.entry("C", .closed, hex: F.hexA, priorShuffle: true, priorRepeat: "all")))
+        let music = Music68()
+        music.state = "playing"
+        music.current = F.hexA
+        let guardian = guardOver(music, f.journal)
+        let seams = f.copySeams
+        f.onRestore = { discoverCopySettleModes(txn: $0, modes: guardian, adopt: seams.adopt, log: { _ in }) }
+        reconcile(f, atLaunch: false)
+        XCTAssertEqual(music.sets, [])
+        XCTAssertEqual(try f.onDisk().first?.restorePending, true)
+        XCTAssertEqual(try f.onDisk().first?.priorShuffle, true)
+        XCTAssertEqual(f.adoptCalls, ["C:\(F.hexA)"])
+    }
+
+    // MARK: Codex 68 reproductions (failed at f49d19d; only the guard's construction changed)
+
+    func testRepro68_1_AClosedPendingRecordIsNotRestoredWhileItsCopyPlays() throws {
+        let f = try seeded(pending(F.entry("C", .closed, hex: F.hexA, priorShuffle: true, priorRepeat: "all")))
+        let music = Music68()
+        music.state = "playing"
+        music.current = F.hexA
+        let guardian = guardOver(music, f.journal)
+        f.onRestore = { guardian.restore(txn: $0) }
+        reconcile(f, atLaunch: false)
+        XCTAssertEqual(music.sets, [], "his modes must stay off while our copy plays")
+        XCTAssertEqual(try f.onDisk().first?.restorePending, true)
+        XCTAssertEqual(try f.onDisk().first?.priorShuffle, true)
+    }
+
+    func testRepro68_2_APlayStartedBetweenTheLookAndTheSetsIsNotRestoredOver() throws {
+        let f = try seeded(pending(F.entry("O", .owned, hex: F.hexA, priorShuffle: true, priorRepeat: "all")))
+        f.deleteResult = { _ in .failed }
+        let music = Music68()
+        let guardian = guardOver(music, f.journal)
+        f.onRestore = {
+            // He starts our copy after the look and before the restore writes.
+            music.state = "playing"
+            music.current = F.hexA
+            guardian.restore(txn: $0)
+        }
+        reconcile(f, atLaunch: false)
+        XCTAssertEqual(music.sets, [], "the look and the write must be one operation")
+        XCTAssertEqual(try f.onDisk().first?.restorePending, true)
     }
 
     // MARK: every state at once, in order
@@ -363,7 +395,7 @@ final class DiscoverCopyReconcileTests: XCTestCase {
         XCTAssertEqual(try f.onDisk().map(\.state),
                        [.closed, .uncertain, .uncertain, .owned, .listening, .closed])
         XCTAssertEqual(try f.onDisk().map(\.toldAtLaunch), [false, true, true, false, false, false])
-        XCTAssertEqual(f.restoreCalls, ["closed", "preexisting"])
+        XCTAssertEqual(f.restoreCalls, ["closed"], "the only entry holding a record")
         XCTAssertEqual(f.deleteCalls, ["owned", "listening", "preexisting"])
         XCTAssertEqual(f.adoptCalls, ["listening:00000000000000BB"])
         XCTAssertEqual(f.toasts, [
@@ -404,7 +436,7 @@ final class DiscoverCopyReconcileTests: XCTestCase {
         f.ops.copiesResults = [.success([])]
         reconcile(f, atLaunch: true)
         XCTAssertEqual(journal.stored.map(\.state), [.intent, .preexisting])
-        XCTAssertEqual(f.restoreCalls, ["P"])
+        XCTAssertEqual(f.restoreCalls, [], "P holds no record")
         XCTAssertFalse(f.logs.filter { $0.contains("journal write failed") }.isEmpty)
     }
 

@@ -389,6 +389,7 @@ struct DiscoverCopySequencer {
             return .refused(refusal)
         }
         guard modesOff else {
+            seams.restoreModes()
             seams.deleteIfOwned()
             return .refused(.modes)
         }
