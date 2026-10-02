@@ -165,6 +165,21 @@ final class DiscoverCopySequencerTests: XCTestCase {
         assertOnlyCadenceSleeps(h)
     }
 
+    func testAStableZeroAtTheBoundIsNotReadyRatherThanChanged() {
+        // A copy that never loaded: nothing says he changed the playlist.
+        let h = Harness(k: 3)
+        h.player.trackCounts = [0]
+        XCTAssertEqual(h.run(), .refused(.notReady))
+        XCTAssertGreaterThan(h.elapsed, DiscoverCopyTiming.readinessBound - 2 * DiscoverCopyTiming.readinessCadence)
+        XCTAssertLessThanOrEqual(h.elapsed, DiscoverCopyTiming.readinessBound + 0.001)
+        XCTAssertEqual(h.count("deleteIfOwned"), 1)
+        XCTAssertEqual(h.count("read:3"), 0)
+        XCTAssertEqual(h.count("restoreModes"), 0)
+        XCTAssertTrue(h.player.commands.isEmpty)
+        XCTAssertTrue(h.gate.calls.isEmpty)
+        assertOnlyCadenceSleeps(h)
+    }
+
     func testAnUnreadableCountAtTheBoundIsNotReady() {
         let h = Harness(k: 3)
         h.player.trackCounts = [nil]

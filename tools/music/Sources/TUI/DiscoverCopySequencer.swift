@@ -340,7 +340,8 @@ struct DiscoverCopySequencer {
 
         // S5 + S6 (CH4): two reads in a row equal to n are ready; two in a row
         // above n refuse at once; a stable smaller count at the bound refuses
-        // as changed; anything else at the bound is not ready.
+        // as changed, except a stable zero, which is a copy that never loaded;
+        // that and anything else at the bound is not ready.
         seams.progress(.waitingForCopy)
         var previous: Int?
         var latest: Int?
@@ -355,7 +356,7 @@ struct DiscoverCopySequencer {
             return nil
         }
         guard readiness == .ready else {
-            let stable = latest != nil && latest == previous
+            let stable = latest != nil && latest == previous && latest != 0
             seams.log("discover copy: S5 refused at \(elapsed()), last count \(latest.map(String.init) ?? "unreadable") of \(n)")
             seams.deleteIfOwned()
             return .refused(stable ? .countChanged : .notReady)
