@@ -59,10 +59,13 @@ final class DiscoverCopyDeleteTests: XCTestCase {
     func testTheDeleteComesAfterTheGoneAndSparedChecks() throws {
         let script = discoverCopyEndScript(hex: hex, delete: true)
         let gone = try XCTUnwrap(script.range(of: "if pl is missing value then return \"gone\""))
+        let unreadable = try XCTUnwrap(script.range(of:
+            "if active and not currentReadable then return \"spared\""))
         let spared = try XCTUnwrap(script.range(of:
-            "if currentID is \"\(hex)\" and stateText is not \"stopped\" then return \"spared\""))
+            "if active and currentID is \"\(hex)\" then return \"spared\""))
         let delete = try XCTUnwrap(script.range(of: "delete pl"))
-        XCTAssertLessThan(gone.lowerBound, spared.lowerBound)
+        XCTAssertLessThan(gone.lowerBound, unreadable.lowerBound)
+        XCTAssertLessThan(unreadable.lowerBound, spared.lowerBound)
         XCTAssertLessThan(spared.upperBound, delete.lowerBound)
         XCTAssertTrue(script.hasSuffix("if pl is missing value then return \"deleted\"\nreturn \"still\""))
     }
@@ -79,6 +82,153 @@ final class DiscoverCopyDeleteTests: XCTestCase {
         XCTAssertTrue(script.hasPrefix(discoverCopyLookupPreamble(hex: hex)))
         XCTAssertTrue(script.hasSuffix("return \"kept\""))
         XCTAssertFalse(script.contains(title))
+    }
+
+    // MARK: The script's decision, walked line by line
+    //
+    // The script is never run here. `walk` is a small reader of exactly the
+    // line forms `discoverCopyEndScript` emits; it fails the test on any line
+    // it does not know, so the script cannot drift away from it unnoticed. It
+    // is a model of AppleScript, not AppleScript.
+
+    private struct Player {
+        var state: String?          // nil = the read fails
+        var current: String?        // nil = the read fails
+        var copyPresent = true
+        var deleteWorks = true
+    }
+
+    private func walk(_ script: String, _ player: Player) -> (answer: String?, deleted: Bool) {
+        var player = player
+        var deleted = false
+        var vars: [String: String] = [:]
+        let lookup = discoverCopyLookupPreamble(hex: hex)
+        let lines = script.replacingOccurrences(of: lookup, with: "LOOKUP")
+            .split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
+
+        func quoted(_ text: String) -> String? {
+            guard text.count >= 2, text.hasPrefix("\""), text.hasSuffix("\"") else { return nil }
+            return String(text.dropFirst().dropLast())
+        }
+        func value(_ expression: String) -> String?? {      // .some(nil) = the read fails
+            if let literal = quoted(expression) { return literal }
+            switch expression {
+            case "true", "false": return expression
+            case "(player state as text)": return .some(player.state)
+            case "(persistent ID of current playlist) as text": return .some(player.current)
+            default: return nil
+            }
+        }
+        func holds(_ condition: String) -> Bool? {
+            var all = true
+            for term in condition.components(separatedBy: " and ") {
+                let one: Bool
+                if term == "pl is missing value" { one = vars["pl"] == nil }
+                else if term.hasPrefix("not "), let v = vars[String(term.dropFirst(4))] { one = v == "false" }
+                else if let r = term.range(of: " is "), let v = vars[String(term[..<r.lowerBound])],
+                        let literal = quoted(String(term[r.upperBound...])) { one = v == literal }
+                else if let v = vars[term], v == "true" || v == "false" { one = v == "true" }
+                else { return nil }
+                all = all && one
+            }
+            return all
+        }
+        /// Runs one simple statement. Returns an answer when it is a `return`.
+        func statement(_ line: String) -> (answer: String?, failed: Bool)? {
+            if line == "delete pl" {
+                deleted = true
+                if player.deleteWorks { player.copyPresent = false }
+                return (nil, false)
+            }
+            if line.hasPrefix("return "), let word = quoted(String(line.dropFirst(7))) { return (word, false) }
+            if line.hasPrefix("set "), let r = line.range(of: " to ") {
+                let name = String(line[line.index(line.startIndex, offsetBy: 4)..<r.lowerBound])
+                guard let got = value(String(line[r.upperBound...])) else { return nil }
+                guard let text = got else { return (nil, true) }
+                vars[name] = text
+                return (nil, false)
+            }
+            return nil
+        }
+
+        var inTry = false
+        var skipping = false
+        for line in lines {
+            if line == "LOOKUP" { vars["pl"] = player.copyPresent ? "found" : nil; continue }
+            if line == "try" { inTry = true; skipping = false; continue }
+            if line == "end try" { inTry = false; skipping = false; continue }
+            if skipping { continue }
+            var body = line
+            if line.hasPrefix("if "), let r = line.range(of: " then ") {
+                guard let yes = holds(String(line[line.index(line.startIndex, offsetBy: 3)..<r.lowerBound])) else {
+                    XCTFail("unknown condition: \(line)"); return (nil, deleted)
+                }
+                if !yes { continue }
+                body = String(line[r.upperBound...])
+            }
+            guard let done = statement(body) else { XCTFail("unknown line: \(line)"); return (nil, deleted) }
+            if done.failed {
+                guard inTry else { XCTFail("a read failed outside a try: \(line)"); return (nil, deleted) }
+                skipping = true
+                continue
+            }
+            if let answer = done.answer { return (answer, deleted) }
+        }
+        XCTFail("the script ended without an answer")
+        return (nil, deleted)
+    }
+
+    private let otherID = "FFEEDDCC00112233"
+
+    func testActiveWithAnUnreadableCurrentPlaylistIsSparedAndNothingIsDeleted() {
+        let script = discoverCopyEndScript(hex: hex, delete: true)
+        for state in ["playing", "paused", "fast forwarding", "rewinding", nil] as [String?] {
+            for current in [nil, "", "missing value"] as [String?] {
+                let result = walk(script, Player(state: state, current: current))
+                XCTAssertEqual(result.answer, "spared", "\(String(describing: state)) / \(String(describing: current))")
+                XCTAssertFalse(result.deleted, "the delete command is never reached")
+            }
+        }
+    }
+
+    func testStoppedWithAnUnreadableCurrentPlaylistDeletes() {
+        let script = discoverCopyEndScript(hex: hex, delete: true)
+        for current in [nil, "", "missing value"] as [String?] {
+            let result = walk(script, Player(state: "stopped", current: current))
+            XCTAssertEqual(result.answer, "deleted")
+            XCTAssertTrue(result.deleted)
+        }
+    }
+
+    func testActiveInAnotherPlaylistDeletes() {
+        let script = discoverCopyEndScript(hex: hex, delete: true)
+        for state in ["playing", "paused"] {
+            let result = walk(script, Player(state: state, current: otherID))
+            XCTAssertEqual(result.answer, "deleted", state)
+            XCTAssertTrue(result.deleted, state)
+        }
+    }
+
+    func testTheRestOfTheDecisionTable() {
+        let script = discoverCopyEndScript(hex: hex, delete: true)
+        var result = walk(script, Player(state: "playing", current: hex))
+        XCTAssertEqual(result.answer, "spared"); XCTAssertFalse(result.deleted)
+        result = walk(script, Player(state: nil, current: hex))
+        XCTAssertEqual(result.answer, "spared", "an unreadable state counts as active"); XCTAssertFalse(result.deleted)
+        result = walk(script, Player(state: "stopped", current: hex))
+        XCTAssertEqual(result.answer, "deleted"); XCTAssertTrue(result.deleted)
+        result = walk(script, Player(state: "stopped", current: nil, copyPresent: false))
+        XCTAssertEqual(result.answer, "gone"); XCTAssertFalse(result.deleted)
+        result = walk(script, Player(state: "stopped", current: nil, deleteWorks: false))
+        XCTAssertEqual(result.answer, "still"); XCTAssertTrue(result.deleted)
+
+        let keeping = discoverCopyEndScript(hex: hex, delete: false)
+        result = walk(keeping, Player(state: "stopped", current: nil))
+        XCTAssertEqual(result.answer, "kept"); XCTAssertFalse(result.deleted)
+        result = walk(keeping, Player(state: "playing", current: nil))
+        XCTAssertEqual(result.answer, "spared"); XCTAssertFalse(result.deleted)
+        result = walk(keeping, Player(state: "playing", current: otherID))
+        XCTAssertEqual(result.answer, "kept"); XCTAssertFalse(result.deleted)
     }
 
     // MARK: Which entries run a script at all

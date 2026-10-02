@@ -177,7 +177,8 @@ private func discoverCopyIsPersistentIDHex(_ hex: String) -> Bool {
 /// AppleScript body (no `tell` wrapper) that ends one copy, addressed by
 /// persistent ID only: no playlist name appears in it. It answers one word:
 ///   `gone`    the copy was not in the library before anything was done;
-///   `spared`  the copy is the current playlist and the player is not stopped;
+///   `spared`  the player is not stopped and the current playlist is the copy,
+///             or could not be read (it could be the copy);
 ///   `deleted` it was deleted and then read absent      (only when `delete`);
 ///   `still`   it was deleted and still read present    (only when `delete`);
 ///   `kept`    nothing was deleted                      (only when not `delete`).
@@ -193,10 +194,17 @@ func discoverCopyEndScript(hex: String, delete: Bool) -> String {
         set stateText to (player state as text)
     end try
     set currentID to ""
+    set currentReadable to false
     try
         set currentID to (persistent ID of current playlist) as text
+        set currentReadable to true
     end try
-    if currentID is "\(hex)" and stateText is not "stopped" then return "spared"
+    if currentID is "" then set currentReadable to false
+    if currentID is "missing value" then set currentReadable to false
+    set active to true
+    if stateText is "stopped" then set active to false
+    if active and not currentReadable then return "spared"
+    if active and currentID is "\(hex)" then return "spared"
     """
     guard delete else {
         return guardLines + "\nreturn \"kept\""
