@@ -92,7 +92,13 @@ func runShell() {
     // One owner for Discover containers: admission after the launch sweep,
     // protection at exit, confirmation of ownership in between
     // (docs/plans/2026-09-03-discover-lifecycle-design.md).
-    let discoverLifecycle = makeDiscoverLifecycleCoordinator(backend: backend, status: status)
+    // Play from here on Apple's own copy of a playlist: the journal lives in
+    // ~/.config/music/discover-copies, and a copy he has stopped listening to
+    // is ended on the action queue, so it never interleaves with a play.
+    let discoverCopy = makeDiscoverCopyRuntime(backend: backend, routing: routing, paths: .live,
+                                               enqueue: { actions.enqueueQuiet($0) })
+    let discoverLifecycle = makeDiscoverLifecycleCoordinator(backend: backend, status: status,
+                                                             copy: discoverCopy.seams)
     let terminal = TerminalState.shared
     // Computed once (env-based, no stdin response parsing — design doc sharp
     // edge #5) and threaded into every art-rendering scene.
@@ -253,6 +259,9 @@ func runShell() {
     // Must run before poller.start() — after this line only the poller
     // touches queueStore, so there's no concurrent access and no lock needed.
     restoreQueueOnLaunch(queueStore: queueStore, appQueue: appQueue, backend: backend)
+    // The end watcher rides the poller's tick; it runs no script while no
+    // copy is being listened to.
+    poller.onTick = { discoverCopy.watcher.tick() }
     poller.start()
     // Records Bridge's finished library plays in Music.app, on a thread of its
     // own (not the poller's, not this input loop), and only while Bridge is the

@@ -25,10 +25,11 @@ final class MusicTUIOutputWithoutADACTests: XCTestCase {
         XCTAssertEqual(done.wait(timeout: .now() + 5), .success, "ActionRunner never drained")
     }
 
-    /// A Discover playlist on the MusicTUI output with SpanDAC data and no
+    /// A Discover album on the MusicTUI output with SpanDAC data and no
     /// DAC: SpanDAC on this Mac ensures the container, and it plays by the
     /// persistent ID SpanDAC returned. No DAC refusal, nothing queued on any
-    /// SpanDAC.
+    /// SpanDAC. (An album since 2026-10-02: a catalogue playlist there plays
+    /// on Apple's own copy instead, `DiscoverFromHereRoutingTests`.)
     func testDiscoverContainerOnMusicTUIOutputWithoutADAC() {
         let rig = SceneDataRig(output: .musicApp, accepted: true)
         rig.replies["slice.status"] = noDACStatus
@@ -62,8 +63,8 @@ final class MusicTUIOutputWithoutADACTests: XCTestCase {
         }
         XCTAssertNil(scene.loadFailure, "no DAC is no reason to refuse Discover's rails")
 
-        let row = DiscoverItem(id: "pl.u-abc", name: "Boom Bap", subtitle: nil, url: nil, artworkURL: nil,
-                               detail: .playlist(description: nil))
+        let row = DiscoverItem(id: "1440857781", name: "Boom Bap", subtitle: nil, url: nil, artworkURL: nil,
+                               detail: .album(trackCount: nil, year: nil, genre: nil))
         scene.playAllFromRail(row)
         drain(actions)
 

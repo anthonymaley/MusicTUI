@@ -339,7 +339,12 @@ final class PlaybackPoller {
         }
     }
 
+    /// Runs first on every tick, whichever output is selected. Set before
+    /// `start()` and never after, so it needs no lock.
+    var onTick: (() -> Void)?
+
     func tick() {
+        onTick?()
         // Bridge owns playback in Source Mode, so Now must read IT. Until this,
         // the screen said "Nothing playing" while Bridge played — the poller was
         // faithfully reporting Music.app, which was paused and correct to be.

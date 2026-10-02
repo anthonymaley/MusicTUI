@@ -171,6 +171,13 @@ final class ActionRunner {
             }
         }
     }
+
+    /// The same serial queue, with no status post and no state change: for
+    /// work nobody pressed a key for (ending a Discover copy he has stopped
+    /// listening to), which must still never interleave with a play.
+    func enqueueQuiet(_ body: @escaping () -> Void) {
+        queue.async(execute: body)
+    }
 }
 
 // MARK: - Keypress coalescing
