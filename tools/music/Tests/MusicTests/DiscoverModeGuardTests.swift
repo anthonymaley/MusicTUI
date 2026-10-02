@@ -748,6 +748,23 @@ final class DiscoverModeGuardTests: XCTestCase {
         XCTAssertEqual(modes.restoreRequests, [])
     }
 
+    func testAMoveBackThatCannotBeWrittenLeavesTheRecordOnTheNewEntry() {
+        let modes = ModeGuardFakeModes(shuffle: false, songRepeat: .off)
+        modes.failShuffleSet = true
+        let (guardian, store) = make([modeGuardEntry("A", shuffle: true, repeat: "all"), modeGuardEntry("B")], modes)
+        var writesToA = 0
+        store.failWrites = { label in
+            guard label.hasPrefix("update:A") else { return false }
+            writesToA += 1
+            return writesToA > 1        // the move's clear works; the rewrite after the rollback fails
+        }
+        XCTAssertFalse(guardian.switchOff(txn: "B"))
+        XCTAssertNil(entry(store, "A")?.priorShuffle)
+        XCTAssertEqual(entry(store, "B")?.priorShuffle, true, "never zero holders")
+        XCTAssertEqual(entry(store, "B")?.priorRepeat, "all")
+        XCTAssertEqual(entry(store, "B")?.restorePending, true)
+    }
+
     // MARK: - discoverCopySettleModes
 
     private func settled(_ answer: DiscoverModeRestoreAnswer, entries: [DiscoverCopyEntry],

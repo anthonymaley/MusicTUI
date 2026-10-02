@@ -359,14 +359,23 @@ struct DiscoverModeGuard {
             case .fresh:
                 clearRecord(txn)
             case .moved(let from):
-                clearRecord(txn)
+                // Every older holder gets its record back FIRST; this entry
+                // lets go of his originals only if all of them did. A
+                // duplicate record is harmless (the second restore answers
+                // `back` or `changed`); a lost one is not.
+                var allRewritten = true
                 for entry in from {
-                    _ = try? journal.update(txn: entry.txn) {
-                        $0.priorShuffle = entry.priorShuffle
-                        $0.priorRepeat = entry.priorRepeat
-                        $0.restorePending = entry.restorePending
+                    do {
+                        try journal.update(txn: entry.txn) {
+                            $0.priorShuffle = entry.priorShuffle
+                            $0.priorRepeat = entry.priorRepeat
+                            $0.restorePending = entry.restorePending
+                        }
+                    } catch {
+                        allRewritten = false
                     }
                 }
+                if allRewritten { clearRecord(txn) } else { markPending(txn) }
             }
             return false
         }
