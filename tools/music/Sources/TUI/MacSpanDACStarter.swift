@@ -345,7 +345,10 @@ extension SourceAppClient {
         return SourceAppClient(
             path: path,
             transport: retryingOnceAfterAStart(baseTransport, starter: starter),
-            libraryTransport: retryingOnceAfterAStart(baseLibraryTransport, starter: starter))
+            libraryTransport: retryingOnceAfterAStart(baseLibraryTransport, starter: starter),
+            catalogPlaylistAddTransport: retryingOnceAfterAStart(
+                SourceAppStationSearch.sender(timeoutSeconds: spandacCatalogPlaylistAddTimeoutSeconds),
+                starter: starter))
     }
 }
 
