@@ -97,6 +97,9 @@ struct DiscoverItem: Equatable {
     let url: String?
     let artworkURL: String?
     let detail: DiscoverItemDetail
+    /// The row's length as SpanDAC's `slice.containerTracks` gave it (W2).
+    /// `.absent` for every row that did not come from that op.
+    var length: RowLength = .absent
 
     var kind: DiscoverItemKind { detail.kind }
 }
