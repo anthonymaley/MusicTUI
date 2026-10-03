@@ -382,6 +382,11 @@ final class DiscoverLifecycleCoordinator {
         /// Play from here on Apple's own copy of a playlist. Nil: not wired,
         /// and every reconcile call is a no-op.
         var copy: DiscoverCopySeams? = nil
+        /// Play from here on a Discover ALBUM, with clean-up (album-cleanup
+        /// A2). Nil: not wired; an album request is `.notWired` and reconcile
+        /// leaves album entries untouched. Needs `copy` too: the album shares
+        /// its journal, its slot and its watcher.
+        var album: DiscoverAlbumSeams? = nil
     }
 
     /// SpanDAC data only: the play attempt whose container name is in use. The
@@ -779,7 +784,8 @@ final class DiscoverLifecycleCoordinator {
     /// Replays the copy journal. A no-op when the copy path is not wired.
     private func reconcileCopies(atLaunch: Bool) {
         guard let copy = seams.copy else { return }
-        DiscoverCopyReconciler(copy: copy, post: seams.post).run(atLaunch: atLaunch)
+        DiscoverCopyReconciler(copy: copy, post: seams.post, albumReplay: seams.album?.replay)
+            .run(atLaunch: atLaunch)
     }
 
     /// PHASE A. Never blocks; safe inside the routing boundary. Takes the one
@@ -789,6 +795,7 @@ final class DiscoverLifecycleCoordinator {
         condition.lock()
         defer { condition.unlock() }
         guard seams.copy != nil else { return .notWired }
+        if request.kind == .albumContainer && seams.album == nil { return .notWired }
         guard admissionState == .open else { return .exiting }
         guard copySlot == nil else { return .busy }
         let slot = UUID()
@@ -819,6 +826,7 @@ final class DiscoverLifecycleCoordinator {
         condition.unlock()
         // A reservation that is not the one holding the slot is not a play.
         guard let copy = seams.copy, holdsSlot else { return .refused(.busy) }
+        if request.kind == .albumContainer { return runAlbumPlay(request, copy: copy, gate: gate) }
 
         // S0a. The capability read is a socket round trip, which is why it is
         // here and not in phase A.
@@ -843,6 +851,47 @@ final class DiscoverLifecycleCoordinator {
             transition: { [self] state in transition(id, to: state) })
         return .completed(transaction.run(token: token, txn: id.uuidString, request: request,
                                           ops: ops, gate: gate))
+    }
+
+    /// Phase B for an album (album-cleanup A2, design 4.3), holding the same
+    /// slot as a copy play, so the two are mutually busy. S0a, Rule 1, the
+    /// mint (so the table protects the container's name from both sweeps from
+    /// the first moment), reconcile, then the album transaction. One relations
+    /// reader and one library per play: the capability read and S1-S2 ask the
+    /// same one, and the alias wait re-sends through the library the ensure used.
+    private func runAlbumPlay(_ request: DiscoverCopyRequest, copy: DiscoverCopySeams,
+                              gate: @escaping DiscoverCopyGate) -> DiscoverPlayRequestOutcome {
+        // Unreachable: `reserveCopyPlay` answers `.notWired` for an album without these seams.
+        guard let wired = seams.album else { return .refused(.busy) }
+        let relations = wired.relations()
+
+        // S0a: no write, no journal write, no op beyond the capability read.
+        if let refusal = discoverAlbumPreflightRefusal(relations: relations, request: request,
+                                                       journal: copy.journal, now: copy.now(),
+                                                       post: seams.post) {
+            return .refused(refusal)
+        }
+
+        // Rule 1, then the mint: the container name is the transaction token.
+        condition.lock()
+        guard awaitAdmissionLocked() else { condition.unlock(); return .refused(.exiting) }
+        let (id, name) = mintLocked(title: request.playlistTitle)
+        condition.unlock()
+        seams.onTransition?(id, .minted(name))
+
+        reconcileCopies(atLaunch: false)
+
+        let library = wired.library()
+        var album = wired
+        album.relations = { relations }
+        album.library = { library }
+        let transaction = DiscoverAlbumTransaction(
+            copy: copy, album: album, post: seams.post,
+            transition: { [self] state in transition(id, to: state) },
+            awaitAlias: { [self] name, ids, playlistID in
+                awaitAlias(name: name, catalogIDs: ids, playlistID: playlistID, library: library)
+            })
+        return .completed(transaction.run(name: name, txn: id.uuidString, request: request, gate: gate))
     }
 
     // MARK: Rule 2: exit, two phases
@@ -920,8 +969,26 @@ func discoverReadPlaylistTrackCount(name: String, backend: AppleScriptBackend) -
 /// create rather than held, because it is per-token and the tokens can
 /// change under a running TUI; without both tokens the create refuses with
 /// the sign-in outcome, the same gate `DiscoverScene` applies before asking.
+/// The production toast poster: every error outcome means the play did not
+/// start, so it stays until the next state change; progress lasts 60 s.
+func discoverToastPoster(status: StatusStore) -> (DiscoverToast) -> Void {
+    return { toast in
+        switch toast {
+        case .startupCleanup:
+            status.post(discoverStartupCleanupToastText)
+        case .outcome(let outcome, let title):
+            let m = discoverToastMessage(for: outcome, title: title)
+            // Every error outcome means the play did not start: it stays.
+            status.post(m.text, error: m.isError, untilStateChange: m.isError)
+        case .progress(let text):
+            status.post(text, ttl: 60)
+        }
+    }
+}
+
 func makeDiscoverLifecycleCoordinator(backend: AppleScriptBackend, status: StatusStore,
-                                      copy: DiscoverCopySeams? = nil) -> DiscoverLifecycleCoordinator {
+                                      copy: DiscoverCopySeams? = nil,
+                                      album: DiscoverAlbumSeams? = nil) -> DiscoverLifecycleCoordinator {
     var seams = DiscoverLifecycleCoordinator.Seams(
         runSweep: { script in
             _ = try syncRun { try await backend.runMusic(script) }
@@ -941,18 +1008,7 @@ func makeDiscoverLifecycleCoordinator(backend: AppleScriptBackend, status: Statu
             let raw = try? syncRun { try await backend.runMusic(script, timeout: discoverConfirmationReadTimeout) }
             return raw?.trimmingCharacters(in: .whitespacesAndNewlines) ?? discoverNotYetToken
         },
-        post: { toast in
-            switch toast {
-            case .startupCleanup:
-                status.post(discoverStartupCleanupToastText)
-            case .outcome(let outcome, let title):
-                let m = discoverToastMessage(for: outcome, title: title)
-                // Every error outcome means the play did not start: it stays.
-                status.post(m.text, error: m.isError, untilStateChange: m.isError)
-            case .progress(let text):
-                status.post(text, ttl: 60)
-            }
-        },
+        post: discoverToastPoster(status: status),
         scheduler: .live,
         readCountByPersistentID: { hex in
             guard let raw = try? syncRun({ try await backend.runMusic(discoverTrackCountScript(persistentID: hex)) })
@@ -976,5 +1032,6 @@ func makeDiscoverLifecycleCoordinator(backend: AppleScriptBackend, status: Statu
             }).tracks(persistentIDs: hexes)
         })
     seams.copy = copy
+    seams.album = album
     return DiscoverLifecycleCoordinator(seams: seams)
 }
