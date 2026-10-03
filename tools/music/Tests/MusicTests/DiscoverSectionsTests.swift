@@ -536,7 +536,7 @@ final class DiscoverSectionsTests: XCTestCase {
         for album in [topAlbum, addedAlbum] {
             r.scene.playAllFromRail(album)
             drain(r.actions)
-            XCTAssertEqual(r.status.current()?.text, DiscoverScene.albumPlayRefused(album.name), album.id)
+            XCTAssertEqual(r.status.current()?.text, DiscoverScene.webDataPlayRefused(album.name), album.id)
             XCTAssertEqual(r.status.current()?.staysUntilStateChange, true)
         }
         XCTAssertEqual(r.created.ids, [], "a web-service playlist was made: the album went into the library")
@@ -557,7 +557,7 @@ final class DiscoverSectionsTests: XCTestCase {
         XCTAssertEqual(r.scene.handle(.enter), .push(.nowPlaying))
         drain(r.actions)
 
-        XCTAssertEqual(r.status.current()?.text, DiscoverScene.albumPlayRefused(album.name))
+        XCTAssertEqual(r.status.current()?.text, DiscoverScene.webDataPlayRefused(album.name))
         XCTAssertEqual(r.created.ids, [], "a web-service playlist was made: the album went into the library")
         XCTAssertTrue(data.sent.isEmpty)
     }

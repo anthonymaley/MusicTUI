@@ -155,8 +155,8 @@ final class DiscoverCopyJournalTests: XCTestCase {
             ("", .unreadable),
             ("{\"entries\":[]}", .unreadable),
             ("{\"entries\":[],\"format\":0}", .unreadable),
-            ("{\"entries\":[],\"format\":2}", .tooNew),
-            ("{\"entries\":[{\"surprise\":true}],\"format\":2}", .tooNew),
+            ("{\"entries\":[],\"format\":3}", .tooNew),
+            ("{\"entries\":[{\"surprise\":true}],\"format\":3}", .tooNew),
             ("{\"entries\":[{\"surprise\":true}],\"format\":1}", .unreadable),
         ]
         for (text, expected) in bodies {

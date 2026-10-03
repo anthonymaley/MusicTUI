@@ -142,7 +142,8 @@ final class DiscoverBridgeCollectionTests: XCTestCase {
     /// And Music.app mode, MusicTUI's own data, refuses the album instead of
     /// building its web-service playlist (which adds the album's songs to the
     /// library for good, probe P-C), so the test above cannot pass with the
-    /// mode ignored.
+    /// mode ignored. Since N3 the refusal is the web-data sentence, the same
+    /// one a playlist gets.
     func testPlayAllFromRailInMusicAppModeRefusesAnAlbumAndCreatesNothing() {
         let wire = Wire()
         let created = Recorder()
@@ -153,26 +154,27 @@ final class DiscoverBridgeCollectionTests: XCTestCase {
         s.playAllFromRail(albumRow)
         settle { status.current() != nil }
 
-        XCTAssertEqual(status.current()?.text, DiscoverScene.albumPlayRefused("An Album"))
+        XCTAssertEqual(status.current()?.text, DiscoverScene.webDataPlayRefused("An Album"))
         XCTAssertEqual(status.current()?.staysUntilStateChange, true)
         XCTAssertEqual(created.ids, [], "the web-service playlist was made")
         XCTAssertTrue(wire.queued.isEmpty, "MusicTUI's own data with the MusicTUI output sent a SpanDAC request")
     }
 
-    /// The control for the refusal: a catalogue playlist in the same mode
-    /// still builds the shipped container, unchanged.
-    func testPlayAllFromRailInMusicAppModeStillBuildsAPlaylistsContainer() {
+    /// N3: a catalogue playlist in the same mode refuses too; nothing is built.
+    func testPlayAllFromRailInMusicAppModeRefusesAPlaylistAndBuildsNothing() {
+        let status = StatusStore()
         let wire = Wire()
         let created = Recorder()
-        let s = scene(mode: .musicApp, wire: wire, status: StatusStore(),
+        let s = scene(mode: .musicApp, wire: wire, status: status,
                       lifecycle: lifecycle(playsRecorded: { created.set($0) }))
         let playlistRow = DiscoverItem(id: "pl.u-abc", name: "A Playlist", subtitle: nil, url: nil,
                                        artworkURL: nil, detail: .playlist(description: nil))
 
         s.playAllFromRail(playlistRow)
-        settle { !created.ids.isEmpty }
+        settle { status.current() != nil }
 
-        XCTAssertEqual(created.ids, ["801", "802", "803"])
+        XCTAssertEqual(status.current()?.text, DiscoverScene.webDataPlayRefused("A Playlist"))
+        XCTAssertEqual(created.ids, [], "the web-service playlist was made")
         XCTAssertTrue(wire.queued.isEmpty)
     }
 
@@ -213,7 +215,7 @@ final class DiscoverBridgeCollectionTests: XCTestCase {
             XCTAssertEqual(s.handle(.enter), .push(.nowPlaying))
             settle { status.current() != nil }
 
-            XCTAssertEqual(status.current()?.text, DiscoverScene.albumPlayRefused("An Album"), "row \(downs)")
+            XCTAssertEqual(status.current()?.text, DiscoverScene.webDataPlayRefused("An Album"), "row \(downs)")
             XCTAssertEqual(status.current()?.staysUntilStateChange, true)
             XCTAssertEqual(created.ids, [], "the web-service playlist was made (row \(downs))")
             XCTAssertTrue(wire.queued.isEmpty)
@@ -249,16 +251,20 @@ final class DiscoverBridgeCollectionTests: XCTestCase {
         XCTAssertEqual(wire.queuedIDs, ["803"])
     }
 
-    func testASelectedSliceInMusicAppModeStillBuildsTheContainer() {
+    /// N3: a selected slice in Music.app mode (MusicTUI's own data) refuses
+    /// instead of building the container.
+    func testASelectedSliceInMusicAppModeRefusesAndBuildsNothing() {
         let wire = Wire()
         let created = Recorder()
-        let s = scene(mode: .musicApp, wire: wire, status: StatusStore(),
+        let status = StatusStore()
+        let s = scene(mode: .musicApp, wire: wire, status: status,
                       lifecycle: lifecycle(playsRecorded: { created.set($0) }))
 
         s.playCatalogSlice(catalogIDs: ["802", "803"], containerTitle: "An Album", trackName: "S2")
-        settle { !created.ids.isEmpty }
+        settle { status.current() != nil }
 
-        XCTAssertEqual(created.ids, ["802", "803"])
+        XCTAssertEqual(status.current()?.text, DiscoverScene.webDataPlayRefused("An Album"))
+        XCTAssertEqual(created.ids, [])
         XCTAssertTrue(wire.queued.isEmpty, "MusicTUI's own data with the MusicTUI output sent a SpanDAC request")
     }
 

@@ -375,10 +375,13 @@ final class BridgeDiscoverSectionsTests: XCTestCase {
         XCTAssertEqual(s.web.urls, [])
     }
 
-    /// The 3.18.1 refusal holds for a section album under SpanDAC data on the
-    /// MusicTUI output: `p` on a Top Albums row and on a Recently Added album
-    /// refuses, with no library op and no queue sent to any SpanDAC.
-    func testASectionAlbumStillRefusesOnTheMusicTUIOutput() throws {
+    /// A section album under SpanDAC data on the MusicTUI output takes the
+    /// album clean-up path like any Discover album (album-cleanup W). This
+    /// lifecycle wires no play-from-here seams, so `p` on a Top Albums row and
+    /// on a Recently Added album refuses with the not-wired line, with no
+    /// library op and no queue sent to any SpanDAC: nothing falls back to an
+    /// add. The wired path is `DiscoverAlbumRoutingTests`.
+    func testASectionAlbumOnTheMusicTUIOutputTakesTheAlbumPathAndFallsBackToNothing() throws {
         let rig = advertisingRig(output: .musicApp)
         rig.replies["slice.containerTracks"] = """
         {"ok":true,"op":"slice.containerTracks","items":[
@@ -394,7 +397,7 @@ final class BridgeDiscoverSectionsTests: XCTestCase {
         for album in [topAlbum, addedAlbum] {
             s.scene.playAllFromRail(album)
             drain(s.actions)
-            XCTAssertEqual(s.status.current()?.text, DiscoverScene.albumPlayRefused(album.name), album.id)
+            XCTAssertEqual(s.status.current()?.text, pickASpanDACOutput, album.id)
         }
         let mutations = rig.sent.filter { $0.op.hasPrefix("slice.library") || $0.op == "slice.queue" }
         XCTAssertEqual(mutations.map(\.op), [], "the album reached the library or a queue")

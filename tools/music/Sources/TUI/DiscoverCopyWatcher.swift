@@ -268,10 +268,18 @@ struct DiscoverCopyDeleter {
     }
 
     /// The copy read absent. A failed write leaves the entry for reconcile.
+    /// CH6: an album entry is not closed here: its container is recorded gone
+    /// and its state is left alone, because its songs still have to be
+    /// finished (A5's settle closes it).
     private func close(_ txn: String) {
         _ = try? journal.update(txn: txn) { entry in
-            entry.state = .closed
-            entry.watching = false
+            if entry.kind == .albumContainer {
+                entry.containerGone = true
+                entry.watching = false
+            } else {
+                entry.state = .closed
+                entry.watching = false
+            }
         }
     }
 }
@@ -283,24 +291,28 @@ struct DiscoverCopyDeleter {
 /// record for later when it cannot finish. Then the bookkeeping per result:
 /// `.spared` -> watch the copy again. `.deleted` / `.alreadyGone` / `.kept` ->
 /// the entry stops being watched, and a `preexisting` entry closes. `.failed`
-/// -> nothing more (the journal keeps it for reconcile).
+/// -> nothing more (the journal keeps it for reconcile). Returns the delete
+/// result it acted on (design 4.4).
+@discardableResult
 func discoverCopyHandleEnd(txn: String, deleter: DiscoverCopyDeleter, journal: DiscoverCopyJournalStore,
-                           restoreModes: (String) -> Void, readopt: (String, String) -> Void) {
+                           restoreModes: (String) -> Void,
+                           readopt: (String, String) -> Void) -> DiscoverCopyDeleteResult {
     let result = deleter.end(txn: txn)
     restoreModes(txn)
     switch result {
     case .spared:
         guard let entry = (try? journal.entries())?.first(where: { $0.txn == txn }),
-              let hex = entry.hex else { return }
+              let hex = entry.hex else { return result }
         readopt(txn, hex)
     case .deleted, .alreadyGone, .kept:
         guard let entry = (try? journal.entries())?.first(where: { $0.txn == txn }),
-              entry.watching || entry.state == .preexisting else { return }
+              entry.watching || entry.state == .preexisting else { return result }
         _ = try? journal.update(txn: txn) { entry in
             entry.watching = false
             if entry.state == .preexisting { entry.state = .closed }
         }
     case .failed:
-        return
+        break
     }
+    return result
 }

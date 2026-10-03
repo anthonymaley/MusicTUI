@@ -405,9 +405,17 @@ hidden because it is the actual price of playing catalog content on a platform
 with no write free play verb, and a user deserves to know that pressing play
 touches their library.
 
-Since 3.18.1, play from here on a Discover album refuses instead: it says so,
-plays nothing and adds nothing to the library, until a safe cleanup exists.
-Playlists still play from the chosen song.
+Update: with SpanDAC as the data source and MusicTUI as the output, play from
+here on a Discover album now plays through a temporary playlist and afterwards
+removes only the songs MusicTUI can prove it added. A song you loved or put in
+one of your playlists stays, and MusicTUI names what it kept. Without a current
+SpanDAC it asks you to update SpanDAC and plays nothing. On the web data source,
+a Discover play that would build a temporary playlist refuses: it says so, plays
+nothing and adds nothing to the library. Play from here on a Discover playlist,
+with SpanDAC data and the MusicTUI output, plays from Apple's own copy of that
+playlist and adds none of its songs to the library; the copy is removed when
+listening ends, and if MusicTUI cannot be sure it added the copy, it leaves it
+and says so by name.
 
 ## `play playlist` is bounded, `play track N of playlist` is not
 

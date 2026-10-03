@@ -99,6 +99,18 @@ struct DiscoverCopyEntry: Codable, Equatable {
     var restorePending: Bool? = nil
     let createdAt: Int           // epoch seconds
     var updatedAt: Int
+    // Album-cleanup (journal format 2). All nil on a copy entry; absent kind = a copy.
+    // For an album entry: playlistID = album id, title = album name, copiesRead = 0.
+    var kind: DiscoverPlayKind? = nil
+    var containerName: String? = nil     // "__discover__ <txn> — <album>", the transaction token
+    var writeSentAt: Double? = nil       // epoch seconds WITH fraction, written before the ensure
+    var listeningEnded: Bool? = nil      // recorded at the end or a refusal after S3; gates nothing (CH8)
+    var containerGone: Bool? = nil       // the container read absent (CH6)
+    var endTold: Bool? = nil             // the end line was posted (CH9)
+    var uncertainReason: String? = nil   // "outcome_unknown" (reconcile retries) | "not_created" | "several"
+    var entryIDs: [String]? = nil        // E, the container's ordered track IDs at S7
+    var beforeFile: String? = nil        // B's side file, "before-<txn>.json"
+    var songs: [DiscoverAlbumSong]? = nil
 
     enum CodingKeys: String, CodingKey {
         case txn
@@ -113,6 +125,16 @@ struct DiscoverCopyEntry: Codable, Equatable {
         case restorePending = "restore_pending"
         case createdAt = "created_at"
         case updatedAt = "updated_at"
+        case kind
+        case containerName = "container_name"
+        case writeSentAt = "write_sent_at"
+        case listeningEnded = "listening_ended"
+        case containerGone = "container_gone"
+        case endTold = "end_told"
+        case uncertainReason = "uncertain_reason"
+        case entryIDs = "entry_ids"
+        case beforeFile = "before_file"
+        case songs
     }
 
     var isDeletable: Bool { (state == .owned || state == .listening) && hex != nil }
@@ -139,6 +161,8 @@ struct DiscoverCopyRequest: Equatable {
     let playlistTitle: String
     let rows: [DiscoverItem]      // the FULL rows he was shown, in order
     let selected: Int             // cursor index, 0-based; k = selected + 1
+    /// Album-cleanup: `.albumContainer` for an album (see `discoverAlbumRequest`).
+    var kind: DiscoverPlayKind = .playlistCopy
 }
 
 enum DiscoverCopyStage: Equatable { case adding, waitingForCopy, ready, positioning }

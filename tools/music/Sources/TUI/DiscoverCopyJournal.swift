@@ -19,8 +19,17 @@ struct DiscoverCopyPaths: Equatable {
     }
 }
 
-/// The newest format this build reads and the one it writes.
-let discoverCopyJournalFormat = 1
+/// The newest format this build reads. Formats 1 and 2 are read; a higher one
+/// is `tooNew` and nothing is replayed. CH5: the file is WRITTEN as format 2
+/// only while it holds at least one album entry, else as format 1
+/// (`discoverCopyJournalWriteFormat`), so an older build reads `tooNew` only
+/// after an album play.
+let discoverCopyJournalFormat = 2
+
+/// CH5: 2 while `entries` holds an album entry, else 1.
+func discoverCopyJournalWriteFormat(_ entries: [DiscoverCopyEntry]) -> Int {
+    entries.contains(where: { $0.kind == .albumContainer }) ? 2 : 1
+}
 
 /// How many closed entries are kept (CH8). One still holding prior modes is
 /// never pruned, and neither is anything that is not `closed`.
@@ -37,14 +46,47 @@ func discoverCopyHexIsWellFormed(_ hex: String) -> Bool {
 /// The invariants a journal entry must hold on disk: an `owned` or `listening`
 /// entry names the copy by a well-formed hex, and an `intent` entry names none
 /// (an intent is written before anything exists to name).
+///
+/// Album-cleanup (format 2) adds: an album entry has non-empty `songs` whose
+/// positions are exactly `1...songs.count` in order, a `containerName` starting
+/// with `discoverPlaylistPrefix`, and a `beforeFile`; an `owned` song names its
+/// container row by a well-formed `entryHex` and holds an `alias` that is the
+/// same identity; a `deleted` song has a well-formed `entryHex`. A copy entry
+/// (`kind` nil or `.playlistCopy`) carries no `songs`, `containerName` or `entryIDs`.
 func discoverCopyEntryHoldsInvariants(_ entry: DiscoverCopyEntry) -> Bool {
     switch entry.state {
     case .owned, .listening:
-        guard let hex = entry.hex else { return false }
-        return discoverCopyHexIsWellFormed(hex)
+        guard let hex = entry.hex, discoverCopyHexIsWellFormed(hex) else { return false }
     case .intent:
-        return entry.hex == nil
+        guard entry.hex == nil else { return false }
     case .uncertain, .closed, .preexisting:
+        break
+    }
+    switch entry.kind {
+    case nil, .playlistCopy?:
+        return entry.songs == nil && entry.containerName == nil && entry.entryIDs == nil
+    case .albumContainer?:
+        guard let songs = entry.songs, !songs.isEmpty,
+              songs.map(\.position) == Array(1...songs.count),
+              let name = entry.containerName, name.hasPrefix(discoverPlaylistPrefix),
+              entry.beforeFile != nil else { return false }
+        return songs.allSatisfy(discoverAlbumSongHoldsInvariants)
+    }
+}
+
+/// An `owned` song: well-formed `entryHex`, a non-nil `alias`, and
+/// `persistentIDHex(fromAlias: alias) == entryHex`. A `deleted` song: a
+/// well-formed `entryHex`. Every other state: nothing more.
+func discoverAlbumSongHoldsInvariants(_ song: DiscoverAlbumSong) -> Bool {
+    switch song.state {
+    case .owned:
+        guard let hex = song.entryHex, discoverCopyHexIsWellFormed(hex),
+              let alias = song.alias else { return false }
+        return persistentIDHex(fromAlias: alias) == hex
+    case .deleted:
+        guard let hex = song.entryHex else { return false }
+        return discoverCopyHexIsWellFormed(hex)
+    case .intent, .pending, .preexisting, .uncertain, .kept:
         return true
     }
 }
@@ -145,7 +187,7 @@ final class FileDiscoverCopyJournalStore: DiscoverCopyJournalStore {
             encoder.outputFormatting = [.sortedKeys]
             let data: Data
             do {
-                data = try encoder.encode(Body(format: discoverCopyJournalFormat, entries: current))
+                data = try encoder.encode(Body(format: discoverCopyJournalWriteFormat(current), entries: current))
             } catch {
                 throw DiscoverCopyJournalError.writeFailed("encode")
             }
@@ -184,5 +226,94 @@ final class FileDiscoverCopyJournalStore: DiscoverCopyJournalStore {
     private func directoryExists() -> Bool {
         var info = stat()
         return lstat(paths.directory.path, &info) == 0
+    }
+}
+
+// MARK: B, the before-set side file (K5, CH25)
+
+/// `before-<UPPERCASE UUID>.json`, and nothing else: no path, no other name.
+private let discoverBeforeSetNamePattern = try! NSRegularExpression(pattern: #"^before-[0-9A-F-]{36}\.json$"#)
+
+/// The txn a well-formed side-file name carries, or nil for any other name.
+func discoverBeforeSetTxn(fromFile file: String) -> String? {
+    let whole = NSRange(file.startIndex..., in: file)
+    guard discoverBeforeSetNamePattern.firstMatch(in: file, range: whole) != nil else { return nil }
+    return String(file.dropFirst("before-".count).dropLast(".json".count))
+}
+
+/// The side file's name for `txn`, or nil when the name would not be well formed.
+func discoverBeforeSetFile(txn: String) -> String? {
+    let file = "before-\(txn).json"
+    return discoverBeforeSetTxn(fromFile: file) == txn ? file : nil
+}
+
+extension FileDiscoverCopyJournalStore: DiscoverBeforeSetStore {
+
+    private struct BeforeSetBody: Codable {
+        let format: Int
+        let txn: String
+        let ids: [String]
+    }
+
+    /// Under the journal's lock, `DurableFile.replace` (0600, on the disk
+    /// itself before it returns). A txn that would not make a well-formed name,
+    /// or an id that is not sixteen `0-9A-F`, writes nothing.
+    func writeBeforeSet(txn: String, ids: [String]) throws -> String {
+        guard let file = discoverBeforeSetFile(txn: txn) else {
+            throw DiscoverCopyJournalError.writeFailed("before-set name")
+        }
+        guard ids.allSatisfy(discoverCopyHexIsWellFormed) else {
+            throw DiscoverCopyJournalError.writeFailed("before-set id")
+        }
+        guard PrivateDirectory.prepare(paths.directory) else {
+            throw DiscoverCopyJournalError.writeFailed("directory")
+        }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let data: Data
+        do {
+            data = try encoder.encode(BeforeSetBody(format: 1, txn: txn, ids: ids))
+        } catch {
+            throw DiscoverCopyJournalError.writeFailed("encode")
+        }
+        switch PlaySyncLock.acquire(paths.lock, waitingUpTo: 2) {
+        case .failure(.busy):
+            throw DiscoverCopyJournalError.busy
+        case .failure(.unavailable(let code)):
+            throw DiscoverCopyJournalError.writeFailed("lock: \(code)")
+        case .success(let lock):
+            defer { lock.release() }
+            do {
+                try DurableFile.replace(paths.directory.appendingPathComponent(file), with: data)
+            } catch let error as DurableFileError {
+                throw DiscoverCopyJournalError.writeFailed("\(error.step): \(error.code)")
+            } catch {
+                throw DiscoverCopyJournalError.writeFailed(error.localizedDescription)
+            }
+        }
+        return file
+    }
+
+    /// Reads without the lock: the file only ever changes by an atomic rename,
+    /// so a read sees one whole version. A misnamed file, a missing or
+    /// malformed one, a `txn` that differs from the name, a format other than
+    /// 1, or any id that is not sixteen `0-9A-F` is `.unreadable`.
+    func readBeforeSet(file: String) throws -> Set<String> {
+        guard let txn = discoverBeforeSetTxn(fromFile: file) else {
+            throw DiscoverCopyJournalError.unreadable
+        }
+        guard case .contents(let data) = DurableFile.read(paths.directory.appendingPathComponent(file)),
+              let body = try? JSONDecoder().decode(BeforeSetBody.self, from: data),
+              body.format == 1, body.txn == txn,
+              body.ids.allSatisfy(discoverCopyHexIsWellFormed) else {
+            throw DiscoverCopyJournalError.unreadable
+        }
+        return Set(body.ids)
+    }
+
+    /// Best effort. A misnamed file is never touched.
+    func deleteBeforeSet(file: String) {
+        guard discoverBeforeSetTxn(fromFile: file) != nil else { return }
+        _ = unlink(paths.directory.appendingPathComponent(file).path)
     }
 }
