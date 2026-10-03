@@ -407,7 +407,7 @@ final class DiscoverCopyReconcileTests: XCTestCase {
     // MARK: an unreadable journal
 
     func testAnUnreadableJournalDoesNothingAndPostsNothing() throws {
-        for text in ["garbage", "{\"entries\":[],\"format\":2}"] {
+        for text in ["garbage", "{\"entries\":[],\"format\":3}"] {
             let f = F()
             try FileManager.default.createDirectory(at: f.paths.directory, withIntermediateDirectories: true,
                                                     attributes: [.posixPermissions: 0o700])

@@ -311,6 +311,11 @@ struct DiscoverCopyTransaction {
 struct DiscoverCopyReconciler {
     let copy: DiscoverCopySeams
     let post: (DiscoverToast) -> Void
+    /// Album-cleanup: where an album entry goes INSTEAD of the copy replay
+    /// below (whose `intent` branch would ask `copies(ofCatalogPlaylist:)` with
+    /// an album id). nil: an album entry is left untouched, nothing deleted,
+    /// nothing told. A closed album entry is never replayed (CH9).
+    var albumReplay: ((_ entry: DiscoverCopyEntry, _ atLaunch: Bool) -> Void)? = nil
 
     func run(atLaunch: Bool) {
         let start = copy.now()
@@ -325,7 +330,11 @@ struct DiscoverCopyReconciler {
     }
 
     private func reconcile(_ entry: DiscoverCopyEntry, atLaunch: Bool) {
-        replay(entry, atLaunch: atLaunch)
+        if entry.kind == .albumContainer {
+            if entry.state != .closed { albumReplay?(entry, atLaunch) }
+        } else {
+            replay(entry, atLaunch: atLaunch)
+        }
         if entry.priorShuffle != nil || entry.priorRepeat != nil { copy.restoreModes(entry.txn) }
     }
 
