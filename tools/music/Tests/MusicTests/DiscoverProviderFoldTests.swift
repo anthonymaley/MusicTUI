@@ -227,9 +227,9 @@ final class DiscoverProviderFoldTests: XCTestCase {
     }
 
     /// MusicTUI's own data on the MusicTUI output: Enter on a song shown
-    /// directly on a rail builds the one-song container and plays it. Before
-    /// 2026-09-29 it did nothing.
-    func testMusicAppEnterOnARailSongPlaysJustThatSong() {
+    /// directly on a rail refuses (N3), because playing it would build a
+    /// one-song temporary playlist and add the song to the library.
+    func testMusicAppEnterOnARailSongRefusesAndBuildsNothing() {
         let song = DiscoverItem(id: "777", name: "Rail Song", subtitle: "Rail Artist", url: nil, artworkURL: nil,
                                 detail: .song)
         let feed = Feed(rails: [DiscoverRail(id: "r1", title: "Songs for You", items: [song],
@@ -241,32 +241,38 @@ final class DiscoverProviderFoldTests: XCTestCase {
         _ = r.scene.handle(.enter)
         drain(r.actions)
 
-        XCTAssertEqual(r.created.created, [["777"]])
+        XCTAssertEqual(r.status.current()?.text, DiscoverScene.webDataPlayRefused("Rail Song"))
+        XCTAssertEqual(r.created.created, [])
         XCTAssertEqual(r.feed?.trackItems, [], "one song needs no container read")
         XCTAssertTrue(r.wire.requests.isEmpty)
     }
 
-    func testMusicAppPlayAllReadsTheFeedAndBuildsTheContainer() {
+    /// N3: `p` still reads the feed's tracks, then refuses before any create.
+    func testMusicAppPlayAllReadsTheFeedThenRefusesAndBuildsNothing() {
         let r = rig(mode: .musicApp, feed: Self.webFeed())
         r.scene.playAllFromRail(Self.playlistRow)
         drain(r.actions)
 
         XCTAssertEqual(r.feed?.trackItems, ["pl.u-abc"])
-        XCTAssertEqual(r.created.created, [["801", "802"]])
+        XCTAssertEqual(r.status.current()?.text, DiscoverScene.webDataPlayRefused("Boom Bap"))
+        XCTAssertEqual(r.created.created, [])
         XCTAssertTrue(r.wire.requests.isEmpty)
     }
 
-    func testMusicAppSliceBuildsTheContainerAndWithoutKeysSaysSignInToPlay() {
+    /// N3: a slice refuses with and without keys (the sign-in guard lives in
+    /// the callers, before `route`; a direct slice call reaches the refusal).
+    func testMusicAppSliceRefusesAndBuildsNothing() {
         let r = rig(mode: .musicApp, feed: Self.webFeed())
         r.scene.playCatalogSlice(catalogIDs: ["802"], containerTitle: "Boom Bap", trackName: "S2")
         drain(r.actions)
-        XCTAssertEqual(r.created.created, [["802"]])
+        XCTAssertEqual(r.status.current()?.text, DiscoverScene.webDataPlayRefused("Boom Bap"))
+        XCTAssertEqual(r.created.created, [])
         XCTAssertTrue(r.wire.requests.isEmpty)
 
         let keyless = rig(mode: .musicApp, feed: Self.webFeed(), api: false)
         keyless.scene.playCatalogSlice(catalogIDs: ["802"], containerTitle: "Boom Bap", trackName: "S2")
         drain(keyless.actions)
-        XCTAssertEqual(keyless.status.current()?.text, DiscoverScene.signInToPlay)
+        XCTAssertEqual(keyless.status.current()?.text, DiscoverScene.webDataPlayRefused("Boom Bap"))
         XCTAssertEqual(keyless.created.created, [])
         XCTAssertTrue(keyless.wire.requests.isEmpty)
     }

@@ -508,6 +508,11 @@ final class DiscoverScene: Scene {
         "Play from here isn't available for albums yet, so '\(album)' wasn't added to your library. Nothing played."
     }
 
+    /// Said instead of building a temporary playlist on MusicTUI's own data (N3).
+    static func webDataPlayRefused(_ title: String) -> String {
+        "Nothing played: on MusicTUI's own data, playing '\(title)' would add its songs to your library and leave them there, because MusicTUI can't tell which ones it added."
+    }
+
     /// Play a catalogue slice: the selected Discover row through the container's
     /// tail. Internal, not private, so the routing binding is reachable from a
     /// test.
@@ -577,7 +582,6 @@ final class DiscoverScene: Scene {
         let status = self.status
         let player = self.cataloguePlayer
         let injectedOps = self.libraryOps
-        let hasAPI = api != nil
         func libraryOps() -> SpanDACLibraryAdding {
             injectedOps ?? routing.dataClient().libraryWrites()
         }
@@ -595,10 +599,11 @@ final class DiscoverScene: Scene {
                     }
                     switch path {
                     case .shipped:
-                        try refuseAnAlbum()
-                        try require(hasAPI, Self.signInToPlay)
-                        _ = lifecycle.requestPlay(title: musicAppTitle, catalogIDs: catalogIDs,
-                                                  disableShuffle: disableShuffle)
+                        // MusicTUI's own data: every Discover play here would
+                        // build a temporary playlist from catalogue ids, which
+                        // adds its songs to the library and keeps them (N3,
+                        // CH28). Refuses before anything else, albums too.
+                        throw ActionError(message: Self.webDataPlayRefused(musicAppTitle))
                     case .addContainer:
                         try refuseAnAlbum()
                         if let copy {

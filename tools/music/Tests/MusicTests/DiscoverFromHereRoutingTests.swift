@@ -334,8 +334,9 @@ final class DiscoverFromHereRoutingTests: XCTestCase {
         assertCopyPathUntouched(f)
     }
 
-    /// MusicTUI's own data: the shipped path, which ignores the copy request.
-    func testAPlaylistUnderMusicTUIsOwnDataTakesTheShippedPath() {
+    /// MusicTUI's own data: refuses (N3) before the copy request or any
+    /// web-service container is touched.
+    func testAPlaylistUnderMusicTUIsOwnDataRefusesBeforeAnyPlaylistIsMade() {
         let f = fixture(accepted: false,
                         api: RESTAPIBackend(developerToken: "d", userToken: "u", storefront: "us"))
         let request = DiscoverCopyRequest(playlistID: playlistID, playlistTitle: title, rows: rows, selected: 1)
@@ -344,7 +345,8 @@ final class DiscoverFromHereRoutingTests: XCTestCase {
                                  trackName: "Song 2", copy: request)
         drain(f.actions)
 
-        XCTAssertEqual(f.log.created, [["902", "903", "904", "905"]], "the shipped web-service container")
+        XCTAssertEqual(f.status.current()?.text, DiscoverScene.webDataPlayRefused(title))
+        XCTAssertEqual(f.log.created, [], "a web-service container was made")
         assertCopyPathUntouched(f)
         XCTAssertEqual(f.rig.sent.count, 0, "no SpanDAC was asked anything")
     }
