@@ -114,10 +114,12 @@ final class DiscoverFeedTests: XCTestCase {
         XCTAssertEqual(rails.first?.items.first?.kind, .playlist)
     }
 
+    /// The FIRST request: the self-named sections (DiscoverSectionsTests) are
+    /// read after it, and only once it has succeeded.
     func testRailsHitTheRecommendationsEndpoint() throws {
-        var seen = ""
-        _ = try feed(recommendationsJSON, capture: { seen = $0 }).rails()
-        XCTAssertTrue(seen.contains("/v1/me/recommendations"), seen)
+        var seen: [String] = []
+        _ = try feed(recommendationsJSON, capture: { seen.append($0) }).rails()
+        XCTAssertTrue(seen.first?.contains("/v1/me/recommendations") == true, "\(seen)")
     }
 
     // MARK: - Recently played

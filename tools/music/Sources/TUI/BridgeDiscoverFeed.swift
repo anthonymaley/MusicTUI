@@ -9,6 +9,11 @@
 // `orderedDiscoverRails` leaves Bridge's rails in Apple's order; no share URL;
 // no year, genre, track count, live flag or playlist description, so the detail
 // panel is thinner than on Music.app output.
+//
+// **No self-named sections** (`DiscoverSection`: Recently Added, Recent
+// Stations, the charts). SpanDAC serves no op for any of them, and with
+// SpanDAC data nothing falls back to the web service, so they are absent here
+// by design rather than missing by accident.
 import Foundation
 
 struct BridgeDiscoverFeed: DiscoverFeedReading {
