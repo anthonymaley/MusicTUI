@@ -124,14 +124,14 @@ struct DiscoverRail: Equatable {
     var section: DiscoverSection? = nil
 }
 
-/// Discover's self-named sections: feeds the web service serves beside the
-/// For You rails, read by `DiscoverFeed` only (the TODO's "Discover second
-/// pass", endpoints probed 200 on 2026-08-25).
+/// Discover's self-named sections, shown beside the For You rails (the TODO's
+/// "Discover second pass", endpoints probed 200 on 2026-08-25).
 ///
-/// **Web-service data only.** With SpanDAC selected as the data source every
-/// read is SpanDAC's (Anthony, 2026-09-29: no fallback on either axis), and
-/// SpanDAC serves no equivalent of any of these, so under SpanDAC data the
-/// sections are simply absent: `BridgeDiscoverFeed` never builds one.
+/// **Each data source serves its own.** With the web service, `DiscoverFeed`
+/// reads them. With SpanDAC selected as the data source every read is
+/// SpanDAC's (Anthony, 2026-09-29: no fallback on either axis), so they come
+/// from SpanDAC's own reads (`bridgeDiscoverSectionRails`), one per section
+/// SpanDAC advertises; a section SpanDAC does not advertise is absent.
 ///
 /// `allCases` order IS the display order: his own library and listening
 /// first, then the storefront's charts.
@@ -329,37 +329,15 @@ final class DiscoverFeed: DiscoverFeedReading {
     /// later, is discarded. A read that fails is absent too, because a
     /// missing "Top Albums" is a smaller wrong than no Discover at all.
     func sectionRails() -> [DiscoverRail] {
-        let lock = NSLock()
-        var found: [DiscoverSection: [DiscoverItem]] = [:]
-        var open = true   // false once the deadline has passed: late results are dropped
-        func record(_ results: [DiscoverSection: [DiscoverItem]]) {
-            lock.lock(); defer { lock.unlock() }
-            guard open else { return }
-            found.merge(results) { first, _ in first }
-        }
-        let reads: [() -> [DiscoverSection: [DiscoverItem]]] = [
-            { [self] in (try? recentlyAdded()).map { [.recentlyAdded: $0] } ?? [:] },
-            { [self] in (try? recentStations()).map { [.recentStations: $0] } ?? [:] },
-            { [self] in
-                guard let charts = try? charts() else { return [:] }
-                return [.topSongs: charts.songs, .topAlbums: charts.albums, .topPlaylists: charts.playlists]
-            },
-        ]
-        let group = DispatchGroup()
-        for read in reads {
-            group.enter()
-            DispatchQueue.global().async { record(read()); group.leave() }
-        }
-        _ = group.wait(timeout: .now() + sectionDeadline)
-        lock.lock()
-        open = false
-        let landed = found
-        lock.unlock()
-        return DiscoverSection.allCases.compactMap { section in
-            guard let items = landed[section], !items.isEmpty else { return nil }
-            return DiscoverRail(id: section.railID, title: section.title, items: items,
-                                isRecentlyPlayed: false, resourceTypes: section.resourceTypes,
-                                section: section)
+        loadDiscoverSections(deadline: sectionDeadline) { [self] in
+            [
+                { (try? self.recentlyAdded()).map { [.recentlyAdded: $0] } ?? [:] },
+                { (try? self.recentStations()).map { [.recentStations: $0] } ?? [:] },
+                {
+                    guard let charts = try? self.charts() else { return [:] }
+                    return [.topSongs: charts.songs, .topAlbums: charts.albums, .topPlaylists: charts.playlists]
+                },
+            ]
         }
     }
 
@@ -547,4 +525,50 @@ func makeDiscoverFeed() -> DiscoverFeed? {
 func discoverTabAdmitted(selection: EffectiveSelection, hasUserToken: @autoclosure () -> Bool) -> Bool {
     if case .consistent(.spandacMac, _) = selection { return true }
     return hasUserToken()
+}
+
+// MARK: - Section loading, shared by both data sources
+
+/// One section read: what it found, keyed by section. Empty when it failed.
+typealias DiscoverSectionRead = () -> [DiscoverSection: [DiscoverItem]]
+
+/// Discover's sections, read under ONE shared deadline from this call's start,
+/// for whichever data source supplies `plan`.
+///
+/// `plan` runs first, inside the deadline (SpanDAC's capability read lives
+/// there), and returns the reads to make; they then run at once. A read that
+/// has not finished when the deadline passes is simply absent: its result,
+/// should it land later, is discarded. A read that failed is absent too,
+/// because a missing "Top Albums" is a smaller wrong than no Discover at all.
+/// The result is in `DiscoverSection` order, empty sections dropped.
+func loadDiscoverSections(deadline: TimeInterval,
+                          plan: @escaping () -> [DiscoverSectionRead]) -> [DiscoverRail] {
+    let lock = NSLock()
+    var found: [DiscoverSection: [DiscoverItem]] = [:]
+    var open = true   // false once the deadline has passed: late results are dropped
+    func record(_ results: [DiscoverSection: [DiscoverItem]]) {
+        lock.lock(); defer { lock.unlock() }
+        guard open else { return }
+        found.merge(results) { first, _ in first }
+    }
+    let group = DispatchGroup()
+    group.enter()
+    DispatchQueue.global().async {
+        for read in plan() {
+            group.enter()
+            DispatchQueue.global().async { record(read()); group.leave() }
+        }
+        group.leave()
+    }
+    _ = group.wait(timeout: .now() + deadline)
+    lock.lock()
+    open = false
+    let landed = found
+    lock.unlock()
+    return DiscoverSection.allCases.compactMap { section in
+        guard let items = landed[section], !items.isEmpty else { return nil }
+        return DiscoverRail(id: section.railID, title: section.title, items: items,
+                            isRecentlyPlayed: false, resourceTypes: section.resourceTypes,
+                            section: section)
+    }
 }

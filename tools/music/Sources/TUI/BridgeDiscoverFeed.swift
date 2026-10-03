@@ -9,11 +9,6 @@
 // `orderedDiscoverRails` leaves Bridge's rails in Apple's order; no share URL;
 // no year, genre, track count, live flag or playlist description, so the detail
 // panel is thinner than on Music.app output.
-//
-// **No self-named sections** (`DiscoverSection`: Recently Added, Recent
-// Stations, the charts). SpanDAC serves no op for any of them, and with
-// SpanDAC data nothing falls back to the web service, so they are absent here
-// by design rather than missing by accident.
 import Foundation
 
 struct BridgeDiscoverFeed: DiscoverFeedReading {
@@ -87,7 +82,8 @@ struct BridgeDiscoverFeed: DiscoverFeedReading {
     /// the person did not ask for. That is forward compatibility, and it is the
     /// ONLY thing dropped: a row with no kind, or a known kind missing its id or
     /// name, is malformed and fails the whole read.
-    private static func items(_ rows: [[String: Any]]) throws -> [DiscoverItem] {
+    /// Internal: `BridgeDiscoverSections` decodes its rows by the same rules.
+    static func items(_ rows: [[String: Any]]) throws -> [DiscoverItem] {
         try rows.compactMap { row in
             guard let kind = row["kind"] as? String else { throw SourceAppError.unreadable }
             guard ["station", "album", "playlist", "song"].contains(kind) else { return nil }

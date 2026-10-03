@@ -766,6 +766,19 @@ protocol SourceControlling {
     /// returning `skipped_unavailable` (0 from a Bridge that predates it).
     /// `queue(catalogIDs:)` itself is untouched.
     func queueReportingSkips(catalogIDs: [String]) throws -> Int
+
+    // Discover's self-named sections under SpanDAC data
+    // (`BridgeDiscoverSections.swift`). Each is sent only when `capabilities()`
+    // names its op.
+
+    /// `slice.status`'s raw `capabilities`; empty when the status carries none.
+    func capabilities() throws -> [String]
+    /// `slice.recentlyAdded` (no request fields).
+    func recentlyAdded() throws -> [DiscoverItem]
+    /// `slice.recentStations {"limit"}`.
+    func recentStations(limit: Int) throws -> [DiscoverItem]
+    /// `slice.charts` (no request fields).
+    func charts() throws -> DiscoverSectionCharts
 }
 
 /// Defaults for the Part 2 members: an older conformer reads as an older
@@ -789,6 +802,14 @@ extension SourceControlling {
     func recentTracks(limit: Int) throws -> [HistoryItem] { throw SourceAppError.unsupported("slice.recentTracks") }
     func heavyRotation(limit: Int) throws -> [HistoryItem] { throw SourceAppError.unsupported("slice.heavyRotation") }
     func queueReportingSkips(catalogIDs: [String]) throws -> Int { throw SourceAppError.unsupported("slice.queue") }
+    func capabilities() throws -> [String] { throw SourceAppError.unsupported("slice.status") }
+    func recentlyAdded() throws -> [DiscoverItem] {
+        throw SourceAppError.unsupported(BridgeDiscoverSections.recentlyAddedOp)
+    }
+    func recentStations(limit: Int) throws -> [DiscoverItem] {
+        throw SourceAppError.unsupported(BridgeDiscoverSections.recentStationsOp)
+    }
+    func charts() throws -> DiscoverSectionCharts { throw SourceAppError.unsupported(BridgeDiscoverSections.chartsOp) }
 }
 
 struct SourceAppControl: SourceControlling {
@@ -1273,6 +1294,26 @@ struct SourceAppControl: SourceControlling {
     /// D5.
     func recentTracks(limit: Int) throws -> [HistoryItem] {
         try Self.historyItems(fromReply: send(["op": "slice.recentTracks", "limit": limit]))
+    }
+
+    /// The raw `capabilities` of `slice.status`, as `offersCatalogPlaylist`
+    /// reads them. A status with no `capabilities` (an older contract) has none.
+    func capabilities() throws -> [String] {
+        let reply = try send(["op": "slice.status"])
+        return (reply["status"] as? [String: Any])?["capabilities"] as? [String] ?? []
+    }
+
+    func recentlyAdded() throws -> [DiscoverItem] {
+        try BridgeDiscoverSections.recentlyAdded(fromReply: send(["op": BridgeDiscoverSections.recentlyAddedOp]))
+    }
+
+    func recentStations(limit: Int) throws -> [DiscoverItem] {
+        try BridgeDiscoverSections.recentStations(
+            fromReply: send(["op": BridgeDiscoverSections.recentStationsOp, "limit": limit]))
+    }
+
+    func charts() throws -> DiscoverSectionCharts {
+        try BridgeDiscoverSections.charts(fromReply: send(["op": BridgeDiscoverSections.chartsOp]))
     }
 
     /// D5.

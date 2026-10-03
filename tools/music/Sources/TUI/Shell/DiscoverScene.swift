@@ -213,8 +213,8 @@ final class DiscoverScene: Scene {
     // MARK: - Rows
 
     /// Discover shows five curated rails at four items each, then the
-    /// self-named sections the data source served (web-service data only;
-    /// none under SpanDAC data), also at four. The rail level shows one rail in
+    /// self-named sections the data source served (under SpanDAC data, only
+    /// those SpanDAC advertises), also at four. The rail level shows one rail in
     /// full, in Apple's own item order.
     ///
     /// Memoised: this ran rail selection plus flattening on every access,

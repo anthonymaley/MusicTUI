@@ -76,7 +76,9 @@ final class CLIBridgeListingsTests: XCTestCase {
         let (error, calls) = discover(h)
         XCTAssertNil(error)
         XCTAssertEqual(calls, [], "no token read reaches REST, no AppleScript")
-        XCTAssertEqual(h.seen.ops, ["slice.status", "slice.recommendations"])
+        // The trailing status is the sections' capability read; this SpanDAC
+        // advertises no section op, so none is sent (BridgeDiscoverSectionsTests).
+        XCTAssertEqual(h.seen.ops, ["slice.status", "slice.recommendations", "slice.status"])
         let body = try XCTUnwrap(h.seen.bodies("slice.recommendations").first)
         XCTAssertEqual(body["limit"] as? Int, 30, "the TUI's own rail limit (DiscoverScene)")
         XCTAssertEqual(h.seen.locked("slice.recommendations"), [false], "a read takes no output lock")

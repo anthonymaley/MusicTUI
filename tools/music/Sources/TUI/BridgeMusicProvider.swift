@@ -16,7 +16,13 @@ struct BridgeMusicProvider: MusicDataProvider {
     /// `SourceAppControl` owns the framing, the size limit and the refusal
     /// vocabulary, so this type adds no second copy of any of them: it turns
     /// Bridge's answers into the seam's words and nothing else.
-    init(control: SourceControlling) { self.control = control }
+    /// The sections' one shared deadline (`DiscoverFeed.defaultSectionDeadline`).
+    private let sectionDeadline: TimeInterval
+
+    init(control: SourceControlling, sectionDeadline: TimeInterval = DiscoverFeed.defaultSectionDeadline) {
+        self.control = control
+        self.sectionDeadline = sectionDeadline
+    }
 
     func librarySongs(cursor: String?, limit: Int = 100) throws -> MusicPage {
         do { return try control.librarySongs(cursor: cursor, limit: limit) }
@@ -135,9 +141,12 @@ struct BridgeMusicProvider: MusicDataProvider {
         try control.containerTracks(for: item)
     }
 
-    /// None, by design: SpanDAC serves no op for any section, and with
-    /// SpanDAC data nothing falls back to the web service (2026-09-29).
-    func discoverSections() -> [DiscoverRail] { [] }
+    /// The sections SpanDAC advertises, read by SpanDAC's own ops under the
+    /// shared deadline (`bridgeDiscoverSectionRails`). One SpanDAC does not
+    /// advertise is absent; nothing falls back to the web service (2026-09-29).
+    func discoverSections() -> [DiscoverRail] {
+        bridgeDiscoverSectionRails(control: control, deadline: sectionDeadline)
+    }
 
     /// D2: `SourceAppStationSearch`'s bytes and refusal decoding, unchanged.
     func searchStations(term: String, limit: Int) throws -> [Station] {

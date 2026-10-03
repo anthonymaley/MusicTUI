@@ -165,8 +165,10 @@ final class DiscoverSectionsTests: XCTestCase {
         XCTAssertTrue(sections.allSatisfy { !$0.isRecentlyPlayed })
     }
 
-    /// Bridge's feed and every other non-web feed serve no section.
-    func testBridgeServesNoSection() {
+    /// No section where none can be read: Bridge's raw feed type, a SpanDAC
+    /// whose capabilities cannot be read, and open mode with no feed. (A
+    /// SpanDAC that advertises its section ops: BridgeDiscoverSectionsTests.)
+    func testNoSectionWhereNoneCanBeRead() {
         XCTAssertEqual(BridgeDiscoverFeed(path: "/unused", transport: { _, _ in "" }).sectionRails(), [])
         XCTAssertEqual(BridgeMusicProvider(control: SourceAppControl(path: "/unused", transport: { _, _ in "" }))
             .discoverSections(), [])
