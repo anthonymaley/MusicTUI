@@ -18,6 +18,14 @@ protocol DiscoverProviding {
     var feedAvailable: Bool { get }
     func discoverRails(limit: Int) throws -> [DiscoverRail]
     func containerTracks(for item: DiscoverItem) throws -> [DiscoverItem]
+    /// Discover's self-named sections (`DiscoverSection`), read after the
+    /// rails under one shared deadline. Never throws: absent is the answer for
+    /// a section that could not be read, and for a provider that serves none.
+    func discoverSections() -> [DiscoverRail]
+}
+
+extension DiscoverProviding {
+    func discoverSections() -> [DiscoverRail] { [] }
 }
 
 /// Radio's catalogue reads and a station play.

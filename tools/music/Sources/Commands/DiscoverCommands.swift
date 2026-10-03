@@ -58,7 +58,9 @@ struct Discover: ParsableCommand {
         // `View all N` to page through the rest; the CLI has no navigation to
         // offer instead, so it keeps `--per-rail` (default 6). That is a
         // decision, not drift.
-        let feedRails = try feed.rails()
+        // The sections follow Apple's rails here too (the scene shows them as
+        // they land; the CLI waits for them, at most the feed's one deadline).
+        let feedRails = try feed.rails() + feed.sectionRails()
         let curated = all ? feedRails : resolvedDiscoverRails(feedRails)
         let rails = curated.prefix(max(1, limit))
         if json {

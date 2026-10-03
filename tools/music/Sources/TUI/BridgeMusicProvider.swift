@@ -135,6 +135,10 @@ struct BridgeMusicProvider: MusicDataProvider {
         try control.containerTracks(for: item)
     }
 
+    /// None, by design: SpanDAC serves no op for any section, and with
+    /// SpanDAC data nothing falls back to the web service (2026-09-29).
+    func discoverSections() -> [DiscoverRail] { [] }
+
     /// D2: `SourceAppStationSearch`'s bytes and refusal decoding, unchanged.
     func searchStations(term: String, limit: Int) throws -> [Station] {
         try control.searchStations(term: term, limit: limit)

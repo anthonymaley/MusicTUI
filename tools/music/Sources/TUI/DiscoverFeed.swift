@@ -247,6 +247,15 @@ func discoverSelection(rows: [DiscoverDisplayRow], cursor: Int) -> DiscoverSelec
 protocol DiscoverFeedReading {
     func rails(limit: Int) throws -> [DiscoverRail]
     func tracks(for item: DiscoverItem) throws -> [DiscoverItem]
+    /// The self-named sections (`DiscoverSection`), read AFTER the rails and
+    /// shown when they land: the curated rails never wait on them. Never
+    /// throws; a section that could not be read is absent.
+    func sectionRails() -> [DiscoverRail]
+}
+
+extension DiscoverFeedReading {
+    /// No sections: what every feed but the web service's serves.
+    func sectionRails() -> [DiscoverRail] { [] }
 }
 
 final class DiscoverFeed: DiscoverFeedReading {
@@ -254,28 +263,30 @@ final class DiscoverFeed: DiscoverFeedReading {
     private let token: () -> String?
     private let fetch: (String) -> Data?
     private let base = "https://api.music.apple.com"
+    /// The ONE deadline every section read shares, from the moment section
+    /// loading starts (`sectionRails`). See `defaultSectionDeadline`.
+    private let sectionDeadline: TimeInterval
 
-    init(storefront: String, token: @escaping () -> String?, fetch: @escaping (String) -> Data?) {
+    /// Six seconds for all the sections together, from the start of section
+    /// loading. A judgment, not a measurement: the curated rails are already
+    /// on screen by then (the scene never makes them wait), so this bounds how
+    /// late a section may still arrive and how long `music discover` waits.
+    /// Recently Added is the longest chain, two round trips in a row (the
+    /// list, then its catalogue lookups), so six seconds leaves about three per
+    /// hop, where each `fetch` alone may otherwise wait up to twenty.
+    static let defaultSectionDeadline: TimeInterval = 6
+
+    init(storefront: String, token: @escaping () -> String?, fetch: @escaping (String) -> Data?,
+         sectionDeadline: TimeInterval = DiscoverFeed.defaultSectionDeadline) {
         self.storefront = storefront
         self.token = token
         self.fetch = fetch
+        self.sectionDeadline = sectionDeadline
     }
 
-    /// Apple's For You rails, empty ones dropped, then the self-named
-    /// sections (`DiscoverSection`) this feed could read.
-    ///
-    /// The recommendations read is the feed: if it fails, the whole read
-    /// fails, exactly as before. A SECTION's read failing only drops that
-    /// section, because a missing "Top Albums" is a smaller wrong than no
-    /// Discover at all. Sections are read only after the recommendations
-    /// succeed, one after another (at most five extra round trips, and
-    /// none at all on a dead connection, where the first read already threw).
+    /// Apple's For You rails, empty ones dropped. The sections are a separate
+    /// read (`sectionRails`), so these never wait on them.
     func rails(limit: Int = 30) throws -> [DiscoverRail] {
-        try recommendationRails(limit: limit) + sectionRails()
-    }
-
-    /// Apple's For You rails alone, empty ones dropped.
-    func recommendationRails(limit: Int = 30) throws -> [DiscoverRail] {
         let root = try json(at: "/v1/me/recommendations?limit=\(limit)")
         let rows = root["data"] as? [[String: Any]] ?? []
         return rows.compactMap { row in
@@ -309,19 +320,43 @@ final class DiscoverFeed: DiscoverFeedReading {
     /// Recently played stations. 10 is the endpoint's default page.
     static let recentStationsLimit = 10
 
-    /// Every section this feed could read, empty ones dropped, in
-    /// `DiscoverSection` order.
+    /// Every section this feed could read within `sectionDeadline`, empty
+    /// ones dropped, in `DiscoverSection` order.
+    ///
+    /// The three reads (Recently Added, Recent Stations, the charts) run at
+    /// once and share ONE deadline from this call's start. A read that has
+    /// not finished by then is simply absent: its result, should it land
+    /// later, is discarded. A read that fails is absent too, because a
+    /// missing "Top Albums" is a smaller wrong than no Discover at all.
     func sectionRails() -> [DiscoverRail] {
+        let lock = NSLock()
         var found: [DiscoverSection: [DiscoverItem]] = [:]
-        found[.recentlyAdded] = try? recentlyAdded()
-        found[.recentStations] = try? recentStations()
-        if let charts = try? charts() {
-            found[.topSongs] = charts.songs
-            found[.topAlbums] = charts.albums
-            found[.topPlaylists] = charts.playlists
+        var open = true   // false once the deadline has passed: late results are dropped
+        func record(_ results: [DiscoverSection: [DiscoverItem]]) {
+            lock.lock(); defer { lock.unlock() }
+            guard open else { return }
+            found.merge(results) { first, _ in first }
         }
+        let reads: [() -> [DiscoverSection: [DiscoverItem]]] = [
+            { [self] in (try? recentlyAdded()).map { [.recentlyAdded: $0] } ?? [:] },
+            { [self] in (try? recentStations()).map { [.recentStations: $0] } ?? [:] },
+            { [self] in
+                guard let charts = try? charts() else { return [:] }
+                return [.topSongs: charts.songs, .topAlbums: charts.albums, .topPlaylists: charts.playlists]
+            },
+        ]
+        let group = DispatchGroup()
+        for read in reads {
+            group.enter()
+            DispatchQueue.global().async { record(read()); group.leave() }
+        }
+        _ = group.wait(timeout: .now() + sectionDeadline)
+        lock.lock()
+        open = false
+        let landed = found
+        lock.unlock()
         return DiscoverSection.allCases.compactMap { section in
-            guard let items = found[section], !items.isEmpty else { return nil }
+            guard let items = landed[section], !items.isEmpty else { return nil }
             return DiscoverRail(id: section.railID, title: section.title, items: items,
                                 isRecentlyPlayed: false, resourceTypes: section.resourceTypes,
                                 section: section)
@@ -345,9 +380,19 @@ final class DiscoverFeed: DiscoverFeedReading {
         func ids(_ type: String) -> [String] {
             rows.compactMap { ($0["type"] as? String) == type ? $0["id"] as? String : nil }
         }
-        let albums = catalogCounterparts(library: "albums", catalogType: "albums", ids: ids("library-albums"))
-        let playlists = catalogCounterparts(library: "playlists", catalogType: "playlists",
+        // The two lookups run at once: they are one hop of the section's
+        // shared deadline, not two.
+        var albums: [String: [String: Any]] = [:]
+        var playlists: [String: [String: Any]] = [:]
+        let group = DispatchGroup()
+        DispatchQueue.global().async(group: group) { [self] in
+            albums = catalogCounterparts(library: "albums", catalogType: "albums", ids: ids("library-albums"))
+        }
+        DispatchQueue.global().async(group: group) { [self] in
+            playlists = catalogCounterparts(library: "playlists", catalogType: "playlists",
                                             ids: ids("library-playlists"))
+        }
+        group.wait()
         let resolved: [[String: Any]] = rows.compactMap { row in
             guard let id = row["id"] as? String, let type = row["type"] as? String else { return nil }
             switch type {
