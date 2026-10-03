@@ -201,10 +201,10 @@ func discoverCopyEndScript(hex: String, delete: Bool) -> String {
     end try
     if currentID is "" then set currentReadable to false
     if currentID is "missing value" then set currentReadable to false
-    set active to true
-    if stateText is "stopped" then set active to false
-    if active and not currentReadable then return "spared"
-    if active and currentID is "\(hex)" then return "spared"
+    set playerActive to true
+    if stateText is "stopped" then set playerActive to false
+    if playerActive and not currentReadable then return "spared"
+    if playerActive and currentID is "\(hex)" then return "spared"
     """
     guard delete else {
         return guardLines + "\nreturn \"kept\""

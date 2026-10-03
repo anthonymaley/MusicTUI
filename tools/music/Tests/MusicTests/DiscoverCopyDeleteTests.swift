@@ -56,13 +56,23 @@ final class DiscoverCopyDeleteTests: XCTestCase {
         XCTAssertTrue(script.contains("delete pl"))
     }
 
+    /// Music.app answers "Unknown object type" (-1731) to a script variable
+    /// named `active`, so the delete never ran on the first live play (G1,
+    /// 2026-10-03). The variable must not use that name.
+    func testTheEndScriptNamesNoVariableActive() {
+        for delete in [true, false] {
+            let script = discoverCopyEndScript(hex: hex, delete: delete)
+            XCTAssertNil(script.range(of: #"\bactive\b"#, options: .regularExpression), script)
+        }
+    }
+
     func testTheDeleteComesAfterTheGoneAndSparedChecks() throws {
         let script = discoverCopyEndScript(hex: hex, delete: true)
         let gone = try XCTUnwrap(script.range(of: "if pl is missing value then return \"gone\""))
         let unreadable = try XCTUnwrap(script.range(of:
-            "if active and not currentReadable then return \"spared\""))
+            "if playerActive and not currentReadable then return \"spared\""))
         let spared = try XCTUnwrap(script.range(of:
-            "if active and currentID is \"\(hex)\" then return \"spared\""))
+            "if playerActive and currentID is \"\(hex)\" then return \"spared\""))
         let delete = try XCTUnwrap(script.range(of: "delete pl"))
         XCTAssertLessThan(gone.lowerBound, unreadable.lowerBound)
         XCTAssertLessThan(unreadable.lowerBound, spared.lowerBound)
