@@ -63,8 +63,10 @@ final class MusicTUIOutputWithoutADACTests: XCTestCase {
         }
         XCTAssertNil(scene.loadFailure, "no DAC is no reason to refuse Discover's rails")
 
-        let row = DiscoverItem(id: "1440857781", name: "Boom Bap", subtitle: nil, url: nil, artworkURL: nil,
-                               detail: .album(trackCount: nil, year: nil, genre: nil))
+        // A playlist with a non-`pl.` id: the container path. (An album, as
+        // this row was until 3.18.1, now refuses before SpanDAC is asked.)
+        let row = DiscoverItem(id: "p.boom-bap", name: "Boom Bap", subtitle: nil, url: nil, artworkURL: nil,
+                               detail: .playlist(description: nil))
         scene.playAllFromRail(row)
         drain(actions)
 

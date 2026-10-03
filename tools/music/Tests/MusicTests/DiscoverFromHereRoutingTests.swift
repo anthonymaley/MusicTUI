@@ -227,27 +227,48 @@ final class DiscoverFromHereRoutingTests: XCTestCase {
         XCTAssertEqual(f.rig.sent("slice.queue").count, 0)
     }
 
-    /// An album keeps today's path (ruling D4): SpanDAC on this Mac ensures a
-    /// container holding the slice from the chosen row, and that plays.
-    func testEnterOnAnAlbumRowKeepsTheContainerPath() {
-        let f = fixture(rail: Self.albumRail)
-        let mac = FakeSpanDACMac(library: FakeAppleLibrary())
-        f.scene.libraryOps = mac.client
-        f.log.mac = mac
-        drillIn(f)
-
-        enter(f, row: 2)
-
-        let ensures = mac.ops("slice.libraryEnsurePlaylist")
-        XCTAssertEqual(ensures.count, 1)
-        XCTAssertEqual(ensures.first?["ids"] as? [String], ["903", "904", "905"], "today's slice")
-        XCTAssertEqual(f.log.played.count, 1)
-        XCTAssertEqual(f.log.created, [])
-        assertCopyPathUntouched(f)
+    /// What a refused album play must leave behind: the refusal, lasting, and
+    /// no library mutation and no play on any fake. Every SpanDAC op counts,
+    /// not only the adds, because the refusal comes before the first of them.
+    private func assertAlbumRefused(_ f: Fixture, mac: FakeSpanDACMac, lib: FakeAppleLibrary,
+                                    file: StaticString = #filePath, line: UInt = #line) {
+        let shown = f.status.current()
+        XCTAssertEqual(shown?.text, DiscoverScene.albumPlayRefused("Some Album"), file: file, line: line)
+        XCTAssertEqual(shown?.isError, true, file: file, line: line)
+        XCTAssertEqual(shown?.staysUntilStateChange, true, "a won't-play message lasts", file: file, line: line)
+        XCTAssertEqual(mac.allOps, [], "SpanDAC's library ops were reached", file: file, line: line)
+        XCTAssertEqual(lib.allEvents, [], "the library saw a write or a read", file: file, line: line)
+        XCTAssertEqual(lib.allSeeded, [], file: file, line: line)
+        XCTAssertEqual(lib.launches, 0, file: file, line: line)
+        XCTAssertEqual(f.log.created, [], "the web-service playlist was made", file: file, line: line)
+        XCTAssertEqual(f.log.played, [], "a container played", file: file, line: line)
+        XCTAssertEqual(f.rig.sent("slice.queue").count, 0, file: file, line: line)
+        XCTAssertEqual(f.rig.outputBuilt, [], file: file, line: line)
+        assertCopyPathUntouched(f, file: file, line: line)
     }
 
-    /// The LAST row of an album is still one song, added and played alone.
-    func testTheLastRowOfAnAlbumKeepsTheSingleSongPath() {
+    /// An album refuses (owner's ruling, after probe P-C showed a playlist
+    /// made from catalogue ids adds its songs and keeps them): from the first
+    /// row and a middle one, SpanDAC is asked nothing and nothing plays.
+    func testEnterOnAnAlbumRowRefusesAndAddsNothing() {
+        for selected in [0, 2] {
+            let f = fixture(rail: Self.albumRail)
+            let lib = FakeAppleLibrary()
+            let mac = FakeSpanDACMac(library: lib)
+            f.scene.cataloguePlayer = SpanDACCataloguePlayer(seams: lib.seams)
+            f.scene.libraryOps = mac.client
+            f.log.mac = mac
+            drillIn(f)
+
+            enter(f, row: selected)
+
+            assertAlbumRefused(f, mac: mac, lib: lib)
+        }
+    }
+
+    /// The LAST row of an album is a one-song slice, which used to be added
+    /// alone. It refuses too.
+    func testTheLastRowOfAnAlbumRefusesAndAddsNothing() {
         let f = fixture(rail: Self.albumRail)
         let lib = FakeAppleLibrary()
         lib.catalogue["905"] = ("Song 5", "Artist", "Some Album")
@@ -259,10 +280,39 @@ final class DiscoverFromHereRoutingTests: XCTestCase {
 
         enter(f, row: 4)
 
-        XCTAssertEqual(mac.ops("slice.libraryAdd").first?["ids"] as? [String], ["905"])
-        XCTAssertEqual(mac.ops("slice.libraryEnsurePlaylist").count, 0)
-        XCTAssertEqual(f.status.current()?.text, "Playing Song 5")
+        assertAlbumRefused(f, mac: mac, lib: lib)
+    }
+
+    /// `p` on an album rail row: the same refusal, after the track read.
+    func testPOnAnAlbumRailRowRefusesAndAddsNothing() {
+        let f = fixture(rail: Self.albumRail)
+        let lib = FakeAppleLibrary()
+        let mac = FakeSpanDACMac(library: lib)
+        f.scene.cataloguePlayer = SpanDACCataloguePlayer(seams: lib.seams)
+        f.scene.libraryOps = mac.client
+        f.log.mac = mac
+        loadRails(f)
+
+        f.scene.playAllFromRail(f.scene.rails[0].items[0])
+        drain(f.actions)
+
+        XCTAssertEqual(f.rig.sent("slice.containerTracks").count, 1, "the tracks were read")
+        assertAlbumRefused(f, mac: mac, lib: lib)
+    }
+
+    /// A SpanDAC output is not a refused path: an album's slice is queued on
+    /// the output as before, and no library op is sent.
+    func testAnAlbumOnASpanDACOutputStillQueuesOnTheOutput() {
+        let f = fixture(output: .networkSource(SceneDataRig.ipad), rail: Self.albumRail)
+        drillIn(f)
+
+        enter(f, row: 2)
+
+        XCTAssertEqual(f.rig.sent("slice.queue").map(\.tag), ["output:\(SceneDataRig.ipad)"])
+        XCTAssertEqual(f.rig.sent("slice.queue").first?.body["ids"] as? [String], ["903", "904", "905"])
+        XCTAssertNotEqual(f.status.current()?.text, DiscoverScene.albumPlayRefused("Some Album"))
         assertCopyPathUntouched(f)
+        XCTAssertEqual(f.log.created, [])
     }
 
     /// A song shown directly on a rail: the single-song path, as it ships.

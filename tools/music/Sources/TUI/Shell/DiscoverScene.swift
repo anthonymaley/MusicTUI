@@ -24,6 +24,10 @@ import Foundation
 // name this app gave it. `→` still never plays — see
 // discoverRightArrowActivates.
 //
+// ALBUMS, since 3.18.1: on the MusicTUI output every one of those routes adds
+// the album's songs to his library for good, so an album refuses there and
+// plays nothing (`catalogueAlbumTitle`). Playlists are unchanged.
+//
 // "Play from here" (2026-08-30) is the SAME transaction over a shorter id
 // list: discoverPlaySlice cuts the container from the selected row to its end,
 // so the bounded `play playlist` form starts where the user pointed. It also
@@ -405,7 +409,8 @@ final class DiscoverScene: Scene {
         playCatalogSlice(catalogIDs: ids, containerTitle: container.name,
                          trackName: trackRows[cursorIndex].name, trackArtist: trackRows[cursorIndex].subtitle,
                          read: tracksRead,
-                         copy: discoverCopyRequest(container: container, rows: trackRows, selected: cursorIndex))
+                         copy: discoverCopyRequest(container: container, rows: trackRows, selected: cursorIndex),
+                         albumTitle: Self.catalogueAlbumTitle(container))
         return .push(.nowPlaying)
     }
 
@@ -470,8 +475,27 @@ final class DiscoverScene: Scene {
                        bridgeToast: "Playing '\(title)' on SpanDAC — \(catalogIDs.count) tracks.",
                        expecting: (epoch: keypressEpoch, dataEpoch: read.dataEpoch),
                        origin: Self.origin(of: read, singleTrack: false),
-                       copy: discoverCopyRequest(container: item, rows: tracks, selected: 0))
+                       copy: discoverCopyRequest(container: item, rows: tracks, selected: 0),
+                       albumTitle: Self.catalogueAlbumTitle(item))
         }
+    }
+
+    /// The container's title when it is a Discover (catalogue) album, else nil.
+    ///
+    /// Every route that puts a catalogue album in front of Music.app adds its
+    /// songs to his library and keeps them: a user playlist made from catalogue
+    /// ids adds its tracks, and deleting the playlist leaves them (probe P-C,
+    /// 2026-10-03, one run per arm). Until a cleanup exists, an album refuses on
+    /// every branch that would add (owner's ruling); a SpanDAC output, which
+    /// queues on its own player and sends no library op, is unchanged.
+    static func catalogueAlbumTitle(_ container: DiscoverItem) -> String? {
+        if case .album = container.detail { return container.name }
+        return nil
+    }
+
+    /// Said instead of adding a Discover album to his library (CHOSEN wording).
+    static func albumPlayRefused(_ album: String) -> String {
+        "Play from here isn't available for albums yet, so '\(album)' wasn't added to your library. Nothing played."
     }
 
     /// Play a catalogue slice: the selected Discover row through the container's
@@ -485,9 +509,12 @@ final class DiscoverScene: Scene {
     /// `copy` is set only for a catalogue playlist. With one, the origin is the
     /// container's whatever the slice's length: the LAST row of a playlist is
     /// a one-row slice, and must not go down the single-song add path.
+    ///
+    /// `albumTitle` is set only for a Discover album (`catalogueAlbumTitle`):
+    /// every branch that would add to the library refuses instead.
     func playCatalogSlice(catalogIDs: [String], containerTitle: String, trackName: String,
                           trackArtist: String? = nil, read: RowsRead? = nil,
-                          copy: DiscoverCopyRequest? = nil) {
+                          copy: DiscoverCopyRequest? = nil, albumTitle: String? = nil) {
         let expecting = read.map { (epoch: routing.epoch, dataEpoch: $0.dataEpoch) }
         let origin = read.map { Self.origin(of: $0, singleTrack: copy == nil && catalogIDs.count == 1) }
         actions.run("Play") {
@@ -497,7 +524,8 @@ final class DiscoverScene: Scene {
                            ? "Playing \(trackName) on SpanDAC."
                            : "Playing \(trackName) on SpanDAC — \(catalogIDs.count) tracks.",
                        expecting: expecting, origin: origin,
-                       track: (title: trackName, artist: trackArtist), copy: copy)
+                       track: (title: trackName, artist: trackArtist), copy: copy,
+                       albumTitle: albumTitle)
         }
     }
 
@@ -524,11 +552,16 @@ final class DiscoverScene: Scene {
     ///
     /// `track` is the single track's own title and artist, which the SpanDAC
     /// add path needs to find the row the add made; nil for a container.
+    ///
+    /// `albumTitle` set: a Discover album. The three MusicTUI-output branches
+    /// that add catalogue songs to the library (`.shipped`'s web-service
+    /// playlist, `.addContainer`'s SpanDAC playlist, `.add`'s single-song add)
+    /// refuse before any of it runs. The SpanDAC-output branch is unchanged.
     private func route(_ action: MusicTUIAction, catalogIDs: [String], disableShuffle: Bool,
                        musicAppTitle: String, bridgeToast: String,
                        expecting: (epoch: Int, dataEpoch: Int)?, origin: PlayOrigin?,
                        track: (title: String, artist: String?)? = nil,
-                       copy: DiscoverCopyRequest? = nil) throws {
+                       copy: DiscoverCopyRequest? = nil, albumTitle: String? = nil) throws {
         let lifecycle = self.lifecycle
         let routing = self.routing
         let status = self.status
@@ -545,12 +578,19 @@ final class DiscoverScene: Scene {
         do {
             try routing.perform(action, expecting: expecting, origin: origin,
                 musicApp: { path in
+                    // A Discover album: each branch below that adds to the
+                    // library refuses first, before any mutation.
+                    func refuseAnAlbum() throws {
+                        if let albumTitle { throw ActionError(message: Self.albumPlayRefused(albumTitle)) }
+                    }
                     switch path {
                     case .shipped:
+                        try refuseAnAlbum()
                         try require(hasAPI, Self.signInToPlay)
                         _ = lifecycle.requestPlay(title: musicAppTitle, catalogIDs: catalogIDs,
                                                   disableShuffle: disableShuffle)
                     case .addContainer:
+                        try refuseAnAlbum()
                         if let copy {
                             // PHASE A. No socket, no AppleScript, no wait: the
                             // one copy-play slot and the reservation, while the
@@ -571,6 +611,8 @@ final class DiscoverScene: Scene {
                     case .add:
                         // One Discover track with SpanDAC data: added through
                         // SpanDAC on this Mac, then exactly that song plays.
+                        // The LAST row of an album is such a slice, and refuses.
+                        try refuseAnAlbum()
                         guard catalogIDs.count == 1, let track else { throw ActionError(message: pickASpanDACOutput) }
                         let song = SpanDACCatalogueSong(catalogueID: catalogIDs[0], title: track.title,
                                                         artist: track.artist, album: nil)

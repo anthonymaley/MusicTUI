@@ -89,13 +89,14 @@ final class DiscoverBridgeCollectionTests: XCTestCase {
     }
 
     private func scene(mode: PlaybackMode, wire: Wire, status: StatusStore,
-                       lifecycle: DiscoverLifecycleCoordinator) -> DiscoverScene {
+                       lifecycle: DiscoverLifecycleCoordinator,
+                       feed: DiscoverFeed? = nil) -> DiscoverScene {
         let store = PlaybackModeStore(path: NSTemporaryDirectory() + "mode-\(UUID().uuidString).json")
         store.set(mode)
         let routing = RoutingCoordinator(store: store, surface: .tui,
                                          makeSource: { SourceAppClient(path: "/nonexistent",
                                                                        transport: wire.transport) })
-        return DiscoverScene(feed: feed(), status: status,
+        return DiscoverScene(feed: feed ?? self.feed(), status: status,
                              actions: ActionRunner(status: status),
                              api: RESTAPIBackend(developerToken: "d", userToken: "u", storefront: "us"),
                              lifecycle: lifecycle,
@@ -138,19 +139,85 @@ final class DiscoverBridgeCollectionTests: XCTestCase {
         XCTAssertEqual(wire.queuedIDs, ["801", "802", "803"])
     }
 
-    /// And Music.app mode still builds its container instead, so the test above
-    /// cannot pass with the mode ignored.
-    func testPlayAllFromRailInMusicAppModeStillBuildsTheContainer() {
+    /// And Music.app mode, MusicTUI's own data, refuses the album instead of
+    /// building its web-service playlist (which adds the album's songs to the
+    /// library for good, probe P-C), so the test above cannot pass with the
+    /// mode ignored.
+    func testPlayAllFromRailInMusicAppModeRefusesAnAlbumAndCreatesNothing() {
+        let wire = Wire()
+        let created = Recorder()
+        let status = StatusStore()
+        let s = scene(mode: .musicApp, wire: wire, status: status,
+                      lifecycle: lifecycle(playsRecorded: { created.set($0) }))
+
+        s.playAllFromRail(albumRow)
+        settle { status.current() != nil }
+
+        XCTAssertEqual(status.current()?.text, DiscoverScene.albumPlayRefused("An Album"))
+        XCTAssertEqual(status.current()?.staysUntilStateChange, true)
+        XCTAssertEqual(created.ids, [], "the web-service playlist was made")
+        XCTAssertTrue(wire.queued.isEmpty, "MusicTUI's own data with the MusicTUI output sent a SpanDAC request")
+    }
+
+    /// The control for the refusal: a catalogue playlist in the same mode
+    /// still builds the shipped container, unchanged.
+    func testPlayAllFromRailInMusicAppModeStillBuildsAPlaylistsContainer() {
         let wire = Wire()
         let created = Recorder()
         let s = scene(mode: .musicApp, wire: wire, status: StatusStore(),
                       lifecycle: lifecycle(playsRecorded: { created.set($0) }))
+        let playlistRow = DiscoverItem(id: "pl.u-abc", name: "A Playlist", subtitle: nil, url: nil,
+                                       artworkURL: nil, detail: .playlist(description: nil))
 
-        s.playAllFromRail(albumRow)
+        s.playAllFromRail(playlistRow)
         settle { !created.ids.isEmpty }
 
         XCTAssertEqual(created.ids, ["801", "802", "803"])
-        XCTAssertTrue(wire.queued.isEmpty, "MusicTUI's own data with the MusicTUI output sent a SpanDAC request")
+        XCTAssertTrue(wire.queued.isEmpty)
+    }
+
+    // MARK: - Enter inside an album, MusicTUI's own data
+
+    /// A feed that serves one album rail, and that album's three tracks.
+    private func albumRailFeed() -> DiscoverFeed {
+        let rails = """
+        {"data":[{"id":"rail-1","type":"personal-recommendation",
+          "attributes":{"kind":"music-recommendations","resourceTypes":["albums"],
+            "title":{"stringForDisplay":"Albums For You"}},
+          "relationships":{"contents":{"data":[
+            {"id":"700","type":"albums","attributes":{"name":"An Album","artistName":"A"}}]}}}]}
+        """
+        return DiscoverFeed(storefront: "us", token: { "t" }, fetch: { url in
+            Data((url.contains("/recommendations") ? rails : Self.albumTracksJSON).utf8)
+        })
+    }
+
+    /// Enter on a track row inside an album on the shipped path (MusicTUI's
+    /// own data, the MusicTUI output): a middle row and the LAST row (a
+    /// one-song slice) both refuse, and no playlist is created.
+    func testEnterInsideAnAlbumInMusicAppModeRefusesAndCreatesNothing() {
+        for downs in [1, 2] {
+            let wire = Wire()
+            let created = Recorder()
+            let status = StatusStore()
+            let s = scene(mode: .musicApp, wire: wire, status: status,
+                          lifecycle: lifecycle(playsRecorded: { created.set($0) }), feed: albumRailFeed())
+            let idle = NowPlayingSnapshot(outcome: .stopped, history: [], surrounding: [])
+            settle { _ = s.tick(snapshot: idle); return !s.rails.isEmpty }
+            XCTAssertFalse(s.rails.isEmpty, "the rails never loaded")
+            _ = s.handle(.enter)   // into the album
+            settle { _ = s.tick(snapshot: idle); return !s.trackRows.isEmpty }
+            XCTAssertEqual(s.trackRows.map(\.id), ["801", "802", "803"])
+            for _ in 0..<downs { _ = s.handle(.down) }
+
+            XCTAssertEqual(s.handle(.enter), .push(.nowPlaying))
+            settle { status.current() != nil }
+
+            XCTAssertEqual(status.current()?.text, DiscoverScene.albumPlayRefused("An Album"), "row \(downs)")
+            XCTAssertEqual(status.current()?.staysUntilStateChange, true)
+            XCTAssertEqual(created.ids, [], "the web-service playlist was made (row \(downs))")
+            XCTAssertTrue(wire.queued.isEmpty)
+        }
     }
 
     // MARK: - Enter on a track row

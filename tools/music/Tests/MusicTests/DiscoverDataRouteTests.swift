@@ -190,12 +190,13 @@ final class DiscoverDataRouteTests: XCTestCase {
                      detail: .playlist(description: nil))
     }
 
-    /// An album keeps the container path on the MusicTUI output with SpanDAC
-    /// data; a catalogue playlist there plays on Apple's own copy instead
-    /// (`DiscoverFromHereRoutingTests`).
-    private var albumRow: DiscoverItem {
-        DiscoverItem(id: "1440857781", name: "Boom Bap", subtitle: nil, url: nil, artworkURL: nil,
-                     detail: .album(trackCount: nil, year: nil, genre: nil))
+    /// A playlist whose id is not a `pl.` one keeps the container path on the
+    /// MusicTUI output with SpanDAC data. A `pl.` playlist there plays on
+    /// Apple's own copy instead, and an album refuses (both in
+    /// `DiscoverFromHereRoutingTests`). This row was an album until 3.18.1.
+    private var containerRow: DiscoverItem {
+        DiscoverItem(id: "p.boom-bap", name: "Boom Bap", subtitle: nil, url: nil, artworkURL: nil,
+                     detail: .playlist(description: nil))
     }
 
     // MARK: - The door
@@ -273,8 +274,9 @@ final class DiscoverDataRouteTests: XCTestCase {
 
     // MARK: - Plays on the MusicTUI output with SpanDAC data
 
-    /// A Discover album or its play-from-here slice on the MusicTUI output
-    /// with SpanDAC data takes the container path (step 10): the
+    /// A Discover container that is neither an album nor a `pl.` playlist, or
+    /// its play-from-here slice, on the MusicTUI output with SpanDAC data
+    /// takes the container path (step 10): the
     /// lifecycle has SpanDAC on this Mac ensure the container under its minted
     /// name, then plays it by the persistent ID SpanDAC returned. Nothing is
     /// created by the web service, and nothing is queued on any SpanDAC. A
@@ -287,7 +289,7 @@ final class DiscoverDataRouteTests: XCTestCase {
         s.log.mac = mac
         loadRails(s)
 
-        s.scene.playAllFromRail(albumRow)
+        s.scene.playAllFromRail(containerRow)
         drain(s.actions)
 
         let ensures = mac.ops("slice.libraryEnsurePlaylist")
