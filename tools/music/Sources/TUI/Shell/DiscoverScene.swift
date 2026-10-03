@@ -399,9 +399,13 @@ final class DiscoverScene: Scene {
             status.post("Couldn't tell which track to play from.", error: true, untilStateChange: true)
             return .redraw
         }
+        // A catalogue playlist carries the FULL rows and the cursor too: with
+        // SpanDAC data on the MusicTUI output it plays on Apple's own copy,
+        // positioned at this row. Everything else ignores it.
         playCatalogSlice(catalogIDs: ids, containerTitle: container.name,
                          trackName: trackRows[cursorIndex].name, trackArtist: trackRows[cursorIndex].subtitle,
-                         read: tracksRead)
+                         read: tracksRead,
+                         copy: discoverCopyRequest(container: container, rows: trackRows, selected: cursorIndex))
         return .push(.nowPlaying)
     }
 
@@ -465,7 +469,8 @@ final class DiscoverScene: Scene {
                        musicAppTitle: title,
                        bridgeToast: "Playing '\(title)' on SpanDAC — \(catalogIDs.count) tracks.",
                        expecting: (epoch: keypressEpoch, dataEpoch: read.dataEpoch),
-                       origin: Self.origin(of: read, singleTrack: false))
+                       origin: Self.origin(of: read, singleTrack: false),
+                       copy: discoverCopyRequest(container: item, rows: tracks, selected: 0))
         }
     }
 
@@ -476,10 +481,15 @@ final class DiscoverScene: Scene {
     /// `read` is where the track list came from. Without one there is no
     /// earlier read to stamp and no origin, so a play that needs an origin (a
     /// SpanDAC row on the MusicTUI output) refuses rather than guessing.
+    ///
+    /// `copy` is set only for a catalogue playlist. With one, the origin is the
+    /// container's whatever the slice's length: the LAST row of a playlist is
+    /// a one-row slice, and must not go down the single-song add path.
     func playCatalogSlice(catalogIDs: [String], containerTitle: String, trackName: String,
-                          trackArtist: String? = nil, read: RowsRead? = nil) {
+                          trackArtist: String? = nil, read: RowsRead? = nil,
+                          copy: DiscoverCopyRequest? = nil) {
         let expecting = read.map { (epoch: routing.epoch, dataEpoch: $0.dataEpoch) }
-        let origin = read.map { Self.origin(of: $0, singleTrack: catalogIDs.count == 1) }
+        let origin = read.map { Self.origin(of: $0, singleTrack: copy == nil && catalogIDs.count == 1) }
         actions.run("Play") {
             try self.route(.discoverTrackPlay, catalogIDs: catalogIDs, disableShuffle: true,
                        musicAppTitle: containerTitle,
@@ -487,7 +497,7 @@ final class DiscoverScene: Scene {
                            ? "Playing \(trackName) on SpanDAC."
                            : "Playing \(trackName) on SpanDAC — \(catalogIDs.count) tracks.",
                        expecting: expecting, origin: origin,
-                       track: (title: trackName, artist: trackArtist))
+                       track: (title: trackName, artist: trackArtist), copy: copy)
         }
     }
 
@@ -517,7 +527,8 @@ final class DiscoverScene: Scene {
     private func route(_ action: MusicTUIAction, catalogIDs: [String], disableShuffle: Bool,
                        musicAppTitle: String, bridgeToast: String,
                        expecting: (epoch: Int, dataEpoch: Int)?, origin: PlayOrigin?,
-                       track: (title: String, artist: String?)? = nil) throws {
+                       track: (title: String, artist: String?)? = nil,
+                       copy: DiscoverCopyRequest? = nil) throws {
         let lifecycle = self.lifecycle
         let routing = self.routing
         let status = self.status
@@ -527,6 +538,10 @@ final class DiscoverScene: Scene {
         func libraryOps() -> SpanDACLibraryAdding {
             injectedOps ?? routing.dataClient().libraryWrites()
         }
+        // A catalogue playlist with SpanDAC data on the MusicTUI output plays
+        // in two phases. Phase A, inside the boundary, only reserves; this is
+        // what it captured, for phase B below.
+        var phaseA: DiscoverCopyPhaseA?
         do {
             try routing.perform(action, expecting: expecting, origin: origin,
                 musicApp: { path in
@@ -536,6 +551,14 @@ final class DiscoverScene: Scene {
                         _ = lifecycle.requestPlay(title: musicAppTitle, catalogIDs: catalogIDs,
                                                   disableShuffle: disableShuffle)
                     case .addContainer:
+                        if let copy {
+                            // PHASE A. No socket, no AppleScript, no wait: the
+                            // one copy-play slot and the reservation, while the
+                            // boundary is held, so they are one instant.
+                            phaseA = try discoverCopyPhaseA(copy, lifecycle: lifecycle,
+                                                            reservation: { try routing.reservationForThisBranch() })
+                            return
+                        }
                         // A Discover container with SpanDAC data: SpanDAC on
                         // this Mac makes it, and it plays by the identity
                         // SpanDAC returned. The web-service container path is
@@ -570,10 +593,21 @@ final class DiscoverScene: Scene {
                 },
                 unaffected: {})
         } catch let error as SourceAppError {
+            if let phaseA { lifecycle.cancelCopyPlay(phaseA.slot) }
             // ActionRunner reduces anything that is not an ActionError to
             // "Play failed.", which would hide the 100-song bound and
             // "unresolvable" alike.
             throw ActionError(message: error.message)
+        } catch {
+            if let phaseA { lifecycle.cancelCopyPlay(phaseA.slot) }
+            throw error
+        }
+        // PHASE B. The boundary is free again: the add, every wait and every
+        // Music.app read run here, on this thread, and go back into the
+        // boundary only through the gate. The lifecycle posts its own outcome.
+        if let phaseA {
+            _ = lifecycle.runCopyPlay(phaseA.slot,
+                                      gate: discoverCopyGate(routing: routing, reservation: phaseA.reservation))
         }
     }
 

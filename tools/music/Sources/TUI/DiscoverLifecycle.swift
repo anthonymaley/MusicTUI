@@ -50,8 +50,14 @@ enum DiscoverLaunchSweep: Equatable {
 /// ID to play it by arrived in time, or its tracks were not exactly the
 /// expected ones in the expected order, so nothing plays and the container is
 /// left for the sweep. `selectionChanged`, SpanDAC data only too: the output
-/// or the data source moved before the play, so nothing plays.
-enum DiscoverFailureStage: Equatable { case create, readiness, identity, selectionChanged }
+/// or the data source moved before the play, so nothing plays. `modes`,
+/// `positioning` and `superseded` belong to a play on Apple's own copy of a
+/// playlist: shuffle and repeat could not be switched off; the chosen row was
+/// not reached; a later play started while this one was still getting ready.
+enum DiscoverFailureStage: Equatable {
+    case create, readiness, identity, selectionChanged
+    case modes, positioning, superseded
+}
 
 /// One transaction's position, with the protection each position carries
 /// (design §3.1). `protected` is derived from this, never stored beside it.
@@ -83,12 +89,20 @@ enum DiscoverTransactionState: Equatable {
     /// terminal: the attempt pauses here, and the person's next Enter resumes
     /// it with the SAME name, never by itself.
     case unknownOutcome(String)
+    /// Apple's own copy only: the copy is playing and MusicTUI is moving to
+    /// the chosen row (S11-S12). Protected, not terminal. On this path the
+    /// associated string is the token `copy:<txn uuid>`, never a playlist name.
+    case positioning(String)
+    /// Apple's own copy only: the chosen row was confirmed playing (S14).
+    /// Terminal and not protected, like `confirmedPlaying`.
+    case listening(String)
 
     var name: String {
         switch self {
         case .minted(let n), .created(let n), .ready(let n), .playIssued(let n),
              .unconfirmed(let n), .playAmbiguous(let n), .confirmedPlaying(let n),
-             .failedBeforePlay(let n, _), .unknownOutcome(let n):
+             .failedBeforePlay(let n, _), .unknownOutcome(let n),
+             .positioning(let n), .listening(let n):
             return n
         }
     }
@@ -97,15 +111,16 @@ enum DiscoverTransactionState: Equatable {
     /// SpanDAC data a seventh, `unknownOutcome`, protects too.
     var isProtected: Bool {
         switch self {
-        case .minted, .created, .ready, .playIssued, .unconfirmed, .playAmbiguous, .unknownOutcome: return true
-        case .confirmedPlaying, .failedBeforePlay: return false
+        case .minted, .created, .ready, .playIssued, .unconfirmed, .playAmbiguous, .unknownOutcome,
+             .positioning: return true
+        case .confirmedPlaying, .failedBeforePlay, .listening: return false
         }
     }
 
     var isTerminal: Bool {
         switch self {
-        case .unconfirmed, .playAmbiguous, .confirmedPlaying, .failedBeforePlay: return true
-        case .minted, .created, .ready, .playIssued, .unknownOutcome: return false
+        case .unconfirmed, .playAmbiguous, .confirmedPlaying, .failedBeforePlay, .listening: return true
+        case .minted, .created, .ready, .playIssued, .unknownOutcome, .positioning: return false
         }
     }
 }
@@ -133,6 +148,21 @@ func discoverTransitionIsLegal(from: DiscoverTransactionState, to: DiscoverTrans
     case (.ready, .playIssued), (.ready, .playAmbiguous):
         return true
     case (.playIssued, .confirmedPlaying), (.playIssued, .unconfirmed):
+        return true
+    // Apple's own copy of a playlist (play from here). A gate that found the
+    // output, the data source or the latest play moved ends the attempt
+    // wherever it stands; the rest follow the sequencer's stages.
+    case (.minted, .failedBeforePlay(_, .selectionChanged)), (.minted, .failedBeforePlay(_, .superseded)):
+        return true
+    case (.created, .failedBeforePlay(_, .modes)), (.created, .failedBeforePlay(_, .superseded)):
+        return true
+    case (.ready, .positioning),
+         (.ready, .failedBeforePlay(_, .selectionChanged)), (.ready, .failedBeforePlay(_, .superseded)):
+        return true
+    case (.positioning, .listening), (.positioning, .unconfirmed),
+         (.positioning, .failedBeforePlay(_, .positioning)),
+         (.positioning, .failedBeforePlay(_, .selectionChanged)),
+         (.positioning, .failedBeforePlay(_, .superseded)):
         return true
     default:
         return false
@@ -202,6 +232,8 @@ enum DiscoverToast: Equatable {
     case outcome(DiscoverPlayOutcome, title: String)
     /// Rule 1's explanation for a key that has not acted yet.
     case startupCleanup
+    /// A play on Apple's own copy is still getting ready: what it is doing now.
+    case progress(String)
 }
 
 let discoverStartupCleanupToastText = "Finishing startup cleanup…"
@@ -274,13 +306,24 @@ func discoverToastMessage(for outcome: DiscoverPlayOutcome, title: String) -> (t
 /// advertise the library ops, so nothing was minted or sent.
 /// `selectionChanged`: SpanDAC data only, MusicTUI did not have SpanDAC data
 /// on its own output when the play began, so nothing was minted or sent.
-enum DiscoverRefusal: Equatable { case exiting, libraryOpsNotOffered, selectionChanged }
+/// `preflight`: Apple's own copy only, the rows could not be played from here
+/// (a missing or unreadable length, or a cursor outside them), so nothing was
+/// minted or sent. `busy`: another copy play holds the one slot.
+enum DiscoverRefusal: Equatable { case exiting, libraryOpsNotOffered, selectionChanged, preflight, busy }
 
 enum DiscoverPlayRequestOutcome: Equatable {
     /// Refused before minting: no name, no create, no footprint in Music.
     case refused(DiscoverRefusal)
     /// The transaction reached a terminal state.
     case completed(DiscoverTransactionState)
+}
+
+/// Phase A's answer for a play on Apple's own copy: the one slot, and the
+/// request it was taken for.
+struct DiscoverCopyReservation: Equatable { let slot: UUID; let request: DiscoverCopyRequest }
+
+enum DiscoverCopyReserveOutcome: Equatable {
+    case reserved(DiscoverCopyReservation), busy, exiting, notWired
 }
 
 enum DiscoverExitOutcome: Equatable {
@@ -336,6 +379,9 @@ final class DiscoverLifecycleCoordinator {
         var readTracksByPersistentID: (_ hexes: [String]) throws -> [String: [HandoffTrackHit]] = { _ in
             throw ActionError(message: pickASpanDACOutput)
         }
+        /// Play from here on Apple's own copy of a playlist. Nil: not wired,
+        /// and every reconcile call is a no-op.
+        var copy: DiscoverCopySeams? = nil
     }
 
     /// SpanDAC data only: the play attempt whose container name is in use. The
@@ -359,6 +405,10 @@ final class DiscoverLifecycleCoordinator {
     private var launchSweepState: DiscoverLaunchSweep = .notStarted
     private var transactionTable: [UUID: DiscoverTransactionState] = [:]
     private var spandacAttempt: SpanDACAttempt?
+    /// The one copy-play slot, guarded by `condition` too. Taken in phase A,
+    /// given back by every exit of phase B. It is NOT the transaction table:
+    /// reserving registers nothing there, so Rule 1's lemma still holds.
+    private var copySlot: UUID?
 
     init(seams: Seams) { self.seams = seams }
 
@@ -396,6 +446,9 @@ final class DiscoverLifecycleCoordinator {
             } catch {
                 outcome = .failed(error.localizedDescription)
             }
+            // Before the sweep is marked finished, so admission (Rule 1)
+            // waits for the journal replay too.
+            reconcileCopies(atLaunch: true)
             completeLaunchSweep(outcome)
         }
     }
@@ -418,6 +471,7 @@ final class DiscoverLifecycleCoordinator {
     /// terminal state, or a refusal that left no footprint.
     func requestPlay(title: String, catalogIDs: [String], disableShuffle: Bool) -> DiscoverPlayRequestOutcome {
         guard let (id, name) = admit(title: title) else { return .refused(.exiting) }
+        reconcileCopies(atLaunch: false)
         return .completed(run(id: id, name: name, title: title,
                               catalogIDs: catalogIDs, disableShuffle: disableShuffle))
     }
@@ -518,6 +572,7 @@ final class DiscoverLifecycleCoordinator {
         }
         condition.unlock()
         if minted { seams.onTransition?(attempt.id, .minted(attempt.name)) }
+        reconcileCopies(atLaunch: false)
         return .completed(runSpanDAC(attempt, library: library,
                                      stampUnchanged: { currentStamp() == entryStamp }))
     }
@@ -719,6 +774,77 @@ final class DiscoverLifecycleCoordinator {
         }
     }
 
+    // MARK: Apple's own copy of a playlist: play from here, in two phases
+
+    /// Replays the copy journal. A no-op when the copy path is not wired.
+    private func reconcileCopies(atLaunch: Bool) {
+        guard let copy = seams.copy else { return }
+        DiscoverCopyReconciler(copy: copy, post: seams.post).run(atLaunch: atLaunch)
+    }
+
+    /// PHASE A. Never blocks; safe inside the routing boundary. Takes the one
+    /// copy-play slot. It does not mint, does not touch the transaction table,
+    /// reads no file and sends nothing.
+    func reserveCopyPlay(_ request: DiscoverCopyRequest) -> DiscoverCopyReserveOutcome {
+        condition.lock()
+        defer { condition.unlock() }
+        guard seams.copy != nil else { return .notWired }
+        guard admissionState == .open else { return .exiting }
+        guard copySlot == nil else { return .busy }
+        let slot = UUID()
+        copySlot = slot
+        return .reserved(DiscoverCopyReservation(slot: slot, request: request))
+    }
+
+    /// Gives the slot back when phase A failed after reserving.
+    func cancelCopyPlay(_ reservation: DiscoverCopyReservation) {
+        condition.lock()
+        if copySlot == reservation.slot { copySlot = nil }
+        condition.unlock()
+    }
+
+    /// For tests: whether the copy-play slot is taken.
+    var copyPlaySlotIsHeld: Bool { condition.lock(); defer { condition.unlock() }; return copySlot != nil }
+
+    /// PHASE B. Outside the routing boundary, synchronously on the caller's
+    /// thread: preflight (S0a), Rule 1, reconcile, then the transaction, which
+    /// reaches the routing boundary only through `gate`. Every exit gives the
+    /// slot back.
+    func runCopyPlay(_ reservation: DiscoverCopyReservation,
+                     gate: @escaping DiscoverCopyGate) -> DiscoverPlayRequestOutcome {
+        defer { cancelCopyPlay(reservation) }
+        let request = reservation.request
+        condition.lock()
+        let holdsSlot = copySlot == reservation.slot
+        condition.unlock()
+        // A reservation that is not the one holding the slot is not a play.
+        guard let copy = seams.copy, holdsSlot else { return .refused(.busy) }
+
+        // S0a. The capability read is a socket round trip, which is why it is
+        // here and not in phase A.
+        let ops = copy.ops()
+        if let refusal = discoverCopyPreflightRefusal(ops: ops, request: request, post: seams.post) {
+            return .refused(refusal)
+        }
+
+        // Rule 1, then the mint.
+        condition.lock()
+        guard awaitAdmissionLocked() else { condition.unlock(); return .refused(.exiting) }
+        let id = UUID()
+        let token = discoverCopyToken(id)
+        transactionTable[id] = .minted(token)
+        condition.unlock()
+        seams.onTransition?(id, .minted(token))
+
+        reconcileCopies(atLaunch: false)
+
+        let transaction = DiscoverCopyTransaction(
+            copy: copy, post: seams.post,
+            transition: { [self] state in transition(id, to: state) })
+        return .completed(transaction.run(token: token, txn: id.uuidString, request: request,
+                                          ops: ops, gate: gate))
+    }
+
     // MARK: Rule 2: exit, two phases
 
     /// Phase 1, the FIRST statement of the exit `defer`, ahead of
@@ -794,8 +920,9 @@ func discoverReadPlaylistTrackCount(name: String, backend: AppleScriptBackend) -
 /// create rather than held, because it is per-token and the tokens can
 /// change under a running TUI; without both tokens the create refuses with
 /// the sign-in outcome, the same gate `DiscoverScene` applies before asking.
-func makeDiscoverLifecycleCoordinator(backend: AppleScriptBackend, status: StatusStore) -> DiscoverLifecycleCoordinator {
-    let seams = DiscoverLifecycleCoordinator.Seams(
+func makeDiscoverLifecycleCoordinator(backend: AppleScriptBackend, status: StatusStore,
+                                      copy: DiscoverCopySeams? = nil) -> DiscoverLifecycleCoordinator {
+    var seams = DiscoverLifecycleCoordinator.Seams(
         runSweep: { script in
             _ = try syncRun { try await backend.runMusic(script) }
         },
@@ -822,6 +949,8 @@ func makeDiscoverLifecycleCoordinator(backend: AppleScriptBackend, status: Statu
                 let m = discoverToastMessage(for: outcome, title: title)
                 // Every error outcome means the play did not start: it stays.
                 status.post(m.text, error: m.isError, untilStateChange: m.isError)
+            case .progress(let text):
+                status.post(text, ttl: 60)
             }
         },
         scheduler: .live,
@@ -846,5 +975,6 @@ func makeDiscoverLifecycleCoordinator(backend: AppleScriptBackend, status: Statu
                 try syncRun { try await backend.runMusic(script, timeout: 60) }
             }).tracks(persistentIDs: hexes)
         })
+    seams.copy = copy
     return DiscoverLifecycleCoordinator(seams: seams)
 }

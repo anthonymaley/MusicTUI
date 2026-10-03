@@ -190,6 +190,14 @@ final class DiscoverDataRouteTests: XCTestCase {
                      detail: .playlist(description: nil))
     }
 
+    /// An album keeps the container path on the MusicTUI output with SpanDAC
+    /// data; a catalogue playlist there plays on Apple's own copy instead
+    /// (`DiscoverFromHereRoutingTests`).
+    private var albumRow: DiscoverItem {
+        DiscoverItem(id: "1440857781", name: "Boom Bap", subtitle: nil, url: nil, artworkURL: nil,
+                     detail: .album(trackCount: nil, year: nil, genre: nil))
+    }
+
     // MARK: - The door
 
     /// The tab opens on accepted SpanDAC data with no user token, whatever the
@@ -265,8 +273,8 @@ final class DiscoverDataRouteTests: XCTestCase {
 
     // MARK: - Plays on the MusicTUI output with SpanDAC data
 
-    /// A Discover album, playlist or play-from-here slice on the MusicTUI
-    /// output with SpanDAC data takes the container path (step 10): the
+    /// A Discover album or its play-from-here slice on the MusicTUI output
+    /// with SpanDAC data takes the container path (step 10): the
     /// lifecycle has SpanDAC on this Mac ensure the container under its minted
     /// name, then plays it by the persistent ID SpanDAC returned. Nothing is
     /// created by the web service, and nothing is queued on any SpanDAC. A
@@ -279,7 +287,7 @@ final class DiscoverDataRouteTests: XCTestCase {
         s.log.mac = mac
         loadRails(s)
 
-        s.scene.playAllFromRail(playlistRow)
+        s.scene.playAllFromRail(albumRow)
         drain(s.actions)
 
         let ensures = mac.ops("slice.libraryEnsurePlaylist")

@@ -71,6 +71,14 @@ enum StopUsingSpanDACResult: Equatable {
     case outputStillBlocked(why: String)
 }
 
+/// What a two-phase play carries from phase A to every later gate.
+struct RoutingReservation: Equatable {
+    let epoch: Int
+    let dataEpoch: Int
+    let playSerial: Int
+}
+enum RoutingReservationCheck: Equatable { case holds, sourceChanged, superseded }
+
 final class RoutingCoordinator {
 
     /// The outcome of a switch that went ahead or had nothing to do. A switch
@@ -147,9 +155,15 @@ final class RoutingCoordinator {
     /// `acceptSpanDACData` or `stopUsingSpanDACData`, never by an output switch.
     private var _dataEpoch = 0
 
+    /// How many chosen-music plays have reached a `.musicApp` or `.source`
+    /// branch in this process. Starts at 0; moved only by the two-axis
+    /// `perform`, after every refusal it can make before a branch.
+    private var _playSerial = 0
+
     /// A unique key per instance. `ObjectIdentifier.hashValue` is not
     /// guaranteed unique, so it cannot name "this coordinator" (Codex, 11:47).
     private let reentryKey = "RoutingCoordinator.\(UUID().uuidString)"
+    private let reentryMessage = "Internal error: a playback action started another inside itself"
 
     /// Reads BOTH persisted selections ONCE: mode.json for the output and
     /// data.json for the data source. From here on the in-memory values are
@@ -319,12 +333,9 @@ final class RoutingCoordinator {
                  musicApp: () throws -> Void,
                  source: (SourceAppClient) throws -> Void,
                  unaffected: () throws -> Void) throws {
-        try perform(action, expecting: nil, origin: nil,
-                    musicApp: { path in
-                        guard path == .shipped else { throw ActionError(message: pickASpanDACOutput) }
-                        try musicApp()
-                    },
-                    source: source, unaffected: unaffected)
+        try route(action, expecting: nil, origin: nil, shippedOnly: true,
+                  musicApp: { _ in try musicApp() },
+                  source: source, unaffected: unaffected)
     }
 
     /// Runs exactly one branch for `action`, routed on both axes now.
@@ -347,6 +358,23 @@ final class RoutingCoordinator {
                  musicApp: (MusicTUIPlayPath) throws -> Void,
                  source: (SourceAppClient) throws -> Void,
                  unaffected: () throws -> Void) throws {
+        try route(action, expecting: expecting, origin: origin, shippedOnly: false,
+                  musicApp: musicApp, source: source, unaffected: unaffected)
+    }
+
+    /// Both forms of `perform`. `shippedOnly` is the form whose `musicApp` body
+    /// is the shipped one: any other path refuses before the body runs.
+    ///
+    /// The play serial moves only once a chosen-music play is admitted: routed,
+    /// its path chosen, and its branch the next thing to run. A play refused
+    /// before that made no sound and supersedes no reservation.
+    private func route(_ action: MusicTUIAction,
+                       expecting: (epoch: Int, dataEpoch: Int)?,
+                       origin: PlayOrigin?,
+                       shippedOnly: Bool,
+                       musicApp: (MusicTUIPlayPath) throws -> Void,
+                       source: (SourceAppClient) throws -> Void,
+                       unaffected: () throws -> Void) throws {
         try exclusively {
             if let expecting, expecting != stamp {
                 throw ActionError(message: sourceChangedNothingPlayed)
@@ -355,13 +383,22 @@ final class RoutingCoordinator {
             let routed = routeAction(action, selection: now, from: surface)
             if case .refused(let why) = routed.sound { throw ActionError(message: why) }
             try refuseAStaleOrigin(origin, for: action, in: now)
+            func admitAPlay() {
+                guard action.playsChosenMusic else { return }
+                state.lock(); _playSerial += 1; state.unlock()
+            }
             switch routed.sound {
             case .unaffected:
                 try unaffected()
             case .source:
-                try source(action.readsMusicData && routed.data == .spandacMac ? dataClient() : sourceClient())
+                let client = action.readsMusicData && routed.data == .spandacMac ? dataClient() : sourceClient()
+                admitAPlay()
+                try source(client)
             case .musicApp:
-                try musicApp(try musicTUIPath(for: action, origin: origin, in: now))
+                let path = try musicTUIPath(for: action, origin: origin, in: now)
+                if shippedOnly, path != .shipped { throw ActionError(message: pickASpanDACOutput) }
+                admitAPlay()
+                try musicApp(path)
             case .refused(let why):
                 throw ActionError(message: why)
             }
@@ -413,6 +450,60 @@ final class RoutingCoordinator {
                     throw ActionError(message: why)
                 }
             }
+        }
+    }
+
+    // MARK: - A two-phase play (the reservation and its gate)
+
+    /// How many chosen-music plays have reached a branch in this process. Read under `state`.
+    var playSerial: Int {
+        state.lock(); defer { state.unlock() }
+        return _playSerial
+    }
+
+    /// PHASE A. Valid only on a thread that is inside one of this coordinator's
+    /// `perform` branches (the re-entry marker is set on it); anywhere else it
+    /// throws the same internal error a re-entry throws. Requires
+    /// `.consistent(data: .spandacMac, output: .musicApp)`, else throws
+    /// `ActionError(sourceChangedNothingPlayed)`. Returns both epochs and the
+    /// play serial this branch is running under. Takes only `state`.
+    ///
+    /// The three values are one consistent instant because the caller's thread
+    /// holds `order`: no switch, accept, stop or other play can run until its
+    /// branch returns.
+    func reservationForThisBranch() throws -> RoutingReservation {
+        guard Thread.current.threadDictionary[reentryKey] != nil else {
+            throw ActionError(message: reentryMessage)
+        }
+        state.lock(); defer { state.unlock() }
+        guard case .consistent(.spandacMac, .musicApp) = composedSelection() else {
+            throw ActionError(message: sourceChangedNothingPlayed)
+        }
+        return RoutingReservation(epoch: _epoch, dataEpoch: _dataEpoch, playSerial: _playSerial)
+    }
+
+    /// PHASE B's gate. Enters the ordering boundary with the same re-entry
+    /// guard as `perform`, and runs `body` ONLY IF MusicTUI still has SpanDAC
+    /// data on its own output, both epochs equal the reservation's, and no
+    /// other chosen-music play has reached a branch since. Checks in that
+    /// order: `.sourceChanged` first, then `.superseded`. `body` ran only for
+    /// `.holds`. Throws only the re-entry error, or what `body` throws.
+    ///
+    /// It does not take the cross-process output lock: a play never does, only
+    /// a switch.
+    func whileReserved(_ reservation: RoutingReservation,
+                       _ body: () throws -> Void) throws -> RoutingReservationCheck {
+        try exclusively {
+            state.lock()
+            let now = composedSelection()
+            let epochs = (_epoch, _dataEpoch)
+            let serial = _playSerial
+            state.unlock()
+            guard case .consistent(.spandacMac, .musicApp) = now,
+                  epochs == (reservation.epoch, reservation.dataEpoch) else { return .sourceChanged }
+            guard serial == reservation.playSerial else { return .superseded }
+            try body()
+            return .holds
         }
     }
 
@@ -722,7 +813,7 @@ final class RoutingCoordinator {
     private func exclusively<T>(_ body: () throws -> T) throws -> T {
         let marker = Thread.current.threadDictionary
         guard marker[reentryKey] == nil else {
-            throw ActionError(message: "Internal error: a playback action started another inside itself")
+            throw ActionError(message: reentryMessage)
         }
         state.lock()
         let hook = reachedBoundary

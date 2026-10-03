@@ -173,12 +173,15 @@ final class DiscoverLifecycleTests: XCTestCase {
             case .confirmedPlaying: return "confirmedPlaying"
             case .failedBeforePlay(_, let stage): return "failedBeforePlay(\(stage))"
             case .unknownOutcome: return "unknownOutcome"
+            case .positioning: return "positioning"
+            case .listening: return "listening"
             }
         }
 
         static func label(_ t: DiscoverToast) -> String {
             switch t {
             case .startupCleanup: return "startupCleanup"
+            case .progress: return "progress"
             case .outcome(let o, _):
                 switch o {
                 case .playing: return "playing"

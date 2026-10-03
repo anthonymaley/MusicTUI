@@ -99,7 +99,10 @@ struct BridgeDiscoverFeed: DiscoverFeedReading {
             return DiscoverItem(id: id, name: name, subtitle: row["subtitle"] as? String,
                                 // `artwork_url` is the WIRE's spelling (the app's
                                 // CodingKeys), not the Swift property's.
-                                url: nil, artworkURL: row["artwork_url"] as? String, detail: detail)
+                                url: nil, artworkURL: row["artwork_url"] as? String, detail: detail,
+                                // Only a track row carries `duration_ms` (W2); every
+                                // other kind stays `.absent`.
+                                length: kind == "song" ? rowLength(inWireRow: row) : .absent)
         }
     }
 }
