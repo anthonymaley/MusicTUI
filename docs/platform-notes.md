@@ -405,6 +405,10 @@ hidden because it is the actual price of playing catalog content on a platform
 with no write free play verb, and a user deserves to know that pressing play
 touches their library.
 
+Since 3.18.1, play from here on a Discover album refuses instead: it says so,
+plays nothing and adds nothing to the library, until a safe cleanup exists.
+Playlists still play from the chosen song.
+
 ## `play playlist` is bounded, `play track N of playlist` is not
 
 Measured 2026-08-27 against a five track temp playlist, checking `current
