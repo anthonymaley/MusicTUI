@@ -230,10 +230,16 @@ final class DiscoverFromHereRoutingTests: XCTestCase {
     /// What a refused album play must leave behind: the refusal, lasting, and
     /// no library mutation and no play on any fake. Every SpanDAC op counts,
     /// not only the adds, because the refusal comes before the first of them.
+    ///
+    /// Since album-cleanup (W) an album with SpanDAC data on the MusicTUI
+    /// output takes the album path in phase A. This fixture's lifecycle wires
+    /// the copy seams only, so phase A answers `.notWired`: the album refuses
+    /// with the not-wired line and falls back to no other path. The album path
+    /// itself is `DiscoverAlbumRoutingTests`.
     private func assertAlbumRefused(_ f: Fixture, mac: FakeSpanDACMac, lib: FakeAppleLibrary,
                                     file: StaticString = #filePath, line: UInt = #line) {
         let shown = f.status.current()
-        XCTAssertEqual(shown?.text, DiscoverScene.albumPlayRefused("Some Album"), file: file, line: line)
+        XCTAssertEqual(shown?.text, pickASpanDACOutput, file: file, line: line)
         XCTAssertEqual(shown?.isError, true, file: file, line: line)
         XCTAssertEqual(shown?.staysUntilStateChange, true, "a won't-play message lasts", file: file, line: line)
         XCTAssertEqual(mac.allOps, [], "SpanDAC's library ops were reached", file: file, line: line)
@@ -247,10 +253,10 @@ final class DiscoverFromHereRoutingTests: XCTestCase {
         assertCopyPathUntouched(f, file: file, line: line)
     }
 
-    /// An album refuses (owner's ruling, after probe P-C showed a playlist
-    /// made from catalogue ids adds its songs and keeps them): from the first
-    /// row and a middle one, SpanDAC is asked nothing and nothing plays.
-    func testEnterOnAnAlbumRowRefusesAndAddsNothing() {
+    /// An album with no album wiring refuses and falls back to nothing (the
+    /// 3.18.1 refusal's guarantee, kept: nothing is added): from the first row
+    /// and a middle one, SpanDAC is asked nothing and nothing plays.
+    func testEnterOnAnAlbumRowWithNoAlbumWiringRefusesAndAddsNothing() {
         for selected in [0, 2] {
             let f = fixture(rail: Self.albumRail)
             let lib = FakeAppleLibrary()
@@ -267,8 +273,9 @@ final class DiscoverFromHereRoutingTests: XCTestCase {
     }
 
     /// The LAST row of an album is a one-song slice, which used to be added
-    /// alone. It refuses too.
-    func testTheLastRowOfAnAlbumRefusesAndAddsNothing() {
+    /// alone. It carries the album request too, so it refuses the same way
+    /// rather than reaching the single-song add.
+    func testTheLastRowOfAnAlbumWithNoAlbumWiringRefusesAndAddsNothing() {
         let f = fixture(rail: Self.albumRail)
         let lib = FakeAppleLibrary()
         lib.catalogue["905"] = ("Song 5", "Artist", "Some Album")
@@ -284,7 +291,7 @@ final class DiscoverFromHereRoutingTests: XCTestCase {
     }
 
     /// `p` on an album rail row: the same refusal, after the track read.
-    func testPOnAnAlbumRailRowRefusesAndAddsNothing() {
+    func testPOnAnAlbumRailRowWithNoAlbumWiringRefusesAndAddsNothing() {
         let f = fixture(rail: Self.albumRail)
         let lib = FakeAppleLibrary()
         let mac = FakeSpanDACMac(library: lib)
