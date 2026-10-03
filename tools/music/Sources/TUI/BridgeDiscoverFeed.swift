@@ -82,7 +82,8 @@ struct BridgeDiscoverFeed: DiscoverFeedReading {
     /// the person did not ask for. That is forward compatibility, and it is the
     /// ONLY thing dropped: a row with no kind, or a known kind missing its id or
     /// name, is malformed and fails the whole read.
-    private static func items(_ rows: [[String: Any]]) throws -> [DiscoverItem] {
+    /// Internal: `BridgeDiscoverSections` decodes its rows by the same rules.
+    static func items(_ rows: [[String: Any]]) throws -> [DiscoverItem] {
         try rows.compactMap { row in
             guard let kind = row["kind"] as? String else { throw SourceAppError.unreadable }
             guard ["station", "album", "playlist", "song"].contains(kind) else { return nil }

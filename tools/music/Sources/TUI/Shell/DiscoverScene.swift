@@ -117,7 +117,15 @@ final class DiscoverScene: Scene {
     /// move reloads the tab: rows from before a change of data source are not
     /// left on screen to be played (C-MATRIX's "from before" rule).
     private var fetchDataEpoch = 0
+    /// Bumped each time a rails fetch starts (tick thread). The sections that
+    /// fetch reads afterwards carry it, so sections from a fetch since
+    /// replaced (a refresh, a change of data source) are dropped, never
+    /// appended to newer rails.
+    private var fetchGeneration = 0
     private var railsInbox: [DiscoverRail]?      // guarded by inboxLock
+    /// The self-named sections, which land AFTER the rails so the curated
+    /// rails never wait on them (`DiscoverFeed.sectionRails`'s one deadline).
+    private var sectionsInbox: (generation: Int, rails: [DiscoverRail])?   // guarded by inboxLock
     private var railsReadInbox: RowsRead?        // guarded by inboxLock
     private var tracksReadInbox: RowsRead?       // guarded by inboxLock
     /// Where the rows on screen were read (tick/handle thread only). A play
@@ -204,8 +212,10 @@ final class DiscoverScene: Scene {
 
     // MARK: - Rows
 
-    /// Discover shows five curated rails at four items each. The rail level shows
-    /// one rail in full, in Apple's own item order.
+    /// Discover shows five curated rails at four items each, then the
+    /// self-named sections the data source served (under SpanDAC data, only
+    /// those SpanDAC advertises), also at four. The rail level shows one rail in
+    /// full, in Apple's own item order.
     ///
     /// Memoised: this ran rail selection plus flattening on every access,
     /// measured at 3 evaluations per idle repaint and up to 5 on a keypress
@@ -889,16 +899,20 @@ final class DiscoverScene: Scene {
         if !fetchStarted {
             fetchStarted = true
             fetchDataEpoch = routing.dataEpoch
+            fetchGeneration += 1
+            let generation = fetchGeneration
             DispatchQueue.global().async { [weak self] in
                 guard let self else { return }
                 var fetched: [DiscoverRail] = []
                 var failed = false
                 var failure: String? = nil
                 var read: RowsRead? = nil
+                var provider: DiscoverProviding? = nil
                 do {
                     let choice = try self.chooseFeed(.discoverFeed)
                     fetched = try choice.provider.discoverRails(limit: 30)
                     read = RowsRead(choice)
+                    provider = choice.provider
                 } catch {
                     failed = true
                     failure = Self.words(for: error)
@@ -908,6 +922,15 @@ final class DiscoverScene: Scene {
                 self.railsFailed = failed
                 self.railsFailure = failure
                 self.railsReadInbox = read
+                self.inboxLock.unlock()
+                // The rails are posted first, so the curated five show at
+                // once. Then the sections, from the SAME provider the rails
+                // came from (so the same data source and read stamp): the
+                // web service's within its one deadline, none from SpanDAC.
+                guard let provider else { return }
+                let sections = provider.discoverSections()
+                self.inboxLock.lock()
+                self.sectionsInbox = (generation, sections)
                 self.inboxLock.unlock()
             }
         }
@@ -919,6 +942,8 @@ final class DiscoverScene: Scene {
         let incomingRailsRead = railsReadInbox
         railsInbox = nil
         railsReadInbox = nil
+        let incomingSections = sectionsInbox
+        sectionsInbox = nil
         let incomingTracks = tracksInbox
         let incomingTracksFailure = tracksFailure
         let incomingTracksRead = tracksReadInbox
@@ -937,6 +962,16 @@ final class DiscoverScene: Scene {
             failed = incomingFailed || incomingRails.isEmpty
             loadFailure = incomingFailure
             cursorIndex = min(cursorIndex, max(0, selectableDiscoverIndices(rows).count - 1))
+            changed = true
+        }
+        // Sections append after the rails of the SAME fetch, and only to a
+        // successful read (`railsRead` is set only then). Appending never
+        // moves a row above them, so the cursor stays where it was.
+        if let incomingSections, incomingSections.generation == fetchGeneration,
+           loaded, railsRead != nil, !incomingSections.rails.isEmpty {
+            rails = rails.filter { $0.section == nil } + incomingSections.rails
+            feedVersion += 1
+            failed = rails.isEmpty
             changed = true
         }
         if let incomingTracks {

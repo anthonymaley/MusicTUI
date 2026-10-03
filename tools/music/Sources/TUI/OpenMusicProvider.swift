@@ -47,6 +47,11 @@ struct OpenMusicProvider: DiscoverProviding, StationProviding {
         return try discover.tracks(for: item)
     }
 
+    /// The web-service feed's sections; none without a feed.
+    func discoverSections() -> [DiscoverRail] {
+        discover?.sectionRails() ?? []
+    }
+
     // MARK: - StationProviding
 
     var catalogueAvailable: Bool { catalog != nil }

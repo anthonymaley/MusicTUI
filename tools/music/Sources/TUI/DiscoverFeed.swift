@@ -23,6 +23,10 @@
 //    items and a `?types=` filter, so both are exposed here.
 //  - Dead ends already paid for: /v1/me/home 404, catalog/new-releases 400,
 //    music-summaries 404 (there is no Replay API), platform=web rejected.
+//  - Probed 200 the same day and surfaced since as self-named sections
+//    (`DiscoverSection`): /v1/me/library/recently-added,
+//    /v1/me/recent/radio-stations, /v1/catalog/{sf}/charts. Their response
+//    shapes here follow Apple's documentation, not a recorded probe body.
 import Foundation
 
 enum DiscoverFeedError: Error {
@@ -114,6 +118,57 @@ struct DiscoverRail: Equatable {
     /// The API's own content-type flag, e.g. ["albums"]. This is what rail
     /// selection runs on: titles are localized and rotate, flags do not.
     let resourceTypes: [String]
+    /// Which self-named section this rail is, or nil for one of Apple's For
+    /// You rails. A section never competes for the five curated slots; it is
+    /// shown after them, in `DiscoverSection`'s own order.
+    var section: DiscoverSection? = nil
+}
+
+/// Discover's self-named sections, shown beside the For You rails (the TODO's
+/// "Discover second pass", endpoints probed 200 on 2026-08-25).
+///
+/// **Each data source serves its own.** With the web service, `DiscoverFeed`
+/// reads them. With SpanDAC selected as the data source every read is
+/// SpanDAC's (Anthony, 2026-09-29: no fallback on either axis), so they come
+/// from SpanDAC's own reads (`bridgeDiscoverSectionRails`), one per section
+/// SpanDAC advertises; a section SpanDAC does not advertise is absent.
+///
+/// `allCases` order IS the display order: his own library and listening
+/// first, then the storefront's charts.
+enum DiscoverSection: CaseIterable, Equatable {
+    case recentlyAdded, recentStations, topSongs, topAlbums, topPlaylists
+
+    var title: String {
+        switch self {
+        case .recentlyAdded:  return "Recently Added"
+        case .recentStations: return "Recent Stations"
+        case .topSongs:       return "Top Songs"
+        case .topAlbums:      return "Top Albums"
+        case .topPlaylists:   return "Top Playlists"
+        }
+    }
+
+    /// Distinct from every For You rail id (Apple's ids carry no colon), so
+    /// the scene's scroll and hero state never collide with one.
+    var railID: String {
+        switch self {
+        case .recentlyAdded:  return "section:recently-added"
+        case .recentStations: return "section:recent-stations"
+        case .topSongs:       return "section:top-songs"
+        case .topAlbums:      return "section:top-albums"
+        case .topPlaylists:   return "section:top-playlists"
+        }
+    }
+
+    var resourceTypes: [String] {
+        switch self {
+        case .recentlyAdded:  return ["albums", "playlists"]
+        case .recentStations: return ["stations"]
+        case .topSongs:       return ["songs"]
+        case .topAlbums:      return ["albums"]
+        case .topPlaylists:   return ["playlists"]
+        }
+    }
 }
 
 // MARK: - Display model (pure, so the scene's layout is testable without a network)
@@ -192,6 +247,15 @@ func discoverSelection(rows: [DiscoverDisplayRow], cursor: Int) -> DiscoverSelec
 protocol DiscoverFeedReading {
     func rails(limit: Int) throws -> [DiscoverRail]
     func tracks(for item: DiscoverItem) throws -> [DiscoverItem]
+    /// The self-named sections (`DiscoverSection`), read AFTER the rails and
+    /// shown when they land: the curated rails never wait on them. Never
+    /// throws; a section that could not be read is absent.
+    func sectionRails() -> [DiscoverRail]
+}
+
+extension DiscoverFeedReading {
+    /// No sections: what every feed but the web service's serves.
+    func sectionRails() -> [DiscoverRail] { [] }
 }
 
 final class DiscoverFeed: DiscoverFeedReading {
@@ -199,14 +263,29 @@ final class DiscoverFeed: DiscoverFeedReading {
     private let token: () -> String?
     private let fetch: (String) -> Data?
     private let base = "https://api.music.apple.com"
+    /// The ONE deadline every section read shares, from the moment section
+    /// loading starts (`sectionRails`). See `defaultSectionDeadline`.
+    private let sectionDeadline: TimeInterval
 
-    init(storefront: String, token: @escaping () -> String?, fetch: @escaping (String) -> Data?) {
+    /// Six seconds for all the sections together, from the start of section
+    /// loading. A judgment, not a measurement: the curated rails are already
+    /// on screen by then (the scene never makes them wait), so this bounds how
+    /// late a section may still arrive and how long `music discover` waits.
+    /// Recently Added is the longest chain, two round trips in a row (the
+    /// list, then its catalogue lookups), so six seconds leaves about three per
+    /// hop, where each `fetch` alone may otherwise wait up to twenty.
+    static let defaultSectionDeadline: TimeInterval = 6
+
+    init(storefront: String, token: @escaping () -> String?, fetch: @escaping (String) -> Data?,
+         sectionDeadline: TimeInterval = DiscoverFeed.defaultSectionDeadline) {
         self.storefront = storefront
         self.token = token
         self.fetch = fetch
+        self.sectionDeadline = sectionDeadline
     }
 
-    /// Apple's For You rails, empty ones dropped.
+    /// Apple's For You rails, empty ones dropped. The sections are a separate
+    /// read (`sectionRails`), so these never wait on them.
     func rails(limit: Int = 30) throws -> [DiscoverRail] {
         let root = try json(at: "/v1/me/recommendations?limit=\(limit)")
         let rows = root["data"] as? [[String: Any]] ?? []
@@ -232,6 +311,123 @@ final class DiscoverFeed: DiscoverFeedReading {
     func recentlyPlayed(limit: Int = 20) throws -> [DiscoverItem] {
         let root = try json(at: "/v1/me/recent/played?limit=\(limit)")
         return decodeItems(root["data"] as? [[String: Any]] ?? [])
+    }
+
+    // MARK: - Sections
+
+    /// Items per chart. Apple's own default (documented: default 20, max 200).
+    static let chartLimit = 20
+    /// Recently played stations. 10 is the endpoint's default page.
+    static let recentStationsLimit = 10
+
+    /// Every section this feed could read within `sectionDeadline`, empty
+    /// ones dropped, in `DiscoverSection` order.
+    ///
+    /// The three reads (Recently Added, Recent Stations, the charts) run at
+    /// once and share ONE deadline from this call's start. A read that has
+    /// not finished by then is simply absent: its result, should it land
+    /// later, is discarded. A read that fails is absent too, because a
+    /// missing "Top Albums" is a smaller wrong than no Discover at all.
+    func sectionRails() -> [DiscoverRail] {
+        loadDiscoverSections(deadline: sectionDeadline) { [self] in
+            [
+                { (try? self.recentlyAdded()).map { [.recentlyAdded: $0] } ?? [:] },
+                { (try? self.recentStations()).map { [.recentStations: $0] } ?? [:] },
+                {
+                    guard let charts = try? self.charts() else { return [:] }
+                    return [.topSongs: charts.songs, .topAlbums: charts.albums, .topPlaylists: charts.playlists]
+                },
+            ]
+        }
+    }
+
+    /// What he added to his library most recently, newest first, as CATALOGUE
+    /// items.
+    ///
+    /// The endpoint answers with LIBRARY resources (`library-albums`,
+    /// `library-playlists`, ids like `l.NWqWi1m`, and a library album's
+    /// `playParams` carries no catalogue id: Apple's documented example). Every
+    /// Discover drill-in and play runs on catalogue ids, so each row is
+    /// resolved to its catalogue counterpart through the documented `catalog`
+    /// relationship, one batched request per resource type. A row with no
+    /// known counterpart (his own playlists, an upload) is DROPPED, never
+    /// guessed at: a row whose Enter opens nothing is worse than a shorter rail.
+    func recentlyAdded() throws -> [DiscoverItem] {
+        let root = try json(at: "/v1/me/library/recently-added")
+        let rows = root["data"] as? [[String: Any]] ?? []
+        func ids(_ type: String) -> [String] {
+            rows.compactMap { ($0["type"] as? String) == type ? $0["id"] as? String : nil }
+        }
+        // The two lookups run at once: they are one hop of the section's
+        // shared deadline, not two.
+        var albums: [String: [String: Any]] = [:]
+        var playlists: [String: [String: Any]] = [:]
+        let group = DispatchGroup()
+        DispatchQueue.global().async(group: group) { [self] in
+            albums = catalogCounterparts(library: "albums", catalogType: "albums", ids: ids("library-albums"))
+        }
+        DispatchQueue.global().async(group: group) { [self] in
+            playlists = catalogCounterparts(library: "playlists", catalogType: "playlists",
+                                            ids: ids("library-playlists"))
+        }
+        group.wait()
+        let resolved: [[String: Any]] = rows.compactMap { row in
+            guard let id = row["id"] as? String, let type = row["type"] as? String else { return nil }
+            switch type {
+            case "library-albums":    return albums[id]
+            case "library-playlists": return playlists[id]
+            default:                  return nil
+            }
+        }
+        return decodeItems(resolved)
+    }
+
+    /// Library id -> its catalogue resource, for those that have one. The
+    /// catalogue resource's own attributes are used when it carries them; when
+    /// it is only an identifier, the library row's attributes (name, artist,
+    /// artwork) stand in, under the CATALOGUE id and type. Any failure is an
+    /// empty map: the rows simply do not resolve.
+    private func catalogCounterparts(library collection: String, catalogType: String,
+                                     ids: [String]) -> [String: [String: Any]] {
+        guard !ids.isEmpty else { return [:] }
+        let list = ids.map { $0.addingPercentEncoding(withAllowedCharacters: .alphanumerics.union(.init(charactersIn: ".-_"))) ?? $0 }
+            .joined(separator: ",")
+        guard let root = try? json(at: "/v1/me/library/\(collection)?ids=\(list)&include=catalog") else { return [:] }
+        var out: [String: [String: Any]] = [:]
+        for row in root["data"] as? [[String: Any]] ?? [] {
+            guard let libraryID = row["id"] as? String,
+                  let catalog = (((row["relationships"] as? [String: Any])?["catalog"]
+                                  as? [String: Any])?["data"] as? [[String: Any]])?.first,
+                  let catalogID = catalog["id"] as? String else { continue }
+            let attributes = (catalog["attributes"] as? [String: Any]) ?? (row["attributes"] as? [String: Any])
+            guard let attributes else { continue }
+            out[libraryID] = ["id": catalogID, "type": (catalog["type"] as? String) ?? catalogType,
+                              "attributes": attributes]
+        }
+        return out
+    }
+
+    /// Stations he played recently, newest first. Catalogue stations with
+    /// their share URL, so Enter plays them exactly as a For You station does.
+    func recentStations() throws -> [DiscoverItem] {
+        let root = try json(at: "/v1/me/recent/radio-stations?limit=\(Self.recentStationsLimit)")
+        return decodeItems(root["data"] as? [[String: Any]] ?? []).filter { $0.kind == .station }
+    }
+
+    /// The storefront's top charts, one request for all three. The response
+    /// maps each requested type to an ARRAY of charts; the first chart of each
+    /// type with anything in it is the one shown.
+    func charts() throws -> (songs: [DiscoverItem], albums: [DiscoverItem], playlists: [DiscoverItem]) {
+        let root = try json(at: "/v1/catalog/\(storefront)/charts?types=songs,albums,playlists&limit=\(Self.chartLimit)")
+        let results = root["results"] as? [String: Any] ?? [:]
+        func chart(_ type: String, _ kind: DiscoverItemKind) -> [DiscoverItem] {
+            for chart in results[type] as? [[String: Any]] ?? [] {
+                let items = decodeItems(chart["data"] as? [[String: Any]] ?? []).filter { $0.kind == kind }
+                if !items.isEmpty { return items }
+            }
+            return []
+        }
+        return (chart("songs", .song), chart("albums", .album), chart("playlists", .playlist))
     }
 
     /// The tracks on an album or playlist, for a read-only drill-in. Both live
@@ -329,4 +525,50 @@ func makeDiscoverFeed() -> DiscoverFeed? {
 func discoverTabAdmitted(selection: EffectiveSelection, hasUserToken: @autoclosure () -> Bool) -> Bool {
     if case .consistent(.spandacMac, _) = selection { return true }
     return hasUserToken()
+}
+
+// MARK: - Section loading, shared by both data sources
+
+/// One section read: what it found, keyed by section. Empty when it failed.
+typealias DiscoverSectionRead = () -> [DiscoverSection: [DiscoverItem]]
+
+/// Discover's sections, read under ONE shared deadline from this call's start,
+/// for whichever data source supplies `plan`.
+///
+/// `plan` runs first, inside the deadline (SpanDAC's capability read lives
+/// there), and returns the reads to make; they then run at once. A read that
+/// has not finished when the deadline passes is simply absent: its result,
+/// should it land later, is discarded. A read that failed is absent too,
+/// because a missing "Top Albums" is a smaller wrong than no Discover at all.
+/// The result is in `DiscoverSection` order, empty sections dropped.
+func loadDiscoverSections(deadline: TimeInterval,
+                          plan: @escaping () -> [DiscoverSectionRead]) -> [DiscoverRail] {
+    let lock = NSLock()
+    var found: [DiscoverSection: [DiscoverItem]] = [:]
+    var open = true   // false once the deadline has passed: late results are dropped
+    func record(_ results: [DiscoverSection: [DiscoverItem]]) {
+        lock.lock(); defer { lock.unlock() }
+        guard open else { return }
+        found.merge(results) { first, _ in first }
+    }
+    let group = DispatchGroup()
+    group.enter()
+    DispatchQueue.global().async {
+        for read in plan() {
+            group.enter()
+            DispatchQueue.global().async { record(read()); group.leave() }
+        }
+        group.leave()
+    }
+    _ = group.wait(timeout: .now() + deadline)
+    lock.lock()
+    open = false
+    let landed = found
+    lock.unlock()
+    return DiscoverSection.allCases.compactMap { section in
+        guard let items = landed[section], !items.isEmpty else { return nil }
+        return DiscoverRail(id: section.railID, title: section.title, items: items,
+                            isRecentlyPlayed: false, resourceTypes: section.resourceTypes,
+                            section: section)
+    }
 }

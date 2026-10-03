@@ -42,7 +42,10 @@ let bridgeDiscoverFeedLimit = 30
 func bridgeDiscoverCommand(_ session: CLIBridgeSession, limit: Int, perRail: Int, recent: Bool,
                            json: Bool, all: Bool, env: CLIBridgeEnv) throws {
     guard !recent else { throw ActionError(message: bridgeDiscoverRecentRefusal) }
+    // The sections SpanDAC advertises follow, read only after the rails
+    // succeed and within their one deadline, as with the web service.
     let feedRails = try session.provider.discoverRails(limit: bridgeDiscoverFeedLimit)
+        + session.provider.discoverSections()
     let curated = all ? feedRails : resolvedDiscoverRails(feedRails)
     let rails = curated.prefix(max(1, limit)).map { rail in
         DiscoverRail(id: rail.id, title: rail.title, items: Array(rail.items.prefix(max(1, perRail))),

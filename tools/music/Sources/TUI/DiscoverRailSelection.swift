@@ -99,6 +99,17 @@ func discoverCurrentYear(_ now: Date = Date()) -> Int {
 /// internally consistent, so the suite stayed green). Two call sites composing
 /// the same two functions in the same order is not "one pure function both
 /// callers go through" — it is two chances to drift. This is the one function.
+///
+/// Self-named sections (`DiscoverRail.section`) never enter the five-slot
+/// selection: a "Top Albums" chart must not displace one of Apple's For You
+/// rails, nor be displaced by one. They follow the curated five, in
+/// `DiscoverSection`'s order, one rail per section, whatever order they
+/// arrived in.
 func resolvedDiscoverRails(_ rails: [DiscoverRail], currentYear: Int = discoverCurrentYear()) -> [DiscoverRail] {
-    selectDiscoverRails(orderedDiscoverRails(rails), currentYear: currentYear)
+    let curated = selectDiscoverRails(orderedDiscoverRails(rails.filter { $0.section == nil }),
+                                      currentYear: currentYear)
+    let sections = DiscoverSection.allCases.compactMap { section in
+        rails.first { $0.section == section }
+    }
+    return curated + sections
 }
