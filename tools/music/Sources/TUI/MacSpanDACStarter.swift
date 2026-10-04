@@ -71,14 +71,20 @@ final class NeverStartsMacSpanDAC: MacSpanDACStarting {
     func newAttempt() {}
 }
 
-/// SpanDAC on this Mac's bundle identifier, in this one constant.
+/// SpanDAC on this Mac's bundle identifiers, in preference order.
 ///
-/// **TEMPORARY and borrowed** (score's Open list): this is the App ID created
-/// for MusicKit's automatic-token service, reused for this dogfood build by
-/// standing decision; it is not yet a durable product identity, and nothing
-/// in this file may assume it survives a future rename. Auto-launch and
-/// bring-forward key on it, so a rename there is the one place this changes.
-let macSpanDACBundleID = "com.anthonymaley.music-catalog"
+/// The first id is SpanDAC's product id. The second is the TEMPORARY id of
+/// the development build, kept so a Mac that only has that build still
+/// launches it; it is removed when the development build moves to the
+/// product id. Auto-launch and bring-forward use the first id LaunchServices
+/// knows (else the first); installed and running accept any of them.
+let macSpanDACBundleIDs = ["io.vouch.spandac", "com.anthonymaley.music-catalog"]
+
+/// The id to launch: the first of `ids` that `isKnown` accepts, else the
+/// first. Pure, so the preference rule is testable without LaunchServices.
+func resolveMacSpanDACBundleID(_ ids: [String], isKnown: (String) -> Bool) -> String {
+    ids.first(where: isKnown) ?? ids[0]
+}
 
 /// One probe of SpanDAC's control socket while starting it: whether it
 /// answered ready, said it needs Apple Music access, hasn't answered
@@ -300,10 +306,14 @@ final class LiveMacSpanDACStarter: MacSpanDACStarting {
 /// The live starter: SpanDAC on this Mac, launched hidden through
 /// `ExternalCallTripwire`, polled over its own control socket.
 func liveMacSpanDACStarter() -> MacSpanDACStarting {
-    LiveMacSpanDACStarter(
-        bundleID: macSpanDACBundleID,
-        checkInstalled: { liveMacSpanDACIsInstalled(bundleID: macSpanDACBundleID) },
-        checkRunning: { liveMacSpanDACIsRunning(bundleID: macSpanDACBundleID) },
+    let ids = macSpanDACBundleIDs
+    let resolved = resolveMacSpanDACBundleID(ids) {
+        NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0) != nil
+    }
+    return LiveMacSpanDACStarter(
+        bundleID: resolved,
+        checkInstalled: { ids.contains { liveMacSpanDACIsInstalled(bundleID: $0) } },
+        checkRunning: { ids.contains { liveMacSpanDACIsRunning(bundleID: $0) } },
         launch: { try liveLaunchMacSpanDAC(bundleID: $0, hidden: true) },
         activate: { try liveLaunchMacSpanDAC(bundleID: $0, hidden: false) },
         probe: { liveMacSpanDACProbe() })
