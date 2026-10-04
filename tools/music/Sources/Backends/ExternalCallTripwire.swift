@@ -12,7 +12,7 @@ enum ExternalCall: Equatable, CustomStringConvertible {
         switch self {
         case .appleScript(let script): return "osascript: \(script.prefix(80))"
         case .http(let method, let path): return "\(method) \(path)"
-        case .launchApp(let bundleID): return "open -b \(bundleID)"
+        case .launchApp(let bundleID): return "open the app \(bundleID)"
         }
     }
 }
