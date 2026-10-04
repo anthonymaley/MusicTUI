@@ -304,4 +304,23 @@ final class MacSpanDACStarterTests: XCTestCase {
         XCTAssertFalse(notRunningStarter.isRunning)
         XCTAssertTrue(notRunningStarter.isInstalled)
     }
+
+    func testResolvePrefersFirstIDWhenBothKnown() {
+        let ids = ["first.example", "second.example"]
+        XCTAssertEqual(resolveMacSpanDACBundleID(ids) { _ in true }, "first.example")
+    }
+
+    func testResolveFallsBackToSecondWhenOnlyItIsKnown() {
+        let ids = ["first.example", "second.example"]
+        XCTAssertEqual(resolveMacSpanDACBundleID(ids) { $0 == "second.example" }, "second.example")
+    }
+
+    func testResolveReturnsFirstWhenNeitherIsKnown() {
+        let ids = ["first.example", "second.example"]
+        XCTAssertEqual(resolveMacSpanDACBundleID(ids) { _ in false }, "first.example")
+    }
+
+    func testProductIDIsListedBeforeTheTemporaryDevID() {
+        XCTAssertEqual(macSpanDACBundleIDs.first, "io.vouch.spandac")
+    }
 }
