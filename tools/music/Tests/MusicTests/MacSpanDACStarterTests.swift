@@ -324,6 +324,13 @@ final class MacSpanDACStarterTests: XCTestCase {
         XCTAssertNil(resolveMacSpanDACBundleID([]) { _ in true })
     }
 
+    func testOnlyTheMacExecutableCountsAsMacSpanDAC() {
+        XCTAssertTrue(isMacSpanDACExecutable("MusicTUISource"))
+        XCTAssertFalse(isMacSpanDACExecutable("SpanDAC"))
+        XCTAssertFalse(isMacSpanDACExecutable("SMPProbe"))
+        XCTAssertFalse(isMacSpanDACExecutable(nil))
+    }
+
     func testProductIDIsListedBeforeTheTemporaryDevID() {
         XCTAssertEqual(macSpanDACBundleIDs.first, "io.vouch.spandac")
     }

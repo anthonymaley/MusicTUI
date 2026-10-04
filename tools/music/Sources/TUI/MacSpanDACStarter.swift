@@ -87,6 +87,14 @@ func resolveMacSpanDACBundleID(_ ids: [String], isKnown: (String) -> Bool) -> St
     ids.first(where: isKnown) ?? ids.first
 }
 
+/// Whether an app registered under a SpanDAC id is the Mac app itself. The
+/// product id is shared with SpanDAC's iPhone and iPad apps (and could be
+/// carried by any test build), and LaunchServices can answer an id with one of
+/// those; only the Mac app runs the executable MusicTUI talks to.
+func isMacSpanDACExecutable(_ executable: String?) -> Bool {
+    executable == "MusicTUISource"
+}
+
 /// One probe of SpanDAC's control socket while starting it: whether it
 /// answered ready, said it needs Apple Music access, hasn't answered
 /// something actionable yet (keep polling), or failed for a reason MusicTUI
@@ -308,8 +316,9 @@ final class LiveMacSpanDACStarter: MacSpanDACStarting {
 /// `ExternalCallTripwire`, polled over its own control socket.
 func liveMacSpanDACStarter() -> MacSpanDACStarting {
     let ids = macSpanDACBundleIDs
-    let resolved = resolveMacSpanDACBundleID(ids) {
-        NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0) != nil
+    let resolved = resolveMacSpanDACBundleID(ids) { id in
+        guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: id) else { return false }
+        return isMacSpanDACExecutable(Bundle(url: url)?.infoDictionary?["CFBundleExecutable"] as? String)
     } ?? macSpanDACBundleIDs[0]
     return LiveMacSpanDACStarter(
         bundleID: resolved,
