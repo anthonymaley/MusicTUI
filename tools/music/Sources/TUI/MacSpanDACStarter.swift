@@ -71,14 +71,62 @@ final class NeverStartsMacSpanDAC: MacSpanDACStarting {
     func newAttempt() {}
 }
 
-/// SpanDAC on this Mac's bundle identifier, in this one constant.
+/// SpanDAC on this Mac's bundle identifiers, in preference order.
 ///
-/// **TEMPORARY and borrowed** (score's Open list): this is the App ID created
-/// for MusicKit's automatic-token service, reused for this dogfood build by
-/// standing decision; it is not yet a durable product identity, and nothing
-/// in this file may assume it survives a future rename. Auto-launch and
-/// bring-forward key on it, so a rename there is the one place this changes.
-let macSpanDACBundleID = "com.anthonymaley.music-catalog"
+/// The first id is SpanDAC's product id. The second is the TEMPORARY id of
+/// the development build, kept so a Mac that only has that build still
+/// launches it; it is removed when the development build moves to the
+/// product id. An id alone never identifies the Mac app (see
+/// `macSpanDACExecutable`); `pickMacSpanDACApp` applies the full rule.
+let macSpanDACBundleIDs = ["io.vouch.spandac", "com.anthonymaley.music-catalog"]
+
+/// The executable only SpanDAC for Mac runs. The product id is shared with
+/// SpanDAC's iPhone and iPad apps (and could be carried by any test build),
+/// and LaunchServices can answer that id with one of those (seen on a dev Mac:
+/// an iPad probe). The one rule for "this app is SpanDAC for Mac" is: bundle
+/// id in `macSpanDACBundleIDs` AND this executable name.
+let macSpanDACExecutable = "MusicTUISource"
+
+/// SpanDAC for Mac as found on disk: which of `macSpanDACBundleIDs` it is
+/// registered under, and the bundle LaunchServices holds for it.
+struct MacSpanDACApp: Equatable {
+    let bundleID: String
+    let url: URL
+}
+
+/// The Mac app to launch, or nil when none is registered: the first id (in
+/// `ids` order) with a registered bundle whose executable is
+/// `macSpanDACExecutable`, paired with that bundle. `urls` lists EVERY
+/// registration for an id (not only LaunchServices' default, which may be a
+/// different app sharing it), and `executable` reads a bundle's
+/// `CFBundleExecutable`. Pure over both, so the rule is testable without
+/// LaunchServices.
+func pickMacSpanDACApp(_ ids: [String],
+                       urls: (String) -> [URL],
+                       executable: (URL) -> String?) -> MacSpanDACApp? {
+    for id in ids {
+        if let url = urls(id).first(where: { executable($0) == macSpanDACExecutable }) {
+            return MacSpanDACApp(bundleID: id, url: url)
+        }
+    }
+    return nil
+}
+
+/// Whether one running application is SpanDAC for Mac: the same rule as
+/// `pickMacSpanDACApp`, over a running process's id and executable. Pure, so
+/// an iPad build running under the product id is testably not the Mac app.
+func isMacSpanDACRunningApp(bundleID: String?, executableURL: URL?, ids: [String] = macSpanDACBundleIDs) -> Bool {
+    guard let bundleID, ids.contains(bundleID) else { return false }
+    return executableURL?.lastPathComponent == macSpanDACExecutable
+}
+
+/// The live pick: every LaunchServices registration of each id, each read for
+/// its own executable name.
+func liveMacSpanDACApp() -> MacSpanDACApp? {
+    pickMacSpanDACApp(macSpanDACBundleIDs,
+                      urls: { NSWorkspace.shared.urlsForApplications(withBundleIdentifier: $0) },
+                      executable: { Bundle(url: $0)?.infoDictionary?["CFBundleExecutable"] as? String })
+}
 
 /// One probe of SpanDAC's control socket while starting it: whether it
 /// answered ready, said it needs Apple Music access, hasn't answered
@@ -105,33 +153,40 @@ struct MacSpanDACClock {
     static let live = MacSpanDACClock(now: Date.init, wait: { Thread.sleep(forTimeInterval: $0) })
 }
 
-/// The live way to bring SpanDAC on this Mac forward: `/usr/bin/open`,
-/// hidden (`-g -j`) for a start, or plain for a person's Enter. Gated by
-/// `ExternalCallTripwire` exactly as an AppleScript run or a REST request is:
-/// a test that arms the tripwire records the call and never spawns the real
-/// process.
-func liveLaunchMacSpanDAC(bundleID: String, hidden: Bool) throws {
-    try ExternalCallTripwire.shared.check(.launchApp(bundleID: bundleID))
+/// The live way to bring SpanDAC on this Mac forward: `/usr/bin/open` on the
+/// picked app's own bundle path, hidden (`-g -j`) for a start, or plain for a
+/// person's Enter. Never by bundle id, which LaunchServices may answer with a
+/// different app sharing it. With no picked app it opens nothing and returns,
+/// so the socket probe decides (a build that answers without a registration
+/// still works). Gated by `ExternalCallTripwire` exactly as an AppleScript run
+/// or a REST request is: a test that arms the tripwire records the call and
+/// never spawns the real process.
+func liveLaunchMacSpanDAC(_ app: MacSpanDACApp?, hidden: Bool) throws {
+    guard let app else { return }
+    try ExternalCallTripwire.shared.check(.launchApp(bundleID: app.bundleID))
     let process = Process()
     process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-    process.arguments = hidden ? ["-g", "-j", "-b", bundleID] : ["-b", bundleID]
+    process.arguments = hidden ? ["-g", "-j", app.url.path] : [app.url.path]
     try process.run()
     process.waitUntilExit()
 }
 
-/// Installed = LaunchServices knows the app OR its control socket already
+/// Installed = a picked SpanDAC for Mac exists OR its control socket already
 /// exists (a build that predates LaunchServices registration, or one whose
 /// registration lagged, still counts once it has ever answered).
-func liveMacSpanDACIsInstalled(bundleID: String) -> Bool {
-    NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) != nil
+func liveMacSpanDACIsInstalled() -> Bool {
+    liveMacSpanDACApp() != nil
         || FileManager.default.fileExists(atPath: SourceAppStationSearch.socketPath)
 }
 
-/// LaunchServices only, independent of the socket, for C-REPAIR's "paused"
+/// Running processes only, independent of the socket, for C-REPAIR's "paused"
 /// test (a Mac SpanDAC whose process has quit but whose stale socket path
-/// still exists on disk must not read as running).
-func liveMacSpanDACIsRunning(bundleID: String) -> Bool {
-    NSWorkspace.shared.runningApplications.contains { $0.bundleIdentifier == bundleID }
+/// still exists on disk must not read as running). Only the Mac app counts,
+/// by `isMacSpanDACRunningApp`.
+func liveMacSpanDACIsRunning() -> Bool {
+    NSWorkspace.shared.runningApplications.contains {
+        isMacSpanDACRunningApp(bundleID: $0.bundleIdentifier, executableURL: $0.executableURL)
+    }
 }
 
 /// Sentences the app's own `slice.status` reply says are an authorization
@@ -298,14 +353,17 @@ final class LiveMacSpanDACStarter: MacSpanDACStarting {
 }
 
 /// The live starter: SpanDAC on this Mac, launched hidden through
-/// `ExternalCallTripwire`, polled over its own control socket.
+/// `ExternalCallTripwire`, polled over its own control socket. The Mac app is
+/// picked afresh at each launch or activate, so one installed after MusicTUI
+/// started is found; the starter's `bundleID` is the id picked at
+/// construction (else the product id) and is a label only, never opened.
 func liveMacSpanDACStarter() -> MacSpanDACStarting {
     LiveMacSpanDACStarter(
-        bundleID: macSpanDACBundleID,
-        checkInstalled: { liveMacSpanDACIsInstalled(bundleID: macSpanDACBundleID) },
-        checkRunning: { liveMacSpanDACIsRunning(bundleID: macSpanDACBundleID) },
-        launch: { try liveLaunchMacSpanDAC(bundleID: $0, hidden: true) },
-        activate: { try liveLaunchMacSpanDAC(bundleID: $0, hidden: false) },
+        bundleID: liveMacSpanDACApp()?.bundleID ?? macSpanDACBundleIDs[0],
+        checkInstalled: { liveMacSpanDACIsInstalled() },
+        checkRunning: { liveMacSpanDACIsRunning() },
+        launch: { _ in try liveLaunchMacSpanDAC(liveMacSpanDACApp(), hidden: true) },
+        activate: { _ in try liveLaunchMacSpanDAC(liveMacSpanDACApp(), hidden: false) },
         probe: { liveMacSpanDACProbe() })
 }
 
