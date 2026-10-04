@@ -320,6 +320,10 @@ final class MacSpanDACStarterTests: XCTestCase {
         XCTAssertEqual(resolveMacSpanDACBundleID(ids) { _ in false }, "first.example")
     }
 
+    func testResolveReturnsNilForAnEmptyList() {
+        XCTAssertNil(resolveMacSpanDACBundleID([]) { _ in true })
+    }
+
     func testProductIDIsListedBeforeTheTemporaryDevID() {
         XCTAssertEqual(macSpanDACBundleIDs.first, "io.vouch.spandac")
     }

@@ -81,9 +81,10 @@ final class NeverStartsMacSpanDAC: MacSpanDACStarting {
 let macSpanDACBundleIDs = ["io.vouch.spandac", "com.anthonymaley.music-catalog"]
 
 /// The id to launch: the first of `ids` that `isKnown` accepts, else the
-/// first. Pure, so the preference rule is testable without LaunchServices.
-func resolveMacSpanDACBundleID(_ ids: [String], isKnown: (String) -> Bool) -> String {
-    ids.first(where: isKnown) ?? ids[0]
+/// first; nil only for an empty list. Pure, so the preference rule is
+/// testable without LaunchServices.
+func resolveMacSpanDACBundleID(_ ids: [String], isKnown: (String) -> Bool) -> String? {
+    ids.first(where: isKnown) ?? ids.first
 }
 
 /// One probe of SpanDAC's control socket while starting it: whether it
@@ -309,7 +310,7 @@ func liveMacSpanDACStarter() -> MacSpanDACStarting {
     let ids = macSpanDACBundleIDs
     let resolved = resolveMacSpanDACBundleID(ids) {
         NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0) != nil
-    }
+    } ?? macSpanDACBundleIDs[0]
     return LiveMacSpanDACStarter(
         bundleID: resolved,
         checkInstalled: { ids.contains { liveMacSpanDACIsInstalled(bundleID: $0) } },
