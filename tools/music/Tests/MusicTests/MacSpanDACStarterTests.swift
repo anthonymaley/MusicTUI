@@ -272,7 +272,9 @@ final class MacSpanDACStarterTests: XCTestCase {
 
     func testTheLiveLaunchGoesThroughTheTripwire() {
         let (result, calls) = withTripwire {
-            Result { try liveLaunchMacSpanDAC(bundleID: testBundleID, hidden: true) }
+            Result { try liveLaunchMacSpanDAC(
+                MacSpanDACApp(bundleID: testBundleID, url: URL(fileURLWithPath: "/nonexistent/Fake.app")),
+                hidden: true) }
         }
         XCTAssertThrowsError(try result.get()) { error in
             XCTAssertTrue(error is ExternalCallBlocked)
@@ -305,30 +307,63 @@ final class MacSpanDACStarterTests: XCTestCase {
         XCTAssertTrue(notRunningStarter.isInstalled)
     }
 
-    func testResolvePrefersFirstIDWhenBothKnown() {
-        let ids = ["first.example", "second.example"]
-        XCTAssertEqual(resolveMacSpanDACBundleID(ids) { _ in true }, "first.example")
+    // MARK: - Which app is SpanDAC for Mac
+
+    private let probeURL = URL(fileURLWithPath: "/Applications/SMPProbe.app")
+    private let macURL = URL(fileURLWithPath: "/Applications/SpanDAC.app")
+    private let legacyURL = URL(fileURLWithPath: "/Applications/MusicTUISource.app")
+
+    private func executable(_ url: URL) -> String? {
+        switch url {
+        case probeURL: return "SMPProbe"
+        case macURL, legacyURL: return "MusicTUISource"
+        default: return nil
+        }
     }
 
-    func testResolveFallsBackToSecondWhenOnlyItIsKnown() {
-        let ids = ["first.example", "second.example"]
-        XCTAssertEqual(resolveMacSpanDACBundleID(ids) { $0 == "second.example" }, "second.example")
+    func testProductIDOnAnIPadProbePicksTheLegacyMacApp() {
+        let picked = pickMacSpanDACApp(
+            macSpanDACBundleIDs,
+            urls: { $0 == "io.vouch.spandac" ? [probeURL] : [legacyURL] },
+            executable: executable)
+        XCTAssertEqual(picked, MacSpanDACApp(bundleID: "com.anthonymaley.music-catalog", url: legacyURL))
     }
 
-    func testResolveReturnsFirstWhenNeitherIsKnown() {
-        let ids = ["first.example", "second.example"]
-        XCTAssertEqual(resolveMacSpanDACBundleID(ids) { _ in false }, "first.example")
+    func testProductIDWithBothAProbeAndTheMacAppPicksTheMacApp() {
+        let picked = pickMacSpanDACApp(
+            macSpanDACBundleIDs,
+            urls: { $0 == "io.vouch.spandac" ? [probeURL, macURL] : [legacyURL] },
+            executable: executable)
+        XCTAssertEqual(picked, MacSpanDACApp(bundleID: "io.vouch.spandac", url: macURL))
     }
 
-    func testResolveReturnsNilForAnEmptyList() {
-        XCTAssertNil(resolveMacSpanDACBundleID([]) { _ in true })
+    func testNoMacAppPicksNothingAndLaunchOpensNothing() {
+        let picked = pickMacSpanDACApp(
+            macSpanDACBundleIDs,
+            urls: { $0 == "io.vouch.spandac" ? [probeURL] : [] },
+            executable: executable)
+        XCTAssertNil(picked)
+        let (result, calls) = withTripwire {
+            Result { try liveLaunchMacSpanDAC(picked, hidden: true) }
+        }
+        XCTAssertNoThrow(try result.get())
+        XCTAssertEqual(calls, [])
     }
 
-    func testOnlyTheMacExecutableCountsAsMacSpanDAC() {
-        XCTAssertTrue(isMacSpanDACExecutable("MusicTUISource"))
-        XCTAssertFalse(isMacSpanDACExecutable("SpanDAC"))
-        XCTAssertFalse(isMacSpanDACExecutable("SMPProbe"))
-        XCTAssertFalse(isMacSpanDACExecutable(nil))
+    func testAnUnreadableBundleIsNotTheMacApp() {
+        XCTAssertNil(pickMacSpanDACApp(["a.example"], urls: { _ in [URL(fileURLWithPath: "/x.app")] },
+                                       executable: { _ in nil }))
+    }
+
+    func testOnlyTheMacExecutableRunningUnderASpanDACIDCountsAsRunning() {
+        let bin = { (name: String) in URL(fileURLWithPath: "/Applications/X.app/Contents/MacOS/\(name)") }
+        XCTAssertFalse(isMacSpanDACRunningApp(bundleID: "io.vouch.spandac", executableURL: bin("SMPProbe")))
+        XCTAssertTrue(isMacSpanDACRunningApp(bundleID: "io.vouch.spandac", executableURL: bin("MusicTUISource")))
+        XCTAssertTrue(isMacSpanDACRunningApp(bundleID: "com.anthonymaley.music-catalog",
+                                             executableURL: bin("MusicTUISource")))
+        XCTAssertFalse(isMacSpanDACRunningApp(bundleID: "com.example.other", executableURL: bin("MusicTUISource")))
+        XCTAssertFalse(isMacSpanDACRunningApp(bundleID: nil, executableURL: bin("MusicTUISource")))
+        XCTAssertFalse(isMacSpanDACRunningApp(bundleID: "io.vouch.spandac", executableURL: nil))
     }
 
     func testProductIDIsListedBeforeTheTemporaryDevID() {
