@@ -132,17 +132,41 @@ let licencePrimeTimeoutSeconds = 2
 /// Fed by the network clients' replies (`observingOutputQueue`), from any
 /// thread, hence the lock. Never observed reads as not loaded: no evidence
 /// grants no play-out.
+///
+/// **Freshness (Codex review 100, finding 2).** As for the Mac's cache: each
+/// request takes a monotonic `ticket()` before it is sent, and its reply is
+/// applied only if that ticket is newer than the last one applied FOR THAT
+/// OUTPUT. `forget` invalidates every ticket handed out so far for the output
+/// it forgets, so a reply already in flight cannot repopulate it.
 final class SpanDACOutputQueues {
     private let lock = NSLock()
     private var loaded: [String: Bool] = [:]
+    private var issued: UInt64 = 0
+    /// Per output: the newest ticket applied, or the floor `forget` set.
+    private var applied: [String: UInt64] = [:]
 
     init() {}
+
+    /// A ticket for a request about to be sent: greater than every ticket
+    /// handed out before it, for any output.
+    func ticket() -> UInt64 {
+        lock.lock(); defer { lock.unlock() }
+        issued += 1
+        return issued
+    }
+
+    /// A reply observed with no request ticket of its own is taken as the
+    /// newest: it is given a ticket now.
+    func observe(sourceID: String, replyLine: String) {
+        observe(sourceID: sourceID, replyLine: replyLine, ticket: ticket())
+    }
 
     /// A `slice.status` reply records whether a queue is built or building
     /// and has not stopped (the same rule the Mac's cache uses); a
     /// `nothing_loaded` refusal records not loaded. Anything else, including
-    /// a line that does not parse, changes nothing.
-    func observe(sourceID: String, replyLine: String) {
+    /// a line that does not parse, changes nothing, and so does a reply whose
+    /// `ticket` is not newer than the last applied for `sourceID`.
+    func observe(sourceID: String, replyLine: String, ticket: UInt64) {
         guard let data = replyLine.data(using: .utf8),
               let reply = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let ok = reply["ok"] as? Bool else { return }
@@ -156,7 +180,10 @@ final class SpanDACOutputQueues {
             guard (reply["error"] as? [String: Any])?["kind"] as? String == "nothing_loaded" else { return }
             now = false
         }
-        lock.lock(); loaded[sourceID] = now; lock.unlock()
+        lock.lock(); defer { lock.unlock() }
+        guard ticket > applied[sourceID, default: 0] else { return }
+        loaded[sourceID] = now
+        applied[sourceID] = ticket
     }
 
     /// True only when this output's own last status showed its queue loaded.
@@ -166,21 +193,27 @@ final class SpanDACOutputQueues {
     }
 
     /// Drops what is known about `sourceID`, so only a later reply from it
-    /// can say its queue is loaded.
+    /// can say its queue is loaded: every ticket handed out so far is
+    /// invalidated for it, so a reply to a request sent before this is not
+    /// applied when it arrives.
     func forget(_ sourceID: String) {
-        lock.lock(); loaded[sourceID] = nil; lock.unlock()
+        lock.lock(); defer { lock.unlock() }
+        loaded[sourceID] = nil
+        applied[sourceID] = issued
     }
 }
 
 /// A transport that reports every reply it returns to `queues` under
 /// `sourceID` and otherwise changes nothing: the same bytes come back, and an
-/// error from the transport is thrown as it was, unobserved.
+/// error from the transport is thrown as it was, unobserved. The request's
+/// ticket is taken BEFORE it is sent (see `SpanDACOutputQueues`).
 func observingOutputQueue(_ transport: @escaping (String, String) throws -> String,
                           sourceID: String,
                           queues: SpanDACOutputQueues) -> (String, String) throws -> String {
     { path, line in
+        let ticket = queues.ticket()
         let reply = try transport(path, line)
-        queues.observe(sourceID: sourceID, replyLine: reply)
+        queues.observe(sourceID: sourceID, replyLine: reply, ticket: ticket)
         return reply
     }
 }
