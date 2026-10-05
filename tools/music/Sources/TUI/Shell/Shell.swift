@@ -51,9 +51,8 @@ func musicTUISkip(_ step: Int, backend: AppleScriptBackend, appQueue: AppQueueSt
 /// picks one when the action RUNS, from where the sound is then
 /// (`effectiveOutput`'s state), never from the stored mode at the keypress.
 /// Until this, a stored SpanDAC output took a SpanDAC-only path whose MusicTUI
-/// body was empty, so after a replacement (ruling A8), or with SpanDAC on this
-/// Mac not serving, Next and Previous did nothing. The coordinator also hands
-/// MusicTUI off first when serving has returned (amended A8).
+/// body was empty, so with SpanDAC on this Mac stored but not serving (the
+/// MusicTUI output), Next and Previous did nothing.
 func globalSkip(_ step: Int, routing: RoutingCoordinator,
                 musicTUI: @escaping () throws -> Void,
                 run: (_ label: String, _ body: @escaping () throws -> Void) -> Void) {

@@ -69,7 +69,8 @@ final class NowPlayingScene: Scene {
         // (spec 6.2's row); it pauses Bridge, never Music.app (ruling 12.7).
         // Every SpanDAC-shaped choice on this tab follows where the sound is
         // (`effectiveOutput`), never the stored output (Codex review 101,
-        // blocking 1): after a replacement MusicTUI's controls are the live ones.
+        // blocking 1): with SpanDAC on this Mac not serving, MusicTUI's
+        // controls are the live ones.
         if routing.effectiveOutput.usesSource { return "[ ] Seek  x Quiet" }
         return gridFocused
             ? "\u{2191}\u{2193} Row  Enter Set  \u{2192} Up Next  [ ] Seek  \u{2014} controls"
