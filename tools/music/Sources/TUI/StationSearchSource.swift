@@ -114,8 +114,8 @@ enum SourceAppError: Error, Equatable {
     }
 
     /// The shared decode rule for the two "simple" wire replies (search,
-    /// play): only `unauthorized` and `busy` have a kind of their own, and
-    /// every other kind is `refused(detail)`. One function so a kind added
+    /// play): only `unauthorized`, `busy` and `unlicensed` have a kind of
+    /// their own, and every other kind is `refused(detail)`. One function so a kind added
     /// to this rule cannot drift between the two call sites — `busy` was
     /// added to `decodeSearchReply` alone first, then had to be found and
     /// duplicated into `play`, which is exactly the drift this guards
@@ -124,6 +124,7 @@ enum SourceAppError: Error, Equatable {
         switch kind {
         case "unauthorized": return .notAuthorized
         case "busy":          return .busy
+        case spanDACLicenceRefusalKind: return .unlicensed(detail)
         default:              return .refused(detail)
         }
     }

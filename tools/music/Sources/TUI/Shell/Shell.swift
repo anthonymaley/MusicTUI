@@ -60,6 +60,76 @@ func licenceNotice(previous: Bool?, current: Bool?, dataAccepted: Bool) -> Strin
     return licenceFallbackNotice
 }
 
+/// How often, at most, the shell loop re-reads SpanDAC's `slice.status` while
+/// its licence is known not to be serving. Low on purpose: it is a recovery
+/// poll for a person who has just entered a key in SpanDAC, not a heartbeat.
+let licenceReprobeIntervalSeconds: TimeInterval = 30
+
+/// Whether the shell loop should start a licence reprobe now. Only while the
+/// cache says serving is FALSE (true and unknown, which is today's behaviour,
+/// never probe), never with one already in flight, and not before `interval`
+/// has passed since the last start. A clock that stepped backwards waits.
+func licenceReprobeDue(serving: Bool?, lastProbe: Date?, now: Date,
+                       interval: TimeInterval, inFlight: Bool) -> Bool {
+    guard serving == false, !inFlight else { return false }
+    guard let lastProbe else { return true }
+    return now.timeIntervalSince(lastProbe) >= interval
+}
+
+/// Notices SpanDAC regaining its licence when nothing else is asking it: once
+/// serving is false the Now poller reads Music.app and only the visible Output
+/// tab probes, so without this a stored SpanDAC choice would not resume until
+/// that tab was opened.
+///
+/// `tick()` is called from the shell loop and returns at once. When due it
+/// hands ONE bounded `slice.status` read to `async` (a global queue in the
+/// shell), through the coordinator's own `.source` client, which is wrapped to
+/// feed its licence cache, so the cache flips from the reply by the same path
+/// every other reply takes. It never starts SpanDAC: the read goes through
+/// `primeLicence`, which sends nothing without the Mac's socket file or when
+/// SpanDAC is not involved in the stored selection. The read is bounded by the
+/// transport's own timeout, and a failed read changes nothing.
+final class LicenceReprobe {
+    private let routing: RoutingCoordinator
+    private let interval: TimeInterval
+    private let now: () -> Date
+    private let socketExists: () -> Bool
+    private let async: (@escaping () -> Void) -> Void
+    private let lock = NSLock()
+    private var lastProbe: Date?
+    private var inFlight = false
+
+    init(routing: RoutingCoordinator,
+         interval: TimeInterval = licenceReprobeIntervalSeconds,
+         now: @escaping () -> Date = Date.init,
+         socketExists: @escaping () -> Bool = {
+             FileManager.default.fileExists(atPath: SourceAppStationSearch.socketPath)
+         },
+         async: @escaping (@escaping () -> Void) -> Void = { work in DispatchQueue.global().async(execute: work) }) {
+        self.routing = routing
+        self.interval = interval
+        self.now = now
+        self.socketExists = socketExists
+        self.async = async
+    }
+
+    func tick() {
+        guard let licence = routing.licence else { return }
+        let at = now()
+        lock.lock()
+        let go = licenceReprobeDue(serving: licence.snapshot().serving, lastProbe: lastProbe, now: at,
+                                   interval: interval, inFlight: inFlight)
+        if go { inFlight = true; lastProbe = at }
+        lock.unlock()
+        guard go else { return }
+        async { [self] in
+            _ = routing.primeLicence(socketExists: socketExists,
+                                     readStatus: { _ = try routing.client(for: .source).control.status() })
+            lock.lock(); inFlight = false; lock.unlock()
+        }
+    }
+}
+
 /// Opens the Playlists tab (C2, D7 item 5): which library it opens FROM
 /// follows the data selection, decided here rather than inside
 /// `PlaylistsScene` so the Bridge branch is provable with no AppleScript
@@ -362,8 +432,12 @@ func runShell() {
     // What SpanDAC last said about serving, as this loop saw it, so a flip
     // into not serving is told once (`licenceNotice`).
     var lastServing: Bool? = nil
+    // While serving is false, a low-rate asynchronous status read notices the
+    // licence coming back (review finding 7); it never blocks this loop.
+    let licenceReprobe = LicenceReprobe(routing: routing)
 
     while true {
+        licenceReprobe.tick()
         if let licence = routing.licence {
             let serving = licence.snapshot().serving
             if let notice = licenceNotice(previous: lastServing, current: serving,
