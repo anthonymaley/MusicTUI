@@ -24,7 +24,10 @@
 // music DATA comes from is a selection of its own, beside the output. The
 // coordinator holds both: `mode`/`epoch` for the output, exactly as before,
 // and the data selection with its own `dataEpoch`, read once at init and
-// changed only by `acceptSpanDACData` and `stopUsingSpanDACData`. `choose`
+// changed only by `acceptSpanDACData` and `stopUsingSpanDACData`. SpanDAC's
+// licence (design section 7) overrides both in memory, never in the files:
+// while the Mac's SpanDAC says it is not serving, data is open and the output
+// is MusicTUI, and `dataEpoch` moves once at each flip. `choose`
 // routes by the data axis and hands the DATA client (always SpanDAC on this
 // Mac); `perform` routes by the sound axis and hands the OUTPUT client. Open
 // data never constructs a SpanDAC client, and neither does a blocked output
@@ -114,6 +117,12 @@ final class RoutingCoordinator {
     /// starter, and with it one launch attempt.
     let macStarter: MacSpanDACStarting
 
+    /// What the Mac's SpanDAC last said about serving, learned from the
+    /// replies its wrapped clients return. Nil (every coordinator built
+    /// without one, and every test that predates the licence) is today's
+    /// behaviour exactly: nothing below reads it.
+    let licence: SpanDACServingCache?
+
     /// The cross-process output lock (slice 3, D6), exposed read-only so the
     /// CLI can take it directly around a playback mutation. The CLI's mutation
     /// already runs inside `perform`, which holds `order` and has set the
@@ -143,6 +152,13 @@ final class RoutingCoordinator {
     private var ceremonyState: SwitchCeremonyState
     private var reachedBoundary: (() -> Void)?
 
+    /// The serving value this coordinator has acted on: the last one
+    /// `syncLicence` took from `licence`. Nil until SpanDAC has said.
+    private var actedOnServing: Bool?
+    /// Design section 7, mid-song: the SpanDAC output whose queue was playing
+    /// when serving ended. While set, transport keys still reach it.
+    private var playOut: PlaybackMode?
+
     /// Slice 3 Part 2, D3. Starts at 0; incremented exactly once per
     /// COMMITTED switch (never on `alreadyInMode`, a refused switch — readiness,
     /// an unconfirmed pause, a failed queue drop, a failed save — or a
@@ -152,7 +168,13 @@ final class RoutingCoordinator {
     private var _epoch = 0
 
     /// C-EPOCH. Starts at 0; incremented exactly once per COMMITTED
-    /// `acceptSpanDACData` or `stopUsingSpanDACData`, never by an output switch.
+    /// `acceptSpanDACData` or `stopUsingSpanDACData`, never by an output switch,
+    /// AND exactly once per observed flip of SpanDAC's licence (ambiguity A3):
+    /// serving true to false, false to true, and unknown to false. Unknown to
+    /// true is not a flip, because unknown already behaves as serving. A flip
+    /// changes where data comes from and where sound goes without either file
+    /// changing, so a read made under the other answer is dropped like any
+    /// other stale read. A repeat of the same answer moves nothing.
     private var _dataEpoch = 0
 
     /// How many chosen-music plays have reached a `.musicApp` or `.source`
@@ -178,7 +200,8 @@ final class RoutingCoordinator {
          dataStore: DataProviderStore,
          makeSourceFor: @escaping (PlaybackMode) -> SourceAppClient,
          makeDataClient: @escaping () -> SourceAppClient,
-         starter: MacSpanDACStarting) {
+         starter: MacSpanDACStarting,
+         licence: SpanDACServingCache? = nil) {
         self.store = store
         self.surface = surface
         self.makeSource = makeSourceFor
@@ -187,6 +210,7 @@ final class RoutingCoordinator {
         self.dataAxis = .stored(dataStore)
         self.makeDataClient = makeDataClient
         self.macStarter = starter
+        self.licence = licence
         // The ONLY accepted state is both values together (C-AXES); anything
         // else is open data, with whatever ceremony state it names.
         let read = dataStore.read()
@@ -209,6 +233,7 @@ final class RoutingCoordinator {
         self.dataAxis = .followsOutput
         self.makeDataClient = { makeSourceFor(.source) }
         self.macStarter = NeverStartsMacSpanDAC()
+        self.licence = nil
         self.accepted = false
         self.ceremonyState = .neverShown
     }
@@ -232,13 +257,44 @@ final class RoutingCoordinator {
     /// beside the store's mode.json, so a temp store gets a temp lock and a
     /// temp data file; the data client is SpanDAC on this Mac, started by
     /// `starter` when it is needed.
+    ///
+    /// **The licence (design section 7).** One `SpanDACServingCache` per
+    /// process, told every reply from the Mac's two clients (the `.source`
+    /// output client and the data client); a network SpanDAC's client is not
+    /// wrapped. When the stored selection involves SpanDAC and the Mac's socket
+    /// file exists, one `slice.status` is read here, synchronously, through the
+    /// plain socket client, so the first action is routed on SpanDAC's answer.
+    /// It never starts SpanDAC: with no socket file, nothing is sent.
     static func live(store: PlaybackModeStore = PlaybackModeStore(), surface: InvocationSurface,
                      starter: MacSpanDACStarting = liveMacSpanDACStarter()) -> RoutingCoordinator {
-        RoutingCoordinator(store: store, surface: surface, outputLock: OutputLock(path: store.lockPath),
-                           dataStore: DataProviderStore(beside: store),
-                           makeSourceFor: { SourceAppClient.selected(for: $0) },
-                           makeDataClient: { SourceAppClient.macData(starter: starter) },
-                           starter: starter)
+        let licence = SpanDACServingCache()
+        let routing = RoutingCoordinator(store: store, surface: surface, outputLock: OutputLock(path: store.lockPath),
+                                         dataStore: DataProviderStore(beside: store),
+                                         makeSourceFor: { SourceAppClient.selected(for: $0, licence: licence) },
+                                         makeDataClient: { SourceAppClient.macData(starter: starter, licence: licence) },
+                                         starter: starter,
+                                         licence: licence)
+        routing.primeLicence(
+            socketExists: { FileManager.default.fileExists(atPath: SourceAppStationSearch.socketPath) },
+            readStatus: { _ = try SourceAppClient.mac(observing: licence).control.status() })
+        return routing
+    }
+
+    /// Reads SpanDAC's licence once, at composition, when it matters: the
+    /// stored output is a SpanDAC or SpanDAC data is accepted, AND
+    /// `socketExists`. `readStatus` must go through a client wrapped with this
+    /// coordinator's `licence` and must not start anything; its error is
+    /// ignored (serving stays unknown, which is today's behaviour). Returns
+    /// whether it read. A coordinator without a licence never reads.
+    @discardableResult
+    func primeLicence(socketExists: () -> Bool, readStatus: () throws -> Void) -> Bool {
+        guard licence != nil else { return false }
+        state.lock()
+        let involved = current.usesSource || accepted
+        state.unlock()
+        guard involved, socketExists() else { return false }
+        try? readStatus()
+        return true
     }
 
     /// A client for `mode`, built by this coordinator's factory. CONSTRUCTION
@@ -259,19 +315,36 @@ final class RoutingCoordinator {
     /// drain time and drops a result whose epoch has moved on.
     var epoch: Int {
         state.lock(); defer { state.unlock() }
+        syncLicence()
         return _epoch
     }
 
-    /// C-EPOCH. Moves only when the data source changes.
+    /// C-EPOCH. Moves only when the data source changes: an accept, a stop, or
+    /// a flip of SpanDAC's licence (see `_dataEpoch`).
     var dataEpoch: Int {
         state.lock(); defer { state.unlock() }
+        syncLicence()
         return _dataEpoch
     }
 
     /// Both epochs, read together.
     var stamp: (epoch: Int, dataEpoch: Int) {
         state.lock(); defer { state.unlock() }
+        syncLicence()
         return (_epoch, _dataEpoch)
+    }
+
+    /// Design section 7, mid-song: the SpanDAC output still playing the queue
+    /// it had when serving ended, or nil. While set, `.playPause`, `.next`,
+    /// `.previous`, `.seek`, `.stop` and `.nowStatus` reach this output's
+    /// client, so a poller follows it too. Cleared by an admitted chosen-music
+    /// play (which goes to MusicTUI), a status showing `stopped`/`idle` or
+    /// queue phase `none`, a transport reply `unlicensed` or `nothing_loaded`,
+    /// a committed output switch, or serving again.
+    var playOutMode: PlaybackMode? {
+        state.lock(); defer { state.unlock() }
+        syncLicence()
+        return playOut
     }
 
     /// What the two selections mean together now (C-REPAIR): a SpanDAC
@@ -376,22 +449,29 @@ final class RoutingCoordinator {
                        source: (SourceAppClient) throws -> Void,
                        unaffected: () throws -> Void) throws {
         try exclusively {
-            if let expecting, expecting != stamp {
+            let settled = settledState()
+            if let expecting, expecting != settled.stamp {
                 throw ActionError(message: sourceChangedNothingPlayed)
             }
-            let now = selection
+            if let target = settled.playOut, playOutActions.contains(action) {
+                try source(playOutClient(for: target))
+                return
+            }
+            let now = settled.selection
             let routed = routeAction(action, selection: now, from: surface)
-            if case .refused(let why) = routed.sound { throw ActionError(message: why) }
+            if case .refused(let why) = routed.sound { throw ActionError(message: licensed(why, settled)) }
             try refuseAStaleOrigin(origin, for: action, in: now)
             func admitAPlay() {
                 guard action.playsChosenMusic else { return }
-                state.lock(); _playSerial += 1; state.unlock()
+                state.lock(); _playSerial += 1; playOut = nil; state.unlock()
             }
             switch routed.sound {
             case .unaffected:
                 try unaffected()
             case .source:
-                let client = action.readsMusicData && routed.data == .spandacMac ? dataClient() : sourceClient()
+                let reads = action.readsMusicData && routed.data == .spandacMac
+                if !reads, settled.networkUnproven { throw ActionError(message: iPhoneIPadNeedsLicensedMac) }
+                let client = reads ? dataClient() : sourceClient()
                 admitAPlay()
                 try source(client)
             case .musicApp:
@@ -400,7 +480,7 @@ final class RoutingCoordinator {
                 admitAPlay()
                 try musicApp(path)
             case .refused(let why):
-                throw ActionError(message: why)
+                throw ActionError(message: licensed(why, settled))
             }
         }
     }
@@ -426,10 +506,14 @@ final class RoutingCoordinator {
                           musicApp: () throws -> Provider,
                           source: (SourceAppClient) throws -> Provider) throws -> ProviderChoice<Provider> {
         try exclusively {
-            let now = selection
+            // One instant: the selection and both epochs a licence flip could
+            // otherwise move between separate reads.
+            let settled = settledState()
+            let now = settled.selection
             let routed = routeAction(action, selection: now, from: surface)
             func choice(_ provider: Provider) -> ProviderChoice<Provider> {
-                ProviderChoice(provider: provider, epoch: epoch, mode: mode, dataEpoch: dataEpoch, selection: now)
+                ProviderChoice(provider: provider, epoch: settled.stamp.epoch, mode: settled.mode,
+                               dataEpoch: settled.stamp.dataEpoch, selection: now)
             }
             switch routed.data {
             case .open:
@@ -437,17 +521,18 @@ final class RoutingCoordinator {
             case .spandacMac:
                 return choice(try source(dataClient()))
             case .refused(let why):
-                throw ActionError(message: why)
+                throw ActionError(message: licensed(why, settled))
             case .none:
                 switch routed.sound {
                 case .musicApp:
                     return choice(try musicApp())
                 case .source:
+                    if settled.networkUnproven { throw ActionError(message: iPhoneIPadNeedsLicensedMac) }
                     return choice(try source(sourceClient()))
                 case .unaffected:
                     throw ActionError(message: "Internal error: \(action) has no provider to choose")
                 case .refused(let why):
-                    throw ActionError(message: why)
+                    throw ActionError(message: licensed(why, settled))
                 }
             }
         }
@@ -636,6 +721,11 @@ final class RoutingCoordinator {
     /// switching to one without it refuses before anything is touched. A
     /// blocked stored output is left only by accepting or by stopping using
     /// SpanDAC, never by a plain switch.
+    ///
+    /// **The licence (design section 7).** With a licence cache, a SpanDAC on
+    /// the network is chosen only while the Mac's SpanDAC has said it is
+    /// serving; unknown counts as not proven. Nothing is touched before that
+    /// refusal.
     func switchMode(to target: PlaybackMode,
                     readiness: () -> SourceReadiness,
                     pauseOutgoing: (PlaybackMode) throws -> Bool,
@@ -643,6 +733,9 @@ final class RoutingCoordinator {
         try exclusively { try underOutputLock {
             let outgoing = mode
             guard target != outgoing else { return .alreadyInMode }
+            if licence != nil, target.networkSourceID != nil, settledState().serving != true {
+                throw ActionError(message: iPhoneIPadNeedsLicensedMac)
+            }
             if case .stored = dataAxis, !accepted {
                 if outgoing.usesSource { throw ActionError(message: finishSwitchingToSpanDAC) }
                 if target.usesSource { throw ActionError(message: switchMusicTUIToSpanDACFirst) }
@@ -691,19 +784,127 @@ final class RoutingCoordinator {
         // D3: the epoch moves exactly here, with the mode — the only path
         // that reaches a COMMITTED switch. Every earlier `throw` above
         // returns before this line, so a refused switch never touches it.
-        state.lock(); current = target; _epoch += 1; state.unlock()
+        // A committed switch paused and dropped the outgoing queue, so no
+        // play-out survives it.
+        state.lock(); current = target; _epoch += 1; playOut = nil; state.unlock()
         return .switched(to: target)
     }
 
     /// `selection` for the in-memory values. The caller holds `state`.
+    ///
+    /// **The licence override (design section 7).** While the Mac's SpanDAC
+    /// says it is not serving, it is treated as not installed, in memory only:
+    /// data is open; a stored MusicTUI or Mac SpanDAC output is the MusicTUI
+    /// output; a stored network SpanDAC is blocked (its refusals name
+    /// `iPhoneIPadNeedsLicensedMac`). Neither file is written, so serving again
+    /// restores the stored selection as it was. Unknown is today's behaviour.
     private func composedSelection() -> EffectiveSelection {
+        syncLicence()
         switch dataAxis {
         case .followsOutput:
             return .consistent(data: current.usesSource ? .spandacMac : .open, output: current)
         case .stored:
+            if actedOnServing == false {
+                return current.networkSourceID != nil ? .outputBlocked(stored: current)
+                                                      : .consistent(data: .open, output: .musicApp)
+            }
             if accepted { return .consistent(data: .spandacMac, output: current) }
             return current.usesSource ? .outputBlocked(stored: current) : .consistent(data: .open, output: current)
         }
+    }
+
+    // MARK: - The licence (design section 7)
+
+    /// The transport actions a play-out still sends to SpanDAC.
+    private let playOutActions: Set<MusicTUIAction> = [.playPause, .next, .previous, .seek, .stop, .nowStatus]
+
+    /// Everything a routing decision reads, taken at one instant.
+    private struct Settled {
+        let selection: EffectiveSelection
+        let stamp: (epoch: Int, dataEpoch: Int)
+        let mode: PlaybackMode
+        let serving: Bool?
+        let playOut: PlaybackMode?
+        /// A licence cache is present, the stored output is a network
+        /// SpanDAC, and the Mac's SpanDAC has not said it is serving.
+        let networkUnproven: Bool
+    }
+
+    private func settledState() -> Settled {
+        state.lock(); defer { state.unlock() }
+        let selection = composedSelection()
+        return Settled(selection: selection, stamp: (_epoch, _dataEpoch), mode: current,
+                       serving: actedOnServing, playOut: playOut,
+                       networkUnproven: licence != nil && current.networkSourceID != nil && actedOnServing != true)
+    }
+
+    /// A refusal's sentence, with the blocked-output one replaced while a
+    /// stored network SpanDAC waits on the Mac's licence.
+    private func licensed(_ why: String, _ settled: Settled) -> String {
+        settled.networkUnproven && why == finishSwitchingToSpanDAC ? iPhoneIPadNeedsLicensedMac : why
+    }
+
+    /// Takes in whatever `licence` has observed since the last call. The
+    /// caller holds `state`. Compares serving VALUES, not the cache's change
+    /// count: `_dataEpoch` moves once per flip (true to false, false to true,
+    /// unknown to false), never for unknown to true and never for a repeat.
+    ///
+    /// Play-out begins on a move INTO false (from true, or from unknown, which
+    /// is how a fresh CLI process first meets a lapsed licence mid-song) while
+    /// the stored output is a SpanDAC and the last status showed its queue
+    /// loaded; it ends on serving again, or on a later status showing the queue
+    /// not loaded (stopped, idle, or no queue phase building/complete).
+    private func syncLicence() {
+        guard let licence else { return }
+        let seen = licence.snapshot()
+        if seen.serving != actedOnServing {
+            let wasKnown = actedOnServing != nil
+            if seen.serving == false || wasKnown { _dataEpoch += 1 }
+            switch seen.serving {
+            case false?:
+                if current.usesSource, seen.bridgeLoaded { playOut = current }
+            case true?:
+                playOut = nil
+            case nil:
+                break
+            }
+            actedOnServing = seen.serving
+        }
+        if playOut != nil, !seen.bridgeLoaded { playOut = nil }
+    }
+
+    /// The play-out output's client, with every reply it returns checked for
+    /// the end of the play-out: a status showing `stopped`, `idle` or queue
+    /// phase `none`, or an `unlicensed` or `nothing_loaded` refusal. The bytes
+    /// and errors are unchanged. Library reads and `slice.queue` are not
+    /// play-out actions, so the library transport is the command one here.
+    private func playOutClient(for target: PlaybackMode) -> SourceAppClient {
+        let base = target == mode ? sourceClient() : makeSource(target)
+        let tapped: (String, String) throws -> String = { [weak self] path, line in
+            let reply = try base.transport(path, line)
+            self?.notePlayOutReply(reply)
+            return reply
+        }
+        return SourceAppClient(path: base.path, transport: tapped, libraryTransport: tapped,
+                               catalogPlaylistAddTransport: base.catalogPlaylistAddTransport)
+    }
+
+    private func notePlayOutReply(_ line: String) {
+        guard let data = line.data(using: .utf8),
+              let reply = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let ok = reply["ok"] as? Bool else { return }
+        let ended: Bool
+        if ok {
+            guard let status = reply["status"] as? [String: Any] else { return }
+            let playback = status["playback"] as? String
+            let phase = (status["queue"] as? [String: Any])?["phase"] as? String
+            ended = playback == "stopped" || playback == "idle" || phase == "none"
+        } else {
+            let kind = (reply["error"] as? [String: Any])?["kind"] as? String
+            ended = kind == spanDACLicenceRefusalKind || kind == "nothing_loaded"
+        }
+        guard ended else { return }
+        state.lock(); playOut = nil; state.unlock()
     }
 
     private func dataStore() throws -> DataProviderStore {

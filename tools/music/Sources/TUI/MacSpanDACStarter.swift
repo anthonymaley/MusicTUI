@@ -395,18 +395,27 @@ extension SourceAppClient {
     /// The data client for an accepted SpanDAC-on-this-Mac selection: the
     /// plain Unix-socket client, with `retryingOnceAfterAStart` wrapped
     /// around both its transports.
-    static func macData(starter: MacSpanDACStarting) -> SourceAppClient {
+    ///
+    /// `licence`, when given, sees every reply that comes back (outermost, so
+    /// it sees the reply the caller gets, after any start and retry); nil
+    /// builds exactly the client it always did.
+    static func macData(starter: MacSpanDACStarting,
+                        licence: SpanDACServingCache? = nil) -> SourceAppClient {
         let path = SourceAppStationSearch.socketPath
         let baseTransport = SourceAppStationSearch.sendOverUnixSocket
         let baseLibraryTransport = SourceAppStationSearch.sender(
             timeoutSeconds: SourceAppControl.libraryReadTimeoutSeconds)
+        func observed(_ transport: @escaping (String, String) throws -> String) -> (String, String) throws -> String {
+            guard let licence else { return transport }
+            return observingLicence(transport, cache: licence)
+        }
         return SourceAppClient(
             path: path,
-            transport: retryingOnceAfterAStart(baseTransport, starter: starter),
-            libraryTransport: retryingOnceAfterAStart(baseLibraryTransport, starter: starter),
-            catalogPlaylistAddTransport: retryingOnceAfterAStart(
+            transport: observed(retryingOnceAfterAStart(baseTransport, starter: starter)),
+            libraryTransport: observed(retryingOnceAfterAStart(baseLibraryTransport, starter: starter)),
+            catalogPlaylistAddTransport: observed(retryingOnceAfterAStart(
                 SourceAppStationSearch.sender(timeoutSeconds: spandacCatalogPlaylistAddTimeoutSeconds),
-                starter: starter))
+                starter: starter)))
     }
 }
 

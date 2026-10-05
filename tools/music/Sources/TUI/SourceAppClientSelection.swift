@@ -20,14 +20,39 @@ extension SourceAppClient {
     /// - `.networkSource(id)`: the paired TLS link to that SpanDAC, and
     ///   nothing else. There is no fallback to the Mac's socket or to
     ///   Music.app: a SpanDAC that cannot be used says so and stops.
+    ///
+    /// `licence`, when given, is told every reply the Mac's socket client
+    /// returns (`observingLicence`): `RoutingCoordinator.live` passes its
+    /// one cache so SpanDAC's serving bit is learned from replies that already
+    /// go by. A network SpanDAC's client is never wrapped: it says nothing
+    /// about the Mac's licence. Nil builds exactly the client it always did.
     static func selected(for mode: PlaybackMode,
-                         pairs: SpanDACPairedStore = SpanDACPairedStore()) -> SourceAppClient {
+                         pairs: SpanDACPairedStore = SpanDACPairedStore(),
+                         licence: SpanDACServingCache? = nil) -> SourceAppClient {
         switch mode {
         case .musicApp, .source:
-            return SourceAppClient()
+            return mac(observing: licence)
         case .networkSource(let sourceID):
             return network(sourceID: sourceID, pairs: pairs)
         }
+    }
+
+    /// The Mac's own SpanDAC over its Unix socket. With `licence` nil this is
+    /// `SourceAppClient()` itself. Otherwise the same three transports, each
+    /// with its own timeout as the default client has them, every one wrapped
+    /// so `licence` sees each reply; the bytes and errors are unchanged. It
+    /// never starts SpanDAC.
+    static func mac(observing licence: SpanDACServingCache?) -> SourceAppClient {
+        guard let licence else { return SourceAppClient() }
+        return SourceAppClient(
+            path: SourceAppStationSearch.socketPath,
+            transport: observingLicence(SourceAppStationSearch.sendOverUnixSocket, cache: licence),
+            libraryTransport: observingLicence(
+                SourceAppStationSearch.sender(timeoutSeconds: SourceAppControl.libraryReadTimeoutSeconds),
+                cache: licence),
+            catalogPlaylistAddTransport: observingLicence(
+                SourceAppStationSearch.sender(timeoutSeconds: spandacCatalogPlaylistAddTimeoutSeconds),
+                cache: licence))
     }
 
     /// The same, for the mode `store` holds now.
