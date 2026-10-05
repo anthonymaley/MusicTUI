@@ -430,18 +430,9 @@ func runShell() {
             switch action {
             case .playPause:
                 actions.run("Play/pause") {
-                    try routing.perform(.playPause,
-                        musicApp: { _ = try syncRun { try await backend.runMusic("playpause") } },
-                        source: { client in
-                            // The wire has play and pause, not a toggle, so the
-                            // current state decides which one this press means.
-                            if try client.control.status().playback == "playing" {
-                                try client.control.pause()
-                            } else {
-                                try client.control.resume()
-                            }
-                        },
-                        unaffected: {})
+                    // The SpanDAC branch is shared with the Now tab's control row.
+                    try performSourceTransport(.playPause, routing: routing,
+                        musicApp: { _ = try syncRun { try await backend.runMusic("playpause") } })
                 }
             case .volumeUp, .volumeDown:
                 // Coalesced: holding the key accumulates one delta, applied once.
@@ -465,11 +456,7 @@ func runShell() {
             // rolling back keeps the position honest and the next press retries.)
             case .next:
                 if routing.mode.usesSource {
-                    actions.run("Skip") {
-                        try routing.perform(.next, musicApp: {},
-                                            source: { try $0.control.next() },
-                                            unaffected: {})
-                    }
+                    actions.run("Skip") { try performSourceTransport(.next, routing: routing) }
                 } else if let (pl, pos) = appQueue.step(1) {
                     actions.run("Play") {
                         guard playQueueTrack(backend: backend, playlist: pl, position: pos) else {
@@ -482,11 +469,7 @@ func runShell() {
                 }
             case .prev:
                 if routing.mode.usesSource {
-                    actions.run("Back") {
-                        try routing.perform(.previous, musicApp: {},
-                                            source: { try $0.control.previous() },
-                                            unaffected: {})
-                    }
+                    actions.run("Back") { try performSourceTransport(.previous, routing: routing) }
                 } else if let (pl, pos) = appQueue.step(-1) {
                     actions.run("Play") {
                         guard playQueueTrack(backend: backend, playlist: pl, position: pos) else {

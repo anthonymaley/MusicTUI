@@ -67,7 +67,9 @@ final class NowPlayingScene: Scene {
         // Bridge has no control grid and no Up Next list, so seek and Quiet are
         // what remain. `x` became a Now key in its own right on 2026-09-22
         // (spec 6.2's row); it pauses Bridge, never Music.app (ruling 12.7).
-        if routing.mode.usesSource { return "[ ] Seek  x Quiet" }
+        if routing.mode.usesSource {
+            return transportShown ? "\u{2190}\u{2192} Control  Enter Press  [ ] Seek  x Quiet" : "[ ] Seek  x Quiet"
+        }
         return gridFocused
             ? "\u{2191}\u{2193} Row  Enter Set  \u{2192} Up Next  [ ] Seek  \u{2014} controls"
             : "\u{2191}\u{2193} Browse  \u{2190} Controls  Enter Jump  [ ] Seek  l \u{2665}"
@@ -163,10 +165,35 @@ final class NowPlayingScene: Scene {
     private var restInbox: [(track: String, album: String, hit: (id: String, url: String)?)] = []
     private var artDirty = false
 
+    // SpanDAC cover by persistent ID (no fetchable artwork URL). The extraction
+    // is an osascript run, so it goes on its own serial queue from tick(), never
+    // from render(); `bridgeCoverPaths` (hit) and `bridgeCoverTried` (hit OR
+    // miss, so a song with no embedded art is asked once) are guarded by
+    // artLock, the same handoff as the REST fallback. Keyed by the hex ID.
+    private let bridgeCoverQueue = DispatchQueue(label: "music.now.bridgecover")
+    private var bridgeCoverPaths: [String: String] = [:]
+    private var bridgeCoverTried: Set<String> = []
+    /// (hex persistent ID, temp path) -> path of the written cover, or nil.
+    /// Production runs the Library tab's `extractLibraryTrackArtwork`; tests
+    /// inject a fake so nothing touches a real Music.app.
+    private let bridgeCoverExtractor: (String, String) -> String?
+
+    // The SpanDAC control row: which cell ← → have selected, and whether the
+    // last frame drew the row at all (keys only act while it is on screen).
+    private var transportSel = 0
+    private var transportShown = false
+
+    /// Blocks until queued cover extractions finish. Tests only.
+    func waitForBridgeCover() { bridgeCoverQueue.sync {} }
+
     init(backend: AppleScriptBackend, appQueue: AppQueueStore, status: StatusStore, actions: ActionRunner,
          routing: RoutingCoordinator,
          restArtworkAPI: RESTAPIBackend? = nil, kittyEnabled: Bool = false,
-         setArtSize: @escaping (Int, Int) -> Void = { _, _ in }) {
+         setArtSize: @escaping (Int, Int) -> Void = { _, _ in },
+         bridgeCoverExtractor: ((String, String) -> String?)? = nil) {
+        self.bridgeCoverExtractor = bridgeCoverExtractor ?? { pid, path in
+            extractLibraryTrackArtwork(backend: backend, persistentID: pid, to: path)
+        }
         self.routing = routing
         self.backend = backend
         self.appQueue = appQueue
@@ -284,6 +311,25 @@ final class NowPlayingScene: Scene {
                 }
             }
         }
+        // SpanDAC cover by persistent ID: ask Music's library once per song,
+        // off this thread. Only when there is no fetchable URL (bridgeCoverSource).
+        if let bridge = snapshot.bridge,
+           case .library(let pid) = bridgeCoverSource(artworkURL: bridge.artworkURL, persistentID: bridge.persistentID) {
+            artLock.lock()
+            let fresh = bridgeCoverTried.insert(pid).inserted
+            artLock.unlock()
+            if fresh {
+                bridgeCoverQueue.async { [weak self] in
+                    guard let self else { return }
+                    let path = self.bridgeCoverExtractor(pid, libraryCoverTempPath(albumID: "spandac-\(pid)"))
+                    guard let path else { return }
+                    self.artLock.lock()
+                    self.bridgeCoverPaths[pid] = path
+                    self.artDirty = true
+                    self.artLock.unlock()
+                }
+            }
+        }
         artLock.lock()
         let landed = restInbox; restInbox = []
         let artLanded = artDirty; artDirty = false
@@ -344,6 +390,7 @@ final class NowPlayingScene: Scene {
         for r in frame.bodyY..<(frame.bodyY + frame.bodyHeight) {
             out += ANSICode.moveTo(row: r, col: 1) + ANSICode.clearLine
         }
+        transportShown = false
         guard frame.bodyHeight > 4, frame.width > 30 else { return out }
 
         // Neither branch below draws the kitty art path (that lives in the
@@ -397,7 +444,9 @@ final class NowPlayingScene: Scene {
         // placeholder every other tab shows. The reservation now holds
         // regardless of content so the layout below never jumps depending on
         // whether the current track happens to have artwork.
-        let artRows = showArt ? max(0, frame.bodyHeight - 13) : 0
+        // SpanDAC's control row (two lines and a spacer) comes out of the art,
+        // so the lines below the metadata still fit.
+        let artRows = showArt ? max(0, frame.bodyHeight - 13 - (snapshot.bridge != nil ? 3 : 0)) : 0
         // Kitty's bound: matches the (now width-adaptive) left column in
         // two-pane mode, same as the hero panes (gw == the pane's own width).
         // One-pane keeps the original fixed rect. The chafa/mono lines path
@@ -434,17 +483,8 @@ final class NowPlayingScene: Scene {
                 artBlock = .kitty(id: id, transmit: escape)
             } else if !artLines.isEmpty {
                 artBlock = .lines(artLines)
-            } else if let url = snapshot.bridge?.artworkURL {
-                // SpanDAC's own cover URL, through the same ArtworkStore and
-                // hero ladder as the REST fallback below. Keyed on a hash of
-                // the URL so the on-disk cache name stays short and stable.
-                artBlock = artwork.block(key: "spandac-\(String(format: "%08x", kittyImageID(forKey: url)))",
-                                         url: ArtworkStore.resolveURL(url, width: 600, height: 600),
-                                         width: gw, height: artRows,
-                                         kitty: kittyEnabled && gw > 0) { [weak self] in
-                    guard let self else { return }
-                    self.artLock.lock(); self.artDirty = true; self.artLock.unlock()
-                }
+            } else if let block = bridgeCoverBlock(snapshot.bridge, gw: gw, artRows: artRows) {
+                artBlock = block
             } else if let hit = restArt[nowAlbumKey(album: np.album, artist: np.artist)] {
                 artBlock = artwork.block(key: hit.id,
                                          url: ArtworkStore.resolveURL(hit.url, width: 300, height: 300),
@@ -494,6 +534,14 @@ final class NowPlayingScene: Scene {
             out += ANSICode.moveTo(row: my, col: leftX) + "\(elapsed) \(bar) \(total)"
         }
         my += 2
+        // SpanDAC's visible controls, under the progress bar. The Music.app
+        // path keeps its control grid below instead.
+        if snapshot.bridge != nil {
+            my = renderTransportRow(playing: np.state == "playing", startY: my, x: leftX, width: metaW,
+                                    bottom: frame.bodyY + frame.bodyHeight - 1, into: &out) + 1
+        } else {
+            transportShown = false
+        }
         if geniusActive {
             out += ANSICode.moveTo(row: my, col: leftX) + "\(ANSICode.cyan)\u{2726} \(ANSICode.reset)\(ANSICode.bold)\(ANSICode.brightWhite)Genius Shuffle Active\(ANSICode.reset)"
         } else if !snapshot.contextName.isEmpty {
@@ -547,6 +595,70 @@ final class NowPlayingScene: Scene {
             )
         }
         return out
+    }
+
+    /// SpanDAC's cover through the same ArtworkStore and hero ladder as the REST
+    /// fallback. A fetchable http(s) URL goes in as it is; failing that, the
+    /// cover extracted from the library by persistent ID goes in as a file URL
+    /// once tick()'s extraction has landed (nil, so the gradient, until then).
+    private func bridgeCoverBlock(_ bridge: BridgeNow?, gw: Int, artRows: Int) -> ArtBlock? {
+        guard let bridge else { return nil }
+        let onReady: () -> Void = { [weak self] in
+            guard let self else { return }
+            self.artLock.lock(); self.artDirty = true; self.artLock.unlock()
+        }
+        switch bridgeCoverSource(artworkURL: bridge.artworkURL, persistentID: bridge.persistentID) {
+        case .remote(let url):
+            // Keyed on a hash of the URL so the on-disk cache name stays short and stable.
+            return artwork.block(key: "spandac-\(String(format: "%08x", kittyImageID(forKey: url)))",
+                                 url: ArtworkStore.resolveURL(url, width: 600, height: 600),
+                                 width: gw, height: artRows,
+                                 kitty: kittyEnabled && gw > 0, onReady: onReady)
+        case .library(let pid):
+            artLock.lock(); let path = bridgeCoverPaths[pid]; artLock.unlock()
+            guard let path else { return nil }
+            return artwork.block(key: "spandac-lib-\(pid)",
+                                 url: URL(fileURLWithPath: path).absoluteString,
+                                 width: gw, height: artRows,
+                                 kitty: kittyEnabled && gw > 0, onReady: onReady)
+        case .none:
+            return nil
+        }
+    }
+
+    /// The SpanDAC control row, two lines under the progress bar: previous,
+    /// play/pause, next, then the 30 s seeks. Styled like the control grid
+    /// (selected cell `[bright]`, the rest dim) with each cell's key beside it.
+    /// Returns the next free row. Drawn nothing, and `transportShown` false,
+    /// when there is no room.
+    private func renderTransportRow(playing: Bool, startY: Int, x: Int, width: Int, bottom: Int,
+                                    into out: inout String) -> Int {
+        guard startY + 1 <= bottom else { transportShown = false; return startY }
+        transportShown = true
+        transportSel = min(max(0, transportSel), SpanDACTransport.allCases.count - 1)
+        let withKeys = width >= 40
+        let rows: [[SpanDACTransport]] = [[.previous, .playPause, .next], [.seekBack, .seekForward]]
+        var y = startY
+        for row in rows {
+            var line = ""
+            for t in row {
+                let text = t.label(playing: playing) + (withKeys ? " \(t.keyLabel)" : "")
+                if SpanDACTransport.allCases.firstIndex(of: t) == transportSel {
+                    line += "\(ANSICode.cyan)[\(ANSICode.reset)\(ANSICode.brightWhite)\(text)\(ANSICode.reset)\(ANSICode.cyan)]\(ANSICode.reset) "
+                } else {
+                    line += "\(ANSICode.dim) \(text) \(ANSICode.reset) "
+                }
+            }
+            out += ANSICode.moveTo(row: y, col: x) + line
+            y += 1
+        }
+        return y
+    }
+
+    /// Press a control-row cell: the same action its key runs.
+    private func press(_ t: SpanDACTransport) {
+        if let offset = t.seekOffset { seek(by: offset); return }
+        actions.run(t.actionLabel) { [routing] in try performSourceTransport(t, routing: routing) }
     }
 
     /// Bridge's empty state: what Bridge is doing, then the way in.
@@ -837,6 +949,17 @@ final class NowPlayingScene: Scene {
         // no-ops, and a focus left over from Music.app mode is dropped.
         if routing.mode.usesSource {
             gridFocused = false
+            // The control row, when drawn: ← → select a cell, Enter presses it.
+            // Otherwise ← is the dead key it was (nothing to focus).
+            if transportShown {
+                let n = SpanDACTransport.allCases.count
+                switch key {
+                case .left:  transportSel = (transportSel + n - 1) % n; return .redraw
+                case .right: transportSel = (transportSel + 1) % n; return .redraw
+                case .enter: press(SpanDACTransport.allCases[transportSel]); return .redraw
+                default: break
+                }
+            }
             if case .left = key { return .none }
         }
 

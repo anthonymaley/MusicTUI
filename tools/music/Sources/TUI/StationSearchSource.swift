@@ -594,6 +594,12 @@ struct SourceStatus: Equatable {
     var positionSeconds: Double? = nil
     var durationSeconds: Double? = nil
     var artworkURL: String? = nil
+    /// The playing song's Music.app persistent ID, verbatim as a signed
+    /// decimal alias (e.g. "-596357614188841472"; `persistentIDHex(fromAlias:)`
+    /// converts it to the hex AppleScript takes), when SpanDAC knows it. Optional on
+    /// the wire. The Now tab uses it to pull the cover out of the library when
+    /// there is no fetchable `artworkURL`.
+    var persistentID: String? = nil
 }
 
 extension SourceStatus {
@@ -896,7 +902,8 @@ struct SourceAppControl: SourceControlling {
                             output: Self.outputInfo(from: status),
                             positionSeconds: Self.seconds(status["position_s"]),
                             durationSeconds: Self.seconds(status["duration_s"]),
-                            artworkURL: (status["artwork_url"] as? String).flatMap { $0.isEmpty ? nil : $0 })
+                            artworkURL: (status["artwork_url"] as? String).flatMap { $0.isEmpty ? nil : $0 },
+                            persistentID: (status["persistent_id"] as? String).flatMap { $0.isEmpty ? nil : $0 })
     }
 
     /// A non-negative, finite number of seconds, or nil. A malformed value is
