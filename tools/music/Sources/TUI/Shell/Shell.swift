@@ -26,6 +26,51 @@ func shellFooterGlobals(mode: PlaybackMode) -> String {
         : "Space \u{23EF}  < > Skip  z Reshuffle  +/\u{2212} Vol"
 }
 
+/// MusicTUI's own Next (`step` 1) or Previous (`-1`): the app-owned queue
+/// when one is active (the poller can't rely on Music's queue post-26.x),
+/// otherwise the player's own next/previous track. `step()` commits the index
+/// before the play attempt, so a failed play rolls the step back; otherwise the
+/// Up Next highlight desyncs from the audio and every later next/prev walks
+/// from the wrong baseline. (`playQueueTrack` is false only on an osascript
+/// ERROR, i.e. transient; rolling back keeps the position honest and the next
+/// press retries.)
+func musicTUISkip(_ step: Int, backend: AppleScriptBackend, appQueue: AppQueueStore) throws {
+    if let (pl, pos) = appQueue.step(step) {
+        guard playQueueTrack(backend: backend, playlist: pl, position: pos) else {
+            _ = appQueue.step(-step)
+            throw ActionError(message: "Couldn't play that track.")
+        }
+        return
+    }
+    let verb = step > 0 ? "next track" : "previous track"
+    _ = try syncRun { try await backend.runMusic(verb) }
+}
+
+/// The global Next (`step` 1) and Previous (`-1`) keys (Codex review 101,
+/// blocking 1). Both branches are always handed to the coordinator, which
+/// picks one when the action RUNS, from where the sound is then
+/// (`effectiveOutput`'s state), never from the stored mode at the keypress.
+/// Until this, a stored SpanDAC output took a SpanDAC-only path whose MusicTUI
+/// body was empty, so after a replacement (ruling A8), or with SpanDAC on this
+/// Mac not serving, Next and Previous did nothing. The coordinator also hands
+/// MusicTUI off first when serving has returned (amended A8).
+func globalSkip(_ step: Int, routing: RoutingCoordinator,
+                musicTUI: @escaping () throws -> Void,
+                run: (_ label: String, _ body: @escaping () throws -> Void) -> Void) {
+    let action: MusicTUIAction = step > 0 ? .next : .previous
+    run(step > 0 ? "Skip" : "Back") {
+        try routing.perform(action, musicApp: musicTUI,
+                            source: { step > 0 ? try $0.control.next() : try $0.control.previous() },
+                            unaffected: {})
+    }
+}
+
+/// The footer's playback keys for where the sound is now, not the stored
+/// choice (Codex review 101, blocking 1).
+func shellFooterGlobals(for routing: RoutingCoordinator) -> String {
+    shellFooterGlobals(mode: routing.effectiveOutput)
+}
+
 /// Which library the Library and Playlists tabs read, from the DATA
 /// selection, never the output (score: data route and output, step 4).
 ///
@@ -495,7 +540,7 @@ func runShell() {
                 let color = t.isError ? ANSICode.red : ANSICode.amber
                 out += "\(color)\(truncText(t.text, to: max(1, frame.width - 4)))\(ANSICode.reset)"
             } else {
-                let globals = shellFooterGlobals(mode: routing.mode)
+                let globals = shellFooterGlobals(for: routing)
                 out += "\(ANSICode.dim)1-\(tabs.count) Tabs   \(scene.footerHint)   \(globals)  q Quit\(ANSICode.reset)"
             }
             // Synchronized output (terminals that don't support it ignore the
@@ -567,40 +612,11 @@ func runShell() {
             // the audio and every later next/prev walks from the wrong baseline.
             // (playQueueTrack is false only on an osascript ERROR, i.e. transient;
             // rolling back keeps the position honest and the next press retries.)
-            case .next:
-                if routing.mode.usesSource {
-                    actions.run("Skip") {
-                        try routing.perform(.next, musicApp: {},
-                                            source: { try $0.control.next() },
-                                            unaffected: {})
-                    }
-                } else if let (pl, pos) = appQueue.step(1) {
-                    actions.run("Play") {
-                        guard playQueueTrack(backend: backend, playlist: pl, position: pos) else {
-                            _ = appQueue.step(-1)
-                            throw ActionError(message: "Couldn't play that track.")
-                        }
-                    }
-                } else {
-                    actions.run("Skip") { _ = try syncRun { try await backend.runMusic("next track") } }
-                }
-            case .prev:
-                if routing.mode.usesSource {
-                    actions.run("Back") {
-                        try routing.perform(.previous, musicApp: {},
-                                            source: { try $0.control.previous() },
-                                            unaffected: {})
-                    }
-                } else if let (pl, pos) = appQueue.step(-1) {
-                    actions.run("Play") {
-                        guard playQueueTrack(backend: backend, playlist: pl, position: pos) else {
-                            _ = appQueue.step(1)
-                            throw ActionError(message: "Couldn't play that track.")
-                        }
-                    }
-                } else {
-                    actions.run("Back") { _ = try syncRun { try await backend.runMusic("previous track") } }
-                }
+            case .next, .prev:
+                let step = action == .next ? 1 : -1
+                globalSkip(step, routing: routing,
+                           musicTUI: { try musicTUISkip(step, backend: backend, appQueue: appQueue) },
+                           run: { actions.run($0, $1) })
             case .shuffle:
                 actions.run("Shuffle") {
                     // The global `z` shuffles the CURRENT collection, which in

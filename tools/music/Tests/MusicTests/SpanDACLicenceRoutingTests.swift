@@ -16,7 +16,8 @@ import XCTest
 /// A coordinator over temp stores with one licence cache. The Mac's clients
 /// (the `.source` output and the data client) are wrapped with
 /// `observingLicence`, as `live` wraps them; a network client is not.
-private final class LicenceRig {
+/// Internal so `SpanDACLicenceEffectiveOutputTests` composes the same rig.
+final class LicenceRig {
     static let ipad = "D2C4A6E8-1B3D-4F5A-8C7E-9A0B2C4D6E8F"
 
     let dir: String
@@ -49,7 +50,8 @@ private final class LicenceRig {
     deinit { try? FileManager.default.removeItem(atPath: dir) }
 
     func coordinator(_ surface: InvocationSurface = .tui, licensed: Bool = true,
-                     macAbsent: Bool = false) -> RoutingCoordinator {
+                     macAbsent: Bool = false,
+                     musicTUIPaused: @escaping () throws -> Bool = { false }) -> RoutingCoordinator {
         RoutingCoordinator(store: modes, surface: surface, dataStore: data,
                            makeSourceFor: { self.client(self.tag($0), observed: $0.networkSourceID == nil,
                                                         network: $0.networkSourceID) },
@@ -57,7 +59,8 @@ private final class LicenceRig {
                            starter: NeverStartsMacSpanDAC(),
                            licence: licensed ? cache : nil,
                            outputQueues: licensed ? queues : nil,
-                           macSpanDACAbsent: { macAbsent })
+                           macSpanDACAbsent: { macAbsent },
+                           confirmMusicTUIPaused: musicTUIPaused)
     }
 
     func tag(_ mode: PlaybackMode) -> String {
@@ -632,9 +635,11 @@ final class SpanDACLicenceRoutingTests: XCTestCase {
     /// An iPhone/iPad output whose own queue was playing when the Mac stopped
     /// serving: a recorded play-out on that device. `accepted` false is the
     /// persisted-state repair block.
-    private func networkPlayingOut(accepted: Bool = true) throws -> (LicenceRig, RoutingCoordinator) {
+    private func networkPlayingOut(accepted: Bool = true,
+                                   musicTUIPaused: @escaping () throws -> Bool = { false }) throws
+        -> (LicenceRig, RoutingCoordinator) {
         let rig = LicenceRig(output: .networkSource(ipad), accepted: accepted)
-        let c = rig.coordinator()
+        let c = rig.coordinator(musicTUIPaused: musicTUIPaused)
         rig.says(serving: true, playback: "idle")
         rig.reply = { _, _ in LicenceRig.status(playback: "playing", phase: "complete") }
         _ = try c.client(for: .networkSource(ipad)).control.status()
@@ -728,8 +733,9 @@ final class SpanDACLicenceRoutingTests: XCTestCase {
 
     /// A new play has replaced an iPhone/iPad play-out: returns the rig and
     /// coordinator with that play made on MusicTUI.
-    private func replacedNetworkPlayOut() throws -> (LicenceRig, RoutingCoordinator) {
-        let (rig, c) = try networkPlayingOut()
+    private func replacedNetworkPlayOut(musicTUIPaused: @escaping () throws -> Bool = { false }) throws
+        -> (LicenceRig, RoutingCoordinator) {
+        let (rig, c) = try networkPlayingOut(musicTUIPaused: musicTUIPaused)
         rig.reply = LicenceRig.pausesWhenAsked(serving: nil)
         let log = BranchLog()
         try run(c, .libraryPlay, log, origin: .openData(resultNumber: nil))
@@ -764,17 +770,21 @@ final class SpanDACLicenceRoutingTests: XCTestCase {
         XCTAssertEqual(rig.bytes(rig.dataPath), dataBefore)
     }
 
-    /// Serving again restores the stored iPhone/iPad selection, and the
-    /// MusicTUI routing does not come back by itself when serving ends again.
+    /// Serving again restores the stored iPhone/iPad selection once MusicTUI
+    /// has been handed off (amended A8: until then MusicTUI is the effective
+    /// output, with SpanDAC's data), and the MusicTUI routing does not come
+    /// back by itself when serving ends again after that.
     func testServingReturningRestoresTheStoredNetworkSelection() throws {
-        let (rig, c) = try replacedNetworkPlayOut()
+        let (rig, c) = try replacedNetworkPlayOut(musicTUIPaused: { true })
         rig.says(serving: true)
-        XCTAssertEqual(c.selection, .consistent(data: .spandacMac, output: .networkSource(ipad)))
+        XCTAssertEqual(c.selection, .consistent(data: .spandacMac, output: .musicApp),
+                       "MusicTUI is still the effective output until it is handed off")
         rig.reply = { _, _ in LicenceRig.status(playback: "paused", phase: "complete") }
         let log = BranchLog()
         try run(c, .next, log)
         XCTAssertEqual(log.log, ["source"])
         XCTAssertEqual(rig.sent.last?.tag, "output:\(ipad)")
+        XCTAssertEqual(c.selection, .consistent(data: .spandacMac, output: .networkSource(ipad)))
 
         rig.reply = { _, _ in LicenceRig.status(playback: "idle") }
         _ = try c.client(for: .networkSource(ipad)).control.status()
@@ -799,14 +809,17 @@ final class SpanDACLicenceRoutingTests: XCTestCase {
         XCTAssertEqual(c.selection, .consistent(data: .open, output: .musicApp))
     }
 
-    /// Serving again clears it, and a NEW play-out that arises later on the
-    /// device takes over: transport reaches the device again until the next
-    /// new play replaces that one.
+    /// Serving again does not clear it by itself (amended A8); the first
+    /// device transport after a confirmed MusicTUI pause does. A NEW play-out
+    /// that arises later on the device then takes over: transport reaches the
+    /// device again until the next new play replaces that one.
     func testANewPlayOutTakesOverFromAReplacement() throws {
-        let (rig, c) = try replacedNetworkPlayOut()
+        let (rig, c) = try replacedNetworkPlayOut(musicTUIPaused: { true })
         rig.says(serving: true)
-        XCTAssertNil(c.replacedPlayOutMode, "serving again clears it")
+        XCTAssertEqual(c.replacedPlayOutMode, .networkSource(ipad), "serving again alone does not clear it")
         rig.reply = { _, _ in LicenceRig.status(playback: "playing", phase: "complete") }
+        try run(c, .playPause, BranchLog())
+        XCTAssertNil(c.replacedPlayOutMode, "the handoff clears it")
         _ = try c.client(for: .networkSource(ipad)).control.status()
         rig.says(serving: false)
         XCTAssertEqual(c.playOutMode, .networkSource(ipad))
