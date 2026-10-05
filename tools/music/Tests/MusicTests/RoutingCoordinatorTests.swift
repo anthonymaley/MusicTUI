@@ -396,8 +396,8 @@ final class RoutingCoordinatorTests: XCTestCase {
     func testLiveCompositionReadsThePersistedSelection() {
         let path = tempPath()
         PlaybackModeStore(path: path).set(.source)
-        XCTAssertEqual(RoutingCoordinator.live(store: PlaybackModeStore(path: path), surface: .tui).mode, .source)
-        XCTAssertEqual(RoutingCoordinator.live(store: PlaybackModeStore(path: tempPath()), surface: .tui).mode, .musicApp)
+        XCTAssertEqual(RoutingCoordinator.live(store: PlaybackModeStore(path: path), surface: .tui, licenceSocketExists: { false }).mode, .source)
+        XCTAssertEqual(RoutingCoordinator.live(store: PlaybackModeStore(path: tempPath()), surface: .tui, licenceSocketExists: { false }).mode, .musicApp)
     }
 
     // MARK: ruling 12.15, the user-facing name

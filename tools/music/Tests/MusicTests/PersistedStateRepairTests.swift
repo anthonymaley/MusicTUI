@@ -193,7 +193,7 @@ final class PersistedStateRepairTests: XCTestCase {
         for (json, stored) in [(#"{"mode":"musictui_source"}"#, PlaybackMode.source),
                                (#"{"mode":"spandac_network","target":"\#(ipad)"}"#, .networkSource(ipad))] {
             let rig = Rig(modeJSON: json, dataJSON: nil)
-            let live = RoutingCoordinator.live(store: rig.modes, surface: .tui, starter: NeverStartsMacSpanDAC())
+            let live = RoutingCoordinator.live(store: rig.modes, surface: .tui, starter: NeverStartsMacSpanDAC(), licenceSocketExists: { false })
             XCTAssertEqual(live.mode, stored)
             XCTAssertEqual(live.selection, .outputBlocked(stored: stored))
             XCTAssertEqual(live.data, .open)

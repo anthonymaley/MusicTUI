@@ -375,7 +375,7 @@ final class OutputLockSwitchTests: XCTestCase {
         guard let liveRange = coordinator.range(of: "static func live(") else {
             return XCTFail("no live composition")
         }
-        let liveBody = coordinator[liveRange.lowerBound...].prefix(400)
+        let liveBody = coordinator[liveRange.lowerBound...].prefix(600)
         XCTAssertTrue(liveBody.contains("outputLock: OutputLock(path: store.lockPath)"),
                       "the construction is not inside live")
     }

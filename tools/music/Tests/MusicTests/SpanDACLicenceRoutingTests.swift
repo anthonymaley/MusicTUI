@@ -231,6 +231,58 @@ final class SpanDACLicenceRoutingTests: XCTestCase {
         XCTAssertTrue(rig.sent.contains { $0.tag == "output:\(ipad)" })
     }
 
+    /// Precedence: the persisted-state repair block (a stored SpanDAC output
+    /// with no accepted data) is decided FIRST, whatever the licence says; the
+    /// iPhone/iPad licence refusal applies only where that block does not.
+    /// Pinned for serving unknown and serving false, for an action and for a
+    /// switch, with nothing touched.
+    func testTheRepairBlockIsDecidedBeforeTheNetworkLicenceRefusal() throws {
+        for serving in [nil, false] as [Bool?] {
+            let label = "serving \(serving.map(String.init) ?? "unknown")"
+            // A stored iPhone/iPad output, data never accepted: the repair block.
+            let blocked = LicenceRig(output: .networkSource(ipad), accepted: false)
+            let c = blocked.coordinator()
+            if let serving { blocked.says(serving: serving) }
+            for action: MusicTUIAction in [.playPause, .next] {
+                XCTAssertThrowsError(try run(c, action, BranchLog()), label) {
+                    XCTAssertEqual(($0 as? ActionError)?.message, finishSwitchingToSpanDAC, "\(action) \(label)")
+                }
+            }
+            XCTAssertThrowsError(try run(c, .libraryPlay, BranchLog(), origin: .openData(resultNumber: nil)), label) {
+                XCTAssertEqual(($0 as? ActionError)?.message, finishSwitchingToSpanDAC, label)
+            }
+            XCTAssertEqual(blocked.sent.count, 0, label)
+
+            // A switch to an iPhone/iPad with data never accepted: the repair
+            // refusal, before the licence one.
+            let open = LicenceRig(output: .musicApp, accepted: false)
+            let d = open.coordinator()
+            if let serving { open.says(serving: serving) }
+            var touched = false
+            XCTAssertThrowsError(try d.switchMode(to: .networkSource(ipad), readiness: { .ready },
+                                                  pauseOutgoing: { _ in touched = true; return true },
+                                                  dropQueue: { _ in touched = true })) {
+                XCTAssertEqual(($0 as? ActionError)?.message, switchMusicTUIToSpanDACFirst, label)
+            }
+            XCTAssertFalse(touched, label)
+
+            // Data accepted: no repair block, so the licence refusal applies.
+            let accepted = LicenceRig(output: .networkSource(ipad), accepted: true)
+            let e = accepted.coordinator()
+            if let serving { accepted.says(serving: serving) }
+            XCTAssertThrowsError(try run(e, .playPause, BranchLog()), label) {
+                XCTAssertEqual(($0 as? ActionError)?.message, iPhoneIPadNeedsLicensedMac, label)
+            }
+            let acceptedOpen = LicenceRig(output: .musicApp, accepted: true)
+            let f = acceptedOpen.coordinator()
+            if let serving { acceptedOpen.says(serving: serving) }
+            XCTAssertThrowsError(try f.switchMode(to: .networkSource(ipad), readiness: { .ready },
+                                                  pauseOutgoing: { _ in true }, dropQueue: { _ in })) {
+                XCTAssertEqual(($0 as? ActionError)?.message, iPhoneIPadNeedsLicensedMac, label)
+            }
+        }
+    }
+
     func testSwitchingToANetworkOutputNeedsServingTrue() throws {
         let rig = LicenceRig(output: .musicApp, accepted: true)
         let c = rig.coordinator()
