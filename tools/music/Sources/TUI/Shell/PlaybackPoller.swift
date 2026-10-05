@@ -15,6 +15,38 @@ import Darwin
 /// `intervalMs`. On `stop()` the loop exits after its current iteration and
 /// signals `finished`; `stop()` waits briefly so the main loop can leave raw
 /// mode after the poller is idle.
+/// Whom a poll tick asks.
+enum PollTarget: Equatable {
+    /// MusicTUI's own player, the shipped path.
+    case musicApp
+    /// This SpanDAC output.
+    case bridge(PlaybackMode)
+    /// Nobody: the output is blocked, so neither answer would be honest.
+    case stopped
+}
+
+/// The poller's target, from the two things it reads.
+///
+/// `playOut`, while set, wins over everything: the queue it names is still the
+/// one making sound, so Now follows it even though the selection has already
+/// fallen back to MusicTUI (or is blocked, for a network output). Otherwise
+/// Now follows the OUTPUT only: SpanDAC data with the MusicTUI output reads
+/// MusicTUI's own player, never SpanDAC; SpanDAC output with open data fails
+/// closed, exactly as a blocked output does.
+func pollTarget(selection: EffectiveSelection, playOut: PlaybackMode?) -> PollTarget {
+    if let playOut, playOut.usesSource { return .bridge(playOut) }
+    switch selection {
+    case .consistent(.spandacMac, let output) where output.usesSource:
+        return .bridge(output)
+    case .outputBlocked:
+        return .stopped
+    case .consistent(.open, let output) where output.usesSource:
+        return .stopped
+    case .consistent:
+        return .musicApp
+    }
+}
+
 final class PlaybackPoller {
     private let store: NowPlayingStore
     private let backend: AppleScriptBackend
@@ -169,12 +201,15 @@ final class PlaybackPoller {
     /// Which player to read. Nil means Music.app, which is what every existing
     /// caller and test means.
     private let routing: RoutingCoordinator?
-    private let makeSourceClient: () -> SourceAppClient
+    /// The Mac's SpanDAC client, when a caller supplies one. Nil asks the
+    /// coordinator, whose client tells its licence cache what SpanDAC says; a
+    /// bare `SourceAppClient()` here would read the same status past it.
+    private let makeSourceClient: (() -> SourceAppClient)?
 
     init(store: NowPlayingStore, backend: AppleScriptBackend, appQueue: AppQueueStore,
          queueStore: QueueStore = QueueStore(), intervalMs: UInt32 = 1000,
          routing: RoutingCoordinator? = nil,
-         makeSourceClient: @escaping () -> SourceAppClient = { SourceAppClient() }) {
+         makeSourceClient: (() -> SourceAppClient)? = nil) {
         self.routing = routing
         self.makeSourceClient = makeSourceClient
         self.store = store
@@ -198,9 +233,15 @@ final class PlaybackPoller {
     /// queue phase and counts, position, readiness — travels in
     /// `snapshot.bridge` for the Now tab to draw.
     private func tickFromBridge(_ mode: PlaybackMode) {
-        // The Mac's own SpanDAC through the injected factory, exactly as
-        // before; a SpanDAC on the network through the coordinator's.
-        let client = mode == .source ? makeSourceClient() : (routing?.client(for: mode) ?? .failing(.notPaired))
+        // The Mac's own SpanDAC through the injected factory when there is one,
+        // else the coordinator's (its licence cache hears every reply); a
+        // SpanDAC on the network through the coordinator's.
+        let client: SourceAppClient
+        if mode == .source, let makeSourceClient {
+            client = makeSourceClient()
+        } else {
+            client = routing?.client(for: mode) ?? .failing(.notPaired)
+        }
         let result: Result<SourceStatus, Error>
         do { result = .success(try client.control.status()) }
         catch { result = .failure(error) }
@@ -355,19 +396,18 @@ final class PlaybackPoller {
         // and asks no player: the stored SpanDAC may still be what the person
         // hears, so neither answer would be honest, and Now says why instead.
         if let routing {
-            switch routing.selection {
-            case .consistent(.spandacMac, let output) where output.usesSource:
+            // A queue still playing out after SpanDAC stopped serving is read
+            // from SpanDAC whatever the selection now says (design section 7).
+            switch pollTarget(selection: routing.selection, playOut: routing.playOutMode) {
+            case .bridge(let output):
                 tickFromBridge(output)
                 return
-            case .outputBlocked:
+            case .stopped:
+                // A blocked output (C-REPAIR), or open data over a SpanDAC
+                // output, which is never committed and fails closed the same.
                 store.write(NowPlayingSnapshot(outcome: .stopped, history: [], surrounding: []))
                 return
-            case .consistent(.open, let output) where output.usesSource:
-                // Never committed (C-REPAIR); it fails closed exactly as
-                // blocked if it is ever represented.
-                store.write(NowPlayingSnapshot(outcome: .stopped, history: [], surrounding: []))
-                return
-            case .consistent:
+            case .musicApp:
                 break
             }
         }
