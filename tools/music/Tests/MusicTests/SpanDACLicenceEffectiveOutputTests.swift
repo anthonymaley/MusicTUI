@@ -111,6 +111,26 @@ final class SpanDACLicenceEffectiveOutputTests: XCTestCase {
         return plain.components(separatedBy: "\n").first { $0.hasPrefix("Playing through") } ?? "<no line>"
     }
 
+    /// The Output tab with one active AirPlay speaker, rendered once its row
+    /// has loaded.
+    private func outputWithASpeaker(_ c: RoutingCoordinator) -> String {
+        let scene = SpeakersScene(backend: AppleScriptBackend(executable: "/usr/bin/true"),
+                                  status: StatusStore(), actions: ActionRunner(status: StatusStore()),
+                                  routing: c, macName: "Studio Mac",
+                                  fetchSpeakers: { [["name": "Kitchen", "selected": true, "volume": 58, "kind": "AirPlay"]] },
+                                  fetchEQ: { _ in EQSnapshot(enabled: false, current: nil, presets: []) },
+                                  fetchVisualizer: { _ in false },
+                                  macSocketExists: { false })
+        let snapshot = NowPlayingSnapshot(outcome: .stopped, history: [], surrounding: [])
+        let deadline = Date().addingTimeInterval(3)
+        while Date() < deadline, scene.speakerRowsForTest.count != 1 {
+            _ = scene.tick(snapshot: snapshot)
+            usleep(10_000)
+        }
+        XCTAssertEqual(scene.speakerRowsForTest.count, 1, "the speaker row never loaded")
+        return scene.render(frame: shellLayout(width: 120, height: 40), snapshot: snapshot)
+    }
+
     // MARK: - Blocking 1: the shell follows the effective output
 
     /// After a replacement, the global Next and Previous keys reach MusicTUI's
@@ -424,5 +444,106 @@ final class SpanDACLicenceEffectiveOutputTests: XCTestCase {
         XCTAssertEqual(toTUIDropped.log, ["\(device)"])
         XCTAssertTrue(tui.playing, "switching to MusicTUI keeps it playing")
         XCTAssertEqual(tui.confirmedAtSent, [])
+    }
+
+    // MARK: - Codex review 102: the Output tab's MusicTUI section
+
+    /// After a replacement MusicTUI and its AirPlay speakers carry the sound:
+    /// the section is not dimmed and does not say a SpanDAC is playing. On a
+    /// live device output it still is and still does.
+    func testOutputSpeakerSectionFollowsTheEffectiveOutput() throws {
+        let hint = "Enter on a speaker switches back"
+        let dimmedVolume = "\(ANSICode.dim) 58\(ANSICode.reset)"
+        let dimmedDot = "\(ANSICode.dim)\u{25CF}\(ANSICode.reset)"
+
+        let (_, c, _) = try replaced()
+        let a8 = outputWithASpeaker(c)
+        XCTAssertFalse(a8.contains(hint), "A8: no 'a SpanDAC plays' hint")
+        XCTAssertFalse(a8.contains(dimmedVolume), "A8: the speaker carrying the sound is not dimmed")
+        XCTAssertFalse(a8.contains(dimmedDot), "A8: the active speaker's dot is not dimmed")
+        XCTAssertTrue(a8.contains(" 58"), "the speaker row was drawn")
+
+        let live = LicenceRig(output: device, accepted: true)
+        let onDevice = live.coordinator()
+        live.says(serving: true)
+        let deviceOut = outputWithASpeaker(onDevice)
+        XCTAssertTrue(deviceOut.contains(hint))
+        XCTAssertTrue(deviceOut.contains(dimmedVolume))
+        XCTAssertTrue(deviceOut.contains(dimmedDot))
+    }
+
+    // MARK: - Codex review 102: stopping SpanDAC data while a replacement stands
+
+    /// A8 (and a pending handoff): "Stop using SpanDAC for music data" cannot
+    /// leave the stored device (its pause is unconfirmed, or its queue drop
+    /// fails), so the output stays put, but data does stop. MusicTUI is still
+    /// the player making sound, so it stays the effective output and its
+    /// transport stays controllable; nothing reaches the device and MusicTUI
+    /// is not paused. Before the fix the coordinator reported the stored
+    /// device blocked and refused transport.
+    func testStoppingDataWhenTheDeviceCannotBeLeftKeepsMusicTUIEffective() throws {
+        let failures: [(String, (PlaybackMode) throws -> Bool, (PlaybackMode) throws -> Void)] = [
+            ("pause unconfirmed", { _ in false }, { _ in }),
+            ("drop failed", { _ in true }, { _ in throw SourceAppError.notRunning }),
+        ]
+        for pending in [false, true] {
+            for (failure, pause, drop) in failures {
+                let label = "\(pending ? "pending handoff" : "A8"), \(failure)"
+                let (rig, c, tui) = try replaced()
+                if pending { rig.says(serving: true) }
+                let result = try c.stopUsingSpanDACData(pauseOutgoing: pause, dropQueue: drop)
+                guard case .outputStillBlocked = result else {
+                    XCTFail("expected the output to stay: \(label), got \(result)"); continue
+                }
+                XCTAssertEqual(c.data, .open, label)
+                XCTAssertEqual(c.mode, device, label)
+                XCTAssertEqual(c.effectiveOutput, .musicApp, label)
+                XCTAssertEqual(c.selection, .consistent(data: .open, output: .musicApp), label)
+                XCTAssertEqual(pollTarget(selection: c.selection, playOut: c.playOutMode), .musicApp, label)
+
+                let sentBefore = rig.sent.count
+                let log = BranchLog()
+                pressSkip(1, c, log)
+                for action: MusicTUIAction in [.playPause, .previous, .nowStatus] {
+                    try c.perform(action, expecting: nil, origin: nil,
+                                  musicApp: { log.append("musicApp:\($0)") },
+                                  source: { _ in log.append("source") },
+                                  unaffected: { log.append("unaffected") })
+                }
+                XCTAssertEqual(log.log, ["musicTUI:1", "musicApp:shipped", "musicApp:shipped", "musicApp:shipped"], label)
+                XCTAssertEqual(rig.sent.count, sentBefore, "nothing reached the device: \(label)")
+                XCTAssertEqual(tui.confirmedAtSent, [], "MusicTUI was not paused: \(label)")
+                XCTAssertTrue(tui.playing, label)
+            }
+        }
+    }
+
+    /// The kept replacement never overrides an ordinary repair block: data
+    /// never accepted on a stored device is blocked as before, and so is the
+    /// same downgraded pair of files read by a fresh process. Once the device
+    /// is finally left, the replacement ends with the committed switch.
+    func testTheRepairBlockStillWinsOutsideAKeptReplacement() throws {
+        for serving in [false, true] {
+            let rig = LicenceRig(output: device, accepted: false)
+            let c = rig.coordinator()
+            rig.says(serving: serving)
+            XCTAssertEqual(c.selection, .outputBlocked(stored: device), "serving \(serving)")
+            XCTAssertEqual(c.effectiveOutput, device)
+            let log = BranchLog()
+            pressSkip(1, c, log)
+            XCTAssertEqual(log.log, ["refused:Skip:\(finishSwitchingToSpanDAC)"], "serving \(serving)")
+        }
+
+        let (rig, c, _) = try replaced()
+        _ = try c.stopUsingSpanDACData(pauseOutgoing: { _ in false }, dropQueue: { _ in })
+        XCTAssertEqual(c.effectiveOutput, .musicApp)
+        let fresh = rig.coordinator()
+        XCTAssertEqual(fresh.selection, .outputBlocked(stored: device), "a fresh process sees the plain repair block")
+        XCTAssertEqual(fresh.effectiveOutput, device)
+
+        XCTAssertEqual(try c.stopUsingSpanDACData(pauseOutgoing: { _ in true }, dropQueue: { _ in }), .stopped)
+        XCTAssertEqual(c.mode, .musicApp)
+        XCTAssertNil(c.replacedPlayOutMode)
+        XCTAssertEqual(c.selection, .consistent(data: .open, output: .musicApp))
     }
 }
