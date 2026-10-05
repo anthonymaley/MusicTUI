@@ -538,7 +538,13 @@ struct SourceAppClient {
     /// defect.
     func readiness() -> SourceReadiness {
         do {
-            return try control.status().readiness
+            let readiness = try control.status().readiness
+            // Thin slice (Anthony 2026-10-05 16:57/17:23): on this Mac, a DAC that is
+            // plugged in but not the sound output is SpanDAC's to switch when a play
+            // starts, so it no longer blocks the play here. SpanDAC still refuses
+            // in its own words when there is no DAC to switch to.
+            if readiness == .unavailable("plug in your DAC") { return .ready }
+            return readiness
         } catch {
             return SourceReadiness.from(error)
         }
