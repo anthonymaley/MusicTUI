@@ -169,6 +169,14 @@ final class RoutingCoordinator {
     /// Design section 7, mid-song: the SpanDAC output whose queue was playing
     /// when serving ended. While set, transport keys still reach it.
     private var playOut: PlaybackMode?
+    /// Conductor ruling A8: the iPhone/iPad output whose play-out a new play
+    /// REPLACED (that play went to MusicTUI). While it is still the stored
+    /// output, serving is still false and data is accepted, the selection is
+    /// the MusicTUI output with open data, exactly as for a stored Mac
+    /// SpanDAC, so the music now sounding is controllable and Now follows it.
+    /// Cleared by serving again, a committed output switch, or a new
+    /// play-out. In memory only: no file is written.
+    private var replacedPlayOut: PlaybackMode?
 
     /// Slice 3 Part 2, D3. Starts at 0; incremented exactly once per
     /// COMMITTED switch (never on `alreadyInMode`, a refused switch — readiness,
@@ -409,7 +417,8 @@ final class RoutingCoordinator {
     /// it had when serving ended, or nil. While set, `.playPause`, `.next`,
     /// `.previous`, `.seek`, `.stop` and `.nowStatus` reach this output's
     /// client, so a poller follows it too. Cleared by an admitted chosen-music
-    /// play (which goes to MusicTUI once this output is confirmed paused), a
+    /// play (which goes to MusicTUI once this output is confirmed paused; for
+    /// an iPhone/iPad, `replacedPlayOutMode` then keeps MusicTUI in charge), a
     /// status from this output showing `stopped`/`idle` or
     /// queue phase `none`, a transport reply `unlicensed` or `nothing_loaded`,
     /// a committed output switch, or serving again.
@@ -417,6 +426,14 @@ final class RoutingCoordinator {
         state.lock(); defer { state.unlock() }
         syncLicence()
         return playOut
+    }
+
+    /// Ruling A8: the iPhone/iPad output whose play-out a new play replaced,
+    /// while that still routes this process to the MusicTUI output; else nil.
+    var replacedPlayOutMode: PlaybackMode? {
+        state.lock(); defer { state.unlock() }
+        syncLicence()
+        return replacedPlayOut
     }
 
     /// What the two selections mean together now (C-REPAIR): a SpanDAC
@@ -558,7 +575,14 @@ final class RoutingCoordinator {
                     let device = playingOut.networkSourceID != nil ? "the iPhone/iPad SpanDAC" : name(playingOut)
                     throw ActionError(message: "Couldn't confirm \(device) paused; nothing was played on \(musicTUIOutputName).")
                 }
-                state.lock(); _playSerial += 1; playOut = nil; state.unlock()
+                state.lock()
+                _playSerial += 1
+                // Ruling A8: an iPhone/iPad play-out replaced here leaves the
+                // MusicTUI output in charge until serving returns, a switch
+                // commits, or a new play-out arises.
+                if let playingOut, playingOut.networkSourceID != nil { replacedPlayOut = playingOut }
+                playOut = nil
+                state.unlock()
             }
             switch routed.sound {
             case .unaffected:
@@ -884,7 +908,7 @@ final class RoutingCoordinator {
         // A committed switch paused and dropped the outgoing queue, so no
         // play-out survives it. What either network side last said about its
         // queue is forgotten: only a reply after this can say one is loaded.
-        state.lock(); current = target; _epoch += 1; playOut = nil; state.unlock()
+        state.lock(); current = target; _epoch += 1; playOut = nil; replacedPlayOut = nil; state.unlock()
         for side in [outgoing, target] { side.networkSourceID.map { outputQueues?.forget($0) } }
         return .switched(to: target)
     }
@@ -895,8 +919,10 @@ final class RoutingCoordinator {
     /// says it is not serving, it is treated as not installed, in memory only:
     /// data is open; a stored MusicTUI or Mac SpanDAC output is the MusicTUI
     /// output; a stored network SpanDAC is blocked (its refusals name
-    /// `iPhoneIPadNeedsLicensedMac`). Neither file is written, so serving again
-    /// restores the stored selection as it was. Unknown is today's behaviour.
+    /// `iPhoneIPadNeedsLicensedMac`), except after a new play replaced its
+    /// play-out (ruling A8, `replacedPlayOut`), when it is the MusicTUI output
+    /// too. Neither file is written, so serving again restores the stored
+    /// selection as it was. Unknown is today's behaviour.
     private func composedSelection() -> EffectiveSelection {
         syncLicence()
         switch dataAxis {
@@ -904,8 +930,12 @@ final class RoutingCoordinator {
             return .consistent(data: current.usesSource ? .spandacMac : .open, output: current)
         case .stored:
             if actedOnServing == false {
-                return current.networkSourceID != nil ? .outputBlocked(stored: current)
-                                                      : .consistent(data: .open, output: .musicApp)
+                // Ruling A8: after a new play replaced this iPhone/iPad
+                // output's play-out, it is treated as the Mac's is: MusicTUI.
+                // Never over the repair block (data not accepted).
+                let replaced = replacedPlayOut != nil && replacedPlayOut == current && accepted
+                return current.networkSourceID != nil && !replaced ? .outputBlocked(stored: current)
+                                                                   : .consistent(data: .open, output: .musicApp)
             }
             if accepted { return .consistent(data: .spandacMac, output: current) }
             return current.usesSource ? .outputBlocked(stored: current) : .consistent(data: .open, output: current)
@@ -978,12 +1008,15 @@ final class RoutingCoordinator {
                 if queueLoaded(on: current, seen) { playOut = current }
             case true?:
                 playOut = nil
+                replacedPlayOut = nil
             case nil:
                 break
             }
             actedOnServing = seen.serving
         }
         if let target = playOut, !queueLoaded(on: target, seen) { playOut = nil }
+        // Ruling A8: a new play-out takes over from a replaced one.
+        if playOut != nil { replacedPlayOut = nil }
     }
 
     /// Whether `output`'s own queue was loaded the last time it answered

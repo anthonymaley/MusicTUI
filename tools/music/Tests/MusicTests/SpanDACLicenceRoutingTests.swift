@@ -724,6 +724,110 @@ final class SpanDACLicenceRoutingTests: XCTestCase {
         XCTAssertEqual(d.playOutMode, .networkSource(ipad))
     }
 
+    // MARK: - Ruling A8: after a replacement, the sounding music is MusicTUI's to control
+
+    /// A new play has replaced an iPhone/iPad play-out: returns the rig and
+    /// coordinator with that play made on MusicTUI.
+    private func replacedNetworkPlayOut() throws -> (LicenceRig, RoutingCoordinator) {
+        let (rig, c) = try networkPlayingOut()
+        rig.reply = LicenceRig.pausesWhenAsked(serving: nil)
+        let log = BranchLog()
+        try run(c, .libraryPlay, log, origin: .openData(resultNumber: nil))
+        XCTAssertEqual(log.log, ["musicApp:shipped"])
+        XCTAssertNil(c.playOutMode)
+        return (rig, c)
+    }
+
+    /// Conductor ruling A8: once a new play has replaced an iPhone/iPad
+    /// play-out, the music sounding is MusicTUI's, so every transport action
+    /// (and Now) goes to the MusicTUI output, as it does for a stored Mac
+    /// SpanDAC while not serving. New plays keep going there. Nothing reaches
+    /// the device, and neither stored file is written. Before A8 these were
+    /// refused with the iPhone/iPad licence sentence.
+    func testAfterAReplacementTransportGoesToMusicTUI() throws {
+        let (rig, c) = try replacedNetworkPlayOut()
+        let modeBefore = rig.bytes(rig.modePath), dataBefore = rig.bytes(rig.dataPath)
+        let sentBefore = rig.sent.count
+        let log = BranchLog()
+        for action: MusicTUIAction in [.playPause, .next, .previous, .seek, .stop, .nowStatus] {
+            XCTAssertNoThrow(try run(c, action, log), "\(action)")
+        }
+        XCTAssertEqual(log.log, Array(repeating: "musicApp:shipped", count: 6))
+        try run(c, .libraryPlay, log, origin: .openData(resultNumber: nil))
+        XCTAssertEqual(log.log.last, "musicApp:shipped", "new plays keep going to MusicTUI")
+        XCTAssertEqual(rig.sent.count, sentBefore, "nothing reached the device")
+        XCTAssertEqual(c.selection, .consistent(data: .open, output: .musicApp))
+        XCTAssertEqual(c.mode, .networkSource(ipad), "the stored output is unchanged in memory")
+        XCTAssertEqual(pollTarget(selection: c.selection, playOut: c.playOutMode), .musicApp,
+                       "Now follows the MusicTUI output")
+        XCTAssertEqual(rig.bytes(rig.modePath), modeBefore)
+        XCTAssertEqual(rig.bytes(rig.dataPath), dataBefore)
+    }
+
+    /// Serving again restores the stored iPhone/iPad selection, and the
+    /// MusicTUI routing does not come back by itself when serving ends again.
+    func testServingReturningRestoresTheStoredNetworkSelection() throws {
+        let (rig, c) = try replacedNetworkPlayOut()
+        rig.says(serving: true)
+        XCTAssertEqual(c.selection, .consistent(data: .spandacMac, output: .networkSource(ipad)))
+        rig.reply = { _, _ in LicenceRig.status(playback: "paused", phase: "complete") }
+        let log = BranchLog()
+        try run(c, .next, log)
+        XCTAssertEqual(log.log, ["source"])
+        XCTAssertEqual(rig.sent.last?.tag, "output:\(ipad)")
+
+        rig.reply = { _, _ in LicenceRig.status(playback: "idle") }
+        _ = try c.client(for: .networkSource(ipad)).control.status()
+        rig.says(serving: false)
+        XCTAssertNil(c.playOutMode)
+        XCTAssertEqual(c.selection, .outputBlocked(stored: .networkSource(ipad)),
+                       "a later lapse with nothing playing is blocked as before")
+        XCTAssertThrowsError(try run(c, .next, BranchLog())) {
+            XCTAssertEqual(($0 as? ActionError)?.message, iPhoneIPadNeedsLicensedMac)
+        }
+    }
+
+    /// A committed output switch ends the MusicTUI routing a replacement set
+    /// up; it does not survive on the stored output's side.
+    func testACommittedSwitchClearsTheReplacement() throws {
+        let (_, c) = try replacedNetworkPlayOut()
+        XCTAssertEqual(c.replacedPlayOutMode, .networkSource(ipad))
+        XCTAssertEqual(try c.switchMode(to: .musicApp, readiness: { .ready },
+                                        pauseOutgoing: { _ in true }, dropQueue: { _ in }),
+                       .switched(to: .musicApp))
+        XCTAssertNil(c.replacedPlayOutMode)
+        XCTAssertEqual(c.selection, .consistent(data: .open, output: .musicApp))
+    }
+
+    /// Serving again clears it, and a NEW play-out that arises later on the
+    /// device takes over: transport reaches the device again until the next
+    /// new play replaces that one.
+    func testANewPlayOutTakesOverFromAReplacement() throws {
+        let (rig, c) = try replacedNetworkPlayOut()
+        rig.says(serving: true)
+        XCTAssertNil(c.replacedPlayOutMode, "serving again clears it")
+        rig.reply = { _, _ in LicenceRig.status(playback: "playing", phase: "complete") }
+        _ = try c.client(for: .networkSource(ipad)).control.status()
+        rig.says(serving: false)
+        XCTAssertEqual(c.playOutMode, .networkSource(ipad))
+        XCTAssertNil(c.replacedPlayOutMode)
+        let log = BranchLog()
+        try run(c, .next, log)
+        XCTAssertEqual(log.log, ["source"])
+        XCTAssertEqual(rig.sent.last?.tag, "output:\(ipad)")
+    }
+
+    /// The repair block is never overridden: with data not accepted, a
+    /// replacement cannot happen, and nothing routes to MusicTUI around it.
+    func testTheReplacementNeverOverridesTheRepairBlock() throws {
+        let (rig, c) = try networkPlayingOut(accepted: false)
+        let sentBefore = rig.sent.count
+        XCTAssertThrowsError(try run(c, .libraryPlay, BranchLog(), origin: .openData(resultNumber: nil)))
+        XCTAssertNil(c.replacedPlayOutMode)
+        XCTAssertEqual(c.selection, .outputBlocked(stored: .networkSource(ipad)))
+        XCTAssertEqual(rig.sent.count, sentBefore)
+    }
+
     /// SpanDAC on this Mac proven absent (not running AND no socket) is
     /// evidence it is not playing, as it is for a switch: the new play goes
     /// ahead although no status could be read. Absence never speaks for an
