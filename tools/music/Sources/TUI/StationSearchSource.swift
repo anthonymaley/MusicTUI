@@ -80,6 +80,9 @@ enum SourceAppError: Error, Equatable {
     /// read from. Carries the structured reason, so the Output tab can show a
     /// short note and everything else the whole sentence.
     case link(SpanDACLinkFailure)
+    /// SpanDAC is installed and not licensed: it answers every op but its status
+    /// with this kind. Carries SpanDAC's own sentence, shown verbatim.
+    case unlicensed(String)
 
     /// Deliberately short: it renders inside Radio's one-line message strip
     /// beside a `✗`, not in a log.
@@ -106,6 +109,7 @@ enum SourceAppError: Error, Equatable {
         case .ledgerChanged: return "SpanDAC's play record was replaced"
         case .busy: return "SpanDAC is busy; try again in a moment."
         case .link(let failure): return failure.sentence
+        case .unlicensed(let d): return d
         }
     }
 
@@ -581,6 +585,9 @@ struct SourceStatus: Equatable {
     /// What the SpanDAC says is on its output. Nil when the reply carries no
     /// `output` key (a SpanDAC that predates it), which is read as before.
     var output: SourceOutputInfo? = nil
+    /// SpanDAC's licence object. Nil when the reply carries none, which is read
+    /// as serving (an older SpanDAC, or one built without licensing).
+    var licence: SpanDACLicenceInfo? = nil
 }
 
 extension SourceStatus {
@@ -880,7 +887,8 @@ struct SourceAppControl: SourceControlling {
                             queueReason: queue?["reason"] as? String,
                             queueBuiltBeforeFailure: queue?["built_before_failure"] as? Int,
                             queueIndex: queue?["index"] as? Int,
-                            output: Self.outputInfo(from: status))
+                            output: Self.outputInfo(from: status),
+                            licence: SpanDACLicenceInfo(status: status))
     }
 
     /// Contract 3. The reply's rows carry MusicKit LIBRARY ids, which is the
@@ -1361,6 +1369,12 @@ struct SourceAppControl: SourceControlling {
         if let contract = status["contract"] as? Int, contract != sourceContractVersion {
             return .unavailable(sourceContractMismatchReason(contract))
         }
+        // After the contract (a peer that speaks another contract may not mean
+        // `licence` by it) and BEFORE authorization: an unlicensed SpanDAC
+        // has nothing else worth reporting, so its licence is the first thing to say.
+        if let licence = SpanDACLicenceInfo(status: status), !licence.serving {
+            return .unavailable(spanDACNotLicensedLine(licence.text))
+        }
         switch status["authorization"] as? String {
         case "authorized":     break
         case "not_determined": return .unavailable("SpanDAC has not been granted Apple Music access yet")
@@ -1448,6 +1462,9 @@ struct SourceAppControl: SourceControlling {
                 // been replaced. A restart from the beginning, decided on the
                 // kind; the detail is for display only.
                 throw SourceAppError.ledgerChanged(detail)
+            case spanDACLicenceRefusalKind:
+                // Decoded on the KIND; the detail is SpanDAC's own sentence.
+                throw SourceAppError.unlicensed(detail)
             case "unknown_op":
                 // An OLDER Bridge that predates this op (D6, additive contract).
                 // Carries the op name, not the prose, so the caller can say

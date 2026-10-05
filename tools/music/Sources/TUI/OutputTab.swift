@@ -83,6 +83,7 @@ enum SourceReadiness: Equatable {
         case .ledgerChanged:     return .unavailable("SpanDAC's play record was replaced")
         case .busy:              return .unavailable("SpanDAC is busy; try again in a moment.")
         case .link(let failure): return .unavailable(failure.sentence)
+        case .unlicensed(let detail): return .unavailable(spanDACNotLicensedLine(detail))
         }
     }
 }
