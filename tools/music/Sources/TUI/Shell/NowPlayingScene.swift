@@ -434,6 +434,17 @@ final class NowPlayingScene: Scene {
                 artBlock = .kitty(id: id, transmit: escape)
             } else if !artLines.isEmpty {
                 artBlock = .lines(artLines)
+            } else if let url = snapshot.bridge?.artworkURL {
+                // SpanDAC's own cover URL, through the same ArtworkStore and
+                // hero ladder as the REST fallback below. Keyed on a hash of
+                // the URL so the on-disk cache name stays short and stable.
+                artBlock = artwork.block(key: "spandac-\(String(format: "%08x", kittyImageID(forKey: url)))",
+                                         url: ArtworkStore.resolveURL(url, width: 600, height: 600),
+                                         width: gw, height: artRows,
+                                         kitty: kittyEnabled && gw > 0) { [weak self] in
+                    guard let self else { return }
+                    self.artLock.lock(); self.artDirty = true; self.artLock.unlock()
+                }
             } else if let hit = restArt[nowAlbumKey(album: np.album, artist: np.artist)] {
                 artBlock = artwork.block(key: hit.id,
                                          url: ArtworkStore.resolveURL(hit.url, width: 300, height: 300),
@@ -467,9 +478,10 @@ final class NowPlayingScene: Scene {
         out += ANSICode.moveTo(row: my, col: leftX) + "\(ANSICode.dim)\(truncText(np.album, to: metaW))\(ANSICode.reset)"
         my += 2
         // No duration means no progress is KNOWN, which is not the same as a
-        // zero-length track at position zero. Bridge reports no position, and the
-        // old bar rendered "0:00 ●──── 0:00" over a playing song and never moved
-        // — a reading invented by the renderer rather than reported by anything.
+        // zero-length track at position zero. A SpanDAC that sends no duration
+        // leaves it at zero, and the old bar rendered "0:00 ●──── 0:00" over a
+        // playing song and never moved — a reading invented by the renderer
+        // rather than reported by anything.
         // Radio already refuses to draw one for live stations, for this reason.
         if np.duration > 0 {
             let elapsed = formatTime(np.position)

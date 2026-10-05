@@ -192,10 +192,12 @@ final class PlaybackPoller {
     /// Music.app's track on screen beside Bridge's.
     ///
     /// **What Bridge does not report, this does not invent.** `slice.status`
-    /// carries no album, no artwork and no position, so those stay empty rather
-    /// than being filled from Music.app or guessed. A zero duration is the
-    /// honest reading, and the screen shows no progress. What it DOES report —
-    /// queue phase and counts, position, readiness — travels in
+    /// carries no album, so it stays empty rather than being filled from
+    /// Music.app or guessed. Elapsed time, duration and an artwork URL are
+    /// optional keys: when SpanDAC sends them they fill the same fields the
+    /// Music.app path fills (the artwork URL via `snapshot.bridge`), and when
+    /// it does not, a zero duration is the honest reading and the screen shows
+    /// no progress. Queue phase and counts, position and readiness travel in
     /// `snapshot.bridge` for the Now tab to draw.
     private func tickFromBridge(_ mode: PlaybackMode) {
         // The Mac's own SpanDAC through the injected factory, exactly as
@@ -245,6 +247,13 @@ final class PlaybackPoller {
         np.track = status.title ?? ""
         np.artist = status.artist ?? ""
         np.state = state
+        // Same whole-second fields the Music.app poll fills, so the Now tab's
+        // existing progress bar draws them. No duration leaves both at zero:
+        // a position with nothing to measure it against is not a progress bar.
+        if let total = status.durationSeconds, total >= 1 {
+            np.duration = Int(total)
+            np.position = min(np.duration, Int(status.positionSeconds ?? 0))
+        }
         return .active(np)
     }
 

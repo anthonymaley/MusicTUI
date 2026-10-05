@@ -26,6 +26,9 @@ struct BridgeNow: Equatable {
     var artist: String
     var queue: Queue
     var index: Int?           // 0-based, within present entries
+    /// The playing song's cover, when SpanDAC sends one. Nil draws the same
+    /// gradient placeholder as a Music.app track with no artwork.
+    var artworkURL: String? = nil
 
     /// Before Bridge has answered even once.
     static let empty = BridgeNow(link: .checking, playback: "idle", title: "", artist: "",
@@ -56,7 +59,7 @@ func bridgeNow(from status: SourceStatus) -> BridgeNow {
     }
     return BridgeNow(link: link, playback: status.playback,
                      title: status.title ?? "", artist: status.artist ?? "",
-                     queue: queue, index: status.queueIndex)
+                     queue: queue, index: status.queueIndex, artworkURL: status.artworkURL)
 }
 
 /// Keeps a failed read from flashing a diagnosis.

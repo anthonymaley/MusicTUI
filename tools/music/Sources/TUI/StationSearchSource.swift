@@ -587,6 +587,13 @@ struct SourceStatus: Equatable {
     /// What the SpanDAC says is on its output. Nil when the reply carries no
     /// `output` key (a SpanDAC that predates it), which is read as before.
     var output: SourceOutputInfo? = nil
+    /// Elapsed and total seconds of the playing song, and its cover art URL.
+    /// **Optional on the wire:** absent when SpanDAC does not know, and an
+    /// older SpanDAC never sends them, so nil reads exactly as before (no
+    /// progress bar, the placeholder cover).
+    var positionSeconds: Double? = nil
+    var durationSeconds: Double? = nil
+    var artworkURL: String? = nil
 }
 
 extension SourceStatus {
@@ -886,7 +893,18 @@ struct SourceAppControl: SourceControlling {
                             queueReason: queue?["reason"] as? String,
                             queueBuiltBeforeFailure: queue?["built_before_failure"] as? Int,
                             queueIndex: queue?["index"] as? Int,
-                            output: Self.outputInfo(from: status))
+                            output: Self.outputInfo(from: status),
+                            positionSeconds: Self.seconds(status["position_s"]),
+                            durationSeconds: Self.seconds(status["duration_s"]),
+                            artworkURL: (status["artwork_url"] as? String).flatMap { $0.isEmpty ? nil : $0 })
+    }
+
+    /// A non-negative, finite number of seconds, or nil. A malformed value is
+    /// read as unknown rather than failing the whole status reply.
+    static func seconds(_ raw: Any?) -> Double? {
+        guard let n = raw as? NSNumber else { return nil }
+        let d = n.doubleValue
+        return d.isFinite && d >= 0 ? d : nil
     }
 
     /// Contract 3. The reply's rows carry MusicKit LIBRARY ids, which is the
