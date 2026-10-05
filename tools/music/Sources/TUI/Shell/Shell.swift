@@ -41,6 +41,25 @@ func spanDACDataProvider(routing: RoutingCoordinator) -> MusicDataProvider? {
     routing.data == .spandacMac ? BridgeMusicProvider(control: routing.dataClient().control) : nil
 }
 
+/// The first notice when SpanDAC stops serving and the person had accepted it
+/// as their music source: the one line the Output tab's Mac row opens with
+/// (`spanDACNotLicensedLine`), without SpanDAC's own sentence, then where to
+/// read it.
+let licenceFallbackNotice = spanDACNotLicensedLine("") + " The Output tab says why."
+
+/// What to tell the person when SpanDAC's serving changes from `previous` to
+/// `current`, or nil. Pure.
+///
+/// Once per flip into not serving: from serving or from unknown (a fresh
+/// process meeting a lapsed licence) to false, and again only after serving
+/// has been seen in between. Nothing for a repeat of false, for any change
+/// to serving or unknown, or when `dataAccepted` is false: with MusicTUI's own
+/// data nothing fell back, and the Output tab already says what SpanDAC said.
+func licenceNotice(previous: Bool?, current: Bool?, dataAccepted: Bool) -> String? {
+    guard current == false, previous != false, dataAccepted else { return nil }
+    return licenceFallbackNotice
+}
+
 /// Opens the Playlists tab (C2, D7 item 5): which library it opens FROM
 /// follows the data selection, decided here rather than inside
 /// `PlaylistsScene` so the Bridge branch is provable with no AppleScript
@@ -340,8 +359,19 @@ func runShell() {
     var lastGeneration = -1
     var lastToast: StatusToast? = nil
     var needsRender = true
+    // What SpanDAC last said about serving, as this loop saw it, so a flip
+    // into not serving is told once (`licenceNotice`).
+    var lastServing: Bool? = nil
 
     while true {
+        if let licence = routing.licence {
+            let serving = licence.snapshot().serving
+            if let notice = licenceNotice(previous: lastServing, current: serving,
+                                          dataAccepted: routing.ceremony == .accepted) {
+                status.post(notice, ttl: 8)
+            }
+            lastServing = serving
+        }
         if terminalResized {
             terminalResized = false
             print(ANSICode.cursorHome + ANSICode.clearScreen, terminator: "")

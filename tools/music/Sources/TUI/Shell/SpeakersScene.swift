@@ -496,7 +496,7 @@ final class SpeakersScene: Scene {
 
     init(backend: AppleScriptBackend, status: StatusStore, actions: ActionRunner,
          routing: RoutingCoordinator,
-         makeSourceClient: @escaping () -> SourceAppClient = { SourceAppClient() },
+         makeSourceClient: (() -> SourceAppClient)? = nil,
          makeNetworkClient: ((String) -> SourceAppClient)? = nil,
          spandac: SpanDACOutputsDriving? = nil,
          macName: String = SpeakersScene.computerName(),
@@ -511,7 +511,9 @@ final class SpeakersScene: Scene {
         self.status = status
         self.actions = actions
         self.routing = routing
-        self.makeSourceClient = makeSourceClient
+        // Nil means the coordinator's Mac client, whose licence cache hears
+        // every status this tab reads; a bare `SourceAppClient()` would not.
+        self.makeSourceClient = makeSourceClient ?? { routing.client(for: .source) }
         self.makeNetworkClient = makeNetworkClient
         self.spandac = spandac
         self.macName = macName
@@ -552,7 +554,9 @@ final class SpeakersScene: Scene {
     private static func readMacStatus(_ client: SourceAppClient) -> (SourceReadiness, SourceOutputInfo?) {
         do {
             let status = try client.control.status()
-            return (status.readiness, status.output)
+            // Not serving: the licence line is the whole story. Its DAC says
+            // nothing a person can use while SpanDAC will not play.
+            return (status.readiness, status.licence?.serving == false ? nil : status.output)
         } catch {
             return (SourceReadiness.from(error), nil)
         }
