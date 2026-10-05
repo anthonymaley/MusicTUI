@@ -79,20 +79,46 @@ let iPhoneIPadNeedsLicensedMac = "iPhone/iPad SpanDAC needs SpanDAC for Mac, lic
 ///
 /// Every reply is observed on the way through (`observingLicence`), from any
 /// thread, hence the lock.
+///
+/// **Freshness (Codex review 100, finding 2).** Requests overlap (the launch
+/// prime, the reprobe, the Output tab, the poller, actions), and their replies
+/// can complete in any order. The lock prevents torn memory, not a stale
+/// completion, so each request takes a monotonic `ticket()` BEFORE it is sent,
+/// and its reply is applied only if that ticket is newer than the one that
+/// last set the same value. Serving and the loaded queue are tracked
+/// separately, because an `unlicensed` refusal says nothing about the queue.
 final class SpanDACServingCache {
     private let lock = NSLock()
     private var serving: Bool? = nil
     private var changes = 0
     private var bridgeLoaded = false
+    private var issued: UInt64 = 0
+    private var servingTicket: UInt64 = 0
+    private var loadedTicket: UInt64 = 0
 
     init() {}
+
+    /// A ticket for a request about to be sent: greater than every ticket
+    /// handed out before it.
+    func ticket() -> UInt64 {
+        lock.lock(); defer { lock.unlock() }
+        issued += 1
+        return issued
+    }
+
+    /// A reply observed with no request ticket of its own is taken as the
+    /// newest: it is given a ticket now.
+    func observe(replyLine: String) {
+        observe(replyLine: replyLine, ticket: ticket())
+    }
 
     /// A `slice.status` reply sets serving from its `licence` (absent = true)
     /// and whether a Bridge queue is loaded. An `unlicensed` error from any op
     /// sets serving false until the next status. Anything else, including a
     /// line that does not parse or a status without `playback`, changes
-    /// nothing.
-    func observe(replyLine: String) {
+    /// nothing. A reply whose `ticket` is not newer than the one that last set
+    /// a value leaves that value as it is.
+    func observe(replyLine: String, ticket: UInt64) {
         guard let data = replyLine.data(using: .utf8),
               let reply = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let ok = reply["ok"] as? Bool else { return }
@@ -102,11 +128,11 @@ final class SpanDACServingCache {
             let phase = (status["queue"] as? [String: Any])?["phase"] as? String
             let loaded = (phase == "building" || phase == "complete")
                 && playback != "stopped" && playback != "idle"
-            record(serving: spanDACServing(status), bridgeLoaded: loaded)
+            record(serving: spanDACServing(status), bridgeLoaded: loaded, ticket: ticket)
         } else {
             let error = reply["error"] as? [String: Any]
             if error?["kind"] as? String == spanDACLicenceRefusalKind {
-                record(serving: false, bridgeLoaded: nil)
+                record(serving: false, bridgeLoaded: nil, ticket: ticket)
             }
         }
     }
@@ -121,22 +147,31 @@ final class SpanDACServingCache {
         return (serving, changes, bridgeLoaded)
     }
 
-    private func record(serving new: Bool, bridgeLoaded loaded: Bool?) {
+    private func record(serving new: Bool, bridgeLoaded loaded: Bool?, ticket: UInt64) {
         lock.lock(); defer { lock.unlock() }
-        if serving != new { changes += 1 }
-        serving = new
-        if let loaded { bridgeLoaded = loaded }
+        if ticket > servingTicket {
+            if serving != new { changes += 1 }
+            serving = new
+            servingTicket = ticket
+        }
+        if let loaded, ticket > loadedTicket {
+            bridgeLoaded = loaded
+            loadedTicket = ticket
+        }
     }
 }
 
 /// A transport that reports every reply it returns to `cache` and otherwise
 /// changes nothing: the same bytes come back, and an error from the transport
-/// is thrown as it was, unobserved.
+/// is thrown as it was, unobserved. The request's ticket is taken BEFORE it
+/// is sent, so a reply that completes after a newer request's never
+/// overwrites that newer evidence.
 func observingLicence(_ transport: @escaping (String, String) throws -> String,
                       cache: SpanDACServingCache) -> (String, String) throws -> String {
     { path, line in
+        let ticket = cache.ticket()
         let reply = try transport(path, line)
-        cache.observe(replyLine: reply)
+        cache.observe(replyLine: reply, ticket: ticket)
         return reply
     }
 }

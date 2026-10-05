@@ -318,6 +318,93 @@ final class SpanDACLicenceStatusTests: XCTestCase {
         XCTAssertEqual(cache.snapshot().serving, false)
     }
 
+    // MARK: freshness: a late reply never overwrites newer evidence (Codex review 100, finding 2)
+
+    /// Runs `older` on another thread until its transport has been entered and
+    /// is held, then runs `newer` to completion, then lets `older` finish: the
+    /// older request completes LAST. `between` runs after `newer`, while
+    /// `older` is still in flight.
+    private func reverseCompletion(older: @escaping (@escaping () -> Void) throws -> Void,
+                                   newer: () throws -> Void,
+                                   between: () -> Void = {}) rethrows {
+        let entered = DispatchSemaphore(value: 0), release = DispatchSemaphore(value: 0)
+        let finished = expectation(description: "the older request finished")
+        DispatchQueue.global().async {
+            try? older({ entered.signal(); _ = release.wait(timeout: .now() + 10) })
+            finished.fulfill()
+        }
+        XCTAssertEqual(entered.wait(timeout: .now() + 10), .success, "the older request was sent")
+        try newer()
+        between()
+        release.signal()
+        wait(for: [finished], timeout: 10)
+    }
+
+    private let playingLoaded = #"{"ok":true,"op":"slice.status","status":{"playback":"playing","contract":3,"authorization":"authorized","queue":{"phase":"complete","requested":2}}}"#
+
+    /// Request A is sent while SpanDAC serves with a queue loaded and stalls;
+    /// request B, sent after, says not serving and idle and is observed; A's
+    /// late reply must not restore serving or the loaded queue.
+    func testALateOlderStatusDoesNotOverwriteANewerOne() {
+        let cache = SpanDACServingCache()
+        try? reverseCompletion(older: { hold in
+            _ = try observingLicence({ _, _ in hold(); return self.playingLoaded }, cache: cache)("/nonexistent", #"{"op":"slice.status"}"#)
+        }, newer: {
+            _ = try observingLicence({ _, _ in self.statusLine(licence: self.notServing) }, cache: cache)("/nonexistent", #"{"op":"slice.status"}"#)
+        })
+        XCTAssertEqual(cache.snapshot().serving, false, "the older reply restored serving")
+        XCTAssertFalse(cache.snapshot().bridgeLoaded, "the older reply restored the loaded queue")
+        XCTAssertEqual(cache.snapshot().changes, 1, "only the newer answer was a change")
+    }
+
+    /// The same with an `unlicensed` refusal as the newer reply.
+    func testALateOlderStatusDoesNotUndoANewerUnlicensedRefusal() {
+        let cache = SpanDACServingCache()
+        try? reverseCompletion(older: { hold in
+            _ = try observingLicence({ _, _ in hold(); return self.statusLine() }, cache: cache)("/nonexistent", #"{"op":"slice.status"}"#)
+        }, newer: {
+            _ = try observingLicence({ _, _ in self.unlicensedError }, cache: cache)("/nonexistent", #"{"op":"slice.search"}"#)
+        })
+        XCTAssertEqual(cache.snapshot().serving, false, "the older reply undid the refusal")
+    }
+
+    /// An iPhone/iPad output's queue evidence: an older request that saw the
+    /// queue playing completes after a newer one that saw it idle.
+    func testALateOlderReplyDoesNotRepopulateAnOutputsQueue() {
+        let queues = SpanDACOutputQueues(), id = "D2C4A6E8-1B3D-4F5A-8C7E-9A0B2C4D6E8F"
+        try? reverseCompletion(older: { hold in
+            _ = try observingOutputQueue({ _, _ in hold(); return self.playingLoaded }, sourceID: id, queues: queues)("spandac:x", #"{"op":"slice.status"}"#)
+        }, newer: {
+            _ = try observingOutputQueue({ _, _ in self.statusLine(playback: "idle") }, sourceID: id, queues: queues)("spandac:x", #"{"op":"slice.status"}"#)
+        })
+        XCTAssertFalse(queues.isLoaded(id), "the older reply repopulated the output's queue")
+    }
+
+    /// A reply already in flight when `forget` runs cannot repopulate that
+    /// output; a request sent after `forget` still can.
+    func testAReplyInFlightAcrossForgetDoesNotRepopulateTheOutput() throws {
+        let queues = SpanDACOutputQueues(), id = "D2C4A6E8-1B3D-4F5A-8C7E-9A0B2C4D6E8F"
+        try? reverseCompletion(older: { hold in
+            _ = try observingOutputQueue({ _, _ in hold(); return self.playingLoaded }, sourceID: id, queues: queues)("spandac:x", #"{"op":"slice.status"}"#)
+        }, newer: {}, between: { queues.forget(id) })
+        XCTAssertFalse(queues.isLoaded(id), "a reply sent before forget repopulated the output")
+        _ = try observingOutputQueue({ _, _ in self.playingLoaded }, sourceID: id, queues: queues)("spandac:x", #"{"op":"slice.status"}"#)
+        XCTAssertTrue(queues.isLoaded(id), "a request sent after forget is evidence")
+    }
+
+    /// Freshness is per output: a newer reply from one output never discards
+    /// an older one's evidence about another.
+    func testFreshnessIsPerOutput() {
+        let queues = SpanDACOutputQueues(), a = "A-OUTPUT", b = "B-OUTPUT"
+        try? reverseCompletion(older: { hold in
+            _ = try observingOutputQueue({ _, _ in hold(); return self.playingLoaded }, sourceID: a, queues: queues)("spandac:a", #"{"op":"slice.status"}"#)
+        }, newer: {
+            _ = try observingOutputQueue({ _, _ in self.statusLine(playback: "idle") }, sourceID: b, queues: queues)("spandac:b", #"{"op":"slice.status"}"#)
+        })
+        XCTAssertTrue(queues.isLoaded(a))
+        XCTAssertFalse(queues.isLoaded(b))
+    }
+
     // MARK: the simple reply paths decode `unlicensed` (review finding 9)
 
     private let unlicensedDetail = "No licence - enter your key in SpanDAC"

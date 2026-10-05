@@ -311,9 +311,17 @@ final class RoutingCoordinator {
     }
 
     /// How long TUI composition waits for the licence read before going on
-    /// without it. A healthy SpanDAC answers a status in milliseconds, so the
-    /// first action is still routed on its answer; a wedged one costs launch
-    /// this much and no more. UNMEASURED as a choice.
+    /// without it. A wedged SpanDAC costs launch this much and no more.
+    ///
+    /// **The one-action residual (Codex review 100, should-fix 4).** An answer
+    /// that lands inside this wait routes the first action. A healthy answer
+    /// that takes LONGER leaves serving unknown when composition returns, and
+    /// unknown keeps today's SpanDAC data route, so the first action may get
+    /// one `unlicensed` refusal from a SpanDAC that is not serving before the
+    /// background answer (or that refusal itself) moves routing to the
+    /// MusicTUI output. That is accepted over a launch that waits on SpanDAC.
+    /// NOT MEASURED: neither this threshold nor how long a healthy local
+    /// status takes; both are to be measured at the live gate.
     static let licencePrimeLaunchWaitMilliseconds = 250
 
     /// The composition-time licence read (Codex review 98, finding 8). The
@@ -521,20 +529,34 @@ final class RoutingCoordinator {
                 try source(playOutClient(for: target))
                 return
             }
-            let now = settled.selection
+            // Design section 7, mid-song, and Codex review 100, finding 1: a
+            // new chosen play during an iPhone/iPad play-out REPLACES it and
+            // goes to MusicTUI, exactly as it does for SpanDAC on this Mac. The
+            // stored network output is blocked while the Mac is not serving,
+            // so that play is routed as SpanDAC not installed: open data on
+            // the MusicTUI output. Only while the repair block does not apply
+            // (`networkUnproven` excludes it): that block keeps its own
+            // refusal. A stale row is refused below, on this selection, and
+            // both refusals come before anything reaches the playing device.
+            let replacesNetworkPlayOut = action.playsChosenMusic && settled.networkUnproven
+                && settled.playOut?.networkSourceID != nil && settled.playOut == settled.mode
+            let now: EffectiveSelection = replacesNetworkPlayOut
+                ? .consistent(data: .open, output: .musicApp) : settled.selection
             let routed = routeAction(action, selection: now, from: surface)
             if case .refused(let why) = routed.sound { throw ActionError(message: licensed(why, settled)) }
             try refuseAStaleOrigin(origin, for: action, in: now)
             // Design section 7, mid-song, and Codex review 98, finding 4: a
             // new play REPLACES a play-out. The play-out output is paused and
-            // confirmed not playing before the new play's body runs, still
-            // inside this boundary; if that cannot be confirmed, nothing plays
-            // and the play-out keeps its transport.
+            // confirmed not playing, through that output's own client, before
+            // the new play's body runs, still inside this boundary; if that
+            // cannot be confirmed, nothing plays and the play-out keeps its
+            // transport.
             func admitAPlay() throws {
                 guard action.playsChosenMusic else { return }
                 state.lock(); syncLicence(); let playingOut = playOut; state.unlock()
                 if let playingOut, !silence(playingOut) {
-                    throw ActionError(message: "Couldn't confirm \(name(playingOut)) paused; nothing was played on \(musicTUIOutputName).")
+                    let device = playingOut.networkSourceID != nil ? "the iPhone/iPad SpanDAC" : name(playingOut)
+                    throw ActionError(message: "Couldn't confirm \(device) paused; nothing was played on \(musicTUIOutputName).")
                 }
                 state.lock(); _playSerial += 1; playOut = nil; state.unlock()
             }

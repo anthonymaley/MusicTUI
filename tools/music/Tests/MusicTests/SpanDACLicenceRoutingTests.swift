@@ -627,31 +627,101 @@ final class SpanDACLicenceRoutingTests: XCTestCase {
                        .switched(to: .musicApp))
         XCTAssertNil(c.playOutMode)
     }
-    /// An iPhone/iPad play-out never meets the silence step: while the Mac is
-    /// not serving, a stored network output is blocked, so a new play is
-    /// refused with the one sentence before any branch, no second player
-    /// starts, nothing is sent to the device, and its play-out keeps its
-    /// transport.
-    func testANewPlayOverANetworkPlayOutIsRefusedAndStartsNoSecondPlayer() throws {
-        let rig = LicenceRig(output: .networkSource(ipad), accepted: true)
+    // MARK: - Codex review 100, finding 1: a new play replaces an iPhone/iPad play-out
+
+    /// An iPhone/iPad output whose own queue was playing when the Mac stopped
+    /// serving: a recorded play-out on that device. `accepted` false is the
+    /// persisted-state repair block.
+    private func networkPlayingOut(accepted: Bool = true) throws -> (LicenceRig, RoutingCoordinator) {
+        let rig = LicenceRig(output: .networkSource(ipad), accepted: accepted)
         let c = rig.coordinator()
         rig.says(serving: true, playback: "idle")
         rig.reply = { _, _ in LicenceRig.status(playback: "playing", phase: "complete") }
         _ = try c.client(for: .networkSource(ipad)).control.status()
         rig.says(serving: false, playback: "idle")
         XCTAssertEqual(c.playOutMode, .networkSource(ipad))
+        return (rig, c)
+    }
+
+    /// Design section 7 (mid-song) and score M2: the next new play REPLACES
+    /// an iPhone/iPad play-out and goes to MusicTUI, as it does for SpanDAC
+    /// on this Mac. Inside the boundary, the device is paused and a status
+    /// read through its own client confirms it is not playing, BEFORE the
+    /// MusicTUI body runs; then the play-out is cleared and the serial moves.
+    /// Before this, the play was refused with the licence sentence.
+    func testANewPlayOverANetworkPlayOutSilencesTheDeviceThenGoesToMusicTUI() throws {
+        let (rig, c) = try networkPlayingOut()
+        rig.reply = LicenceRig.pausesWhenAsked(serving: nil)
         let sentBefore = rig.sent.count, serial = c.playSerial
         let log = BranchLog()
-        XCTAssertThrowsError(try run(c, .libraryPlay, log, origin: .openData(resultNumber: nil))) {
-            XCTAssertEqual(($0 as? ActionError)?.message, iPhoneIPadNeedsLicensedMac)
+        var sentWhenTheBodyRan: Int?
+        try c.perform(.libraryPlay, expecting: nil, origin: .openData(resultNumber: nil),
+                      musicApp: { sentWhenTheBodyRan = rig.sent.count; log.append("musicApp:\($0)") },
+                      source: { _ in log.append("source") }, unaffected: { log.append("unaffected") })
+        XCTAssertEqual(log.log, ["musicApp:shipped"], "the new play goes to MusicTUI")
+        XCTAssertEqual(sentWhenTheBodyRan, sentBefore + 2, "the pause and its confirming status went BEFORE the new play")
+        XCTAssertEqual(rig.sent.dropFirst(sentBefore).map(\.tag), ["output:\(ipad)", "output:\(ipad)"],
+                       "through the device's own client")
+        XCTAssertEqual(rig.sent.dropFirst(sentBefore).map { LicenceRig.op($0.line) }, ["slice.pause", "slice.status"])
+        XCTAssertEqual(c.playSerial, serial + 1)
+        XCTAssertNil(c.playOutMode, "the play-out is replaced")
+    }
+
+    /// The device cannot be confirmed paused (still playing, or its status
+    /// cannot be read): nothing plays on MusicTUI, the serial does not move,
+    /// and the play-out keeps its transport. The sentence names the device
+    /// generically and never says Music.app.
+    func testANewPlayThatCannotSilenceANetworkPlayOutIsRefusedAndThePlayOutKept() throws {
+        let replies: [(String, (String, String) throws -> String)] = [
+            ("still playing", { _, _ in LicenceRig.status(playback: "playing", phase: "complete") }),
+            ("status unreadable", { _, line in
+                if LicenceRig.op(line) == "slice.status" { throw SourceAppError.notRunning }
+                return #"{"ok":true}"#
+            }),
+        ]
+        for (label, reply) in replies {
+            let (rig, c) = try networkPlayingOut()
+            rig.throwingReply = reply
+            let sentBefore = rig.sent.count, serial = c.playSerial
+            let log = BranchLog()
+            XCTAssertThrowsError(try run(c, .libraryPlay, log, origin: .openData(resultNumber: nil)), label) {
+                XCTAssertEqual(($0 as? ActionError)?.message,
+                               "Couldn't confirm the iPhone/iPad SpanDAC paused; nothing was played on MusicTUI.", label)
+                XCTAssertFalse((($0 as? ActionError)?.message ?? "").contains("Music.app"), label)
+            }
+            XCTAssertEqual(log.log, [], "nothing played on MusicTUI: \(label)")
+            XCTAssertEqual(c.playSerial, serial, label)
+            XCTAssertEqual(c.playOutMode, .networkSource(ipad), "the play-out is kept: \(label)")
+            XCTAssertEqual(rig.sent.dropFirst(sentBefore).first.map { LicenceRig.op($0.line) }, "slice.pause", label)
+            XCTAssertEqual(rig.sent.dropFirst(sentBefore).first?.tag, "output:\(ipad)", label)
+            rig.throwingReply = nil
+            rig.reply = { _, _ in LicenceRig.status(playback: "playing", phase: "complete") }
+            try run(c, .next, log)
+            XCTAssertEqual(log.log, ["source"], "transport still reaches the device: \(label)")
+            XCTAssertEqual(rig.sent.last?.tag, "output:\(ipad)", label)
         }
-        XCTAssertEqual(log.log, [])
-        XCTAssertEqual(rig.sent.count, sentBefore)
-        XCTAssertEqual(c.playSerial, serial)
+    }
+
+    /// A stale SpanDAC-origin row, and the persisted-state repair block, both
+    /// refuse BEFORE anything reaches the playing device: only an admitted
+    /// play silences it.
+    func testAStaleRowOrTheRepairBlockRefusesBeforeTouchingANetworkPlayOut() throws {
+        let (rig, c) = try networkPlayingOut()
+        let sentBefore = rig.sent.count
+        XCTAssertThrowsError(try run(c, .libraryPlay, BranchLog(), origin: .spandacLibrary)) {
+            XCTAssertEqual(($0 as? ActionError)?.message, sourceChangedNothingPlayed)
+        }
+        XCTAssertEqual(rig.sent.count, sentBefore, "a stale row touches nothing")
         XCTAssertEqual(c.playOutMode, .networkSource(ipad))
-        try run(c, .next, log)
-        XCTAssertEqual(log.log, ["source"])
-        XCTAssertEqual(rig.sent.last?.tag, "output:\(ipad)")
+
+        let (blocked, d) = try networkPlayingOut(accepted: false)
+        let blockedBefore = blocked.sent.count, serial = d.playSerial
+        XCTAssertThrowsError(try run(d, .libraryPlay, BranchLog(), origin: .openData(resultNumber: nil))) {
+            XCTAssertEqual(($0 as? ActionError)?.message, finishSwitchingToSpanDAC)
+        }
+        XCTAssertEqual(blocked.sent.count, blockedBefore, "the repair block touches nothing")
+        XCTAssertEqual(d.playSerial, serial)
+        XCTAssertEqual(d.playOutMode, .networkSource(ipad))
     }
 
     /// SpanDAC on this Mac proven absent (not running AND no socket) is
@@ -707,9 +777,10 @@ final class SpanDACLicenceRoutingTests: XCTestCase {
         XCTAssertTrue(rig.sent.contains { $0.tag == "output:\(ipad)" })
     }
 
-    /// A healthy SpanDAC answers inside the TUI's short launch wait, so the
-    /// first action is routed on its answer, as it was when the read was
-    /// synchronous.
+    /// An answer that lands inside the TUI's short launch wait routes the
+    /// first action, as it did when the read was synchronous. A slower one
+    /// leaves the one-action residual documented (and not yet measured) on
+    /// `licencePrimeLaunchWaitMilliseconds`.
     func testAPromptAnswerLandsBeforeTheTUIComposes() {
         let rig = LicenceRig(output: .source, accepted: true)
         let c = rig.coordinator(.tui)
