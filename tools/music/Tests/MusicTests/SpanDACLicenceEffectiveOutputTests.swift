@@ -340,4 +340,89 @@ final class SpanDACLicenceEffectiveOutputTests: XCTestCase {
         XCTAssertEqual(rig.sent.count, sentBefore)
         XCTAssertEqual(tui.confirmedAtSent, [])
     }
+
+    // MARK: - Ruling A8b: a switch's outgoing player is the effective output
+
+    /// A switch with the Output tab's shape: the pause and the drop are
+    /// recorded by mode, MusicTUI's pause goes to the fake, a SpanDAC's is
+    /// confirmed as the shell's own status read would.
+    private func switchTo(_ target: PlaybackMode, _ c: RoutingCoordinator, _ tui: FakeMusicTUI,
+                          paused: BranchLog, dropped: BranchLog) throws -> RoutingCoordinator.SwitchResult {
+        try c.switchMode(to: target, readiness: { .ready },
+                         pauseOutgoing: { outgoing in
+                             paused.append("\(outgoing)")
+                             return outgoing == .musicApp ? try tui.confirmPaused() : true
+                         },
+                         dropQueue: { dropped.append("\($0)") })
+    }
+
+    /// During A8 and during a pending handoff MusicTUI is what sounds, so a
+    /// switch to another SpanDAC pauses and confirms MusicTUI as the outgoing
+    /// player. Before A8b it paused the already-paused device and left
+    /// MusicTUI playing beside the new output. The device's stale queue is
+    /// still dropped, as before.
+    func testASwitchDuringA8PausesMusicTUIAsTheOutgoingPlayer() throws {
+        for pending in [false, true] {
+            let label = pending ? "pending handoff" : "A8"
+            let (rig, c, tui) = try replaced()
+            if pending { rig.says(serving: true) }
+            let paused = BranchLog(), dropped = BranchLog()
+            XCTAssertEqual(try switchTo(.source, c, tui, paused: paused, dropped: dropped), .switched(to: .source), label)
+            XCTAssertEqual(paused.log, ["\(PlaybackMode.musicApp)"], "MusicTUI is the outgoing player: \(label)")
+            XCTAssertFalse(tui.playing, "MusicTUI was left playing: \(label)")
+            XCTAssertEqual(tui.confirmedAtSent.count, 1, label)
+            XCTAssertEqual(dropped.log, ["\(device)"], "the device's stale queue is dropped as before: \(label)")
+            XCTAssertEqual(c.mode, .source, label)
+            XCTAssertNil(c.replacedPlayOutMode, label)
+        }
+    }
+
+    /// MusicTUI cannot be confirmed paused: the switch is refused in its
+    /// existing shape, naming MusicTUI, and touches nothing: no drop, no
+    /// save, no epoch, no device command, and MusicTUI stays effective.
+    func testASwitchDuringA8ThatCannotPauseMusicTUIIsRefusedAndTouchesNothing() throws {
+        for pending in [false, true] {
+            let label = pending ? "pending handoff" : "A8"
+            let tui = FakeMusicTUI()
+            tui.honoursPause = false
+            let (rig, c, _) = try replaced(tui)
+            if pending { rig.says(serving: true) }
+            let modeBefore = rig.bytes(rig.modePath), epoch = c.epoch, sentBefore = rig.sent.count
+            let paused = BranchLog(), dropped = BranchLog()
+            XCTAssertThrowsError(try switchTo(.source, c, tui, paused: paused, dropped: dropped), label) {
+                XCTAssertEqual(($0 as? ActionError)?.message, "Couldn't confirm MusicTUI paused; still using it", label)
+            }
+            XCTAssertEqual(paused.log, ["\(PlaybackMode.musicApp)"], label)
+            XCTAssertEqual(dropped.log, [], label)
+            XCTAssertEqual(rig.bytes(rig.modePath), modeBefore, label)
+            XCTAssertEqual(c.epoch, epoch, label)
+            XCTAssertEqual(rig.sent.count, sentBefore, label)
+            XCTAssertEqual(c.mode, device, label)
+            XCTAssertEqual(c.replacedPlayOutMode, device, label)
+            XCTAssertEqual(c.effectiveOutput, .musicApp, label)
+        }
+    }
+
+    /// Unchanged outside A8: a normal switch pauses the stored output, and a
+    /// switch TO MusicTUI during A8 (MusicTUI is the incoming player, not the
+    /// outgoing one) pauses the device as before and leaves MusicTUI playing.
+    func testOtherSwitchesStillPauseTheStoredOutput() throws {
+        let live = LicenceRig(output: device, accepted: true)
+        let liveTUI = FakeMusicTUI()
+        let normal = live.coordinator(musicTUIPaused: { try liveTUI.confirmPaused() })
+        live.says(serving: true)
+        let paused = BranchLog(), dropped = BranchLog()
+        XCTAssertEqual(try switchTo(.source, normal, liveTUI, paused: paused, dropped: dropped), .switched(to: .source))
+        XCTAssertEqual(paused.log, ["\(device)"])
+        XCTAssertEqual(dropped.log, ["\(device)"])
+        XCTAssertEqual(liveTUI.confirmedAtSent, [])
+
+        let (_, c, tui) = try replaced()
+        let toTUIPaused = BranchLog(), toTUIDropped = BranchLog()
+        XCTAssertEqual(try switchTo(.musicApp, c, tui, paused: toTUIPaused, dropped: toTUIDropped), .switched(to: .musicApp))
+        XCTAssertEqual(toTUIPaused.log, ["\(device)"])
+        XCTAssertEqual(toTUIDropped.log, ["\(device)"])
+        XCTAssertTrue(tui.playing, "switching to MusicTUI keeps it playing")
+        XCTAssertEqual(tui.confirmedAtSent, [])
+    }
 }

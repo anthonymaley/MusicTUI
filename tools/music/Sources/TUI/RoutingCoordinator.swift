@@ -941,9 +941,20 @@ final class RoutingCoordinator {
             throw ActionError(message: "SpanDAC on this Mac is \(ready.label); still using \(name(outgoing))")
         }
 
-        let paused = (try? pauseOutgoing(outgoing)) ?? false
+        // Conductor ruling A8b: the outgoing PLAYER is the effective output.
+        // While a replacement stands (A8, or the handoff still pending once
+        // serving returns), MusicTUI is what sounds, so a switch to anything
+        // but MusicTUI pauses and confirms MusicTUI, not the stored device,
+        // which the replacement already paused. A switch TO MusicTUI keeps it
+        // playing and pauses the stored output as before. The stored output's
+        // queue is still the one dropped below.
+        state.lock()
+        syncLicence()
+        let sounding = target != .musicApp && musicTUIReplacedTheStoredOutput() ? PlaybackMode.musicApp : outgoing
+        state.unlock()
+        let paused = (try? pauseOutgoing(sounding)) ?? false
         guard paused else {
-            throw ActionError(message: "Couldn't confirm \(name(outgoing)) paused; still using it")
+            throw ActionError(message: "Couldn't confirm \(name(sounding)) paused; still using it")
         }
 
         do {
@@ -1008,8 +1019,15 @@ final class RoutingCoordinator {
     /// stored iPhone/iPad output, and data is accepted, so MusicTUI has not
     /// yet been handed off. The caller holds `state`.
     private func handoffPending() -> Bool {
+        actedOnServing != false && musicTUIReplacedTheStoredOutput()
+    }
+
+    /// Ruling A8 or a pending handoff: a new play replaced the stored
+    /// iPhone/iPad output's play-out and MusicTUI is what sounds. The caller
+    /// holds `state` and has synced the licence.
+    private func musicTUIReplacedTheStoredOutput() -> Bool {
         guard case .stored = dataAxis else { return false }
-        return actedOnServing != false && replacedPlayOut != nil && replacedPlayOut == current && accepted
+        return replacedPlayOut != nil && replacedPlayOut == current && accepted
     }
 
     // MARK: - The licence (design section 7)
