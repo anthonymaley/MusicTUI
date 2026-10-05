@@ -317,4 +317,26 @@ final class SpanDACLicenceStatusTests: XCTestCase {
         XCTAssertEqual(client.readiness(), .unavailable(spanDACNotLicensedLine("No licence - enter your key in SpanDAC")))
         XCTAssertEqual(cache.snapshot().serving, false)
     }
+
+    // MARK: the simple reply paths decode `unlicensed` (review finding 9)
+
+    private let unlicensedDetail = "No licence - enter your key in SpanDAC"
+
+    func testStationSearchDecodesAnUnlicensedReplyAsUnlicensed() {
+        let search = SourceAppStationSearch(path: "/nonexistent", transport: { _, _ in
+            #"{"ok":false,"op":"slice.searchStations","error":{"kind":"unlicensed","detail":"\#(self.unlicensedDetail)"}}"#
+        })
+        XCTAssertThrowsError(try search.searchStations(term: "jazz")) {
+            XCTAssertEqual($0 as? SourceAppError, .unlicensed(self.unlicensedDetail))
+        }
+    }
+
+    func testDirectPlayDecodesAnUnlicensedReplyAsUnlicensed() {
+        let play = SourceAppPlayback(path: "/nonexistent", transport: { _, _ in
+            #"{"ok":false,"op":"slice.play","error":{"kind":"unlicensed","detail":"\#(self.unlicensedDetail)"}}"#
+        })
+        XCTAssertThrowsError(try play.play(catalogID: "1234")) {
+            XCTAssertEqual($0 as? SourceAppError, .unlicensed(self.unlicensedDetail))
+        }
+    }
 }
