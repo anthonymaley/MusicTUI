@@ -282,9 +282,11 @@ final class RoutingCoordinator {
     /// play-out on it is recorded from its own queue. When the stored selection
     /// involves SpanDAC and the Mac's socket file exists, one `slice.status` is
     /// read (`primeLicenceAtComposition`) on a short deadline of its own. It
-    /// never starts SpanDAC: with no socket file, nothing is sent.
+    /// never starts SpanDAC: with no socket file, nothing is sent. Tests pass
+    /// `licenceSocketExists: { false }` so composition never reads the real socket.
     static func live(store: PlaybackModeStore = PlaybackModeStore(), surface: InvocationSurface,
-                     starter: MacSpanDACStarting = liveMacSpanDACStarter()) -> RoutingCoordinator {
+                     starter: MacSpanDACStarting = liveMacSpanDACStarter(),
+                     licenceSocketExists: @escaping () -> Bool = macSocketExists) -> RoutingCoordinator {
         let licence = SpanDACServingCache(), queues = SpanDACOutputQueues()
         let routing = RoutingCoordinator(store: store, surface: surface, outputLock: OutputLock(path: store.lockPath),
                                          dataStore: DataProviderStore(beside: store),
@@ -297,7 +299,7 @@ final class RoutingCoordinator {
                                          outputQueues: queues,
                                          macSpanDACAbsent: { !starter.isRunning && !macSocketExists() })
         routing.primeLicenceAtComposition(
-            socketExists: macSocketExists,
+            socketExists: licenceSocketExists,
             readStatus: { _ = try SourceAppClient.macLicencePrime(observing: licence).control.status() })
         return routing
     }
@@ -804,12 +806,14 @@ final class RoutingCoordinator {
         try exclusively { try underOutputLock {
             let outgoing = mode
             guard target != outgoing else { return .alreadyInMode }
-            if licence != nil, target.networkSourceID != nil, settledState().serving != true {
-                throw ActionError(message: iPhoneIPadNeedsLicensedMac)
-            }
+            // The repair block is decided first; the licence refusal applies
+            // only where it does not.
             if case .stored = dataAxis, !accepted {
                 if outgoing.usesSource { throw ActionError(message: finishSwitchingToSpanDAC) }
                 if target.usesSource { throw ActionError(message: switchMusicTUIToSpanDACFirst) }
+            }
+            if licence != nil, target.networkSourceID != nil, settledState().serving != true {
+                throw ActionError(message: iPhoneIPadNeedsLicensedMac)
             }
             return try commitOutputSwitch(to: target, readiness: readiness,
                                           pauseOutgoing: pauseOutgoing, dropQueue: dropQueue)
@@ -899,7 +903,9 @@ final class RoutingCoordinator {
         let serving: Bool?
         let playOut: PlaybackMode?
         /// A licence cache is present, the stored output is a network
-        /// SpanDAC, and the Mac's SpanDAC has not said it is serving.
+        /// SpanDAC, the Mac's SpanDAC has not said it is serving, AND the
+        /// persisted-state repair block does not apply (data accepted): that
+        /// block is decided first, so its own sentence stands.
         let networkUnproven: Bool
     }
 
@@ -908,11 +914,22 @@ final class RoutingCoordinator {
         let selection = composedSelection()
         return Settled(selection: selection, stamp: (_epoch, _dataEpoch), mode: current,
                        serving: actedOnServing, playOut: playOut,
-                       networkUnproven: licence != nil && current.networkSourceID != nil && actedOnServing != true)
+                       networkUnproven: licence != nil && current.networkSourceID != nil && actedOnServing != true
+                           && !repairBlocks())
+    }
+
+    /// The persisted-state repair (C-REPAIR) applies: a stored data axis with
+    /// SpanDAC data not accepted. It is decided before the licence, so a
+    /// stored SpanDAC output it blocks keeps the repair's sentence and a switch
+    /// it refuses keeps the switch's. The caller holds `state`.
+    private func repairBlocks() -> Bool {
+        if case .stored = dataAxis { return !accepted }
+        return false
     }
 
     /// A refusal's sentence, with the blocked-output one replaced while a
-    /// stored network SpanDAC waits on the Mac's licence.
+    /// stored network SpanDAC waits on the Mac's licence and the repair block
+    /// does not apply (`networkUnproven` excludes it).
     private func licensed(_ why: String, _ settled: Settled) -> String {
         settled.networkUnproven && why == finishSwitchingToSpanDAC ? iPhoneIPadNeedsLicensedMac : why
     }
