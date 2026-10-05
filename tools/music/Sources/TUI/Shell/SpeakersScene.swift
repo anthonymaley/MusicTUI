@@ -1097,7 +1097,10 @@ final class SpeakersScene: Scene {
             let label = "Playing through"
             let room = max(0, frame.width - 4 - label.count - 2)
             let selected = selectedSpanDAC
-            let (path, problem) = playingThroughText(mode: routing.mode,
+            // Where the sound IS (Codex review 101, blocking 1): after a
+            // replacement that is MusicTUI, though the device row stays the
+            // stored, selected one.
+            let (path, problem) = playingThroughText(mode: routing.effectiveOutput,
                                                      activeSpeakers: rows.filter(\.active).map(\.name),
                                                      spandacDevice: selected.name, state: selected.state,
                                                      output: selected.output, now: now)

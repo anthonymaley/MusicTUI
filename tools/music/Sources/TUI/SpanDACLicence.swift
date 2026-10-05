@@ -74,6 +74,12 @@ func spanDACNotLicensedLine(_ text: String) -> String {
 /// SpanDAC is not serving, or has not said that it is.
 let iPhoneIPadNeedsLicensedMac = "iPhone/iPad SpanDAC needs SpanDAC for Mac, licensed."
 
+/// Amended ruling A8: serving has returned, but MusicTUI, still playing what
+/// replaced an iPhone/iPad play-out, could not be confirmed paused, so the
+/// device's transport or play was refused and MusicTUI stays the output.
+let musicTUIHandoffUnconfirmed =
+    "Couldn't confirm \(musicTUIOutputName) paused; nothing was sent to the iPhone/iPad SpanDAC."
+
 /// The last thing the Mac's SpanDAC said about serving, learned from the
 /// replies that already go by, so nothing here sends a request of its own.
 ///

@@ -134,6 +134,13 @@ final class RoutingCoordinator {
     /// that it is not playing. Defaults to never proven.
     private let macSpanDACAbsent: () -> Bool
 
+    /// Amended ruling A8: pauses MusicTUI's own player and confirms it is not
+    /// playing, by the evidence rule an output switch uses for an outgoing
+    /// MusicTUI (`confirmMusicAppNotPlaying`). Used only to hand the sound
+    /// back to a stored iPhone/iPad output once serving returns. Defaults to
+    /// never confirmed (fail closed).
+    private let confirmMusicTUIPaused: () throws -> Bool
+
     /// The cross-process output lock (slice 3, D6), exposed read-only so the
     /// CLI can take it directly around a playback mutation. The CLI's mutation
     /// already runs inside `perform`, which holds `order` and has set the
@@ -174,8 +181,11 @@ final class RoutingCoordinator {
     /// output, serving is still false and data is accepted, the selection is
     /// the MusicTUI output with open data, exactly as for a stored Mac
     /// SpanDAC, so the music now sounding is controllable and Now follows it.
-    /// Cleared by serving again, a committed output switch, or a new
-    /// play-out. In memory only: no file is written.
+    /// As amended: serving again does NOT clear it. MusicTUI is then the
+    /// OUTGOING output, still effective (with SpanDAC's data) until the first
+    /// device transport or play pauses it and confirms the pause
+    /// (`handOff`, in `route`); only that, a committed output switch, or a new
+    /// play-out clears it. In memory only: no file is written.
     private var replacedPlayOut: PlaybackMode?
 
     /// Slice 3 Part 2, D3. Starts at 0; incremented exactly once per
@@ -222,7 +232,8 @@ final class RoutingCoordinator {
          starter: MacSpanDACStarting,
          licence: SpanDACServingCache? = nil,
          outputQueues: SpanDACOutputQueues? = nil,
-         macSpanDACAbsent: @escaping () -> Bool = { false }) {
+         macSpanDACAbsent: @escaping () -> Bool = { false },
+         confirmMusicTUIPaused: @escaping () throws -> Bool = { false }) {
         self.store = store
         self.surface = surface
         self.makeSource = makeSourceFor
@@ -234,6 +245,7 @@ final class RoutingCoordinator {
         self.licence = licence
         self.outputQueues = outputQueues
         self.macSpanDACAbsent = macSpanDACAbsent
+        self.confirmMusicTUIPaused = confirmMusicTUIPaused
         // The ONLY accepted state is both values together (C-AXES); anything
         // else is open data, with whatever ceremony state it names.
         let read = dataStore.read()
@@ -259,6 +271,7 @@ final class RoutingCoordinator {
         self.licence = nil
         self.outputQueues = nil
         self.macSpanDACAbsent = { false }
+        self.confirmMusicTUIPaused = { false }
         self.accepted = false
         self.ceremonyState = .neverShown
     }
@@ -305,7 +318,11 @@ final class RoutingCoordinator {
                                          starter: starter,
                                          licence: licence,
                                          outputQueues: queues,
-                                         macSpanDACAbsent: { !starter.isRunning && !macSocketExists() })
+                                         macSpanDACAbsent: { !starter.isRunning && !macSocketExists() },
+                                         confirmMusicTUIPaused: {
+                                             try confirmMusicAppNotPlaying(session: liveMusicAppPauseSession,
+                                                                           isRunning: liveMusicAppMayBeRunning)
+                                         })
         routing.primeLicenceAtComposition(
             socketExists: licenceSocketExists,
             readStatus: { _ = try SourceAppClient.macLicencePrime(observing: licence).control.status() })
@@ -387,6 +404,25 @@ final class RoutingCoordinator {
     var mode: PlaybackMode {
         state.lock(); defer { state.unlock() }
         return current
+    }
+
+    /// Where the sound is now (Codex review 101, blocking 1): the ONE value
+    /// the shell asks whenever its decision is about sound rather than about
+    /// the persisted choice, which stays `mode`. A play-out's output while one
+    /// is recorded (that queue is still sounding); otherwise the selection's
+    /// output, which is MusicTUI after a replacement (ruling A8) and, as
+    /// amended, after serving returns until MusicTUI has been handed off; or
+    /// the stored output while it is blocked, so its keys still reach the
+    /// coordinator and refuse in its own sentence. It agrees with
+    /// `pollTarget`, which Now's poller reads.
+    var effectiveOutput: PlaybackMode {
+        state.lock(); defer { state.unlock() }
+        let selection = composedSelection()
+        if let playOut, playOut.usesSource { return playOut }
+        switch selection {
+        case .consistent(_, let output): return output
+        case .outputBlocked(let stored): return stored
+        }
     }
 
     /// Slice 3 Part 2, D3. The epoch a result is stamped with when its
@@ -557,8 +593,17 @@ final class RoutingCoordinator {
             // both refusals come before anything reaches the playing device.
             let replacesNetworkPlayOut = action.playsChosenMusic && settled.networkUnproven
                 && settled.playOut?.networkSourceID != nil && settled.playOut == settled.mode
+            // Amended ruling A8 (Codex review 101, blocking 2): serving has
+            // returned while MusicTUI still plays what replaced the device's
+            // play-out. An action that can start or advance the device's sound
+            // is routed on the stored selection, and MusicTUI, the outgoing
+            // output, is paused and confirmed (`handOff`) after every refusal
+            // and before its branch. Anything else stays on MusicTUI.
+            let handsOff = settled.handoffPending
+                && (action.playsChosenMusic || deviceTransportActions.contains(action))
             let now: EffectiveSelection = replacesNetworkPlayOut
-                ? .consistent(data: .open, output: .musicApp) : settled.selection
+                ? .consistent(data: .open, output: .musicApp)
+                : handsOff ? settled.handedOffSelection : settled.selection
             let routed = routeAction(action, selection: now, from: surface)
             if case .refused(let why) = routed.sound { throw ActionError(message: licensed(why, settled)) }
             try refuseAStaleOrigin(origin, for: action, in: now)
@@ -568,6 +613,13 @@ final class RoutingCoordinator {
             // the new play's body runs, still inside this boundary; if that
             // cannot be confirmed, nothing plays and the play-out keeps its
             // transport.
+            func handOff() throws {
+                guard handsOff else { return }
+                guard (try? confirmMusicTUIPaused()) == true else {
+                    throw ActionError(message: musicTUIHandoffUnconfirmed)
+                }
+                state.lock(); replacedPlayOut = nil; state.unlock()
+            }
             func admitAPlay() throws {
                 guard action.playsChosenMusic else { return }
                 state.lock(); syncLicence(); let playingOut = playOut; state.unlock()
@@ -591,11 +643,13 @@ final class RoutingCoordinator {
                 let reads = action.readsMusicData && routed.data == .spandacMac
                 if !reads, settled.networkUnproven { throw ActionError(message: iPhoneIPadNeedsLicensedMac) }
                 let client = reads ? dataClient() : sourceClient()
+                try handOff()
                 try admitAPlay()
                 try source(client)
             case .musicApp:
                 let path = try musicTUIPath(for: action, origin: origin, in: now)
                 if shippedOnly, path != .shipped { throw ActionError(message: pickASpanDACOutput) }
+                try handOff()
                 try admitAPlay()
                 try musicApp(path)
             case .refused(let why):
@@ -923,7 +977,12 @@ final class RoutingCoordinator {
     /// play-out (ruling A8, `replacedPlayOut`), when it is the MusicTUI output
     /// too. Neither file is written, so serving again restores the stored
     /// selection as it was. Unknown is today's behaviour.
-    private func composedSelection() -> EffectiveSelection {
+    ///
+    /// **Amended A8.** Serving again with `replacedPlayOut` still set is the
+    /// handoff not yet made: MusicTUI stays the output, with SpanDAC's data,
+    /// until `route` hands it off. `handedOff` composes as if it had been,
+    /// for the action doing the handoff.
+    private func composedSelection(handedOff: Bool = false) -> EffectiveSelection {
         syncLicence()
         switch dataAxis {
         case .followsOutput:
@@ -937,15 +996,30 @@ final class RoutingCoordinator {
                 return current.networkSourceID != nil && !replaced ? .outputBlocked(stored: current)
                                                                    : .consistent(data: .open, output: .musicApp)
             }
-            if accepted { return .consistent(data: .spandacMac, output: current) }
+            if accepted {
+                if !handedOff, handoffPending() { return .consistent(data: .spandacMac, output: .musicApp) }
+                return .consistent(data: .spandacMac, output: current)
+            }
             return current.usesSource ? .outputBlocked(stored: current) : .consistent(data: .open, output: current)
         }
+    }
+
+    /// Amended A8: serving is not false, a replacement still names the
+    /// stored iPhone/iPad output, and data is accepted, so MusicTUI has not
+    /// yet been handed off. The caller holds `state`.
+    private func handoffPending() -> Bool {
+        guard case .stored = dataAxis else { return false }
+        return actedOnServing != false && replacedPlayOut != nil && replacedPlayOut == current && accepted
     }
 
     // MARK: - The licence (design section 7)
 
     /// The transport actions a play-out still sends to SpanDAC.
     private let playOutActions: Set<MusicTUIAction> = [.playPause, .next, .previous, .seek, .stop, .nowStatus]
+
+    /// Amended A8: the transport that can start or advance the device's
+    /// sound, so it hands MusicTUI off first. `.nowStatus` only reads.
+    private let deviceTransportActions: Set<MusicTUIAction> = [.playPause, .next, .previous, .seek, .stop]
 
     /// Everything a routing decision reads, taken at one instant.
     private struct Settled {
@@ -954,6 +1028,10 @@ final class RoutingCoordinator {
         let mode: PlaybackMode
         let serving: Bool?
         let playOut: PlaybackMode?
+        /// Amended A8: MusicTUI is still to be handed off (`handoffPending`).
+        let handoffPending: Bool
+        /// The selection once it has been.
+        let handedOffSelection: EffectiveSelection
         /// A licence cache is present, the stored output is a network
         /// SpanDAC, the Mac's SpanDAC has not said it is serving, AND the
         /// persisted-state repair block does not apply (data accepted): that
@@ -966,6 +1044,8 @@ final class RoutingCoordinator {
         let selection = composedSelection()
         return Settled(selection: selection, stamp: (_epoch, _dataEpoch), mode: current,
                        serving: actedOnServing, playOut: playOut,
+                       handoffPending: handoffPending(),
+                       handedOffSelection: composedSelection(handedOff: true),
                        networkUnproven: licence != nil && current.networkSourceID != nil && actedOnServing != true
                            && !repairBlocks())
     }
@@ -1005,10 +1085,13 @@ final class RoutingCoordinator {
             if seen.serving == false || wasKnown { _dataEpoch += 1 }
             switch seen.serving {
             case false?:
-                if queueLoaded(on: current, seen) { playOut = current }
+                // Amended A8: while a replacement stands, MusicTUI is what
+                // sounds; the paused device's loaded queue is not a play-out.
+                if replacedPlayOut == nil, queueLoaded(on: current, seen) { playOut = current }
             case true?:
+                // `replacedPlayOut` survives: MusicTUI is handed off by the
+                // first device transport or play, never silently here.
                 playOut = nil
-                replacedPlayOut = nil
             case nil:
                 break
             }
