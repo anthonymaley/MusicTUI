@@ -186,7 +186,18 @@ final class RoutingCoordinator {
     /// device transport or play pauses it and confirms the pause
     /// (`handOff`, in `route`); only that, a committed output switch, or a new
     /// play-out clears it. In memory only: no file is written.
-    private var replacedPlayOut: PlaybackMode?
+    private var replacedPlayOut: PlaybackMode? {
+        didSet { if replacedPlayOut != oldValue { replacementOutlivedDataStop = false } }
+    }
+    /// Codex review 102: "Stop using SpanDAC for music data" stopped the data
+    /// while a replacement stood but could not leave the stored device (its
+    /// pause was unconfirmed or its queue drop failed). MusicTUI is still the
+    /// player making sound, so the replacement keeps it the effective output
+    /// although data is no longer accepted. Only this explicit outcome; an
+    /// ordinary repair block (data never accepted, or files read that way by
+    /// another process) never sets it. Reset whenever the replacement changes
+    /// or data is accepted again. In memory only.
+    private var replacementOutlivedDataStop = false
 
     /// Slice 3 Part 2, D3. Starts at 0; incremented exactly once per
     /// COMMITTED switch (never on `alreadyInMode`, a refused switch — readiness,
@@ -787,7 +798,9 @@ final class RoutingCoordinator {
             guard store.accept() else {
                 throw ActionError(message: "Couldn't save the switch to SpanDAC; MusicTUI is still using its own music data.")
             }
-            state.lock(); accepted = true; ceremonyState = .accepted; _dataEpoch += 1; state.unlock()
+            state.lock()
+            accepted = true; ceremonyState = .accepted; _dataEpoch += 1; replacementOutlivedDataStop = false
+            state.unlock()
             return .switched(to: .spandacMac)
         } }
     }
@@ -849,7 +862,13 @@ final class RoutingCoordinator {
                 if let outputProblem { why += " \(outputProblem)." }
                 throw ActionError(message: why)
             }
-            state.lock(); accepted = false; ceremonyState = .declined; _dataEpoch += 1; state.unlock()
+            state.lock()
+            // Codex review 102: the output did not move, so MusicTUI, still
+            // playing what replaced the device's play-out, stays effective.
+            syncLicence()
+            if !outputMoved, musicTUIReplacedTheStoredOutput() { replacementOutlivedDataStop = true }
+            accepted = false; ceremonyState = .declined; _dataEpoch += 1
+            state.unlock()
             if let outputProblem { return .outputStillBlocked(why: outputProblem) }
             return .stopped
         } }
@@ -1002,8 +1021,9 @@ final class RoutingCoordinator {
             if actedOnServing == false {
                 // Ruling A8: after a new play replaced this iPhone/iPad
                 // output's play-out, it is treated as the Mac's is: MusicTUI.
-                // Never over the repair block (data not accepted).
-                let replaced = replacedPlayOut != nil && replacedPlayOut == current && accepted
+                // Never over the repair block (data not accepted), except the
+                // replacement a data stop kept (Codex review 102).
+                let replaced = musicTUIReplacedTheStoredOutput()
                 return current.networkSourceID != nil && !replaced ? .outputBlocked(stored: current)
                                                                    : .consistent(data: .open, output: .musicApp)
             }
@@ -1011,6 +1031,9 @@ final class RoutingCoordinator {
                 if !handedOff, handoffPending() { return .consistent(data: .spandacMac, output: .musicApp) }
                 return .consistent(data: .spandacMac, output: current)
             }
+            // Codex review 102: a data stop that could not leave the device
+            // kept the replacement; MusicTUI still sounds, with open data.
+            if musicTUIReplacedTheStoredOutput() { return .consistent(data: .open, output: .musicApp) }
             return current.usesSource ? .outputBlocked(stored: current) : .consistent(data: .open, output: current)
         }
     }
@@ -1018,16 +1041,19 @@ final class RoutingCoordinator {
     /// Amended A8: serving is not false, a replacement still names the
     /// stored iPhone/iPad output, and data is accepted, so MusicTUI has not
     /// yet been handed off. The caller holds `state`.
+    /// Without accepted data there is no handoff: the device stays behind the
+    /// repair block, and MusicTUI simply stays the output.
     private func handoffPending() -> Bool {
-        actedOnServing != false && musicTUIReplacedTheStoredOutput()
+        actedOnServing != false && accepted && musicTUIReplacedTheStoredOutput()
     }
 
     /// Ruling A8 or a pending handoff: a new play replaced the stored
-    /// iPhone/iPad output's play-out and MusicTUI is what sounds. The caller
-    /// holds `state` and has synced the licence.
+    /// iPhone/iPad output's play-out and MusicTUI is what sounds, with data
+    /// accepted or a data stop having kept the replacement. The caller holds
+    /// `state` and has synced the licence.
     private func musicTUIReplacedTheStoredOutput() -> Bool {
         guard case .stored = dataAxis else { return false }
-        return replacedPlayOut != nil && replacedPlayOut == current && accepted
+        return replacedPlayOut != nil && replacedPlayOut == current && (accepted || replacementOutlivedDataStop)
     }
 
     // MARK: - The licence (design section 7)

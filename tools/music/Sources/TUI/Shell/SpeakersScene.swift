@@ -1087,7 +1087,11 @@ final class SpeakersScene: Scene {
         if showingSwitchScreen { return out + renderSwitchScreen(frame: frame) }
         let now = clock()
         var y = frame.bodyY
-        let spanDACSelected = routing.mode.usesSource
+        // Codex review 102: a SpanDAC is PLAYING only when the effective
+        // output is one. The section's "switches back" hint and its dimming
+        // follow that; row selection marks and Enter still follow the stored
+        // choice (`routing.mode`).
+        let spanDACPlaying = routing.effectiveOutput.usesSource
         let switched = dataSwitched
         let blocked = outputBlocked
         let noMacBox = !switched && macDataState == .notInstalled
@@ -1220,11 +1224,11 @@ final class SpeakersScene: Scene {
             var header = "\(ANSICode.bold)\(ANSICode.cyan)\(title)\(ANSICode.reset)  \(ANSICode.dim)\(truncText(subtitle, to: room))\(ANSICode.reset)"
             // While a SpanDAC plays, say how to come back: beside the heading
             // when it fits, on its own line when it does not.
-            let hintInline = spanDACSelected && subtitle.count + 3 + hint.count <= room
+            let hintInline = spanDACPlaying && subtitle.count + 3 + hint.count <= room
             if hintInline { header += "   \(ANSICode.dim)\(hint)\(ANSICode.reset)" }
             out += ANSICode.moveTo(row: y, col: 3) + header
             y += 1
-            if spanDACSelected, !hintInline, y <= bottom {
+            if spanDACPlaying, !hintInline, y <= bottom {
                 out += ANSICode.moveTo(row: y, col: 3)
                     + "\(ANSICode.dim)\(truncText(hint, to: max(0, frame.width - 4)))\(ANSICode.reset)"
                 y += 1
@@ -1318,21 +1322,21 @@ final class SpeakersScene: Scene {
                 let nameStr: String
                 if isCursor {
                     nameStr = "\(ANSICode.inverse)\(padName)\(ANSICode.reset)"
-                } else if row.active && !spanDACSelected {
+                } else if row.active && !spanDACPlaying {
                     nameStr = "\(ANSICode.brightWhite)\(padName)\(ANSICode.reset)"
                 } else {
                     nameStr = "\(ANSICode.dim)\(padName)\(ANSICode.reset)"
                 }
                 let bar: String
-                if spanDACSelected {
+                if spanDACPlaying {
                     let filled = Int(Double(max(0, min(100, row.volume))) / 100.0 * Double(barW))
                     bar = "\(ANSICode.dim)\(String(repeating: "\u{2588}", count: filled))\(String(repeating: "\u{2591}", count: barW - filled))\(ANSICode.reset)"
                 } else {
                     bar = meterBar(value: row.volume, width: barW)
                 }
                 let vol = String(format: "%3d", row.volume)
-                let volStr = spanDACSelected ? "\(ANSICode.dim)\(vol)\(ANSICode.reset)" : vol
-                out += "\(marker) \(dot(row.active, dimmed: spanDACSelected)) \(nameStr) \(bar) \(volStr)"
+                let volStr = spanDACPlaying ? "\(ANSICode.dim)\(vol)\(ANSICode.reset)" : vol
+                out += "\(marker) \(dot(row.active, dimmed: spanDACPlaying)) \(nameStr) \(bar) \(volStr)"
                 y += 1
 
             case .eqPower:
