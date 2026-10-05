@@ -671,6 +671,69 @@ extension MusicTUIAction {
     }
 }
 
+/// What an action can do to the sound while a SpanDAC queue plays out after
+/// the Mac's SpanDAC stopped serving (design section 7; Anthony, 2026-10-05
+/// 16:07, "one rule for every SpanDAC device"). `RoutingCoordinator.route`
+/// reads it before anything else, for every action, so a play-out is decided in
+/// ONE place.
+enum PlayOutClass: Equatable {
+    /// Transport for the queue that is sounding: during a play-out it reaches
+    /// the play-out output's own client, until that queue ends or is stopped.
+    case followsThePlayOut
+    /// Can start or replace sound in MusicTUI or on a SpanDAC: refused during
+    /// a play-out, before any branch runs or anything is sent. Never a
+    /// replacement, so two players at once cannot arise.
+    case startsOrReplacesSound
+    /// Cannot start sound: routed exactly as without a play-out.
+    case cannotStartSound
+}
+
+extension MusicTUIAction {
+
+    /// The play-out gate's classification. Exhaustive with no default, so a
+    /// new action cannot compile until someone decides whether it can start
+    /// sound. Decided from each action's bodies (Codex review 104), not from
+    /// its name: wider than `playsChosenMusic`, because the global `z`, bare
+    /// `music play`, Now's queue-row Enter and Genius all start Apple's Music
+    /// player without choosing music.
+    var playOutClass: PlayOutClass {
+        switch self {
+        case .playPause, .next, .previous, .seek, .stop,
+             .nowStatus:                       // a read of what is sounding
+            return .followsThePlayOut
+
+        case .libraryPlay, .playlistPlay, .discoverTrackPlay, .discoverPlayAll, .radioStationPlay,
+             .cliPlayIndex, .cliPlayPlaylist, .cliPlayAlbum, .cliPlaySong, .cliPlayArtist,
+             .cliPlayQuery, .cliPlayCatalogSong, .playlistTemp,
+             .cliPlayResume,                   // bare `music play`: AppleScript `play`
+             .collectionShuffle,               // `z`, Now's continuation `S`: plays a shuffled queue
+             .queueJump,                       // Now's Up Next Enter: `play track N`
+             .genius,                          // Genius Shuffle rebuilds the queue and plays it
+             .airplayRoute,                    // a route heal's tier 2 pauses, then `play`s
+             .similarToCurrentTrack,           // bare `music similar`: its TTY picker plays
+             .suggestFromCurrentTrack:         // bare `music suggest`: its TTY picker plays
+            return .startsOrReplacesSound
+
+        case .persistentShuffleMode, .persistentRepeatMode, .volume,
+             .quiet,                           // pauses; never starts
+             .playlistListing, .discoverFeed, .discoverRefresh, .catalogSearch, .searchLibrary,
+             .radioSearch, .recent, .rotation, .radioCatalogueBrowse, .radioStationLookup,
+             .newReleases, .newReleasesLikeCurrentTrack,
+             .similar, .suggest,               // with a title or --from: no picker, a read
+             .loveTrack, .addToLibrary, .addCurrentTrackToPlaylist, .removeCurrentTrackFromPlaylist,
+             .playlistWrite, .playlistShare, .cliMix, .radioFavourite, .radioAddURL,
+             .eq, .visualizer, .libraryArtistTierFilter, .playlistsOpenNowPlaying, .libraryRetry, .auth:
+            return .cannotStartSound
+        }
+    }
+}
+
+/// Said when a new play is refused while SpanDAC on this Mac finishes the queue
+/// it had when its licence stopped serving (Anthony, 2026-10-05 16:07). The
+/// iPhone/iPad form is `iPhoneIPadNeedsLicensedMac`.
+let macPlayOutRefusal =
+    "SpanDAC for Mac is finishing its queue without a licence; stop it or let it end to play something new."
+
 /// C-MATRIX column 4's "Sound on the MusicTUI output as shipped": transport,
 /// modes, queue, the current-track verbs and Apple's Music app settings. In
 /// `outputBlocked` (C-REPAIR) every one of these refuses.

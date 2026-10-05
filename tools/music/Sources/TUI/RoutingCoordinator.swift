@@ -129,11 +129,6 @@ final class RoutingCoordinator {
     /// network play-out.
     private let outputQueues: SpanDACOutputQueues?
 
-    /// Independently established absence of SpanDAC on this Mac (not running
-    /// per LaunchServices AND no socket), the one evidence besides a status
-    /// that it is not playing. Defaults to never proven.
-    private let macSpanDACAbsent: () -> Bool
-
     /// The cross-process output lock (slice 3, D6), exposed read-only so the
     /// CLI can take it directly around a playback mutation. The CLI's mutation
     /// already runs inside `perform`, which holds `order` and has set the
@@ -213,8 +208,7 @@ final class RoutingCoordinator {
          makeDataClient: @escaping () -> SourceAppClient,
          starter: MacSpanDACStarting,
          licence: SpanDACServingCache? = nil,
-         outputQueues: SpanDACOutputQueues? = nil,
-         macSpanDACAbsent: @escaping () -> Bool = { false }) {
+         outputQueues: SpanDACOutputQueues? = nil) {
         self.store = store
         self.surface = surface
         self.makeSource = makeSourceFor
@@ -225,7 +219,6 @@ final class RoutingCoordinator {
         self.macStarter = starter
         self.licence = licence
         self.outputQueues = outputQueues
-        self.macSpanDACAbsent = macSpanDACAbsent
         // The ONLY accepted state is both values together (C-AXES); anything
         // else is open data, with whatever ceremony state it names.
         let read = dataStore.read()
@@ -250,7 +243,6 @@ final class RoutingCoordinator {
         self.macStarter = NeverStartsMacSpanDAC()
         self.licence = nil
         self.outputQueues = nil
-        self.macSpanDACAbsent = { false }
         self.accepted = false
         self.ceremonyState = .neverShown
     }
@@ -296,8 +288,7 @@ final class RoutingCoordinator {
                                          makeDataClient: { SourceAppClient.macData(starter: starter, licence: licence) },
                                          starter: starter,
                                          licence: licence,
-                                         outputQueues: queues,
-                                         macSpanDACAbsent: { !starter.isRunning && !macSocketExists() })
+                                         outputQueues: queues)
         routing.primeLicenceAtComposition(
             socketExists: licenceSocketExists,
             readStatus: { _ = try SourceAppClient.macLicencePrime(observing: licence).control.status() })
@@ -426,8 +417,8 @@ final class RoutingCoordinator {
     /// Design section 7, mid-song: the SpanDAC output still playing the queue
     /// it had when serving ended, or nil. While set, `.playPause`, `.next`,
     /// `.previous`, `.seek`, `.stop` and `.nowStatus` reach this output's
-    /// client, so a poller follows it too. Cleared by an admitted chosen-music
-    /// play (which goes to MusicTUI once this output is confirmed paused), a
+    /// client, so a poller follows it too. While set, every action that can
+    /// start or replace sound is refused (`gatePlayOut`). Cleared by a
     /// status from this output showing `stopped`/`idle` or
     /// queue phase `none`, a transport reply `unlicensed` or `nothing_loaded`,
     /// a committed output switch, or serving again.
@@ -543,33 +534,18 @@ final class RoutingCoordinator {
             if let expecting, expecting != settled.stamp {
                 throw ActionError(message: sourceChangedNothingPlayed)
             }
-            if let target = settled.playOut, playOutActions.contains(action) {
-                try source(playOutClient(for: target))
-                return
-            }
-            // Design section 7, "Play-out on iPhone/iPad" (Anthony,
-            // 2026-10-05 15:06): a new chosen play during an iPhone/iPad
-            // play-out is REFUSED, never a replacement. The stored network
-            // output is blocked while the Mac is not serving, so the refusal
-            // below names `iPhoneIPadNeedsLicensedMac` before anything is sent
-            // or started: two players at once cannot arise.
+            if let target = settled.playOut,
+               try gatePlayOut(target, action: action, settled: settled, source: source) { return }
             let now = settled.selection
             let routed = routeAction(action, selection: now, from: surface)
             if case .refused(let why) = routed.sound { throw ActionError(message: licensed(why, settled)) }
             try refuseAStaleOrigin(origin, for: action, in: now)
-            // Design section 7, mid-song, and Codex review 98, finding 4: a
-            // new play REPLACES a play-out of SpanDAC on this Mac (the only
-            // play-out a play is admitted over). The play-out output is paused
-            // and confirmed not playing before the new play's body runs, still
-            // inside this boundary; if that cannot be confirmed, nothing plays
-            // and the play-out keeps its transport.
-            func admitAPlay() throws {
+            // No play-out is recorded here (the gate above refused every
+            // sound-starting action over one), so an admitted play replaces
+            // nothing: it only moves the serial.
+            func admitAPlay() {
                 guard action.playsChosenMusic else { return }
-                state.lock(); syncLicence(); let playingOut = playOut; state.unlock()
-                if let playingOut, !silence(playingOut) {
-                    throw ActionError(message: "Couldn't confirm \(name(playingOut)) paused; nothing was played on \(musicTUIOutputName).")
-                }
-                state.lock(); _playSerial += 1; playOut = nil; state.unlock()
+                state.lock(); _playSerial += 1; state.unlock()
             }
             switch routed.sound {
             case .unaffected:
@@ -578,12 +554,12 @@ final class RoutingCoordinator {
                 let reads = action.readsMusicData && routed.data == .spandacMac
                 if !reads, settled.networkUnproven { throw ActionError(message: iPhoneIPadNeedsLicensedMac) }
                 let client = reads ? dataClient() : sourceClient()
-                try admitAPlay()
+                admitAPlay()
                 try source(client)
             case .musicApp:
                 let path = try musicTUIPath(for: action, origin: origin, in: now)
                 if shippedOnly, path != .shipped { throw ActionError(message: pickASpanDACOutput) }
-                try admitAPlay()
+                admitAPlay()
                 try musicApp(path)
             case .refused(let why):
                 throw ActionError(message: licensed(why, settled))
@@ -615,6 +591,12 @@ final class RoutingCoordinator {
             // One instant: the selection and both epochs a licence flip could
             // otherwise move between separate reads.
             let settled = settledState()
+            // A provider built for an action that can start sound is not built
+            // over a play-out either (the same gate as `route`; no caller
+            // chooses one today).
+            if let target = settled.playOut, action.playOutClass == .startsOrReplacesSound {
+                throw ActionError(message: playOutRefusal(target, settled))
+            }
             let now = settled.selection
             let routed = routeAction(action, selection: now, from: surface)
             func choice(_ provider: Provider) -> ProviderChoice<Provider> {
@@ -925,8 +907,42 @@ final class RoutingCoordinator {
 
     // MARK: - The licence (design section 7)
 
-    /// The transport actions a play-out still sends to SpanDAC.
-    private let playOutActions: Set<MusicTUIAction> = [.playPause, .next, .previous, .seek, .stop, .nowStatus]
+    /// THE play-out gate (design section 7; Anthony, 2026-10-05 15:06 for
+    /// iPhone/iPad and 16:07 for SpanDAC on this Mac: "one rule for every
+    /// SpanDAC device"). Every action `route` handles passes here first while
+    /// a play-out is recorded, and `MusicTUIAction.playOutClass`, exhaustive
+    /// with no default, decides it:
+    ///
+    /// - `followsThePlayOut`: runs `source` on the play-out output's own
+    ///   client (pause, next, previous, seek, stop, and `music now`), until
+    ///   that queue ends or is stopped, and returns true: the action is done.
+    /// - `startsOrReplacesSound`: refused, before any branch runs and before
+    ///   anything is sent to any player. There is no replacement on any
+    ///   device, so MusicTUI never sounds beside a SpanDAC queue and serving
+    ///   returning cannot find two players (Codex review 104).
+    /// - `cannotStartSound`: returns false, and ordinary routing decides.
+    ///
+    /// The caller holds `order`; `settled` is this action's one instant.
+    private func gatePlayOut(_ target: PlaybackMode, action: MusicTUIAction, settled: Settled,
+                             source: (SourceAppClient) throws -> Void) throws -> Bool {
+        switch action.playOutClass {
+        case .followsThePlayOut:
+            try source(playOutClient(for: target))
+            return true
+        case .startsOrReplacesSound:
+            throw ActionError(message: playOutRefusal(target, settled))
+        case .cannotStartSound:
+            return false
+        }
+    }
+
+    /// The gate's sentence. SpanDAC on this Mac: `macPlayOutRefusal`. An
+    /// iPhone/iPad: the blocked stored output's own sentence, as the matrix
+    /// would give it, which is `iPhoneIPadNeedsLicensedMac` unless the
+    /// persisted-state repair block applies, which keeps its own.
+    private func playOutRefusal(_ target: PlaybackMode, _ settled: Settled) -> String {
+        target.networkSourceID == nil ? macPlayOutRefusal : licensed(finishSwitchingToSpanDAC, settled)
+    }
 
     /// Everything a routing decision reads, taken at one instant.
     private struct Settled {
@@ -1008,18 +1024,6 @@ final class RoutingCoordinator {
         case .source: return seen.bridgeLoaded
         case .networkSource(let id): return outputQueues?.isLoaded(id) ?? false
         }
-    }
-
-    /// Pauses the play-out output and confirms it is not playing: a status
-    /// showing paused, stopped or idle (`confirmBridgeNotPlaying`, the switch's
-    /// own evidence rule), or, for SpanDAC on this Mac, its established
-    /// absence. A status that cannot be read is not evidence. The output's
-    /// plain client is used, so a reply here never ends the play-out by
-    /// itself: only an admitted play does.
-    private func silence(_ target: PlaybackMode) -> Bool {
-        let client = target == mode ? sourceClient() : makeSource(target)
-        if (try? confirmBridgeNotPlaying(client.control)) == true { return true }
-        return target == .source && macSpanDACAbsent()
     }
 
     /// The play-out output's client, with every reply it returns checked for

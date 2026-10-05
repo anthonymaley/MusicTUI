@@ -691,8 +691,13 @@ final class NowPlayingScene: Scene {
             let appQueue = self.appQueue
             let routing = self.routing
             actions.run("Shuffle") {
-                // STAYS REFUSED after step 2, for a different reason than
-                // before: not "unbuilt", but unanswerable.
+                // Through the coordinator like the global `z`: the one
+                // play-out gate refuses it while a SpanDAC queue plays out
+                // (Anthony, 2026-10-05 16:07), and a SpanDAC output takes the
+                // refusing `source` branch below.
+                //
+                // On a SpanDAC output it STAYS REFUSED after step 2, for a
+                // different reason than before: not "unbuilt", but unanswerable.
                 //
                 // This shuffles the CURRENT collection, and in Bridge mode
                 // nothing on this side knows what that is. `continuationSourceNow()`
@@ -708,18 +713,22 @@ final class NowPlayingScene: Scene {
                 // the exact defect class the fail-closed sweep removed. Giving
                 // Bridge a remembered collection is new state and its own
                 // decision, so it is not taken here.
-                if routing.effectiveOutput.usesSource { throw bridgeNotWiredYet("Collection shuffle") }
-                let ok: Bool
-                switch source {
-                case .bounded(let label, let src, let tracks):
-                    ok = shufflePlayBounded(backend: backend, appQueue: appQueue,
-                                            label: label, source: src, tracks: tracks)
-                case .playlist(let name):
-                    ok = shufflePlayPlaylist(backend: backend, appQueue: appQueue, playlist: name)
-                case nil:
-                    ok = shufflePlayCurrent(backend: backend, appQueue: appQueue)
-                }
-                try require(ok, "Shuffle failed.")
+                try routing.perform(.collectionShuffle,
+                    musicApp: {
+                        let ok: Bool
+                        switch source {
+                        case .bounded(let label, let src, let tracks):
+                            ok = shufflePlayBounded(backend: backend, appQueue: appQueue,
+                                                    label: label, source: src, tracks: tracks)
+                        case .playlist(let name):
+                            ok = shufflePlayPlaylist(backend: backend, appQueue: appQueue, playlist: name)
+                        case nil:
+                            ok = shufflePlayCurrent(backend: backend, appQueue: appQueue)
+                        }
+                        try require(ok, "Shuffle failed.")
+                    },
+                    source: { _ in throw bridgeNotWiredYet("Collection shuffle") },
+                    unaffected: {})
             }
         case .playlist:
             wantsPlaylists = true
@@ -885,34 +894,46 @@ final class NowPlayingScene: Scene {
         case .enter:
             guard cursor < rows.count else { return .none }
             guard askMatrix(.queueJump) else { return .redraw }
-            // Jump within the app-owned queue by the row's play-order position.
+            // The play itself goes through the coordinator, which decides when
+            // the action RUNS: the one play-out gate refuses it while a
+            // SpanDAC queue plays out (Anthony, 2026-10-05 16:07; Codex review
+            // 104), before the app queue moves or any AppleScript runs.
             let backend = self.backend
-            if let (pl, pos) = appQueue.jump(to: rows[cursor].index) {
-                actions.run("Play") { try require(playQueueTrack(backend: backend, playlist: pl, position: pos), "Couldn't play that track.") }
-                return .redraw
-            }
-            // No app queue: a whole-playlist play (native queue) lands here. Playing
-            // the row from the Library would collapse Music's context to the
-            // alphabetical library (and `play track N of current playlist` is the
-            // macOS 26.x-regressed verb) — so ADOPT the app-owned queue: fetch the
-            // context playlist and take over from this row, same as the Playlists
-            // tab does. Album/library contexts (the context name isn't a playlist,
-            // or the row doesn't line up) fall back to the library lookup.
             let row = rows[cursor]
             let context = contextNameNow
             let store = self.appQueue
+            let routing = self.routing
             actions.run("Play") {
-                if !context.isEmpty, !isLibraryContextName(context) {
-                    let tracks = fetchPlaylistTracks(backend: backend, playlist: context)
-                    if row.index >= 1, row.index <= tracks.count,
-                       trackKey(title: tracks[row.index - 1].name, artist: tracks[row.index - 1].artist)
-                           == trackKey(title: row.name, artist: row.artist) {
-                        store.set(AppQueue(playlistName: context, tracks: tracks, currentIndex: row.index))
-                        try require(playQueueTrack(backend: backend, playlist: context, position: row.index), "Couldn't play that track.")
-                        return
-                    }
-                }
-                try require(playLibraryTrack(backend: backend, title: row.name, artist: row.artist), "'\(row.name)' not found in the library.")
+                try routing.perform(.queueJump,
+                    musicApp: {
+                        // Jump within the app-owned queue by the row's play-order position.
+                        if let (pl, pos) = store.jump(to: row.index) {
+                            try require(playQueueTrack(backend: backend, playlist: pl, position: pos), "Couldn't play that track.")
+                            return
+                        }
+                        // No app queue: a whole-playlist play (native queue) lands here. Playing
+                        // the row from the Library would collapse Music's context to the
+                        // alphabetical library (and `play track N of current playlist` is the
+                        // macOS 26.x-regressed verb) — so ADOPT the app-owned queue: fetch the
+                        // context playlist and take over from this row, same as the Playlists
+                        // tab does. Album/library contexts (the context name isn't a playlist,
+                        // or the row doesn't line up) fall back to the library lookup.
+                        if !context.isEmpty, !isLibraryContextName(context) {
+                            let tracks = fetchPlaylistTracks(backend: backend, playlist: context)
+                            if row.index >= 1, row.index <= tracks.count,
+                               trackKey(title: tracks[row.index - 1].name, artist: tracks[row.index - 1].artist)
+                                   == trackKey(title: row.name, artist: row.artist) {
+                                store.set(AppQueue(playlistName: context, tracks: tracks, currentIndex: row.index))
+                                try require(playQueueTrack(backend: backend, playlist: context, position: row.index), "Couldn't play that track.")
+                                return
+                            }
+                        }
+                        try require(playLibraryTrack(backend: backend, title: row.name, artist: row.artist), "'\(row.name)' not found in the library.")
+                    },
+                    // The matrix refuses a queue-row jump on every SpanDAC
+                    // output, so this is never reached; it fails closed.
+                    source: { _ in throw bridgeNotWiredYet("Jumping to a queue row") },
+                    unaffected: {})
             }
             return .redraw
         case .char("l"):
@@ -985,10 +1006,21 @@ final class NowPlayingScene: Scene {
         }
     }
     /// Genius Shuffle rebuilds the queue from the current song (UI-scripted).
+    ///
+    /// Through the coordinator, so the one play-out gate refuses it while a
+    /// SpanDAC queue plays out (Anthony, 2026-10-05 16:07; Codex review 104):
+    /// Genius Shuffle starts Apple's Music player.
     private func triggerGenius() {
         geniusActive = true; geniusTriggeredAt = Date()
+        let backend = self.backend
+        let routing = self.routing
         actions.run("Genius") {
-            try require((try? triggerGeniusShuffle(self.backend)) != nil, "Genius Shuffle failed.")
+            try routing.perform(.genius,
+                musicApp: { try require((try? triggerGeniusShuffle(backend)) != nil, "Genius Shuffle failed.") },
+                // The matrix refuses Genius on every SpanDAC output, so this
+                // is never reached; it fails closed.
+                source: { _ in throw bridgeNotWiredYet("Genius") },
+                unaffected: {})
         }
     }
 
