@@ -96,6 +96,32 @@ final class SpanDACWholePlaySceneTests: XCTestCase {
         return !wire.sent("slice.playLibrary").isEmpty
     }
 
+    /// Whether `op` was requested before the first `slice.playLibrary`: a whole play
+    /// is sent without reading the container's rows. A read AFTER the play is the
+    /// background one that fills Up Next.
+    private func readsBeforePlay(_ wire: BridgeLibraryReadsWire, _ op: String) -> Bool {
+        let ops = wire.opsInOrder()
+        guard let play = ops.firstIndex(of: "slice.playLibrary") else { return ops.contains(op) }
+        return ops[..<play].contains(op)
+    }
+
+    /// Waits until `op` has been requested at least `count` times.
+    private func settleRequested(_ wire: BridgeLibraryReadsWire, _ op: String, count: Int = 1,
+                                 seconds: Double = 3.0) -> Bool {
+        let deadline = Date().addingTimeInterval(seconds)
+        while Date() < deadline {
+            if wire.sent(op).count >= count { return true }
+            usleep(5_000)
+        }
+        return wire.sent(op).count >= count
+    }
+
+    /// A `slice.status` for the Now tab: SpanDAC's `row` and `next_rows` against its queue token.
+    private func nowStatus(title: String, row: Int, next: [Int], token: String) throws -> SourceStatus {
+        let r = #"{"ok":true,"op":"slice.status","status":{"playback":"playing","contract":3,"authorization":"authorized","title":"\#(title)","artist":"A","row":\#(row),"next_rows":\#(next),"queue_token":"\#(token)","queue":{"phase":"complete","requested":3,"present":3,"index":0}}}"#
+        return try SourceAppControl(path: "/nonexistent", transport: { _, _ in r }).status()
+    }
+
     /// Lets a play that was NOT supposed to send a queue run to the end.
     private func pause(_ seconds: Double = 0.4) {
         let end = Date().addingTimeInterval(seconds)
@@ -393,7 +419,7 @@ final class SpanDACWholePlaySceneTests: XCTestCase {
         XCTAssertEqual(wire.sent("slice.listRev").count, 1)
         XCTAssertEqual(wire.sent("slice.listRev").first?["kind"] as? String, "artist")
         XCTAssertEqual(wire.sent("slice.listRev").first?["id"] as? String, "ar1")
-        XCTAssertTrue(wire.sent("slice.libraryArtistSongs").isEmpty, "the artist's songs were read to play them")
+        XCTAssertFalse(readsBeforePlay(wire, "slice.libraryArtistSongs"), "the artist's songs were read to play them")
         XCTAssertNil(req["library_ids"])
         XCTAssertTrue(wire.sent("slice.queue").isEmpty)
         XCTAssertTrue(settleScene(s) { status.current()?.text == "Playing 'Radiohead' on SpanDAC \u{2014} 1,001 queued." },
@@ -460,8 +486,8 @@ final class SpanDACWholePlaySceneTests: XCTestCase {
         XCTAssertNil(req["start_index"])
         XCTAssertEqual(SourceAppControl.bool(req["shuffle"]), false)
         XCTAssertEqual(req["list_rev"] as? String, "rev-pl1")
-        XCTAssertTrue(wire.sent("slice.libraryPlaylistTracks").isEmpty,
-                      "no row was read, not even the one-row probe slice.listRev replaced")
+        XCTAssertFalse(readsBeforePlay(wire, "slice.libraryPlaylistTracks"),
+                       "no row was read to play, not even the one-row probe slice.listRev replaced")
         let revReads = wire.sent("slice.listRev")
         XCTAssertEqual(revReads.count, 1)
         XCTAssertEqual(revReads.first?["kind"] as? String, "playlist")
@@ -484,7 +510,7 @@ final class SpanDACWholePlaySceneTests: XCTestCase {
         XCTAssertEqual(SourceAppControl.bool(req["shuffle"]), true)
         XCTAssertNil(req["start_index"])
         XCTAssertEqual(req["list_rev"] as? String, "rev-pl1")
-        XCTAssertTrue(wire.sent("slice.libraryPlaylistTracks").isEmpty)
+        XCTAssertFalse(readsBeforePlay(wire, "slice.libraryPlaylistTracks"))
         XCTAssertEqual(wire.sent("slice.listRev").count, 1)
     }
 
@@ -528,5 +554,144 @@ final class SpanDACWholePlaySceneTests: XCTestCase {
         XCTAssertTrue(settleScene(s) { r.spanDACPlay() != nil })
         XCTAssertEqual(r.spanDACPlay()?.rows.map(\.id), ["i.a", "i.b", "i.a"])
         XCTAssertEqual(r.spanDACPlay()?.token, "qpl-9")
+    }
+
+    // MARK: - Up Next after a whole play that sent no rows
+
+    /// An uncached playlist plays whole by its revision and records no rows. The rows
+    /// are read AFTER the play, off the action, and filled in for Up Next.
+    func testAnUncachedPlaylistPlayFillsItsRowsFromABackgroundReadAfterThePlay() throws {
+        let wire = stickyWire(["slice.libraryPlaylists": [onePlaylistPage], "slice.status": [Self.capable],
+                               "slice.listRev": [Self.revReply("playlist", "rev-pl1", count: 3)],
+                               "slice.playLibrary": [Self.playReply(queued: 3, token: "qpl-7")]])
+        wire.script("slice.libraryPlaylistTracks", [playlistTracks(["i.a", "i.b", "i.c"])])
+        let r = routing(wire)
+        let s = playlistScene(wire, routing: r)
+        _ = s.handle(.char("p"))
+        XCTAssertTrue(settleScene(s) { r.spanDACPlay()?.rows.count == 3 }, "the background read never filled the rows")
+        XCTAssertFalse(readsBeforePlay(wire, "slice.libraryPlaylistTracks"), "sound waited for the row read")
+        XCTAssertEqual(r.spanDACPlay()?.rows.map(\.id), ["i.a", "i.b", "i.c"])
+        XCTAssertEqual(r.spanDACPlay()?.token, "qpl-7")
+        XCTAssertEqual(r.spanDACPlay()?.listRev, "rev-pl1")
+        let played = r.spanDACPlay()
+        let window = spanDACQueueWindow(sent: played?.rows, token: played?.token, shuffled: played?.shuffled ?? false,
+                                        status: try nowStatus(title: "Pi.a", row: 0, next: [1, 2], token: "qpl-7"))
+        XCTAssertEqual(window.entries.map(\.name), ["Pi.a", "Pi.b", "Pi.c"], "Up Next comes from next_rows")
+    }
+
+    func testABackgroundReadWhoseListRevDiffersFromThePlaysRecordsNoRows() {
+        let wire = stickyWire(["slice.libraryPlaylists": [onePlaylistPage], "slice.status": [Self.capable],
+                               "slice.listRev": [Self.revReply("playlist", "rev-pl1", count: 3)],
+                               "slice.playLibrary": [Self.playReply(queued: 3, token: "qpl-7")]])
+        wire.script("slice.libraryPlaylistTracks", [playlistTracks(["i.a", "i.b", "i.c"], listRev: "rev-newer")])
+        let r = routing(wire)
+        let s = playlistScene(wire, routing: r)
+        _ = s.handle(.char("p"))
+        XCTAssertTrue(settleRequested(wire, "slice.libraryPlaylistTracks"))
+        pause()
+        XCTAssertEqual(r.spanDACPlay()?.rows.count, 0, "rows of another revision index another list")
+        XCTAssertEqual(r.spanDACPlay()?.token, "qpl-7", "the play itself is still recorded")
+    }
+
+    func testAFailedBackgroundReadLeavesUpNextEmptyAndPostsNoError() {
+        let wire = stickyWire(["slice.libraryPlaylists": [onePlaylistPage], "slice.status": [Self.capable],
+                               "slice.listRev": [Self.revReply("playlist", "rev-pl1", count: 3)],
+                               "slice.playLibrary": [Self.playReply(queued: 3, token: "qpl-7")]])
+        // No libraryPlaylistTracks scripted: the read answers an error.
+        let status = StatusStore()
+        let r = routing(wire)
+        let s = playlistScene(wire, status: status, routing: r)
+        _ = s.handle(.char("p"))
+        XCTAssertTrue(settleScene(s) { status.current()?.text.hasPrefix("Playing") == true })
+        XCTAssertTrue(settleRequested(wire, "slice.libraryPlaylistTracks"), "the background read never started")
+        pause(0.2)
+        XCTAssertEqual(r.spanDACPlay()?.rows.count, 0)
+        XCTAssertEqual(status.current()?.isError, false, "a failed Up Next read is silent")
+        XCTAssertEqual(status.current()?.text, "Playing 'Chill' on SpanDAC \u{2014} 3 queued.")
+    }
+
+    /// A later play wins: the read of the first play lands after the second recorded.
+    func testANewerPlayBeforeTheBackgroundReadLandsKeepsItsOwnRows() throws {
+        let wire = stickyWire(["slice.libraryPlaylists": [onePlaylistPage], "slice.status": [Self.capable],
+                               "slice.listRev": [Self.revReply("playlist", "rev-pl1", count: 3)],
+                               "slice.playLibrary": [Self.playReply(queued: 3, token: "qpl-7")]])
+        wire.script("slice.libraryPlaylistTracks", [playlistTracks(["i.a", "i.b", "i.c"])])
+        wire.gate(op: "slice.libraryPlaylistTracks", at: 0)
+        let r = routing(wire)
+        let s = playlistScene(wire, routing: r)
+        _ = s.handle(.char("p"))
+        XCTAssertTrue(settleRequested(wire, "slice.libraryPlaylistTracks"), "the background read never started")
+        XCTAssertTrue(settleScene(s) { r.spanDACPlay()?.token == "qpl-7" })
+        // A later play (a station here) moves the serial, then a newer SpanDAC play records its own rows.
+        try r.perform(.radioStationPlay, expecting: nil, musicApp: { _ in }, source: { _ in }, unaffected: {})
+        r.recordSpanDACPlay([MusicRow(id: "n1", title: "Newer", artist: "N", album: "", kind: .song)], token: "qnew-2")
+        wire.release(op: "slice.libraryPlaylistTracks", at: 0)
+        pause()
+        XCTAssertEqual(r.spanDACPlay()?.rows.map(\.id), ["n1"], "the older play's read replaced the newer play's rows")
+        XCTAssertEqual(r.spanDACPlay()?.token, "qnew-2")
+    }
+
+    func testACachedPlaylistPlayReadsNothingMoreAfterThePlay() {
+        let wire = stickyWire(["slice.libraryPlaylists": [onePlaylistPage], "slice.status": [Self.capable],
+                               "slice.playLibrary": [Self.playReply(queued: 3, token: "qpl-9")]])
+        wire.script("slice.libraryPlaylistTracks", [playlistTracks(["i.a", "i.b", "i.c"]), playlistTracks(["i.a", "i.b", "i.c"])])
+        let r = routing(wire)
+        let s = playlistScene(wire, routing: r)
+        _ = s.handle(.enter)
+        XCTAssertTrue(settleScene(s) { s.render(frame: threeZone, snapshot: idle).contains("Pi.b") })
+        for _ in 0..<20 { _ = s.tick(snapshot: idle); usleep(2_000) }
+        let before = wire.sent("slice.libraryPlaylistTracks").count
+        _ = s.handle(.enter)
+        XCTAssertTrue(settlePlayed(wire))
+        XCTAssertTrue(settleScene(s) { r.spanDACPlay()?.rows.count == 3 })
+        pause()
+        XCTAssertEqual(wire.sent("slice.libraryPlaylistTracks").count, before, "a cached play read the rows again")
+    }
+
+    func testAnUncachedAlbumPlayFillsItsRowsFromABackgroundReadAfterThePlay() {
+        let wire = stickyWire(["slice.libraryAlbums": [albumPage],
+                               "slice.libraryAlbumTracks": [trackReply(["t1", "t2", "t3"]), trackReply(["t1", "t2", "t3"])],
+                               "slice.listRev": [Self.revReply("album", "rev-al1")],
+                               "slice.status": [Self.capable],
+                               "slice.playLibrary": [Self.playReply(queued: 3, token: "qal-5")]])
+        let r = routing(wire)
+        let s = albumScene(wire, routing: r)
+        _ = s.handle(.char("p"))
+        XCTAssertTrue(settleScene(s) { r.spanDACPlay()?.rows.count == 3 }, "the background read never filled the rows")
+        XCTAssertEqual(r.spanDACPlay()?.rows.map(\.id), ["t1", "t2", "t3"])
+        XCTAssertEqual(r.spanDACPlay()?.token, "qal-5")
+        XCTAssertEqual(r.spanDACPlay()?.listRev, "rev-al1")
+    }
+
+    func testAnAlbumBackgroundReadOfAnotherRevisionRecordsNoRows() {
+        let wire = stickyWire(["slice.libraryAlbums": [albumPage],
+                               "slice.libraryAlbumTracks": [trackReply(["t1", "t2", "t3"], listRev: "rev-other"),
+                                                            trackReply(["t1", "t2", "t3"], listRev: "rev-other")],
+                               "slice.listRev": [Self.revReply("album", "rev-al1")],
+                               "slice.status": [Self.capable],
+                               "slice.playLibrary": [Self.playReply(queued: 3, token: "qal-5")]])
+        let r = routing(wire)
+        let s = albumScene(wire, routing: r)
+        _ = s.handle(.char("p"))
+        XCTAssertTrue(settlePlayed(wire))
+        pause()
+        XCTAssertEqual(r.spanDACPlay()?.rows.count, 0)
+    }
+
+    func testAnUncachedArtistPlayFillsItsRowsFromABackgroundReadAfterThePlay() {
+        let wire = stickyWire(["slice.libraryArtists": [artistPage], "slice.status": [Self.capable],
+                               "slice.libraryArtistSongs": [artistSongs(["t1", "t2"])],
+                               "slice.listRev": [Self.revReply("artist", "rev-ar1", count: 2)],
+                               "slice.playLibrary": [Self.playReply(queued: 2, token: "qar-3")]])
+        let r = routing(wire)
+        let s = libraryTestScene(flag: BridgeSelectedFlag(true), wire: wire, spy: LibraryAppleScriptSpy(), routing: r)
+        goToSubView(s, .artists)
+        XCTAssertTrue(settleScene(s) { s.render(frame: frame, snapshot: idle).contains("Radiohead") })
+        _ = s.handle(.char("p"))
+        XCTAssertTrue(settleScene(s) { r.spanDACPlay()?.rows.count == 2 }, "the background read never filled the rows")
+        XCTAssertFalse(readsBeforePlay(wire, "slice.libraryArtistSongs"))
+        XCTAssertEqual(r.spanDACPlay()?.rows.map(\.id), ["t1", "t2"])
+        XCTAssertEqual(r.spanDACPlay()?.token, "qar-3")
+        XCTAssertEqual(r.spanDACPlay()?.listRev, "rev-ar1")
     }
 }

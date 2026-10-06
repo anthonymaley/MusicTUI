@@ -1940,6 +1940,7 @@ final class LibraryScene: Scene {
                 var skippedUnavailable = 0
                 var handedOff: HandoffPlayReport?
                 var wholeResult: SpanDACPlayResult?
+                var wholeSerial: Int?
                 try retryingWhileWarming(budget: budget, onWarming: onWarming, sleep: sleep) {
                     // Stamped at the keypress: a switch that committed while
                     // the tracks were read plays nothing (C-EPOCH).
@@ -1958,8 +1959,8 @@ final class LibraryScene: Scene {
                                 let result = try spanDACOutputPlayer(client).playLibrary(
                                     kind: .album, id: albumID, start: start, listRev: rev, shuffle: shuffle)
                                 wholeResult = result
-                                routing.recordSpanDACPlay(trackRows ?? [], token: result.queueToken, listRev: rev,
-                                                          shuffled: shuffle)
+                                wholeSerial = routing.recordSpanDACPlay(trackRows ?? [], token: result.queueToken,
+                                                                        listRev: rev, shuffled: shuffle)
                                 return
                             }
                             guard let ids, let sent else { throw ActionError(message: sourceChangedNothingPlayed) }
@@ -1976,6 +1977,14 @@ final class LibraryScene: Scene {
                     return
                 }
                 if let wholeResult {
+                    // Nothing was cached, so no rows were recorded: read them after the
+                    // play, off this action, so Up Next has a list to index.
+                    if trackRows == nil, let wholeSerial {
+                        fillUpNextRowsInBackground(routing: routing, serial: wholeSerial, token: wholeResult.queueToken) {
+                            let list = try retryingWhileWarming(sleep: sleep) { try provider.albumTracks(albumID: albumID) }
+                            return (list.rows, list.listRev)
+                        }
+                    }
                     status.post(bridgeWholePlayMessage(name: title, result: wholeResult),
                                 untilStateChange: bridgeWholePlayNeedsAttention(wholeResult))
                     return
@@ -2045,6 +2054,7 @@ final class LibraryScene: Scene {
                 var skippedUnavailable = 0
                 var handedOff: HandoffPlayReport?
                 var wholeResult: SpanDACPlayResult?
+                var wholeSerial: Int?
                 try retryingWhileWarming(budget: budget, onWarming: onWarming, sleep: sleep) {
                     try routing.perform(.libraryPlay, expecting: stamp, origin: .spandacLibrary,
                         musicApp: { path in
@@ -2059,8 +2069,8 @@ final class LibraryScene: Scene {
                                 let result = try spanDACOutputPlayer(client).playLibrary(
                                     kind: .artist, id: artistID, start: start, listRev: rev, shuffle: shuffle)
                                 wholeResult = result
-                                routing.recordSpanDACPlay(songRows ?? [], token: result.queueToken, listRev: rev,
-                                                          shuffled: shuffle)
+                                wholeSerial = routing.recordSpanDACPlay(songRows ?? [], token: result.queueToken,
+                                                                        listRev: rev, shuffled: shuffle)
                                 return
                             }
                             guard let ids, let sent else { throw ActionError(message: sourceChangedNothingPlayed) }
@@ -2077,6 +2087,14 @@ final class LibraryScene: Scene {
                     return
                 }
                 if let wholeResult {
+                    // No rows were read to play, so none were recorded: read them after
+                    // the play, off this action, so Up Next has a list to index.
+                    if songRows == nil, let wholeSerial {
+                        fillUpNextRowsInBackground(routing: routing, serial: wholeSerial, token: wholeResult.queueToken) {
+                            let list = try retryingWhileWarming(sleep: sleep) { try provider.artistSongs(artistID: artistID) }
+                            return (list.rows, list.listRev)
+                        }
+                    }
                     status.post(bridgeWholePlayMessage(name: name, result: wholeResult),
                                 untilStateChange: bridgeWholePlayNeedsAttention(wholeResult))
                     return

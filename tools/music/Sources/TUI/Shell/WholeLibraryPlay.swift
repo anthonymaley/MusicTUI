@@ -121,6 +121,22 @@ func planLibraryPlay(routing: RoutingCoordinator, stamp: (epoch: Int, dataEpoch:
     return PlannedLibraryPlay(plan: plan, rows: rows, listRev: rev)
 }
 
+/// Up Next for a whole play that sent no rows. A play the client had not cached
+/// goes by id and `list_rev` alone, so no rows were recorded and the Now tab has
+/// nothing to index SpanDAC's `row` / `next_rows` against. This reads the
+/// container's rows on a background thread AFTER the play reply (sound never
+/// waits for it) and fills them in for Up Next through
+/// `RoutingCoordinator.fillSpanDACPlayRows`, which keeps them only for the play
+/// they were read for and only when their `list_rev` is the one the play was sent
+/// with. A failed read leaves Up Next empty: silent, no footer, no error.
+func fillUpNextRowsInBackground(routing: RoutingCoordinator, serial: Int, token: String?,
+                                read: @escaping () throws -> (rows: [MusicRow], listRev: String?)) {
+    DispatchQueue.global(qos: .utility).async {
+        guard let list = try? read() else { return }
+        routing.fillSpanDACPlayRows(list.rows, listRev: list.listRev, serial: serial, token: token)
+    }
+}
+
 /// Whether the OUTPUT SpanDAC (the selected one, not the data client) plays a
 /// library container whole. Called after any read the play needed (see
 /// `planLibraryPlay`), never before: it builds the output client, which a play

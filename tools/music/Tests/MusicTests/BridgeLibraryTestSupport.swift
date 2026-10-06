@@ -97,6 +97,11 @@ final class BridgeLibraryReadsWire {
         lock.lock(); defer { lock.unlock() }
         return requests.filter { ($0["op"] as? String) == op }
     }
+    /// Every request's op, in the order they arrived.
+    func opsInOrder() -> [String] {
+        lock.lock(); defer { lock.unlock() }
+        return requests.compactMap { $0["op"] as? String }
+    }
     var requestCount: Int { lock.lock(); defer { lock.unlock() }; return requests.count }
 }
 

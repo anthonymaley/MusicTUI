@@ -520,10 +520,33 @@ final class RoutingCoordinator {
     /// them. `shuffled` is true for a `slice.playLibrary` that SpanDAC shuffled
     /// itself: the rows are then in container order, not play order, so a
     /// status without `next_rows` has no Up Next list to offer.
+    ///
+    /// Returns the play serial the record is tied to, for a caller that fills the
+    /// rows in later (`fillSpanDACPlayRows`).
+    @discardableResult
     func recordSpanDACPlay(_ rows: [MusicRow], token: String? = nil, listRev: String? = nil,
-                           shuffled: Bool = false) {
+                           shuffled: Bool = false) -> Int {
         state.lock(); defer { state.unlock() }
         _spanDACSent = (_playSerial, rows, token, listRev, shuffled)
+        return _playSerial
+    }
+
+    /// Fills in the rows of a whole play that recorded none (the client had not
+    /// cached the container, so `slice.playLibrary` went by id and `list_rev`),
+    /// after they were read in the background. Records them ONLY IF the play
+    /// recorded under `serial` is still the current one, still has no rows, still
+    /// carries `token`, and `listRev` (the revision the read came with) is the
+    /// one the play was sent with: rows of another revision index another list.
+    /// A later play, or a read that lost any of these, changes nothing. Returns
+    /// whether the rows were kept.
+    @discardableResult
+    func fillSpanDACPlayRows(_ rows: [MusicRow], listRev: String?, serial: Int, token: String?) -> Bool {
+        state.lock(); defer { state.unlock() }
+        guard !rows.isEmpty, let listRev, let sent = _spanDACSent,
+              sent.serial == serial, serial == _playSerial,
+              sent.rows.isEmpty, sent.token == token, sent.listRev == listRev else { return false }
+        _spanDACSent = (sent.serial, rows, sent.token, sent.listRev, sent.shuffled)
+        return true
     }
 
     /// The rows the CURRENT play sent, or nil. Any later chosen-music play in

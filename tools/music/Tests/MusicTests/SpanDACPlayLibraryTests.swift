@@ -408,6 +408,45 @@ final class SpanDACPlayLibraryTests: XCTestCase {
         XCTAssertNil(r.spanDACPlay())
     }
 
+    // MARK: - rows filled in after a whole play that sent none
+
+    func testFillKeepsTheRowsOnlyForTheSamePlayTokenAndListRev() {
+        let r = routing()
+        let rows = [song(0), song(1)]
+        let serial = r.recordSpanDACPlay([], token: "qA-1", listRev: "rev-1")
+        XCTAssertFalse(r.fillSpanDACPlayRows(rows, listRev: "rev-2", serial: serial, token: "qA-1"), "another revision")
+        XCTAssertFalse(r.fillSpanDACPlayRows(rows, listRev: nil, serial: serial, token: "qA-1"), "no revision claimed")
+        XCTAssertFalse(r.fillSpanDACPlayRows(rows, listRev: "rev-1", serial: serial, token: "qB-2"), "another token")
+        XCTAssertFalse(r.fillSpanDACPlayRows(rows, listRev: "rev-1", serial: serial + 1, token: "qA-1"), "another play")
+        XCTAssertFalse(r.fillSpanDACPlayRows([], listRev: "rev-1", serial: serial, token: "qA-1"), "nothing read")
+        XCTAssertEqual(r.spanDACPlay()?.rows.count, 0)
+        XCTAssertTrue(r.fillSpanDACPlayRows(rows, listRev: "rev-1", serial: serial, token: "qA-1"))
+        XCTAssertEqual(r.spanDACPlay()?.rows.map(\.id), ["i0", "i1"])
+        XCTAssertEqual(r.spanDACPlay()?.token, "qA-1")
+        XCTAssertEqual(r.spanDACPlay()?.listRev, "rev-1")
+    }
+
+    func testFillNeverReplacesRowsAPlayAlreadyRecorded() {
+        let r = routing()
+        let serial = r.recordSpanDACPlay([song(0)], token: "qA-1", listRev: "rev-1")
+        XCTAssertFalse(r.fillSpanDACPlayRows([song(5), song(6)], listRev: "rev-1", serial: serial, token: "qA-1"))
+        XCTAssertEqual(r.spanDACPlayedRows()?.map(\.id), ["i0"])
+    }
+
+    func testFillOfAnOlderPlayNeverTouchesANewerPlaysRowsOrRecordsOverAnEndedOne() throws {
+        let r = routing()
+        let first = r.recordSpanDACPlay([], token: "qA-1", listRev: "rev-1")
+        try r.perform(.radioStationPlay, expecting: nil, musicApp: { _ in }, source: { _ in }, unaffected: {})
+        XCTAssertFalse(r.fillSpanDACPlayRows([song(0)], listRev: "rev-1", serial: first, token: "qA-1"),
+                       "a later play ended this one")
+        XCTAssertNil(r.spanDACPlay())
+        let second = r.recordSpanDACPlay([], token: "qB-2", listRev: "rev-1")
+        XCTAssertNotEqual(first, second)
+        XCTAssertFalse(r.fillSpanDACPlayRows([song(0)], listRev: "rev-1", serial: first, token: "qA-1"))
+        XCTAssertEqual(r.spanDACPlay()?.rows.count, 0)
+        XCTAssertEqual(r.spanDACPlay()?.token, "qB-2")
+    }
+
     // MARK: - the poller applies the rule end to end
 
     func testThePollerShowsNoUpNextWhenStatusEchoesAnotherQueuesToken() throws {
