@@ -1713,8 +1713,12 @@ extension SourceAppControl: CompletedPlaysReading {
     }
 
     /// One play record. `alias` must be present as text or an explicit null;
-    /// an absent key is not the same claim as "no alias". `duration_s` and
-    /// `position_s` are evidence for Bridge's own decision and are not read.
+    /// an absent key is not the same claim as "no alias". `library_id` is text
+    /// when SpanDAC identified the song, and null, absent or empty when it could
+    /// not: all three read as "unidentified" (nil), because the only safe
+    /// reading of a missing identity is no identity. Any other type is a broken
+    /// peer. `duration_s` and `position_s` are evidence for Bridge's own
+    /// decision and are not read.
     private static func completedPlay(_ item: [String: Any],
                                        bad: (String) -> SourceAppError) throws -> CompletedPlayRecord {
         guard let seq = strictInt(item["seq"]), seq >= 1 else { throw bad("has a play with no seq") }
@@ -1729,12 +1733,18 @@ extension SourceAppControl: CompletedPlaysReading {
         case nil:                  throw bad("has play \(seq) with no alias")
         default:                   throw bad("has play \(seq) with an alias that is neither text nor null")
         }
+        let libraryID: String?
+        switch item["library_id"] {
+        case nil, is NSNull:       libraryID = nil
+        case let value as String:  libraryID = value.isEmpty ? nil : value
+        default:                   throw bad("has play \(seq) with a library_id that is neither text nor null")
+        }
         let stamp = try text("completed_at")
         guard let completedAt = completedAtFormatter.date(from: stamp) else {
             throw bad("has play \(seq) with an unreadable completed_at")
         }
         return CompletedPlayRecord(seq: seq, playID: try text("play_id"), alias: alias,
-                                   libraryID: try text("library_id"),
+                                   libraryID: libraryID,
                                    title: try text("title"), artist: try text("artist"),
                                    completedAt: completedAt, end: try text("end"))
     }

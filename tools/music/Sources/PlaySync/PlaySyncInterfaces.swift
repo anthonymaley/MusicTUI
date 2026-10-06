@@ -18,6 +18,9 @@ struct CompletedPlayRecord: Equatable {
     let playID: String
     /// Music.app's persistent ID as a signed decimal, when Bridge has one.
     let alias: String?
+    /// The library song SpanDAC identified as the one that played. Nil when it
+    /// could not identify the song: such a play is never credited to any song,
+    /// whatever its alias, title or artist say.
     let libraryID: String?
     let title: String
     let artist: String
@@ -221,6 +224,10 @@ struct PlaySyncResult: Equatable {
     /// nothing failed. Added after the freeze, with a default, so every
     /// existing construction is unchanged.
     var musicAccess: MusicAccessError? = nil
+    /// Plays read this pass that SpanDAC could not identify (no `library_id`).
+    /// They are consumed and counted here, never credited and never journaled.
+    /// Added after the freeze, with a default.
+    var unidentified: Int = 0
 }
 
 /// The only way anything outside the engine touches play sync. Every journal

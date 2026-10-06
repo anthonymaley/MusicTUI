@@ -119,6 +119,42 @@ final class BridgeNowTests: XCTestCase {
         XCTAssertEqual(bridgeStatusLine(b), "Checking SpanDAC\u{2026}")
     }
 
+    // MARK: - Fewer songs present than requested
+
+    /// SpanDAC may queue fewer songs than the client asked for. That is a
+    /// complete queue of the songs it has, never a failure and never retried.
+    func testACompleteQueueWithFewerPresentThanRequestedIsComplete() {
+        let b = bridgeNow(from: status(phase: "complete", requested: 800, present: 796, index: 0))
+        XCTAssertEqual(b.queue, .complete(requested: 800, present: 796))
+        XCTAssertEqual(b.link, .answering)
+        XCTAssertEqual(bridgeStatusLine(b), "796 of 800 queued.")
+    }
+
+    func testAFullCompleteQueueSaysNothingAboutCounts() {
+        XCTAssertNil(bridgeStatusLine(bridgeNow(from: status(phase: "complete", requested: 800, present: 800))))
+        XCTAssertNil(bridgeStatusLine(bridgeNow(from: status(phase: "complete", requested: 800))),
+                     "a SpanDAC that sends no present count is read as before")
+    }
+
+    func testThePositionOfAShortQueueCountsOnlyTheSongsThatAreThere() {
+        XCTAssertEqual(bridgePositionLine(now(queue: .complete(requested: 800, present: 796), index: 4)),
+                       "Song 5 of 796")
+        XCTAssertNil(bridgePositionLine(now(queue: .complete(requested: 800, present: 796), index: 796)))
+    }
+
+    func testAShortCompleteQueueKeepsLoadingAndLinkPrecedence() {
+        let short = BridgeNow.Queue.complete(requested: 800, present: 796)
+        XCTAssertEqual(bridgeStatusLine(now(playback: "loading", queue: short)), "Loading\u{2026}")
+        XCTAssertEqual(bridgeStatusLine(now(link: .notResponding, queue: short)), "SpanDAC is not responding.")
+    }
+
+    func testTheNowJSONCarriesBothCountsUntouched() {
+        let json = bridgeNowJSON(status(phase: "complete", requested: 800, present: 796))
+        let queue = json["queue"] as? [String: Any]
+        XCTAssertEqual(queue?["requested"] as? Int, 800)
+        XCTAssertEqual(queue?["present"] as? Int, 796)
+    }
+
     // MARK: - Lines
 
     private func now(link: BridgeNow.Link = .answering, playback: String = "playing",
@@ -189,6 +225,15 @@ final class BridgeNowTests: XCTestCase {
         XCTAssertNil(s.queueReason)
         XCTAssertNil(s.queueBuiltBeforeFailure)
         XCTAssertNil(s.queueIndex)
+    }
+
+    func testStatusDecodesFewerPresentThanRequested() throws {
+        let reply = #"{"ok":true,"op":"slice.status","status":{"playback":"playing","contract":3,"authorization":"authorized","title":"T","artist":"A","queue":{"phase":"complete","requested":800,"present":796,"index":2}}}"#
+        let s = try SourceAppControl(path: "/nonexistent", transport: { _, _ in reply }).status()
+        XCTAssertEqual(s.queuePhase, "complete")
+        XCTAssertEqual(s.queueRequested, 800)
+        XCTAssertEqual(s.queuePresent, 796)
+        XCTAssertEqual(s.readiness, .ready)
     }
 
     // MARK: - Now scene and footer

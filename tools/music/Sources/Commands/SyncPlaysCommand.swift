@@ -42,6 +42,11 @@ enum SyncPlaysSentence {
                : "Recorded \(n) library plays in Apple's Music player."
     }
     static let nothingNew = "Nothing new to record."
+    /// Plays SpanDAC could not identify are never credited to a song.
+    static func unidentified(_ n: Int) -> String {
+        n == 1 ? "1 play SpanDAC couldn't identify was not counted."
+               : "\(n) plays SpanDAC couldn't identify were not counted."
+    }
     static func musicNotRunning(waiting n: Int) -> String {
         (n == 1 ? "1 play waiting" : "\(n) plays waiting")
             + ": Apple's Music player is not running. Open it and run music sync-plays again."
@@ -172,8 +177,11 @@ func renderSyncPlays(_ result: PlaySyncResult, json: Bool) -> (text: String, exi
             let sentence = S.musicAccessFailed(access, waiting: result.waiting)
             notices.append(sentence); failure = failure ?? sentence
         }
-        if result.recorded.isEmpty && notices.isEmpty { lines.append(S.nothingNew) }
+        if result.recorded.isEmpty && notices.isEmpty && result.unidentified == 0 { lines.append(S.nothingNew) }
         lines += notices
+        // Not a failure: SpanDAC said it could not tell which song played, and
+        // the play was left uncounted rather than guessed at.
+        if result.unidentified > 0 { lines.append(S.unidentified(result.unidentified)) }
 
         if !result.unconfirmed.isEmpty {
             lines.append(S.unconfirmedHeader(result.unconfirmed.count))
@@ -204,6 +212,7 @@ func renderSyncPlays(_ result: PlaySyncResult, json: Bool) -> (text: String, exi
             ["title": $0.title, "artist": $0.artist, "completed_at": $0.completedAt] as [String: Any]
         },
         "waiting": result.waiting,
+        "unidentified": result.unidentified,
         "unconfirmed": result.unconfirmed.map { ["title": $0.title, "artist": $0.artist] },
         "music_running": result.musicRunning,
         "bridge": bridge,

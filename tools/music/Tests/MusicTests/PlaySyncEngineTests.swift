@@ -74,6 +74,18 @@ private final class FakeFeed: CompletedPlaysReading {
         return seq
     }
 
+    /// A play SpanDAC could not identify: `library_id` is null. Its alias and
+    /// title are whatever SpanDAC still reported, and may name a real song.
+    @discardableResult
+    func addUnidentified(_ alias: String?, _ title: String, at completedAt: Int) -> Int {
+        let seq = plays.count + 1
+        plays.append(CompletedPlayRecord(
+            seq: seq, playID: "\(ledgerID)-play-\(seq)", alias: alias, libraryID: nil,
+            title: title, artist: "Artist", completedAt: Date(timeIntervalSince1970: TimeInterval(completedAt) + 0.496),
+            end: "advance"))
+        return seq
+    }
+
     func replaceLedger(with id: String) {
         ledgerID = id
         plays = []
@@ -1466,5 +1478,71 @@ final class PlaySyncEngineTests: XCTestCase {
         XCTAssertEqual(result.fetch, .skipped)
         XCTAssertTrue(result.musicRunning)
         XCTAssertFalse(FileManager.default.fileExists(atPath: h.paths.journal.path))
+    }
+
+    // MARK: - Plays SpanDAC could not identify (library_id null)
+
+    /// The ruling: a play is credited by the playing song's own identity,
+    /// never by position or title. SpanDAC's alias on an unidentified play is
+    /// not that identity, even when it names a song in the library.
+    func testAnUnidentifiedPlayIsNeverCreditedEvenWithAMatchingAlias() {
+        h.feed.addUnidentified(Song.awakeAlias, "Are You Awake?", at: At.first)
+
+        let result = h.pass()
+
+        XCTAssertEqual(h.writer.calls, [], "Music's library is not even read for it")
+        XCTAssertEqual(h.writer.library[Song.awake], state(27, At.earlier))
+        XCTAssertEqual(result.recorded, [])
+        XCTAssertEqual(result.unidentified, 1)
+        XCTAssertEqual(result.fetch, .ok(newPlays: 0))
+        XCTAssertEqual(result.outstanding, [])
+        XCTAssertEqual(result.newProblems, [])
+        XCTAssertEqual(h.journal().entries, [], "nothing that could ever be credited is kept")
+        XCTAssertEqual(h.journal().consumedThrough, 1, "the play is consumed, not refetched")
+    }
+
+    func testAnUnidentifiedPlayWithNoAliasAndAMatchingTitleIsNeverCredited() {
+        h.feed.addUnidentified(nil, "Organ Donor", at: At.first)
+        let result = h.pass()
+        XCTAssertEqual(h.writer.calls, [])
+        XCTAssertEqual(h.writer.library[Song.donor], state(5, At.earlier))
+        XCTAssertEqual(result.unidentified, 1)
+    }
+
+    func testAnUnidentifiedPlayDoesNotAbortOrBlockThePlaysAroundIt() {
+        h.feed.add(Song.awakeAlias, "Are You Awake?", at: At.first)
+        h.feed.addUnidentified(Song.donorAlias, "Organ Donor", at: At.second)
+        h.feed.add(Song.awakeAlias, "Are You Awake?", at: At.third)
+        h.feed.add(Song.spontAlias, "Spontaneous", at: At.fourth)
+
+        let result = h.pass()
+
+        XCTAssertEqual(result.recorded.map(\.seq), [1, 3, 4])
+        XCTAssertEqual(result.unidentified, 1)
+        XCTAssertEqual(result.fetch, .ok(newPlays: 3))
+        XCTAssertEqual(h.writer.library[Song.awake]?.count, 29)
+        XCTAssertEqual(h.writer.library[Song.donor], state(5, At.earlier), "the unidentified play credited nothing")
+        XCTAssertEqual(h.writer.library[Song.spont]?.count, 1)
+        XCTAssertEqual(h.journal().consumedThrough, 4)
+        XCTAssertEqual(h.journal().entries.map(\.seq), [1, 3, 4])
+    }
+
+    func testAnUnidentifiedPlayIsCountedOnceNotOnEveryPass() {
+        h.feed.addUnidentified(Song.awakeAlias, "Are You Awake?", at: At.first)
+        XCTAssertEqual(h.pass().unidentified, 1)
+        XCTAssertEqual(h.pass().unidentified, 0)
+        XCTAssertEqual(h.writer.library[Song.awake], state(27, At.earlier))
+    }
+
+    func testUnidentifiedPlaysOnEveryPageOfASeveralPageFetchAreAllCounted() {
+        for index in 0..<250 {
+            if index % 2 == 0 { h.feed.addUnidentified(Song.awakeAlias, "P\(index)", at: At.first + index) }
+            else { h.feed.add(Song.awakeAlias, "P\(index)", at: At.first + index) }
+        }
+        let result = h.pass()
+        XCTAssertEqual(result.unidentified, 125)
+        XCTAssertEqual(result.recorded.count, 125)
+        XCTAssertEqual(h.writer.library[Song.awake]?.count, 27 + 125)
+        XCTAssertEqual(h.journal().consumedThrough, 250)
     }
 }

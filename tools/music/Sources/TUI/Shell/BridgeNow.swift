@@ -17,7 +17,9 @@ struct BridgeNow: Equatable {
     enum Queue: Equatable {
         case none
         case building(ready: Int?, requested: Int)
-        case complete(requested: Int)
+        /// `present` is set only when SpanDAC queued fewer songs than were
+        /// requested; nil when every requested song is present or it did not say.
+        case complete(requested: Int, present: Int? = nil)
         case invalid(reason: String, built: Int?, requested: Int)
     }
     var link: Link
@@ -64,7 +66,9 @@ func bridgeNow(from status: SourceStatus) -> BridgeNow {
     let queue: BridgeNow.Queue
     switch status.queuePhase {
     case "building": queue = .building(ready: status.queuePresent, requested: requested)
-    case "complete": queue = .complete(requested: requested)
+    case "complete":
+        let short = status.queuePresent.flatMap { $0 >= 0 && $0 < requested ? $0 : nil }
+        queue = .complete(requested: requested, present: short)
     case "invalid":
         queue = .invalid(reason: status.queueReason ?? "the queue could not be built",
                          built: status.queueBuiltBeforeFailure, requested: requested)
@@ -138,6 +142,10 @@ func bridgeStatusLine(_ b: BridgeNow) -> String? {
         guard let ready else { return "Building queue of \(requested)\u{2026}" }
         return "Building queue: \(ready) of \(requested) ready."
     }
+    // SpanDAC queued fewer songs than asked for: a finished queue, said as it is.
+    if case .complete(let requested, let present?) = b.queue {
+        return "\(present) of \(requested) queued."
+    }
     return nil
 }
 
@@ -147,7 +155,10 @@ func bridgePositionLine(_ b: BridgeNow) -> String? {
     guard let index = b.index else { return nil }
     let requested: Int
     switch b.queue {
-    case .building(_, let m), .complete(let m): requested = m
+    case .building(_, let m): requested = m
+    // The index counts the songs that are present, so a short queue's total is
+    // the songs there, not the number asked for.
+    case .complete(let m, let present): requested = present ?? m
     case .none, .invalid: return nil
     }
     guard requested > 0, index >= 0, index < requested else { return nil }
