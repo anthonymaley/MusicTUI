@@ -140,6 +140,7 @@ enum OutputTabData {
 func makeOutputTabScene(dir: String, mode: PlaybackMode, spandac: SpanDACOutputsDriving?,
                         speakers: [[String: Any]] = [], status: StatusStore = StatusStore(),
                         macReply: @escaping () throws -> String = { outputTabReadyReply },
+                        macLine: ((String) throws -> String)? = nil,
                         network: @escaping (String) -> SourceAppClient = { _ in
                             SourceAppClient(path: "/fake", transport: { _, _ in outputTabReadyReply })
                         },
@@ -157,7 +158,9 @@ func makeOutputTabScene(dir: String, mode: PlaybackMode, spandac: SpanDACOutputs
     case .declined: dataStore.decline()
     case .none: try? FileManager.default.removeItem(atPath: dir + "/data.json")
     }
-    let local = { SourceAppClient(path: "/nonexistent", transport: { _, _ in try macReply() }) }
+    let local = { SourceAppClient(path: "/nonexistent", transport: { _, line in
+        try macLine.map { try $0(line) } ?? macReply()
+    }) }
     let routing = RoutingCoordinator(store: store, surface: .tui, dataStore: dataStore,
                                      makeSourceFor: { m in m.networkSourceID.map(network) ?? local() },
                                      makeDataClient: {

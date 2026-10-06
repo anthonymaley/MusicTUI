@@ -463,6 +463,12 @@ final class SpeakersScene: Scene {
     private var startOutcome: MacSpanDACStartOutcome? = nil
     private var inboxStart: MacSpanDACStartOutcome? = nil        // guarded by readinessLock
     private var inboxStopProblem: String?? = nil                 // guarded by readinessLock
+    /// Why SpanDAC could not make its DAC the Mac's sound output on the last
+    /// Enter (`slice.useDAC` refused), shown on the Mac row while that DAC is
+    /// still switchable. Main loop only; arrives through `inboxOutputProblem`
+    /// (`.some(nil)` clears it).
+    private var macOutputProblem: String? = nil
+    private var inboxOutputProblem: String?? = nil               // guarded by readinessLock
     /// Whether SpanDAC on this Mac's control socket exists. Injectable so a
     /// test never looks at the real one; with "not running", its absence is
     /// what lets "Stop using" leave a SpanDAC on this Mac that is not there.
@@ -637,8 +643,13 @@ final class SpeakersScene: Scene {
         readinessLock.lock()
         let start = inboxStart; inboxStart = nil
         let problem = inboxStopProblem; inboxStopProblem = nil
+        let outputProblem = inboxOutputProblem; inboxOutputProblem = nil
         readinessLock.unlock()
         var changed = false
+        if let outputProblem, outputProblem != macOutputProblem {
+            macOutputProblem = outputProblem
+            changed = true
+        }
         if let start {
             startInFlight = false
             changed = true
@@ -806,7 +817,9 @@ final class SpeakersScene: Scene {
                 })
             switch result {
             case .alreadyInMode:
-                break
+                // Enter on the SpanDAC row that is already the output: when its
+                // DAC is still not the Mac's output, ask again.
+                if target == .source { self.makeMacOutputTheDAC(client) }
             case .switched(let mode):
                 // Through the inbox, like every other background result. Writing
                 // `bridgeReadiness` here would reinstate the main-loop/background
@@ -816,14 +829,55 @@ final class SpeakersScene: Scene {
                 case .networkSource(let id):
                     self.spandac?.probe(id)
                     self.status.post("Output: SpanDAC · \(targetName ?? "on the network")")
-                case .source, .musicApp:
+                case .source:
+                    // The selection is committed and the outgoing player is
+                    // paused and cleared (inside `switchMode`): only now may
+                    // SpanDAC move the Mac's sound output to its DAC.
+                    self.makeMacOutputTheDAC(client)
+                    self.status.post("Output: SpanDAC · \(self.macName)")
+                case .musicApp:
                     let (readiness, data, output) = Self.readMacStatus(client)
                     self.publishReadiness(readiness, data: data, output: output)
-                    self.status.post(mode == .source ? "Output: SpanDAC · \(self.macName)" : "Output: \(musicTUIOutputName)")
+                    self.status.post("Output: \(musicTUIOutputName)")
                 }
             }
         }
     }
+
+    /// Reads the Mac's status and, when its DAC is plugged in but not the sound
+    /// output (`switchable`) and this SpanDAC lists `output.use_dac`, sends
+    /// `slice.useDAC`. Always publishes the freshest status; a refusal is kept
+    /// for the row (SpanDAC's own detail, else a fallback). An older SpanDAC
+    /// without the capability is left alone: its switch is at the first play.
+    /// Runs on the action queue, after the selection is committed.
+    private func makeMacOutputTheDAC(_ client: SourceAppClient) {
+        var fresh: SourceStatus
+        do {
+            fresh = try client.control.status()
+        } catch {
+            let readiness = SourceReadiness.from(error)
+            publishReadiness(readiness, data: readiness, output: nil)
+            return
+        }
+        var problem: String? = nil
+        if fresh.output?.switchable == true, fresh.offersUseDAC {
+            do {
+                fresh = try client.control.useDAC() ?? client.control.status()
+            } catch SourceAppError.refused(let detail) {
+                problem = (detail.isEmpty || detail == "no detail") ? Self.notTheMacsSoundOutput : detail
+            } catch {
+                problem = Self.notTheMacsSoundOutput
+            }
+        }
+        readinessLock.lock()
+        inboxOutputProblem = .some(problem)
+        readinessLock.unlock()
+        publishReadiness(fresh.readiness, data: fresh.dataReadiness, output: fresh.output)
+        if let problem { status.post("SpanDAC is selected, but \(problem)") }
+    }
+
+    /// Shown on the Mac row when `slice.useDAC` is refused without a reason.
+    static let notTheMacsSoundOutput = "not the Mac's sound output"
 
     @discardableResult
     func tick(snapshot: NowPlayingSnapshot) -> Bool {
@@ -856,6 +910,12 @@ final class SpeakersScene: Scene {
                 bridgeReadiness = freshReadiness.readiness
                 bridgeDataReadiness = freshReadiness.data
                 macOutput = freshReadiness.output
+                changed = true
+            }
+            // A refusal belongs to a DAC that is still not the output; once it
+            // is, or is gone, the old reason is stale.
+            if macOutput?.switchable != true, macOutputProblem != nil {
+                macOutputProblem = nil
                 changed = true
             }
             if let installed = freshReadiness.installed, installed != macInstalled {
@@ -1270,7 +1330,7 @@ final class SpeakersScene: Scene {
             let isCursor = dispIdx == cursor
             switch dispRow {
             case .spandacMac:
-                let detail: SpanDACRowDetail
+                var detail: SpanDACRowDetail
                 if !switched {
                     detail = macDataRowDetail(macDataState)
                 } else if macInstalled == false {
@@ -1278,6 +1338,11 @@ final class SpeakersScene: Scene {
                 } else {
                     detail = spandacRowDetail(state: macRowState, output: macOutput, device: macName,
                                               isThisMac: true, now: now)
+                    if let problem = macOutputProblem, macRowState == .ready, macOutput?.switchable == true {
+                        // The switch was asked for and refused: SpanDAC stays the
+                        // output, and the row says why. Enter asks again.
+                        detail = SpanDACRowDetail(text: problem, tone: .warning)
+                    }
                 }
                 spandacLine(isCursor: isCursor, selected: routing.mode == .source && !blocked, name: macName, detail: detail)
                 // Before the switch, SpanDACs on the network are drawn under

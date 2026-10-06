@@ -657,12 +657,18 @@ struct SourceStatus: Equatable {
 /// The wire ops for SpanDAC's own shuffle and repeat.
 let sourceShuffleOp = "slice.shuffle"
 let sourceRepeatOp = "slice.repeat"
+/// `slice.useDAC` and the capability SpanDAC lists when it serves it.
+let sourceUseDACOp = "slice.useDAC"
+let sourceUseDACCapability = "output.use_dac"
 
 extension SourceStatus {
     /// Whether the app lists the op in `capabilities`: the only thing that makes
     /// the Now tab's Shuffle / Repeat cells live. An older build lists neither.
     var offersShuffle: Bool { capabilities.contains(sourceShuffleOp) }
     var offersRepeat: Bool { capabilities.contains(sourceRepeatOp) }
+    /// Whether this SpanDAC can switch the Mac to its DAC on request. An older
+    /// one cannot, and then the switch happens at the first play.
+    var offersUseDAC: Bool { capabilities.contains(sourceUseDACCapability) }
 }
 
 extension SourceStatus {
@@ -777,6 +783,12 @@ protocol SourceControlling {
     /// The default throws `.unsupported` like any op an older build lacks.
     func setShuffle(_ on: Bool) throws
     func setRepeat(_ mode: RepeatMode) throws
+    /// `slice.useDAC`: SpanDAC makes the Mac's sound output its chosen DAC and
+    /// answers with the fresh status (nil when the reply carries none). Sent
+    /// only when `status().offersUseDAC`. Refused with `.refused(detail)` when
+    /// there is no chosen DAC present (`bad_request`) or the switch could not be
+    /// confirmed (`output_unconfirmed`).
+    func useDAC() throws -> SourceStatus?
     func queue(rows: [SourceLibraryRow]) throws
     func queue(catalogIDs: [String]) throws
     func playStation(id: String, named name: String) throws
@@ -898,6 +910,7 @@ extension SourceControlling {
     func capabilities() throws -> [String] { throw SourceAppError.unsupported("slice.status") }
     func setShuffle(_ on: Bool) throws { throw SourceAppError.unsupported(sourceShuffleOp) }
     func setRepeat(_ mode: RepeatMode) throws { throw SourceAppError.unsupported(sourceRepeatOp) }
+    func useDAC() throws -> SourceStatus? { throw SourceAppError.unsupported(sourceUseDACOp) }
     func recentlyAdded() throws -> [DiscoverItem] {
         throw SourceAppError.unsupported(BridgeDiscoverSections.recentlyAddedOp)
     }
@@ -961,14 +974,27 @@ struct SourceAppControl: SourceControlling {
     func status() throws -> SourceStatus {
         let reply = try send(["op": "slice.status"])
         guard let status = reply["status"] as? [String: Any],
-              let playback = status["playback"] as? String else {
+              let decoded = Self.decodeStatus(status, readingWith: self) else {
             throw SourceAppError.unreadable
         }
+        return decoded
+    }
+
+    /// `slice.useDAC`: no uid, no other field. The reply's fresh `status`,
+    /// decoded as `status()` would, or nil when it carries none.
+    func useDAC() throws -> SourceStatus? {
+        let reply = try send(["op": sourceUseDACOp])
+        guard let status = reply["status"] as? [String: Any] else { return nil }
+        return Self.decodeStatus(status, readingWith: self)
+    }
+
+    private static func decodeStatus(_ status: [String: Any], readingWith control: SourceAppControl) -> SourceStatus? {
+        guard let playback = status["playback"] as? String else { return nil }
         let queue = status["queue"] as? [String: Any]
         return SourceStatus(playback: playback,
                             title: status["title"] as? String,
                             artist: status["artist"] as? String,
-                            readiness: readiness(from: status),
+                            readiness: control.readiness(from: status),
                             queuePhase: queue?["phase"] as? String,
                             queueRequested: queue?["requested"] as? Int,
                             queuePresent: queue?["present"] as? Int,
@@ -986,7 +1012,7 @@ struct SourceAppControl: SourceControlling {
                             repeatMode: (status["repeat"] as? String).flatMap { RepeatMode(rawValue: $0) }?.rawValue,
                             capabilities: status["capabilities"] as? [String] ?? [],
                             playerDisconnected: Self.playerIsDisconnected(status),
-                            readinessIgnoringPlayer: readiness(from: status, includingPlayer: false))
+                            readinessIgnoringPlayer: control.readiness(from: status, includingPlayer: false))
     }
 
     /// True only for the exact word `disconnected`; absent, null, any other
