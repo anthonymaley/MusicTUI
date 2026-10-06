@@ -323,12 +323,18 @@ let cliBridgeExceptions: Set<MusicTUIAction> = [
     .visualizer,
 ]
 
+/// What `music shuffle` and `music repeat` say with SpanDAC selected. The TUI
+/// serves them now (the Now tab's Shuffle and Repeat cells); the CLI does not.
+let cliShuffleRepeatNotServed = "Shuffle and repeat modes are MusicTUI only for now."
+
 /// D7's reason for a CLI action Bridge does not serve. Shuffle and repeat
 /// modes, volume and AirPlay keep the TUI table's reasons; everything else
 /// names what is not available.
 func cliBridgeNotServedReason(_ action: MusicTUIAction) -> String {
     switch action {
-    case .persistentShuffleMode, .persistentRepeatMode, .volume, .airplayRoute:
+    case .persistentShuffleMode, .persistentRepeatMode:
+        return cliShuffleRepeatNotServed
+    case .volume, .airplayRoute:
         if case .refused(let why) = routeAction(action, in: .source, from: .tui) { return why }
     // Part 2 P8, Q1 default (D10, verbatim): Bridge serves no op for these,
     // so the reason names what is missing rather than "yet". The
@@ -510,9 +516,15 @@ func routeAction(_ action: MusicTUIAction,
          .libraryArtistTierFilter, .playlistsOpenNowPlaying:
         return .unaffected
 
-    // Refused, each with what to do instead.
+    // Served by the source, TUI only (the CLI clause above never reaches here
+    // for them: `music shuffle` / `music repeat` stay refused, with
+    // `cliShuffleRepeatNotServed`). SpanDAC has its own shuffle and repeat
+    // (`slice.shuffle`, `slice.repeat`); the Now tab sends them only when the
+    // app's `capabilities` list the op, and says so itself when it does not.
     case .persistentShuffleMode, .persistentRepeatMode:
-        return .refused("Shuffle and repeat modes are MusicTUI only for now.")
+        return .source
+
+    // Refused, each with what to do instead.
     case .volume:
         return .refused("Volume is MusicTUI only; the source plays at the Mac's output level.")
     case .loveTrack, .addToLibrary, .addCurrentTrackToPlaylist,

@@ -600,6 +600,25 @@ struct SourceStatus: Equatable {
     /// the wire. The Now tab uses it to pull the cover out of the library when
     /// there is no fetchable `artworkURL`.
     var persistentID: String? = nil
+    /// SpanDAC's own shuffle and repeat state (`slice.shuffle` / `slice.repeat`
+    /// builds), and the raw `capabilities` of the same reply. All optional on
+    /// the wire: an older SpanDAC sends none, which reads as no shuffle/repeat
+    /// control (see `SourceStatus.offersShuffle` / `offersRepeat`).
+    var shuffle: Bool? = nil
+    /// "off" | "one" | "all" as the app sends it; anything else is nil.
+    var repeatMode: String? = nil
+    var capabilities: [String] = []
+}
+
+/// The wire ops for SpanDAC's own shuffle and repeat.
+let sourceShuffleOp = "slice.shuffle"
+let sourceRepeatOp = "slice.repeat"
+
+extension SourceStatus {
+    /// Whether the app lists the op in `capabilities`: the only thing that makes
+    /// the Now tab's Shuffle / Repeat cells live. An older build lists neither.
+    var offersShuffle: Bool { capabilities.contains(sourceShuffleOp) }
+    var offersRepeat: Bool { capabilities.contains(sourceRepeatOp) }
 }
 
 extension SourceStatus {
@@ -703,6 +722,11 @@ protocol SourceControlling {
     /// Relative seek. The TUI's `[` and `]` are ±30s, and `slice.seek` already
     /// takes `offset` as the alternative to `position`.
     func seek(byOffset seconds: Double) throws
+    /// SpanDAC's own shuffle and repeat (`slice.shuffle {"on"}`, `slice.repeat
+    /// {"mode"}`), sent only when `status().offersShuffle` / `offersRepeat`.
+    /// The default throws `.unsupported` like any op an older build lacks.
+    func setShuffle(_ on: Bool) throws
+    func setRepeat(_ mode: RepeatMode) throws
     func queue(rows: [SourceLibraryRow]) throws
     func queue(catalogIDs: [String]) throws
     func playStation(id: String, named name: String) throws
@@ -822,6 +846,8 @@ extension SourceControlling {
     func heavyRotation(limit: Int) throws -> [HistoryItem] { throw SourceAppError.unsupported("slice.heavyRotation") }
     func queueReportingSkips(catalogIDs: [String]) throws -> Int { throw SourceAppError.unsupported("slice.queue") }
     func capabilities() throws -> [String] { throw SourceAppError.unsupported("slice.status") }
+    func setShuffle(_ on: Bool) throws { throw SourceAppError.unsupported(sourceShuffleOp) }
+    func setRepeat(_ mode: RepeatMode) throws { throw SourceAppError.unsupported(sourceRepeatOp) }
     func recentlyAdded() throws -> [DiscoverItem] {
         throw SourceAppError.unsupported(BridgeDiscoverSections.recentlyAddedOp)
     }
@@ -903,7 +929,16 @@ struct SourceAppControl: SourceControlling {
                             positionSeconds: Self.seconds(status["position_s"]),
                             durationSeconds: Self.seconds(status["duration_s"]),
                             artworkURL: (status["artwork_url"] as? String).flatMap { $0.isEmpty ? nil : $0 },
-                            persistentID: (status["persistent_id"] as? String).flatMap { $0.isEmpty ? nil : $0 })
+                            persistentID: (status["persistent_id"] as? String).flatMap { $0.isEmpty ? nil : $0 },
+                            shuffle: Self.bool(status["shuffle"]),
+                            repeatMode: (status["repeat"] as? String).flatMap { RepeatMode(rawValue: $0) }?.rawValue,
+                            capabilities: status["capabilities"] as? [String] ?? [])
+    }
+
+    /// A real JSON boolean, or nil. `1` and `0` are numbers, not booleans.
+    static func bool(_ raw: Any?) -> Bool? {
+        guard let n = raw as? NSNumber, CFGetTypeID(n as CFTypeRef) == CFBooleanGetTypeID() else { return nil }
+        return n.boolValue
     }
 
     /// A non-negative, finite number of seconds, or nil. A malformed value is
@@ -1217,6 +1252,14 @@ struct SourceAppControl: SourceControlling {
 
     func seek(byOffset seconds: Double) throws {
         _ = try send(["op": "slice.seek", "offset": seconds])
+    }
+
+    func setShuffle(_ on: Bool) throws {
+        _ = try send(["op": sourceShuffleOp, "on": on])
+    }
+
+    func setRepeat(_ mode: RepeatMode) throws {
+        _ = try send(["op": sourceRepeatOp, "mode": mode.rawValue])
     }
 
     /// Hands the selected rows over for the app to resolve and play.

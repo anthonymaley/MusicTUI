@@ -68,7 +68,11 @@ final class NowPlayingScene: Scene {
         // what remain. `x` became a Now key in its own right on 2026-09-22
         // (spec 6.2's row); it pauses Bridge, never Music.app (ruling 12.7).
         if routing.mode.usesSource {
-            return transportShown ? "\u{2190}\u{2192} Control  Enter Press  [ ] Seek  x Quiet" : "[ ] Seek  x Quiet"
+            if spanDACGridShown {
+                return gridFocused ? "\u{2191}\u{2193} Row  Enter Set  \u{2192} Release  [ ] Seek  x Quiet"
+                                   : "\u{2190} Controls  s Shuffle  r Repeat  [ ] Seek  x Quiet"
+            }
+            return "[ ] Seek  x Quiet"
         }
         return gridFocused
             ? "\u{2191}\u{2193} Row  Enter Set  \u{2192} Up Next  [ ] Seek  \u{2014} controls"
@@ -117,6 +121,18 @@ final class NowPlayingScene: Scene {
     // the grid still shows live active state.
     private var gridFocused = false
     private var gridRow = 0
+
+    // SpanDAC's grid. `spanDACGridShown`: whether the last frame drew it (keys
+    // only act on it while it is on screen). `lastBridge`: what the last tick or
+    // render saw, which the keys read to decide offered / current. A press
+    // overrides SpanDAC's own state for a moment, so the cell moves at once
+    // instead of after the next poll; it is guarded by `bridgeModesLock` because
+    // a failed press clears it from the action queue.
+    private var spanDACGridShown = false
+    private var lastBridge: BridgeNow? = nil
+    private let bridgeModesLock = NSLock()
+    private var bridgeModesOverride: (shuffle: Bool?, repeatMode: String?, at: Date)? = nil
+    static let bridgeModesOverrideSeconds: TimeInterval = 2.5
 
     // Genius Shuffle latch: set when we trigger it, cleared once a real playlist
     // or app queue takes over (Music exposes no genius flag — see geniusShouldClear).
@@ -177,11 +193,6 @@ final class NowPlayingScene: Scene {
     /// Production runs the Library tab's `extractLibraryTrackArtwork`; tests
     /// inject a fake so nothing touches a real Music.app.
     private let bridgeCoverExtractor: (String, String) -> String?
-
-    // The SpanDAC control row: which cell ← → have selected, and whether the
-    // last frame drew the row at all (keys only act while it is on screen).
-    private var transportSel = 0
-    private var transportShown = false
 
     /// Blocks until queued cover extractions finish. Tests only.
     func waitForBridgeCover() { bridgeCoverQueue.sync {} }
@@ -255,6 +266,7 @@ final class NowPlayingScene: Scene {
     @discardableResult
     func tick(snapshot: NowPlayingSnapshot) -> Bool {
         menuShownLastFrame = menuActive(snapshot)
+        lastBridge = snapshot.bridge
         pendingFromStopped = snapshot.queueEnded
         if snapshot.queueEnded {
             pendingSeedTitle = snapshot.endedTrack
@@ -390,7 +402,8 @@ final class NowPlayingScene: Scene {
         for r in frame.bodyY..<(frame.bodyY + frame.bodyHeight) {
             out += ANSICode.moveTo(row: r, col: 1) + ANSICode.clearLine
         }
-        transportShown = false
+        spanDACGridShown = false
+        lastBridge = snapshot.bridge
         guard frame.bodyHeight > 4, frame.width > 30 else { return out }
 
         // Neither branch below draws the kitty art path (that lives in the
@@ -444,9 +457,7 @@ final class NowPlayingScene: Scene {
         // placeholder every other tab shows. The reservation now holds
         // regardless of content so the layout below never jumps depending on
         // whether the current track happens to have artwork.
-        // SpanDAC's control row (two lines and a spacer) comes out of the art,
-        // so the lines below the metadata still fit.
-        let artRows = showArt ? max(0, frame.bodyHeight - 13 - (snapshot.bridge != nil ? 3 : 0)) : 0
+        let artRows = showArt ? max(0, frame.bodyHeight - 13) : 0
         // Kitty's bound: matches the (now width-adaptive) left column in
         // two-pane mode, same as the hero panes (gw == the pane's own width).
         // One-pane keeps the original fixed rect. The chafa/mono lines path
@@ -534,14 +545,6 @@ final class NowPlayingScene: Scene {
             out += ANSICode.moveTo(row: my, col: leftX) + "\(elapsed) \(bar) \(total)"
         }
         my += 2
-        // SpanDAC's visible controls, under the progress bar. The Music.app
-        // path keeps its control grid below instead.
-        if snapshot.bridge != nil {
-            my = renderTransportRow(playing: np.state == "playing", startY: my, x: leftX, width: metaW,
-                                    bottom: frame.bodyY + frame.bodyHeight - 1, into: &out) + 1
-        } else {
-            transportShown = false
-        }
         if geniusActive {
             out += ANSICode.moveTo(row: my, col: leftX) + "\(ANSICode.cyan)\u{2726} \(ANSICode.reset)\(ANSICode.bold)\(ANSICode.brightWhite)Genius Shuffle Active\(ANSICode.reset)"
         } else if !snapshot.contextName.isEmpty {
@@ -626,41 +629,6 @@ final class NowPlayingScene: Scene {
         }
     }
 
-    /// The SpanDAC control row, two lines under the progress bar: previous,
-    /// play/pause, next, then the 30 s seeks. Styled like the control grid
-    /// (selected cell `[bright]`, the rest dim) with each cell's key beside it.
-    /// Returns the next free row. Drawn nothing, and `transportShown` false,
-    /// when there is no room.
-    private func renderTransportRow(playing: Bool, startY: Int, x: Int, width: Int, bottom: Int,
-                                    into out: inout String) -> Int {
-        guard startY + 1 <= bottom else { transportShown = false; return startY }
-        transportShown = true
-        transportSel = min(max(0, transportSel), SpanDACTransport.allCases.count - 1)
-        let withKeys = width >= 40
-        let rows: [[SpanDACTransport]] = [[.previous, .playPause, .next], [.seekBack, .seekForward]]
-        var y = startY
-        for row in rows {
-            var line = ""
-            for t in row {
-                let text = t.label(playing: playing) + (withKeys ? " \(t.keyLabel)" : "")
-                if SpanDACTransport.allCases.firstIndex(of: t) == transportSel {
-                    line += "\(ANSICode.cyan)[\(ANSICode.reset)\(ANSICode.brightWhite)\(text)\(ANSICode.reset)\(ANSICode.cyan)]\(ANSICode.reset) "
-                } else {
-                    line += "\(ANSICode.dim) \(text) \(ANSICode.reset) "
-                }
-            }
-            out += ANSICode.moveTo(row: y, col: x) + line
-            y += 1
-        }
-        return y
-    }
-
-    /// Press a control-row cell: the same action its key runs.
-    private func press(_ t: SpanDACTransport) {
-        if let offset = t.seekOffset { seek(by: offset); return }
-        actions.run(t.actionLabel) { [routing] in try performSourceTransport(t, routing: routing) }
-    }
-
     /// Bridge's empty state: what Bridge is doing, then the way in.
     ///
     /// The digits are the tab strip's real ones (`tabs` in Shell.swift: 3 is
@@ -680,7 +648,9 @@ final class NowPlayingScene: Scene {
     ///
     /// **No Up Next.** `slice.status` carries counts and a position, never the
     /// track list, so the position line is all that can honestly be said about
-    /// what comes next. Shuffle and repeat are not on the wire at all.
+    /// what comes next. Below it, the same Shuffle / Order / Repeat / Genius
+    /// grid Music.app shows, driven by SpanDAC's own shuffle and repeat when the
+    /// app lists the ops; an older build gets the sentence it always did.
     private func renderBridgeActive(_ bridge: BridgeNow, startY: Int, x: Int, width: Int,
                                     bottom: Int, into base: String) -> String {
         var out = base
@@ -691,9 +661,12 @@ final class NowPlayingScene: Scene {
             y += 1
         }
         y += 1
-        if y <= bottom {
+        if bridge.offersShuffle || bridge.offersRepeat {
+            if y <= bottom { spanDACGridShown = true }
+            out += renderControlGrid(startY: y, x: x, bottom: bottom, bridge: bridge)
+        } else if y <= bottom {
             out += ANSICode.moveTo(row: y, col: x)
-                + "\(ANSICode.dim)\(truncText("Shuffle and repeat aren't available on SpanDAC.", to: width))\(ANSICode.reset)"
+                + "\(ANSICode.dim)\(truncText(spanDACNoModesSentence, to: width))\(ANSICode.reset)"
         }
         return out
     }
@@ -714,13 +687,21 @@ final class NowPlayingScene: Scene {
     /// The playback-control grid: a label column then option cells per row.
     /// Active value is bright; the focused row (when the grid has focus) is
     /// marked with ▸ and Enter cycles its value.
-    private func renderControlGrid(startY: Int, x: Int, bottom: Int) -> String {
+    ///
+    /// With a `bridge`, SpanDAC's state fills the cells and the rows it has no
+    /// control for (Order, Genius, or an op the app does not list) are dimmed
+    /// whole: no active cell, never the focus marker.
+    private func renderControlGrid(startY: Int, x: Int, bottom: Int, bridge: BridgeNow? = nil) -> String {
         var out = ""
+        let live = bridge.map { effectiveBridgeModes($0) }
         var y = startY
         let labelW = 8
         for row in 0..<ControlGrid.rowCount {
             guard y <= bottom else { break }
-            let rowFocused = gridFocused && row == gridRow
+            let enabled = bridge.map {
+                ControlGrid.spanDACEnabled(row: row, offersShuffle: $0.offersShuffle, offersRepeat: $0.offersRepeat)
+            } ?? true
+            let rowFocused = gridFocused && row == gridRow && enabled
             out += ANSICode.moveTo(row: y, col: x)
             let marker = rowFocused ? "\(ANSICode.cyan)\u{25B8}\(ANSICode.reset)" : " "
             let label = ControlGrid.labels[row]
@@ -728,11 +709,20 @@ final class NowPlayingScene: Scene {
             let labelStyled = rowFocused ? "\(ANSICode.brightWhite)\(padLabel)\(ANSICode.reset)"
                                          : "\(ANSICode.dim)\(padLabel)\(ANSICode.reset)"
             out += "\(marker) \(labelStyled) "
-            let active = modes.flatMap { ControlGrid.activeColumn(row: row, modes: $0) }
+            let active: Int?
+            if let live {
+                active = enabled ? ControlGrid.spanDACActiveColumn(row: row, shuffle: live.shuffle, repeatMode: live.repeatMode) : nil
+            } else {
+                active = modes.flatMap { ControlGrid.activeColumn(row: row, modes: $0) }
+            }
             var line = ""
             for col in 0..<ControlGrid.cellCount(row: row) {
                 let cell = ControlGrid.cells[row][col]
-                if col == active {
+                if !enabled {
+                    // Dim and struck through (a terminal without strikethrough
+                    // still shows it dim, with no active cell).
+                    line += "\(ANSICode.dim)\u{1B}[9m \(cell) \(ANSICode.reset) "
+                } else if col == active {
                     line += "\(ANSICode.brightWhite)[\(cell)]\(ANSICode.reset) "
                 } else {
                     line += "\(ANSICode.dim) \(cell) \(ANSICode.reset) "
@@ -948,19 +938,45 @@ final class NowPlayingScene: Scene {
         // Bridge draws no grid, so nothing may focus it: the grid keys become
         // no-ops, and a focus left over from Music.app mode is dropped.
         if routing.mode.usesSource {
-            gridFocused = false
-            // The control row, when drawn: ← → select a cell, Enter presses it.
-            // Otherwise ← is the dead key it was (nothing to focus).
-            if transportShown {
-                let n = SpanDACTransport.allCases.count
+            if !spanDACGridShown { gridFocused = false }
+            switch key {
+            case .char("s"), .char("S"): guard askMatrix(.persistentShuffleMode) else { return .redraw }
+                                         spanDACToggleShuffle(); return .redraw
+            case .char("r"), .char("R"): guard askMatrix(.persistentRepeatMode) else { return .redraw }
+                                         spanDACCycleRepeat(); return .redraw
+            case .char("m"), .char("M"): status.post(spanDACRowUnavailable(ControlRow.order.rawValue), error: true)
+                                         return .redraw
+            default: break
+            }
+            if !spanDACGridShown {
+                // Nothing to focus.
+                if case .left = key { return .none }
+            } else if let b = lastBridge {
+                let enabled = { (r: Int) in ControlGrid.spanDACEnabled(row: r, offersShuffle: b.offersShuffle, offersRepeat: b.offersRepeat) }
+                func step(_ d: Int) -> Int {
+                    ControlGrid.spanDACStep(from: gridRow, by: d, offersShuffle: b.offersShuffle, offersRepeat: b.offersRepeat)
+                }
                 switch key {
-                case .left:  transportSel = (transportSel + n - 1) % n; return .redraw
-                case .right: transportSel = (transportSel + 1) % n; return .redraw
-                case .enter: press(SpanDACTransport.allCases[transportSel]); return .redraw
+                case .left:
+                    // Focus lands on a live row, never a disabled one.
+                    if !enabled(gridRow) { gridRow = step(1) }
+                    if !enabled(gridRow) { gridRow = step(-1) }
+                case .up where gridFocused:    gridRow = step(-1); return .redraw
+                case .down where gridFocused:  gridRow = step(1); return .redraw
+                case .home where gridFocused:  gridRow = enabled(0) ? 0 : step(1); return .redraw
+                case .end where gridFocused:
+                    gridRow = enabled(ControlGrid.rowCount - 1) ? ControlGrid.rowCount - 1 : step(-1); return .redraw
+                case .enter where gridFocused:
+                    guard askMatrix(.persistentShuffleMode) else { return .redraw }
+                    switch ControlRow(rawValue: gridRow) {
+                    case .shuffle:    spanDACToggleShuffle()
+                    case .repeatMode: spanDACCycleRepeat()
+                    default:          status.post(spanDACRowUnavailable(gridRow), error: true)
+                    }
+                    return .redraw
                 default: break
                 }
             }
-            if case .left = key { return .none }
         }
 
         // Focus model: ← focuses the control grid (left pane), → the Up Next
@@ -1083,6 +1099,68 @@ final class NowPlayingScene: Scene {
             triggerGenius(); return .redraw
         default:
             return .none
+        }
+    }
+
+    // MARK: SpanDAC's shuffle and repeat (the grid's two live rows, and `s` / `r`).
+
+    /// SpanDAC's shuffle and repeat as the grid shows them: its own state from
+    /// the last status, unless a press of ours is newer than the poll could know.
+    private func effectiveBridgeModes(_ b: BridgeNow, now: Date = Date()) -> (shuffle: Bool?, repeatMode: String?) {
+        bridgeModesLock.lock(); defer { bridgeModesLock.unlock() }
+        if let o = bridgeModesOverride, now.timeIntervalSince(o.at) < Self.bridgeModesOverrideSeconds {
+            return (o.shuffle ?? b.shuffle, o.repeatMode ?? b.repeatMode)
+        }
+        return (b.shuffle, b.repeatMode)
+    }
+
+    private func setBridgeModesOverride(shuffle: Bool? = nil, repeatMode: String? = nil) {
+        // Merged, so a press of one row keeps the other row's pending press.
+        bridgeModesLock.lock()
+        let now = Date()
+        let live = bridgeModesOverride.flatMap { now.timeIntervalSince($0.at) < Self.bridgeModesOverrideSeconds ? $0 : nil }
+        bridgeModesOverride = (shuffle ?? live?.shuffle, repeatMode ?? live?.repeatMode, now)
+        bridgeModesLock.unlock()
+    }
+
+    private func clearBridgeModesOverride() {
+        bridgeModesLock.lock(); bridgeModesOverride = nil; bridgeModesLock.unlock()
+    }
+
+    /// Why a row cannot be set: Order and Genius have no SpanDAC equivalent.
+    private func spanDACRowUnavailable(_ row: Int) -> String {
+        "\(ControlGrid.labels[row]) isn't available on SpanDAC."
+    }
+
+    /// Shuffle on SpanDAC. An older build that does not list `slice.shuffle`
+    /// gets the sentence the Now tab always showed and nothing is sent.
+    private func spanDACToggleShuffle() {
+        guard let b = lastBridge, b.offersShuffle else {
+            status.post(spanDACNoModesSentence, error: true); return
+        }
+        let on = !(effectiveBridgeModes(b).shuffle ?? false)
+        setBridgeModesOverride(shuffle: on)
+        actions.run("Shuffle") { [routing] in
+            do {
+                try routing.perform(.persistentShuffleMode, musicApp: {},
+                                    source: { try $0.control.setShuffle(on) }, unaffected: {})
+            } catch { self.clearBridgeModesOverride(); throw error }
+        }
+    }
+
+    /// Repeat on SpanDAC: off, all, one, as the Music.app grid cycles.
+    private func spanDACCycleRepeat() {
+        guard let b = lastBridge, b.offersRepeat else {
+            status.post(spanDACNoModesSentence, error: true); return
+        }
+        let current = effectiveBridgeModes(b).repeatMode.flatMap(RepeatMode.init(rawValue:)) ?? .off
+        let next = current.next
+        setBridgeModesOverride(repeatMode: next.rawValue)
+        actions.run("Repeat") { [routing] in
+            do {
+                try routing.perform(.persistentRepeatMode, musicApp: {},
+                                    source: { try $0.control.setRepeat(next) }, unaffected: {})
+            } catch { self.clearBridgeModesOverride(); throw error }
         }
     }
 

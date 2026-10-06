@@ -2,9 +2,10 @@
 import XCTest
 @testable import music
 
-/// SpanDAC on the Now tab: the cover by persistent ID, and the visible control
-/// row. Nothing here touches a real Music.app or SpanDAC: the extractor is a
-/// fake (or a fake osascript), and the wire is a recording closure.
+/// SpanDAC on the Now tab: the cover by persistent ID, and the Shuffle / Repeat
+/// cells of the existing control grid. Nothing here touches a real Music.app or
+/// SpanDAC: the extractor is a fake (or a fake osascript), and the wire is a
+/// recording closure.
 final class SpanDACNowControlsTests: XCTestCase {
 
     private let alias = "-596357614188841472"        // SpanDAC's signed decimal, verbatim
@@ -130,86 +131,156 @@ final class SpanDACNowControlsTests: XCTestCase {
         sweepLibraryArtFiles()
     }
 
-    // MARK: - the control row
+    // MARK: - shuffle and repeat in the existing grid
 
-    func testControlRowRendersOnSpanDACWithKeysAndReflectsState() throws {
-        let playing = plain(scene().0.render(frame: frame, snapshot: try snapshot(extra: #","position_s":65,"duration_s":312"#)))
-        for text in ["Prev <", "Pause Space", "Next \u{25B6}\u{25B6} >", "-30s [", "+30s ]"] {
-            XCTAssertTrue(playing.contains(text), "\(text)\n\(playing)")
+    private let both = #","shuffle":true,"repeat":"all","capabilities":["slice.status","slice.shuffle","slice.repeat"]"#
+
+    func testStatusDecodesShuffleRepeatAndCapabilitiesAndRejectsMalformed() throws {
+        let s = try SourceAppControl(path: "/nonexistent", transport: { _, _ in self.playingReply(extra: self.both) }).status()
+        XCTAssertEqual(s.shuffle, true)
+        XCTAssertEqual(s.repeatMode, "all")
+        XCTAssertTrue(s.offersShuffle && s.offersRepeat)
+        let b = bridgeNow(from: s)
+        XCTAssertEqual(b.shuffle, true); XCTAssertEqual(b.repeatMode, "all")
+        XCTAssertTrue(b.offersShuffle && b.offersRepeat)
+
+        // An older build sends none of it; a malformed value is unknown, not a failure.
+        for extra in ["", #","shuffle":1,"repeat":"loop","capabilities":"slice.shuffle""#] {
+            let o = try SourceAppControl(path: "/nonexistent", transport: { _, _ in self.playingReply(extra: extra) }).status()
+            XCTAssertNil(o.shuffle, extra); XCTAssertNil(o.repeatMode, extra)
+            XCTAssertFalse(o.offersShuffle || o.offersRepeat, extra)
         }
-        let paused = plain(scene().0.render(frame: frame, snapshot: try snapshot(playback: "paused")))
-        XCTAssertTrue(paused.contains("Play Space"))
-        XCTAssertFalse(paused.contains("Pause Space"))
-        // Without a duration there is no bar, and the controls are still there.
-        XCTAssertTrue(paused.contains("Prev <"))
+        let one = try SourceAppControl(path: "/nonexistent", transport: { _, _ in
+            self.playingReply(extra: #","capabilities":["slice.repeat"]"#) }).status()
+        XCTAssertTrue(one.offersRepeat); XCTAssertFalse(one.offersShuffle)
     }
 
-    func testControlRowIsNotInTheFooterUntilDrawnAndFooterNamesIt() throws {
+    func testTheOpsGoOutAsSpecified() throws {
+        var lines: [[String: Any]] = []
+        let c = SourceAppControl(path: "/nonexistent", transport: { _, line in
+            lines.append(try JSONSerialization.jsonObject(with: Data(line.utf8)) as! [String: Any])
+            return #"{"ok":true,"op":"x"}"#
+        })
+        try c.setShuffle(true); try c.setShuffle(false)
+        for m in [RepeatMode.off, .one, .all] { try c.setRepeat(m) }
+        XCTAssertEqual(lines.map { $0["op"] as? String },
+                       ["slice.shuffle", "slice.shuffle", "slice.repeat", "slice.repeat", "slice.repeat"])
+        XCTAssertEqual(lines.prefix(2).map { $0["on"] as? Bool }, [true, false])
+        XCTAssertEqual(lines.suffix(3).map { $0["mode"] as? String }, ["off", "one", "all"])
+    }
+
+    func testGridModelOnSpanDAC() {
+        XCTAssertEqual((0..<4).map { ControlGrid.spanDACEnabled(row: $0, offersShuffle: true, offersRepeat: true) },
+                       [true, false, true, false])
+        XCTAssertFalse(ControlGrid.spanDACEnabled(row: 0, offersShuffle: false, offersRepeat: true))
+        XCTAssertEqual(ControlGrid.spanDACActiveColumn(row: 0, shuffle: true, repeatMode: nil), 0)
+        XCTAssertEqual(ControlGrid.spanDACActiveColumn(row: 0, shuffle: false, repeatMode: nil), 1)
+        XCTAssertNil(ControlGrid.spanDACActiveColumn(row: 0, shuffle: nil, repeatMode: nil))
+        XCTAssertEqual(["off", "all", "one"].map { ControlGrid.spanDACActiveColumn(row: 2, shuffle: nil, repeatMode: $0) }, [0, 1, 2])
+        XCTAssertNil(ControlGrid.spanDACActiveColumn(row: 1, shuffle: true, repeatMode: "all"))
+        XCTAssertNil(ControlGrid.spanDACActiveColumn(row: 3, shuffle: true, repeatMode: "all"))
+        XCTAssertEqual(ControlGrid.spanDACStep(from: 0, by: 1, offersShuffle: true, offersRepeat: true), 2, "skips Order")
+        XCTAssertEqual(ControlGrid.spanDACStep(from: 2, by: 1, offersShuffle: true, offersRepeat: true), 2, "Genius is off")
+        XCTAssertEqual(ControlGrid.spanDACStep(from: 2, by: -1, offersShuffle: true, offersRepeat: true), 0)
+        XCTAssertEqual(ControlGrid.spanDACStep(from: 0, by: 1, offersShuffle: true, offersRepeat: false), 0)
+    }
+
+    func testGridShowsSpanDACsStateAndDimsOrderAndGenius() throws {
         let (s, _) = scene()
-        XCTAssertEqual(s.footerHint, "[ ] Seek  x Quiet")
-        _ = s.render(frame: frame, snapshot: try snapshot())
-        XCTAssertEqual(s.footerHint, "\u{2190}\u{2192} Control  Enter Press  [ ] Seek  x Quiet")
-    }
-
-    func testEveryCellMapsToTheKeyAlreadyOnTheFooter() {
-        for t in SpanDACTransport.allCases {
-            if let g = t.global { XCTAssertEqual(resolveGlobalKey(t.key), g, "\(t)") }
+        let raw = s.render(frame: frame, snapshot: try snapshot(extra: both))
+        let text = plain(raw)
+        for label in ["Shuffle", "Order", "Repeat", "Genius"] { XCTAssertTrue(text.contains(label), label) }
+        XCTAssertTrue(text.contains("[On]"), text)
+        XCTAssertTrue(text.contains("[All]"), text)
+        XCTAssertFalse(text.contains("[Off]") || text.contains("[One]"), text)
+        XCTAssertFalse(text.contains("aren't available on SpanDAC"), text)
+        // Order and Genius cells are dim and struck through, with no active cell.
+        for cell in ["Songs", "Shuffle now"] {
+            XCTAssertTrue(raw.contains("\(ANSICode.dim)\u{1B}[9m \(cell) "), cell)
+            XCTAssertFalse(text.contains("[\(cell)]"))
         }
-        XCTAssertEqual(SpanDACTransport.previous.global, .prev)
-        XCTAssertEqual(SpanDACTransport.playPause.global, .playPause)
-        XCTAssertEqual(SpanDACTransport.next.global, .next)
-        XCTAssertEqual(SpanDACTransport.seekBack.seekOffset, -30)
-        XCTAssertEqual(SpanDACTransport.seekForward.seekOffset, 30)
-        XCTAssertEqual(SpanDACTransport.allCases.map(\.keyLabel), ["<", "Space", ">", "[", "]"])
+        XCTAssertTrue(s.footerHint.contains("Controls"), s.footerHint)
+
+        let off = plain(scene().0.render(frame: frame, snapshot: try snapshot(
+            extra: #","shuffle":false,"repeat":"one","capabilities":["slice.shuffle","slice.repeat"]"#)))
+        XCTAssertTrue(off.contains("[Off]") && off.contains("[One]"), off)
     }
 
-    /// Arrow-select + Enter reaches the wire with the same ops the keys send.
-    func testArrowsAndEnterSendTheSameOpsAsTheKeys() throws {
+    /// An older SpanDAC lists neither op: today's sentence, no grid, nothing sent.
+    func testAnOlderSpanDACKeepsTheSentenceAndSendsNothing() throws {
         var lines: [String] = []
+        let status = StatusStore()
+        let (s, actions) = scene(transport: { _, line in lines.append(line); return "{}" }, status: status)
+        let snap = try snapshot()
+        s.tick(snapshot: snap)
+        let text = plain(s.render(frame: frame, snapshot: snap))
+        XCTAssertTrue(text.contains("Shuffle and repeat aren't available on SpanDAC."), text)
+        XCTAssertFalse(text.contains("Genius"), text)
+        XCTAssertEqual(s.footerHint, "[ ] Seek  x Quiet")
+        XCTAssertEqual(s.handle(.left), .none)
+        for k in [KeyPress.char("s"), .char("r"), .enter] { _ = s.handle(k) }
+        actions.waitUntilIdle()
+        XCTAssertTrue(lines.isEmpty, "\(lines)")
+        XCTAssertEqual(status.current()?.text, "Shuffle and repeat aren't available on SpanDAC.")
+    }
+
+    func testPressingTheCellsSendsTheOpsAndMovesTheCellAtOnce() throws {
+        var lines: [[String: Any]] = []
         let lock = NSLock()
         let transport: (String, String) throws -> String = { _, line in
-            lock.lock(); lines.append(line); lock.unlock()
-            if line.contains("slice.status") { return self.playingReply(extra: "") }
+            lock.lock(); defer { lock.unlock() }
+            lines.append(try JSONSerialization.jsonObject(with: Data(line.utf8)) as! [String: Any])
             return #"{"ok":true,"op":"x"}"#
         }
         let (s, actions) = scene(transport: transport)
-        let snap = try snapshot()
+        let snap = try snapshot(extra: both)       // shuffle on, repeat all
         s.tick(snapshot: snap)
         _ = s.render(frame: frame, snapshot: snap)
 
-        func press(_ key: KeyPress) -> SceneAction { let a = s.handle(key); actions.waitUntilIdle(); return a }
-        XCTAssertEqual(press(.enter), .redraw)                                   // Prev
-        _ = press(.right); XCTAssertEqual(press(.enter), .redraw)                // Play/pause (playing -> pause)
-        _ = press(.right); XCTAssertEqual(press(.enter), .redraw)                // Next
-        _ = press(.right); XCTAssertEqual(press(.enter), .redraw)                // -30s
-        _ = press(.right); XCTAssertEqual(press(.enter), .redraw)                // +30s
-        _ = press(.right); XCTAssertEqual(press(.enter), .redraw)                // wraps to Prev
+        func press(_ key: KeyPress) { _ = s.handle(key); actions.waitUntilIdle() }
+        press(.left)                                // focus the grid: lands on Shuffle
+        XCTAssertTrue(s.footerHint.contains("Row"), s.footerHint)
+        press(.enter)                               // shuffle on -> off
+        XCTAssertTrue(plain(s.render(frame: frame, snapshot: snap)).contains("[Off]"), "the cell moves before the next poll")
+        press(.down)                                // skips Order: Repeat
+        press(.enter)                               // all -> one
+        press(.down)                                // Genius is disabled: stays
+        press(.enter)                               // one -> off
+        XCTAssertEqual(lines.map { $0["op"] as? String }, ["slice.shuffle", "slice.repeat", "slice.repeat"])
+        XCTAssertEqual(lines[0]["on"] as? Bool, false)
+        XCTAssertEqual(lines[1]["mode"] as? String, "one")
+        XCTAssertEqual(lines[2]["mode"] as? String, "off")
 
-        let ops = lines.compactMap { line -> String? in
-            guard let r = line.range(of: #""op":"slice\.[a-z]+""#, options: .regularExpression) else { return nil }
-            return String(line[r]).replacingOccurrences(of: #""op":""#, with: "").replacingOccurrences(of: "\"", with: "")
-        }
-        XCTAssertEqual(ops, ["slice.previous", "slice.status", "slice.pause", "slice.next",
-                             "slice.seek", "slice.seek", "slice.previous"])
-        let seeks = lines.filter { $0.contains("slice.seek") }
-        XCTAssertTrue(seeks[0].contains("-30"), seeks[0])
-        XCTAssertTrue(seeks[1].contains("30") && !seeks[1].contains("-30"), seeks[1])
-
-        // The footer's own seek keys send the identical request.
         lines = []
-        _ = press(.char("[")); _ = press(.char("]"))
-        func offsets(_ ls: [String]) -> [Double] {
-            ls.filter { $0.contains("slice.seek") }.compactMap {
-                (try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any])?["offset"] as? Double
-            }
-        }
-        XCTAssertEqual(offsets(lines), [-30, 30])
-        XCTAssertEqual(offsets(Array(seeks.prefix(2))), [-30, 30])
+        press(.char("s")); press(.char("r"))        // the keys do the same
+        XCTAssertEqual(lines.map { $0["op"] as? String }, ["slice.shuffle", "slice.repeat"])
+        XCTAssertEqual(lines[0]["on"] as? Bool, true, "the override remembers the last press, not the stale status")
     }
 
-    func testArrowsDoNothingBeforeTheRowIsDrawn() {
-        let (s, _) = scene()
-        XCTAssertEqual(s.handle(.left), .none)
-        XCTAssertEqual(s.handle(.enter), .none)
+    func testOrderAndGeniusAreRefusedInWordsAndNeverReachMusicApp() throws {
+        var lines: [String] = []
+        let status = StatusStore()
+        let (s, actions) = scene(transport: { _, line in lines.append(line); return "{}" }, status: status)
+        let snap = try snapshot(extra: both)
+        s.tick(snapshot: snap); _ = s.render(frame: frame, snapshot: snap)
+        _ = s.handle(.char("m")); actions.waitUntilIdle()
+        XCTAssertEqual(status.current()?.text, "Order isn't available on SpanDAC.")
+        XCTAssertTrue(lines.isEmpty)
+    }
+
+    func testAFailedPressPutsTheCellBack() throws {
+        struct Boom: Error {}
+        let (s, actions) = scene(transport: { _, _ in throw Boom() })
+        let snap = try snapshot(extra: both)
+        s.tick(snapshot: snap); _ = s.render(frame: frame, snapshot: snap)
+        _ = s.handle(.char("s")); actions.waitUntilIdle()
+        XCTAssertTrue(plain(s.render(frame: frame, snapshot: snap)).contains("[On]"))
+    }
+
+    func testTheTUIServesShuffleAndRepeatOnSpanDACButTheCLIStillRefuses() {
+        for a in [MusicTUIAction.persistentShuffleMode, .persistentRepeatMode] {
+            XCTAssertEqual(routeAction(a, in: .source, from: .tui), .source, "\(a)")
+            XCTAssertEqual(routeAction(a, in: .source, from: .cli), .refused(cliShuffleRepeatNotServed), "\(a)")
+        }
     }
 }

@@ -32,6 +32,13 @@ struct BridgeNow: Equatable {
     /// The playing song's Music.app persistent ID as SpanDAC sends it (a signed
     /// decimal alias, verbatim), when it sends one: the way to a cover when `artworkURL` is absent or not fetchable.
     var persistentID: String? = nil
+    /// SpanDAC's shuffle and repeat state, and which of the two it offers
+    /// control of (its `capabilities` named the op). Defaults read as an older
+    /// build: no state, nothing offered.
+    var shuffle: Bool? = nil
+    var repeatMode: String? = nil
+    var offersShuffle = false
+    var offersRepeat = false
 
     /// Before Bridge has answered even once.
     static let empty = BridgeNow(link: .checking, playback: "idle", title: "", artist: "",
@@ -63,8 +70,14 @@ func bridgeNow(from status: SourceStatus) -> BridgeNow {
     return BridgeNow(link: link, playback: status.playback,
                      title: status.title ?? "", artist: status.artist ?? "",
                      queue: queue, index: status.queueIndex, artworkURL: status.artworkURL,
-                     persistentID: status.persistentID)
+                     persistentID: status.persistentID,
+                     shuffle: status.shuffle, repeatMode: status.repeatMode,
+                     offersShuffle: status.offersShuffle, offersRepeat: status.offersRepeat)
 }
+
+/// What the Now tab says in place of the control grid when SpanDAC does not
+/// list `slice.shuffle` or `slice.repeat` (an older build).
+let spanDACNoModesSentence = "Shuffle and repeat aren't available on SpanDAC."
 
 /// Keeps a failed read from flashing a diagnosis.
 ///
