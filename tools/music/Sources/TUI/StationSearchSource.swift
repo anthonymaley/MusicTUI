@@ -649,9 +649,9 @@ struct SourceStatus: Equatable {
     var repeatMode: String? = nil
     var capabilities: [String] = []
     /// `slice.status`'s optional `"player":"disconnected"`: SpanDAC has lost its
-    /// connection to macOS's music player and only a relaunch fixes it. Absent
+    /// connection to Apple Music's player and only a relaunch fixes it. Absent
     /// (an older SpanDAC), or any other value, is false: this build knows one
-    /// word and ignores the rest. Already folded into `readiness`.
+    /// word and ignores the rest. Folded into `readiness`, never into `dataReadiness`.
     var playerDisconnected: Bool = false
     /// `readiness` as it reads with the player left out: authorization, contract
     /// and DAC only. Nil on a status built by hand, which reads as `readiness`.
