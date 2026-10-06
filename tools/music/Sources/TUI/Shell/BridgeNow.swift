@@ -156,7 +156,8 @@ func bridgePositionLine(_ b: BridgeNow) -> String? {
 
 /// SpanDAC's queue as the Now tab's EXISTING Up Next draws it: the same
 /// `TrackListEntry` rows the Music.app path fills `surrounding` with, the
-/// playing row first (`isCurrent`), then up to 20 after it. `index` is the
+/// playing row first (`isCurrent`), then every row after it (the renderer
+/// scrolls, as it does for the Music.app path, which passes its whole queue). `index` is the
 /// row's 1-based place in the list the client sent.
 ///
 /// `sent` is what the current play sent (`RoutingCoordinator.spanDACPlayedRows`);
@@ -176,9 +177,9 @@ func spanDACQueueWindow(sent: [MusicRow]?, status: SourceStatus) -> (current: Mu
         return (nil, [])
     }
     let next = status.nextRows.map { $0.filter { sent.indices.contains($0) } }
-        ?? Array(((at + 1)..<sent.count).prefix(20))
+        ?? Array((at + 1)..<sent.count)
     func entry(_ i: Int, current: Bool) -> TrackListEntry {
         TrackListEntry(index: i + 1, name: sent[i].title, artist: sent[i].artist, isCurrent: current, album: sent[i].album)
     }
-    return (current, [entry(at, current: true)] + next.prefix(20).map { entry($0, current: false) })
+    return (current, [entry(at, current: true)] + next.map { entry($0, current: false) })
 }

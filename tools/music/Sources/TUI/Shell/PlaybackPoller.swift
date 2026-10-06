@@ -192,8 +192,9 @@ final class PlaybackPoller {
     /// Music.app's track on screen beside Bridge's.
     ///
     /// **What Bridge does not report, this does not invent.** `slice.status`
-    /// carries no album, so it stays empty rather than being filled from
-    /// Music.app or guessed. Elapsed time, duration and an artwork URL are
+    /// carries no album; the album line is the album of the sent row the status's
+    /// `row` names (title-checked, see `spanDACQueueWindow`), and empty when
+    /// there is no such row, never filled from Music.app or guessed. Elapsed time, duration and an artwork URL are
     /// optional keys: when SpanDAC sends them they fill the same fields the
     /// Music.app path fills (the artwork URL via `snapshot.bridge`), and when
     /// it does not, a zero duration is the honest reading and the screen shows
@@ -204,6 +205,7 @@ final class PlaybackPoller {
         // before; a SpanDAC on the network through the coordinator's.
         let client = mode == .source ? makeSourceClient() : (routing?.client(for: mode) ?? .failing(.notPaired))
         var result: Result<SourceStatus, Error>
+        var album = ""
         do { result = .success(try client.control.status()) }
         catch { result = .failure(error) }
         // Up Next and the cover's fallback come from the rows the current play
@@ -217,6 +219,9 @@ final class PlaybackPoller {
             }
             result = .success(status)
             lastBridgeSurrounding = window.entries
+            // The album is the sent row's, vouched for by the same title check
+            // that gates the list; absent that, it stays empty.
+            album = window.current?.album ?? ""
         }
         let bridge = bridgeLink.record(result)
         // A second consecutive miss reports a stop; the list goes with it.
@@ -225,7 +230,7 @@ final class PlaybackPoller {
         let outcome: PollOutcome
         switch result {
         case .success(let status):
-            outcome = bridgeOutcome(status)
+            outcome = bridgeOutcome(status, album: album)
         case .failure:
             // One miss is absorbed: the screen keeps what it showed, exactly as
             // the Music.app path keeps its snapshot on `.unavailable`. A second
@@ -248,7 +253,7 @@ final class PlaybackPoller {
     private var lastBridgeOutcome: PollOutcome = .stopped
     private var lastBridgeSurrounding: [TrackListEntry] = []
 
-    private func bridgeOutcome(_ status: SourceStatus) -> PollOutcome {
+    private func bridgeOutcome(_ status: SourceStatus, album: String) -> PollOutcome {
         let state: String
         switch status.playback {
         case "playing": state = "playing"
@@ -262,6 +267,7 @@ final class PlaybackPoller {
         var np = NowPlayingState()
         np.track = status.title ?? ""
         np.artist = status.artist ?? ""
+        np.album = album
         np.state = state
         // Same whole-second fields the Music.app poll fills, so the Now tab's
         // existing progress bar draws them. No duration leaves both at zero:

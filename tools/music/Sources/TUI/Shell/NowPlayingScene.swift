@@ -311,6 +311,9 @@ final class NowPlayingScene: Scene {
         // serial queue and signals back through artDirty.
         if case .active(let np) = snapshot.outcome, let api = restArtworkAPI,
            snapshot.artLines.isEmpty, snapshot.artPath == nil,
+           // Bridge's album line is the sent row's; it must not start a REST
+           // lookup for a player whose cover has its own rung.
+           snapshot.bridge == nil,
            !np.album.isEmpty, !np.artist.isEmpty {
             let albumKey = nowAlbumKey(album: np.album, artist: np.artist)
             let trackTag = trackKey(title: np.track, artist: np.artist)

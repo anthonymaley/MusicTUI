@@ -11,8 +11,8 @@ final class SpanDACUpNextTests: XCTestCase {
     private let alias = "-596357614188841472"
     private let hex = "F7B94FE8D72CB600"
 
-    private func song(_ n: Int, alias: String? = nil) -> MusicRow {
-        var r = MusicRow(id: "i\(n)", title: "Song \(n)", artist: "Artist \(n)", album: "Album", kind: .song)
+    private func song(_ n: Int, alias: String? = nil, album: String = "Album") -> MusicRow {
+        var r = MusicRow(id: "i\(n)", title: "Song \(n)", artist: "Artist \(n)", album: album, kind: .song)
         r.alias = alias
         return r
     }
@@ -58,8 +58,11 @@ final class SpanDACUpNextTests: XCTestCase {
         XCTAssertNil(bad.row, "a boolean is not an index")
         XCTAssertEqual(bad.nextRows, [4])
 
-        let many = (0..<30).map(String.init).joined(separator: ",")
-        XCTAssertEqual(try status(extra: #","row":0,"next_rows":[\#(many)]"#).nextRows?.count, 20)
+        // No 20-row cap: every upcoming row is kept, up to a sanity cap only.
+        let many = (0..<300).map(String.init).joined(separator: ",")
+        XCTAssertEqual(try status(extra: #","row":0,"next_rows":[\#(many)]"#).nextRows, Array(0..<300))
+        let runaway = (0..<6000).map(String.init).joined(separator: ",")
+        XCTAssertEqual(try status(extra: #","row":0,"next_rows":[\#(runaway)]"#).nextRows?.count, SourceAppControl.nextRowsSanityCap)
     }
 
     // MARK: - the window, pure
@@ -75,6 +78,16 @@ final class SpanDACUpNextTests: XCTestCase {
 
         let inOrder = spanDACQueueWindow(sent: sent, status: try status(title: "Song 3", extra: #","row":3"#))
         XCTAssertEqual(inOrder.entries.map(\.name), ["Song 3", "Song 4"])
+    }
+
+    func testWindowIsUncappedWithAndWithoutNextRows() throws {
+        let sent = (0..<400).map { song($0) }
+        let inOrder = spanDACQueueWindow(sent: sent, status: try status(title: "Song 10", extra: #","row":10"#))
+        XCTAssertEqual(inOrder.entries.count, 1 + 389, "fallback: every row after `row`, not 20")
+        XCTAssertEqual(inOrder.entries.last?.name, "Song 399")
+        let ids = (0..<400).filter { $0 != 10 }.map(String.init).joined(separator: ",")
+        let listed = spanDACQueueWindow(sent: sent, status: try status(title: "Song 10", extra: #","row":10,"next_rows":[\#(ids)]"#))
+        XCTAssertEqual(listed.entries.count, 400, "next_rows: all of them, not 20")
     }
 
     func testWindowShowsNothingTheStatusDoesNotVouchFor() throws {
@@ -161,6 +174,44 @@ final class SpanDACUpNextTests: XCTestCase {
         let oldSnap = poll(r3, reply: old)
         XCTAssertTrue(oldSnap.surrounding.isEmpty)
         XCTAssertNil(oldSnap.bridge?.persistentID)
+    }
+
+    func testPollerFillsTheAlbumLineFromTheSentRowAndPassesEveryRow() throws {
+        let rows = (0..<120).map { song($0, album: $0 == 1 ? "Sent Album" : "Album") }
+        let ids = (2..<120).map(String.init).joined(separator: ",")
+        let text = reply(title: "Song 1", extra: #","row":1,"next_rows":[\#(ids)]"#)
+        let r = routing(reply: text)
+        r.recordSpanDACPlay(rows)
+        let snap = poll(r, reply: text)
+        XCTAssertEqual(snap.surrounding.count, 119, "the poller hands the renderer every row, as the Music.app path does")
+        guard case .active(let np) = snap.outcome else { return XCTFail("not active") }
+        XCTAssertEqual(np.album, "Sent Album")
+
+        // A status the sent list does not vouch for keeps the album empty.
+        let other = reply(title: "Something Else", extra: #","row":1"#)
+        let r2 = routing(reply: other)
+        r2.recordSpanDACPlay(rows)
+        guard case .active(let np2) = poll(r2, reply: other).outcome else { return XCTFail("not active") }
+        XCTAssertEqual(np2.album, "")
+    }
+
+    func testNowScrollsAllSpanDACRowsThroughTheSharedRenderer() throws {
+        let rows = (0..<200).map { song($0) }
+        let ids = (2..<200).map(String.init).joined(separator: ",")
+        let text = reply(title: "Song 1", extra: #","row":1,"next_rows":[\#(ids)]"#)
+        let r = routing(reply: text)
+        r.recordSpanDACPlay(rows)
+        let snap = poll(r, reply: text)
+        XCTAssertEqual(snap.surrounding.count, 199)
+        let status = StatusStore()
+        let scene = NowPlayingScene(backend: AppleScriptBackend(executable: "/usr/bin/true"), appQueue: AppQueueStore(),
+                                    status: status, actions: ActionRunner(status: status), routing: r,
+                                    bridgeCoverExtractor: { _, _ in nil })
+        scene.tick(snapshot: snap)
+        for _ in 0..<150 { _ = scene.handle(.down) }
+        let plain = scene.render(frame: shellLayout(width: 120, height: 40), snapshot: snap)
+            .replacingOccurrences(of: "\u{1B}\\[[0-9;?]*[A-Za-z]", with: "", options: .regularExpression)
+        XCTAssertTrue(plain.contains("Song 150 \u{2014} Artist 150"), "a row far past 20 is reachable by scrolling")
     }
 
     func testNowDrawsSpanDACsUpNextWithTheSharedListAndEnterStaysRefused() throws {

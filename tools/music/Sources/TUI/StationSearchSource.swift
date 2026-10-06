@@ -602,7 +602,8 @@ struct SourceStatus: Equatable {
     var persistentID: String? = nil
     /// Which of the rows the client sent in its current play request is
     /// playing (`row`, 0-based), and the rows after it in play order
-    /// (`next_rows`, up to 20, following shuffle when SpanDAC's queue does).
+    /// (`next_rows`, every upcoming row SpanDAC sends, following shuffle when
+    /// its queue does; only a sanity cap, `nextRowsSanityCap`, guards a runaway reply).
     /// Indexes into the SENT list (`RoutingCoordinator.spanDACPlayedRows`),
     /// not into the present entries. Optional on the wire; a malformed value is
     /// absent, and a negative index is dropped.
@@ -939,11 +940,15 @@ struct SourceAppControl: SourceControlling {
                             artworkURL: (status["artwork_url"] as? String).flatMap { $0.isEmpty ? nil : $0 },
                             persistentID: (status["persistent_id"] as? String).flatMap { $0.isEmpty ? nil : $0 },
                             row: Self.index(status["row"]),
-                            nextRows: (status["next_rows"] as? [Any]).map { $0.compactMap(Self.index).prefix(20).map { $0 } },
+                            nextRows: (status["next_rows"] as? [Any]).map { $0.compactMap(Self.index).prefix(Self.nextRowsSanityCap).map { $0 } },
                             shuffle: Self.bool(status["shuffle"]),
                             repeatMode: (status["repeat"] as? String).flatMap { RepeatMode(rawValue: $0) }?.rawValue,
                             capabilities: status["capabilities"] as? [String] ?? [])
     }
+
+    /// Not a product limit: SpanDAC sends every upcoming row. This only stops a
+    /// malformed reply from allocating without bound.
+    static let nextRowsSanityCap = 5000
 
     /// A real JSON boolean, or nil. `1` and `0` are numbers, not booleans.
     static func bool(_ raw: Any?) -> Bool? {
