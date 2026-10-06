@@ -62,7 +62,46 @@ struct SpanDACPlayResult: Equatable {
     var queueToken: String? = nil
 }
 
+/// `slice.listRev`'s answer: the revision of the complete ordered list, and its
+/// row count. No rows.
+struct SpanDACListRev: Equatable {
+    let listRev: String
+    let count: Int
+}
+
+/// The revision-only read, served only where `play.library` is advertised.
+let sourceListRevOp = "slice.listRev"
+
 extension SourceAppControl {
+
+    /// `slice.listRev {"kind","id"}` (no id for songs): the `list_rev` of a
+    /// container's complete ordered list WITHOUT its rows. Unbounded, so a whole
+    /// play of an album or artist over the listing reads' 1,000-song bound (or any
+    /// list not worth reading to play) can still be proven. Its value equals the
+    /// list read's `list_rev` for the same list.
+    func listRev(kind: LibraryPlayKind, id: String?) throws -> SpanDACListRev {
+        if kind == .songs, id != nil {
+            throw SourceAppError.refused("a revision of the Songs list names no container")
+        }
+        if kind != .songs, (id ?? "").trimmingCharacters(in: .whitespaces).isEmpty {
+            throw SourceAppError.refused("a revision of a \(kind.rawValue) needs its id")
+        }
+        var body: [String: Any] = ["op": sourceListRevOp, "kind": kind.rawValue]
+        if let id { body["id"] = id }
+        let reply = try send(body, over: libraryTransport)
+        // Fail closed: a revision that is missing, blank or for another kind of
+        // list would prove nothing about the list the play names.
+        guard (reply["kind"] as? String) == kind.rawValue else {
+            throw SourceAppError.malformedReply("SpanDAC's \(sourceListRevOp) reply is for another kind of list")
+        }
+        guard let rev = Self.listRev(reply["list_rev"]) else {
+            throw SourceAppError.malformedReply("SpanDAC's \(sourceListRevOp) reply has no list_rev")
+        }
+        guard let count = Self.index(reply["count"]) else {
+            throw SourceAppError.malformedReply("SpanDAC's \(sourceListRevOp) reply has a count that is not a count")
+        }
+        return SpanDACListRev(listRev: rev, count: count)
+    }
 
     /// The request body: `kind`; `id` only for a container; `start_index` and
     /// `start_id` together or not at all; `list_rev` when the rows the play
@@ -108,7 +147,10 @@ extension SourceAppControl {
     /// A successful reply, fail closed: `queued` and both skip counts are on
     /// every successful reply (0 included), so one that is missing or is not a
     /// whole non-negative number is a peer that broke the contract, never a
-    /// zero. The token is optional: absent or blank is nil.
+    /// zero. So is the token `play.library` promises: a nonblank top-level
+    /// `queue_token` AND the same one in the embedded status, or the reply is
+    /// malformed and no rows are kept against it (Codex 116, finding 1). The
+    /// nil-token compatibility belongs to the legacy `slice.queue` path alone.
     static func playLibraryResult(from reply: [String: Any],
                                   readingWith control: SourceAppControl) throws -> SpanDACPlayResult {
         func count(_ key: String) throws -> Int {
@@ -124,10 +166,14 @@ extension SourceAppControl {
               let status = decodeStatus(wireStatus, readingWith: control) else {
             throw SourceAppError.malformedReply("SpanDAC's \(sourcePlayLibraryOp) reply has no status")
         }
+        guard let token = queueToken(reply["queue_token"]), status.queueToken == token else {
+            throw SourceAppError.malformedReply(
+                "SpanDAC's \(sourcePlayLibraryOp) reply has no queue_token, or two that differ")
+        }
         return SpanDACPlayResult(queue: bridgeNow(from: status).queue,
                                  skippedUnavailable: unavailable, skippedVideos: videos,
                                  queued: queued, requested: status.queueRequested,
-                                 queueToken: queueToken(reply["queue_token"]))
+                                 queueToken: token)
     }
 
     /// `list_rev` as sent: a non-blank string, or nil (an older SpanDAC).

@@ -840,6 +840,8 @@ protocol SourceControlling {
     /// `capabilities()` lists `play.library`.
     func playLibrary(kind: LibraryPlayKind, id: String?, start: LibraryPlayStart?, listRev: String?,
                      shuffle: Bool) throws -> SpanDACPlayResult
+    /// `slice.listRev`: a container's complete-list revision without its rows.
+    func listRev(kind: LibraryPlayKind, id: String?) throws -> SpanDACListRev
     // NOTE: `SourceAppControl`'s own declaration below defaults `startRequired`
     // to `false`; a protocol requirement's default only applies to callers
     // holding a `SourceControlling`-typed value, so `BridgeMusicProviderTests`'
@@ -925,6 +927,9 @@ extension SourceControlling {
     func playLibrary(kind: LibraryPlayKind, id: String?, start: LibraryPlayStart?, listRev: String?,
                      shuffle: Bool) throws -> SpanDACPlayResult {
         throw SourceAppError.unsupported(sourcePlayLibraryOp)
+    }
+    func listRev(kind: LibraryPlayKind, id: String?) throws -> SpanDACListRev {
+        throw SourceAppError.unsupported(sourceListRevOp)
     }
     func recommendations(limit: Int) throws -> [DiscoverRail] {
         throw SourceAppError.unsupported("slice.recommendations")

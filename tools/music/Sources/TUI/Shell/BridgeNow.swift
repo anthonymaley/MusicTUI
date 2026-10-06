@@ -184,8 +184,12 @@ func bridgePositionLine(_ b: BridgeNow) -> String? {
 /// `token` is the `queue_token` the play's reply carried (Codex 106, finding 6).
 /// When there is one, the rows are used only while the status echoes the same
 /// token, so another process's queue can never borrow them: no Up Next, no
-/// album line, no persistent-id fallback for the cover. Without one (a SpanDAC
-/// that predates tokens) the title check above is the whole rule, as before.
+/// album line, no persistent-id fallback for the cover. Without one (a legacy
+/// play on a SpanDAC that predates tokens) the title check above is the whole
+/// rule, as before, but only for a status that carries no token either: a
+/// status that does describes an assignment this play holds no token for. A
+/// `slice.playLibrary` reply without its token is refused, so a whole play never
+/// records none.
 ///
 /// `shuffled` is true when the play was a shuffle SpanDAC made itself.
 func spanDACQueueWindow(sent: [MusicRow]?, token: String? = nil, shuffled: Bool = false,
@@ -194,7 +198,11 @@ func spanDACQueueWindow(sent: [MusicRow]?, token: String? = nil, shuffled: Bool 
     // The play recorded a token: these rows describe that assignment and no
     // other. A status that echoes a different token (another process replaced
     // the queue) or none (the player was unloaded) shows its own data only.
-    if let token, status.queueToken != token { return (nil, []) }
+    // No token recorded (an older SpanDAC's legacy play): the title check below is
+    // all there is, but only while the status carries no assignment's token either.
+    // One that does describes an assignment this play holds no token for.
+    if let token { if status.queueToken != token { return (nil, []) } }
+    else if status.queueToken != nil { return (nil, []) }
     let current = sent[at]
     if let title = status.title?.trimmingCharacters(in: .whitespaces), !title.isEmpty,
        title.lowercased() != current.title.trimmingCharacters(in: .whitespaces).lowercased() {

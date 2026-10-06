@@ -102,6 +102,66 @@ final class SpanDACPlayLibraryTests: XCTestCase {
         XCTAssertNil(try control(Canned(list(""))).libraryAlbumTracks(albumID: "a").listRev)
     }
 
+    // MARK: - slice.listRev
+
+    func testTheRevisionReadSendsKindAndIdAndOmitsTheIdForSongs() throws {
+        let canned = Canned(#"{"ok":true,"op":"slice.listRev","kind":"artist","list_rev":"fp-9","count":1001}"#)
+        _ = try control(canned).listRev(kind: .artist, id: "ar1")
+        let body = try XCTUnwrap(canned.bodies.first)
+        XCTAssertEqual(body["op"] as? String, "slice.listRev")
+        XCTAssertEqual(body["kind"] as? String, "artist")
+        XCTAssertEqual(body["id"] as? String, "ar1")
+        let songs = Canned(#"{"ok":true,"op":"slice.listRev","kind":"songs","list_rev":"gen-7","count":15646}"#)
+        _ = try control(songs).listRev(kind: .songs, id: nil)
+        XCTAssertNil(songs.bodies.first?["id"])
+        XCTAssertThrowsError(try control(Canned("{}")).listRev(kind: .songs, id: "x"))
+        XCTAssertThrowsError(try control(Canned("{}")).listRev(kind: .album, id: nil))
+    }
+
+    func testTheRevisionReplyIsReadStrictly() throws {
+        let ok = try control(Canned(#"{"ok":true,"op":"slice.listRev","kind":"album","list_rev":"fp-1","count":12}"#))
+            .listRev(kind: .album, id: "a")
+        XCTAssertEqual(ok.listRev, "fp-1")
+        XCTAssertEqual(ok.count, 12)
+        for bad in [
+            #"{"ok":true,"op":"slice.listRev","kind":"album","count":12}"#,
+            #"{"ok":true,"op":"slice.listRev","kind":"album","list_rev":"","count":12}"#,
+            #"{"ok":true,"op":"slice.listRev","kind":"album","list_rev":7,"count":12}"#,
+            #"{"ok":true,"op":"slice.listRev","kind":"album","list_rev":"fp-1"}"#,
+            #"{"ok":true,"op":"slice.listRev","kind":"album","list_rev":"fp-1","count":-1}"#,
+            #"{"ok":true,"op":"slice.listRev","kind":"album","list_rev":"fp-1","count":true}"#,
+            #"{"ok":true,"op":"slice.listRev","kind":"playlist","list_rev":"fp-1","count":3}"#,
+        ] {
+            XCTAssertThrowsError(try control(Canned(bad)).listRev(kind: .album, id: "a"), bad) { error in
+                guard case SourceAppError.malformedReply = error else { return XCTFail("\(bad): \(error)") }
+            }
+        }
+    }
+
+    func testTheRevisionReadKeepsItsRefusalKindsAndAnOlderSpanDACReadsAsUpdate() {
+        func attempt(_ reply: String) -> Error? {
+            do { _ = try control(Canned(reply)).listRev(kind: .playlist, id: "p"); return nil } catch { return error }
+        }
+        XCTAssertEqual(attempt(#"{"ok":false,"op":"slice.listRev","error":{"kind":"warming","detail":"w","retry_after":2.0}}"#)
+                        as? SourceAppError, .warming("w", retryAfter: 2.0))
+        XCTAssertEqual(attempt(#"{"ok":false,"op":"slice.listRev","error":{"kind":"not_in_library","detail":"gone"}}"#)
+                        as? SourceAppError, .refused("gone"))
+        XCTAssertEqual(attempt(#"{"ok":false,"op":"slice.listRev","error":{"kind":"library_changed","detail":"That list has changed since you saw it; open it again to see the new list."}}"#)
+                        as? SourceAppError, .refused("That list has changed since you saw it; open it again to see the new list."))
+        XCTAssertEqual(attempt(#"{"ok":false,"op":"slice.listRev","error":{"kind":"unsupported_item","detail":"That playlist cannot be played."}}"#)
+                        as? SourceAppError, .refused("That playlist cannot be played."))
+        XCTAssertEqual(attempt(#"{"ok":false,"op":"slice.listRev","error":{"kind":"busy","detail":"busy"}}"#)
+                        as? SourceAppError, .busy)
+        XCTAssertEqual(attempt(#"{"ok":false,"op":"slice.listRev","error":{"kind":"unknown_op","detail":"x"}}"#)
+                        as? SourceAppError, .unsupported("slice.listRev"))
+        let provider = BridgeMusicProvider(control: control(Canned(
+            #"{"ok":false,"op":"slice.listRev","error":{"kind":"unknown_op","detail":"x"}}"#)))
+        XCTAssertThrowsError(try provider.listRev(kind: .playlist, id: "p")) { error in
+            XCTAssertEqual(error as? MusicProviderError,
+                           .notImplemented("This SpanDAC build can't read a list's revision \u{2014} update SpanDAC"))
+        }
+    }
+
     // MARK: - the reply
 
     func testTheReplyCarriesQueuedBothSkipCountsTheTokenAndTheQueue() throws {
@@ -133,12 +193,38 @@ final class SpanDACPlayLibraryTests: XCTestCase {
             .playLibrary(kind: .album, id: "a", start: nil, listRev: nil, shuffle: false), "a skip is never silent")
     }
 
-    func testAMissingTokenIsNilNotAFailure() throws {
-        let reply = #"{"ok":true,"op":"slice.playLibrary","status":{"playback":"playing","contract":3,"authorization":"authorized"},"queued":5,"skipped_unavailable":0,"skipped_videos":0}"#
-        let result = try control(Canned(reply)).playLibrary(kind: .album, id: "a", start: nil, listRev: nil, shuffle: false)
-        XCTAssertNil(result.queueToken)
-        let blank = #"{"ok":true,"op":"slice.playLibrary","status":{"playback":"playing","contract":3,"authorization":"authorized"},"queued":5,"skipped_unavailable":0,"skipped_videos":0,"queue_token":""}"#
-        XCTAssertNil(try control(Canned(blank)).playLibrary(kind: .album, id: "a", start: nil, listRev: nil, shuffle: false).queueToken)
+    /// `play.library` promises a token on every successful play reply: the
+    /// top-level one AND the same one in the reply's own status. A reply without
+    /// both, or with two that differ, is a broken peer, and no rows are retained
+    /// against it (Codex 116, finding 1).
+    func testASuccessfulPlayReplyWithoutItsTokenIsMalformedNotNil() {
+        func reply(top: String, embedded: String) -> String {
+            #"{"ok":true,"op":"slice.playLibrary","status":{"playback":"playing","contract":3,"authorization":"authorized"\#(embedded)},"queued":5,"skipped_unavailable":0,"skipped_videos":0\#(top)}"#
+        }
+        let cases: [(String, String, String)] = [
+            ("no top-level token", "", #","queue_token":"q-1""#),
+            ("blank top-level token", #","queue_token":"""#, #","queue_token":"q-1""#),
+            ("no embedded token", #","queue_token":"q-1""#, ""),
+            ("blank embedded token", #","queue_token":"q-1""#, #","queue_token":" ""#),
+            ("two different tokens", #","queue_token":"q-1""#, #","queue_token":"q-2""#),
+            ("no token at all", "", ""),
+            ("a top-level token that is not text", #","queue_token":7"#, #","queue_token":"q-1""#),
+        ]
+        for (label, top, embedded) in cases {
+            XCTAssertThrowsError(try control(Canned(reply(top: top, embedded: embedded)))
+                .playLibrary(kind: .album, id: "a", start: nil, listRev: nil, shuffle: false), label) { error in
+                guard case SourceAppError.malformedReply = error else { return XCTFail("\(label): \(error)") }
+            }
+        }
+        XCTAssertNoThrow(try control(Canned(reply(top: #","queue_token":"q-1""#, embedded: #","queue_token":"q-1""#)))
+            .playLibrary(kind: .album, id: "a", start: nil, listRev: nil, shuffle: false))
+    }
+
+    /// The nil-token compatibility is the LEGACY paths' alone: an older SpanDAC's
+    /// `slice.queue` reply carries none, and that stays a success with no token.
+    func testALegacyQueueReplyWithoutATokenStaysASuccess() throws {
+        let older = #"{"ok":true,"op":"slice.queue","status":{"playback":"playing","contract":3,"authorization":"authorized"}}"#
+        XCTAssertNil(try control(Canned(older)).queueRetainingToken(libraryIDs: ["a"], startRequired: false).queueToken)
     }
 
     func testTheRefusalsKeepTheirKinds() {
@@ -267,14 +353,19 @@ final class SpanDACPlayLibraryTests: XCTestCase {
         XCTAssertTrue(spanDACQueueWindow(sent: rows, token: "qA-1", status: bare).entries.isEmpty)
     }
 
-    func testWithoutARecordedTokenTodaysTitleCheckAloneStillApplies() throws {
-        // An older SpanDAC sends no token either way: unchanged behaviour.
+    /// Legacy plays only. An older SpanDAC sends no token in a play reply or a
+    /// status, and the title check alone is all there is. A play whose reply had
+    /// no token never reaches here from a SpanDAC that has tokens: a whole play
+    /// without one is refused, and a legacy reply from a tokened SpanDAC carries it.
+    func testWithoutARecordedTokenTheTitleCheckAppliesOnlyToAStatusWithNoTokenEither() throws {
         let rows = [song(0), song(1)]
         let old = try status(title: "Song 0", row: 0, next: [1], token: nil)
         XCTAssertEqual(spanDACQueueWindow(sent: rows, token: nil, status: old).entries.map(\.name), ["Song 0", "Song 1"])
-        // And a token on the status with none recorded does not hide them.
+        // A status that carries an assignment's token describes an assignment this
+        // play holds no token for: it is not shown these rows, however alike the title.
         let newer = try status(title: "Song 0", row: 0, next: [1], token: "qZ-1")
-        XCTAssertEqual(spanDACQueueWindow(sent: rows, token: nil, status: newer).entries.count, 2)
+        XCTAssertTrue(spanDACQueueWindow(sent: rows, token: nil, status: newer).entries.isEmpty)
+        XCTAssertNil(spanDACQueueWindow(sent: rows, token: nil, status: newer).current)
     }
 
     /// SpanDAC may leave `next_rows` out under shuffle. That is "no Up Next list",

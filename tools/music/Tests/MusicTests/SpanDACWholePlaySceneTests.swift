@@ -30,6 +30,14 @@ final class SpanDACWholePlaySceneTests: XCTestCase {
         """#
     }
 
+    /// `slice.listRev`'s answer: the list's revision and count, no rows.
+    private static func revReply(_ kind: String, _ rev: String, count: Int = 3) -> String {
+        #"{"ok":true,"op":"slice.listRev","kind":"\#(kind)","list_rev":"\#(rev)","count":\#(count)}"#
+    }
+    /// A listing read over SpanDAC's 1,000-song bound.
+    private static let tooLarge = #"{"ok":false,"op":"slice.libraryAlbumTracks","error":{"kind":"too_large","detail":"That has more than 1,000 songs, which is more than SpanDAC will list."}}"#
+    private static let unknownOp = #"{"ok":false,"op":"slice.listRev","error":{"kind":"unknown_op","detail":"unknown op"}}"#
+
     private static func refusal(_ kind: String, _ detail: String) -> String {
         #"{"ok":false,"op":"slice.playLibrary","error":{"kind":"\#(kind)","detail":"\#(detail)"}}"#
     }
@@ -109,6 +117,7 @@ final class SpanDACWholePlaySceneTests: XCTestCase {
     func testPOnAnAlbumSendsOnePlayLibraryWithTheListRevOfItsReadAndNoIdList() {
         let wire = stickyWire(["slice.libraryAlbums": [albumPage],
                                            "slice.libraryAlbumTracks": [trackReply(["t1", "t2", "t3"]), trackReply(["t1", "t2", "t3"])],
+                                           "slice.listRev": [Self.revReply("album", "rev-al1"), Self.revReply("album", "rev-al1")],
                                            "slice.status": [Self.capable],
                                            "slice.playLibrary": [Self.playReply(queued: 3)]])
         let s = albumScene(wire, status: StatusStore())
@@ -158,6 +167,7 @@ final class SpanDACWholePlaySceneTests: XCTestCase {
     func testSOnAnAlbumSendsShuffleAndNoStart() {
         let wire = stickyWire(["slice.libraryAlbums": [albumPage],
                                            "slice.libraryAlbumTracks": [trackReply(["t1", "t2", "t3"]), trackReply(["t1", "t2", "t3"])],
+                                           "slice.listRev": [Self.revReply("album", "rev-al1"), Self.revReply("album", "rev-al1")],
                                            "slice.status": [Self.capable],
                                            "slice.playLibrary": [Self.playReply(queued: 3)]])
         let s = albumScene(wire)
@@ -172,6 +182,7 @@ final class SpanDACWholePlaySceneTests: XCTestCase {
     func testTheFooterSaysQueuedAndNamesAShortQueue() {
         let wire = stickyWire(["slice.libraryAlbums": [albumPage],
                                            "slice.libraryAlbumTracks": [trackReply(["t1", "t2", "t3"]), trackReply(["t1", "t2", "t3"])],
+                                           "slice.listRev": [Self.revReply("album", "rev-al1"), Self.revReply("album", "rev-al1")],
                                            "slice.status": [Self.capable],
                                            "slice.playLibrary": [Self.playReply(queued: 790, requested: 796, unavailable: 4)]])
         let status = StatusStore()
@@ -188,6 +199,7 @@ final class SpanDACWholePlaySceneTests: XCTestCase {
     func testTheFooterOfAFullQueueJustSaysHowManyAreQueued() {
         let wire = stickyWire(["slice.libraryAlbums": [albumPage],
                                            "slice.libraryAlbumTracks": [trackReply(["t1", "t2", "t3"]), trackReply(["t1", "t2", "t3"])],
+                                           "slice.listRev": [Self.revReply("album", "rev-al1"), Self.revReply("album", "rev-al1")],
                                            "slice.status": [Self.capable],
                                            "slice.playLibrary": [Self.playReply(queued: 3)]])
         let status = StatusStore()
@@ -202,6 +214,7 @@ final class SpanDACWholePlaySceneTests: XCTestCase {
         let wire = stickyWire([
             "slice.libraryAlbums": [albumPage], "slice.status": [Self.capable],
             "slice.libraryAlbumTracks": [trackReply(["t1", "t2", "t3"]), trackReply(["t1", "t2", "t3"])],
+            "slice.listRev": [Self.revReply("album", "rev-al1"), Self.revReply("album", "rev-al1")],
             "slice.playLibrary": [Self.refusal("library_changed",
                 "That list has changed since you saw it; open it again to see the new list.")]])
         let status = StatusStore()
@@ -217,6 +230,7 @@ final class SpanDACWholePlaySceneTests: XCTestCase {
         let wire = stickyWire([
             "slice.libraryAlbums": [albumPage], "slice.status": [Self.capable],
             "slice.libraryAlbumTracks": [trackReply(["t1", "t2", "t3"]), trackReply(["t1", "t2", "t3"])],
+            "slice.listRev": [Self.revReply("album", "rev-al1"), Self.revReply("album", "rev-al1")],
             "slice.playLibrary": [Self.refusal("warming", "SpanDAC is still preparing your library."),
                                   Self.playReply(queued: 3)]])
         let status = StatusStore()
@@ -225,6 +239,64 @@ final class SpanDACWholePlaySceneTests: XCTestCase {
         XCTAssertTrue(settleScene(s) { wire.sent("slice.playLibrary").count == 2 }, "warming was not retried")
         XCTAssertTrue(settleScene(s) { status.current()?.text == "Playing 'In Rainbows' on SpanDAC \u{2014} 3 queued." },
                       "got: \(String(describing: status.current()?.text))")
+    }
+
+    /// Codex 116, finding 2: an album over the listing read's 1,000-song bound has
+    /// no rows to read, but a whole play of it needs only its revision.
+    func testAnAlbumWhoseListingReadRefusesTooLargeStillPlaysWholeByItsRevision() {
+        let wire = stickyWire(["slice.libraryAlbums": [albumPage],
+                               "slice.libraryAlbumTracks": [Self.tooLarge, Self.tooLarge],
+                               "slice.listRev": [Self.revReply("album", "rev-big", count: 1001)],
+                               "slice.status": [Self.capable],
+                               "slice.playLibrary": [Self.playReply(queued: 1001)]])
+        let s = albumScene(wire)
+        _ = s.handle(.char("p"))
+        XCTAssertTrue(settlePlayed(wire), "an over-bound album never reached slice.playLibrary")
+        let req = (wire.sent("slice.playLibrary").first ?? [:])
+        XCTAssertEqual(req["kind"] as? String, "album")
+        XCTAssertEqual(req["id"] as? String, "al1")
+        XCTAssertEqual(req["list_rev"] as? String, "rev-big", "the revision came from slice.listRev")
+        let revReads = wire.sent("slice.listRev")
+        XCTAssertEqual(revReads.first?["kind"] as? String, "album")
+        XCTAssertEqual(revReads.first?["id"] as? String, "al1")
+        pause()
+        XCTAssertTrue(wire.sent("slice.queue").isEmpty)
+    }
+
+    /// The album's track list is not read just to play it: with nothing cached the
+    /// revision read stands in. (The preview may have cached the rows; then their
+    /// own `list_rev` is used and no revision read is sent.)
+    func testAFromRowAlbumPlayKeepsTheRevThatCameWithTheRowsOnScreen() {
+        let wire = stickyWire(["slice.libraryAlbums": [albumPage],
+                               "slice.libraryAlbumTracks": [trackReply(["t1", "t2", "t3"], listRev: "rev-shown")],
+                               "slice.listRev": [Self.revReply("album", "rev-other")],
+                               "slice.status": [Self.capable],
+                               "slice.playLibrary": [Self.playReply(queued: 3)]])
+        let s = albumScene(wire)
+        _ = s.handle(.enter)
+        XCTAssertTrue(settleScene(s) { s.render(frame: frame, snapshot: idle).contains("Tt2") })
+        _ = s.handle(.down)
+        _ = s.handle(.enter)
+        XCTAssertTrue(settlePlayed(wire))
+        let req = (wire.sent("slice.playLibrary").first ?? [:])
+        XCTAssertEqual(req["list_rev"] as? String, "rev-shown")
+        XCTAssertEqual(req["start_id"] as? String, "t2")
+        XCTAssertTrue(wire.sent("slice.listRev").isEmpty, "a from-row play must not replace the shown list's rev")
+    }
+
+    /// A whole play whose reply lacks the token play.library promises keeps no rows.
+    func testAWholePlayReplyWithoutItsTokenIsRefusedAndKeepsNoRows() {
+        let noToken = #"{"ok":true,"op":"slice.playLibrary","status":{"playback":"playing","title":"T","artist":"A","contract":3,"authorization":"authorized"},"queued":3,"skipped_unavailable":0,"skipped_videos":0}"#
+        let wire = stickyWire(["slice.libraryAlbums": [albumPage],
+                               "slice.libraryAlbumTracks": [trackReply(["t1", "t2", "t3"]), trackReply(["t1", "t2", "t3"])],
+                               "slice.listRev": [Self.revReply("album", "rev-al1"), Self.revReply("album", "rev-al1")],
+                               "slice.status": [Self.capable], "slice.playLibrary": [noToken]])
+        let status = StatusStore()
+        let r = routing(wire)
+        let s = albumScene(wire, status: status, routing: r)
+        _ = s.handle(.char("p"))
+        XCTAssertTrue(settleScene(s) { status.current()?.isError == true })
+        XCTAssertNil(r.spanDACPlay(), "rows were kept against a reply with no token")
     }
 
     func testAnOlderSpanDACKeepsTodaysIdListPath() {
@@ -261,9 +333,12 @@ final class SpanDACWholePlaySceneTests: XCTestCase {
     /// ready network row keeps the id-list path, even though the Mac SpanDAC the
     /// album was read from does advertise it.
     func testANetworkRowWithoutThePlayLibraryCapabilityUsesTheIdListPath() {
+        // The Mac's SpanDAC answers a revision read too: the play asks the data
+        // SpanDAC before it knows what the network output can take.
         let macWire = stickyWire(["slice.libraryAlbums": [albumPage],
-                                              "slice.libraryAlbumTracks": [trackReply(["t1", "t2", "t3"])],
-                                              "slice.status": [Self.capable]])
+                                  "slice.libraryAlbumTracks": [trackReply(["t1", "t2", "t3"]), trackReply(["t1", "t2", "t3"])],
+                                  "slice.listRev": [Self.revReply("album", "rev-al1")],
+                                  "slice.status": [Self.capable]])
         let queued = #"{"ok":true,"op":"slice.queue","status":{"playback":"playing","title":"T","artist":"A","contract":3,"authorization":"authorized","queue":{"phase":"complete","requested":3,"present":3,"index":0}}}"#
         let networkWire = stickyWire(["slice.status": [Self.incapable], "slice.queue": [queued]])
         let id = "0E6A3F6C-4B51-4D1B-9E1E-5C2A8D3B7F10"
@@ -292,35 +367,60 @@ final class SpanDACWholePlaySceneTests: XCTestCase {
         trackReply(ids, listRev: listRev).replacingOccurrences(of: "libraryAlbumTracks", with: "libraryArtistSongs")
     }
 
-    func testPOnAnArtistReadsTheSongsOnceForTheirListRevAndSendsOnePlayLibraryNotAnIdList() {
+    func testPOnAnArtistOverTheListingBoundStillPlaysWholeByItsRevision() {
+        // 1,001 songs: the listing read refuses too_large, and the play does not need it.
+        let tooLargeSongs = Self.tooLarge.replacingOccurrences(of: "libraryAlbumTracks", with: "libraryArtistSongs")
         let wire = stickyWire(["slice.libraryArtists": [artistPage], "slice.status": [Self.capable],
-                                           "slice.libraryArtistSongs": [artistSongs(["t1", "t2"])],
-                                           "slice.playLibrary": [Self.playReply(queued: 14)]])
-        let r = routing(wire)
+                               "slice.libraryArtistSongs": [tooLargeSongs],
+                               "slice.listRev": [Self.revReply("artist", "rev-ar1", count: 1001)],
+                               "slice.playLibrary": [Self.playReply(queued: 1001)]])
         let status = StatusStore()
+        let r = routing(wire)
         let s = libraryTestScene(flag: BridgeSelectedFlag(true), wire: wire, spy: LibraryAppleScriptSpy(),
                                  status: status, routing: r)
         goToSubView(s, .artists)
         XCTAssertTrue(settleScene(s) { s.render(frame: frame, snapshot: idle).contains("Radiohead") })
         _ = s.handle(.char("p"))
-        XCTAssertTrue(settlePlayed(wire))
+        XCTAssertTrue(settlePlayed(wire), "a 1,001-song artist never reached slice.playLibrary")
         let req = (wire.sent("slice.playLibrary").first ?? [:])
         XCTAssertEqual(req["kind"] as? String, "artist")
         XCTAssertEqual(req["id"] as? String, "ar1")
         XCTAssertNil(req["start_index"])
-        XCTAssertEqual(req["list_rev"] as? String, "rev-ar1", "the list_rev of the one read of the artist's songs")
-        XCTAssertEqual(wire.sent("slice.libraryArtistSongs").count, 1)
+        XCTAssertEqual(req["list_rev"] as? String, "rev-ar1", "the revision came from slice.listRev")
+        XCTAssertEqual(wire.sent("slice.listRev").count, 1)
+        XCTAssertEqual(wire.sent("slice.listRev").first?["kind"] as? String, "artist")
+        XCTAssertEqual(wire.sent("slice.listRev").first?["id"] as? String, "ar1")
+        XCTAssertTrue(wire.sent("slice.libraryArtistSongs").isEmpty, "the artist's songs were read to play them")
         XCTAssertNil(req["library_ids"])
         XCTAssertTrue(wire.sent("slice.queue").isEmpty)
-        XCTAssertEqual(r.spanDACPlay()?.rows.map(\.id), ["t1", "t2"], "the rows read are the rows kept for Up Next")
-        XCTAssertTrue(settleScene(s) { status.current()?.text == "Playing 'Radiohead' on SpanDAC \u{2014} 14 queued." },
+        XCTAssertTrue(settleScene(s) { status.current()?.text == "Playing 'Radiohead' on SpanDAC \u{2014} 1,001 queued." },
                       "got: \(String(describing: status.current()?.text))")
+        XCTAssertEqual(r.spanDACPlay()?.rows.count, 0, "no rows were read, so none are kept")
+        XCTAssertEqual(r.spanDACPlay()?.token, "qa-1", "but the play's token is")
+        XCTAssertEqual(r.spanDACPlay()?.listRev, "rev-ar1")
+    }
+
+    /// A SpanDAC that cannot read a revision (an older one, or one that does not
+    /// advertise play.library) keeps the artist's songs read and the id list.
+    func testPOnAnArtistWithoutPlayLibraryReadsTheSongsAndQueuesTheIds() {
+        let queued = #"{"ok":true,"op":"slice.queue","status":{"playback":"playing","title":"T","artist":"A","contract":3,"authorization":"authorized","queue":{"phase":"complete","requested":2,"present":2,"index":0}}}"#
+        let wire = stickyWire(["slice.libraryArtists": [artistPage], "slice.status": [Self.incapable],
+                               "slice.libraryArtistSongs": [artistSongs(["t1", "t2"])], "slice.queue": [queued]])
+        let s = libraryTestScene(flag: BridgeSelectedFlag(true), wire: wire, spy: LibraryAppleScriptSpy())
+        goToSubView(s, .artists)
+        XCTAssertTrue(settleScene(s) { s.render(frame: frame, snapshot: idle).contains("Radiohead") })
+        _ = s.handle(.char("p"))
+        let deadline = Date().addingTimeInterval(3)
+        while Date() < deadline && wire.sent("slice.queue").isEmpty { usleep(5_000) }
+        XCTAssertEqual(wire.sent("slice.queue").first?["library_ids"] as? [String], ["t1", "t2"])
+        XCTAssertTrue(wire.sent("slice.listRev").isEmpty)
+        XCTAssertTrue(wire.sent("slice.playLibrary").isEmpty)
     }
 
     func testSOnAnArtistShufflesTheWholeArtistWithNoStart() {
         let wire = stickyWire(["slice.libraryArtists": [artistPage], "slice.status": [Self.capable],
-                                           "slice.libraryArtistSongs": [artistSongs(["t1", "t2"])],
-                                           "slice.playLibrary": [Self.playReply(queued: 14)]])
+                               "slice.listRev": [Self.revReply("artist", "rev-ar1")],
+                               "slice.playLibrary": [Self.playReply(queued: 14)]])
         let s = libraryTestScene(flag: BridgeSelectedFlag(true), wire: wire, spy: LibraryAppleScriptSpy())
         goToSubView(s, .artists)
         XCTAssertTrue(settleScene(s) { s.render(frame: frame, snapshot: idle).contains("Radiohead") })
@@ -330,6 +430,7 @@ final class SpanDACWholePlaySceneTests: XCTestCase {
         XCTAssertEqual(req["kind"] as? String, "artist")
         XCTAssertEqual(SourceAppControl.bool(req["shuffle"]), true)
         XCTAssertNil(req["start_id"])
+        XCTAssertEqual(req["list_rev"] as? String, "rev-ar1")
     }
 
     // MARK: - playlists
@@ -342,10 +443,10 @@ final class SpanDACWholePlaySceneTests: XCTestCase {
         return s
     }
 
-    func testPOnAPlaylistReadsOneRowForTheListRevAndSendsPlayLibraryWithNoWalk() {
+    func testPOnAPlaylistAsksForItsRevisionAndSendsPlayLibraryWithNoRowRead() {
         let wire = stickyWire(["slice.libraryPlaylists": [onePlaylistPage], "slice.status": [Self.capable],
-                                           "slice.playLibrary": [Self.playReply(queued: 40, videos: 2)]])
-        wire.script("slice.libraryPlaylistTracks", [playlistTracks(["i.a"])])
+                               "slice.listRev": [Self.revReply("playlist", "rev-pl1", count: 40)],
+                               "slice.playLibrary": [Self.playReply(queued: 40, videos: 2)]])
         let status = StatusStore()
         let s = playlistScene(wire, status: status)
         _ = s.handle(.char("p"))
@@ -356,10 +457,12 @@ final class SpanDACWholePlaySceneTests: XCTestCase {
         XCTAssertNil(req["start_index"])
         XCTAssertEqual(SourceAppControl.bool(req["shuffle"]), false)
         XCTAssertEqual(req["list_rev"] as? String, "rev-pl1")
-        let probes = wire.sent("slice.libraryPlaylistTracks")
-        XCTAssertEqual(probes.count, 1, "the playlist was walked before the play")
-        XCTAssertEqual(probes.first?["limit"] as? Int, 1, "one row is enough to learn the list_rev")
-        XCTAssertNil(probes.first?["for_queue"], "the legacy 100-song bound is not asked for")
+        XCTAssertTrue(wire.sent("slice.libraryPlaylistTracks").isEmpty,
+                      "no row was read, not even the one-row probe slice.listRev replaced")
+        let revReads = wire.sent("slice.listRev")
+        XCTAssertEqual(revReads.count, 1)
+        XCTAssertEqual(revReads.first?["kind"] as? String, "playlist")
+        XCTAssertEqual(revReads.first?["id"] as? String, "pl1")
         XCTAssertTrue(wire.sent("slice.queue").isEmpty)
         XCTAssertTrue(settleScene(s) { status.current()?.text.hasPrefix("Playing") == true })
         XCTAssertEqual(status.current()?.text,
@@ -369,8 +472,8 @@ final class SpanDACWholePlaySceneTests: XCTestCase {
 
     func testSOnAPlaylistSendsShuffleAndNoStart() {
         let wire = stickyWire(["slice.libraryPlaylists": [onePlaylistPage], "slice.status": [Self.capable],
-                                           "slice.playLibrary": [Self.playReply(queued: 3)]])
-        wire.script("slice.libraryPlaylistTracks", [playlistTracks(["i.a"])])
+                               "slice.listRev": [Self.revReply("playlist", "rev-pl1")],
+                               "slice.playLibrary": [Self.playReply(queued: 3)]])
         let s = playlistScene(wire)
         _ = s.handle(.char("s"))
         XCTAssertTrue(settlePlayed(wire))
@@ -378,17 +481,17 @@ final class SpanDACWholePlaySceneTests: XCTestCase {
         XCTAssertEqual(SourceAppControl.bool(req["shuffle"]), true)
         XCTAssertNil(req["start_index"])
         XCTAssertEqual(req["list_rev"] as? String, "rev-pl1")
-        XCTAssertEqual(wire.sent("slice.libraryPlaylistTracks").count, 1)
+        XCTAssertTrue(wire.sent("slice.libraryPlaylistTracks").isEmpty)
+        XCTAssertEqual(wire.sent("slice.listRev").count, 1)
     }
 
-    /// A playlist read by a SpanDAC that sends no `list_rev` is walked and queued
-    /// by id, as before: a container play with no `list_rev` would be refused.
-    func testAPlaylistWhoseReadHasNoListRevKeepsTheIdListPath() {
+    /// A SpanDAC that cannot answer slice.listRev (it answers unknown_op) is walked
+    /// and queued by id, as before: a container play with no `list_rev` would be refused.
+    func testAPlaylistWhoseSpanDACCannotReadARevisionKeepsTheIdListPath() {
         let queued = #"{"ok":true,"op":"slice.queue","status":{"playback":"playing","title":"T","artist":"A","contract":3,"authorization":"authorized","queue":{"phase":"complete","requested":2,"present":2,"index":0}}}"#
         let wire = stickyWire(["slice.libraryPlaylists": [onePlaylistPage], "slice.status": [Self.capable],
-                                           "slice.queue": [queued]])
-        wire.script("slice.libraryPlaylistTracks", [playlistTracks(["i.a"], listRev: nil),
-                                                    playlistTracks(["i.a", "i.b"], listRev: nil)])
+                                           "slice.queue": [queued], "slice.listRev": [Self.unknownOp]])
+        wire.script("slice.libraryPlaylistTracks", [playlistTracks(["i.a", "i.b"], listRev: nil)])
         let s = playlistScene(wire)
         _ = s.handle(.char("p"))
         let deadline = Date().addingTimeInterval(3)

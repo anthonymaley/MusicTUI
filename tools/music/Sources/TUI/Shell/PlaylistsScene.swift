@@ -1076,68 +1076,56 @@ final class PlaylistsScene: Scene {
                 }
 
                 // A SpanDAC that plays containers whole is sent the playlist's id (and
-                // the start row, when one was picked) with the `list_rev` of the read
-                // the rows came from. A whole or shuffled play with no rows on screen
-                // needs only that `list_rev`, which every page of a read carries, so
-                // ONE one-row page proves the list and the playlist is not walked.
-                // Capability read BEFORE the lock below, like any capability read.
-                var finalRows: [MusicRow]? = skippedVideos == nil ? nil : rows
+                // the start row, when one was picked) with the playlist's `list_rev`:
+                // the rev that came with the rows on screen, else `slice.listRev`
+                // (no row read at all, not even a one-row page). See `planLibraryPlay`.
                 var finalSkipped = skippedVideos ?? 0
-                var finalRev = listRev
-                let capable = outputPlaysLibraryWhole(routing: routing, expecting: stamp)
-                var plan = libraryPlayPlan(capable: capable, rows: finalRows, listRev: finalRev,
-                                           startAt: startAt, startRequired: startRequired, shuffle: shuffle)
-                let wantsStart = startRequired && !shuffle
-                if plan == .needsRows && !wantsStart {
-                    // The rev probe: page one, one row. Rows are not kept (Up Next is
-                    // then SpanDAC's own), the playlist is not walked.
-                    let probe = try retryingWhileWarming(budget: budget, onWarming: onWarming, sleep: warmUpSleep) {
-                        try provider.playlistTracks(playlistID: playlistID, cursor: nil, limit: 1)
-                    }
-                    if let rev = probe.listRev { plan = .whole(start: nil, listRev: rev) }
-                    else { plan = .legacy }
-                }
-                if plan == .needsRows || (plan == .legacy && finalRows == nil) {
-                    var collected: [MusicRow] = []
-                    var lastSkipped = 0
-                    var walkedRev: String?
-                    var firstPage = true
-                    // F4/C4: the FRESH whole-playlist play walk only — the one
-                    // path that reads for a `p`/`s` with no cached rows —
-                    // hints Bridge with `for_queue` so an over-bound playlist
-                    // is refused on page 1 rather than after a full walk.
-                    let walkError = walkLibraryPages(
-                        fetch: { c, l in try provider.playlistTracksForQueue(playlistID: playlistID, cursor: c, limit: l) },
-                        limit: Self.bridgeTracksPageLimit,
-                        onPage: { page in
-                            collected.append(contentsOf: page.rows)
-                            lastSkipped = page.skippedVideos
-                            // The pages of one read carry one `list_rev`; two that
-                            // differ are two lists, so none is claimed.
-                            if firstPage { walkedRev = page.listRev; firstPage = false }
-                            else if page.listRev != walkedRev { walkedRev = nil }
-                            return true
-                        },
-                        onRestart: { collected = []; lastSkipped = 0; walkedRev = nil; firstPage = true },
-                        onWarming: onWarming, sleep: warmUpSleep, budget: budget)
-                    if let walkError {
-                        throw ActionError(message: walkError.errorDescription ?? "Couldn't read that playlist from your library.")
-                    }
-                    finalRows = collected
-                    finalSkipped = lastSkipped
-                    finalRev = walkedRev
-                    // Decided again with the rows in hand: the start row's id and
-                    // the `list_rev` of THIS read, or the id list if it has none.
-                    plan = libraryPlayPlan(capable: capable, rows: finalRows, listRev: finalRev,
-                                           startAt: startAt, startRequired: startRequired, shuffle: shuffle)
-                    // D2: after a fresh read, the pane shows what was queued.
-                    self.previewInboxLock.lock()
-                    self.bridgePreviewInbox.append(
-                        (playlistID, epoch, .success(rows: collected, total: collected.count, skippedVideos: lastSkipped)))
-                    self.previewInboxLock.unlock()
-                }
-
-                if let finalRows { try require(!finalRows.isEmpty, "'\(name)' has no songs SpanDAC can play.") }
+                let planned = try planLibraryPlay(
+                    routing: routing, stamp: stamp, provider: provider,
+                    rows: skippedVideos == nil ? nil : rows, listRev: listRev,
+                    startAt: startAt, startRequired: startRequired, shuffle: shuffle,
+                    emptyMessage: "'\(name)' has no songs SpanDAC can play.",
+                    readRevision: {
+                        try retryingWhileWarming(budget: budget, onWarming: onWarming, sleep: warmUpSleep) {
+                            try provider.listRev(kind: .playlist, id: playlistID)
+                        }
+                    },
+                    readRows: {
+                        var collected: [MusicRow] = []
+                        var lastSkipped = 0
+                        var walkedRev: String?
+                        var firstPage = true
+                        // F4/C4: the FRESH whole-playlist play walk only — the one
+                        // path that reads for a `p`/`s` with no cached rows —
+                        // hints Bridge with `for_queue` so an over-bound playlist
+                        // is refused on page 1 rather than after a full walk.
+                        let walkError = walkLibraryPages(
+                            fetch: { c, l in try provider.playlistTracksForQueue(playlistID: playlistID, cursor: c, limit: l) },
+                            limit: Self.bridgeTracksPageLimit,
+                            onPage: { page in
+                                collected.append(contentsOf: page.rows)
+                                lastSkipped = page.skippedVideos
+                                // The pages of one read carry one `list_rev`; two that
+                                // differ are two lists, so none is claimed.
+                                if firstPage { walkedRev = page.listRev; firstPage = false }
+                                else if page.listRev != walkedRev { walkedRev = nil }
+                                return true
+                            },
+                            onRestart: { collected = []; lastSkipped = 0; walkedRev = nil; firstPage = true },
+                            onWarming: onWarming, sleep: warmUpSleep, budget: budget)
+                        if let walkError {
+                            throw ActionError(message: walkError.errorDescription ?? "Couldn't read that playlist from your library.")
+                        }
+                        finalSkipped = lastSkipped
+                        // D2: after a fresh read, the pane shows what was queued.
+                        self.previewInboxLock.lock()
+                        self.bridgePreviewInbox.append(
+                            (playlistID, epoch, .success(rows: collected, total: collected.count, skippedVideos: lastSkipped)))
+                        self.previewInboxLock.unlock()
+                        return (collected, walkedRev)
+                    })
+                let plan = planned.plan
+                let finalRows = planned.rows
                 let sent = finalRows.map { bridgeQueueRows($0, shuffle: shuffle, startAt: startAt) }
                 let ids = sent?.map(\.id)
 

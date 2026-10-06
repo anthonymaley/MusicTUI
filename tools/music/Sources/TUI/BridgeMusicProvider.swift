@@ -136,6 +136,11 @@ struct BridgeMusicProvider: MusicDataProvider {
         catch let error as SourceAppError { throw Self.translate(error) }
     }
 
+    func listRev(kind: LibraryPlayKind, id: String?) throws -> SpanDACListRev {
+        do { return try control.listRev(kind: kind, id: id) }
+        catch let error as SourceAppError { throw Self.translate(error) }
+    }
+
     func nowPlaying() throws -> SourceStatus {
         do { return try control.status() }
         catch let error as SourceAppError { throw Self.translate(error) }
@@ -308,6 +313,8 @@ struct BridgeMusicProvider: MusicDataProvider {
             return "This SpanDAC build can't show heavy rotation — update SpanDAC"
         case "slice.playLibrary":
             return "This SpanDAC build can't play a whole list — update SpanDAC"
+        case "slice.listRev":
+            return "This SpanDAC build can't read a list's revision — update SpanDAC"
         default:
             return "SpanDAC doesn't serve that yet — update SpanDAC"
         }

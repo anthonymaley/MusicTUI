@@ -200,6 +200,8 @@ protocol MusicDataProvider: DiscoverProviding, StationProviding, CataloguePlayin
     /// default refuses as an older SpanDAC would.
     func playLibrary(kind: LibraryPlayKind, id: String?, start: LibraryPlayStart?, listRev: String?,
                      shuffle: Bool) throws -> SpanDACPlayResult
+    /// A container's complete-list revision without its rows (`slice.listRev`).
+    func listRev(kind: LibraryPlayKind, id: String?) throws -> SpanDACListRev
     /// What the selected backend is doing now.
     func nowPlaying() throws -> SourceStatus
 }
@@ -256,6 +258,9 @@ extension MusicDataProvider {
         return SpanDACPlayResult(queue: played.queue, skippedUnavailable: played.skippedUnavailable)
     }
     func supportsPlayLibrary() -> Bool { false }
+    func listRev(kind: LibraryPlayKind, id: String?) throws -> SpanDACListRev {
+        throw MusicProviderError.notImplemented(BridgeMusicProvider.unsupportedSentence(forWireOp: sourceListRevOp))
+    }
     func playLibrary(kind: LibraryPlayKind, id: String?, start: LibraryPlayStart?, listRev: String?,
                      shuffle: Bool) throws -> SpanDACPlayResult {
         throw MusicProviderError.notImplemented(BridgeMusicProvider.unsupportedSentence(forWireOp: sourcePlayLibraryOp))
