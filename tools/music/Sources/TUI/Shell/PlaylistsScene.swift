@@ -1100,7 +1100,8 @@ final class PlaylistsScene: Scene {
                 }
 
                 try require(!finalRows.isEmpty, "'\(name)' has no songs SpanDAC can play.")
-                let ids = bridgeQueueIDs(finalRows, shuffle: shuffle, startAt: startAt)
+                let sent = bridgeQueueRows(finalRows, shuffle: shuffle, startAt: startAt)
+                let ids = sent.map(\.id)
 
                 // Addendum U: set only on the attempt that actually succeeds.
                 var skippedUnavailable = 0
@@ -1116,6 +1117,7 @@ final class PlaylistsScene: Scene {
                     }, source: { client in
                         skippedUnavailable = try spanDACOutputPlayer(client).playReportingSkips(
                             ids: ids, startRequired: startRequired).skippedUnavailable
+                        routing.recordSpanDACPlay(sent)
                     }, unaffected: {})
                 }
                 if let handedOff {

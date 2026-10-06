@@ -600,6 +600,14 @@ struct SourceStatus: Equatable {
     /// the wire. The Now tab uses it to pull the cover out of the library when
     /// there is no fetchable `artworkURL`.
     var persistentID: String? = nil
+    /// Which of the rows the client sent in its current play request is
+    /// playing (`row`, 0-based), and the rows after it in play order
+    /// (`next_rows`, up to 20, following shuffle when SpanDAC's queue does).
+    /// Indexes into the SENT list (`RoutingCoordinator.spanDACPlayedRows`),
+    /// not into the present entries. Optional on the wire; a malformed value is
+    /// absent, and a negative index is dropped.
+    var row: Int? = nil
+    var nextRows: [Int]? = nil
     /// SpanDAC's own shuffle and repeat state (`slice.shuffle` / `slice.repeat`
     /// builds), and the raw `capabilities` of the same reply. All optional on
     /// the wire: an older SpanDAC sends none, which reads as no shuffle/repeat
@@ -930,6 +938,8 @@ struct SourceAppControl: SourceControlling {
                             durationSeconds: Self.seconds(status["duration_s"]),
                             artworkURL: (status["artwork_url"] as? String).flatMap { $0.isEmpty ? nil : $0 },
                             persistentID: (status["persistent_id"] as? String).flatMap { $0.isEmpty ? nil : $0 },
+                            row: Self.index(status["row"]),
+                            nextRows: (status["next_rows"] as? [Any]).map { $0.compactMap(Self.index).prefix(20).map { $0 } },
                             shuffle: Self.bool(status["shuffle"]),
                             repeatMode: (status["repeat"] as? String).flatMap { RepeatMode(rawValue: $0) }?.rawValue,
                             capabilities: status["capabilities"] as? [String] ?? [])
@@ -939,6 +949,15 @@ struct SourceAppControl: SourceControlling {
     static func bool(_ raw: Any?) -> Bool? {
         guard let n = raw as? NSNumber, CFGetTypeID(n as CFTypeRef) == CFBooleanGetTypeID() else { return nil }
         return n.boolValue
+    }
+
+    /// A non-negative whole number, or nil. A boolean is not an index, and
+    /// neither is 1.5.
+    static func index(_ raw: Any?) -> Int? {
+        guard let n = raw as? NSNumber, CFGetTypeID(n as CFTypeRef) != CFBooleanGetTypeID() else { return nil }
+        let d = n.doubleValue
+        guard d.isFinite, d >= 0, d == d.rounded(), d <= Double(Int32.max) else { return nil }
+        return Int(d)
     }
 
     /// A non-negative, finite number of seconds, or nil. A malformed value is

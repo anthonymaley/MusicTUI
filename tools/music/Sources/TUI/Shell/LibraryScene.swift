@@ -1777,7 +1777,11 @@ final class LibraryScene: Scene {
                                 try playThroughHandoff(handoff, rows: [row], startAt: 1, startRequired: true,
                                                        shuffle: shuffle, title: title)
                             },
-                            source: { client in _ = try spanDACOutputPlayer(client).play(ids: [id]) },
+                            source: { client in
+                                _ = try spanDACOutputPlayer(client).play(ids: [id])
+                                routing.recordSpanDACPlay(
+                                    [songRow ?? MusicRow(id: id, title: title, artist: artist, album: nil, kind: .song)])
+                            },
                             unaffected: {})
                     }
                 } catch let error as MusicProviderError {
@@ -1901,7 +1905,8 @@ final class LibraryScene: Scene {
                     try provider.albumTracks(albumID: albumID)
                 }.rows
                 try require(!trackRows.isEmpty, "'\(title)' has no songs SpanDAC can play.")
-                let ids = bridgeQueueIDs(trackRows, shuffle: shuffle, startAt: startAt)
+                let sent = bridgeQueueRows(trackRows, shuffle: shuffle, startAt: startAt)
+                let ids = sent.map(\.id)
                 // Addendum U: how many of `ids` Bridge dropped as unavailable,
                 // set only on the attempt that actually succeeds (U-R5/U-R6).
                 var skippedUnavailable = 0
@@ -1919,6 +1924,7 @@ final class LibraryScene: Scene {
                         source: { client in
                             skippedUnavailable = try spanDACOutputPlayer(client).playReportingSkips(
                                 ids: ids, startRequired: startRequired).skippedUnavailable
+                            routing.recordSpanDACPlay(sent)
                         },
                         unaffected: {})
                 }
@@ -1964,7 +1970,8 @@ final class LibraryScene: Scene {
                     try provider.artistSongs(artistID: artistID)
                 }.rows
                 try require(!songRows.isEmpty, "'\(name)' has no songs SpanDAC can play.")
-                let ids = bridgeQueueIDs(songRows, shuffle: shuffle, startAt: 1)
+                let sent = bridgeQueueRows(songRows, shuffle: shuffle, startAt: 1)
+                let ids = sent.map(\.id)
                 // Addendum U: same as playBridgeAlbum above. An artist play is
                 // always whole-collection — there is no track-level entry for
                 // an artist, so `startRequired` is always false.
@@ -1981,6 +1988,7 @@ final class LibraryScene: Scene {
                         source: { client in
                             skippedUnavailable = try spanDACOutputPlayer(client).playReportingSkips(
                                 ids: ids, startRequired: false).skippedUnavailable
+                            routing.recordSpanDACPlay(sent)
                         },
                         unaffected: {})
                 }

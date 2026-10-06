@@ -31,6 +31,9 @@ struct BridgeNow: Equatable {
     var artworkURL: String? = nil
     /// The playing song's Music.app persistent ID as SpanDAC sends it (a signed
     /// decimal alias, verbatim), when it sends one: the way to a cover when `artworkURL` is absent or not fetchable.
+    /// When the status has none, the poller fills it with the alias of the
+    /// sent row the status's `row` names (`spanDACQueueWindow`), so the cover
+    /// takes the same rung either way.
     var persistentID: String? = nil
     /// SpanDAC's shuffle and repeat state, and which of the two it offers
     /// control of (its `capabilities` named the op). Defaults read as an older
@@ -149,4 +152,33 @@ func bridgePositionLine(_ b: BridgeNow) -> String? {
     }
     guard requested > 0, index >= 0, index < requested else { return nil }
     return "Song \(index + 1) of \(requested)"
+}
+
+/// SpanDAC's queue as the Now tab's EXISTING Up Next draws it: the same
+/// `TrackListEntry` rows the Music.app path fills `surrounding` with, the
+/// playing row first (`isCurrent`), then up to 20 after it. `index` is the
+/// row's 1-based place in the list the client sent.
+///
+/// `sent` is what the current play sent (`RoutingCoordinator.spanDACPlayedRows`);
+/// `row` and `next_rows` index it. Without `next_rows`, the rows after `row` in
+/// sent order stand in. `current` is the sent row at `row`: its alias is the
+/// cover's way in when the status carries no persistent ID.
+///
+/// **Nothing is shown that the status does not vouch for.** No sent list, no
+/// `row`, a `row` outside the list, or a row whose title is not the title the
+/// status reports playing (a play from another process, say) all give nothing,
+/// which leaves the Now tab exactly as it was before this existed.
+func spanDACQueueWindow(sent: [MusicRow]?, status: SourceStatus) -> (current: MusicRow?, entries: [TrackListEntry]) {
+    guard let sent, let at = status.row, sent.indices.contains(at) else { return (nil, []) }
+    let current = sent[at]
+    if let title = status.title?.trimmingCharacters(in: .whitespaces), !title.isEmpty,
+       title.lowercased() != current.title.trimmingCharacters(in: .whitespaces).lowercased() {
+        return (nil, [])
+    }
+    let next = status.nextRows.map { $0.filter { sent.indices.contains($0) } }
+        ?? Array(((at + 1)..<sent.count).prefix(20))
+    func entry(_ i: Int, current: Bool) -> TrackListEntry {
+        TrackListEntry(index: i + 1, name: sent[i].title, artist: sent[i].artist, isCurrent: current, album: sent[i].album)
+    }
+    return (current, [entry(at, current: true)] + next.prefix(20).map { entry($0, current: false) })
 }

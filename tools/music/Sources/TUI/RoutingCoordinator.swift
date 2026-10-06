@@ -461,6 +461,31 @@ final class RoutingCoordinator {
         return _playSerial
     }
 
+    // MARK: - The rows the current SpanDAC play sent
+
+    /// The rows the last SpanDAC collection play sent, in the order sent, and
+    /// the play serial it ran under. Guarded by `state`.
+    private var _spanDACSent: (serial: Int, rows: [MusicRow])?
+
+    /// Records the rows a SpanDAC play just sent, in exactly the order their ids
+    /// went on the wire: SpanDAC's status `row` / `next_rows` index this list.
+    /// Called from inside the play's `.source` branch, after the play
+    /// succeeded, so it is tied to the serial that play was admitted under.
+    func recordSpanDACPlay(_ rows: [MusicRow]) {
+        state.lock(); defer { state.unlock() }
+        _spanDACSent = (_playSerial, rows)
+    }
+
+    /// The rows the CURRENT play sent, or nil. Any later chosen-music play in
+    /// this process (a station, a Discover track, a Music.app play) moves the
+    /// serial, and the list stops answering, so a status `row` can never be
+    /// read against an older play's list.
+    func spanDACPlayedRows() -> [MusicRow]? {
+        state.lock(); defer { state.unlock() }
+        guard let sent = _spanDACSent, sent.serial == _playSerial else { return nil }
+        return sent.rows
+    }
+
     /// PHASE A. Valid only on a thread that is inside one of this coordinator's
     /// `perform` branches (the re-entry marker is set on it); anywhere else it
     /// throws the same internal error a re-entry throws. Requires

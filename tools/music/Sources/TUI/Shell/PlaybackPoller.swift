@@ -203,10 +203,24 @@ final class PlaybackPoller {
         // The Mac's own SpanDAC through the injected factory, exactly as
         // before; a SpanDAC on the network through the coordinator's.
         let client = mode == .source ? makeSourceClient() : (routing?.client(for: mode) ?? .failing(.notPaired))
-        let result: Result<SourceStatus, Error>
+        var result: Result<SourceStatus, Error>
         do { result = .success(try client.control.status()) }
         catch { result = .failure(error) }
+        // Up Next and the cover's fallback come from the rows the current play
+        // sent, indexed by the status's `row` / `next_rows`. The playing row's
+        // alias fills a missing persistent ID BEFORE the tracker keeps the
+        // reply, so a missed poll keeps the cover as well as the list.
+        if case .success(var status) = result {
+            let window = spanDACQueueWindow(sent: routing?.spanDACPlayedRows(), status: status)
+            if status.persistentID == nil, let alias = window.current?.alias, !alias.isEmpty {
+                status.persistentID = alias
+            }
+            result = .success(status)
+            lastBridgeSurrounding = window.entries
+        }
         let bridge = bridgeLink.record(result)
+        // A second consecutive miss reports a stop; the list goes with it.
+        if case .failure = result, !bridgeLink.inGrace { lastBridgeSurrounding = [] }
 
         let outcome: PollOutcome
         switch result {
@@ -222,8 +236,9 @@ final class PlaybackPoller {
 
         // Built fresh rather than from `snapshot(outcome:)`: context, Up Next,
         // artwork and the queue-ended menu all describe Music.app, and carrying
-        // them here would put the paused player's state beside Bridge's.
-        var snap = NowPlayingSnapshot(outcome: outcome, history: [], surrounding: [])
+        // them here would put the paused player's state beside Bridge's. Up
+        // Next is SpanDAC's own, in the same rows the Music.app path draws.
+        var snap = NowPlayingSnapshot(outcome: outcome, history: [], surrounding: lastBridgeSurrounding)
         snap.bridge = bridge
         store.write(snap)
     }
@@ -231,6 +246,7 @@ final class PlaybackPoller {
     /// Bridge's thread-confined working state (poller thread only).
     private var bridgeLink = BridgeLinkTracker()
     private var lastBridgeOutcome: PollOutcome = .stopped
+    private var lastBridgeSurrounding: [TrackListEntry] = []
 
     private func bridgeOutcome(_ status: SourceStatus) -> PollOutcome {
         let state: String

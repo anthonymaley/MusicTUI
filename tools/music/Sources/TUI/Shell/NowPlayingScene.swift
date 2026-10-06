@@ -64,9 +64,11 @@ final class NowPlayingScene: Scene {
     let id: SceneID = .nowPlaying
     let tabTitle = "Now"
     var footerHint: String {
-        // Bridge has no control grid and no Up Next list, so seek and Quiet are
-        // what remain. `x` became a Now key in its own right on 2026-09-22
-        // (spec 6.2's row); it pauses Bridge, never Music.app (ruling 12.7).
+        // On SpanDAC the grid's live rows and seek and Quiet are the keys; Up
+        // Next can be browsed when SpanDAC reports its rows, but Enter's jump
+        // is refused there (ruling 12.13), so it is not advertised. `x` became
+        // a Now key in its own right on 2026-09-22 (spec 6.2's row); it pauses
+        // Bridge, never Music.app (ruling 12.7).
         if routing.mode.usesSource {
             if spanDACGridShown {
                 return gridFocused ? "\u{2191}\u{2193} Row  Enter Set  \u{2192} Release  [ ] Seek  x Quiet"
@@ -551,15 +553,24 @@ final class NowPlayingScene: Scene {
             out += ANSICode.moveTo(row: my, col: leftX) + "\(ANSICode.cyan)\u{266A} \(ANSICode.reset)\(ANSICode.brightWhite)\(truncText(cleanContextName(snapshot.contextName), to: metaW - 3))\(ANSICode.reset)"
         }
 
+        let gridStartY: Int
         if let bridge = snapshot.bridge {
             let hasContextLine = geniusActive || !snapshot.contextName.isEmpty
-            return renderBridgeActive(bridge, startY: hasContextLine ? my + 1 : my, x: leftX, width: metaW,
-                                      bottom: frame.bodyY + frame.bodyHeight - 1, into: out)
+            let drawn = renderBridgeActive(bridge, startY: hasContextLine ? my + 1 : my, x: leftX, width: metaW,
+                                           bottom: frame.bodyY + frame.bodyHeight - 1, into: out)
+            out = drawn.out
+            gridStartY = drawn.gridStartY
+            // SpanDAC's Up Next is drawn by the same code below, from the rows
+            // the poller built out of its `row` / `next_rows`. With none (an
+            // older SpanDAC, or a play this process did not send) there is
+            // nothing honest to list, so no header either.
+            if rows.isEmpty { return out }
+        } else {
+            // Playback-control grid (shuffle/order/repeat/genius). Always shows live
+            // active state; `c` focuses it for arrow-navigation + Enter.
+            gridStartY = my + 2
+            out += renderControlGrid(startY: gridStartY, x: leftX, bottom: frame.bodyY + frame.bodyHeight - 1)
         }
-
-        // Playback-control grid (shuffle/order/repeat/genius). Always shows live
-        // active state; `c` focuses it for arrow-navigation + Enter.
-        out += renderControlGrid(startY: my + 2, x: leftX, bottom: frame.bodyY + frame.bodyHeight - 1)
 
         // --- Up Next: right pane (wide) or below the metadata (narrow) ---
         // Stacked mode used to start the list at the same row as the control
@@ -567,7 +578,7 @@ final class NowPlayingScene: Scene {
         // other. stackedListStartY mirrors the grid's own row-count/clamp math
         // so the list always starts below wherever the grid actually stopped.
         let listX = twoPane ? (leftX + leftW + 2) : leftX
-        let listY = twoPane ? frame.bodyY : NowPlayingScene.stackedListStartY(gridStartY: my + 2, gridBottom: listBottom)
+        let listY = twoPane ? frame.bodyY : NowPlayingScene.stackedListStartY(gridStartY: gridStartY, gridBottom: listBottom)
         let listW = twoPane ? max(20, frame.width - listX - 1) : (frame.width - 6)
         if geniusActive {
             // Genius's real queue isn't scriptable (the snapshot shows the
@@ -643,20 +654,20 @@ final class NowPlayingScene: Scene {
         return out
     }
 
-    /// Bridge's lines below the track metadata, in place of the control grid
-    /// and Up Next.
+    /// Bridge's lines below the track metadata, in place of Music.app's
+    /// control grid. Returns the row the grid (or its sentence) starts on, so
+    /// the shared Up Next below can stack under it in a narrow frame.
     ///
-    /// **No Up Next.** `slice.status` carries counts and a position, never the
-    /// track list, so the position line is all that can honestly be said about
-    /// what comes next. Below it, the same Shuffle / Order / Repeat / Genius
-    /// grid Music.app shows, driven by SpanDAC's own shuffle and repeat when the
-    /// app lists the ops; an older build gets the sentence it always did.
+    /// The status and position lines, then the same Shuffle / Order / Repeat /
+    /// Genius grid Music.app shows, driven by SpanDAC's own shuffle and repeat
+    /// when the app lists the ops; an older build gets the sentence it always
+    /// did. Up Next is not drawn here: it is the shared list in `render`.
     private func renderBridgeActive(_ bridge: BridgeNow, startY: Int, x: Int, width: Int,
-                                    bottom: Int, into base: String) -> String {
+                                    bottom: Int, into base: String) -> (out: String, gridStartY: Int) {
         var out = base
         var y = startY
         for line in [bridgeStatusLine(bridge), bridgePositionLine(bridge)].compactMap({ $0 }) {
-            guard y <= bottom else { return out }
+            guard y <= bottom else { return (out, y + 1) }
             out += ANSICode.moveTo(row: y, col: x) + "\(ANSICode.dim)\(truncText(line, to: width))\(ANSICode.reset)"
             y += 1
         }
@@ -668,7 +679,7 @@ final class NowPlayingScene: Scene {
             out += ANSICode.moveTo(row: y, col: x)
                 + "\(ANSICode.dim)\(truncText(spanDACNoModesSentence, to: width))\(ANSICode.reset)"
         }
-        return out
+        return (out, y)
     }
 
     /// Stacked-mode Up Next start row: one blank spacer row below wherever the

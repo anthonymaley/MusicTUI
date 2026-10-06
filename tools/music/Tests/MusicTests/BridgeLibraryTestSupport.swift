@@ -147,11 +147,12 @@ final class BridgeSelectedFlag {
 /// and `BridgeSwitchPauseTests` already cover).
 func libraryTestScene(flag: BridgeSelectedFlag, wire: BridgeLibraryReadsWire,
                       spy: LibraryAppleScriptSpy, status: StatusStore = StatusStore(),
-                      warmUpSleep: @escaping (TimeInterval) -> Void = { _ in }) -> LibraryScene {
+                      warmUpSleep: @escaping (TimeInterval) -> Void = { _ in },
+                      routing given: RoutingCoordinator? = nil) -> LibraryScene {
     let store = PlaybackModeStore(path: NSTemporaryDirectory() + "mode-\(UUID().uuidString).json")
     store.set(.source)
-    let routing = RoutingCoordinator(store: store, surface: .tui,
-                                     makeSource: { SourceAppClient(path: "/nonexistent", transport: wire.transport) })
+    let routing = given ?? RoutingCoordinator(store: store, surface: .tui,
+                                              makeSource: { SourceAppClient(path: "/nonexistent", transport: wire.transport) })
     return LibraryScene(backend: AppleScriptBackend(executable: "/usr/bin/true"), routing: routing,
                         sources: spy.sources(), appQueue: AppQueueStore(), status: status,
                         actions: ActionRunner(status: status),

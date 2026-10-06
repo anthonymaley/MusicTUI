@@ -496,10 +496,17 @@ private func attemptLibraryPageWalk(fetch: (String?, Int) throws -> MusicPage, l
 /// every id, shuffled, and ignores the start row; otherwise the start row is
 /// clamped to 1...count and every row from it to the end is sent.
 func bridgeQueueIDs(_ rows: [MusicRow], shuffle: Bool, startAt: Int) -> [String] {
-    if shuffle { return rows.shuffled().map(\.id) }
+    bridgeQueueRows(rows, shuffle: shuffle, startAt: startAt).map(\.id)
+}
+
+/// The rows `bridgeQueueIDs` sends, in the order it sends their ids. A TUI
+/// play keeps this list (`RoutingCoordinator.recordSpanDACPlay`) because
+/// SpanDAC's status `row` / `next_rows` are indexes into it.
+func bridgeQueueRows(_ rows: [MusicRow], shuffle: Bool, startAt: Int) -> [MusicRow] {
+    if shuffle { return rows.shuffled() }
     guard !rows.isEmpty else { return [] }
     let start = min(max(1, startAt), rows.count)
-    return rows[(start - 1)...].map(\.id)
+    return Array(rows[(start - 1)...])
 }
 
 /// Addendum U (U-R6): the unavailable-song notice, appended to any
