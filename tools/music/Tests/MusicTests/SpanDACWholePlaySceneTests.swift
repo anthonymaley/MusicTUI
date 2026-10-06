@@ -333,8 +333,9 @@ final class SpanDACWholePlaySceneTests: XCTestCase {
     /// ready network row keeps the id-list path, even though the Mac SpanDAC the
     /// album was read from does advertise it.
     func testANetworkRowWithoutThePlayLibraryCapabilityUsesTheIdListPath() {
-        // The Mac's SpanDAC answers a revision read too: the play asks the data
-        // SpanDAC before it knows what the network output can take.
+        // The Mac's SpanDAC advertises play.library and could answer a revision read,
+        // but the OUTPUT is a network SpanDAC, which cannot take the play whole: no
+        // revision read is wasted on it.
         let macWire = stickyWire(["slice.libraryAlbums": [albumPage],
                                   "slice.libraryAlbumTracks": [trackReply(["t1", "t2", "t3"]), trackReply(["t1", "t2", "t3"])],
                                   "slice.listRev": [Self.revReply("album", "rev-al1")],
@@ -359,6 +360,8 @@ final class SpanDACWholePlaySceneTests: XCTestCase {
         XCTAssertTrue(networkWire.sent("slice.playLibrary").isEmpty)
         XCTAssertTrue(macWire.sent("slice.playLibrary").isEmpty)
         XCTAssertTrue(macWire.sent("slice.queue").isEmpty, "the play went to the Mac instead of the network row")
+        XCTAssertTrue(macWire.sent("slice.listRev").isEmpty, "a network output was sent through a revision read it cannot use")
+        XCTAssertTrue(networkWire.sent("slice.listRev").isEmpty)
     }
 
     // MARK: - artists

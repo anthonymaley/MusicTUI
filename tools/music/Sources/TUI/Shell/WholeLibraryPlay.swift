@@ -59,10 +59,15 @@ struct PlannedLibraryPlay {
 /// `unknown_op` and the rows are read as before, and so is every output that
 /// will not take the play whole.
 ///
-/// The OUTPUT capability is read last, after any read, so a switch that crossed
-/// the read builds no output client (C-EPOCH). The data provider's own capability
-/// decides whether to ask it for a revision, and a MusicTUI output (the hand-off)
-/// always needs the rows.
+/// The revision is asked for ONLY when the output is the Mac's own SpanDAC, the
+/// one carrier that advertises `play.library` (`PlayOutputKind.localMac`): a
+/// network or MusicTUI output goes straight to the row read, with no revision
+/// read that could never be used. (The hand-off, a MusicTUI output with SpanDAC
+/// data, always needs the rows.) The output's own capability is read last, after
+/// any read, so a switch that crossed a read builds no output client (C-EPOCH);
+/// and a stamp that went stale during the revision read is refused HERE, with
+/// `perform`'s own sentence, before any fallback read can start or fail with an
+/// unrelated one.
 func planLibraryPlay(routing: RoutingCoordinator, stamp: (epoch: Int, dataEpoch: Int),
                      provider: MusicDataProvider, rows given: [MusicRow]?, listRev givenRev: String?,
                      startAt: Int, startRequired: Bool, shuffle: Bool, emptyMessage: String,
@@ -73,15 +78,22 @@ func planLibraryPlay(routing: RoutingCoordinator, stamp: (epoch: Int, dataEpoch:
     let wantsStart = startRequired && !shuffle
     if rows == nil {
         var haveRevision = false
-        if !wantsStart, routing.mode.usesSource, provider.supportsPlayLibrary() {
+        if !wantsStart, routing.playOutputKind(expecting: stamp) == .localMac, provider.supportsPlayLibrary() {
             do {
                 let read = try readRevision()
+                if routing.playOutputKind(expecting: stamp) == .stale {
+                    throw ActionError(message: sourceChangedNothingPlayed)
+                }
                 if read.count == 0 { throw ActionError(message: emptyMessage) }
                 rev = read.listRev
                 haveRevision = true
             } catch let error as MusicProviderError {
-                // An older SpanDAC cannot read a revision: read the rows, as before.
+                // An older SpanDAC cannot read a revision: read the rows, as before
+                // (unless the output moved while it was being asked).
                 guard case .notImplemented = error else { throw error }
+                if routing.playOutputKind(expecting: stamp) == .stale {
+                    throw ActionError(message: sourceChangedNothingPlayed)
+                }
             }
         }
         if !haveRevision {
@@ -95,22 +107,27 @@ func planLibraryPlay(routing: RoutingCoordinator, stamp: (epoch: Int, dataEpoch:
                                rows: rows, listRev: rev, startAt: startAt,
                                startRequired: startRequired, shuffle: shuffle)
     if rows == nil, case .legacy = plan {
-        // Only the revision was read and this output will not take the play whole:
-        // the rows are read after all, for the id list.
+        // Only the revision was read and this output will not take the play whole
+        // (or the output moved meanwhile): the rows are read after all, for the id
+        // list, unless the stamp went stale, which is refused instead.
+        if routing.playOutputKind(expecting: stamp) == .stale {
+            throw ActionError(message: sourceChangedNothingPlayed)
+        }
         let read = try readRows()
         if read.rows.isEmpty { throw ActionError(message: emptyMessage) }
         rows = read.rows
         rev = read.listRev
-        plan = .legacy
     }
     return PlannedLibraryPlay(plan: plan, rows: rows, listRev: rev)
 }
 
 /// Whether the OUTPUT SpanDAC (the selected one, not the data client) plays a
-/// library container whole. Read before a play reads anything else. False when
-/// the output is not a SpanDAC, when `stamp` (taken at the keypress) no longer
-/// holds, and when the capabilities cannot be read: today's path, and for a
-/// stale stamp the play then refuses in `perform` as it always has.
+/// library container whole. Called after any read the play needed (see
+/// `planLibraryPlay`), never before: it builds the output client, which a play
+/// whose read crossed a switch must not. False when the output is not a SpanDAC,
+/// when `stamp` (taken at the keypress) no longer holds, and when the
+/// capabilities cannot be read: today's path, and for a stale stamp the play then
+/// refuses in `perform` as it always has.
 func outputPlaysLibraryWhole(routing: RoutingCoordinator, expecting stamp: (epoch: Int, dataEpoch: Int)) -> Bool {
     guard let client = routing.outputSourceClient(expecting: stamp) else { return false }
     return spanDACOutputPlayer(client).supportsPlayLibrary()

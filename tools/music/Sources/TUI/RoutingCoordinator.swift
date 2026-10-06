@@ -310,6 +310,29 @@ final class RoutingCoordinator {
         return made
     }
 
+    /// What a play that wants to prepare (ask a SpanDAC something) before it
+    /// reaches `perform` can tell about its output, WITHOUT constructing a client.
+    enum PlayOutputKind: Equatable {
+        /// The stamp taken at the keypress no longer holds: a switch has
+        /// committed, and `perform` will refuse with `sourceChangedNothingPlayed`.
+        case stale
+        /// The output is the Mac's own SpanDAC (the local Unix-socket carrier), the
+        /// only one that advertises `play.library` and serves `slice.listRev`.
+        case localMac
+        /// Any other output: a SpanDAC on the network, or MusicTUI's own (the
+        /// hand-off). Plays go the legacy way.
+        case legacyOutput
+    }
+
+    /// Which of the three the output is NOW, for a play stamped at the keypress.
+    /// Inside the ordering boundary for an instant, and no client is built.
+    func playOutputKind(expecting stamp: (epoch: Int, dataEpoch: Int)) -> PlayOutputKind {
+        (try? exclusively { () -> PlayOutputKind in
+            guard stamp == self.stamp else { return .stale }
+            return mode == .source ? .localMac : .legacyOutput
+        }) ?? .stale
+    }
+
     /// The selected SpanDAC output's client, the one `perform` hands a `.source`
     /// branch, for a caller that wants to ASK it something (its capabilities)
     /// before it plays. CONSTRUCTION only, taken inside the ordering boundary for
