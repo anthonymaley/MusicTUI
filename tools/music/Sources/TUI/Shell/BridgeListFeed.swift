@@ -31,6 +31,10 @@ final class BridgeListFeed<Row> {
         /// landed. Albums and Artists never set this above 0 (their pages
         /// default it); C3's playlist-tracks feed is what actually reads it.
         var skippedVideos: Int?
+        /// The `list_rev` of the read these rows came from: level state like
+        /// `total`. nil until a page has landed, when SpanDAC sent none, and
+        /// once two pages of one attempt disagree (they describe different lists).
+        var listRev: String?
     }
 
     private let lock = NSLock()
@@ -56,6 +60,7 @@ final class BridgeListFeed<Row> {
     private var pendingWarming = false
     private var pendingDone = false
     private var pendingSkippedVideos: Int? = nil
+    private var pendingListRev: String? = nil
 
     init(fetch: @escaping (String?, Int) throws -> MusicPage,
         map: @escaping (MusicRow) -> Row,
@@ -98,6 +103,7 @@ final class BridgeListFeed<Row> {
                 defer { self.lock.unlock() }
                 guard self.epoch == myEpoch else { return false }   // reset since -> stop
                 let rows = page.rows.map(map)
+                let firstPage = !replacedThisAttempt
                 if replacedThisAttempt {
                     self.pendingAppend.append(contentsOf: rows)
                 } else {
@@ -107,6 +113,8 @@ final class BridgeListFeed<Row> {
                 }
                 if let total = page.total { self.pendingTotal = total }
                 self.pendingSkippedVideos = page.skippedVideos
+                if firstPage { self.pendingListRev = page.listRev }
+                else if page.listRev != self.pendingListRev { self.pendingListRev = nil }
                 self.pendingWarming = false
                 return true
             }, onRestart: { [weak self] in
@@ -122,6 +130,7 @@ final class BridgeListFeed<Row> {
                 self.pendingAppend = []
                 self.pendingTotal = nil
                 self.pendingSkippedVideos = nil
+                self.pendingListRev = nil
             }, onWarming: { [weak self] _ in
                 guard let self else { return }
                 self.lock.lock()
@@ -170,6 +179,7 @@ final class BridgeListFeed<Row> {
         pendingWarming = false
         pendingDone = false
         pendingSkippedVideos = nil
+        pendingListRev = nil
         lock.unlock()
     }
 
@@ -192,7 +202,7 @@ final class BridgeListFeed<Row> {
         lock.lock()
         let out = Drained(replace: pendingReplace, append: pendingAppend, total: pendingTotal,
                           failure: pendingFailure, warming: pendingWarming, done: pendingDone,
-                          skippedVideos: pendingSkippedVideos)
+                          skippedVideos: pendingSkippedVideos, listRev: pendingListRev)
         pendingReplace = nil
         pendingAppend = []
         pendingDone = false

@@ -45,6 +45,11 @@ struct MusicList: Equatable {
     let generation: Int
     let stale: Bool
     let refreshing: Bool
+    /// `list_rev`: an opaque fingerprint of the complete ordered list this
+    /// read returned, which a `slice.playLibrary` of these rows sends back so
+    /// SpanDAC can refuse a list that changed since. Nil from a SpanDAC that
+    /// predates it, which keeps today's id-list play.
+    var listRev: String? = nil
 }
 
 /// One page of rows, with the provider's own place-marker.
@@ -74,9 +79,15 @@ struct MusicPage: Equatable {
     /// exactly as a video. Defaulted to 0 so every op besides playlist tracks
     /// keeps constructing a `MusicPage` unchanged.
     let skippedVideos: Int
+    /// `list_rev`, on a page of a playable list (Songs, a playlist's tracks):
+    /// the fingerprint of the complete ordered list (for Songs, the snapshot
+    /// generation), the same on every page of one read. Nil from a SpanDAC that
+    /// predates it.
+    let listRev: String?
 
     init(rows: [MusicRow], nextCursor: String?, total: Int?, generation: Int?,
-         stale: Bool = false, refreshing: Bool = false, skippedVideos: Int = 0) {
+         stale: Bool = false, refreshing: Bool = false, skippedVideos: Int = 0, listRev: String? = nil) {
+        self.listRev = listRev
         self.rows = rows
         self.nextCursor = nextCursor
         self.total = total
@@ -177,6 +188,18 @@ protocol MusicDataProvider: DiscoverProviding, StationProviding, CataloguePlayin
     /// whole-collection `p`/`s` play. The caller computes it at the keypress,
     /// alongside `startAt`.
     func playReportingSkips(ids: [String], startRequired: Bool) throws -> (queue: BridgeNow.Queue, skippedUnavailable: Int)
+    /// The same play, also returning the `queue_token` its reply carried, for
+    /// the caller that keeps the rows it sent (Codex 106, finding 6). The
+    /// default is `playReportingSkips` with no token.
+    func playRetainingToken(ids: [String], startRequired: Bool) throws -> SpanDACPlayResult
+    /// Whether this provider can play a library container whole
+    /// (`slice.playLibrary`): SpanDAC lists `play.library`. False by default,
+    /// and false when the capability cannot be read, which keeps today's path.
+    func supportsPlayLibrary() -> Bool
+    /// Play one library container whole, named by kind, id and start row. The
+    /// default refuses as an older SpanDAC would.
+    func playLibrary(kind: LibraryPlayKind, id: String?, start: LibraryPlayStart?, listRev: String?,
+                     shuffle: Bool) throws -> SpanDACPlayResult
     /// What the selected backend is doing now.
     func nowPlaying() throws -> SourceStatus
 }
@@ -227,6 +250,15 @@ extension MusicDataProvider {
     func playReportingSkips(ids: [String], startRequired: Bool) throws -> (queue: BridgeNow.Queue, skippedUnavailable: Int) {
         _ = startRequired
         return (try play(ids: ids), 0)
+    }
+    func playRetainingToken(ids: [String], startRequired: Bool) throws -> SpanDACPlayResult {
+        let played = try playReportingSkips(ids: ids, startRequired: startRequired)
+        return SpanDACPlayResult(queue: played.queue, skippedUnavailable: played.skippedUnavailable)
+    }
+    func supportsPlayLibrary() -> Bool { false }
+    func playLibrary(kind: LibraryPlayKind, id: String?, start: LibraryPlayStart?, listRev: String?,
+                     shuffle: Bool) throws -> SpanDACPlayResult {
+        throw MusicProviderError.notImplemented(BridgeMusicProvider.unsupportedSentence(forWireOp: sourcePlayLibraryOp))
     }
 }
 

@@ -58,7 +58,8 @@ final class PlaylistAppleScriptSpy {
 func playlistsTestScene(flag: BridgeSelectedFlag, wire: BridgeLibraryReadsWire, spy: PlaylistAppleScriptSpy,
                         status: StatusStore = StatusStore(), names: [String] = [],
                         warmUpSleep: @escaping (TimeInterval) -> Void = { _ in },
-                        width: Int = 138) -> PlaylistsScene {
+                        width: Int = 138,
+                        routing given: RoutingCoordinator? = nil) -> PlaylistsScene {
     // `names` (this construction's own `playlists:`) and `spy.names` (what a
     // LATER async reload answers) are different concerns — only set the spy's
     // when the caller is using the direct-construction path and hasn't
@@ -66,8 +67,8 @@ func playlistsTestScene(flag: BridgeSelectedFlag, wire: BridgeLibraryReadsWire, 
     if !names.isEmpty { spy.names = names }
     let store = PlaybackModeStore(path: NSTemporaryDirectory() + "mode-\(UUID().uuidString).json")
     store.set(.source)
-    let routing = RoutingCoordinator(store: store, surface: .tui,
-                                     makeSource: { SourceAppClient(path: "/nonexistent", transport: wire.transport) })
+    let routing = given ?? RoutingCoordinator(store: store, surface: .tui,
+                                              makeSource: { SourceAppClient(path: "/nonexistent", transport: wire.transport) })
     return PlaylistsScene(backend: AppleScriptBackend(executable: "/usr/bin/true"), routing: routing,
                           playlists: names, sources: names.isEmpty ? .empty : spy.sources(),
                           appQueue: AppQueueStore(), status: status, actions: ActionRunner(status: status),

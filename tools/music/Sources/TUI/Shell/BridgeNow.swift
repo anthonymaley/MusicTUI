@@ -180,15 +180,33 @@ func bridgePositionLine(_ b: BridgeNow) -> String? {
 /// `row`, a `row` outside the list, or a row whose title is not the title the
 /// status reports playing (a play from another process, say) all give nothing,
 /// which leaves the Now tab exactly as it was before this existed.
-func spanDACQueueWindow(sent: [MusicRow]?, status: SourceStatus) -> (current: MusicRow?, entries: [TrackListEntry]) {
+///
+/// `token` is the `queue_token` the play's reply carried (Codex 106, finding 6).
+/// When there is one, the rows are used only while the status echoes the same
+/// token, so another process's queue can never borrow them: no Up Next, no
+/// album line, no persistent-id fallback for the cover. Without one (a SpanDAC
+/// that predates tokens) the title check above is the whole rule, as before.
+///
+/// `shuffled` is true when the play was a shuffle SpanDAC made itself.
+func spanDACQueueWindow(sent: [MusicRow]?, token: String? = nil, shuffled: Bool = false,
+                        status: SourceStatus) -> (current: MusicRow?, entries: [TrackListEntry]) {
     guard let sent, let at = status.row, sent.indices.contains(at) else { return (nil, []) }
+    // The play recorded a token: these rows describe that assignment and no
+    // other. A status that echoes a different token (another process replaced
+    // the queue) or none (the player was unloaded) shows its own data only.
+    if let token, status.queueToken != token { return (nil, []) }
     let current = sent[at]
     if let title = status.title?.trimmingCharacters(in: .whitespaces), !title.isEmpty,
        title.lowercased() != current.title.trimmingCharacters(in: .whitespaces).lowercased() {
         return (nil, [])
     }
+    // `next_rows` absent: in sent order the rows after `row` stand in, as ever.
+    // But a play SpanDAC shuffled itself, or a status that says shuffle is on,
+    // has no order the sent rows could stand in for, and SpanDAC may leave
+    // `next_rows` out then: no Up Next list, never an error and never a guess.
+    let unorderedWithoutNextRows = shuffled || status.shuffle == true
     let next = status.nextRows.map { $0.filter { sent.indices.contains($0) } }
-        ?? Array((at + 1)..<sent.count)
+        ?? (unorderedWithoutNextRows ? [] : Array((at + 1)..<sent.count))
     func entry(_ i: Int, current: Bool) -> TrackListEntry {
         TrackListEntry(index: i + 1, name: sent[i].title, artist: sent[i].artist, isCurrent: current, album: sent[i].album)
     }

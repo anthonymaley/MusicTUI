@@ -627,8 +627,9 @@ struct SourceStatus: Equatable {
     var persistentID: String? = nil
     /// Which of the rows the client sent in its current play request is
     /// playing (`row`, 0-based), and the rows after it in play order
-    /// (`next_rows`, every upcoming row SpanDAC sends, following shuffle when
-    /// its queue does; only a sanity cap, `nextRowsSanityCap`, guards a runaway reply).
+    /// (`next_rows`, the upcoming rows SpanDAC sends, following shuffle when its
+    /// queue does, at most 5,000 of them: SpanDAC's own bound, which
+    /// `nextRowsSanityCap` matches).
     /// Indexes into the SENT list (`RoutingCoordinator.spanDACPlayedRows`),
     /// not into the present entries. Optional on the wire; a malformed value is
     /// absent, and a negative index is dropped.
@@ -652,6 +653,12 @@ struct SourceStatus: Equatable {
     /// `dataReadiness` starts from this, so a disconnected player (a sound
     /// problem) can never make SpanDAC unfit to serve music data.
     var readinessIgnoringPlayer: SourceReadiness? = nil
+    /// `slice.status`'s optional `queue_token`: the token of the assignment now
+    /// standing in SpanDAC's player (Codex 106, finding 6). Opaque, compared for
+    /// equality only. Absent from an older SpanDAC, and from a newer one once the
+    /// player is unloaded or nothing SpanDAC assigned stands; a blank value is
+    /// absent too.
+    var queueToken: String? = nil
 }
 
 /// The wire ops for SpanDAC's own shuffle and repeat.
@@ -676,6 +683,10 @@ extension SourceStatus {
     /// Whether this SpanDAC can switch the Mac to its DAC on request. An older
     /// one cannot, and then the switch happens at the first play.
     var offersUseDAC: Bool { capabilities.contains(sourceUseDACCapability) }
+    /// Whether this SpanDAC plays a library album, artist, playlist or the Songs
+    /// list whole from a container name and a start row (`slice.playLibrary`).
+    /// An older one does not, and the client keeps its page walk and id list.
+    var offersPlayLibrary: Bool { capabilities.contains(sourcePlayLibraryCapability) }
 }
 
 extension SourceStatus {
@@ -819,6 +830,16 @@ protocol SourceControlling {
     /// direct call in `BridgeMusicProviderTests`, which predates this field,
     /// keeps compiling — it still sends the key, just with `false`).
     func queue(libraryIDs: [String], startRequired: Bool) throws -> Int
+    /// `queue(libraryIDs:startRequired:)`'s exact request, also returning the
+    /// `queue_token` its reply carried (nil from a SpanDAC that predates it), so
+    /// the rows the client kept for this play can be tied to the assignment it
+    /// made (Codex 106, finding 6).
+    func queueRetainingToken(libraryIDs: [String], startRequired: Bool) throws -> (skippedUnavailable: Int, queueToken: String?)
+    /// `slice.playLibrary`: play one library container whole, named by kind, id
+    /// and start row, with no id list and no page walk. Sent only when
+    /// `capabilities()` lists `play.library`.
+    func playLibrary(kind: LibraryPlayKind, id: String?, start: LibraryPlayStart?, listRev: String?,
+                     shuffle: Bool) throws -> SpanDACPlayResult
     // NOTE: `SourceAppControl`'s own declaration below defaults `startRequired`
     // to `false`; a protocol requirement's default only applies to callers
     // holding a `SourceControlling`-typed value, so `BridgeMusicProviderTests`'
@@ -896,6 +917,15 @@ protocol SourceControlling {
 /// Defaults for the Part 2 members: an older conformer reads as an older
 /// Bridge, naming the op it does not serve, never as an empty answer.
 extension SourceControlling {
+    /// A conformer written before the token reports none, which reads as an
+    /// older SpanDAC: today's title-checked rows.
+    func queueRetainingToken(libraryIDs: [String], startRequired: Bool) throws -> (skippedUnavailable: Int, queueToken: String?) {
+        (try queue(libraryIDs: libraryIDs, startRequired: startRequired), nil)
+    }
+    func playLibrary(kind: LibraryPlayKind, id: String?, start: LibraryPlayStart?, listRev: String?,
+                     shuffle: Bool) throws -> SpanDACPlayResult {
+        throw SourceAppError.unsupported(sourcePlayLibraryOp)
+    }
     func recommendations(limit: Int) throws -> [DiscoverRail] {
         throw SourceAppError.unsupported("slice.recommendations")
     }
@@ -953,7 +983,7 @@ struct SourceAppControl: SourceControlling {
     /// every `slice.queue`: starting a queue can wait on the player preparing
     /// its first song, and Bridge retries that once after a cold start, which
     /// together outlast the transport commands' 10s.
-    private let libraryTransport: (String, String) throws -> String
+    let libraryTransport: (String, String) throws -> String
 
     init(path: String = SourceAppStationSearch.socketPath) {
         self.path = path
@@ -1007,7 +1037,7 @@ struct SourceAppControl: SourceControlling {
         return Self.decodeStatus(status, readingWith: self)
     }
 
-    private static func decodeStatus(_ status: [String: Any], readingWith control: SourceAppControl) -> SourceStatus? {
+    static func decodeStatus(_ status: [String: Any], readingWith control: SourceAppControl) -> SourceStatus? {
         guard let playback = status["playback"] as? String else { return nil }
         let queue = status["queue"] as? [String: Any]
         return SourceStatus(playback: playback,
@@ -1031,7 +1061,8 @@ struct SourceAppControl: SourceControlling {
                             repeatMode: (status["repeat"] as? String).flatMap { RepeatMode(rawValue: $0) }?.rawValue,
                             capabilities: status["capabilities"] as? [String] ?? [],
                             playerDisconnected: Self.playerIsDisconnected(status),
-                            readinessIgnoringPlayer: control.readiness(from: status, includingPlayer: false))
+                            readinessIgnoringPlayer: control.readiness(from: status, includingPlayer: false),
+                            queueToken: Self.queueToken(status["queue_token"]))
     }
 
     /// True only for the exact word `disconnected`; absent, null, any other
@@ -1040,8 +1071,11 @@ struct SourceAppControl: SourceControlling {
         (status["player"] as? String) == "disconnected"
     }
 
-    /// Not a product limit: SpanDAC sends every upcoming row. This only stops a
-    /// malformed reply from allocating without bound.
+    /// Not a product limit of this client: it keeps every row SpanDAC sends, and
+    /// SpanDAC itself stops at 5,000 (`statusNextRowsMaximum`, which also keeps a
+    /// whole-Songs status inside one 64 KiB reply frame). This equals that
+    /// number, so a full reply is read whole, and it stops a malformed reply
+    /// from allocating without bound.
     static let nextRowsSanityCap = 5000
 
     /// A real JSON boolean, or nil. `1` and `0` are numbers, not booleans.
@@ -1270,7 +1304,8 @@ struct SourceAppControl: SourceControlling {
                          generation: generation,
                          stale: reply["stale"] as? Bool ?? false,
                          refreshing: reply["refreshing"] as? Bool ?? false,
-                         skippedVideos: skippedVideos)
+                         skippedVideos: skippedVideos,
+                         listRev: Self.listRev(reply["list_rev"]))
     }
 
     /// Shared by the three container reads. Complete or refused — `generation`
@@ -1293,7 +1328,8 @@ struct SourceAppControl: SourceControlling {
         LibraryAliasSelfCheck.shared.observe(rows)
         return MusicList(rows: rows, generation: generation,
                          stale: reply["stale"] as? Bool ?? false,
-                         refreshing: reply["refreshing"] as? Bool ?? false)
+                         refreshing: reply["refreshing"] as? Bool ?? false,
+                         listRev: Self.listRev(reply["list_rev"]))
     }
 
     /// Contract 3. **The point of the whole seam:** a row Bridge served is
@@ -1330,9 +1366,17 @@ struct SourceAppControl: SourceControlling {
     /// a legacy request and refuses it, so omission-means-false no longer
     /// holds.
     func queue(libraryIDs: [String], startRequired: Bool = false) throws -> Int {
+        try queueRetainingToken(libraryIDs: libraryIDs, startRequired: startRequired).skippedUnavailable
+    }
+
+    /// The one implementation of the library-id queue request; `queue(libraryIDs:)`
+    /// is this without the token.
+    func queueRetainingToken(libraryIDs: [String], startRequired: Bool = false) throws
+        -> (skippedUnavailable: Int, queueToken: String?) {
         let body: [String: Any] = ["op": "slice.queue", "library_ids": libraryIDs, "start_required": startRequired]
         let reply = try send(body, over: libraryTransport)
-        return try Self.skippedUnavailable(in: reply, sent: libraryIDs.count)
+        return (try Self.skippedUnavailable(in: reply, sent: libraryIDs.count),
+                Self.queueToken(reply["queue_token"]))
     }
 
     /// Part 2, P1: `queue(catalogIDs:)`'s exact request, with the skip count

@@ -213,7 +213,9 @@ final class PlaybackPoller {
         // alias fills a missing persistent ID BEFORE the tracker keeps the
         // reply, so a missed poll keeps the cover as well as the list.
         if case .success(var status) = result {
-            let window = spanDACQueueWindow(sent: routing?.spanDACPlayedRows(), status: status)
+            let played = routing?.spanDACPlay()
+            let window = spanDACQueueWindow(sent: played?.rows, token: played?.token,
+                                            shuffled: played?.shuffled ?? false, status: status)
             if status.persistentID == nil, let alias = window.current?.alias, !alias.isEmpty {
                 status.persistentID = alias
             }

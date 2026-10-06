@@ -251,6 +251,9 @@ final class PlaylistsScene: Scene {
     // the same playlist as last time.
     private var bridgeTracksFeed: BridgeListFeed<MusicRow>? = nil
     private var bridgeTracksRows: [MusicRow] = []
+    /// The `list_rev` of the read `bridgeTracksRows` came from, when SpanDAC sent
+    /// one (the walk's pages all agreed): a whole-playlist play sends it back.
+    private var bridgeTracksListRev: String? = nil
     private var bridgeTracksDone = false
     private var bridgeTracksTotal: Int? = nil
     private var bridgeTracksFailure: String? = nil
@@ -541,6 +544,7 @@ final class PlaylistsScene: Scene {
         bridgeTracksFeed?.reset()
         bridgeTracksFeed = nil
         bridgeTracksRows = []
+        bridgeTracksListRev = nil
         bridgeTracksDone = false
         bridgeTracksTotal = nil
         bridgeTracksFailure = nil
@@ -732,12 +736,13 @@ final class PlaylistsScene: Scene {
                 bridgeTracksRows.append(contentsOf: drain.append)
                 changed = true
             }
+            if bridgeTracksListRev != drain.listRev { bridgeTracksListRev = drain.listRev }
             if bridgeTracksTotal != drain.total { bridgeTracksTotal = drain.total; changed = true }
             if bridgeTracksFailure != drain.failure {
                 bridgeTracksFailure = drain.failure
                 // D4: a failure clears the rows and keeps the sentence — a
                 // walk that failed never shows a partial list.
-                if drain.failure != nil { bridgeTracksRows = [] }
+                if drain.failure != nil { bridgeTracksRows = []; bridgeTracksListRev = nil }
                 changed = true
             }
             if bridgeTracksWarming != drain.warming { bridgeTracksWarming = drain.warming; changed = true }
@@ -922,7 +927,8 @@ final class PlaylistsScene: Scene {
                           let pid = bridgeTracksPlaylistID, let name = bridgeTracksPlaylistName else { return .none }
                     playBridgePlaylist(playlistID: pid, name: name, shuffle: false, startAt: trCursor + 1,
                                        startRequired: true, rows: bridgeTracksRows,
-                                       skippedVideos: skippedVideoCounts[pid] ?? 0)
+                                       skippedVideos: skippedVideoCounts[pid] ?? 0,
+                                       listRev: bridgeTracksListRev)
                     return .push(.nowPlaying)
                 }
                 guard fullCache[plCursor] != nil else { return .none }   // still loading
@@ -978,7 +984,8 @@ final class PlaylistsScene: Scene {
                     && bridgeTracksDone && bridgeTracksFailure == nil
                 playBridgePlaylist(playlistID: row.id, name: row.title, shuffle: false, startAt: 1,
                                    startRequired: false, rows: cached ? bridgeTracksRows : nil,
-                                   skippedVideos: cached ? skippedVideoCounts[row.id] : nil)
+                                   skippedVideos: cached ? skippedVideoCounts[row.id] : nil,
+                                   listRev: cached ? bridgeTracksListRev : nil)
                 return .push(.nowPlaying)
             }
             playPlaylist(shuffle: false); return .push(.nowPlaying)
@@ -991,7 +998,8 @@ final class PlaylistsScene: Scene {
                     && bridgeTracksDone && bridgeTracksFailure == nil
                 playBridgePlaylist(playlistID: row.id, name: row.title, shuffle: true, startAt: 1,
                                    startRequired: false, rows: cached ? bridgeTracksRows : nil,
-                                   skippedVideos: cached ? skippedVideoCounts[row.id] : nil)
+                                   skippedVideos: cached ? skippedVideoCounts[row.id] : nil,
+                                   listRev: cached ? bridgeTracksListRev : nil)
                 return .push(.nowPlaying)
             }
             playPlaylist(shuffle: true); return .push(.nowPlaying)
@@ -1015,6 +1023,7 @@ final class PlaylistsScene: Scene {
         trCursor = 0; trScroll = 0
         bridgeTracksFeed?.reset()
         bridgeTracksRows = []
+        bridgeTracksListRev = nil
         bridgeTracksDone = false
         bridgeTracksTotal = nil
         bridgeTracksFailure = nil
@@ -1045,7 +1054,8 @@ final class PlaylistsScene: Scene {
     /// false for `p`/`s`, which always start the whole playlist at row 1
     /// regardless of where the cursor happens to be.
     private func playBridgePlaylist(playlistID: String, name: String, shuffle: Bool, startAt: Int,
-                                    startRequired: Bool, rows: [MusicRow]?, skippedVideos: Int?) {
+                                    startRequired: Bool, rows: [MusicRow]?, skippedVideos: Int?,
+                                    listRev: String? = nil) {
         let makeProvider = self.makeProvider
         let routing = self.routing
         let status = self.status
@@ -1065,14 +1075,33 @@ final class PlaylistsScene: Scene {
                     status.post("Preparing your library \u{2014} '\(name)' will play when it's ready\u{2026}")
                 }
 
-                let finalRows: [MusicRow]
-                let finalSkipped: Int
-                if let rows, let skippedVideos {
-                    finalRows = rows
-                    finalSkipped = skippedVideos
-                } else {
+                // A SpanDAC that plays containers whole is sent the playlist's id (and
+                // the start row, when one was picked) with the `list_rev` of the read
+                // the rows came from. A whole or shuffled play with no rows on screen
+                // needs only that `list_rev`, which every page of a read carries, so
+                // ONE one-row page proves the list and the playlist is not walked.
+                // Capability read BEFORE the lock below, like any capability read.
+                var finalRows: [MusicRow]? = skippedVideos == nil ? nil : rows
+                var finalSkipped = skippedVideos ?? 0
+                var finalRev = listRev
+                let capable = outputPlaysLibraryWhole(routing: routing, expecting: stamp)
+                var plan = libraryPlayPlan(capable: capable, rows: finalRows, listRev: finalRev,
+                                           startAt: startAt, startRequired: startRequired, shuffle: shuffle)
+                let wantsStart = startRequired && !shuffle
+                if plan == .needsRows && !wantsStart {
+                    // The rev probe: page one, one row. Rows are not kept (Up Next is
+                    // then SpanDAC's own), the playlist is not walked.
+                    let probe = try retryingWhileWarming(budget: budget, onWarming: onWarming, sleep: warmUpSleep) {
+                        try provider.playlistTracks(playlistID: playlistID, cursor: nil, limit: 1)
+                    }
+                    if let rev = probe.listRev { plan = .whole(start: nil, listRev: rev) }
+                    else { plan = .legacy }
+                }
+                if plan == .needsRows || (plan == .legacy && finalRows == nil) {
                     var collected: [MusicRow] = []
                     var lastSkipped = 0
+                    var walkedRev: String?
+                    var firstPage = true
                     // F4/C4: the FRESH whole-playlist play walk only — the one
                     // path that reads for a `p`/`s` with no cached rows —
                     // hints Bridge with `for_queue` so an over-bound playlist
@@ -1083,41 +1112,62 @@ final class PlaylistsScene: Scene {
                         onPage: { page in
                             collected.append(contentsOf: page.rows)
                             lastSkipped = page.skippedVideos
+                            // The pages of one read carry one `list_rev`; two that
+                            // differ are two lists, so none is claimed.
+                            if firstPage { walkedRev = page.listRev; firstPage = false }
+                            else if page.listRev != walkedRev { walkedRev = nil }
                             return true
                         },
-                        onRestart: { collected = []; lastSkipped = 0 },
+                        onRestart: { collected = []; lastSkipped = 0; walkedRev = nil; firstPage = true },
                         onWarming: onWarming, sleep: warmUpSleep, budget: budget)
                     if let walkError {
                         throw ActionError(message: walkError.errorDescription ?? "Couldn't read that playlist from your library.")
                     }
                     finalRows = collected
                     finalSkipped = lastSkipped
+                    finalRev = walkedRev
+                    // Decided again with the rows in hand: the start row's id and
+                    // the `list_rev` of THIS read, or the id list if it has none.
+                    plan = libraryPlayPlan(capable: capable, rows: finalRows, listRev: finalRev,
+                                           startAt: startAt, startRequired: startRequired, shuffle: shuffle)
                     // D2: after a fresh read, the pane shows what was queued.
                     self.previewInboxLock.lock()
                     self.bridgePreviewInbox.append(
-                        (playlistID, epoch, .success(rows: finalRows, total: finalRows.count, skippedVideos: finalSkipped)))
+                        (playlistID, epoch, .success(rows: collected, total: collected.count, skippedVideos: lastSkipped)))
                     self.previewInboxLock.unlock()
                 }
 
-                try require(!finalRows.isEmpty, "'\(name)' has no songs SpanDAC can play.")
-                let sent = bridgeQueueRows(finalRows, shuffle: shuffle, startAt: startAt)
-                let ids = sent.map(\.id)
+                if let finalRows { try require(!finalRows.isEmpty, "'\(name)' has no songs SpanDAC can play.") }
+                let sent = finalRows.map { bridgeQueueRows($0, shuffle: shuffle, startAt: startAt) }
+                let ids = sent?.map(\.id)
 
                 // Addendum U: set only on the attempt that actually succeeds.
                 var skippedUnavailable = 0
                 var handedOff: HandoffPlayReport?
+                var wholeResult: SpanDACPlayResult?
                 _ = try retryingWhileWarming(budget: budget, onWarming: onWarming, sleep: warmUpSleep) {
                     // A SpanDAC output plays the ids on THAT output's client;
                     // the MusicTUI output hands the rows to the hand-off.
                     try routing.perform(.playlistPlay, expecting: stamp, origin: .spandacLibrary, musicApp: { path in
                         guard path == .handoff else { throw ActionError(message: pickASpanDACOutput) }
+                        guard let finalRows else { throw ActionError(message: sourceChangedNothingPlayed) }
                         handedOff = try playThroughHandoff(handoff, rows: finalRows, startAt: startAt,
                                                            startRequired: startRequired,
                                                            shuffle: shuffle, title: name)
                     }, source: { client in
-                        skippedUnavailable = try spanDACOutputPlayer(client).playReportingSkips(
-                            ids: ids, startRequired: startRequired).skippedUnavailable
-                        routing.recordSpanDACPlay(sent)
+                        if case .whole(let start, let rev) = plan {
+                            let result = try spanDACOutputPlayer(client).playLibrary(
+                                kind: .playlist, id: playlistID, start: start, listRev: rev, shuffle: shuffle)
+                            wholeResult = result
+                            routing.recordSpanDACPlay(finalRows ?? [], token: result.queueToken, listRev: rev,
+                                                      shuffled: shuffle)
+                            return
+                        }
+                        guard let ids, let sent else { throw ActionError(message: sourceChangedNothingPlayed) }
+                        let played = try spanDACOutputPlayer(client).playRetainingToken(
+                            ids: ids, startRequired: startRequired)
+                        skippedUnavailable = played.skippedUnavailable
+                        routing.recordSpanDACPlay(sent, token: played.queueToken)
                     }, unaffected: {})
                 }
                 if let handedOff {
@@ -1125,9 +1175,14 @@ final class PlaylistsScene: Scene {
                                 untilStateChange: handedOff.notice != nil)
                     return
                 }
+                if let wholeResult {
+                    status.post(bridgeWholePlayMessage(name: name, result: wholeResult),
+                                untilStateChange: bridgeWholePlayNeedsAttention(wholeResult))
+                    return
+                }
                 // Songs skipped as unavailable, or videos skipped, will not
                 // play: the sentence saying so stays until the next change.
-                status.post(bridgePlaylistPlayMessage(name: name, queued: ids.count, skippedVideos: finalSkipped,
+                status.post(bridgePlaylistPlayMessage(name: name, queued: ids?.count ?? 0, skippedVideos: finalSkipped,
                                                        skippedUnavailable: skippedUnavailable,
                                                        startAt: startAt, shuffle: shuffle),
                             untilStateChange: skippedUnavailable > 0 || finalSkipped > 0)

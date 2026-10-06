@@ -39,6 +39,12 @@ final class BridgeLibraryReadsWire {
     private var repliesByOp: [String: [String]]
     private var countByOp: [String: Int] = [:]
     private var gates: [String: [Int: DispatchSemaphore]] = [:]
+    /// When true, `slice.status` is a poll rather than a one-shot: once scripted,
+    /// its last reply keeps answering. A scene play now reads the status for
+    /// SpanDAC's capabilities before it sends anything, so a scene test that
+    /// scripted ONE status for the read after its queue would otherwise have it
+    /// eaten by the read before. Off by default: the CLI tests count status reads.
+    var stickyStatus = false
 
     init(_ repliesByOp: [String: [String]] = [:]) {
         self.repliesByOp = repliesByOp
@@ -73,7 +79,8 @@ final class BridgeLibraryReadsWire {
         let n = countByOp[op, default: 0]
         countByOp[op] = n + 1
         let replies = repliesByOp[op] ?? []
-        let reply = n < replies.count ? replies[n] : Self.unscripted(op)
+        let reply = n < replies.count ? replies[n]
+            : (op == "slice.status" && stickyStatus ? (replies.last ?? Self.unscripted(op)) : Self.unscripted(op))
         let gate = gates[op]?[n]
         lock.unlock()
         _ = gate?.wait(timeout: .now() + 5)

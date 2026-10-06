@@ -232,6 +232,9 @@ final class LibraryScene: Scene {
     // like a cached Music.app miss, and cleared whenever a provenance switch
     // clears the Music.app caches (D7).
     private var bridgeTracks: [String: [MusicRow]] = [:]
+    /// The `list_rev` of the read each `bridgeTracks` entry came from, when
+    /// SpanDAC sent one. A whole-album play sends it back with the start row.
+    private var bridgeTrackRevs: [String: String] = [:]
     private var bridgeTrackFailures: [String: String] = [:]
     /// One album's landed tracks OR its failure sentence, posted under
     /// `inboxLock` from `previewQueue` (or a detached thread — see
@@ -240,7 +243,7 @@ final class LibraryScene: Scene {
     /// plain `String` failure does not conform to `Error`, and this outcome
     /// is never thrown, only pattern-matched.
     private enum BridgeTracksOutcome {
-        case success([MusicRow])
+        case success([MusicRow], listRev: String?)
         case failure(String)
     }
     /// Which rail's provenance epoch governs a given track fetch: the Albums
@@ -337,6 +340,15 @@ final class LibraryScene: Scene {
     /// drain REPLACES the list rather than appending to it, so the two
     /// generations are never on screen together.
     private var songsReplacePending = false
+    /// The `list_rev` of the read the Songs rows came from (for Songs, SpanDAC's
+    /// snapshot generation), held with the rows: a whole-Songs play sends it back
+    /// with the start row so SpanDAC can refuse a list that has changed. The
+    /// pending pair is written by the walk under `inboxLock` (nil once two pages
+    /// disagree, or a page carries none); `songsListRev` is what the drained
+    /// rows answer to.
+    private var songsRevPending: String? = nil
+    private var songsRevSeen = false
+    private var songsListRev: String? = nil
     /// Bridge said "not ready yet". Drained like the rest so render never reads
     /// it off the walk's thread.
     private var bridgeWarmingPending = false
@@ -678,6 +690,12 @@ final class LibraryScene: Scene {
                     defer { self.inboxLock.unlock() }
                     guard self.songsWalkEpoch == epoch else { return false }   // reset since -> stop
                     for row in page.rows { self.bridgeSongRowsByID[row.id] = row }
+                    if !self.songsRevSeen || self.songsAwaitingReplacement {
+                        self.songsRevPending = page.listRev
+                        self.songsRevSeen = true
+                    } else if page.listRev != self.songsRevPending {
+                        self.songsRevPending = nil
+                    }
                     if self.songsAwaitingReplacement {
                         // First page of the new generation: it REPLACES what is
                         // on screen, wholesale, in one drain.
@@ -707,6 +725,8 @@ final class LibraryScene: Scene {
                     self.songsAwaitingReplacement = true
                     self.songsPending = []
                     self.songsTotalPending = nil
+                    self.songsRevPending = nil
+                    self.songsRevSeen = false
                 },
                 onWarming: { [weak self] _ in
                     guard let self else { return }
@@ -744,6 +764,8 @@ final class LibraryScene: Scene {
         songsResetPending = true
         songsPending = []
         songsTotalPending = nil
+        songsRevPending = nil
+        songsRevSeen = false
         bridgeFailurePending = nil
         bridgeWarmingPending = false
         songsAwaitingReplacement = false
@@ -867,7 +889,7 @@ final class LibraryScene: Scene {
                     let list = try retryingWhileWarming(sleep: sleep) { try provider.albumTracks(albumID: albumID) }
                     guard let self else { return }
                     self.inboxLock.lock()
-                    self.bridgeTracksInbox.append((albumID, epochSource, epoch, .success(list.rows)))
+                    self.bridgeTracksInbox.append((albumID, epochSource, epoch, .success(list.rows, listRev: list.listRev)))
                     self.inboxLock.unlock()
                 } catch {
                     guard let self else { return }
@@ -959,7 +981,12 @@ final class LibraryScene: Scene {
         bridgeWarming = false
         songsSource = nil
         songsWalkEpoch += 1
-        inboxLock.lock(); bridgeSongRowsByID = [:]; inboxLock.unlock()
+        songsListRev = nil
+        inboxLock.lock()
+        bridgeSongRowsByID = [:]
+        songsRevPending = nil
+        songsRevSeen = false
+        inboxLock.unlock()
         if nav.subView == .songs { returnToRoot(.songs) }
     }
 
@@ -1019,6 +1046,7 @@ final class LibraryScene: Scene {
         coverCache = [:]
         coverInFlight = []
         bridgeTracks = [:]
+        bridgeTrackRevs = [:]
         bridgeTrackFailures = [:]
         // Same defense-in-depth as `resetArtistsList`'s inbox clear: the
         // epoch bumps in `resetAlbumsList`/`resetArtistsList` already make
@@ -1065,6 +1093,7 @@ final class LibraryScene: Scene {
         let songsRestarted = songsResetPending; songsResetPending = false
         let songsReplaced = songsReplacePending; songsReplacePending = false
         let landedSongTotal = songsTotalPending
+        let landedSongRev = songsRevPending
         let landedBridgeFailure = bridgeFailurePending
         let landedWarming = bridgeWarmingPending
         let newArtists = artistsPending; artistsPending = []
@@ -1209,6 +1238,7 @@ final class LibraryScene: Scene {
             if case .songList = nav.current { nav.cursor = 0; railScroll = 0 }
             changed = true
         }
+        if songsListRev != landedSongRev { songsListRev = landedSongRev }
         if bridgeSongTotal != landedSongTotal { bridgeSongTotal = landedSongTotal; changed = true }
         if bridgeFailure != landedBridgeFailure { bridgeFailure = landedBridgeFailure; changed = true }
         if bridgeWarming != landedWarming { bridgeWarming = landedWarming; changed = true }
@@ -1285,8 +1315,9 @@ final class LibraryScene: Scene {
             let currentEpoch = item.epochSource == .artists ? artistsSourceEpoch : albumsSourceEpoch
             guard item.epoch == currentEpoch else { continue }   // obsolete output/list -> drop
             switch item.result {
-            case .success(let rows):
+            case .success(let rows, let listRev):
                 bridgeTracks[item.albumID] = rows
+                bridgeTrackRevs[item.albumID] = listRev
                 // Also into `trackCache`, so the existing render, count and
                 // cursor-clamp code (all keyed by title strings) works
                 // unchanged for a Bridge-sourced album exactly as it does for
@@ -1576,9 +1607,12 @@ final class LibraryScene: Scene {
             // never a chosen start song, so never `startRequired`.
             dispatchAlbumPlay(id: id, title: title, artist: artist, shuffle: true, startAt: 1, startRequired: false)
         case .play(.song(let id, let title, let artist)):
-            dispatchSongPlay(id: id, title: title, artist: artist, shuffle: false)
+            // Enter on a Songs row plays on through the rest of the Songs list
+            // when SpanDAC can play it whole (Anthony, 2026-10-05 17:22); `p`
+            // is the same action.
+            dispatchSongPlay(id: id, title: title, artist: artist, shuffle: false, whole: songsWholePlay())
         case .shuffle(.song(let id, let title, let artist)):
-            dispatchSongPlay(id: id, title: title, artist: artist, shuffle: true)
+            dispatchSongPlay(id: id, title: title, artist: artist, shuffle: true, whole: nil)
         case .play(.artist(let id, let name)):
             dispatchArtistPlay(id: id, name: name, shuffle: false)
         case .shuffle(.artist(let id, let name)):
@@ -1599,7 +1633,8 @@ final class LibraryScene: Scene {
         // tracks) is checked against it before anything plays.
         if currentAlbumSource == .bridge {
             playBridgeAlbum(albumID: id, title: title, shuffle: shuffle, startAt: startAt,
-                            startRequired: startRequired, rows: bridgeTracks[id])
+                            startRequired: startRequired, rows: bridgeTracks[id],
+                            listRev: bridgeTrackRevs[id])
         } else if makeProvider() != nil {
             actions.run("Play") { throw ActionError(message: LibraryProvenance.bridgeSelectedMusicAppList) }
         } else {
@@ -1617,7 +1652,21 @@ final class LibraryScene: Scene {
         }
     }
 
-    private func dispatchSongPlay(id: String, title: String, artist: String, shuffle: Bool) {
+    /// The Songs list as it stands on screen, for a play that continues through
+    /// it: the row under the cursor by its index in the WHOLE list (not the
+    /// filtered one), in the order SpanDAC serves it, with the list's
+    /// `list_rev`. Nil when the list is not SpanDAC's, has no `list_rev` (an
+    /// older SpanDAC: the single-song play stays), or the cursor is not on a row.
+    private func songsWholePlay() -> WholeSongsPlay? {
+        guard songsFromBridge, let rev = songsListRev else { return nil }
+        let visible = visibleSongIndices()
+        guard nav.cursor >= 0, nav.cursor < visible.count else { return nil }
+        inboxLock.lock(); let byID = bridgeSongRowsByID; inboxLock.unlock()
+        return WholeSongsPlay(index: visible[nav.cursor], songs: songs, rowsByID: byID, listRev: rev)
+    }
+
+    private func dispatchSongPlay(id: String, title: String, artist: String, shuffle: Bool,
+                                  whole: WholeSongsPlay? = nil) {
         if songsFromBridge, makeProvider() == nil {
             actions.run("Play") { throw ActionError(message: LibraryProvenance.musicAppSelectedBridgeList) }
             return
@@ -1626,7 +1675,7 @@ final class LibraryScene: Scene {
             actions.run("Play") { throw ActionError(message: LibraryProvenance.bridgeSelectedMusicAppList) }
             return
         }
-        playSong(id: id, title: title, artist: artist, shuffle: shuffle)
+        playSong(id: id, title: title, artist: artist, shuffle: shuffle, whole: whole)
     }
 
     /// Whole-album (or from-a-track) play via the app-owned queue. macOS 26.x
@@ -1724,7 +1773,8 @@ final class LibraryScene: Scene {
     /// `id` is the id of whichever backend produced the row, and it is opaque
     /// here: in Bridge mode it is the MusicKit library id a Bridge page carried,
     /// and it is what plays the row. Nothing compares it to a Music.app id.
-    private func playSong(id: String, title: String, artist: String, shuffle: Bool) {
+    private func playSong(id: String, title: String, artist: String, shuffle: Bool,
+                          whole: WholeSongsPlay? = nil) {
         let backend = self.backend
         let store = self.appQueue
         let routing = self.routing
@@ -1741,6 +1791,19 @@ final class LibraryScene: Scene {
             // `(title, artist, album)` triple is built, and no album is required
             // — the whole reason a row with no album used to refuse.
             if provider != nil {
+                // The Songs list goes whole when the OUTPUT SpanDAC plays containers
+                // (read before the lock below, like every capability read), else
+                // exactly one song, as before. The rows kept are the list on screen,
+                // under the `list_rev` they were read with.
+                var wholeRows: [MusicRow] = []
+                var plan: LibraryPlayPlan = .legacy
+                if let whole, !shuffle {
+                    wholeRows = whole.rows()
+                    plan = libraryPlayPlan(capable: outputPlaysLibraryWhole(routing: routing, expecting: stamp), rows: wholeRows,
+                                           listRev: whole.listRev, startAt: whole.index + 1,
+                                           startRequired: true, shuffle: false)
+                }
+                var wholeResult: SpanDACPlayResult?
                 do {
                     // A cold Bridge answers a queue with `warming` rather than
                     // blocking for its drain, so the play waits on the hint
@@ -1778,9 +1841,17 @@ final class LibraryScene: Scene {
                                                        shuffle: shuffle, title: title)
                             },
                             source: { client in
-                                _ = try spanDACOutputPlayer(client).play(ids: [id])
+                                if case .whole(let start, let rev) = plan {
+                                    let result = try spanDACOutputPlayer(client).playLibrary(
+                                        kind: .songs, id: nil, start: start, listRev: rev, shuffle: false)
+                                    wholeResult = result
+                                    routing.recordSpanDACPlay(wholeRows, token: result.queueToken, listRev: rev)
+                                    return
+                                }
+                                let played = try spanDACOutputPlayer(client).playRetainingToken(ids: [id], startRequired: true)
                                 routing.recordSpanDACPlay(
-                                    [songRow ?? MusicRow(id: id, title: title, artist: artist, album: nil, kind: .song)])
+                                    [songRow ?? MusicRow(id: id, title: title, artist: artist, album: nil, kind: .song)],
+                                    token: played.queueToken)
                             },
                             unaffected: {})
                     }
@@ -1790,6 +1861,10 @@ final class LibraryScene: Scene {
                     throw ActionError(message: error.errorDescription ?? "Couldn't play '\(title)' on SpanDAC.")
                 } catch let error as SourceAppError {
                     throw ActionError(message: error.message)
+                }
+                if let wholeResult {
+                    status.post(bridgeWholePlayMessage(name: title, result: wholeResult),
+                                untilStateChange: bridgeWholePlayNeedsAttention(wholeResult))
                 }
                 return
             }
@@ -1881,7 +1956,7 @@ final class LibraryScene: Scene {
     /// when nothing is cached yet.
     // Internal, not private, so it is reachable from a test.
     func playBridgeAlbum(albumID: String, title: String, shuffle: Bool, startAt: Int, startRequired: Bool,
-                         rows: [MusicRow]?) {
+                         rows: [MusicRow]?, listRev: String? = nil) {
         let routing = self.routing
         let status = self.status
         let makeProvider = self.makeProvider
@@ -1901,30 +1976,61 @@ final class LibraryScene: Scene {
                 let onWarming: (TimeInterval) -> Void = { _ in
                     status.post("Preparing your library \u{2014} '\(title)' will play when it's ready\u{2026}")
                 }
-                let trackRows = try rows ?? retryingWhileWarming(budget: budget, onWarming: onWarming, sleep: sleep) {
-                    try provider.albumTracks(albumID: albumID)
-                }.rows
-                try require(!trackRows.isEmpty, "'\(title)' has no songs SpanDAC can play.")
-                let sent = bridgeQueueRows(trackRows, shuffle: shuffle, startAt: startAt)
-                let ids = sent.map(\.id)
+                // A SpanDAC that plays containers whole is sent the album's id (and
+                // the start row, when one was picked) with the `list_rev` of the
+                // read the rows came from: the cached read if there is one, else
+                // one fresh read, which every path needs anyway (the ids for an
+                // older SpanDAC, the `list_rev` for a newer one). The capability
+                // is read AFTER it, so a switch that crossed the read builds no
+                // output client (C-EPOCH).
+                var trackRows = rows
+                var trackRev = listRev
+                if trackRows == nil {
+                    let list = try retryingWhileWarming(budget: budget, onWarming: onWarming, sleep: sleep) {
+                        try provider.albumTracks(albumID: albumID)
+                    }
+                    trackRows = list.rows
+                    trackRev = list.listRev
+                }
+                // An empty album is refused before anything else is asked of SpanDAC.
+                if let trackRows { try require(!trackRows.isEmpty, "'\(title)' has no songs SpanDAC can play.") }
+                let plan = libraryPlayPlan(capable: outputPlaysLibraryWhole(routing: routing, expecting: stamp),
+                                           rows: trackRows, listRev: trackRev, startAt: startAt,
+                                           startRequired: startRequired, shuffle: shuffle)
+                let sent = trackRows.map { bridgeQueueRows($0, shuffle: shuffle, startAt: startAt) }
+                let ids = sent?.map(\.id)
                 // Addendum U: how many of `ids` Bridge dropped as unavailable,
                 // set only on the attempt that actually succeeds (U-R5/U-R6).
                 var skippedUnavailable = 0
                 var handedOff: HandoffPlayReport?
+                var wholeResult: SpanDACPlayResult?
                 try retryingWhileWarming(budget: budget, onWarming: onWarming, sleep: sleep) {
                     // Stamped at the keypress: a switch that committed while
                     // the tracks were read plays nothing (C-EPOCH).
                     try routing.perform(.libraryPlay, expecting: stamp, origin: .spandacLibrary,
                         musicApp: { path in
                             guard path == .handoff else { throw ActionError(message: pickASpanDACOutput) }
+                            // The hand-off needs the rows: a MusicTUI output never
+                            // chose the whole-play plan, so they were read.
+                            guard let trackRows else { throw ActionError(message: sourceChangedNothingPlayed) }
                             handedOff = try playThroughHandoff(handoff, rows: trackRows, startAt: startAt,
                                                                startRequired: startRequired,
                                                                shuffle: shuffle, title: title)
                         },
                         source: { client in
-                            skippedUnavailable = try spanDACOutputPlayer(client).playReportingSkips(
-                                ids: ids, startRequired: startRequired).skippedUnavailable
-                            routing.recordSpanDACPlay(sent)
+                            if case .whole(let start, let rev) = plan {
+                                let result = try spanDACOutputPlayer(client).playLibrary(
+                                    kind: .album, id: albumID, start: start, listRev: rev, shuffle: shuffle)
+                                wholeResult = result
+                                routing.recordSpanDACPlay(trackRows ?? [], token: result.queueToken, listRev: rev,
+                                                          shuffled: shuffle)
+                                return
+                            }
+                            guard let ids, let sent else { throw ActionError(message: sourceChangedNothingPlayed) }
+                            let played = try spanDACOutputPlayer(client).playRetainingToken(
+                                ids: ids, startRequired: startRequired)
+                            skippedUnavailable = played.skippedUnavailable
+                            routing.recordSpanDACPlay(sent, token: played.queueToken)
                         },
                         unaffected: {})
                 }
@@ -1933,7 +2039,12 @@ final class LibraryScene: Scene {
                                 untilStateChange: handedOff.notice != nil)
                     return
                 }
-                let queuedCount = ids.count - skippedUnavailable
+                if let wholeResult {
+                    status.post(bridgeWholePlayMessage(name: title, result: wholeResult),
+                                untilStateChange: bridgeWholePlayNeedsAttention(wholeResult))
+                    return
+                }
+                let queuedCount = (ids?.count ?? 0) - skippedUnavailable
                 var footer = "Playing '\(title)' on SpanDAC \u{2014} \(queuedCount) tracks."
                 if skippedUnavailable > 0 { footer += " " + bridgeUnavailableSongsNotice(skippedUnavailable) }
                 status.post(footer, untilStateChange: skippedUnavailable > 0)
@@ -1966,10 +2077,23 @@ final class LibraryScene: Scene {
                 let onWarming: (TimeInterval) -> Void = { _ in
                     status.post("Preparing your library \u{2014} '\(name)' will play when it's ready\u{2026}")
                 }
-                let songRows = try retryingWhileWarming(budget: budget, onWarming: onWarming, sleep: sleep) {
+                // An artist play is always whole-collection (there is no
+                // track-level entry for an artist), and nothing about an artist
+                // is on screen to name or prove, so the songs are read first:
+                // that one read is what carries the `list_rev` a SpanDAC that
+                // plays containers whole needs, and it gives the rows kept for
+                // Up Next. A SpanDAC that does not play them whole is sent the
+                // ids of those rows, as before.
+                let list = try retryingWhileWarming(budget: budget, onWarming: onWarming, sleep: sleep) {
                     try provider.artistSongs(artistID: artistID)
-                }.rows
+                }
+                let songRows = list.rows
                 try require(!songRows.isEmpty, "'\(name)' has no songs SpanDAC can play.")
+                // The capability is read AFTER the read, so a switch that crossed it
+                // builds no output client (C-EPOCH).
+                let plan = libraryPlayPlan(capable: outputPlaysLibraryWhole(routing: routing, expecting: stamp),
+                                           rows: songRows, listRev: list.listRev,
+                                           startAt: 1, startRequired: false, shuffle: shuffle)
                 let sent = bridgeQueueRows(songRows, shuffle: shuffle, startAt: 1)
                 let ids = sent.map(\.id)
                 // Addendum U: same as playBridgeAlbum above. An artist play is
@@ -1977,6 +2101,7 @@ final class LibraryScene: Scene {
                 // an artist, so `startRequired` is always false.
                 var skippedUnavailable = 0
                 var handedOff: HandoffPlayReport?
+                var wholeResult: SpanDACPlayResult?
                 try retryingWhileWarming(budget: budget, onWarming: onWarming, sleep: sleep) {
                     try routing.perform(.libraryPlay, expecting: stamp, origin: .spandacLibrary,
                         musicApp: { path in
@@ -1986,15 +2111,29 @@ final class LibraryScene: Scene {
                                                                shuffle: shuffle, title: name)
                         },
                         source: { client in
-                            skippedUnavailable = try spanDACOutputPlayer(client).playReportingSkips(
-                                ids: ids, startRequired: false).skippedUnavailable
-                            routing.recordSpanDACPlay(sent)
+                            if case .whole(let start, let rev) = plan {
+                                let result = try spanDACOutputPlayer(client).playLibrary(
+                                    kind: .artist, id: artistID, start: start, listRev: rev, shuffle: shuffle)
+                                wholeResult = result
+                                routing.recordSpanDACPlay(songRows, token: result.queueToken, listRev: rev,
+                                                          shuffled: shuffle)
+                                return
+                            }
+                            let played = try spanDACOutputPlayer(client).playRetainingToken(
+                                ids: ids, startRequired: false)
+                            skippedUnavailable = played.skippedUnavailable
+                            routing.recordSpanDACPlay(sent, token: played.queueToken)
                         },
                         unaffected: {})
                 }
                 if let handedOff {
                     status.post(LibraryProvenance.playingOnMusicTUI(name, report: handedOff),
                                 untilStateChange: handedOff.notice != nil)
+                    return
+                }
+                if let wholeResult {
+                    status.post(bridgeWholePlayMessage(name: name, result: wholeResult),
+                                untilStateChange: bridgeWholePlayNeedsAttention(wholeResult))
                     return
                 }
                 let queuedCount = ids.count - skippedUnavailable

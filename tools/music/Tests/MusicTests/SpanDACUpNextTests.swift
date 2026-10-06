@@ -129,6 +129,7 @@ final class SpanDACUpNextTests: XCTestCase {
             "slice.libraryAlbums": [#"{"ok":true,"op":"slice.libraryAlbums","generation":3,"total":1,"items":[{"id":"al1","title":"In Rainbows","artist":"Radiohead","track_count":3,"kind":"album"}],"next_cursor":null}"#],
             "slice.libraryAlbumTracks": ["{\"ok\":true,\"op\":\"slice.libraryAlbumTracks\",\"generation\":3,\"items\":[\(tracks)]}"],
             "slice.queue": [queued], "slice.status": [queued]])
+        wire.stickyStatus = true   // a play reads SpanDAC's capabilities before it queues
         let store = PlaybackModeStore(path: NSTemporaryDirectory() + "mode-\(UUID().uuidString).json")
         store.set(.source)
         let r = RoutingCoordinator(store: store, surface: .tui,
