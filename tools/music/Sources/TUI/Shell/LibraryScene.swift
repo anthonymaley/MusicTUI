@@ -1980,8 +1980,11 @@ final class LibraryScene: Scene {
                     // Nothing was cached, so no rows were recorded: read them after the
                     // play, off this action, so Up Next has a list to index.
                     if trackRows == nil, let wholeSerial {
-                        fillUpNextRowsInBackground(routing: routing, serial: wholeSerial, token: wholeResult.queueToken) {
-                            let list = try retryingWhileWarming(sleep: sleep) { try provider.albumTracks(albumID: albumID) }
+                        fillUpNextRowsInBackground(routing: routing, serial: wholeSerial, token: wholeResult.queueToken) { stillNeeded in
+                            let list = try retryingWhileWarming(sleep: sleep) {
+                                guard stillNeeded() else { throw UpNextFillStopped() }
+                                return try provider.albumTracks(albumID: albumID)
+                            }
                             return (list.rows, list.listRev)
                         }
                     }
@@ -2090,8 +2093,11 @@ final class LibraryScene: Scene {
                     // No rows were read to play, so none were recorded: read them after
                     // the play, off this action, so Up Next has a list to index.
                     if songRows == nil, let wholeSerial {
-                        fillUpNextRowsInBackground(routing: routing, serial: wholeSerial, token: wholeResult.queueToken) {
-                            let list = try retryingWhileWarming(sleep: sleep) { try provider.artistSongs(artistID: artistID) }
+                        fillUpNextRowsInBackground(routing: routing, serial: wholeSerial, token: wholeResult.queueToken) { stillNeeded in
+                            let list = try retryingWhileWarming(sleep: sleep) {
+                                guard stillNeeded() else { throw UpNextFillStopped() }
+                                return try provider.artistSongs(artistID: artistID)
+                            }
                             return (list.rows, list.listRev)
                         }
                     }

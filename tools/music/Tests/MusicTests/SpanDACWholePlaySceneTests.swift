@@ -694,4 +694,122 @@ final class SpanDACWholePlaySceneTests: XCTestCase {
         XCTAssertEqual(r.spanDACPlay()?.token, "qar-3")
         XCTAssertEqual(r.spanDACPlay()?.listRev, "rev-ar1")
     }
+
+    // MARK: - the fill is scheduled, not only gated at the write
+
+    /// A playlist page with a next cursor, for a walk of more than one page.
+    private func playlistPage(_ ids: [String], next: String?) -> String {
+        let rows = ids.map { "{\"id\":\"\($0)\",\"title\":\"P\($0)\",\"artist\":\"Art\",\"kind\":\"song\"}" }.joined(separator: ",")
+        let cursor = next.map { "\"\($0)\"" } ?? "null"
+        return """
+        {"ok":true,"op":"slice.libraryPlaylistTracks","generation":3,"total":4,
+         "items":[\(rows)],"next_cursor":\(cursor),"skipped_videos":0,"list_rev":"rev-pl1"}
+        """
+    }
+
+    /// Holds the coordinator's fill worker until released, so a play's fill queues behind it.
+    private func blockFillWorker(_ r: RoutingCoordinator) -> DispatchSemaphore {
+        let release = DispatchSemaphore(value: 0)
+        let started = DispatchSemaphore(value: 0)
+        r.upNextFills.submit { started.signal(); _ = release.wait(timeout: .now() + 10) }
+        XCTAssertEqual(started.wait(timeout: .now() + 3), .success)
+        return release
+    }
+
+    private func supersede(_ r: RoutingCoordinator) throws {
+        try r.perform(.radioStationPlay, expecting: nil, musicApp: { _ in }, source: { _ in }, unaffected: {})
+    }
+
+    func testAFillWhosePlayWasSupersededBeforeItStartsSendsNoRowRead() throws {
+        let wire = stickyWire(["slice.libraryPlaylists": [onePlaylistPage], "slice.status": [Self.capable],
+                               "slice.listRev": [Self.revReply("playlist", "rev-pl1", count: 3)],
+                               "slice.playLibrary": [Self.playReply(queued: 3, token: "qpl-7")]])
+        wire.script("slice.libraryPlaylistTracks", [playlistTracks(["i.a", "i.b", "i.c"])])
+        let r = routing(wire)
+        let s = playlistScene(wire, routing: r)
+        let release = blockFillWorker(r)
+        _ = s.handle(.char("p"))
+        XCTAssertTrue(settlePlayed(wire))
+        XCTAssertTrue(settleScene(s) { r.spanDACPlay()?.token == "qpl-7" })
+        try supersede(r)
+        release.signal()
+        pause()
+        XCTAssertTrue(wire.sent("slice.libraryPlaylistTracks").isEmpty, "a superseded play still sent its row read")
+        XCTAssertNil(r.spanDACPlay())
+    }
+
+    func testSeveralQuickWholePlaysSendOnlyTheLatestPlaysRowRead() {
+        let wire = stickyWire(["slice.libraryPlaylists": [onePlaylistPage], "slice.status": [Self.capable],
+                               "slice.listRev": Array(repeating: Self.revReply("playlist", "rev-pl1", count: 3), count: 3),
+                               "slice.playLibrary": [Self.playReply(queued: 3, token: "qpl-1"),
+                                                     Self.playReply(queued: 3, token: "qpl-2"),
+                                                     Self.playReply(queued: 3, token: "qpl-3")]])
+        wire.script("slice.libraryPlaylistTracks", [playlistTracks(["i.a", "i.b", "i.c"])])
+        let r = routing(wire)
+        let s = playlistScene(wire, routing: r)
+        let release = blockFillWorker(r)
+        for _ in 0..<3 { _ = s.handle(.char("p")) }
+        XCTAssertTrue(settleRequested(wire, "slice.playLibrary", count: 3))
+        XCTAssertTrue(settleScene(s) { r.spanDACPlay()?.token == "qpl-3" })
+        release.signal()
+        XCTAssertTrue(settleScene(s) { r.spanDACPlay()?.rows.count == 3 }, "the latest play never got its rows")
+        pause()
+        XCTAssertEqual(wire.sent("slice.libraryPlaylistTracks").count, 1, "an earlier play's fill reached the wire")
+        XCTAssertEqual(r.spanDACPlay()?.token, "qpl-3")
+    }
+
+    func testAMultiPageFillStopsAfterThePageDuringWhichItsPlayWasSuperseded() throws {
+        let wire = stickyWire(["slice.libraryPlaylists": [onePlaylistPage], "slice.status": [Self.capable],
+                               "slice.listRev": [Self.revReply("playlist", "rev-pl1", count: 4)],
+                               "slice.playLibrary": [Self.playReply(queued: 4, token: "qpl-7")]])
+        wire.script("slice.libraryPlaylistTracks", [playlistPage(["i.a", "i.b"], next: "c2"),
+                                                    playlistPage(["i.c", "i.d"], next: nil)])
+        wire.gate(op: "slice.libraryPlaylistTracks", at: 0)
+        let r = routing(wire)
+        let s = playlistScene(wire, routing: r)
+        _ = s.handle(.char("p"))
+        XCTAssertTrue(settleRequested(wire, "slice.libraryPlaylistTracks"), "the fill never started")
+        XCTAssertTrue(settleScene(s) { r.spanDACPlay()?.token == "qpl-7" })
+        try supersede(r)
+        wire.release(op: "slice.libraryPlaylistTracks", at: 0)
+        pause()
+        XCTAssertEqual(wire.sent("slice.libraryPlaylistTracks").count, 1, "the walk went on to the next page of a superseded play")
+        XCTAssertNil(r.spanDACPlay())
+    }
+
+    func testAMultiPageFillOfTheCurrentPlayWalksEveryPage() {
+        let wire = stickyWire(["slice.libraryPlaylists": [onePlaylistPage], "slice.status": [Self.capable],
+                               "slice.listRev": [Self.revReply("playlist", "rev-pl1", count: 4)],
+                               "slice.playLibrary": [Self.playReply(queued: 4, token: "qpl-7")]])
+        wire.script("slice.libraryPlaylistTracks", [playlistPage(["i.a", "i.b"], next: "c2"),
+                                                    playlistPage(["i.c", "i.d"], next: nil)])
+        let r = routing(wire)
+        let s = playlistScene(wire, routing: r)
+        _ = s.handle(.char("p"))
+        XCTAssertTrue(settleScene(s) { r.spanDACPlay()?.rows.count == 4 })
+        XCTAssertEqual(r.spanDACPlay()?.rows.map(\.id), ["i.a", "i.b", "i.c", "i.d"])
+    }
+
+    /// The worker itself: one at a time, and a waiting job is replaced by a newer one.
+    func testTheFillWorkerRunsOneJobAtATimeAndDropsWaitingJobsForTheNewest() {
+        let worker = UpNextFillWorker()
+        let lock = NSLock()
+        var ran: [String] = []
+        var running = 0, peak = 0
+        func job(_ name: String, hold: DispatchSemaphore? = nil) -> () -> Void {
+            { lock.lock(); running += 1; peak = max(peak, running); ran.append(name); lock.unlock()
+              if let hold { _ = hold.wait(timeout: .now() + 5) }
+              lock.lock(); running -= 1; lock.unlock() }
+        }
+        let hold = DispatchSemaphore(value: 0)
+        worker.submit(job("first", hold: hold))
+        let deadline = Date().addingTimeInterval(3)
+        while Date() < deadline { lock.lock(); let n = ran.count; lock.unlock(); if n == 1 { break }; usleep(2_000) }
+        worker.submit(job("second")); worker.submit(job("third")); worker.submit(job("fourth"))
+        hold.signal()
+        pause(0.3)
+        lock.lock(); defer { lock.unlock() }
+        XCTAssertEqual(ran, ["first", "fourth"], "waiting jobs must be dropped unstarted")
+        XCTAssertEqual(peak, 1)
+    }
 }

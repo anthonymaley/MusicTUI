@@ -1229,10 +1229,11 @@ final class PlaylistsScene: Scene {
                     // play, off this action, so Up Next has a list to index. The
                     // playlist is cached SpanDAC-side for a minute, so this is cheap.
                     if finalRows == nil, let wholeSerial {
-                        fillUpNextRowsInBackground(routing: routing, serial: wholeSerial, token: wholeResult.queueToken) {
+                        fillUpNextRowsInBackground(routing: routing, serial: wholeSerial, token: wholeResult.queueToken) { stillNeeded in
                             let read = try self.walkPlaylistForQueue(
                                 provider: provider, playlistID: playlistID, epoch: epoch,
-                                budget: WarmUpBudget(), onWarming: { _ in }, sleep: warmUpSleep)
+                                budget: WarmUpBudget(), onWarming: { _ in }, sleep: warmUpSleep,
+                                proceed: stillNeeded)
                             return (read.rows, read.listRev)
                         }
                     }
@@ -1257,16 +1258,23 @@ final class PlaylistsScene: Scene {
     /// Walks a playlist's pages for a play (`for_queue`), and posts what was read to
     /// the preview inbox (D2): the pane shows what was queued. The pages of one read
     /// carry one `list_rev`; two that differ are two lists, so none is claimed.
+    /// `proceed`, for a background fill, is asked before each request; when it says
+    /// no the walk fails (nothing is posted) and the fill is dropped.
     private func walkPlaylistForQueue(provider: MusicDataProvider, playlistID: String, epoch: Int,
                                       budget: WarmUpBudget, onWarming: @escaping (TimeInterval) -> Void,
-                                      sleep: @escaping (TimeInterval) -> Void) throws
+                                      sleep: @escaping (TimeInterval) -> Void,
+                                      proceed: (() -> Bool)? = nil) throws
         -> (rows: [MusicRow], skippedVideos: Int, listRev: String?) {
         var collected: [MusicRow] = []
         var lastSkipped = 0
         var walkedRev: String?
         var firstPage = true
         let walkError = walkLibraryPages(
-            fetch: { c, l in try provider.playlistTracksForQueue(playlistID: playlistID, cursor: c, limit: l) },
+            fetch: { c, l in
+                // A background fill asks before EVERY request (each page, each warming
+                // retry): a play that was replaced stops costing the wire anything.
+                if let proceed, !proceed() { throw UpNextFillStopped() }
+                return try provider.playlistTracksForQueue(playlistID: playlistID, cursor: c, limit: l) },
             limit: Self.bridgeTracksPageLimit,
             onPage: { page in
                 collected.append(contentsOf: page.rows)

@@ -531,6 +531,18 @@ final class RoutingCoordinator {
         return _playSerial
     }
 
+    /// The one worker that reads the rows of whole plays for Up Next, one at a time
+    /// (`fillUpNextRowsInBackground`).
+    let upNextFills = UpNextFillWorker()
+
+    /// Whether the play recorded under `serial` is still the current one, still has
+    /// no rows, and still carries `token`: a fill's read is worth sending only then.
+    func spanDACPlayNeedsRows(serial: Int, token: String?) -> Bool {
+        state.lock(); defer { state.unlock() }
+        guard let sent = _spanDACSent else { return false }
+        return sent.serial == serial && serial == _playSerial && sent.rows.isEmpty && sent.token == token
+    }
+
     /// Fills in the rows of a whole play that recorded none (the client had not
     /// cached the container, so `slice.playLibrary` went by id and `list_rev`),
     /// after they were read in the background. Records them ONLY IF the play

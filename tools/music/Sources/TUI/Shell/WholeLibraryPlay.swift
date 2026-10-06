@@ -121,18 +121,52 @@ func planLibraryPlay(routing: RoutingCoordinator, stamp: (epoch: Int, dataEpoch:
     return PlannedLibraryPlay(plan: plan, rows: rows, listRev: rev)
 }
 
+/// Runs the Up Next row reads one at a time, newest wanted first: ONE serial
+/// queue, at most one job in flight, and a job submitted while another waits
+/// REPLACES the waiting one, which never starts. SpanDAC serves library reads
+/// through a few slow slots (MusicKit serialises them), so a pile of reads for
+/// plays that were already replaced would delay, or turn busy, the read a later
+/// play actually needs.
+final class UpNextFillWorker {
+    private let queue = DispatchQueue(label: "music.upnext.fill", qos: .utility)
+    private let lock = NSLock()
+    private var pending: (() -> Void)?
+
+    func submit(_ job: @escaping () -> Void) {
+        lock.lock(); pending = job; lock.unlock()
+        queue.async { [self] in
+            lock.lock(); let next = pending; pending = nil; lock.unlock()
+            next?()
+        }
+    }
+}
+
+/// Thrown from inside a fill's read when the play it is for is no longer the
+/// current one: the read stops without sending another request.
+struct UpNextFillStopped: Error {}
+
 /// Up Next for a whole play that sent no rows. A play the client had not cached
 /// goes by id and `list_rev` alone, so no rows were recorded and the Now tab has
 /// nothing to index SpanDAC's `row` / `next_rows` against. This reads the
-/// container's rows on a background thread AFTER the play reply (sound never
-/// waits for it) and fills them in for Up Next through
+/// container's rows on the coordinator's fill worker AFTER the play reply (sound
+/// never waits for it) and fills them in for Up Next through
 /// `RoutingCoordinator.fillSpanDACPlayRows`, which keeps them only for the play
 /// they were read for and only when their `list_rev` is the one the play was sent
 /// with. A failed read leaves Up Next empty: silent, no footer, no error.
+///
+/// `read` is handed `stillNeeded`, true while the coordinator still holds this
+/// play with no rows: it must be asked before EACH request it sends (every page,
+/// every warming retry) and stop when it says no, so a play that was replaced
+/// costs the wire nothing more. The same check runs before the read starts.
+///
+/// Residual: an album or artist over SpanDAC's 1,000-song listing bound refuses
+/// the row read (`too_large`), so it plays whole but gets no Up Next here. A
+/// playlist is walked in pages and has no such bound.
 func fillUpNextRowsInBackground(routing: RoutingCoordinator, serial: Int, token: String?,
-                                read: @escaping () throws -> (rows: [MusicRow], listRev: String?)) {
-    DispatchQueue.global(qos: .utility).async {
-        guard let list = try? read() else { return }
+                                read: @escaping (_ stillNeeded: @escaping () -> Bool) throws -> (rows: [MusicRow], listRev: String?)) {
+    let stillNeeded = { routing.spanDACPlayNeedsRows(serial: serial, token: token) }
+    routing.upNextFills.submit {
+        guard stillNeeded(), let list = try? read(stillNeeded) else { return }
         routing.fillSpanDACPlayRows(list.rows, listRev: list.listRev, serial: serial, token: token)
     }
 }
