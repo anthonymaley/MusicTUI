@@ -224,6 +224,10 @@ struct BridgeMusicProvider: MusicDataProvider {
             return .warming(why, retryAfter: retryAfter)
         case .staleGeneration(let detail):
             return .staleGeneration(detail)
+        case .playerDisconnected(let sentence):
+            // The sentence alone: the scene prints `errorDescription`, and the
+            // fix (relaunch SpanDAC) is already in it.
+            return .unavailable(sentence)
         case .refused(let detail):
             return .refused(detail)
         case .malformedReply(let what):

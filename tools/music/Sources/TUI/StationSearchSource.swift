@@ -76,10 +76,31 @@ enum SourceAppError: Error, Equatable {
     /// and the fix is to wait, not to change the request. No auto-retry
     /// here: the caller decides when to try again.
     case busy
+    /// SpanDAC lost its connection to macOS's music player, so nothing it is
+    /// asked to play can sound until SpanDAC is relaunched. Decoded on the
+    /// KIND `player_disconnected`; carries the whole sentence to show, which is
+    /// SpanDAC's own `detail` when it sent one and `playerDisconnectedSentence`
+    /// when it did not (build it with `playerDisconnected(detail:)`).
+    ///
+    /// **Not retried and never routed elsewhere.** Asking again cannot help and
+    /// playing through the MusicTUI path instead would be a silent provider
+    /// switch; the person is told, and relaunches SpanDAC.
+    case playerDisconnected(String)
     /// A SpanDAC on the network could not be found, reached, agreed with or
     /// read from. Carries the structured reason, so the Output tab can show a
     /// short note and everything else the whole sentence.
     case link(SpanDACLinkFailure)
+
+    /// What a person reads when SpanDAC says `player_disconnected` and sends no
+    /// sentence of its own (or an empty one).
+    static let playerDisconnectedSentence =
+        "SpanDAC lost its connection to macOS's music player. Relaunch SpanDAC to play again."
+
+    /// `player_disconnected`, with SpanDAC's own words when it sent any.
+    static func playerDisconnected(detail: String?) -> SourceAppError {
+        let text = detail?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return .playerDisconnected(text.isEmpty ? playerDisconnectedSentence : text)
+    }
 
     /// Deliberately short: it renders inside Radio's one-line message strip
     /// beside a `✗`, not in a log.
@@ -105,6 +126,9 @@ enum SourceAppError: Error, Equatable {
         case .unsupported: return "SpanDAC doesn't serve that yet — update SpanDAC"
         case .ledgerChanged: return "SpanDAC's play record was replaced"
         case .busy: return "SpanDAC is busy; try again in a moment."
+        // The whole sentence, with no "SpanDAC refused:" in front of it: the
+        // fix is to relaunch SpanDAC, and the sentence already says so.
+        case .playerDisconnected(let sentence): return sentence
         case .link(let failure): return failure.sentence
         }
     }
@@ -116,11 +140,12 @@ enum SourceAppError: Error, Equatable {
     /// added to `decodeSearchReply` alone first, then had to be found and
     /// duplicated into `play`, which is exactly the drift this guards
     /// against next time.
-    static func fromSimpleFailureKind(_ kind: String?, detail: String) -> SourceAppError {
+    static func fromSimpleFailureKind(_ kind: String?, detail: String?) -> SourceAppError {
         switch kind {
-        case "unauthorized": return .notAuthorized
-        case "busy":          return .busy
-        default:              return .refused(detail)
+        case "unauthorized":        return .notAuthorized
+        case "busy":                return .busy
+        case "player_disconnected": return .playerDisconnected(detail: detail)
+        default:                    return .refused(detail ?? "no detail")
         }
     }
 }
@@ -210,8 +235,7 @@ struct SourceAppStationSearch: StationSearching {
         }
 
         guard reply.ok else {
-            throw SourceAppError.fromSimpleFailureKind(reply.error?.kind,
-                                                        detail: reply.error?.detail ?? "no detail")
+            throw SourceAppError.fromSimpleFailureKind(reply.error?.kind, detail: reply.error?.detail)
         }
 
         // A missing `stations` key on an ok reply is a contract violation, not
@@ -430,8 +454,12 @@ struct SourceAppPlayback: SourcePlaying {
         }
 
         guard reply.ok else {
-            throw SourceAppError.fromSimpleFailureKind(reply.error?.kind,
-                                                        detail: reply.error?.detail ?? "no detail")
+            // A refusal with no detail has always been an unreadable reply;
+            // only `player_disconnected` may omit it.
+            if let failure = reply.error, failure.detail == nil, failure.kind != "player_disconnected" {
+                throw SourceAppError.unreadable
+            }
+            throw SourceAppError.fromSimpleFailureKind(reply.error?.kind, detail: reply.error?.detail)
         }
 
         // `ok` alone is not the answer. Before 2026-09-13 the app reported a
@@ -454,7 +482,9 @@ struct SourceAppPlayback: SourcePlaying {
     private struct PlayReply: Decodable {
         struct Failure: Decodable {
             let kind: String
-            let detail: String
+            /// Required for every kind but `player_disconnected`, whose
+            /// sentence has a fallback here (see `play`).
+            let detail: String?
         }
         struct Status: Decodable {
             let playback: String
@@ -617,6 +647,11 @@ struct SourceStatus: Equatable {
     /// "off" | "one" | "all" as the app sends it; anything else is nil.
     var repeatMode: String? = nil
     var capabilities: [String] = []
+    /// `slice.status`'s optional `"player":"disconnected"`: SpanDAC has lost its
+    /// connection to macOS's music player and only a relaunch fixes it. Absent
+    /// (an older SpanDAC), or any other value, is false: this build knows one
+    /// word and ignores the rest. Already folded into `readiness`.
+    var playerDisconnected: Bool = false
 }
 
 /// The wire ops for SpanDAC's own shuffle and repeat.
@@ -943,7 +978,14 @@ struct SourceAppControl: SourceControlling {
                             nextRows: (status["next_rows"] as? [Any]).map { $0.compactMap(Self.index).prefix(Self.nextRowsSanityCap).map { $0 } },
                             shuffle: Self.bool(status["shuffle"]),
                             repeatMode: (status["repeat"] as? String).flatMap { RepeatMode(rawValue: $0) }?.rawValue,
-                            capabilities: status["capabilities"] as? [String] ?? [])
+                            capabilities: status["capabilities"] as? [String] ?? [],
+                            playerDisconnected: Self.playerIsDisconnected(status))
+    }
+
+    /// True only for the exact word `disconnected`; absent, null, any other
+    /// string or any other type is "fine" (an older SpanDAC never sends it).
+    static func playerIsDisconnected(_ status: [String: Any]) -> Bool {
+        (status["player"] as? String) == "disconnected"
     }
 
     /// Not a product limit: SpanDAC sends every upcoming row. This only stops a
@@ -1467,7 +1509,12 @@ struct SourceAppControl: SourceControlling {
         default:               return .unavailable("SpanDAC could not read its Apple Music access")
         }
         switch Self.outputInfo(from: status)?.dac {
-        case nil, .connected?: return .ready
+        case nil, .connected?:
+            // Last, so a reason a person can act on first (no Apple Music
+            // access, no DAC) is the one the row says. The Output tab shows
+            // this as the row's reason, the same sentence a failed play prints.
+            return Self.playerIsDisconnected(status)
+                ? .unavailable(SourceAppError.playerDisconnectedSentence) : .ready
         case .notConnected?:   return .unavailable("plug in your DAC")
         case .unknown?:        return .unavailable("SpanDAC is still checking for a DAC")
         }
@@ -1551,6 +1598,12 @@ struct SourceAppControl: SourceControlling {
                 // Carries the op name, not the prose, so the caller can say
                 // which capability is missing rather than "SpanDAC refused".
                 throw SourceAppError.unsupported(op)
+            case "player_disconnected":
+                // Decoded on the kind, and NOT retried: `mutate` re-sends only
+                // a `warming`, so this reaches the person as the one sentence.
+                // `error?["detail"]` rather than `detail`, whose "no detail"
+                // stands in for a missing one and must not be shown.
+                throw SourceAppError.playerDisconnected(detail: error?["detail"] as? String)
             case "unavailable":
                 // Addendum U (U-R4): "None of those songs are available to
                 // SpanDAC." and "'<title>' isn't available to SpanDAC." —
