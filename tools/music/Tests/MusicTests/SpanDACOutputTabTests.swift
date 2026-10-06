@@ -101,6 +101,8 @@ final class SpanDACOutputTabTests: XCTestCase {
     private let readyWithDAC = #"{"ok":true,"status":{"playback":"idle","authorization":"authorized","contract":3,"capabilities":[],"output":{"dac":"connected","name":"SSL 2+","max_rate_hz":192000}}}"#
     private let noDAC = #"{"ok":true,"status":{"playback":"idle","authorization":"authorized","contract":3,"capabilities":[],"output":{"dac":"not_connected"}}}"#
 
+    private let playerDisconnected = #"{"ok":true,"status":{"playback":"idle","authorization":"authorized","contract":3,"capabilities":[],"player":"disconnected"}}"#
+
     private final class Posts {
         private let lock = NSLock()
         private var _all: [(String, Bool)] = []
@@ -265,6 +267,20 @@ final class SpanDACOutputTabTests: XCTestCase {
         waitUntil { self.row(o, self.ipad)?.state != .checking }
         XCTAssertEqual(row(o, ipad)?.state, .notReady("plug in your DAC"))
         XCTAssertEqual(row(o, ipad)?.output?.dac, .notConnected)
+    }
+
+    /// An iPhone or iPad SpanDAC can lose its player too: its row reads not
+    /// ready with the same platform-neutral sentence a failed play prints.
+    func testAPlayerDisconnectedAnswerIsNotReadyOnTheNetworkRow() {
+        let pairs = store()
+        try! pairs.save(record(ipad, name: "Studio iPad"))
+        let o = outputs(pairs: pairs, reply: { _ in self.playerDisconnected })
+        o.activated()
+        waitUntil { self.row(o, self.ipad)?.state != .checking }
+        let sentence = "SpanDAC lost its connection to Apple Music's player. Relaunch SpanDAC to play again."
+        XCTAssertEqual(row(o, ipad)?.state, .notReady(sentence))
+        XCTAssertEqual(row(o, ipad)?.ready, false)
+        XCTAssertEqual(row(o, ipad)?.note, sentence)
     }
 
     /// C-FORGOT: a TLS -9864 on a probe means the SpanDAC no longer knows this

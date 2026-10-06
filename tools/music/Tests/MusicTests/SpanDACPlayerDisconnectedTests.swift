@@ -1,6 +1,6 @@
 // tools/music/Tests/MusicTests/SpanDACPlayerDisconnectedTests.swift
 //
-// SpanDAC can lose its connection to macOS's music player; only relaunching
+// SpanDAC can lose its connection to Apple Music's player; only relaunching
 // SpanDAC fixes it. It says so two ways (wire contract, fixed):
 //   - a play/queue refusal `{"ok":false,"error":{"kind":"player_disconnected","detail":...}}`
 //   - an optional `"player":"disconnected"` on `slice.status` (absent = fine).
@@ -15,7 +15,7 @@ import XCTest
 
 final class SpanDACPlayerDisconnectedTests: XCTestCase {
 
-    private let sentence = "SpanDAC lost its connection to macOS's music player. Relaunch SpanDAC to play again."
+    private let sentence = "SpanDAC lost its connection to Apple Music's player. Relaunch SpanDAC to play again."
 
     private func disconnected(op: String, detail: String? = nil) -> String {
         let d = detail.map { #","detail":"\#($0)""# } ?? ""
@@ -184,5 +184,62 @@ final class SpanDACPlayerDisconnectedTests: XCTestCase {
     func testTheOutputRowIsUnchangedWhenThePlayerIsNotMentioned() throws {
         let s = try status(player: nil)
         XCTAssertEqual(macSpanDACRowState(readiness: s.readiness, output: s.output), .ready)
+    }
+
+    // MARK: - Data and sound stay independent (ruling 2026-09-28)
+    //
+    // A SpanDAC whose player is disconnected still serves music DATA. The Output
+    // row says not ready (sound), and nothing about that may reach data.
+
+    private func statusWith(player: String = #""disconnected""#, authorization: String = "authorized",
+                            contract: Int = sourceContractVersion, output: String? = nil) throws -> SourceStatus {
+        let out = output.map { #","output":\#($0)"# } ?? ""
+        let reply = #"{"ok":true,"status":{"playback":"idle","authorization":"\#(authorization)","contract":\#(contract),"player":\#(player)\#(out)}}"#
+        return try SourceAppControl(path: "/nonexistent", transport: { _, _ in reply }).status()
+    }
+
+    func testDataReadinessIgnoresADisconnectedPlayer() throws {
+        let s = try statusWith()
+        XCTAssertEqual(s.readiness, .unavailable(sentence), "the Output row still says not ready")
+        XCTAssertEqual(s.dataReadiness, .ready, "data does not need the player")
+
+        // With a DAC reading that data already exempts, too.
+        for dac in [#"{"dac":"not_connected"}"#, #"{"dac":"unknown"}"#, #"{"dac":"connected","name":"X"}"#] {
+            XCTAssertEqual(try statusWith(output: dac).dataReadiness, .ready, dac)
+        }
+    }
+
+    func testDataReadinessStillFailsOnAccessAndContract() throws {
+        for authorization in ["denied", "not_determined", "restricted", "bogus"] {
+            let s = try statusWith(authorization: authorization)
+            XCTAssertNotEqual(s.dataReadiness, .ready, authorization)
+            XCTAssertEqual(s.dataReadiness, s.readiness, "\(authorization): its own reason, not the player's")
+        }
+        let mismatch = try statusWith(contract: sourceContractVersion + 1)
+        XCTAssertNotEqual(mismatch.dataReadiness, .ready)
+        if case .unavailable(let why) = mismatch.dataReadiness {
+            XCTAssertTrue(isSourceContractMismatch(why), why)
+        } else { XCTFail("a different contract is not ready for data") }
+    }
+
+    func testTheMacStartProbeReadsDataReadyWhileThePlayerIsDisconnected() {
+        func client(authorization: String = "authorized", contract: Int = sourceContractVersion) -> SourceAppClient {
+            let reply = #"{"ok":true,"status":{"playback":"idle","authorization":"\#(authorization)","contract":\#(contract),"player":"disconnected"}}"#
+            return SourceAppClient(path: "/nonexistent/probe.sock", transport: { _, _ in reply })
+        }
+        XCTAssertEqual(liveMacSpanDACProbe(client: client()), .ready)
+        XCTAssertEqual(liveMacSpanDACProbe(client: client(authorization: "denied")), .notAuthorized)
+        XCTAssertEqual(liveMacSpanDACProbe(client: client(contract: sourceContractVersion + 1)),
+                       .failed(macSpanDACNotCompatibleSentence))
+    }
+
+    func testTheCLIDataCheckAndTheMacRowAreReadyWhileThePlayerIsDisconnected() throws {
+        let reply = #"{"ok":true,"status":{"playback":"idle","authorization":"authorized","contract":\#(sourceContractVersion),"player":"disconnected"}}"#
+        let client = SourceAppClient(path: "/nonexistent/cli.sock", transport: { _, _ in reply })
+        XCTAssertEqual(cliDataReadiness(client), .ready)
+        XCTAssertEqual(client.readiness(), .unavailable(sentence), "playing is still refused")
+        let s = try statusWith()
+        XCTAssertEqual(macDataRowState(readiness: s.dataReadiness, installed: true, starting: false,
+                                       startOutcome: nil), .ready)
     }
 }

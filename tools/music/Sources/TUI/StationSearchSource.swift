@@ -76,7 +76,7 @@ enum SourceAppError: Error, Equatable {
     /// and the fix is to wait, not to change the request. No auto-retry
     /// here: the caller decides when to try again.
     case busy
-    /// SpanDAC lost its connection to macOS's music player, so nothing it is
+    /// SpanDAC lost its connection to Apple Music's player, so nothing it is
     /// asked to play can sound until SpanDAC is relaunched. Decoded on the
     /// KIND `player_disconnected`; carries the whole sentence to show, which is
     /// SpanDAC's own `detail` when it sent one and `playerDisconnectedSentence`
@@ -92,9 +92,10 @@ enum SourceAppError: Error, Equatable {
     case link(SpanDACLinkFailure)
 
     /// What a person reads when SpanDAC says `player_disconnected` and sends no
-    /// sentence of its own (or an empty one).
+    /// sentence of its own (or an empty one). Platform-neutral: an iPhone or
+    /// iPad SpanDAC can lose its player too.
     static let playerDisconnectedSentence =
-        "SpanDAC lost its connection to macOS's music player. Relaunch SpanDAC to play again."
+        "SpanDAC lost its connection to Apple Music's player. Relaunch SpanDAC to play again."
 
     /// `player_disconnected`, with SpanDAC's own words when it sent any.
     static func playerDisconnected(detail: String?) -> SourceAppError {
@@ -652,6 +653,11 @@ struct SourceStatus: Equatable {
     /// (an older SpanDAC), or any other value, is false: this build knows one
     /// word and ignores the rest. Already folded into `readiness`.
     var playerDisconnected: Bool = false
+    /// `readiness` as it reads with the player left out: authorization, contract
+    /// and DAC only. Nil on a status built by hand, which reads as `readiness`.
+    /// `dataReadiness` starts from this, so a disconnected player (a sound
+    /// problem) can never make SpanDAC unfit to serve music data.
+    var readinessIgnoringPlayer: SourceReadiness? = nil
 }
 
 /// The wire ops for SpanDAC's own shuffle and repeat.
@@ -676,13 +682,19 @@ extension SourceStatus {
     /// together with the DAC state that produces them. That function checks
     /// the contract and access BEFORE the DAC, so either problem still reads
     /// as not ready here.
+    ///
+    /// **The player is left out structurally**, not by matching its sentence:
+    /// this starts from `readinessIgnoringPlayer`, computed from the same
+    /// status without the player check. Data and sound are independent
+    /// (2026-09-28); a SpanDAC whose player is disconnected still serves data.
     var dataReadiness: SourceReadiness {
-        switch (output?.dac, readiness) {
+        let basis = readinessIgnoringPlayer ?? readiness
+        switch (output?.dac, basis) {
         case (.notConnected?, .unavailable("plug in your DAC")),
              (.unknown?, .unavailable("SpanDAC is still checking for a DAC")):
             return .ready
         default:
-            return readiness
+            return basis
         }
     }
 }
@@ -979,7 +991,8 @@ struct SourceAppControl: SourceControlling {
                             shuffle: Self.bool(status["shuffle"]),
                             repeatMode: (status["repeat"] as? String).flatMap { RepeatMode(rawValue: $0) }?.rawValue,
                             capabilities: status["capabilities"] as? [String] ?? [],
-                            playerDisconnected: Self.playerIsDisconnected(status))
+                            playerDisconnected: Self.playerIsDisconnected(status),
+                            readinessIgnoringPlayer: readiness(from: status, includingPlayer: false))
     }
 
     /// True only for the exact word `disconnected`; absent, null, any other
@@ -1497,7 +1510,7 @@ struct SourceAppControl: SourceControlling {
     /// one that has not read its DAC yet: not ready, so the routing transaction
     /// and the CLI refuse it too. SpanDAC is DAC-only, and an unknown output
     /// must never fall through to a speaker.
-    func readiness(from status: [String: Any]) -> SourceReadiness {
+    func readiness(from status: [String: Any], includingPlayer: Bool = true) -> SourceReadiness {
         if let contract = status["contract"] as? Int, contract != sourceContractVersion {
             return .unavailable(sourceContractMismatchReason(contract))
         }
@@ -1513,7 +1526,7 @@ struct SourceAppControl: SourceControlling {
             // Last, so a reason a person can act on first (no Apple Music
             // access, no DAC) is the one the row says. The Output tab shows
             // this as the row's reason, the same sentence a failed play prints.
-            return Self.playerIsDisconnected(status)
+            return includingPlayer && Self.playerIsDisconnected(status)
                 ? .unavailable(SourceAppError.playerDisconnectedSentence) : .ready
         case .notConnected?:   return .unavailable("plug in your DAC")
         case .unknown?:        return .unavailable("SpanDAC is still checking for a DAC")

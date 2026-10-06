@@ -342,7 +342,7 @@ final class SpeakersScene: Scene {
 
     /// This Mac's row before the switch.
     private var macDataState: MacDataRowState {
-        macDataRowState(readiness: bridgeReadiness, installed: macInstalled,
+        macDataRowState(readiness: bridgeDataReadiness, installed: macInstalled,
                         starting: startInFlight, startOutcome: startOutcome)
     }
 
@@ -401,11 +401,16 @@ final class SpeakersScene: Scene {
     /// Bridge's own last-reported state. Owned by the main loop and written ONLY
     /// in `tick()`; background work posts to `inboxReadiness` instead.
     private var bridgeReadiness: SourceReadiness = .checking
+    /// The same status read for music DATA (`SourceStatus.dataReadiness`): the
+    /// DAC and the player are the output's concern, never the data's. Written
+    /// with `bridgeReadiness`, by `tick()` only.
+    private var bridgeDataReadiness: SourceReadiness = .checking
     /// What the Mac's SpanDAC last said about its DAC; written with
     /// `bridgeReadiness`, by `tick()` only.
     private var macOutput: SourceOutputInfo? = nil
     private let readinessLock = NSLock()
-    private var inboxReadiness: (readiness: SourceReadiness, output: SourceOutputInfo?, installed: Bool?)? = nil   // guarded by readinessLock
+    private var inboxReadiness: (readiness: SourceReadiness, data: SourceReadiness,
+                                 output: SourceOutputInfo?, installed: Bool?)? = nil   // guarded by readinessLock
     private var readinessInFlight = false
     private var lastReadinessKick = Date.distantPast   // clock(), tick()-thread only
     private var lastCountdownSecond = 0                // tick()-thread only
@@ -463,7 +468,7 @@ final class SpeakersScene: Scene {
     /// Test-only: lands a Mac status in the inbox exactly as a probe would,
     /// so a test can set the DAC the Mac reports without a socket.
     func deliverMacStatusForTest(readiness: SourceReadiness, output: SourceOutputInfo?) {
-        publishReadiness(readiness, output: output)
+        publishReadiness(readiness, data: macDataReadiness(readiness), output: output)
     }
 
     /// The pairing Enter started, and the output epoch at that moment: a pair
@@ -539,22 +544,24 @@ final class SpeakersScene: Scene {
     /// version wrote `bridgeReadiness` directly from `ActionRunner`'s background
     /// queue while `render` read it on the main loop — a data race that happened
     /// to be invisible because the write never ran at all.
-    private func publishReadiness(_ readiness: SourceReadiness, output: SourceOutputInfo?,
-                                  installed: Bool? = nil) {
+    private func publishReadiness(_ readiness: SourceReadiness, data: SourceReadiness,
+                                  output: SourceOutputInfo?, installed: Bool? = nil) {
         readinessLock.lock()
-        inboxReadiness = (readiness, output, installed)
+        inboxReadiness = (readiness, data, output, installed)
         readinessLock.unlock()
     }
 
     /// One status read of the Mac's SpanDAC: its readiness and its DAC. The
     /// readiness is exactly what `SourceAppClient.readiness()` answers; the
     /// status is read once so the DAC comes from the same answer.
-    private static func readMacStatus(_ client: SourceAppClient) -> (SourceReadiness, SourceOutputInfo?) {
+    private static func readMacStatus(_ client: SourceAppClient)
+        -> (readiness: SourceReadiness, data: SourceReadiness, output: SourceOutputInfo?) {
         do {
             let status = try client.control.status()
-            return (status.readiness, status.output)
+            return (status.readiness, status.dataReadiness, status.output)
         } catch {
-            return (SourceReadiness.from(error), nil)
+            let readiness = SourceReadiness.from(error)
+            return (readiness, readiness, nil)
         }
     }
 
@@ -574,11 +581,12 @@ final class SpeakersScene: Scene {
         let make = makeSourceClient
         let starter = routing.macStarter
         DispatchQueue.global().async { [weak self] in
-            let (readiness, output) = Self.readMacStatus(make())
+            let (readiness, data, output) = Self.readMacStatus(make())
             // Installed: LaunchServices or its socket knows it, or it just
             // answered. Asking never starts it.
             let answered = readiness != .checking && readiness != .notRunning
-            self?.publishReadiness(readiness, output: output, installed: answered || starter.isInstalled)
+            self?.publishReadiness(readiness, data: data, output: output,
+                                   installed: answered || starter.isInstalled)
         }
     }
 
@@ -652,7 +660,7 @@ final class SpeakersScene: Scene {
             guard let self else { return }
             defer { self.dataActionFinishedForTest?() }
             let result = try self.routing.acceptSpanDACData(readiness: {
-                macDataReadiness(Self.readMacStatus(make()).0)
+                macDataReadiness(Self.readMacStatus(make()).data)
             })
             if case .switched = result { self.status.post(switchedToSpanDACData) }
         }
@@ -800,8 +808,8 @@ final class SpeakersScene: Scene {
                     self.spandac?.probe(id)
                     self.status.post("Output: SpanDAC · \(targetName ?? "on the network")")
                 case .source, .musicApp:
-                    let (readiness, output) = Self.readMacStatus(client)
-                    self.publishReadiness(readiness, output: output)
+                    let (readiness, data, output) = Self.readMacStatus(client)
+                    self.publishReadiness(readiness, data: data, output: output)
                     self.status.post(mode == .source ? "Output: SpanDAC · \(self.macName)" : "Output: \(musicTUIOutputName)")
                 }
             }
@@ -834,8 +842,10 @@ final class SpeakersScene: Scene {
         readinessLock.unlock()
         if let freshReadiness {
             readinessInFlight = false
-            if freshReadiness.readiness != bridgeReadiness || freshReadiness.output != macOutput {
+            if freshReadiness.readiness != bridgeReadiness || freshReadiness.data != bridgeDataReadiness
+                || freshReadiness.output != macOutput {
                 bridgeReadiness = freshReadiness.readiness
+                bridgeDataReadiness = freshReadiness.data
                 macOutput = freshReadiness.output
                 changed = true
             }
@@ -844,7 +854,7 @@ final class SpeakersScene: Scene {
                 changed = true
             }
             // A status that reads ready for music data ends a failed start.
-            if startOutcome != nil, macDataReadiness(bridgeReadiness) == .ready {
+            if startOutcome != nil, macDataReadiness(bridgeDataReadiness) == .ready {
                 startOutcome = nil
                 changed = true
             }
@@ -855,7 +865,7 @@ final class SpeakersScene: Scene {
         // asked (every install from before the data route included: no
         // migration). After Esc, only Enter on this Mac's row shows it.
         if !switchScreenAutoShown, !dataSwitched, routing.ceremony == .neverShown,
-           macDataReadiness(bridgeReadiness) == .ready {
+           macDataReadiness(bridgeDataReadiness) == .ready {
             switchScreenAutoShown = true
             showingSwitchScreen = true
             changed = true

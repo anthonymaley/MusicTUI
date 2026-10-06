@@ -308,6 +308,24 @@ final class SpanDACSwitchOutputTabTests: XCTestCase {
         XCTAssertEqual(bytes("mode.json"), modeBefore)
     }
 
+    /// Data and sound are independent (2026-09-28): a SpanDAC whose player is
+    /// disconnected still serves music data, so the switch screen shows and
+    /// Enter accepts it. Only the sound side is not ready.
+    func testAPlayerDisconnectedSpanDACStillOffersAndAcceptsMusicData() {
+        let disconnected: () throws -> String = {
+            #"{"ok":true,"status":{"playback":"idle","authorization":"authorized","contract":3,"capabilities":[],"player":"disconnected"}}"#
+        }
+        let s = scene(data: .none, answer: MacAnswer(disconnected))
+        XCTAssertTrue(tick(s) { s.isShowingSwitchScreen }, "the Mac reads ready for data")
+        XCTAssertEqual(s.bridgeReadinessForTest,
+                       .unavailable("SpanDAC lost its connection to Apple Music's player. Relaunch SpanDAC to play again."),
+                       "the Output side still reads not ready")
+        let finished = watchData(s)
+        XCTAssertEqual(s.handle(.enter), .redraw)
+        XCTAssertTrue(wait { finished.count == 1 })
+        XCTAssertEqual(data().0, .spandacMac, "data switched to SpanDAC")
+    }
+
     func testEscDeclinesAndEnterOnTheMacRowAsksAgain() {
         let s = scene(data: .none, answer: MacAnswer(ready))
         XCTAssertTrue(tick(s) { s.isShowingSwitchScreen })
