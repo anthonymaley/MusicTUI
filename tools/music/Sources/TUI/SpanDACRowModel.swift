@@ -20,6 +20,12 @@ struct SourceOutputInfo: Equatable {
     let name: String?
     /// Only where the device measures it.
     let maxRateHz: Int?
+    /// `output.switchable == true` beside `dac == .notConnected`: the chosen
+    /// DAC is plugged in and merely not the Mac's sound output, so SpanDAC makes
+    /// it the output when asked. `name` and `maxRateHz` then describe that DAC.
+    /// False for everything else, including a reply from an older SpanDAC:
+    /// genuinely no DAC.
+    var switchable: Bool = false
 }
 
 /// The Output tab's state for one SpanDAC row.

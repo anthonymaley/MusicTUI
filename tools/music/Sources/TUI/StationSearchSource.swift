@@ -569,13 +569,7 @@ struct SourceAppClient {
     /// defect.
     func readiness() -> SourceReadiness {
         do {
-            let readiness = try control.status().readiness
-            // Thin slice (Anthony 2026-10-05 16:57/17:23): on this Mac, a DAC that is
-            // plugged in but not the sound output is SpanDAC's to switch when a play
-            // starts, so it no longer blocks the play here. SpanDAC still refuses
-            // in its own words when there is no DAC to switch to.
-            if readiness == .unavailable("plug in your DAC") { return .ready }
-            return readiness
+            return try control.status().readiness
         } catch {
             return SourceReadiness.from(error)
         }
@@ -1521,11 +1515,20 @@ struct SourceAppControl: SourceControlling {
         case "restricted":     return .unavailable("Apple Music access is restricted on this Mac")
         default:               return .unavailable("SpanDAC could not read its Apple Music access")
         }
-        switch Self.outputInfo(from: status)?.dac {
+        let output = Self.outputInfo(from: status)
+        switch output?.dac {
         case nil, .connected?:
             // Last, so a reason a person can act on first (no Apple Music
             // access, no DAC) is the one the row says. The Output tab shows
             // this as the row's reason, the same sentence a failed play prints.
+            return includingPlayer && Self.playerIsDisconnected(status)
+                ? .unavailable(SourceAppError.playerDisconnectedSentence) : .ready
+        case .notConnected? where output?.switchable == true:
+            // The chosen DAC is plugged in and merely not the sound output
+            // (Anthony 2026-10-05 17:23): choosing it makes it the output, so it
+            // is as ready as a connected one, player check included. Only an
+            // explicit `switchable: true` gets here; absent, false or unreadable
+            // is genuinely no DAC, below.
             return includingPlayer && Self.playerIsDisconnected(status)
                 ? .unavailable(SourceAppError.playerDisconnectedSentence) : .ready
         case .notConnected?:   return .unavailable("plug in your DAC")
@@ -1535,8 +1538,11 @@ struct SourceAppControl: SourceControlling {
 
     /// The optional `output` object of `slice.status`: `dac` is `connected`,
     /// `not_connected` or `unknown`; `name` and `max_rate_hz` only beside a
-    /// connected DAC. No key (or null) is nil. A key this build cannot read
-    /// is `unknown`, never connected.
+    /// connected DAC, or beside `not_connected` with `switchable: true` (a DAC
+    /// plugged in but not the Mac's output). `switchable` is read only as a real
+    /// JSON `true`, only beside `not_connected`: anything else is false. No key
+    /// (or null) is nil. A key this build cannot read is `unknown`, never
+    /// connected.
     static func outputInfo(from status: [String: Any]) -> SourceOutputInfo? {
         guard let raw = status["output"], !(raw is NSNull) else { return nil }
         guard let output = raw as? [String: Any] else {
@@ -1547,7 +1553,11 @@ struct SourceAppControl: SourceControlling {
             return SourceOutputInfo(dac: .connected, name: output["name"] as? String,
                                     maxRateHz: output["max_rate_hz"] as? Int)
         case "not_connected":
-            return SourceOutputInfo(dac: .notConnected, name: nil, maxRateHz: nil)
+            guard bool(output["switchable"]) == true else {
+                return SourceOutputInfo(dac: .notConnected, name: nil, maxRateHz: nil)
+            }
+            return SourceOutputInfo(dac: .notConnected, name: output["name"] as? String,
+                                    maxRateHz: output["max_rate_hz"] as? Int, switchable: true)
         default:
             return SourceOutputInfo(dac: .unknown, name: nil, maxRateHz: nil)
         }

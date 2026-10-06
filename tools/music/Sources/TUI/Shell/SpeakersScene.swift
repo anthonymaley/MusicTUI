@@ -118,8 +118,11 @@ func macSpanDACRowState(readiness: SourceReadiness, output: SourceOutputInfo?) -
     if readiness == .checking { return .checking }
     switch output?.dac {
     case .unknown?: return .checking
-    case .notConnected?: return .notReady("plug in your DAC")
-    case .connected?, nil: break
+    case .notConnected? where output?.switchable != true: return .notReady("plug in your DAC")
+    // A DAC that is plugged in but not the sound output (`switchable`) is
+    // selectable: choosing it makes it the Mac's output. It is as ready as
+    // `readiness` says, no more.
+    case .notConnected?, .connected?, nil: break
     }
     switch readiness {
     case .ready: return .ready
@@ -168,6 +171,12 @@ func spandacRowDetail(state: SpanDACRowState, output: SourceOutputInfo?, device:
         return SpanDACRowDetail(text: output?.dac == .unknown ? "checking the DAC" : "checking\u{2026}",
                                 tone: .neutral)
     case .ready:
+        if isThisMac, let output, output.dac == .notConnected, output.switchable {
+            let rate = output.maxRateHz.map(formatSampleRate)
+            let name = [output.name, rate].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " \u{00B7} ")
+            return SpanDACRowDetail(text: "\(name.isEmpty ? "your DAC" : name)  select to make it the Mac's output",
+                                    tone: .neutral)
+        }
         let dac = spandacOutputDetail(output)
         return SpanDACRowDetail(text: dac.isEmpty ? "ready" : "ready  \(dac)", tone: .ready)
     case .notPaired(let pairable):

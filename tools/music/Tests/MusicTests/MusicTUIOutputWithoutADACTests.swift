@@ -84,7 +84,6 @@ final class MusicTUIOutputWithoutADACTests: XCTestCase {
     /// and the MusicTUI output stays selected. The same status is ready for
     /// music data.
     func testPlayingOnASpanDACOutputStillNeedsItsDAC() throws {
-        throw XCTSkip("slice/dac-ready (2026-10-05): a Mac DAC that is not the sound output no longer blocks here; SpanDAC switches it at play start. Rewrite at harden.")
         let rig = SceneDataRig(output: .musicApp, accepted: true)
         rig.replies["slice.status"] = noDACStatus
         let routing = rig.coordinator()
