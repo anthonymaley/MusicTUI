@@ -248,12 +248,31 @@ final class PlaylistsScene: Scene {
     static let bridgePreviewRest: TimeInterval = 0.25
     /// The row the cursor is on and when it arrived there (tick-thread only).
     private var bridgePreviewRest: (id: String, since: Date)? = nil
-    /// The playlist id the rail is on, as of the last tick — what a queued
-    /// preview read checks, from the preview queue, when it reaches the front.
-    /// Guarded by `bridgeWantedLock`; `currentBridgeRow()` itself is
-    /// tick-thread state and must not be read from the queue.
-    private var bridgeWantedPreviewID: String? = nil
+    /// What a queued preview read must still be true of when it reaches the
+    /// front of `previewQueue`: the rail row, the scene's rail epoch, and a
+    /// generation bumped by every action that leaves the preview context. It is
+    /// published (nil when the pane is not live: rail focus lost, layout not
+    /// three-zone, not a Bridge rail) from `tick`, and cleared synchronously by
+    /// `invalidateBridgePreview()`. `currentBridgeRow()` is tick-thread state and
+    /// must not be read from the queue.
+    private struct BridgePreviewToken: Equatable {
+        let id: String
+        let epoch: Int
+        let generation: Int
+    }
+    private var bridgePreviewToken: BridgePreviewToken? = nil
+    private var bridgePreviewGeneration = 0
     private let bridgeWantedLock = NSLock()
+    /// The actions that leave the preview context (drill-in, p/s/Enter plays,
+    /// leaving the scene) call this on the spot, so a read already queued for
+    /// the same row cannot be sent after them. The next `tick` publishes a fresh
+    /// token if the pane is live again, so resting on the rail still previews.
+    private func invalidateBridgePreview() {
+        bridgeWantedLock.lock()
+        bridgePreviewGeneration += 1
+        bridgePreviewToken = nil
+        bridgeWantedLock.unlock()
+    }
     private enum BridgePreviewOutcome {
         case success(rows: [MusicRow], total: Int, skippedVideos: Int)
         case failure(String)
@@ -801,8 +820,14 @@ final class PlaylistsScene: Scene {
         // tracks feed above is the live read) and only in three-zone layout,
         // where the pane is actually shown.
         let wantedRow: MusicRow? = railSource == .bridge ? currentBridgeRow() : nil
-        bridgeWantedLock.lock(); bridgeWantedPreviewID = wantedRow?.id; bridgeWantedLock.unlock()
-        if railSource == .bridge, focus == .playlists, z.mode == .three, let row = wantedRow {
+        var previewToken: BridgePreviewToken? = nil
+        bridgeWantedLock.lock()
+        if let row = wantedRow, focus == .playlists, z.mode == .three {
+            previewToken = BridgePreviewToken(id: row.id, epoch: railEpoch, generation: bridgePreviewGeneration)
+        }
+        bridgePreviewToken = previewToken
+        bridgeWantedLock.unlock()
+        if railSource == .bridge, focus == .playlists, z.mode == .three, let row = wantedRow, let token = previewToken {
             let pid = row.id
             if bridgePreview[pid] == nil, bridgePreviewFailure[pid] == nil, !bridgePreviewInFlight.contains(pid),
                let provider = makeProvider() {
@@ -820,7 +845,7 @@ final class PlaylistsScene: Scene {
                         // be previewed if the cursor comes back.
                         guard let self else { return }
                         self.bridgeWantedLock.lock()
-                        let stillWanted = self.bridgeWantedPreviewID == pid
+                        let stillWanted = self.bridgePreviewToken == token
                         self.bridgeWantedLock.unlock()
                         guard stillWanted else {
                             self.previewInboxLock.lock()
@@ -998,6 +1023,7 @@ final class PlaylistsScene: Scene {
                 focus = .playlists
                 return .redraw
             }
+            invalidateBridgePreview()
             return .pop
         case .escape:
             if focus == .tracks {
@@ -1005,6 +1031,7 @@ final class PlaylistsScene: Scene {
                 focus = .playlists
                 return .redraw
             }
+            invalidateBridgePreview()
             return .pop
         // C2 item 6: Bridge's own retry, only while a failure is showing —
         // resets and restarts only the Bridge feed, never the Music.app
@@ -1065,6 +1092,7 @@ final class PlaylistsScene: Scene {
     /// open re-reads live (D2), even a second drill-in of the same playlist.
     private func drillBridgePlaylist() {
         guard let row = currentBridgeRow() else { return }
+        invalidateBridgePreview()
         let pid = row.id
         focus = .tracks
         trCursor = 0; trScroll = 0
@@ -1103,6 +1131,7 @@ final class PlaylistsScene: Scene {
     private func playBridgePlaylist(playlistID: String, name: String, shuffle: Bool, startAt: Int,
                                     startRequired: Bool, rows: [MusicRow]?, skippedVideos: Int?,
                                     listRev: String? = nil) {
+        invalidateBridgePreview()
         let makeProvider = self.makeProvider
         let routing = self.routing
         let status = self.status

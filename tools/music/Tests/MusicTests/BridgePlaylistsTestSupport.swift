@@ -60,6 +60,7 @@ func playlistsTestScene(flag: BridgeSelectedFlag, wire: BridgeLibraryReadsWire, 
                         warmUpSleep: @escaping (TimeInterval) -> Void = { _ in },
                         width: Int = 138,
                         now: @escaping () -> Date = Date.init,
+                        widthProvider: (() -> Int)? = nil,
                         routing given: RoutingCoordinator? = nil) -> PlaylistsScene {
     // `names` (this construction's own `playlists:`) and `spy.names` (what a
     // LATER async reload answers) are different concerns — only set the spy's
@@ -87,7 +88,7 @@ func playlistsTestScene(flag: BridgeSelectedFlag, wire: BridgeLibraryReadsWire, 
                           now: now,
                           // Injected (rule 15/D10): tests never depend on the
                           // real terminal. 138 defaults to three-zone.
-                          screenWidth: { width })
+                          screenWidth: widthProvider ?? { width })
 }
 
 @discardableResult

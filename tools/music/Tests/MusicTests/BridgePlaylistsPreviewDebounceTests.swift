@@ -162,4 +162,110 @@ final class BridgePlaylistsPreviewDebounceTests: XCTestCase {
                       "the play waited behind the blocked preview read")
         wire.release(op: "slice.libraryPlaylistTracks", at: 0)
     }
+
+    // MARK: - A queued preview is dropped when the preview context ends on the SAME row
+
+    /// Preview reads only: the drill-in and a play walk with a larger limit.
+    private func previewReadIDs(_ wire: BridgeLibraryReadsWire) -> [String] {
+        wire.sent("slice.libraryPlaylistTracks")
+            .filter { ($0["limit"] as? Int) == PlaylistsScene.bridgePreviewLimit }
+            .compactMap { $0["id"] as? String }
+    }
+
+    /// pl0's preview blocks the serial queue; the cursor rests on pl1, so its
+    /// preview is queued behind. Then `leave` ends the preview context while the
+    /// cursor stays on pl1. Releasing the gate must not send pl1's preview.
+    /// The scene is NOT ticked after the release: a tick would legitimately
+    /// re-preview pl1 as a fresh read, which is not what is being asked.
+    private func assertQueuedPreviewDropped(after leave: (PlaylistsScene) -> Void, _ what: String,
+                                            file: StaticString = #filePath, line: UInt = #line) {
+        let wire = BridgeLibraryReadsWire(["slice.libraryPlaylists": [playlistsPage(4)],
+                                           "slice.queue": ["{\"ok\":true,\"op\":\"slice.queue\"}"],
+                                           "slice.status": ["{\"ok\":true,\"op\":\"slice.status\",\"status\":{\"playback\":\"playing\"}}"]])
+        wire.script("slice.libraryPlaylistTracks", (0..<8).map { _ in tracksPage() })
+        wire.gate(op: "slice.libraryPlaylistTracks", at: 0)
+        let clock = Clock()
+        let s = scene(rows: 4, wire: wire, clock: clock)
+        clock.advance(0.5)
+        XCTAssertTrue(settleScene(s) { wire.reached(op: "slice.libraryPlaylistTracks", at: 0) },
+                      "pl0's read never started", file: file, line: line)
+        _ = s.handle(.down)
+        clock.advance(0.5); tickAndLetReadsRun(s, times: 3)
+        clock.advance(0.5); tickAndLetReadsRun(s, times: 3)   // pl1's preview is now queued
+        leave(s)
+        wire.release(op: "slice.libraryPlaylistTracks", at: 0)
+        usleep(400_000)
+        XCTAssertEqual(previewReadIDs(wire), ["pl0"], what, file: file, line: line)
+    }
+
+    func testAQueuedPreviewIsDroppedAfterDrillingIntoTheSameRow() {
+        assertQueuedPreviewDropped(after: { _ = $0.handle(.right) },
+                                   "a queued preview was sent after the cursor drilled into its row")
+    }
+
+    func testAQueuedPreviewIsDroppedAfterEnterDrillsIntoTheSameRow() {
+        assertQueuedPreviewDropped(after: { _ = $0.handle(.enter) },
+                                   "a queued preview was sent after Enter drilled into its row")
+    }
+
+    func testAQueuedPreviewIsDroppedAfterPPlaysThatRow() {
+        assertQueuedPreviewDropped(after: { _ = $0.handle(.char("p")) },
+                                   "a queued preview was sent after p played its row")
+    }
+
+    func testAQueuedPreviewIsDroppedAfterSPlaysThatRow() {
+        assertQueuedPreviewDropped(after: { _ = $0.handle(.char("s")) },
+                                   "a queued preview was sent after s played its row")
+    }
+
+    func testAQueuedPreviewIsDroppedAfterLeavingTheScene() {
+        assertQueuedPreviewDropped(after: { _ = $0.handle(.escape) },
+                                   "a queued preview was sent after the scene was left")
+        assertQueuedPreviewDropped(after: { _ = $0.handle(.left) },
+                                   "a queued preview was sent after ← left the scene")
+    }
+
+    func testAQueuedPreviewIsDroppedWhenTheLayoutStopsBeingThreeZone() {
+        let width = ThreadSafeInt(160)
+        let wire = BridgeLibraryReadsWire(["slice.libraryPlaylists": [playlistsPage(4)]])
+        wire.script("slice.libraryPlaylistTracks", (0..<8).map { _ in tracksPage() })
+        wire.gate(op: "slice.libraryPlaylistTracks", at: 0)
+        let clock = Clock()
+        let s = playlistsTestScene(flag: BridgeSelectedFlag(true), wire: wire, spy: PlaylistAppleScriptSpy(),
+                                   width: 160, now: clock.now, widthProvider: { width.value })
+        XCTAssertTrue(settleScene(s) { s.render(frame: self.threeZoneFrame, snapshot: self.idle).contains("Playlist 0") })
+        clock.advance(0.5)
+        XCTAssertTrue(settleScene(s) { wire.reached(op: "slice.libraryPlaylistTracks", at: 0) })
+        _ = s.handle(.down)
+        clock.advance(0.5); tickAndLetReadsRun(s, times: 3)
+        clock.advance(0.5); tickAndLetReadsRun(s, times: 3)   // pl1 queued
+        width.value = 120                                      // two-zone: the pane is gone
+        tickAndLetReadsRun(s, times: 3)
+        wire.release(op: "slice.libraryPlaylistTracks", at: 0)
+        usleep(400_000)
+        XCTAssertEqual(previewReadIDs(wire), ["pl0"], "a queued preview was sent after the layout dropped the pane")
+    }
+
+    func testRestingOnTheRailAfterAPlayStillPreviewsAFreshRead() {
+        let wire = BridgeLibraryReadsWire(["slice.libraryPlaylists": [playlistsPage(2)],
+                                           "slice.queue": ["{\"ok\":true,\"op\":\"slice.queue\"}"],
+                                           "slice.status": ["{\"ok\":true,\"op\":\"slice.status\",\"status\":{\"playback\":\"playing\"}}"]])
+        wire.script("slice.libraryPlaylistTracks", (0..<8).map { _ in tracksPage() })
+        let clock = Clock()
+        let s = scene(rows: 2, wire: wire, clock: clock)
+        _ = s.handle(.char("p"))
+        clock.advance(0.5)
+        XCTAssertTrue(settleScene(s) { self.previewReadIDs(wire).contains("pl0") },
+                      "invalidating on a play left the rail unable to preview ever again")
+    }
+}
+
+final class ThreadSafeInt {
+    private let lock = NSLock()
+    private var v: Int
+    init(_ v: Int) { self.v = v }
+    var value: Int {
+        get { lock.lock(); defer { lock.unlock() }; return v }
+        set { lock.lock(); v = newValue; lock.unlock() }
+    }
 }
