@@ -225,6 +225,36 @@ final class BridgePlaylistsPreviewDebounceTests: XCTestCase {
                                    "a queued preview was sent after ← left the scene")
     }
 
+    // The cursor moves with NO tick before the queue advances: the token must be
+    // revoked by the move itself, not at the next tick.
+
+    func testAQueuedPreviewIsDroppedWhenDownMovesTheCursorBeforeAnyTick() {
+        assertQueuedPreviewDropped(after: { _ = $0.handle(.down) },
+                                   "pl1's queued read was sent after Down moved the cursor to pl2, with no tick between")
+    }
+
+    func testAQueuedPreviewIsDroppedWhenUpMovesTheCursorBeforeAnyTick() {
+        assertQueuedPreviewDropped(after: { _ = $0.handle(.up) },
+                                   "a queued read was sent after Up moved the cursor off its row")
+    }
+
+    func testAQueuedPreviewIsDroppedWhenHomeMovesTheCursorBeforeAnyTick() {
+        assertQueuedPreviewDropped(after: { _ = $0.handle(.home) },
+                                   "a queued read was sent after Home moved the cursor off its row")
+    }
+
+    func testAQueuedPreviewIsDroppedWhenEndMovesTheCursorBeforeAnyTick() {
+        assertQueuedPreviewDropped(after: { _ = $0.handle(.end) },
+                                   "a queued read was sent after End moved the cursor off its row")
+    }
+
+    func testAQueuedPreviewIsDroppedWhenAFilterReclampsTheCursorBeforeAnyTick() {
+        assertQueuedPreviewDropped(after: { s in
+            _ = s.handle(.char("/"))
+            _ = s.handle(.char("3"))   // only "Playlist 3" is left, so the cursor clamps to it
+        }, "a queued read was sent after a filter moved the cursor off its row")
+    }
+
     func testAQueuedPreviewIsDroppedWhenTheLayoutStopsBeingThreeZone() {
         let width = ThreadSafeInt(160)
         let wire = BridgeLibraryReadsWire(["slice.libraryPlaylists": [playlistsPage(4)]])

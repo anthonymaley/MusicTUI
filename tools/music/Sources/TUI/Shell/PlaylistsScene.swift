@@ -130,7 +130,13 @@ final class PlaylistsScene: Scene {
     }
 
     private var focus: BrowserFocus = .playlists
-    private var plCursor = 0
+    /// Every assignment goes through this observer, so no path that moves the
+    /// rail cursor (movement, Home/End, a filter clamp, a reclamp, the playing
+    /// snap, a reset) can leave a queued Bridge preview eligible for the row it
+    /// left: the token is revoked on the spot, not at the next tick.
+    private var plCursor = 0 {
+        didSet { if plCursor != oldValue { invalidateBridgePreview() } }
+    }
     private var plScroll = 0
     private var snapToPlayingPending = false
 
@@ -548,6 +554,7 @@ final class PlaylistsScene: Scene {
     /// reload) is dropped on arrival, and leaves `railSource` nil so the very
     /// next step (`loadRail`) reloads from the right source this same tick.
     private func resetRail(newWant: ListSource) {
+        invalidateBridgePreview()
         railEpoch += 1
         // Music.app list structures.
         playlists = []
