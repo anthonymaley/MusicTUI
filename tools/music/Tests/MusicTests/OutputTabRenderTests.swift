@@ -137,6 +137,15 @@ enum OutputTabData {
 /// files in `dir`; the Mac's SpanDAC and every network SpanDAC answer through
 /// stub transports; the Mac starter is a fake that never launches anything;
 /// the data client is counted and can only fail.
+/// Where every test scene sends its "is MusicTUI's own player paused?" check.
+/// `SpeakersScene` requires one, so no test can reach a real Music.app pause
+/// by the mode it starts in: reaching this fails the test, and it throws so the
+/// switch refuses rather than carrying on as if the player were confirmed.
+func musicAppPauseTripwire() throws -> Bool {
+    XCTFail("a test scene tried to confirm or pause the real player; start from a fake SpanDAC output")
+    throw MusicAppPauseUnconfirmed(reason: "test tripwire")
+}
+
 func makeOutputTabScene(dir: String, mode: PlaybackMode, spandac: SpanDACOutputsDriving?,
                         speakers: [[String: Any]] = [], status: StatusStore = StatusStore(),
                         macReply: @escaping () throws -> String = { outputTabReadyReply },
@@ -149,6 +158,7 @@ func makeOutputTabScene(dir: String, mode: PlaybackMode, spandac: SpanDACOutputs
                         data: OutputTabData = .accepted,
                         starter: FakeMacStarter = FakeMacStarter(),
                         dataClients: BuildCounter = BuildCounter(),
+                        confirmMusicAppPaused: @escaping () throws -> Bool = musicAppPauseTripwire,
                         macSocketExists: @escaping () -> Bool = { false }) -> SpeakersScene {
     let store = PlaybackModeStore(path: dir + "/mode.json")
     store.set(mode)
@@ -170,6 +180,7 @@ func makeOutputTabScene(dir: String, mode: PlaybackMode, spandac: SpanDACOutputs
                                      starter: starter)
     return SpeakersScene(backend: AppleScriptBackend(executable: "/usr/bin/true"),
                          status: status, actions: ActionRunner(status: status), routing: routing,
+                         confirmMusicAppPaused: confirmMusicAppPaused,
                          makeSourceClient: local, makeNetworkClient: network, spandac: spandac,
                          macName: macName, clock: clock,
                          fetchSpeakers: { speakers },

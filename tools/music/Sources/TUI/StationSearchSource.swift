@@ -657,6 +657,13 @@ struct SourceStatus: Equatable {
 /// The wire ops for SpanDAC's own shuffle and repeat.
 let sourceShuffleOp = "slice.shuffle"
 let sourceRepeatOp = "slice.repeat"
+/// `slice.useDAC` was refused. SpanDAC's own `detail` (nil when it sent none) and,
+/// when the refusal reply carries one, the status it left behind.
+struct SourceUseDACRefusal: Error {
+    let detail: String?
+    let status: SourceStatus?
+}
+
 /// `slice.useDAC` and the capability SpanDAC lists when it serves it.
 let sourceUseDACOp = "slice.useDAC"
 let sourceUseDACCapability = "output.use_dac"
@@ -983,7 +990,19 @@ struct SourceAppControl: SourceControlling {
     /// `slice.useDAC`: no uid, no other field. The reply's fresh `status`,
     /// decoded as `status()` would, or nil when it carries none.
     func useDAC() throws -> SourceStatus? {
-        let reply = try send(["op": sourceUseDACOp])
+        var refusedReply: [String: Any]?
+        let reply: [String: Any]
+        do {
+            reply = try send(["op": sourceUseDACOp], over: transport, onRefusedReply: { refusedReply = $0 })
+        } catch SourceAppError.refused(let detail) {
+            // A refusal of this op keeps the status it carries (the generic send
+            // throws on `ok:false` and would drop the body). `no detail` is the
+            // generic decoder's stand-in for an absent one.
+            throw SourceUseDACRefusal(
+                detail: detail == "no detail" ? nil : detail,
+                status: (refusedReply?["status"] as? [String: Any])
+                    .flatMap { Self.decodeStatus($0, readingWith: self) })
+        }
         guard let status = reply["status"] as? [String: Any] else { return nil }
         return Self.decodeStatus(status, readingWith: self)
     }
@@ -1595,8 +1614,11 @@ struct SourceAppControl: SourceControlling {
         try send(body, over: transport)
     }
 
+    /// `onRefusedReply` sees the whole reply of an `ok:false` answer before it is
+    /// turned into an error, for the one op whose refusal carries a status.
     func send(_ body: [String: Any],
-              over transport: (String, String) throws -> String) throws -> [String: Any] {
+              over transport: (String, String) throws -> String,
+              onRefusedReply: (([String: Any]) -> Void)? = nil) throws -> [String: Any] {
         guard let data = try? JSONSerialization.data(withJSONObject: body),
               let line = String(data: data, encoding: .utf8) else {
             throw SourceAppError.unreadable
@@ -1614,6 +1636,7 @@ struct SourceAppControl: SourceControlling {
             throw SourceAppError.unreadable
         }
         guard ok else {
+            onRefusedReply?(reply)
             let error = reply["error"] as? [String: Any]
             let detail = error?["detail"] as? String ?? "no detail"
             switch error?["kind"] as? String {

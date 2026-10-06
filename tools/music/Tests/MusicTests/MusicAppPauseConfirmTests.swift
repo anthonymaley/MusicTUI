@@ -208,8 +208,9 @@ final class MusicAppPauseConfirmTests: XCTestCase {
             .appendingPathComponent("Sources")
     }
 
-    /// `selectMode`'s `.musicApp` pause case calls the confirmation, and no
-    /// longer the unconfirmed name-addressed pause.
+    /// `selectMode`'s `.musicApp` pause case calls the scene's injected
+    /// confirmation (never the unconfirmed name-addressed pause), and production
+    /// injects the live confirmation, which is `confirmMusicAppNotPlaying`.
     func testSelectModesMusicAppPauseCaseCallsTheConfirmation() throws {
         let source = try String(contentsOf: sources.appendingPathComponent("TUI/Shell/SpeakersScene.swift"),
                                 encoding: .utf8)
@@ -219,9 +220,14 @@ final class MusicAppPauseConfirmTests: XCTestCase {
               let caseEnd = source.range(of: "case .source:", range: caseStart.upperBound..<source.endIndex)
         else { return XCTFail("selectMode's pauseOutgoing .musicApp case not found") }
         let body = source[caseStart.upperBound..<caseEnd.lowerBound]
-        XCTAssertTrue(body.contains("confirmMusicAppNotPlaying("), String(body))
+        XCTAssertTrue(body.contains("confirmMusicAppPaused()"), String(body))
         XCTAssertFalse(body.contains("runMusic"), String(body))
         XCTAssertFalse(body.contains("return true"), String(body))
+        let live = try String(contentsOf: sources.appendingPathComponent("TUI/MusicAppPauseConfirm.swift"),
+                              encoding: .utf8)
+        XCTAssertTrue(live.contains("func liveMusicAppPauseConfirmation() throws -> Bool {\n    try confirmMusicAppNotPlaying(session: liveMusicAppPauseSession, isRunning: liveMusicAppMayBeRunning)"))
+        let shell = try String(contentsOf: sources.appendingPathComponent("TUI/Shell/Shell.swift"), encoding: .utf8)
+        XCTAssertTrue(shell.contains("confirmMusicAppPaused: liveMusicAppPauseConfirmation"))
     }
 
     /// The live session is addressed by process id with launching disabled, and

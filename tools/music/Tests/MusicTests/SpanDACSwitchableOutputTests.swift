@@ -156,9 +156,36 @@ final class SpanDACSwitchableOutputTests: XCTestCase {
             let reply = #"{"ok":false,"op":"slice.useDAC","error":{"kind":"\#(kind)","detail":"SpanDAC couldn't confirm the Mac switched to SSL 2+."}}"#
             let c = SourceAppControl(path: "/nonexistent", transport: { _, _ in reply })
             XCTAssertThrowsError(try c.useDAC(), kind) {
-                XCTAssertEqual($0 as? SourceAppError, .refused("SpanDAC couldn't confirm the Mac switched to SSL 2+."), kind)
+                XCTAssertEqual(($0 as? SourceUseDACRefusal)?.detail,
+                               "SpanDAC couldn't confirm the Mac switched to SSL 2+.", kind)
             }
         }
+    }
+
+    /// A refused `slice.useDAC` still carries the status it left behind.
+    func testARefusedUseDACKeepsTheReplysStatus() throws {
+        let reply = #"{"ok":false,"op":"slice.useDAC","error":{"kind":"output_unconfirmed","detail":"SpanDAC couldn't confirm the Mac switched to SSL 2+."},"status":{"playback":"idle","authorization":"authorized","contract":\#(sourceContractVersion),"capabilities":["output.use_dac"],"output":{"dac":"not_connected"}}}"#
+        let c = SourceAppControl(path: "/nonexistent", transport: { _, _ in reply })
+        XCTAssertThrowsError(try c.useDAC()) { error in
+            guard let refusal = error as? SourceUseDACRefusal else { return XCTFail("\(error)") }
+            XCTAssertEqual(refusal.detail, "SpanDAC couldn't confirm the Mac switched to SSL 2+.")
+            XCTAssertEqual(refusal.status?.output, SourceOutputInfo(dac: .notConnected, name: nil, maxRateHz: nil))
+        }
+        // No status, no detail: both absent, never invented.
+        let bare = SourceAppControl(path: "/nonexistent", transport: { _, _ in
+            #"{"ok":false,"op":"slice.useDAC","error":{"kind":"bad_request"}}"# })
+        XCTAssertThrowsError(try bare.useDAC()) { error in
+            let refusal = error as? SourceUseDACRefusal
+            XCTAssertNil(refusal?.detail)
+            XCTAssertNil(refusal?.status)
+        }
+    }
+
+    /// Anything that is not a refusal of this op keeps its own error.
+    func testOtherFailuresOfUseDACKeepTheirKind() {
+        let c = SourceAppControl(path: "/nonexistent", transport: { _, _ in
+            #"{"ok":false,"error":{"kind":"unauthorized","detail":"x"}}"# })
+        XCTAssertThrowsError(try c.useDAC()) { XCTAssertEqual($0 as? SourceAppError, .notAuthorized) }
     }
 
     func testTheCapabilityIsTheAdvertisedWord() throws {
@@ -315,6 +342,50 @@ final class SpanDACSwitchableOutputTests: XCTestCase {
         XCTAssertTrue(pressEnterOnMacRow(r.scene))
         XCTAssertEqual(modeOnDisk(r), .source)
         XCTAssertTrue(untilRow(r.scene) { $0.contains("not the Mac's sound output") }, row1(r.scene))
+    }
+
+    /// The refusal's own status is what the row shows, not the one read before
+    /// the operation: here the DAC went away while SpanDAC was switching.
+    func testARefusalPublishesTheStatusItCarries() throws {
+        let gone = #"{"dac":"not_connected"}"#
+        let refusal = #"{"ok":false,"op":"slice.useDAC","error":{"kind":"output_unconfirmed","detail":"SpanDAC couldn't confirm the Mac switched to SSL 2+."},"status":{"playback":"idle","authorization":"authorized","contract":\#(sourceContractVersion),"capabilities":["output.use_dac"],"output":\#(gone)}}"#
+        let wire = Wire(macStatus: macStatus(switchableOutput), useDAC: refusal)
+        let r = try rig(mode: .networkSource(ipad), wire: wire)
+        defer { try? FileManager.default.removeItem(atPath: r.dir) }
+        XCTAssertTrue(pressEnterOnMacRow(r.scene))
+        XCTAssertEqual(modeOnDisk(r), .source)
+        XCTAssertTrue(untilRow(r.scene) { $0.contains("plug in your DAC  no DAC on this Mac") }, row1(r.scene))
+    }
+
+    /// A refusal with no status falls back to the status read before it.
+    func testARefusalWithoutAStatusKeepsThePreviousOne() throws {
+        let wire = Wire(macStatus: macStatus(switchableOutput),
+                        useDAC: useDACRefusal("output_unconfirmed", detail: "SpanDAC couldn't confirm."))
+        let r = try rig(mode: .networkSource(ipad), wire: wire)
+        defer { try? FileManager.default.removeItem(atPath: r.dir) }
+        XCTAssertTrue(pressEnterOnMacRow(r.scene))
+        XCTAssertTrue(untilRow(r.scene) { $0.contains("SpanDAC couldn't confirm.") }, row1(r.scene))
+    }
+
+    // MARK: no test reaches a real pause
+
+    /// A scene built over the test seam that starts from MusicTUI's own output
+    /// calls the seam, not the real player, and the switch refuses.
+    func testASwitchAwayFromMusicTUIGoesThroughTheInjectedPauseConfirmation() throws {
+        let dir = NSTemporaryDirectory() + "pauseseam-\(UUID().uuidString)"
+        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        let wire = Wire(macStatus: macStatus(switchableOutput), useDAC: "{}")
+        let calls = NSLock(); var count = 0
+        let s = makeOutputTabScene(dir: dir, mode: .musicApp, spandac: FakeSpanDACOutputs(),
+                                   macLine: { wire.mac($0) },
+                                   confirmMusicAppPaused: { calls.lock(); count += 1; calls.unlock(); return false })
+        settleOutputTab(s, speakers: 0)
+        XCTAssertTrue(pressEnterOnMacRow(s))
+        calls.lock(); defer { calls.unlock() }
+        XCTAssertEqual(count, 1, "the injected confirmation was asked once")
+        XCTAssertEqual(PlaybackModeStore(path: dir + "/mode.json").mode(), .musicApp, "unconfirmed: still using MusicTUI")
+        XCTAssertEqual(wire.count("mac:slice.useDAC"), 0, "nothing is redirected before the pause is confirmed")
     }
 
     /// Enter on the SpanDAC row that is already the output tries again.

@@ -473,6 +473,10 @@ final class SpeakersScene: Scene {
     /// test never looks at the real one; with "not running", its absence is
     /// what lets "Stop using" leave a SpanDAC on this Mac that is not there.
     private let macSocketExists: () -> Bool
+    /// Where a switch away from MusicTUI's own player confirms it is not
+    /// playing. Required at construction; production passes
+    /// `liveMusicAppPauseConfirmation`.
+    private let confirmMusicAppPaused: () throws -> Bool
 
     /// Test-only: the switch screen is up.
     var isShowingSwitchScreen: Bool { showingSwitchScreen }
@@ -516,6 +520,7 @@ final class SpeakersScene: Scene {
 
     init(backend: AppleScriptBackend, status: StatusStore, actions: ActionRunner,
          routing: RoutingCoordinator,
+         confirmMusicAppPaused: @escaping () throws -> Bool,
          makeSourceClient: @escaping () -> SourceAppClient = { SourceAppClient() },
          makeNetworkClient: ((String) -> SourceAppClient)? = nil,
          spandac: SpanDACOutputsDriving? = nil,
@@ -532,6 +537,7 @@ final class SpeakersScene: Scene {
         self.actions = actions
         self.routing = routing
         self.makeSourceClient = makeSourceClient
+        self.confirmMusicAppPaused = confirmMusicAppPaused
         self.makeNetworkClient = makeNetworkClient
         self.spandac = spandac
         self.macName = macName
@@ -721,8 +727,7 @@ final class SpeakersScene: Scene {
                     pauseOutgoing: { outgoing in
                         switch outgoing {
                         case .musicApp:
-                            return try confirmMusicAppNotPlaying(session: liveMusicAppPauseSession,
-                                                                 isRunning: liveMusicAppMayBeRunning)
+                            return try self.confirmMusicAppPaused()
                         case .source:
                             if (try? confirmBridgeNotPlaying(client.control)) == true { return true }
                             return macAbsent()
@@ -801,8 +806,7 @@ final class SpeakersScene: Scene {
                 pauseOutgoing: { outgoing in
                     switch outgoing {
                     case .musicApp:
-                        return try confirmMusicAppNotPlaying(session: liveMusicAppPauseSession,
-                                                             isRunning: liveMusicAppMayBeRunning)
+                        return try self.confirmMusicAppPaused()
                     case .source:
                         return try confirmBridgeNotPlaying(clientFor(outgoing).control)
                     case .networkSource:
@@ -863,6 +867,11 @@ final class SpeakersScene: Scene {
         if fresh.output?.switchable == true, fresh.offersUseDAC {
             do {
                 fresh = try client.control.useDAC() ?? client.control.status()
+            } catch let refusal as SourceUseDACRefusal {
+                // The refusal carries the status it left behind: publish that,
+                // not the one read before the operation.
+                if let after = refusal.status { fresh = after }
+                problem = (refusal.detail?.isEmpty ?? true) ? Self.notTheMacsSoundOutput : refusal.detail
             } catch SourceAppError.refused(let detail) {
                 problem = (detail.isEmpty || detail == "no detail") ? Self.notTheMacsSoundOutput : detail
             } catch {

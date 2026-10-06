@@ -183,6 +183,7 @@ func runShell() {
             let spandac = SpanDACOutputs(makeClient: { routing.client(for: .networkSource($0)) },
                                          post: { text, error, ttl in status.post(text, error: error, ttl: ttl) })
             let scene = SpeakersScene(backend: backend, status: status, actions: actions, routing: routing,
+                                      confirmMusicAppPaused: liveMusicAppPauseConfirmation,
                                       makeNetworkClient: { routing.client(for: .networkSource($0)) },
                                       spandac: spandac)
             scenes[id] = scene
