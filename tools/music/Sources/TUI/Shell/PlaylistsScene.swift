@@ -285,6 +285,12 @@ final class PlaylistsScene: Scene {
     }
     /// Rule 10: epoch-carrying, same discipline as every other inbox here.
     private var bridgePreviewInbox: [(id: String, epoch: Int, outcome: BridgePreviewOutcome)] = []
+    /// How many walked-playlist results wait in the preview inbox, not yet drained by
+    /// `tick`. For a test that must see whether a walk posted.
+    var bridgePreviewPostsPending: Int {
+        previewInboxLock.lock(); defer { previewInboxLock.unlock() }
+        return bridgePreviewInbox.count
+    }
     /// Previews dropped unsent because the cursor had left their row; drained
     /// in `tick` (under `previewInboxLock`) to clear their in-flight mark.
     private var bridgePreviewDropped: [(id: String, epoch: Int)] = []
@@ -1258,8 +1264,9 @@ final class PlaylistsScene: Scene {
     /// Walks a playlist's pages for a play (`for_queue`), and posts what was read to
     /// the preview inbox (D2): the pane shows what was queued. The pages of one read
     /// carry one `list_rev`; two that differ are two lists, so none is claimed.
-    /// `proceed`, for a background fill, is asked before each request; when it says
-    /// no the walk fails (nothing is posted) and the fill is dropped.
+    /// `proceed`, for a background fill, is asked before each request and once more
+    /// after the last page; when it says no the walk fails (nothing is posted) and
+    /// the fill is dropped.
     private func walkPlaylistForQueue(provider: MusicDataProvider, playlistID: String, epoch: Int,
                                       budget: WarmUpBudget, onWarming: @escaping (TimeInterval) -> Void,
                                       sleep: @escaping (TimeInterval) -> Void,
@@ -1288,6 +1295,9 @@ final class PlaylistsScene: Scene {
         if let walkError {
             throw ActionError(message: walkError.errorDescription ?? "Couldn't read that playlist from your library.")
         }
+        // The last page has no next fetch to stop at: ask once more, so a fill whose
+        // play was replaced while that page was in flight posts nothing.
+        if let proceed, !proceed() { throw UpNextFillStopped() }
         previewInboxLock.lock()
         bridgePreviewInbox.append(
             (playlistID, epoch, .success(rows: collected, total: collected.count, skippedVideos: lastSkipped)))

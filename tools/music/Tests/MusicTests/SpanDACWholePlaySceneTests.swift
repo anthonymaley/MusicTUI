@@ -812,4 +812,51 @@ final class SpanDACWholePlaySceneTests: XCTestCase {
         XCTAssertEqual(ran, ["first", "fourth"], "waiting jobs must be dropped unstarted")
         XCTAssertEqual(peak, 1)
     }
+
+    /// A one-page fill has no next fetch to stop at: the check after the last page keeps a
+    /// superseded play's walk out of the preview inbox, and its rows out of Up Next.
+    func testAOnePageFillSupersededWhileItsPageIsInFlightPostsNothingAndKeepsNoRows() throws {
+        let wire = stickyWire(["slice.libraryPlaylists": [onePlaylistPage], "slice.status": [Self.capable],
+                               "slice.listRev": [Self.revReply("playlist", "rev-pl1", count: 3)],
+                               "slice.playLibrary": [Self.playReply(queued: 3, token: "qpl-7")]])
+        wire.script("slice.libraryPlaylistTracks", [playlistTracks(["i.a", "i.b", "i.c"])])
+        wire.gate(op: "slice.libraryPlaylistTracks", at: 0)
+        let r = routing(wire)
+        let s = playlistScene(wire, routing: r)
+        XCTAssertEqual(s.bridgePreviewPostsPending, 0)
+        _ = s.handle(.char("p"))
+        XCTAssertTrue(settleRequested(wire, "slice.libraryPlaylistTracks"), "the fill never started")
+        XCTAssertTrue(settleScene(s) { r.spanDACPlay()?.token == "qpl-7" })
+        try supersede(r)
+        wire.release(op: "slice.libraryPlaylistTracks", at: 0)
+        pause()
+        XCTAssertEqual(wire.sent("slice.libraryPlaylistTracks").count, 1)
+        XCTAssertEqual(s.bridgePreviewPostsPending, 0, "a superseded fill posted to the preview inbox")
+        XCTAssertNil(r.spanDACPlay())
+    }
+
+    func testAFillOfTheCurrentPlayStillPostsWhatItReadToThePreviewInbox() {
+        let wire = stickyWire(["slice.libraryPlaylists": [onePlaylistPage], "slice.status": [Self.capable],
+                               "slice.listRev": [Self.revReply("playlist", "rev-pl1", count: 3)],
+                               "slice.playLibrary": [Self.playReply(queued: 3, token: "qpl-7")]])
+        wire.script("slice.libraryPlaylistTracks", [playlistTracks(["i.a", "i.b", "i.c"])])
+        let r = routing(wire)
+        let s = playlistScene(wire, routing: r)
+        _ = s.handle(.char("p"))
+        let deadline = Date().addingTimeInterval(3)
+        while Date() < deadline && s.bridgePreviewPostsPending == 0 { usleep(5_000) }
+        XCTAssertEqual(s.bridgePreviewPostsPending, 1, "the current play's fill posted nothing")
+    }
+
+    /// The foreground walk (a play with no revision to go by) is not gated and keeps posting.
+    func testTheForegroundPlayWalkStillPostsToThePreviewInbox() {
+        let queued = #"{"ok":true,"op":"slice.queue","status":{"playback":"playing","title":"T","artist":"A","contract":3,"authorization":"authorized","queue":{"phase":"complete","requested":2,"present":2,"index":0}}}"#
+        let wire = stickyWire(["slice.libraryPlaylists": [onePlaylistPage], "slice.status": [Self.capable],
+                               "slice.queue": [queued], "slice.listRev": [Self.unknownOp]])
+        wire.script("slice.libraryPlaylistTracks", [playlistTracks(["i.a", "i.b"], listRev: nil)])
+        let s = playlistScene(wire)
+        _ = s.handle(.char("p"))
+        XCTAssertTrue(settleRequested(wire, "slice.queue"))
+        XCTAssertEqual(s.bridgePreviewPostsPending, 1)
+    }
 }
