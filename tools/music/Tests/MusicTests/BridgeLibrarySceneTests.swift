@@ -46,23 +46,12 @@ final class BridgeLibrarySceneTests: XCTestCase {
         /// What `slice.status` answers: a SpanDAC with no capabilities unless a
         /// test says otherwise (`capableStatus`).
         private let statusReply: String
-        /// Scripted `slice.playLibrary` answers, in order.
-        private let playLibraryReplies: [String]
-        private var playLibraryRequests = 0
 
         /// A SpanDAC that plays containers whole.
         static let capableStatus = """
         {"ok":true,"op":"slice.status","status":{"playback":"idle","contract":3,"authorization":"authorized",
          "capabilities":["slice.shuffle","play.library"]}}
         """
-        static func played(queued: Int, token: String = "qs-1") -> String {
-            """
-            {"ok":true,"op":"slice.playLibrary","status":{"playback":"playing","title":"Lotus Flower","artist":"Radiohead","contract":3,
-             "authorization":"authorized","queue":{"phase":"complete","requested":\(queued),"present":\(queued),"index":1},
-             "queue_token":"\(token)"},"queued":\(queued),"skipped_unavailable":0,"skipped_videos":0,"queue_token":"\(token)"}
-            """
-        }
-
         static let queued = """
         {"ok":true,"op":"slice.queue","status":{"playback":"playing","title":"Aquarama","artist":"Moomin",
          "contract":3,"authorization":"authorized","queue":{"phase":"complete","requested":1,"present":1,"index":0}}}
@@ -87,9 +76,8 @@ final class BridgeLibrarySceneTests: XCTestCase {
 
         init(pages: [String], gateAt: Set<Int> = [], queueReplies: [String] = [],
             albumPages: [String] = [], artistPages: [String] = [],
-            status: String = Wire.status, playLibraryReplies: [String] = []) {
+            status: String = Wire.status) {
             self.statusReply = status
-            self.playLibraryReplies = playLibraryReplies
             self.pages = pages
             self.gateAt = gateAt
             self.queueReplies = queueReplies
@@ -122,10 +110,6 @@ final class BridgeLibrarySceneTests: XCTestCase {
                 let a = artistRequests
                 artistRequests += 1
                 reply = a < artistPages.count ? artistPages[a] : Self.unscriptedArtists
-            case "slice.playLibrary":
-                let q = playLibraryRequests
-                playLibraryRequests += 1
-                reply = q < playLibraryReplies.count ? playLibraryReplies[q] : Self.unscripted
             default:             reply = statusReply
             }
             let gate = gates[n]
@@ -831,46 +815,60 @@ final class BridgeLibrarySceneTests: XCTestCase {
         XCTAssertTrue(wire.sent("slice.playLibrary").isEmpty)
     }
 
-    /// Anthony's 2026-10-05 17:22 ruling (Codex 106, finding 2): Enter on a Songs
-    /// row plays on through the rest of the Songs list. SpanDAC is sent the Songs
-    /// list by name and the row by its index in the list it serves, with the id it
-    /// showed there and the `list_rev` the rows were read under; no id list.
-    func testEnterSendsPlayLibrarySongsFromTheRowWhenSpanDACCanPlayWhole() {
-        let wire = Wire(pages: [revPage1, revPage2], status: Wire.capableStatus,
-                        playLibraryReplies: [Wire.played(queued: 3, token: "qsongs-5")])
+    /// Anthony's 2026-10-06 11:38 ruling: Enter on a Songs row plays ONLY the picked
+    /// song, whatever SpanDAC advertises. A live check showed a whole-library queue
+    /// (15,575 songs) takes longer to prepare than MusicKit allows. So a SpanDAC that
+    /// lists `play.library` still gets one id on `slice.queue`, never `slice.playLibrary`
+    /// for the Songs list and never a revision read.
+    private static let queuedWithToken = """
+    {"ok":true,"op":"slice.queue","skipped_unavailable":0,"queue_token":"qsong-3",
+     "status":{"playback":"playing","title":"Lotus Flower","artist":"Radiohead","contract":3,"authorization":"authorized",
+     "queue":{"phase":"complete","requested":1,"present":1,"index":0},"queue_token":"qsong-3"}}
+    """
+
+    private func assertOnlyTheOneSongWasSent(_ wire: Wire, _ id: String, file: StaticString = #filePath, line: UInt = #line) {
+        let deadline = Date().addingTimeInterval(3)
+        while Date() < deadline && wire.sent("slice.queue").isEmpty { usleep(5_000) }
+        let queued = wire.sent("slice.queue")
+        XCTAssertEqual(queued.count, 1, "the song never reached SpanDAC", file: file, line: line)
+        XCTAssertEqual(queued.first?["library_ids"] as? [String], [id], file: file, line: line)
+        let end = Date().addingTimeInterval(0.3)
+        while Date() < end { usleep(10_000) }
+        XCTAssertTrue(wire.sent("slice.playLibrary").isEmpty, "the Songs list was sent as a container play", file: file, line: line)
+        XCTAssertTrue(wire.sent("slice.listRev").isEmpty, "a revision of the Songs list was read", file: file, line: line)
+    }
+
+    func testEnterOnACapableSpanDACStillPlaysOnlyThePickedSong() {
+        let wire = Wire(pages: [revPage1, revPage2], queueReplies: [Self.queuedWithToken], status: Wire.capableStatus)
         let r = routing(.source, wire: wire)
         let s = scene(mode: .source, wire: wire, spy: AppleScriptSpy(), status: StatusStore(), routing: r)
         toSongs(s)
         XCTAssertTrue(settle(s) { s.songsForTest.count == 3 })
-
         _ = s.handle(.down)                       // second row: Lotus Flower
         XCTAssertEqual(s.handle(.enter), .push(.nowPlaying))
+        assertOnlyTheOneSongWasSent(wire, "i.bbb")
+        XCTAssertNil(wire.sent("slice.queue").first?["rows"])
+        XCTAssertNil(wire.sent("slice.queue").first?["ids"])
 
-        let deadline = Date().addingTimeInterval(3)
-        while Date() < deadline && wire.sent("slice.playLibrary").isEmpty { usleep(5_000) }
-        let played = wire.sent("slice.playLibrary")
-        XCTAssertEqual(played.count, 1, "the Songs list never reached SpanDAC as a container play")
-        XCTAssertEqual((played.first ?? [:])["kind"] as? String, "songs")
-        XCTAssertNil((played.first ?? [:])["id"], "a Songs play names no container")
-        XCTAssertEqual((played.first ?? [:])["start_index"] as? Int, 1)
-        XCTAssertEqual((played.first ?? [:])["start_id"] as? String, "i.bbb")
-        XCTAssertEqual((played.first ?? [:])["list_rev"] as? String, "gen-7")
-        XCTAssertEqual(SourceAppControl.bool((played.first ?? [:])["shuffle"]), false)
-        XCTAssertTrue(wire.sent("slice.queue").isEmpty, "one id was sent as well")
-
-        // The rows kept are the whole Songs list, in the order SpanDAC serves it,
-        // with the token the reply carried and the list_rev they were read under.
+        // What is kept for Up Next is the one song, with the token its reply carried.
         XCTAssertTrue(settle(s) { r.spanDACPlay() != nil })
-        XCTAssertEqual(r.spanDACPlay()?.rows.map(\.id), ["i.aaa", "i.bbb", "i.ccc"])
-        XCTAssertEqual(r.spanDACPlay()?.rows.map(\.alias), ["-1", "-2", "-3"])
-        XCTAssertEqual(r.spanDACPlay()?.token, "qsongs-5")
-        XCTAssertEqual(r.spanDACPlay()?.listRev, "gen-7")
+        XCTAssertEqual(r.spanDACPlay()?.rows.map(\.id), ["i.bbb"])
+        XCTAssertEqual(r.spanDACPlay()?.token, "qsong-3")
+        XCTAssertNil(r.spanDACPlay()?.listRev)
     }
 
-    /// The row is named by its index in the WHOLE list, whatever the filter hides.
-    func testEnterOnAFilteredRowSendsItsIndexInTheWholeList() {
-        let wire = Wire(pages: [revPage1, revPage2], status: Wire.capableStatus,
-                        playLibraryReplies: [Wire.played(queued: 3)])
+    func testPOnACapableSpanDACsSongsListPlaysOnlyThePickedSongToo() {
+        let wire = Wire(pages: [revPage1, revPage2], status: Wire.capableStatus)
+        let s = scene(mode: .source, wire: wire, spy: AppleScriptSpy(), status: StatusStore())
+        toSongs(s)
+        XCTAssertTrue(settle(s) { s.songsForTest.count == 3 })
+        _ = s.handle(.down)
+        _ = s.handle(.char("p"))
+        assertOnlyTheOneSongWasSent(wire, "i.bbb")
+    }
+
+    func testEnterOnAFilteredRowOfACapableSpanDACPlaysOnlyThatSong() {
+        let wire = Wire(pages: [revPage1, revPage2], status: Wire.capableStatus)
         let s = scene(mode: .source, wire: wire, spy: AppleScriptSpy(), status: StatusStore())
         toSongs(s)
         XCTAssertTrue(settle(s) { s.songsForTest.count == 3 })
@@ -878,26 +876,7 @@ final class BridgeLibrarySceneTests: XCTestCase {
         for c in "Nude" { _ = s.handle(.char(c)) }
         _ = s.handle(.enter)                      // apply the filter: one row left
         _ = s.handle(.enter)                      // play it
-        let deadline = Date().addingTimeInterval(3)
-        while Date() < deadline && wire.sent("slice.playLibrary").isEmpty { usleep(5_000) }
-        let played = wire.sent("slice.playLibrary")
-        XCTAssertEqual(played.first?["start_index"] as? Int, 2, "the filtered row's index in the whole list")
-        XCTAssertEqual(played.first?["start_id"] as? String, "i.ccc")
-    }
-
-    /// Rows read by a SpanDAC that sent no `list_rev` cannot be proven to be the
-    /// list SpanDAC holds, so that play stays one id even when it lists play.library.
-    func testSongsReadWithoutAListRevStayOneIdEvenFromACapableSpanDAC() {
-        let wire = Wire(pages: [page1, page2], status: Wire.capableStatus)
-        let s = scene(mode: .source, wire: wire, spy: AppleScriptSpy(), status: StatusStore())
-        toSongs(s)
-        XCTAssertTrue(settle(s) { s.songsForTest.count == 3 })
-        _ = s.handle(.down)
-        _ = s.handle(.enter)
-        let deadline = Date().addingTimeInterval(3)
-        while Date() < deadline && wire.sent("slice.queue").isEmpty { usleep(5_000) }
-        XCTAssertEqual(wire.sent("slice.queue").first?["library_ids"] as? [String], ["i.bbb"])
-        XCTAssertTrue(wire.sent("slice.playLibrary").isEmpty)
+        assertOnlyTheOneSongWasSent(wire, "i.ccc")
     }
 
     /// Shuffle on the Songs list is unchanged: one song.
@@ -908,47 +887,7 @@ final class BridgeLibrarySceneTests: XCTestCase {
         XCTAssertTrue(settle(s) { s.songsForTest.count == 3 })
         _ = s.handle(.down)
         _ = s.handle(.char("s"))
-        let deadline = Date().addingTimeInterval(3)
-        while Date() < deadline && wire.sent("slice.queue").isEmpty { usleep(5_000) }
-        XCTAssertEqual(wire.sent("slice.queue").first?["library_ids"] as? [String], ["i.bbb"])
-        XCTAssertTrue(wire.sent("slice.playLibrary").isEmpty)
-    }
-
-    /// The footer says what was queued, with the grouped count a 15k list needs.
-    func testTheSongsFooterSaysHowManyAreQueued() {
-        let wire = Wire(pages: [revPage1, revPage2], status: Wire.capableStatus,
-                        playLibraryReplies: [Wire.played(queued: 15646)])
-        let status = StatusStore()
-        let s = scene(mode: .source, wire: wire, spy: AppleScriptSpy(), status: status)
-        toSongs(s)
-        XCTAssertTrue(settle(s) { s.songsForTest.count == 3 })
-        _ = s.handle(.down)
-        _ = s.handle(.enter)
-        XCTAssertTrue(settle(s) { status.current()?.text.hasPrefix("Playing") == true },
-                      "got: \(String(describing: status.current()?.text))")
-        XCTAssertEqual(status.current()?.text, "Playing 'Lotus Flower' on SpanDAC \u{2014} 15,646 queued.")
-    }
-
-    /// SpanDAC may refuse a song whose id occurs twice in the list; its words
-    /// reach the footer and nothing else is tried.
-    func testASongThatIsInTheListTwiceIsRefusedInSpanDACsWordsWithNoFallback() {
-        let refusal = """
-        {"ok":false,"op":"slice.playLibrary","error":{"kind":"bad_request","detail":"That song is in the list more than once, so SpanDAC cannot tell which one you picked."}}
-        """
-        let wire = Wire(pages: [revPage1, revPage2], status: Wire.capableStatus, playLibraryReplies: [refusal])
-        let status = StatusStore()
-        let s = scene(mode: .source, wire: wire, spy: AppleScriptSpy(), status: status)
-        toSongs(s)
-        XCTAssertTrue(settle(s) { s.songsForTest.count == 3 })
-        _ = s.handle(.down)
-        _ = s.handle(.enter)
-        XCTAssertTrue(settle(s) { status.current()?.isError == true })
-        XCTAssertEqual(status.current()?.text,
-                       "That song is in the list more than once, so SpanDAC cannot tell which one you picked.")
-        let end = Date().addingTimeInterval(0.4)
-        while Date() < end { usleep(10_000) }
-        XCTAssertTrue(wire.sent("slice.queue").isEmpty, "a refused whole play fell back to one id")
-        XCTAssertEqual(wire.sent("slice.playLibrary").count, 1)
+        assertOnlyTheOneSongWasSent(wire, "i.bbb")
     }
 }
 

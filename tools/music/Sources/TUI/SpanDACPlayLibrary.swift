@@ -3,15 +3,16 @@ import Foundation
 
 // `slice.playLibrary`: the client half of "play a library container whole".
 //
-// MusicTUI names the container (an album, an artist, a playlist, or the Songs
-// list) and the row it started from; SpanDAC reads the container itself and
-// builds ONE whole queue. No song ids cross the wire, so the 64 KiB request
-// frame no longer bounds what a play can be (Codex 106, finding 3), and the
-// client's page walk before a play is no longer needed.
+// MusicTUI names the container (an album, an artist or a playlist) and the row
+// it started from; SpanDAC reads the container itself and builds ONE whole
+// queue. No song ids cross the wire, so the 64 KiB request frame no longer
+// bounds what a play can be (Codex 106, finding 3), and the client's page walk
+// before a play is no longer needed. The Songs list is NOT one of them: Enter on
+// a Songs row plays that song alone (Anthony, 2026-10-06 11:38), because a
+// whole-library queue takes longer to prepare than MusicKit allows.
 //
 // The play also sends back the `list_rev` of the read that produced the rows on
-// screen (an opaque fingerprint of the whole ordered list; for Songs, the
-// snapshot generation), so SpanDAC refuses `library_changed` when the list moved
+// screen (an opaque fingerprint of the whole ordered list), so SpanDAC refuses `library_changed` when the list moved
 // since. A play with no `list_rev` is refused, so rows read without one stay on
 // the id-list path.
 //
@@ -27,7 +28,7 @@ let sourcePlayLibraryCapability = "play.library"
 
 /// What a `slice.playLibrary` names.
 enum LibraryPlayKind: String, Equatable {
-    case album, artist, playlist, songs
+    case album, artist, playlist
 }
 
 /// The row a from-row play starts at: its 0-based index in the list SpanDAC
@@ -80,10 +81,7 @@ extension SourceAppControl {
     /// list not worth reading to play) can still be proven. Its value equals the
     /// list read's `list_rev` for the same list.
     func listRev(kind: LibraryPlayKind, id: String?) throws -> SpanDACListRev {
-        if kind == .songs, id != nil {
-            throw SourceAppError.refused("a revision of the Songs list names no container")
-        }
-        if kind != .songs, (id ?? "").trimmingCharacters(in: .whitespaces).isEmpty {
+        if (id ?? "").trimmingCharacters(in: .whitespaces).isEmpty {
             throw SourceAppError.refused("a revision of a \(kind.rawValue) needs its id")
         }
         var body: [String: Any] = ["op": sourceListRevOp, "kind": kind.rawValue]
@@ -133,10 +131,7 @@ extension SourceAppControl {
         if shuffle && start != nil {
             throw SourceAppError.refused("a shuffled play starts at the first song of the shuffle, so it takes no start row")
         }
-        if kind == .songs, id != nil {
-            throw SourceAppError.refused("a play of the Songs list names no container")
-        }
-        if kind != .songs, (id ?? "").trimmingCharacters(in: .whitespaces).isEmpty {
+        if (id ?? "").trimmingCharacters(in: .whitespaces).isEmpty {
             throw SourceAppError.refused("a play of a \(kind.rawValue) needs its id")
         }
         let reply = try send(Self.playLibraryBody(kind: kind, id: id, start: start, listRev: listRev, shuffle: shuffle),

@@ -46,13 +46,13 @@ final class SpanDACPlayLibraryTests: XCTestCase {
         XCTAssertNil(body["start_id"])
     }
 
-    func testAFromRowPlaySendsBothStartFieldsAndASongsPlaySendsNoId() throws {
+    func testAFromRowPlaySendsBothStartFields() throws {
         let canned = Canned(playReply())
-        _ = try control(canned).playLibrary(kind: .songs, id: nil, start: LibraryPlayStart(index: 41, id: "i.x"),
+        _ = try control(canned).playLibrary(kind: .playlist, id: "p1", start: LibraryPlayStart(index: 41, id: "i.x"),
                                             listRev: nil, shuffle: false)
         let body = try XCTUnwrap(canned.bodies.first)
-        XCTAssertEqual(body["kind"] as? String, "songs")
-        XCTAssertNil(body["id"], "a songs play names no container")
+        XCTAssertEqual(body["kind"] as? String, "playlist")
+        XCTAssertEqual(body["id"] as? String, "p1")
         XCTAssertEqual(body["start_index"] as? Int, 41)
         XCTAssertEqual(body["start_id"] as? String, "i.x")
     }
@@ -68,10 +68,9 @@ final class SpanDACPlayLibraryTests: XCTestCase {
         XCTAssertEqual(SourceAppControl.bool(ok.bodies.first?["shuffle"]), true)
     }
 
-    func testAContainerPlayNeedsAnIdAndASongsPlayMustNotCarryOne() {
+    func testAContainerPlayNeedsAnId() {
         let canned = Canned(playReply())
         XCTAssertThrowsError(try control(canned).playLibrary(kind: .artist, id: nil, start: nil, listRev: nil, shuffle: false))
-        XCTAssertThrowsError(try control(canned).playLibrary(kind: .songs, id: "x", start: nil, listRev: nil, shuffle: false))
         XCTAssertTrue(canned.lines.isEmpty)
     }
 
@@ -104,17 +103,13 @@ final class SpanDACPlayLibraryTests: XCTestCase {
 
     // MARK: - slice.listRev
 
-    func testTheRevisionReadSendsKindAndIdAndOmitsTheIdForSongs() throws {
+    func testTheRevisionReadSendsKindAndId() throws {
         let canned = Canned(#"{"ok":true,"op":"slice.listRev","kind":"artist","list_rev":"fp-9","count":1001}"#)
         _ = try control(canned).listRev(kind: .artist, id: "ar1")
         let body = try XCTUnwrap(canned.bodies.first)
         XCTAssertEqual(body["op"] as? String, "slice.listRev")
         XCTAssertEqual(body["kind"] as? String, "artist")
         XCTAssertEqual(body["id"] as? String, "ar1")
-        let songs = Canned(#"{"ok":true,"op":"slice.listRev","kind":"songs","list_rev":"gen-7","count":15646}"#)
-        _ = try control(songs).listRev(kind: .songs, id: nil)
-        XCTAssertNil(songs.bodies.first?["id"])
-        XCTAssertThrowsError(try control(Canned("{}")).listRev(kind: .songs, id: "x"))
         XCTAssertThrowsError(try control(Canned("{}")).listRev(kind: .album, id: nil))
     }
 

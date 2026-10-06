@@ -157,22 +157,3 @@ func bridgeWholePlayNeedsAttention(_ result: SpanDACPlayResult) -> Bool {
     if let requested = result.requested, let queued = result.queued, queued < requested { return true }
     return false
 }
-
-/// The Songs list as it was on screen when a row was played, for a play that
-/// continues through the rest of it: the row's index in the whole (unfiltered)
-/// list in the order SpanDAC serves, the list itself, and its `list_rev`.
-struct WholeSongsPlay {
-    let index: Int
-    let songs: [LibrarySong]
-    let rowsByID: [String: MusicRow]
-    let listRev: String
-
-    /// The list as `MusicRow`s (the rows SpanDAC's status `row` / `next_rows`
-    /// index), keeping the aliases SpanDAC sent when the walk recorded them.
-    func rows() -> [MusicRow] {
-        songs.map { song in
-            rowsByID[song.id] ?? MusicRow(id: song.id, title: song.title, artist: song.artist,
-                                          album: song.album.isEmpty ? nil : song.album, kind: .song)
-        }
-    }
-}
