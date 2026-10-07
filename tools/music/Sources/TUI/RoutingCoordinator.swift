@@ -416,7 +416,7 @@ final class RoutingCoordinator {
 
     /// Design section 7, mid-song: the SpanDAC output still playing the queue
     /// it had when serving ended, or nil. While set, `.playPause`, `.next`,
-    /// `.previous`, `.seek`, `.stop` and `.nowStatus` reach this output's
+    /// `.previous`, `.seek`, `.stop`, `.quiet` and `.nowStatus` reach this output's
     /// client, so a poller follows it too. While set, every action that can
     /// start or replace sound is refused (`gatePlayOut`). Cleared by a
     /// status from this output showing `stopped`/`idle` or
@@ -1030,7 +1030,7 @@ final class RoutingCoordinator {
     /// with no default, decides it:
     ///
     /// - `followsThePlayOut`: runs `source` on the play-out output's own
-    ///   client (pause, next, previous, seek, stop, and `music now`), until
+    ///   client (pause, next, previous, seek, stop, Quiet, and `music now`), until
     ///   that queue ends or is stopped, and returns true: the action is done.
     /// - `startsOrReplacesSound`: refused, before any branch runs and before
     ///   anything is sent to any player. There is no replacement on any

@@ -3,8 +3,8 @@
 // Anthony's ruling of 2026-10-05 16:07: as for iPhone/iPad, when the Mac's
 // SpanDAC licence stops serving mid-queue on SpanDAC for Mac, every action that
 // can start or replace sound in MusicTUI is refused through ONE gate, while
-// pause, next, previous, seek and stop keep reaching SpanDAC until its queue
-// ends or is stopped. The Mac's "pause SpanDAC, then play on MusicTUI"
+// pause, next, previous, seek, stop and Quiet keep reaching SpanDAC until its
+// queue ends or is stopped. The Mac's "pause SpanDAC, then play on MusicTUI"
 // replacement is gone, so two players at once cannot arise (Codex review 104,
 // both blocking findings).
 //
@@ -150,6 +150,29 @@ final class SpanDACMacPlayOutGateTests: XCTestCase {
         XCTAssertEqual(c.playOutMode, .source)
     }
 
+    // MARK: - Codex review of 903825f: Quiet, the mode cells and the current track
+
+    /// Finding 1. Now shows `x Quiet` during a Mac play-out (the effective
+    /// output is SpanDAC), so `x` must pause the SpanDAC that is sounding, on
+    /// the play-out's own client, and never run Apple's Music app `pause`.
+    func testQuietDuringAMacPlayOutPausesThePlayOutAndNeverTouchesMusicApp() {
+        let (rig, c) = macPlayingOut()
+        rig.reply = LicenceRig.pausesWhenAsked(serving: false)
+        let counter = AppleScriptCallCounter()
+        let status = StatusStore()
+        let (scene, actions) = nowScene(c, backend: counter.backend, status: status)
+        XCTAssertTrue(scene.footerHint.contains("x Quiet"), scene.footerHint)
+        let callsBefore = counter.callCount, sentBefore = rig.sent.count
+        _ = scene.handle(.char("x"))
+        actions.waitUntilIdle()
+        XCTAssertEqual(counter.callCount, callsBefore, "Quiet never reached Apple's Music app")
+        let sent = rig.sent.dropFirst(sentBefore)
+        XCTAssertTrue(sent.contains { $0.tag == rig.tag(.source) && LicenceRig.op($0.line) == "slice.pause" },
+                      "the play-out's own SpanDAC was paused: \(sent.map(\.line))")
+        XCTAssertFalse(status.current()?.isError ?? false, "\(status.current()?.text ?? "")")
+        XCTAssertEqual(c.playOutMode, .source, "a pause does not end the play-out")
+    }
+
     // MARK: - A chosen play is refused, never a replacement
 
     /// Every chosen play, from either surface: refused before any pause is
@@ -219,7 +242,7 @@ final class SpanDACMacPlayOutGateTests: XCTestCase {
             XCTAssertEqual(action.playOutClass, .startsOrReplacesSound, "\(action)")
         }
         XCTAssertEqual(Set(MusicTUIAction.allCases.filter { $0.playOutClass == .followsThePlayOut }),
-                       [.playPause, .next, .previous, .seek, .stop, .nowStatus])
+                       [.playPause, .next, .previous, .seek, .stop, .quiet, .nowStatus])
     }
 
     /// Every action, from both surfaces, during a Mac play-out and during an

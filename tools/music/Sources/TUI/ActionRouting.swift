@@ -711,6 +711,7 @@ extension MusicTUIAction {
     var playOutClass: PlayOutClass {
         switch self {
         case .playPause, .next, .previous, .seek, .stop,
+             .quiet,                           // a pause of what is sounding (ruling 12.7)
              .nowStatus:                       // a read of what is sounding
             return .followsThePlayOut
 
@@ -727,7 +728,6 @@ extension MusicTUIAction {
             return .startsOrReplacesSound
 
         case .persistentShuffleMode, .persistentRepeatMode, .volume,
-             .quiet,                           // pauses; never starts
              .playlistListing, .discoverFeed, .discoverRefresh, .catalogSearch, .searchLibrary,
              .radioSearch, .recent, .rotation, .radioCatalogueBrowse, .radioStationLookup,
              .newReleases, .newReleasesLikeCurrentTrack,
