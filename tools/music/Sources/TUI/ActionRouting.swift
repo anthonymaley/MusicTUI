@@ -696,6 +696,11 @@ enum PlayOutClass: Equatable {
     /// a play-out, before any branch runs or anything is sent. Never a
     /// replacement, so two players at once cannot arise.
     case startsOrReplacesSound
+    /// Resolves its target through Apple's Music app's `current track`, which
+    /// during a play-out is whatever that app was left on, not the song
+    /// SpanDAC is playing (Anthony, 2026-09-16 13:36): refused during a
+    /// play-out, before any branch runs (Codex review of 903825f).
+    case readsTheCurrentTrack
     /// Cannot start sound: routed exactly as without a play-out.
     case cannotStartSound
 }
@@ -729,12 +734,18 @@ extension MusicTUIAction {
              .persistentRepeatMode:            // replays past the queue's end
             return .startsOrReplacesSound
 
+        // Every `readsMusicAppCurrentTrack` verb that cannot start sound (the
+        // two that can are refused above already).
+        case .loveTrack, .addCurrentTrackToPlaylist, .removeCurrentTrackFromPlaylist,
+             .newReleasesLikeCurrentTrack:
+            return .readsTheCurrentTrack
+
         case .volume,
              .playlistListing, .discoverFeed, .discoverRefresh, .catalogSearch, .searchLibrary,
              .radioSearch, .recent, .rotation, .radioCatalogueBrowse, .radioStationLookup,
-             .newReleases, .newReleasesLikeCurrentTrack,
+             .newReleases,
              .similar, .suggest,               // with a title or --from: no picker, a read
-             .loveTrack, .addToLibrary, .addCurrentTrackToPlaylist, .removeCurrentTrackFromPlaylist,
+             .addToLibrary,
              .playlistWrite, .playlistShare, .cliMix, .radioFavourite, .radioAddURL,
              .eq, .visualizer, .libraryArtistTierFilter, .playlistsOpenNowPlaying, .libraryRetry, .auth:
             return .cannotStartSound

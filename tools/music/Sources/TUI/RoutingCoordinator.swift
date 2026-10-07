@@ -1034,6 +1034,8 @@ final class RoutingCoordinator {
     ///   anything is sent to any player. There is no replacement on any
     ///   device, so MusicTUI never sounds beside a SpanDAC queue and serving
     ///   returning cannot find two players (Codex review 104).
+    /// - `readsTheCurrentTrack`: refused the same way, in the current-track
+    ///   sentence on this Mac (Codex review of 903825f).
     /// - `cannotStartSound`: returns false, and ordinary routing decides.
     ///
     /// The caller holds `order`; `settled` is this action's one instant.
@@ -1061,6 +1063,12 @@ final class RoutingCoordinator {
         guard let target = settled.playOut else { return nil }
         switch action.playOutClass {
         case .startsOrReplacesSound: return playOutRefusal(target, settled)
+        // On this Mac the selection names MusicTUI, so the matrix would run
+        // the verb on Apple's Music app's stale track: refused in the ruling's
+        // own words for exactly that. An iPhone/iPad play-out keeps the blocked
+        // output's sentence, which the matrix already gave these verbs.
+        case .readsTheCurrentTrack:
+            return target.networkSourceID == nil ? currentTrackIsStaleInBridge : playOutRefusal(target, settled)
         case .followsThePlayOut, .cannotStartSound: return nil
         }
     }

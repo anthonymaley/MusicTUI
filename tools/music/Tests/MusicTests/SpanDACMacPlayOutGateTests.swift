@@ -219,6 +219,23 @@ final class SpanDACMacPlayOutGateTests: XCTestCase {
         }
     }
 
+    /// Finding 3. `l` during a Mac play-out would favourite whatever Apple's
+    /// Music app was left on, not the song SpanDAC is playing: refused in the
+    /// current-track sentence, and no AppleScript runs.
+    func testFavouriteDuringAMacPlayOutIsRefusedAndRunsNoAppleScript() {
+        let (rig, c) = macPlayingOut()
+        let counter = AppleScriptCallCounter()
+        let status = StatusStore()
+        let (scene, actions) = nowScene(c, backend: counter.backend, status: status)
+        let sentBefore = rig.sent.count
+        _ = scene.handle(.char("l"))
+        actions.waitUntilIdle()
+        XCTAssertEqual(counter.callCount, 0, "nothing was favourited in Apple's Music app")
+        XCTAssertEqual(status.current()?.text, currentTrackIsStaleInBridge)
+        XCTAssertEqual(rig.sent.count, sentBefore)
+        XCTAssertEqual(c.playOutMode, .source)
+    }
+
     // MARK: - A chosen play is refused, never a replacement
 
     /// Every chosen play, from either surface: refused before any pause is
@@ -277,6 +294,17 @@ final class SpanDACMacPlayOutGateTests: XCTestCase {
 
     // MARK: - One exhaustive gate
 
+    /// Every verb that resolves its target through Apple's Music app's current
+    /// track is refused during a play-out, in one class or the other.
+    func testEveryCurrentTrackVerbIsRefusedDuringAPlayOut() {
+        for action in MusicTUIAction.allCases where action.readsMusicAppCurrentTrack {
+            XCTAssertTrue([.readsTheCurrentTrack, .startsOrReplacesSound].contains(action.playOutClass), "\(action)")
+        }
+        XCTAssertEqual(Set(MusicTUIAction.allCases.filter { $0.playOutClass == .readsTheCurrentTrack }),
+                       [.loveTrack, .addCurrentTrackToPlaylist, .removeCurrentTrackFromPlaylist,
+                        .newReleasesLikeCurrentTrack])
+    }
+
     /// The gate is wider than `playsChosenMusic`: every chosen play is in it,
     /// and so are the four Codex review 104 found outside it.
     func testTheGateCoversEveryChosenPlayAndTheFourThatChooseNothing() {
@@ -316,6 +344,11 @@ final class SpanDACMacPlayOutGateTests: XCTestCase {
                         XCTAssertEqual(rig.sent.count, sentBefore, label)
                         XCTAssertEqual(c.playSerial, serial, label)
                         XCTAssertEqual(c.playOutMode, device, label)
+                    case .readsTheCurrentTrack:
+                        XCTAssertEqual(thrown, device == .source ? currentTrackIsStaleInBridge : sentence, label)
+                        XCTAssertEqual(log.log, [], label)
+                        XCTAssertEqual(rig.sent.count, sentBefore, label)
+                        XCTAssertEqual(c.playOutMode, device, label)
                     case .followsThePlayOut:
                         XCTAssertNil(thrown, label)
                         XCTAssertEqual(log.log, ["source"], label)
@@ -348,10 +381,11 @@ final class SpanDACMacPlayOutGateTests: XCTestCase {
 
     /// The CLI verbs that can start sound but do not dispatch through the
     /// coordinator (`music speaker`'s route heal, bare `music suggest`'s
-    /// picker) are gated by `refuseInBridge`, which reads the stored files. A
+    /// picker), and the current-track verbs (`music love`, `music remove`),
+    /// are gated by `refuseInBridge`, which reads the stored files. A
     /// play-out exists only while the stored output is a SpanDAC, and for
-    /// every such stored selection that gate refuses every sound-starting
-    /// action, so none of them can sound beside a play-out either.
+    /// every such stored selection that gate refuses every one of them, so
+    /// none can sound, or act on a stale track, beside a play-out either.
     func testTheCLIFileGateRefusesEverySoundStartingActionWhileASpanDACIsStored() {
         let stored: [EffectiveSelection] = [
             .consistent(data: .spandacMac, output: .source),
@@ -360,7 +394,8 @@ final class SpanDACMacPlayOutGateTests: XCTestCase {
             .outputBlocked(stored: .networkSource(LicenceRig.ipad)),
         ]
         for selection in stored {
-            for action in MusicTUIAction.allCases where action.playOutClass == .startsOrReplacesSound {
+            for action in MusicTUIAction.allCases
+            where action.playOutClass == .startsOrReplacesSound || action.playOutClass == .readsTheCurrentTrack {
                 XCTAssertNotNil(cliBridgeRefusal(action, selection: selection), "\(selection) \(action)")
             }
         }
