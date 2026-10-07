@@ -170,6 +170,29 @@ final class PlaySyncWorkerTests: XCTestCase {
         ])
     }
 
+    // MARK: - Plays SpanDAC could not identify
+
+    func testUnidentifiedPlaysPostTheirOwnSentenceOnceForThePassThatReadThem() {
+        var one = FakeRunner.quiet
+        one.unidentified = 1
+        var many = FakeRunner.quiet
+        many.unidentified = 3
+        for (result, sentence) in [(one, "1 play SpanDAC couldn't identify was not counted"),
+                                   (many, "3 plays SpanDAC couldn't identify were not counted")] {
+            let log = PostLog()
+            makeWorker(bridge: true, runner: FakeRunner(result: result), log: log).tickOnce()
+            XCTAssertEqual(log.items, [Posted(text: sentence, error: false, ttl: 6)])
+        }
+    }
+
+    func testUnidentifiedPlaysAreNotNewProblemsAndNeverPostTheNotRecordedSentence() {
+        var result = FakeRunner.quiet
+        result.unidentified = 2
+        let log = PostLog()
+        makeWorker(bridge: true, runner: FakeRunner(result: result), log: log).tickOnce()
+        XCTAssertFalse(log.items.contains { $0.text.contains("not recorded yet") })
+    }
+
     // MARK: - Quiet cases
 
     func testQuietCasesPostNothing() {

@@ -119,6 +119,42 @@ final class BridgeNowTests: XCTestCase {
         XCTAssertEqual(bridgeStatusLine(b), "Checking SpanDAC\u{2026}")
     }
 
+    // MARK: - Fewer songs present than requested
+
+    /// SpanDAC may queue fewer songs than the client asked for. That is a
+    /// complete queue of the songs it has, never a failure and never retried.
+    func testACompleteQueueWithFewerPresentThanRequestedIsComplete() {
+        let b = bridgeNow(from: status(phase: "complete", requested: 800, present: 796, index: 0))
+        XCTAssertEqual(b.queue, .complete(requested: 800, present: 796))
+        XCTAssertEqual(b.link, .answering)
+        XCTAssertEqual(bridgeStatusLine(b), "796 of 800 queued.")
+    }
+
+    func testAFullCompleteQueueSaysNothingAboutCounts() {
+        XCTAssertNil(bridgeStatusLine(bridgeNow(from: status(phase: "complete", requested: 800, present: 800))))
+        XCTAssertNil(bridgeStatusLine(bridgeNow(from: status(phase: "complete", requested: 800))),
+                     "a SpanDAC that sends no present count is read as before")
+    }
+
+    func testThePositionOfAShortQueueCountsOnlyTheSongsThatAreThere() {
+        XCTAssertEqual(bridgePositionLine(now(queue: .complete(requested: 800, present: 796), index: 4)),
+                       "Song 5 of 796")
+        XCTAssertNil(bridgePositionLine(now(queue: .complete(requested: 800, present: 796), index: 796)))
+    }
+
+    func testAShortCompleteQueueKeepsLoadingAndLinkPrecedence() {
+        let short = BridgeNow.Queue.complete(requested: 800, present: 796)
+        XCTAssertEqual(bridgeStatusLine(now(playback: "loading", queue: short)), "Loading\u{2026}")
+        XCTAssertEqual(bridgeStatusLine(now(link: .notResponding, queue: short)), "SpanDAC is not responding.")
+    }
+
+    func testTheNowJSONCarriesBothCountsUntouched() {
+        let json = bridgeNowJSON(status(phase: "complete", requested: 800, present: 796))
+        let queue = json["queue"] as? [String: Any]
+        XCTAssertEqual(queue?["requested"] as? Int, 800)
+        XCTAssertEqual(queue?["present"] as? Int, 796)
+    }
+
     // MARK: - Lines
 
     private func now(link: BridgeNow.Link = .answering, playback: String = "playing",
@@ -189,6 +225,15 @@ final class BridgeNowTests: XCTestCase {
         XCTAssertNil(s.queueReason)
         XCTAssertNil(s.queueBuiltBeforeFailure)
         XCTAssertNil(s.queueIndex)
+    }
+
+    func testStatusDecodesFewerPresentThanRequested() throws {
+        let reply = #"{"ok":true,"op":"slice.status","status":{"playback":"playing","contract":3,"authorization":"authorized","title":"T","artist":"A","queue":{"phase":"complete","requested":800,"present":796,"index":2}}}"#
+        let s = try SourceAppControl(path: "/nonexistent", transport: { _, _ in reply }).status()
+        XCTAssertEqual(s.queuePhase, "complete")
+        XCTAssertEqual(s.queueRequested, 800)
+        XCTAssertEqual(s.queuePresent, 796)
+        XCTAssertEqual(s.readiness, .ready)
     }
 
     // MARK: - Now scene and footer
@@ -340,6 +385,72 @@ final class BridgeNowTests: XCTestCase {
 
     func testMusicAppSnapshotHasNoBridge() {
         XCTAssertNil(NowPlayingSnapshot(outcome: .stopped, history: [], surrounding: []).bridge)
+    }
+
+    // MARK: - Optional elapsed time, duration and artwork (SpanDAC 2026-10-05)
+
+    private let cover = "https://is1-ssl.mzstatic.com/image/thumb/Music/house/600x600bb.jpg"
+
+    private func playingReply(extra: String) -> String {
+        #"{"ok":true,"op":"slice.status","status":{"playback":"playing","contract":3,"authorization":"authorized","title":"Teardrop","artist":"Massive Attack"\#(extra),"queue":{"phase":"complete","requested":275,"present":275,"index":0}}}"#
+    }
+
+    func testStatusDecodesTimesAndArtworkWhenPresent() throws {
+        let reply = playingReply(extra: #","position_s":65.4,"duration_s":312,"artwork_url":"\#(cover)""#)
+        let s = try SourceAppControl(path: "/nonexistent", transport: { _, _ in reply }).status()
+        XCTAssertEqual(s.positionSeconds, 65.4)
+        XCTAssertEqual(s.durationSeconds, 312, "an integral JSON number is still seconds")
+        XCTAssertEqual(s.artworkURL, cover)
+        XCTAssertEqual(bridgeNow(from: s).artworkURL, cover)
+    }
+
+    func testStatusWithoutTimesOrArtworkReadsAsBefore() throws {
+        let absent = try SourceAppControl(path: "/nonexistent", transport: { _, _ in self.playingReply(extra: "") }).status()
+        XCTAssertNil(absent.positionSeconds)
+        XCTAssertNil(absent.durationSeconds)
+        XCTAssertNil(absent.artworkURL)
+        XCTAssertNil(bridgeNow(from: absent).artworkURL)
+        // Malformed values are unknown, not a failed reply.
+        let bad = playingReply(extra: #","position_s":-3,"duration_s":"long","artwork_url":"""#)
+        let s = try SourceAppControl(path: "/nonexistent", transport: { _, _ in bad }).status()
+        XCTAssertNil(s.positionSeconds)
+        XCTAssertNil(s.durationSeconds)
+        XCTAssertNil(s.artworkURL)
+        XCTAssertEqual(s.title, "Teardrop")
+    }
+
+    /// The poller fills the same fields the Music.app path fills, so the Now
+    /// tab's existing progress bar draws SpanDAC's times.
+    func testPollerPutsSpanDACTimesOnTheNowModelAndTheBarDrawsThem() {
+        let store = NowPlayingStore()
+        let p = poller(mode: .source, store: store, reply: {
+            self.playingReply(extra: #","position_s":65.9,"duration_s":312.2,"artwork_url":"\#(self.cover)""#)
+        })
+        p.tick()
+        var snap = store.read()
+        guard case .active(let np) = snap.outcome else { return XCTFail("expected active, got \(snap.outcome)") }
+        XCTAssertEqual(np.position, 65)
+        XCTAssertEqual(np.duration, 312)
+        XCTAssertEqual(snap.bridge?.artworkURL, cover)
+
+        // Rendered without the URL so the test fetches nothing over the network.
+        snap.bridge?.artworkURL = nil
+        let out = plain(scene(mode: .source).render(frame: frame, snapshot: snap))
+        XCTAssertTrue(out.contains("1:05"), "elapsed time missing")
+        XCTAssertTrue(out.contains("5:12"), "duration missing")
+        XCTAssertTrue(out.contains("\u{25CF}"), "progress knob missing")
+    }
+
+    func testPollerWithoutTimesDrawsNoBar() {
+        let store = NowPlayingStore()
+        let p = poller(mode: .source, store: store, reply: { self.playingReply(extra: "") })
+        p.tick()
+        let snap = store.read()
+        guard case .active(let np) = snap.outcome else { return XCTFail("expected active, got \(snap.outcome)") }
+        XCTAssertEqual(np.duration, 0)
+        XCTAssertEqual(np.position, 0)
+        XCTAssertNil(snap.bridge?.artworkURL)
+        XCTAssertFalse(plain(scene(mode: .source).render(frame: frame, snapshot: snap)).contains("0:00"))
     }
 }
 

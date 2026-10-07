@@ -82,6 +82,9 @@ enum SourceReadiness: Equatable {
         // make one; if it ever does, it says what happened.
         case .ledgerChanged:     return .unavailable("SpanDAC's play record was replaced")
         case .busy:              return .unavailable("SpanDAC is busy; try again in a moment.")
+        // Only a play can see this, and the Output tab does not make one; if it
+        // ever does, it says the same sentence a failed play does.
+        case .playerDisconnected(let sentence): return .unavailable(sentence)
         case .link(let failure): return .unavailable(failure.sentence)
         case .unlicensed(let detail): return .unavailable(spanDACNotLicensedLine(detail))
         }

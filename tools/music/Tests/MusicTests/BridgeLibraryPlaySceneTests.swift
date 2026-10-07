@@ -143,6 +143,7 @@ final class BridgeLibraryPlaySceneTests: XCTestCase {
                                           "slice.libraryAlbumTracks": [trackReply(["t1", "t2", "t3"])],
                                           "slice.queue": [Self.queuedReply(skippedUnavailable: 1)],
                                           "slice.status": [Self.queued]])
+        wire.stickyStatus = true   // a play reads SpanDAC's capabilities before it queues
         let status = StatusStore()
         let s = libraryTestScene(flag: BridgeSelectedFlag(true), wire: wire, spy: LibraryAppleScriptSpy(), status: status)
 
@@ -171,6 +172,7 @@ final class BridgeLibraryPlaySceneTests: XCTestCase {
                                           "slice.libraryArtistSongs": [songs],
                                           "slice.queue": [Self.queuedReply(skippedUnavailable: 2)],
                                           "slice.status": [Self.queued]])
+        wire.stickyStatus = true   // a play reads SpanDAC's capabilities before it queues
         let status = StatusStore()
         let s = libraryTestScene(flag: BridgeSelectedFlag(true), wire: wire, spy: LibraryAppleScriptSpy(), status: status)
 
@@ -195,6 +197,7 @@ final class BridgeLibraryPlaySceneTests: XCTestCase {
                                           "slice.libraryAlbumTracks": [trackReply(["t1", "t2", "t3"])],
                                           "slice.queue": [Self.queued],
                                           "slice.status": [Self.queued]])
+        wire.stickyStatus = true   // a play reads SpanDAC's capabilities before it queues
         let status = StatusStore()
         let s = libraryTestScene(flag: BridgeSelectedFlag(true), wire: wire, spy: LibraryAppleScriptSpy(), status: status)
 

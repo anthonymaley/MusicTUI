@@ -154,6 +154,14 @@ func liveMusicAppPauseSession() -> MusicAppPauseSession? {
     return ScriptingBridgeMusicAppPauseSession(pid: pid)
 }
 
+/// The Output tab's confirmation that MusicTUI's own player is not playing,
+/// before a switch away from it. `SpeakersScene` takes it as a REQUIRED
+/// parameter, so every scene says where its pause goes: production passes this,
+/// a test passes a tripwire and can never reach a real pause by its starting mode.
+func liveMusicAppPauseConfirmation() throws -> Bool {
+    try confirmMusicAppNotPlaying(session: liveMusicAppPauseSession, isRunning: liveMusicAppMayBeRunning)
+}
+
 // MARK: - The live session (verified live only; tests never build one)
 
 /// Records the first Apple Event failure of a call. With a delegate set, a

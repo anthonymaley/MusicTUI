@@ -76,6 +76,16 @@ enum SourceAppError: Error, Equatable {
     /// and the fix is to wait, not to change the request. No auto-retry
     /// here: the caller decides when to try again.
     case busy
+    /// SpanDAC lost its connection to Apple Music's player, so nothing it is
+    /// asked to play can sound until SpanDAC is relaunched. Decoded on the
+    /// KIND `player_disconnected`; carries the whole sentence to show, which is
+    /// SpanDAC's own `detail` when it sent one and `playerDisconnectedSentence`
+    /// when it did not (build it with `playerDisconnected(detail:)`).
+    ///
+    /// **Not retried and never routed elsewhere.** Asking again cannot help and
+    /// playing through the MusicTUI path instead would be a silent provider
+    /// switch; the person is told, and relaunches SpanDAC.
+    case playerDisconnected(String)
     /// A SpanDAC on the network could not be found, reached, agreed with or
     /// read from. Carries the structured reason, so the Output tab can show a
     /// short note and everything else the whole sentence.
@@ -83,6 +93,18 @@ enum SourceAppError: Error, Equatable {
     /// SpanDAC is installed and not licensed: it answers every op but its status
     /// with this kind. Carries SpanDAC's own sentence, shown verbatim.
     case unlicensed(String)
+
+    /// What a person reads when SpanDAC says `player_disconnected` and sends no
+    /// sentence of its own (or an empty one). Platform-neutral: an iPhone or
+    /// iPad SpanDAC can lose its player too.
+    static let playerDisconnectedSentence =
+        "SpanDAC lost its connection to Apple Music's player. Relaunch SpanDAC to play again."
+
+    /// `player_disconnected`, with SpanDAC's own words when it sent any.
+    static func playerDisconnected(detail: String?) -> SourceAppError {
+        let text = detail?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return .playerDisconnected(text.isEmpty ? playerDisconnectedSentence : text)
+    }
 
     /// Deliberately short: it renders inside Radio's one-line message strip
     /// beside a `✗`, not in a log.
@@ -108,24 +130,29 @@ enum SourceAppError: Error, Equatable {
         case .unsupported: return "SpanDAC doesn't serve that yet — update SpanDAC"
         case .ledgerChanged: return "SpanDAC's play record was replaced"
         case .busy: return "SpanDAC is busy; try again in a moment."
+        // The whole sentence, with no "SpanDAC refused:" in front of it: the
+        // fix is to relaunch SpanDAC, and the sentence already says so.
+        case .playerDisconnected(let sentence): return sentence
         case .link(let failure): return failure.sentence
         case .unlicensed(let d): return d
         }
     }
 
     /// The shared decode rule for the two "simple" wire replies (search,
-    /// play): only `unauthorized`, `busy` and `unlicensed` have a kind of
-    /// their own, and every other kind is `refused(detail)`. One function so a kind added
+    /// play): only `unauthorized`, `busy`, `player_disconnected` and
+    /// `unlicensed` have a kind of their own, and every other kind is
+    /// `refused(detail)`. One function so a kind added
     /// to this rule cannot drift between the two call sites — `busy` was
     /// added to `decodeSearchReply` alone first, then had to be found and
     /// duplicated into `play`, which is exactly the drift this guards
     /// against next time.
-    static func fromSimpleFailureKind(_ kind: String?, detail: String) -> SourceAppError {
+    static func fromSimpleFailureKind(_ kind: String?, detail: String?) -> SourceAppError {
         switch kind {
-        case "unauthorized": return .notAuthorized
-        case "busy":          return .busy
-        case spanDACLicenceRefusalKind: return .unlicensed(detail)
-        default:              return .refused(detail)
+        case "unauthorized":        return .notAuthorized
+        case "busy":                return .busy
+        case "player_disconnected": return .playerDisconnected(detail: detail)
+        case spanDACLicenceRefusalKind: return .unlicensed(detail ?? "no detail")
+        default:                    return .refused(detail ?? "no detail")
         }
     }
 }
@@ -215,8 +242,7 @@ struct SourceAppStationSearch: StationSearching {
         }
 
         guard reply.ok else {
-            throw SourceAppError.fromSimpleFailureKind(reply.error?.kind,
-                                                        detail: reply.error?.detail ?? "no detail")
+            throw SourceAppError.fromSimpleFailureKind(reply.error?.kind, detail: reply.error?.detail)
         }
 
         // A missing `stations` key on an ok reply is a contract violation, not
@@ -435,8 +461,12 @@ struct SourceAppPlayback: SourcePlaying {
         }
 
         guard reply.ok else {
-            throw SourceAppError.fromSimpleFailureKind(reply.error?.kind,
-                                                        detail: reply.error?.detail ?? "no detail")
+            // A refusal with no detail has always been an unreadable reply;
+            // only `player_disconnected` may omit it.
+            if let failure = reply.error, failure.detail == nil, failure.kind != "player_disconnected" {
+                throw SourceAppError.unreadable
+            }
+            throw SourceAppError.fromSimpleFailureKind(reply.error?.kind, detail: reply.error?.detail)
         }
 
         // `ok` alone is not the answer. Before 2026-09-13 the app reported a
@@ -459,7 +489,9 @@ struct SourceAppPlayback: SourcePlaying {
     private struct PlayReply: Decodable {
         struct Failure: Decodable {
             let kind: String
-            let detail: String
+            /// Required for every kind but `player_disconnected`, whose
+            /// sentence has a fallback here (see `play`).
+            let detail: String?
         }
         struct Status: Decodable {
             let playback: String
@@ -586,9 +618,84 @@ struct SourceStatus: Equatable {
     /// What the SpanDAC says is on its output. Nil when the reply carries no
     /// `output` key (a SpanDAC that predates it), which is read as before.
     var output: SourceOutputInfo? = nil
+    /// Elapsed and total seconds of the playing song, and its cover art URL.
+    /// **Optional on the wire:** absent when SpanDAC does not know, and an
+    /// older SpanDAC never sends them, so nil reads exactly as before (no
+    /// progress bar, the placeholder cover).
+    var positionSeconds: Double? = nil
+    var durationSeconds: Double? = nil
+    var artworkURL: String? = nil
+    /// The playing song's Music.app persistent ID, verbatim as a signed
+    /// decimal alias (e.g. "-596357614188841472"; `persistentIDHex(fromAlias:)`
+    /// converts it to the hex AppleScript takes), when SpanDAC knows it. Optional on
+    /// the wire. The Now tab uses it to pull the cover out of the library when
+    /// there is no fetchable `artworkURL`.
+    var persistentID: String? = nil
+    /// Which of the rows the client sent in its current play request is
+    /// playing (`row`, 0-based), and the rows after it in play order
+    /// (`next_rows`, the upcoming rows SpanDAC sends, following shuffle when its
+    /// queue does, at most 5,000 of them: SpanDAC's own bound, which
+    /// `nextRowsSanityCap` matches).
+    /// Indexes into the SENT list (`RoutingCoordinator.spanDACPlayedRows`),
+    /// not into the present entries. Optional on the wire; a malformed value is
+    /// absent, and a negative index is dropped.
+    var row: Int? = nil
+    var nextRows: [Int]? = nil
+    /// SpanDAC's own shuffle and repeat state (`slice.shuffle` / `slice.repeat`
+    /// builds), and the raw `capabilities` of the same reply. All optional on
+    /// the wire: an older SpanDAC sends none, which reads as no shuffle/repeat
+    /// control (see `SourceStatus.offersShuffle` / `offersRepeat`).
+    var shuffle: Bool? = nil
+    /// "off" | "one" | "all" as the app sends it; anything else is nil.
+    var repeatMode: String? = nil
+    var capabilities: [String] = []
+    /// `slice.status`'s optional `"player":"disconnected"`: SpanDAC has lost its
+    /// connection to Apple Music's player and only a relaunch fixes it. Absent
+    /// (an older SpanDAC), or any other value, is false: this build knows one
+    /// word and ignores the rest. Folded into `readiness`, never into `dataReadiness`.
+    var playerDisconnected: Bool = false
+    /// `readiness` as it reads with the player left out: authorization, contract
+    /// and DAC only. Nil on a status built by hand, which reads as `readiness`.
+    /// `dataReadiness` starts from this, so a disconnected player (a sound
+    /// problem) can never make SpanDAC unfit to serve music data.
+    var readinessIgnoringPlayer: SourceReadiness? = nil
+    /// `slice.status`'s optional `queue_token`: the token of the assignment now
+    /// standing in SpanDAC's player (Codex 106, finding 6). Opaque, compared for
+    /// equality only. Absent from an older SpanDAC, and from a newer one once the
+    /// player is unloaded or nothing SpanDAC assigned stands; a blank value is
+    /// absent too.
+    var queueToken: String? = nil
     /// SpanDAC's licence object. Nil when the reply carries none, which is read
     /// as serving (an older SpanDAC, or one built without licensing).
     var licence: SpanDACLicenceInfo? = nil
+}
+
+/// The wire ops for SpanDAC's own shuffle and repeat.
+let sourceShuffleOp = "slice.shuffle"
+let sourceRepeatOp = "slice.repeat"
+/// `slice.useDAC` was refused. SpanDAC's own `detail` (nil when it sent none) and,
+/// when the refusal reply carries one, the status it left behind.
+struct SourceUseDACRefusal: Error {
+    let detail: String?
+    let status: SourceStatus?
+}
+
+/// `slice.useDAC` and the capability SpanDAC lists when it serves it.
+let sourceUseDACOp = "slice.useDAC"
+let sourceUseDACCapability = "output.use_dac"
+
+extension SourceStatus {
+    /// Whether the app lists the op in `capabilities`: the only thing that makes
+    /// the Now tab's Shuffle / Repeat cells live. An older build lists neither.
+    var offersShuffle: Bool { capabilities.contains(sourceShuffleOp) }
+    var offersRepeat: Bool { capabilities.contains(sourceRepeatOp) }
+    /// Whether this SpanDAC can switch the Mac to its DAC on request. An older
+    /// one cannot, and then the switch happens at the first play.
+    var offersUseDAC: Bool { capabilities.contains(sourceUseDACCapability) }
+    /// Whether this SpanDAC plays a library album, artist, playlist or the Songs
+    /// list whole from a container name and a start row (`slice.playLibrary`).
+    /// An older one does not, and the client keeps its page walk and id list.
+    var offersPlayLibrary: Bool { capabilities.contains(sourcePlayLibraryCapability) }
 }
 
 extension SourceStatus {
@@ -602,13 +709,19 @@ extension SourceStatus {
     /// together with the DAC state that produces them. That function checks
     /// the contract and access BEFORE the DAC, so either problem still reads
     /// as not ready here.
+    ///
+    /// **The player is left out structurally**, not by matching its sentence:
+    /// this starts from `readinessIgnoringPlayer`, computed from the same
+    /// status without the player check. Data and sound are independent
+    /// (2026-09-28); a SpanDAC whose player is disconnected still serves data.
     var dataReadiness: SourceReadiness {
-        switch (output?.dac, readiness) {
+        let basis = readinessIgnoringPlayer ?? readiness
+        switch (output?.dac, basis) {
         case (.notConnected?, .unavailable("plug in your DAC")),
              (.unknown?, .unavailable("SpanDAC is still checking for a DAC")):
             return .ready
         default:
-            return readiness
+            return basis
         }
     }
 }
@@ -692,6 +805,17 @@ protocol SourceControlling {
     /// Relative seek. The TUI's `[` and `]` are ±30s, and `slice.seek` already
     /// takes `offset` as the alternative to `position`.
     func seek(byOffset seconds: Double) throws
+    /// SpanDAC's own shuffle and repeat (`slice.shuffle {"on"}`, `slice.repeat
+    /// {"mode"}`), sent only when `status().offersShuffle` / `offersRepeat`.
+    /// The default throws `.unsupported` like any op an older build lacks.
+    func setShuffle(_ on: Bool) throws
+    func setRepeat(_ mode: RepeatMode) throws
+    /// `slice.useDAC`: SpanDAC makes the Mac's sound output its chosen DAC and
+    /// answers with the fresh status (nil when the reply carries none). Sent
+    /// only when `status().offersUseDAC`. Refused with `.refused(detail)` when
+    /// there is no chosen DAC present (`bad_request`) or the switch could not be
+    /// confirmed (`output_unconfirmed`).
+    func useDAC() throws -> SourceStatus?
     func queue(rows: [SourceLibraryRow]) throws
     func queue(catalogIDs: [String]) throws
     func playStation(id: String, named name: String) throws
@@ -715,6 +839,18 @@ protocol SourceControlling {
     /// direct call in `BridgeMusicProviderTests`, which predates this field,
     /// keeps compiling — it still sends the key, just with `false`).
     func queue(libraryIDs: [String], startRequired: Bool) throws -> Int
+    /// `queue(libraryIDs:startRequired:)`'s exact request, also returning the
+    /// `queue_token` its reply carried (nil from a SpanDAC that predates it), so
+    /// the rows the client kept for this play can be tied to the assignment it
+    /// made (Codex 106, finding 6).
+    func queueRetainingToken(libraryIDs: [String], startRequired: Bool) throws -> (skippedUnavailable: Int, queueToken: String?)
+    /// `slice.playLibrary`: play one library container whole, named by kind, id
+    /// and start row, with no id list and no page walk. Sent only when
+    /// `capabilities()` lists `play.library`.
+    func playLibrary(kind: LibraryPlayKind, id: String?, start: LibraryPlayStart?, listRev: String?,
+                     shuffle: Bool) throws -> SpanDACPlayResult
+    /// `slice.listRev`: a container's complete-list revision without its rows.
+    func listRev(kind: LibraryPlayKind, id: String?) throws -> SpanDACListRev
     // NOTE: `SourceAppControl`'s own declaration below defaults `startRequired`
     // to `false`; a protocol requirement's default only applies to callers
     // holding a `SourceControlling`-typed value, so `BridgeMusicProviderTests`'
@@ -792,6 +928,18 @@ protocol SourceControlling {
 /// Defaults for the Part 2 members: an older conformer reads as an older
 /// Bridge, naming the op it does not serve, never as an empty answer.
 extension SourceControlling {
+    /// A conformer written before the token reports none, which reads as an
+    /// older SpanDAC: today's title-checked rows.
+    func queueRetainingToken(libraryIDs: [String], startRequired: Bool) throws -> (skippedUnavailable: Int, queueToken: String?) {
+        (try queue(libraryIDs: libraryIDs, startRequired: startRequired), nil)
+    }
+    func playLibrary(kind: LibraryPlayKind, id: String?, start: LibraryPlayStart?, listRev: String?,
+                     shuffle: Bool) throws -> SpanDACPlayResult {
+        throw SourceAppError.unsupported(sourcePlayLibraryOp)
+    }
+    func listRev(kind: LibraryPlayKind, id: String?) throws -> SpanDACListRev {
+        throw SourceAppError.unsupported(sourceListRevOp)
+    }
     func recommendations(limit: Int) throws -> [DiscoverRail] {
         throw SourceAppError.unsupported("slice.recommendations")
     }
@@ -811,6 +959,9 @@ extension SourceControlling {
     func heavyRotation(limit: Int) throws -> [HistoryItem] { throw SourceAppError.unsupported("slice.heavyRotation") }
     func queueReportingSkips(catalogIDs: [String]) throws -> Int { throw SourceAppError.unsupported("slice.queue") }
     func capabilities() throws -> [String] { throw SourceAppError.unsupported("slice.status") }
+    func setShuffle(_ on: Bool) throws { throw SourceAppError.unsupported(sourceShuffleOp) }
+    func setRepeat(_ mode: RepeatMode) throws { throw SourceAppError.unsupported(sourceRepeatOp) }
+    func useDAC() throws -> SourceStatus? { throw SourceAppError.unsupported(sourceUseDACOp) }
     func recentlyAdded() throws -> [DiscoverItem] {
         throw SourceAppError.unsupported(BridgeDiscoverSections.recentlyAddedOp)
     }
@@ -846,7 +997,7 @@ struct SourceAppControl: SourceControlling {
     /// every `slice.queue`: starting a queue can wait on the player preparing
     /// its first song, and Bridge retries that once after a cold start, which
     /// together outlast the transport commands' 10s.
-    private let libraryTransport: (String, String) throws -> String
+    let libraryTransport: (String, String) throws -> String
 
     init(path: String = SourceAppStationSearch.socketPath) {
         self.path = path
@@ -874,14 +1025,39 @@ struct SourceAppControl: SourceControlling {
     func status() throws -> SourceStatus {
         let reply = try send(["op": "slice.status"])
         guard let status = reply["status"] as? [String: Any],
-              let playback = status["playback"] as? String else {
+              let decoded = Self.decodeStatus(status, readingWith: self) else {
             throw SourceAppError.unreadable
         }
+        return decoded
+    }
+
+    /// `slice.useDAC`: no uid, no other field. The reply's fresh `status`,
+    /// decoded as `status()` would, or nil when it carries none.
+    func useDAC() throws -> SourceStatus? {
+        var refusedReply: [String: Any]?
+        let reply: [String: Any]
+        do {
+            reply = try send(["op": sourceUseDACOp], over: transport, onRefusedReply: { refusedReply = $0 })
+        } catch SourceAppError.refused(let detail) {
+            // A refusal of this op keeps the status it carries (the generic send
+            // throws on `ok:false` and would drop the body). `no detail` is the
+            // generic decoder's stand-in for an absent one.
+            throw SourceUseDACRefusal(
+                detail: detail == "no detail" ? nil : detail,
+                status: (refusedReply?["status"] as? [String: Any])
+                    .flatMap { Self.decodeStatus($0, readingWith: self) })
+        }
+        guard let status = reply["status"] as? [String: Any] else { return nil }
+        return Self.decodeStatus(status, readingWith: self)
+    }
+
+    static func decodeStatus(_ status: [String: Any], readingWith control: SourceAppControl) -> SourceStatus? {
+        guard let playback = status["playback"] as? String else { return nil }
         let queue = status["queue"] as? [String: Any]
         return SourceStatus(playback: playback,
                             title: status["title"] as? String,
                             artist: status["artist"] as? String,
-                            readiness: readiness(from: status),
+                            readiness: control.readiness(from: status),
                             queuePhase: queue?["phase"] as? String,
                             queueRequested: queue?["requested"] as? Int,
                             queuePresent: queue?["present"] as? Int,
@@ -889,7 +1065,55 @@ struct SourceAppControl: SourceControlling {
                             queueBuiltBeforeFailure: queue?["built_before_failure"] as? Int,
                             queueIndex: queue?["index"] as? Int,
                             output: Self.outputInfo(from: status),
+                            positionSeconds: Self.seconds(status["position_s"]),
+                            durationSeconds: Self.seconds(status["duration_s"]),
+                            artworkURL: (status["artwork_url"] as? String).flatMap { $0.isEmpty ? nil : $0 },
+                            persistentID: (status["persistent_id"] as? String).flatMap { $0.isEmpty ? nil : $0 },
+                            row: Self.index(status["row"]),
+                            nextRows: (status["next_rows"] as? [Any]).map { $0.compactMap(Self.index).prefix(Self.nextRowsSanityCap).map { $0 } },
+                            shuffle: Self.bool(status["shuffle"]),
+                            repeatMode: (status["repeat"] as? String).flatMap { RepeatMode(rawValue: $0) }?.rawValue,
+                            capabilities: status["capabilities"] as? [String] ?? [],
+                            playerDisconnected: Self.playerIsDisconnected(status),
+                            readinessIgnoringPlayer: control.readiness(from: status, includingPlayer: false),
+                            queueToken: Self.queueToken(status["queue_token"]),
                             licence: SpanDACLicenceInfo(status: status))
+    }
+
+    /// True only for the exact word `disconnected`; absent, null, any other
+    /// string or any other type is "fine" (an older SpanDAC never sends it).
+    static func playerIsDisconnected(_ status: [String: Any]) -> Bool {
+        (status["player"] as? String) == "disconnected"
+    }
+
+    /// Not a product limit of this client: it keeps every row SpanDAC sends, and
+    /// SpanDAC itself stops at 5,000 (`statusNextRowsMaximum`, which also keeps a
+    /// whole-Songs status inside one 64 KiB reply frame). This equals that
+    /// number, so a full reply is read whole, and it stops a malformed reply
+    /// from allocating without bound.
+    static let nextRowsSanityCap = 5000
+
+    /// A real JSON boolean, or nil. `1` and `0` are numbers, not booleans.
+    static func bool(_ raw: Any?) -> Bool? {
+        guard let n = raw as? NSNumber, CFGetTypeID(n as CFTypeRef) == CFBooleanGetTypeID() else { return nil }
+        return n.boolValue
+    }
+
+    /// A non-negative whole number, or nil. A boolean is not an index, and
+    /// neither is 1.5.
+    static func index(_ raw: Any?) -> Int? {
+        guard let n = raw as? NSNumber, CFGetTypeID(n as CFTypeRef) != CFBooleanGetTypeID() else { return nil }
+        let d = n.doubleValue
+        guard d.isFinite, d >= 0, d == d.rounded(), d <= Double(Int32.max) else { return nil }
+        return Int(d)
+    }
+
+    /// A non-negative, finite number of seconds, or nil. A malformed value is
+    /// read as unknown rather than failing the whole status reply.
+    static func seconds(_ raw: Any?) -> Double? {
+        guard let n = raw as? NSNumber else { return nil }
+        let d = n.doubleValue
+        return d.isFinite && d >= 0 ? d : nil
     }
 
     /// Contract 3. The reply's rows carry MusicKit LIBRARY ids, which is the
@@ -1095,7 +1319,8 @@ struct SourceAppControl: SourceControlling {
                          generation: generation,
                          stale: reply["stale"] as? Bool ?? false,
                          refreshing: reply["refreshing"] as? Bool ?? false,
-                         skippedVideos: skippedVideos)
+                         skippedVideos: skippedVideos,
+                         listRev: Self.listRev(reply["list_rev"]))
     }
 
     /// Shared by the three container reads. Complete or refused — `generation`
@@ -1118,7 +1343,8 @@ struct SourceAppControl: SourceControlling {
         LibraryAliasSelfCheck.shared.observe(rows)
         return MusicList(rows: rows, generation: generation,
                          stale: reply["stale"] as? Bool ?? false,
-                         refreshing: reply["refreshing"] as? Bool ?? false)
+                         refreshing: reply["refreshing"] as? Bool ?? false,
+                         listRev: Self.listRev(reply["list_rev"]))
     }
 
     /// Contract 3. **The point of the whole seam:** a row Bridge served is
@@ -1155,9 +1381,17 @@ struct SourceAppControl: SourceControlling {
     /// a legacy request and refuses it, so omission-means-false no longer
     /// holds.
     func queue(libraryIDs: [String], startRequired: Bool = false) throws -> Int {
+        try queueRetainingToken(libraryIDs: libraryIDs, startRequired: startRequired).skippedUnavailable
+    }
+
+    /// The one implementation of the library-id queue request; `queue(libraryIDs:)`
+    /// is this without the token.
+    func queueRetainingToken(libraryIDs: [String], startRequired: Bool = false) throws
+        -> (skippedUnavailable: Int, queueToken: String?) {
         let body: [String: Any] = ["op": "slice.queue", "library_ids": libraryIDs, "start_required": startRequired]
         let reply = try send(body, over: libraryTransport)
-        return try Self.skippedUnavailable(in: reply, sent: libraryIDs.count)
+        return (try Self.skippedUnavailable(in: reply, sent: libraryIDs.count),
+                Self.queueToken(reply["queue_token"]))
     }
 
     /// Part 2, P1: `queue(catalogIDs:)`'s exact request, with the skip count
@@ -1195,6 +1429,14 @@ struct SourceAppControl: SourceControlling {
 
     func seek(byOffset seconds: Double) throws {
         _ = try send(["op": "slice.seek", "offset": seconds])
+    }
+
+    func setShuffle(_ on: Bool) throws {
+        _ = try send(["op": sourceShuffleOp, "on": on])
+    }
+
+    func setRepeat(_ mode: RepeatMode) throws {
+        _ = try send(["op": sourceRepeatOp, "mode": mode.rawValue])
     }
 
     /// Hands the selected rows over for the app to resolve and play.
@@ -1366,7 +1608,7 @@ struct SourceAppControl: SourceControlling {
     /// one that has not read its DAC yet: not ready, so the routing transaction
     /// and the CLI refuse it too. SpanDAC is DAC-only, and an unknown output
     /// must never fall through to a speaker.
-    func readiness(from status: [String: Any]) -> SourceReadiness {
+    func readiness(from status: [String: Any], includingPlayer: Bool = true) -> SourceReadiness {
         if let contract = status["contract"] as? Int, contract != sourceContractVersion {
             return .unavailable(sourceContractMismatchReason(contract))
         }
@@ -1383,8 +1625,22 @@ struct SourceAppControl: SourceControlling {
         case "restricted":     return .unavailable("Apple Music access is restricted on this Mac")
         default:               return .unavailable("SpanDAC could not read its Apple Music access")
         }
-        switch Self.outputInfo(from: status)?.dac {
-        case nil, .connected?: return .ready
+        let output = Self.outputInfo(from: status)
+        switch output?.dac {
+        case nil, .connected?:
+            // Last, so a reason a person can act on first (no Apple Music
+            // access, no DAC) is the one the row says. The Output tab shows
+            // this as the row's reason, the same sentence a failed play prints.
+            return includingPlayer && Self.playerIsDisconnected(status)
+                ? .unavailable(SourceAppError.playerDisconnectedSentence) : .ready
+        case .notConnected? where output?.switchable == true:
+            // The chosen DAC is plugged in and merely not the sound output
+            // (Anthony 2026-10-05 17:23): choosing it makes it the output, so it
+            // is as ready as a connected one, player check included. Only an
+            // explicit `switchable: true` gets here; absent, false or unreadable
+            // is genuinely no DAC, below.
+            return includingPlayer && Self.playerIsDisconnected(status)
+                ? .unavailable(SourceAppError.playerDisconnectedSentence) : .ready
         case .notConnected?:   return .unavailable("plug in your DAC")
         case .unknown?:        return .unavailable("SpanDAC is still checking for a DAC")
         }
@@ -1392,8 +1648,11 @@ struct SourceAppControl: SourceControlling {
 
     /// The optional `output` object of `slice.status`: `dac` is `connected`,
     /// `not_connected` or `unknown`; `name` and `max_rate_hz` only beside a
-    /// connected DAC. No key (or null) is nil. A key this build cannot read
-    /// is `unknown`, never connected.
+    /// connected DAC, or beside `not_connected` with `switchable: true` (a DAC
+    /// plugged in but not the Mac's output). `switchable` is read only as a real
+    /// JSON `true`, only beside `not_connected`: anything else is false. No key
+    /// (or null) is nil. A key this build cannot read is `unknown`, never
+    /// connected.
     static func outputInfo(from status: [String: Any]) -> SourceOutputInfo? {
         guard let raw = status["output"], !(raw is NSNull) else { return nil }
         guard let output = raw as? [String: Any] else {
@@ -1404,7 +1663,11 @@ struct SourceAppControl: SourceControlling {
             return SourceOutputInfo(dac: .connected, name: output["name"] as? String,
                                     maxRateHz: output["max_rate_hz"] as? Int)
         case "not_connected":
-            return SourceOutputInfo(dac: .notConnected, name: nil, maxRateHz: nil)
+            guard bool(output["switchable"]) == true else {
+                return SourceOutputInfo(dac: .notConnected, name: nil, maxRateHz: nil)
+            }
+            return SourceOutputInfo(dac: .notConnected, name: output["name"] as? String,
+                                    maxRateHz: output["max_rate_hz"] as? Int, switchable: true)
         default:
             return SourceOutputInfo(dac: .unknown, name: nil, maxRateHz: nil)
         }
@@ -1416,8 +1679,11 @@ struct SourceAppControl: SourceControlling {
         try send(body, over: transport)
     }
 
+    /// `onRefusedReply` sees the whole reply of an `ok:false` answer before it is
+    /// turned into an error, for the one op whose refusal carries a status.
     func send(_ body: [String: Any],
-              over transport: (String, String) throws -> String) throws -> [String: Any] {
+              over transport: (String, String) throws -> String,
+              onRefusedReply: (([String: Any]) -> Void)? = nil) throws -> [String: Any] {
         guard let data = try? JSONSerialization.data(withJSONObject: body),
               let line = String(data: data, encoding: .utf8) else {
             throw SourceAppError.unreadable
@@ -1435,6 +1701,7 @@ struct SourceAppControl: SourceControlling {
             throw SourceAppError.unreadable
         }
         guard ok else {
+            onRefusedReply?(reply)
             let error = reply["error"] as? [String: Any]
             let detail = error?["detail"] as? String ?? "no detail"
             switch error?["kind"] as? String {
@@ -1471,6 +1738,12 @@ struct SourceAppControl: SourceControlling {
                 // Carries the op name, not the prose, so the caller can say
                 // which capability is missing rather than "SpanDAC refused".
                 throw SourceAppError.unsupported(op)
+            case "player_disconnected":
+                // Decoded on the kind, and NOT retried: `mutate` re-sends only
+                // a `warming`, so this reaches the person as the one sentence.
+                // `error?["detail"]` rather than `detail`, whose "no detail"
+                // stands in for a missing one and must not be shown.
+                throw SourceAppError.playerDisconnected(detail: error?["detail"] as? String)
             case "unavailable":
                 // Addendum U (U-R4): "None of those songs are available to
                 // SpanDAC." and "'<title>' isn't available to SpanDAC." —
@@ -1567,8 +1840,12 @@ extension SourceAppControl: CompletedPlaysReading {
     }
 
     /// One play record. `alias` must be present as text or an explicit null;
-    /// an absent key is not the same claim as "no alias". `duration_s` and
-    /// `position_s` are evidence for Bridge's own decision and are not read.
+    /// an absent key is not the same claim as "no alias". `library_id` is text
+    /// when SpanDAC identified the song, and null, absent or empty when it could
+    /// not: all three read as "unidentified" (nil), because the only safe
+    /// reading of a missing identity is no identity. Any other type is a broken
+    /// peer. `duration_s` and `position_s` are evidence for Bridge's own
+    /// decision and are not read.
     private static func completedPlay(_ item: [String: Any],
                                        bad: (String) -> SourceAppError) throws -> CompletedPlayRecord {
         guard let seq = strictInt(item["seq"]), seq >= 1 else { throw bad("has a play with no seq") }
@@ -1583,12 +1860,18 @@ extension SourceAppControl: CompletedPlaysReading {
         case nil:                  throw bad("has play \(seq) with no alias")
         default:                   throw bad("has play \(seq) with an alias that is neither text nor null")
         }
+        let libraryID: String?
+        switch item["library_id"] {
+        case nil, is NSNull:       libraryID = nil
+        case let value as String:  libraryID = value.isEmpty ? nil : value
+        default:                   throw bad("has play \(seq) with a library_id that is neither text nor null")
+        }
         let stamp = try text("completed_at")
         guard let completedAt = completedAtFormatter.date(from: stamp) else {
             throw bad("has play \(seq) with an unreadable completed_at")
         }
         return CompletedPlayRecord(seq: seq, playID: try text("play_id"), alias: alias,
-                                   libraryID: try text("library_id"),
+                                   libraryID: libraryID,
                                    title: try text("title"), artist: try text("artist"),
                                    completedAt: completedAt, end: try text("end"))
     }

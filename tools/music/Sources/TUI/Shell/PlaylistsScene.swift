@@ -108,6 +108,9 @@ final class PlaylistsScene: Scene {
     private let loadMusicAppPlaylists: () -> (names: [String], subscription: Set<String>)
     private let makeSources: ([String]) -> PlaylistDataSources
     private let warmUpSleep: (TimeInterval) -> Void
+    /// The clock the Bridge preview's rest debounce reads (a seam, so a test
+    /// moves time by hand rather than sleeping).
+    private let now: () -> Date
     private let screenWidth: () -> Int
 
     // D7: which library the rail actually came from, and the epoch every
@@ -127,7 +130,13 @@ final class PlaylistsScene: Scene {
     }
 
     private var focus: BrowserFocus = .playlists
-    private var plCursor = 0
+    /// Every assignment goes through this observer, so no path that moves the
+    /// rail cursor (movement, Home/End, a filter clamp, a reclamp, the playing
+    /// snap, a reset) can leave a queued Bridge preview eligible for the row it
+    /// left: the token is revoked on the spot, not at the next tick.
+    private var plCursor = 0 {
+        didSet { if plCursor != oldValue { invalidateBridgePreview() } }
+    }
     private var plScroll = 0
     private var snapToPlayingPending = false
 
@@ -238,12 +247,53 @@ final class PlaylistsScene: Scene {
     private var bridgePreview: [String: [MusicRow]] = [:]
     private var bridgePreviewFailure: [String: String] = [:]
     private var bridgePreviewInFlight: Set<String> = []
+    /// How long the cursor must rest on a playlist before its preview is read.
+    /// SpanDAC serves library reads one at a time and a big playlist is
+    /// seconds, so a read per row scrolled past builds a backlog a play then
+    /// waits behind.
+    static let bridgePreviewRest: TimeInterval = 0.25
+    /// The row the cursor is on and when it arrived there (tick-thread only).
+    private var bridgePreviewRest: (id: String, since: Date)? = nil
+    /// What a queued preview read must still be true of when it reaches the
+    /// front of `previewQueue`: the rail row, the scene's rail epoch, and a
+    /// generation bumped by every action that leaves the preview context. It is
+    /// published (nil when the pane is not live: rail focus lost, layout not
+    /// three-zone, not a Bridge rail) from `tick`, and cleared synchronously by
+    /// `invalidateBridgePreview()`. `currentBridgeRow()` is tick-thread state and
+    /// must not be read from the queue.
+    private struct BridgePreviewToken: Equatable {
+        let id: String
+        let epoch: Int
+        let generation: Int
+    }
+    private var bridgePreviewToken: BridgePreviewToken? = nil
+    private var bridgePreviewGeneration = 0
+    private let bridgeWantedLock = NSLock()
+    /// The actions that leave the preview context (drill-in, p/s/Enter plays,
+    /// leaving the scene) call this on the spot, so a read already queued for
+    /// the same row cannot be sent after them. The next `tick` publishes a fresh
+    /// token if the pane is live again, so resting on the rail still previews.
+    private func invalidateBridgePreview() {
+        bridgeWantedLock.lock()
+        bridgePreviewGeneration += 1
+        bridgePreviewToken = nil
+        bridgeWantedLock.unlock()
+    }
     private enum BridgePreviewOutcome {
         case success(rows: [MusicRow], total: Int, skippedVideos: Int)
         case failure(String)
     }
     /// Rule 10: epoch-carrying, same discipline as every other inbox here.
     private var bridgePreviewInbox: [(id: String, epoch: Int, outcome: BridgePreviewOutcome)] = []
+    /// How many walked-playlist results wait in the preview inbox, not yet drained by
+    /// `tick`. For a test that must see whether a walk posted.
+    var bridgePreviewPostsPending: Int {
+        previewInboxLock.lock(); defer { previewInboxLock.unlock() }
+        return bridgePreviewInbox.count
+    }
+    /// Previews dropped unsent because the cursor had left their row; drained
+    /// in `tick` (under `previewInboxLock`) to clear their in-flight mark.
+    private var bridgePreviewDropped: [(id: String, epoch: Int)] = []
 
     // C3 item 2: the drill-in's own tracks feed. REBUILT, not reset-and-reused,
     // on every drill-in — its `fetch` closure captures the drilled playlist's
@@ -251,6 +301,9 @@ final class PlaylistsScene: Scene {
     // the same playlist as last time.
     private var bridgeTracksFeed: BridgeListFeed<MusicRow>? = nil
     private var bridgeTracksRows: [MusicRow] = []
+    /// The `list_rev` of the read `bridgeTracksRows` came from, when SpanDAC sent
+    /// one (the walk's pages all agreed): a whole-playlist play sends it back.
+    private var bridgeTracksListRev: String? = nil
     private var bridgeTracksDone = false
     private var bridgeTracksTotal: Int? = nil
     private var bridgeTracksFailure: String? = nil
@@ -268,6 +321,7 @@ final class PlaylistsScene: Scene {
          makeSources: @escaping ([String]) -> PlaylistDataSources = { _ in .empty },
          handoff: MusicTUIHandoff = RefusingHandoff(),
          warmUpSleep: @escaping (TimeInterval) -> Void = { Thread.sleep(forTimeInterval: $0) },
+         now: @escaping () -> Date = Date.init,
          screenWidth: @escaping () -> Int = { ScreenFrame.current().width }) {
         self.routing = routing
         self.handoff = handoff
@@ -285,6 +339,7 @@ final class PlaylistsScene: Scene {
         self.loadMusicAppPlaylists = loadMusicAppPlaylists
         self.makeSources = makeSources
         self.warmUpSleep = warmUpSleep
+        self.now = now
         self.screenWidth = screenWidth
         self.meta = playlists.map { PlaylistMeta(name: $0) }
         if !playlists.isEmpty {
@@ -505,6 +560,7 @@ final class PlaylistsScene: Scene {
     /// reload) is dropped on arrival, and leaves `railSource` nil so the very
     /// next step (`loadRail`) reloads from the right source this same tick.
     private func resetRail(newWant: ListSource) {
+        invalidateBridgePreview()
         railEpoch += 1
         // Music.app list structures.
         playlists = []
@@ -525,6 +581,7 @@ final class PlaylistsScene: Scene {
         previewInbox = [:]
         fullInbox = [:]
         bridgePreviewInbox = []
+        bridgePreviewDropped = []
         previewInboxLock.unlock()
         // Bridge structures.
         bridgePlaylistRows = []
@@ -541,6 +598,7 @@ final class PlaylistsScene: Scene {
         bridgeTracksFeed?.reset()
         bridgeTracksFeed = nil
         bridgeTracksRows = []
+        bridgeTracksListRev = nil
         bridgeTracksDone = false
         bridgeTracksTotal = nil
         bridgeTracksFailure = nil
@@ -668,6 +726,7 @@ final class PlaylistsScene: Scene {
         let freshPreviews = previewInbox; previewInbox = [:]
         let freshFull = fullInbox; fullInbox = [:]
         let freshBridgePreviews = bridgePreviewInbox; bridgePreviewInbox = []
+        let droppedPreviews = bridgePreviewDropped; bridgePreviewDropped = []
         previewInboxLock.unlock()
         for (idx, entry) in freshPreviews {
             previewInFlight.remove(idx)
@@ -680,6 +739,9 @@ final class PlaylistsScene: Scene {
             guard entry.epoch == railEpoch else { continue }   // rule 10: outlived a provenance switch
             fullCache[idx] = entry.preview
             changed = true
+        }
+        for (pid, epoch) in droppedPreviews where epoch == railEpoch {
+            bridgePreviewInFlight.remove(pid)
         }
         // C3 item 1: the Bridge preview's own landings.
         for (pid, epoch, outcome) in freshBridgePreviews {
@@ -732,12 +794,13 @@ final class PlaylistsScene: Scene {
                 bridgeTracksRows.append(contentsOf: drain.append)
                 changed = true
             }
+            if bridgeTracksListRev != drain.listRev { bridgeTracksListRev = drain.listRev }
             if bridgeTracksTotal != drain.total { bridgeTracksTotal = drain.total; changed = true }
             if bridgeTracksFailure != drain.failure {
                 bridgeTracksFailure = drain.failure
                 // D4: a failure clears the rows and keeps the sentence — a
                 // walk that failed never shows a partial list.
-                if drain.failure != nil { bridgeTracksRows = [] }
+                if drain.failure != nil { bridgeTracksRows = []; bridgeTracksListRev = nil }
                 changed = true
             }
             if bridgeTracksWarming != drain.warming { bridgeTracksWarming = drain.warming; changed = true }
@@ -769,34 +832,61 @@ final class PlaylistsScene: Scene {
         // FOCUSED playlist, only at the rail (not while drilled in, where the
         // tracks feed above is the live read) and only in three-zone layout,
         // where the pane is actually shown.
-        if railSource == .bridge, focus == .playlists, z.mode == .three, let row = currentBridgeRow() {
+        let wantedRow: MusicRow? = railSource == .bridge ? currentBridgeRow() : nil
+        var previewToken: BridgePreviewToken? = nil
+        bridgeWantedLock.lock()
+        if let row = wantedRow, focus == .playlists, z.mode == .three {
+            previewToken = BridgePreviewToken(id: row.id, epoch: railEpoch, generation: bridgePreviewGeneration)
+        }
+        bridgePreviewToken = previewToken
+        bridgeWantedLock.unlock()
+        if railSource == .bridge, focus == .playlists, z.mode == .three, let row = wantedRow, let token = previewToken {
             let pid = row.id
             if bridgePreview[pid] == nil, bridgePreviewFailure[pid] == nil, !bridgePreviewInFlight.contains(pid),
                let provider = makeProvider() {
-                bridgePreviewInFlight.insert(pid)
-                let epoch = railEpoch
-                let sleep = warmUpSleep
-                previewQueue.async { [weak self] in
-                    do {
-                        let page = try retryingWhileWarming(budget: WarmUpBudget(), sleep: sleep) {
-                            try provider.playlistTracks(playlistID: pid, cursor: nil, limit: PlaylistsScene.bridgePreviewLimit)
+                // Only a row the cursor has rested on is read: one still being
+                // scrolled past costs SpanDAC a full read for nothing.
+                let t = now()
+                if bridgePreviewRest?.id != pid { bridgePreviewRest = (pid, t) }
+                if let rest = bridgePreviewRest, t.timeIntervalSince(rest.since) >= Self.bridgePreviewRest {
+                    bridgePreviewInFlight.insert(pid)
+                    let epoch = railEpoch
+                    let sleep = warmUpSleep
+                    previewQueue.async { [weak self] in
+                        // A read for a row the cursor has since left is dropped
+                        // unsent, and its in-flight mark cleared so the row can
+                        // be previewed if the cursor comes back.
+                        guard let self else { return }
+                        self.bridgeWantedLock.lock()
+                        let stillWanted = self.bridgePreviewToken == token
+                        self.bridgeWantedLock.unlock()
+                        guard stillWanted else {
+                            self.previewInboxLock.lock()
+                            self.bridgePreviewDropped.append((pid, epoch))
+                            self.previewInboxLock.unlock()
+                            return
                         }
-                        guard let self else { return }
-                        self.previewInboxLock.lock()
-                        self.bridgePreviewInbox.append(
-                            (pid, epoch, .success(rows: page.rows, total: page.total ?? page.rows.count,
-                                                  skippedVideos: page.skippedVideos)))
-                        self.previewInboxLock.unlock()
-                    } catch {
-                        let sentence = (error as? MusicProviderError)?.errorDescription
-                            ?? "Couldn't read that playlist from your library."
-                        guard let self else { return }
-                        self.previewInboxLock.lock()
-                        self.bridgePreviewInbox.append((pid, epoch, .failure(sentence)))
-                        self.previewInboxLock.unlock()
+                        do {
+                            let page = try retryingWhileWarming(budget: WarmUpBudget(), sleep: sleep) {
+                                try provider.playlistTracks(playlistID: pid, cursor: nil, limit: PlaylistsScene.bridgePreviewLimit)
+                            }
+                            self.previewInboxLock.lock()
+                            self.bridgePreviewInbox.append(
+                                (pid, epoch, .success(rows: page.rows, total: page.total ?? page.rows.count,
+                                                      skippedVideos: page.skippedVideos)))
+                            self.previewInboxLock.unlock()
+                        } catch {
+                            let sentence = (error as? MusicProviderError)?.errorDescription
+                                ?? "Couldn't read that playlist from your library."
+                            self.previewInboxLock.lock()
+                            self.bridgePreviewInbox.append((pid, epoch, .failure(sentence)))
+                            self.previewInboxLock.unlock()
+                        }
                     }
                 }
             }
+        } else {
+            bridgePreviewRest = nil
         }
         return changed
     }
@@ -922,7 +1012,8 @@ final class PlaylistsScene: Scene {
                           let pid = bridgeTracksPlaylistID, let name = bridgeTracksPlaylistName else { return .none }
                     playBridgePlaylist(playlistID: pid, name: name, shuffle: false, startAt: trCursor + 1,
                                        startRequired: true, rows: bridgeTracksRows,
-                                       skippedVideos: skippedVideoCounts[pid] ?? 0)
+                                       skippedVideos: skippedVideoCounts[pid] ?? 0,
+                                       listRev: bridgeTracksListRev)
                     return .push(.nowPlaying)
                 }
                 guard fullCache[plCursor] != nil else { return .none }   // still loading
@@ -945,6 +1036,7 @@ final class PlaylistsScene: Scene {
                 focus = .playlists
                 return .redraw
             }
+            invalidateBridgePreview()
             return .pop
         case .escape:
             if focus == .tracks {
@@ -952,6 +1044,7 @@ final class PlaylistsScene: Scene {
                 focus = .playlists
                 return .redraw
             }
+            invalidateBridgePreview()
             return .pop
         // C2 item 6: Bridge's own retry, only while a failure is showing —
         // resets and restarts only the Bridge feed, never the Music.app
@@ -978,7 +1071,8 @@ final class PlaylistsScene: Scene {
                     && bridgeTracksDone && bridgeTracksFailure == nil
                 playBridgePlaylist(playlistID: row.id, name: row.title, shuffle: false, startAt: 1,
                                    startRequired: false, rows: cached ? bridgeTracksRows : nil,
-                                   skippedVideos: cached ? skippedVideoCounts[row.id] : nil)
+                                   skippedVideos: cached ? skippedVideoCounts[row.id] : nil,
+                                   listRev: cached ? bridgeTracksListRev : nil)
                 return .push(.nowPlaying)
             }
             playPlaylist(shuffle: false); return .push(.nowPlaying)
@@ -991,7 +1085,8 @@ final class PlaylistsScene: Scene {
                     && bridgeTracksDone && bridgeTracksFailure == nil
                 playBridgePlaylist(playlistID: row.id, name: row.title, shuffle: true, startAt: 1,
                                    startRequired: false, rows: cached ? bridgeTracksRows : nil,
-                                   skippedVideos: cached ? skippedVideoCounts[row.id] : nil)
+                                   skippedVideos: cached ? skippedVideoCounts[row.id] : nil,
+                                   listRev: cached ? bridgeTracksListRev : nil)
                 return .push(.nowPlaying)
             }
             playPlaylist(shuffle: true); return .push(.nowPlaying)
@@ -1010,11 +1105,13 @@ final class PlaylistsScene: Scene {
     /// open re-reads live (D2), even a second drill-in of the same playlist.
     private func drillBridgePlaylist() {
         guard let row = currentBridgeRow() else { return }
+        invalidateBridgePreview()
         let pid = row.id
         focus = .tracks
         trCursor = 0; trScroll = 0
         bridgeTracksFeed?.reset()
         bridgeTracksRows = []
+        bridgeTracksListRev = nil
         bridgeTracksDone = false
         bridgeTracksTotal = nil
         bridgeTracksFailure = nil
@@ -1045,7 +1142,9 @@ final class PlaylistsScene: Scene {
     /// false for `p`/`s`, which always start the whole playlist at row 1
     /// regardless of where the cursor happens to be.
     private func playBridgePlaylist(playlistID: String, name: String, shuffle: Bool, startAt: Int,
-                                    startRequired: Bool, rows: [MusicRow]?, skippedVideos: Int?) {
+                                    startRequired: Bool, rows: [MusicRow]?, skippedVideos: Int?,
+                                    listRev: String? = nil) {
+        invalidateBridgePreview()
         let makeProvider = self.makeProvider
         let routing = self.routing
         let status = self.status
@@ -1065,57 +1164,65 @@ final class PlaylistsScene: Scene {
                     status.post("Preparing your library \u{2014} '\(name)' will play when it's ready\u{2026}")
                 }
 
-                let finalRows: [MusicRow]
-                let finalSkipped: Int
-                if let rows, let skippedVideos {
-                    finalRows = rows
-                    finalSkipped = skippedVideos
-                } else {
-                    var collected: [MusicRow] = []
-                    var lastSkipped = 0
-                    // F4/C4: the FRESH whole-playlist play walk only — the one
-                    // path that reads for a `p`/`s` with no cached rows —
-                    // hints Bridge with `for_queue` so an over-bound playlist
-                    // is refused on page 1 rather than after a full walk.
-                    let walkError = walkLibraryPages(
-                        fetch: { c, l in try provider.playlistTracksForQueue(playlistID: playlistID, cursor: c, limit: l) },
-                        limit: Self.bridgeTracksPageLimit,
-                        onPage: { page in
-                            collected.append(contentsOf: page.rows)
-                            lastSkipped = page.skippedVideos
-                            return true
-                        },
-                        onRestart: { collected = []; lastSkipped = 0 },
-                        onWarming: onWarming, sleep: warmUpSleep, budget: budget)
-                    if let walkError {
-                        throw ActionError(message: walkError.errorDescription ?? "Couldn't read that playlist from your library.")
-                    }
-                    finalRows = collected
-                    finalSkipped = lastSkipped
-                    // D2: after a fresh read, the pane shows what was queued.
-                    self.previewInboxLock.lock()
-                    self.bridgePreviewInbox.append(
-                        (playlistID, epoch, .success(rows: finalRows, total: finalRows.count, skippedVideos: finalSkipped)))
-                    self.previewInboxLock.unlock()
-                }
-
-                try require(!finalRows.isEmpty, "'\(name)' has no songs SpanDAC can play.")
-                let ids = bridgeQueueIDs(finalRows, shuffle: shuffle, startAt: startAt)
+                // A SpanDAC that plays containers whole is sent the playlist's id (and
+                // the start row, when one was picked) with the playlist's `list_rev`:
+                // the rev that came with the rows on screen, else `slice.listRev`
+                // (no row read at all, not even a one-row page). See `planLibraryPlay`.
+                var finalSkipped = skippedVideos ?? 0
+                let planned = try planLibraryPlay(
+                    routing: routing, stamp: stamp, provider: provider,
+                    rows: skippedVideos == nil ? nil : rows, listRev: listRev,
+                    startAt: startAt, startRequired: startRequired, shuffle: shuffle,
+                    emptyMessage: "'\(name)' has no songs SpanDAC can play.",
+                    readRevision: {
+                        try retryingWhileWarming(budget: budget, onWarming: onWarming, sleep: warmUpSleep) {
+                            try provider.listRev(kind: .playlist, id: playlistID)
+                        }
+                    },
+                    readRows: {
+                        // F4/C4: the FRESH whole-playlist play walk only — the one
+                        // path that reads for a `p`/`s` with no cached rows —
+                        // hints Bridge with `for_queue` so an over-bound playlist
+                        // is refused on page 1 rather than after a full walk.
+                        let read = try self.walkPlaylistForQueue(
+                            provider: provider, playlistID: playlistID, epoch: epoch,
+                            budget: budget, onWarming: onWarming, sleep: warmUpSleep)
+                        finalSkipped = read.skippedVideos
+                        return (read.rows, read.listRev)
+                    })
+                let plan = planned.plan
+                let finalRows = planned.rows
+                let sent = finalRows.map { bridgeQueueRows($0, shuffle: shuffle, startAt: startAt) }
+                let ids = sent?.map(\.id)
 
                 // Addendum U: set only on the attempt that actually succeeds.
                 var skippedUnavailable = 0
                 var handedOff: HandoffPlayReport?
+                var wholeResult: SpanDACPlayResult?
+                var wholeSerial: Int?
                 _ = try retryingWhileWarming(budget: budget, onWarming: onWarming, sleep: warmUpSleep) {
                     // A SpanDAC output plays the ids on THAT output's client;
                     // the MusicTUI output hands the rows to the hand-off.
                     try routing.perform(.playlistPlay, expecting: stamp, origin: .spandacLibrary, musicApp: { path in
                         guard path == .handoff else { throw ActionError(message: pickASpanDACOutput) }
+                        guard let finalRows else { throw ActionError(message: sourceChangedNothingPlayed) }
                         handedOff = try playThroughHandoff(handoff, rows: finalRows, startAt: startAt,
                                                            startRequired: startRequired,
                                                            shuffle: shuffle, title: name)
                     }, source: { client in
-                        skippedUnavailable = try spanDACOutputPlayer(client).playReportingSkips(
-                            ids: ids, startRequired: startRequired).skippedUnavailable
+                        if case .whole(let start, let rev) = plan {
+                            let result = try spanDACOutputPlayer(client).playLibrary(
+                                kind: .playlist, id: playlistID, start: start, listRev: rev, shuffle: shuffle)
+                            wholeResult = result
+                            wholeSerial = routing.recordSpanDACPlay(finalRows ?? [], token: result.queueToken,
+                                                                    listRev: rev, shuffled: shuffle)
+                            return
+                        }
+                        guard let ids, let sent else { throw ActionError(message: sourceChangedNothingPlayed) }
+                        let played = try spanDACOutputPlayer(client).playRetainingToken(
+                            ids: ids, startRequired: startRequired)
+                        skippedUnavailable = played.skippedUnavailable
+                        routing.recordSpanDACPlay(sent, token: played.queueToken)
                     }, unaffected: {})
                 }
                 if let handedOff {
@@ -1123,9 +1230,26 @@ final class PlaylistsScene: Scene {
                                 untilStateChange: handedOff.notice != nil)
                     return
                 }
+                if let wholeResult {
+                    // Nothing was cached, so no rows were recorded: read them after the
+                    // play, off this action, so Up Next has a list to index. The
+                    // playlist is cached SpanDAC-side for a minute, so this is cheap.
+                    if finalRows == nil, let wholeSerial {
+                        fillUpNextRowsInBackground(routing: routing, serial: wholeSerial, token: wholeResult.queueToken) { stillNeeded in
+                            let read = try self.walkPlaylistForQueue(
+                                provider: provider, playlistID: playlistID, epoch: epoch,
+                                budget: WarmUpBudget(), onWarming: { _ in }, sleep: warmUpSleep,
+                                proceed: stillNeeded)
+                            return (read.rows, read.listRev)
+                        }
+                    }
+                    status.post(bridgeWholePlayMessage(name: name, result: wholeResult),
+                                untilStateChange: bridgeWholePlayNeedsAttention(wholeResult))
+                    return
+                }
                 // Songs skipped as unavailable, or videos skipped, will not
                 // play: the sentence saying so stays until the next change.
-                status.post(bridgePlaylistPlayMessage(name: name, queued: ids.count, skippedVideos: finalSkipped,
+                status.post(bridgePlaylistPlayMessage(name: name, queued: ids?.count ?? 0, skippedVideos: finalSkipped,
                                                        skippedUnavailable: skippedUnavailable,
                                                        startAt: startAt, shuffle: shuffle),
                             untilStateChange: skippedUnavailable > 0 || finalSkipped > 0)
@@ -1135,6 +1259,50 @@ final class PlaylistsScene: Scene {
                 throw ActionError(message: e.errorDescription ?? "SpanDAC couldn't play that.")
             }
         }
+    }
+
+    /// Walks a playlist's pages for a play (`for_queue`), and posts what was read to
+    /// the preview inbox (D2): the pane shows what was queued. The pages of one read
+    /// carry one `list_rev`; two that differ are two lists, so none is claimed.
+    /// `proceed`, for a background fill, is asked before each request and once more
+    /// after the last page; when it says no the walk fails (nothing is posted) and
+    /// the fill is dropped.
+    private func walkPlaylistForQueue(provider: MusicDataProvider, playlistID: String, epoch: Int,
+                                      budget: WarmUpBudget, onWarming: @escaping (TimeInterval) -> Void,
+                                      sleep: @escaping (TimeInterval) -> Void,
+                                      proceed: (() -> Bool)? = nil) throws
+        -> (rows: [MusicRow], skippedVideos: Int, listRev: String?) {
+        var collected: [MusicRow] = []
+        var lastSkipped = 0
+        var walkedRev: String?
+        var firstPage = true
+        let walkError = walkLibraryPages(
+            fetch: { c, l in
+                // A background fill asks before EVERY request (each page, each warming
+                // retry): a play that was replaced stops costing the wire anything.
+                if let proceed, !proceed() { throw UpNextFillStopped() }
+                return try provider.playlistTracksForQueue(playlistID: playlistID, cursor: c, limit: l) },
+            limit: Self.bridgeTracksPageLimit,
+            onPage: { page in
+                collected.append(contentsOf: page.rows)
+                lastSkipped = page.skippedVideos
+                if firstPage { walkedRev = page.listRev; firstPage = false }
+                else if page.listRev != walkedRev { walkedRev = nil }
+                return true
+            },
+            onRestart: { collected = []; lastSkipped = 0; walkedRev = nil; firstPage = true },
+            onWarming: onWarming, sleep: sleep, budget: budget)
+        if let walkError {
+            throw ActionError(message: walkError.errorDescription ?? "Couldn't read that playlist from your library.")
+        }
+        // The last page has no next fetch to stop at: ask once more, so a fill whose
+        // play was replaced while that page was in flight posts nothing.
+        if let proceed, !proceed() { throw UpNextFillStopped() }
+        previewInboxLock.lock()
+        bridgePreviewInbox.append(
+            (playlistID, epoch, .success(rows: collected, total: collected.count, skippedVideos: lastSkipped)))
+        previewInboxLock.unlock()
+        return (collected, lastSkipped, walkedRev)
     }
 
     /// The playlist under the rail cursor, in Bridge's own indexing. `nil`

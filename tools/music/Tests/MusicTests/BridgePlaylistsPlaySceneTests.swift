@@ -429,6 +429,7 @@ final class BridgePlaylistsPlaySceneTests: XCTestCase {
         let songs = (1...40).map { ("i.\($0)", "Track \($0)", "Art") }
         let wire = BridgeLibraryReadsWire(["slice.libraryPlaylists": [onePlaylistPage],
                                            "slice.queue": [queueOK], "slice.status": [statusOK]])
+        wire.stickyStatus = true   // a play reads SpanDAC's capabilities before it queues
         wire.script("slice.libraryPlaylistTracks", [tracksPage(songs, total: 40, skipped: 2)])
         let status = StatusStore()
         let s = playlistsTestScene(flag: BridgeSelectedFlag(true), wire: wire, spy: PlaylistAppleScriptSpy(),
@@ -450,6 +451,7 @@ final class BridgePlaylistsPlaySceneTests: XCTestCase {
         let songs = (1...40).map { ("i.\($0)", "Track \($0)", "Art") }
         let wire = BridgeLibraryReadsWire(["slice.libraryPlaylists": [onePlaylistPage],
                                            "slice.queue": [queueOK], "slice.status": [statusOK]])
+        wire.stickyStatus = true   // a play reads SpanDAC's capabilities before it queues
         wire.script("slice.libraryPlaylistTracks", [tracksPage(songs, total: 40, skipped: 2)])
         let status = StatusStore()
         let s = playlistsTestScene(flag: BridgeSelectedFlag(true), wire: wire, spy: PlaylistAppleScriptSpy(),
@@ -484,6 +486,7 @@ final class BridgePlaylistsPlaySceneTests: XCTestCase {
         let songs = (1...40).map { ("i.\($0)", "Track \($0)", "Art") }
         let wire = BridgeLibraryReadsWire(["slice.libraryPlaylists": [onePlaylistPage],
                                            "slice.queue": [queueReply(skippedUnavailable: 1)], "slice.status": [statusOK]])
+        wire.stickyStatus = true   // a play reads SpanDAC's capabilities before it queues
         wire.script("slice.libraryPlaylistTracks", [tracksPage(songs, total: 40, skipped: 2)])
         let status = StatusStore()
         let s = playlistsTestScene(flag: BridgeSelectedFlag(true), wire: wire, spy: PlaylistAppleScriptSpy(),
@@ -513,6 +516,7 @@ final class BridgePlaylistsPlaySceneTests: XCTestCase {
         let songs = (1...40).map { ("i.\($0)", "Track \($0)", "Art") }
         let wire = BridgeLibraryReadsWire(["slice.libraryPlaylists": [onePlaylistPage],
                                            "slice.queue": [queueOK], "slice.status": [statusOK]])
+        wire.stickyStatus = true   // a play reads SpanDAC's capabilities before it queues
         wire.script("slice.libraryPlaylistTracks", [tracksPage(songs, total: 40, skipped: 2)])
         let status = StatusStore()
         let s = playlistsTestScene(flag: BridgeSelectedFlag(true), wire: wire, spy: PlaylistAppleScriptSpy(),

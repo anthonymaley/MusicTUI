@@ -113,6 +113,34 @@ struct BridgeMusicProvider: MusicDataProvider {
         return (queue, skipped)
     }
 
+    /// The same play as `playReportingSkips`, with the reply's `queue_token`.
+    func playRetainingToken(ids: [String], startRequired: Bool) throws -> SpanDACPlayResult {
+        let sent: (skippedUnavailable: Int, queueToken: String?)
+        do { sent = try control.queueRetainingToken(libraryIDs: ids, startRequired: startRequired) }
+        catch let error as SourceAppError { throw Self.translate(error) }
+        let queue = try bridgeNow(from: nowPlaying()).queue
+        return SpanDACPlayResult(queue: queue, skippedUnavailable: sent.skippedUnavailable,
+                                 queueToken: sent.queueToken)
+    }
+
+    /// True only when SpanDAC's own `capabilities` list `play.library`. A status
+    /// that cannot be read is "no": the caller keeps today's path rather than
+    /// guess.
+    func supportsPlayLibrary() -> Bool {
+        (try? control.capabilities())?.contains(sourcePlayLibraryCapability) ?? false
+    }
+
+    func playLibrary(kind: LibraryPlayKind, id: String?, start: LibraryPlayStart?, listRev: String?,
+                     shuffle: Bool) throws -> SpanDACPlayResult {
+        do { return try control.playLibrary(kind: kind, id: id, start: start, listRev: listRev, shuffle: shuffle) }
+        catch let error as SourceAppError { throw Self.translate(error) }
+    }
+
+    func listRev(kind: LibraryPlayKind, id: String?) throws -> SpanDACListRev {
+        do { return try control.listRev(kind: kind, id: id) }
+        catch let error as SourceAppError { throw Self.translate(error) }
+    }
+
     func nowPlaying() throws -> SourceStatus {
         do { return try control.status() }
         catch let error as SourceAppError { throw Self.translate(error) }
@@ -224,6 +252,10 @@ struct BridgeMusicProvider: MusicDataProvider {
             return .warming(why, retryAfter: retryAfter)
         case .staleGeneration(let detail):
             return .staleGeneration(detail)
+        case .playerDisconnected(let sentence):
+            // The sentence alone: the scene prints `errorDescription`, and the
+            // fix (relaunch SpanDAC) is already in it.
+            return .unavailable(sentence)
         case .refused(let detail):
             return .refused(detail)
         case .malformedReply(let what):
@@ -279,6 +311,10 @@ struct BridgeMusicProvider: MusicDataProvider {
             return "This SpanDAC build can't show your listening history — update SpanDAC"
         case "slice.heavyRotation":
             return "This SpanDAC build can't show heavy rotation — update SpanDAC"
+        case "slice.playLibrary":
+            return "This SpanDAC build can't play a whole list — update SpanDAC"
+        case "slice.listRev":
+            return "This SpanDAC build can't read a list's revision — update SpanDAC"
         default:
             return "SpanDAC doesn't serve that yet — update SpanDAC"
         }

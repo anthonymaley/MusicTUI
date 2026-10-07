@@ -27,10 +27,12 @@ final class SyncPlaysOutputTests: XCTestCase {
                         outstanding: [PlaySyncEntry] = [],
                         unconfirmed: [PlaySyncEntry] = [],
                         waiting: Int = 0,
-                        musicAccess: MusicAccessError? = nil) -> PlaySyncResult {
+                        musicAccess: MusicAccessError? = nil,
+                        unidentified: Int = 0) -> PlaySyncResult {
         PlaySyncResult(blocked: blocked, fetch: fetch, musicRunning: musicRunning,
                        recorded: recorded, newProblems: [], outstanding: outstanding,
-                       unconfirmed: unconfirmed, waiting: waiting, musicAccess: musicAccess)
+                       unconfirmed: unconfirmed, waiting: waiting, musicAccess: musicAccess,
+                       unidentified: unidentified)
     }
 
     /// What the engine returns when the journal could not be read at the start.
@@ -63,6 +65,36 @@ final class SyncPlaysOutputTests: XCTestCase {
               Roads — Portishead
             """)
         XCTAssertEqual(out.exit, 0)
+    }
+
+    // MARK: Plays SpanDAC could not identify
+
+    func testOneUnidentifiedPlayIsSaidToBeUncountedAndIsNotAFailure() {
+        let out = renderSyncPlays(result(unidentified: 1), json: false)
+        XCTAssertEqual(out.text, "1 play SpanDAC couldn't identify was not counted.")
+        XCTAssertEqual(out.exit, 0)
+    }
+
+    func testSeveralUnidentifiedPlaysFollowTheRecordedOnes() {
+        let out = renderSyncPlays(result(fetch: .ok(newPlays: 1),
+                                         recorded: [entry("Teardrop", "Massive Attack")],
+                                         unidentified: 4), json: false)
+        XCTAssertEqual(out.text, """
+            Recorded 1 library play in Apple's Music player.
+              Teardrop — Massive Attack
+            4 plays SpanDAC couldn't identify were not counted.
+            """)
+        XCTAssertEqual(out.exit, 0)
+    }
+
+    func testUnidentifiedPlaysAreInTheJSONAsACount() throws {
+        let out = renderSyncPlays(result(unidentified: 2), json: true)
+        let body = try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(out.text.utf8)) as? [String: Any])
+        XCTAssertEqual(body["unidentified"] as? Int, 2)
+        XCTAssertEqual(body["ok"] as? Bool, true)
+        let none = try XCTUnwrap(try JSONSerialization.jsonObject(
+            with: Data(renderSyncPlays(result(), json: true).text.utf8)) as? [String: Any])
+        XCTAssertEqual(none["unidentified"] as? Int, 0)
     }
 
     // MARK: Nothing new

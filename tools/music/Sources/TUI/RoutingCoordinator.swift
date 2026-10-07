@@ -464,6 +464,43 @@ final class RoutingCoordinator {
         return made
     }
 
+    /// What a play that wants to prepare (ask a SpanDAC something) before it
+    /// reaches `perform` can tell about its output, WITHOUT constructing a client.
+    enum PlayOutputKind: Equatable {
+        /// The stamp taken at the keypress no longer holds: a switch has
+        /// committed, and `perform` will refuse with `sourceChangedNothingPlayed`.
+        case stale
+        /// The output is the Mac's own SpanDAC (the local Unix-socket carrier), the
+        /// only one that advertises `play.library` and serves `slice.listRev`.
+        case localMac
+        /// Any other output: a SpanDAC on the network, or MusicTUI's own (the
+        /// hand-off). Plays go the legacy way.
+        case legacyOutput
+    }
+
+    /// Which of the three the output is NOW, for a play stamped at the keypress.
+    /// Inside the ordering boundary for an instant, and no client is built.
+    func playOutputKind(expecting stamp: (epoch: Int, dataEpoch: Int)) -> PlayOutputKind {
+        (try? exclusively { () -> PlayOutputKind in
+            guard stamp == self.stamp else { return .stale }
+            return mode == .source ? .localMac : .legacyOutput
+        }) ?? .stale
+    }
+
+    /// The selected SpanDAC output's client, the one `perform` hands a `.source`
+    /// branch, for a caller that wants to ASK it something (its capabilities)
+    /// before it plays. CONSTRUCTION only, taken inside the ordering boundary for
+    /// as long as it takes to pick the cached client and not while anything is
+    /// asked of it. Nil when the output is not a SpanDAC, or when `stamp` no
+    /// longer holds (a switch has committed since the keypress, so the play
+    /// will refuse and no output client should be built for it).
+    func outputSourceClient(expecting stamp: (epoch: Int, dataEpoch: Int)) -> SourceAppClient? {
+        try? exclusively { () -> SourceAppClient? in
+            guard stamp == self.stamp, mode.usesSource else { return nil }
+            return sourceClient()
+        }
+    }
+
     /// Runs exactly one branch for `action`, chosen now rather than when it was
     /// requested.
     ///
@@ -632,6 +669,85 @@ final class RoutingCoordinator {
     var playSerial: Int {
         state.lock(); defer { state.unlock() }
         return _playSerial
+    }
+
+    // MARK: - The rows the current SpanDAC play sent
+
+    /// The rows the last SpanDAC collection play sent, in the order sent, the
+    /// play serial it ran under, and the `queue_token` its reply carried (nil
+    /// from a SpanDAC that predates it). Guarded by `state`.
+    private var _spanDACSent: (serial: Int, rows: [MusicRow], token: String?, listRev: String?, shuffled: Bool)?
+
+    /// Records the rows a SpanDAC play just sent, in exactly the order their ids
+    /// went on the wire: SpanDAC's status `row` / `next_rows` index this list.
+    /// For a `slice.playLibrary` play they are the container's rows as the
+    /// client listed them (possibly none, when the client had not read them).
+    /// Called from inside the play's `.source` branch, after the play
+    /// succeeded, so it is tied to the serial that play was admitted under.
+    ///
+    /// `token` is the play reply's `queue_token`: the rows are trusted only
+    /// while `slice.status` echoes it (`spanDACQueueWindow`), so another
+    /// process replacing the queue cannot make them describe the wrong songs.
+    ///
+    /// `listRev` is the `list_rev` of the read those rows came from, kept with
+    /// them. `shuffled` is true for a `slice.playLibrary` that SpanDAC shuffled
+    /// itself: the rows are then in container order, not play order, so a
+    /// status without `next_rows` has no Up Next list to offer.
+    ///
+    /// Returns the play serial the record is tied to, for a caller that fills the
+    /// rows in later (`fillSpanDACPlayRows`).
+    @discardableResult
+    func recordSpanDACPlay(_ rows: [MusicRow], token: String? = nil, listRev: String? = nil,
+                           shuffled: Bool = false) -> Int {
+        state.lock(); defer { state.unlock() }
+        _spanDACSent = (_playSerial, rows, token, listRev, shuffled)
+        return _playSerial
+    }
+
+    /// The one worker that reads the rows of whole plays for Up Next, one at a time
+    /// (`fillUpNextRowsInBackground`).
+    let upNextFills = UpNextFillWorker()
+
+    /// Whether the play recorded under `serial` is still the current one, still has
+    /// no rows, and still carries `token`: a fill's read is worth sending only then.
+    func spanDACPlayNeedsRows(serial: Int, token: String?) -> Bool {
+        state.lock(); defer { state.unlock() }
+        guard let sent = _spanDACSent else { return false }
+        return sent.serial == serial && serial == _playSerial && sent.rows.isEmpty && sent.token == token
+    }
+
+    /// Fills in the rows of a whole play that recorded none (the client had not
+    /// cached the container, so `slice.playLibrary` went by id and `list_rev`),
+    /// after they were read in the background. Records them ONLY IF the play
+    /// recorded under `serial` is still the current one, still has no rows, still
+    /// carries `token`, and `listRev` (the revision the read came with) is the
+    /// one the play was sent with: rows of another revision index another list.
+    /// A later play, or a read that lost any of these, changes nothing. Returns
+    /// whether the rows were kept.
+    @discardableResult
+    func fillSpanDACPlayRows(_ rows: [MusicRow], listRev: String?, serial: Int, token: String?) -> Bool {
+        state.lock(); defer { state.unlock() }
+        guard !rows.isEmpty, let listRev, let sent = _spanDACSent,
+              sent.serial == serial, serial == _playSerial,
+              sent.rows.isEmpty, sent.token == token, sent.listRev == listRev else { return false }
+        _spanDACSent = (sent.serial, rows, sent.token, sent.listRev, sent.shuffled)
+        return true
+    }
+
+    /// The rows the CURRENT play sent, or nil. Any later chosen-music play in
+    /// this process (a station, a Discover track, a Music.app play) moves the
+    /// serial, and the list stops answering, so a status `row` can never be
+    /// read against an older play's list.
+    func spanDACPlayedRows() -> [MusicRow]? {
+        spanDACPlay()?.rows
+    }
+
+    /// The current play's rows with the token its reply carried, the
+    /// `list_rev` they were read under, and whether SpanDAC shuffled the play.
+    func spanDACPlay() -> (rows: [MusicRow], token: String?, listRev: String?, shuffled: Bool)? {
+        state.lock(); defer { state.unlock() }
+        guard let sent = _spanDACSent, sent.serial == _playSerial else { return nil }
+        return (sent.rows, sent.token, sent.listRev, sent.shuffled)
     }
 
     /// PHASE A. Valid only on a thread that is inside one of this coordinator's

@@ -43,7 +43,15 @@ final class BridgeLibrarySceneTests: XCTestCase {
         private var albumRequests = 0
         private let artistPages: [String]
         private var artistRequests = 0
+        /// What `slice.status` answers: a SpanDAC with no capabilities unless a
+        /// test says otherwise (`capableStatus`).
+        private let statusReply: String
 
+        /// A SpanDAC that plays containers whole.
+        static let capableStatus = """
+        {"ok":true,"op":"slice.status","status":{"playback":"idle","contract":3,"authorization":"authorized",
+         "capabilities":["slice.shuffle","play.library"]}}
+        """
         static let queued = """
         {"ok":true,"op":"slice.queue","status":{"playback":"playing","title":"Aquarama","artist":"Moomin",
          "contract":3,"authorization":"authorized","queue":{"phase":"complete","requested":1,"present":1,"index":0}}}
@@ -67,7 +75,9 @@ final class BridgeLibrarySceneTests: XCTestCase {
         convenience init(pages: [String], gateAt: Int) { self.init(pages: pages, gateAt: [gateAt]) }
 
         init(pages: [String], gateAt: Set<Int> = [], queueReplies: [String] = [],
-            albumPages: [String] = [], artistPages: [String] = []) {
+            albumPages: [String] = [], artistPages: [String] = [],
+            status: String = Wire.status) {
+            self.statusReply = status
             self.pages = pages
             self.gateAt = gateAt
             self.queueReplies = queueReplies
@@ -100,7 +110,7 @@ final class BridgeLibrarySceneTests: XCTestCase {
                 let a = artistRequests
                 artistRequests += 1
                 reply = a < artistPages.count ? artistPages[a] : Self.unscriptedArtists
-            default:             reply = Self.status
+            default:             reply = statusReply
             }
             let gate = gates[n]
             lock.unlock()
@@ -138,6 +148,19 @@ final class BridgeLibrarySceneTests: XCTestCase {
     private let page2 = """
     {"ok":true,"op":"slice.librarySongs","generation":7,"total":15646,"items":[
       {"id":"i.ccc","title":"Nude","artist":"Radiohead","album":"In Rainbows","kind":"song"}],
+     "next_cursor":null}
+    """
+    /// The same list as `page1` / `page2`, read by a SpanDAC that sends `list_rev`
+    /// (for Songs, the snapshot generation).
+    private let revPage1 = """
+    {"ok":true,"op":"slice.librarySongs","generation":7,"total":3,"list_rev":"gen-7","items":[
+      {"id":"i.aaa","title":"Aquarama","artist":"Moomin","album":"Aquarama - Single","kind":"song","alias":"-1"},
+      {"id":"i.bbb","title":"Lotus Flower","artist":"Radiohead","album":"The King of Limbs","kind":"song","alias":"-2"}],
+     "next_cursor":"cursor-1"}
+    """
+    private let revPage2 = """
+    {"ok":true,"op":"slice.librarySongs","generation":7,"total":3,"list_rev":"gen-7","items":[
+      {"id":"i.ccc","title":"Nude","artist":"Radiohead","album":"In Rainbows","kind":"song","alias":"-3"}],
      "next_cursor":null}
     """
     /// A whole list in one page, from a LATER observation of the library.
@@ -228,8 +251,9 @@ final class BridgeLibrarySceneTests: XCTestCase {
 
     /// The production shape of the factory: a provider only in Bridge mode.
     private func scene(mode: PlaybackMode, wire: Wire, spy: AppleScriptSpy,
-                       status: StatusStore, waits: Waits = Waits()) -> LibraryScene {
-        let route = routing(mode, wire: wire)
+                       status: StatusStore, waits: Waits = Waits(),
+                       routing given: RoutingCoordinator? = nil) -> LibraryScene {
+        let route = given ?? routing(mode, wire: wire)
         return LibraryScene(backend: AppleScriptBackend(executable: "/usr/bin/true"), routing: route,
                             sources: spy.sources(), appQueue: AppQueueStore(),
                             status: status, actions: ActionRunner(status: status),
@@ -770,7 +794,8 @@ final class BridgeLibrarySceneTests: XCTestCase {
 
     /// The reason the seam exists: Enter plays the row by the id Bridge gave it.
     /// No `rows` join, no `ids` (those are catalogue ids), and no album needed.
-    func testEnterPlaysTheRowByBridgesOwnId() {
+    /// This is a SpanDAC that does not list `play.library`: one id, as ever.
+    func testEnterPlaysTheRowByBridgesOwnIdWhenSpanDACCannotPlayWhole() {
         let wire = Wire(pages: [page1, page2])
         let s = scene(mode: .source, wire: wire, spy: AppleScriptSpy(), status: StatusStore())
         toSongs(s)
@@ -787,6 +812,82 @@ final class BridgeLibrarySceneTests: XCTestCase {
         XCTAssertEqual(queued[0]["library_ids"] as? [String], ["i.bbb"])
         XCTAssertNil(queued[0]["rows"], "no (title, artist, album) join may be sent")
         XCTAssertNil(queued[0]["ids"], "library ids are not catalogue ids")
+        XCTAssertTrue(wire.sent("slice.playLibrary").isEmpty)
+    }
+
+    /// Anthony's 2026-10-06 11:38 ruling: Enter on a Songs row plays ONLY the picked
+    /// song, whatever SpanDAC advertises. A live check showed a whole-library queue
+    /// (15,575 songs) takes longer to prepare than MusicKit allows. So a SpanDAC that
+    /// lists `play.library` still gets one id on `slice.queue`, never `slice.playLibrary`
+    /// for the Songs list and never a revision read.
+    private static let queuedWithToken = """
+    {"ok":true,"op":"slice.queue","skipped_unavailable":0,"queue_token":"qsong-3",
+     "status":{"playback":"playing","title":"Lotus Flower","artist":"Radiohead","contract":3,"authorization":"authorized",
+     "queue":{"phase":"complete","requested":1,"present":1,"index":0},"queue_token":"qsong-3"}}
+    """
+
+    private func assertOnlyTheOneSongWasSent(_ wire: Wire, _ id: String, file: StaticString = #filePath, line: UInt = #line) {
+        let deadline = Date().addingTimeInterval(3)
+        while Date() < deadline && wire.sent("slice.queue").isEmpty { usleep(5_000) }
+        let queued = wire.sent("slice.queue")
+        XCTAssertEqual(queued.count, 1, "the song never reached SpanDAC", file: file, line: line)
+        XCTAssertEqual(queued.first?["library_ids"] as? [String], [id], file: file, line: line)
+        let end = Date().addingTimeInterval(0.3)
+        while Date() < end { usleep(10_000) }
+        XCTAssertTrue(wire.sent("slice.playLibrary").isEmpty, "the Songs list was sent as a container play", file: file, line: line)
+        XCTAssertTrue(wire.sent("slice.listRev").isEmpty, "a revision of the Songs list was read", file: file, line: line)
+    }
+
+    func testEnterOnACapableSpanDACStillPlaysOnlyThePickedSong() {
+        let wire = Wire(pages: [revPage1, revPage2], queueReplies: [Self.queuedWithToken], status: Wire.capableStatus)
+        let r = routing(.source, wire: wire)
+        let s = scene(mode: .source, wire: wire, spy: AppleScriptSpy(), status: StatusStore(), routing: r)
+        toSongs(s)
+        XCTAssertTrue(settle(s) { s.songsForTest.count == 3 })
+        _ = s.handle(.down)                       // second row: Lotus Flower
+        XCTAssertEqual(s.handle(.enter), .push(.nowPlaying))
+        assertOnlyTheOneSongWasSent(wire, "i.bbb")
+        XCTAssertNil(wire.sent("slice.queue").first?["rows"])
+        XCTAssertNil(wire.sent("slice.queue").first?["ids"])
+
+        // What is kept for Up Next is the one song, with the token its reply carried.
+        XCTAssertTrue(settle(s) { r.spanDACPlay() != nil })
+        XCTAssertEqual(r.spanDACPlay()?.rows.map(\.id), ["i.bbb"])
+        XCTAssertEqual(r.spanDACPlay()?.token, "qsong-3")
+        XCTAssertNil(r.spanDACPlay()?.listRev)
+    }
+
+    func testPOnACapableSpanDACsSongsListPlaysOnlyThePickedSongToo() {
+        let wire = Wire(pages: [revPage1, revPage2], status: Wire.capableStatus)
+        let s = scene(mode: .source, wire: wire, spy: AppleScriptSpy(), status: StatusStore())
+        toSongs(s)
+        XCTAssertTrue(settle(s) { s.songsForTest.count == 3 })
+        _ = s.handle(.down)
+        _ = s.handle(.char("p"))
+        assertOnlyTheOneSongWasSent(wire, "i.bbb")
+    }
+
+    func testEnterOnAFilteredRowOfACapableSpanDACPlaysOnlyThatSong() {
+        let wire = Wire(pages: [revPage1, revPage2], status: Wire.capableStatus)
+        let s = scene(mode: .source, wire: wire, spy: AppleScriptSpy(), status: StatusStore())
+        toSongs(s)
+        XCTAssertTrue(settle(s) { s.songsForTest.count == 3 })
+        _ = s.handle(.char("/"))
+        for c in "Nude" { _ = s.handle(.char(c)) }
+        _ = s.handle(.enter)                      // apply the filter: one row left
+        _ = s.handle(.enter)                      // play it
+        assertOnlyTheOneSongWasSent(wire, "i.ccc")
+    }
+
+    /// Shuffle on the Songs list is unchanged: one song.
+    func testSOnTheSongsListStaysOneSongEvenFromACapableSpanDAC() {
+        let wire = Wire(pages: [revPage1, revPage2], status: Wire.capableStatus)
+        let s = scene(mode: .source, wire: wire, spy: AppleScriptSpy(), status: StatusStore())
+        toSongs(s)
+        XCTAssertTrue(settle(s) { s.songsForTest.count == 3 })
+        _ = s.handle(.down)
+        _ = s.handle(.char("s"))
+        assertOnlyTheOneSongWasSent(wire, "i.bbb")
     }
 }
 

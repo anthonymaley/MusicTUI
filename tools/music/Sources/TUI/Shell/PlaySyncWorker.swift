@@ -41,6 +41,13 @@ final class PlaySyncWorker {
             : "\(count) plays not recorded yet \u{2014} run music sync-plays"
     }
 
+    /// `1 play SpanDAC couldn't identify was not counted` / `N plays … were not counted`.
+    static func unidentifiedSentence(_ count: Int) -> String {
+        count == 1
+            ? "1 play SpanDAC couldn't identify was not counted"
+            : "\(count) plays SpanDAC couldn't identify were not counted"
+    }
+
     /// `Plays waiting: <why Music.app could not be used> — run music sync-plays`.
     static func musicAccessSentence(_ error: MusicAccessError) -> String {
         "Plays waiting: \(SyncPlaysSentence.musicAccessCause(error)) \u{2014} run music sync-plays"
@@ -105,6 +112,10 @@ final class PlaySyncWorker {
         guard !isStopping() else { return }
         if !result.recorded.isEmpty {
             post(Self.recordedSentence(result.recorded.count), false, Self.recordedTTL)
+        }
+        // Said by the one pass that read them: they are consumed, not waiting.
+        if result.unidentified > 0 {
+            post(Self.unidentifiedSentence(result.unidentified), false, Self.problemTTL)
         }
         // Posted after the recorded count, so when a pass has both the problem
         // is the toast left showing.

@@ -134,6 +134,8 @@ private final class PassRun {
     private var recorded: [PlaySyncEntry] = []
     /// The first Music.app failure that left a play waiting or unconfirmed.
     private var musicAccess: MusicAccessError?
+    /// Plays read and consumed (cursor saved) that SpanDAC could not identify.
+    private var unidentified = 0
 
     init(engine: PlaySyncEngine, journal: PlaySyncJournal) {
         self.engine = engine
@@ -165,7 +167,7 @@ private final class PassRun {
                 outstanding: journal.entries.filter { $0.state == .unmatched || $0.state == .conflict },
                 unconfirmed: journal.entries.filter { $0.state == .unresolved },
                 waiting: journal.entries.filter { $0.state == .pending }.count,
-                musicAccess: musicAccess)
+                musicAccess: musicAccess, unidentified: unidentified)
         } catch {
             // The journal could not be saved. Nothing further was attempted:
             // no set call is ever made without its `writing` entry on disk.
@@ -174,6 +176,7 @@ private final class PassRun {
             result.musicRunning = musicRunning
             result.recorded = recorded
             result.musicAccess = musicAccess
+            result.unidentified = unidentified
             return result
         }
     }
@@ -234,6 +237,7 @@ private final class PassRun {
             }
 
             var fresh: [PlaySyncEntry] = []
+            var unidentifiedInPage = 0
             for play in page.plays {
                 let playKey = key(page.ledgerID, play.seq)
                 if let existing = known[playKey] {
@@ -243,6 +247,15 @@ private final class PassRun {
                     break fetching
                 }
                 known[playKey] = play.playID
+                // A play is credited to a library song only by the playing
+                // song's own identity: SpanDAC's `library_id`. Without one it is
+                // consumed and counted, never journaled, so no later step can
+                // credit it from its alias, title or artist. A missed credit is
+                // the worst case; a wrong one is not allowed.
+                guard play.libraryID != nil else {
+                    unidentifiedInPage += 1
+                    continue
+                }
                 fresh.append(Self.entry(from: play, ledgerID: page.ledgerID))
             }
 
@@ -253,6 +266,9 @@ private final class PassRun {
             journal.entries.append(contentsOf: fresh)
             newPlays += fresh.count
             if journal != persisted { try save() }
+            // Counted only once the cursor past them is on disk, so a failed
+            // save never reports plays the next pass will read again.
+            unidentified += unidentifiedInPage
 
             if !page.more { break fetching }
         }

@@ -56,11 +56,11 @@ func musicTUISkip(_ step: Int, backend: AppleScriptBackend, appQueue: AppQueueSt
 func globalSkip(_ step: Int, routing: RoutingCoordinator,
                 musicTUI: @escaping () throws -> Void,
                 run: (_ label: String, _ body: @escaping () throws -> Void) -> Void) {
-    let action: MusicTUIAction = step > 0 ? .next : .previous
+    let transport: SpanDACTransport = step > 0 ? .next : .previous
+    // The same body the Now tab's grid runs (`performSourceTransport`), with
+    // MusicTUI's own skip as its MusicTUI branch.
     run(step > 0 ? "Skip" : "Back") {
-        try routing.perform(action, musicApp: musicTUI,
-                            source: { step > 0 ? try $0.control.next() : try $0.control.previous() },
-                            unaffected: {})
+        try performSourceTransport(transport, routing: routing, musicApp: musicTUI)
     }
 }
 
@@ -316,6 +316,7 @@ func runShell() {
             let spandac = SpanDACOutputs(makeClient: { routing.client(for: .networkSource($0)) },
                                          post: { text, error, ttl in status.post(text, error: error, ttl: ttl) })
             let scene = SpeakersScene(backend: backend, status: status, actions: actions, routing: routing,
+                                      confirmMusicAppPaused: liveMusicAppPauseConfirmation,
                                       makeNetworkClient: { routing.client(for: .networkSource($0)) },
                                       spandac: spandac)
             scenes[id] = scene
@@ -578,18 +579,9 @@ func runShell() {
             switch action {
             case .playPause:
                 actions.run("Play/pause") {
-                    try routing.perform(.playPause,
-                        musicApp: { _ = try syncRun { try await backend.runMusic("playpause") } },
-                        source: { client in
-                            // The wire has play and pause, not a toggle, so the
-                            // current state decides which one this press means.
-                            if try client.control.status().playback == "playing" {
-                                try client.control.pause()
-                            } else {
-                                try client.control.resume()
-                            }
-                        },
-                        unaffected: {})
+                    // The SpanDAC branch is shared with the Now tab's control row.
+                    try performSourceTransport(.playPause, routing: routing,
+                        musicApp: { _ = try syncRun { try await backend.runMusic("playpause") } })
                 }
             case .volumeUp, .volumeDown:
                 // Coalesced: holding the key accumulates one delta, applied once.

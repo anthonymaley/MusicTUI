@@ -191,7 +191,7 @@ final class CompletedPlaysFeedTests: XCTestCase {
     }
 
     func testAPlayMissingARequiredFieldIsMalformed() {
-        for key in ["seq", "play_id", "library_id", "title", "artist", "completed_at", "end"] {
+        for key in ["seq", "play_id", "title", "artist", "completed_at", "end"] {
             var fields: [String: Any] = [
                 "seq": 1, "play_id": "P-1", "alias": NSNull(), "library_id": "i.1",
                 "title": "T1", "artist": "A", "completed_at": "2026-09-25T01:36:27.496Z",
@@ -368,14 +368,67 @@ final class CompletedPlaysFeedTests: XCTestCase {
                        utc(2026, 9, 25, 3, 52, 34, millis: 100).timeIntervalSince1970, accuracy: 0.0005)
     }
 
-    func testACatalogueOriginPlayWithANullLibraryIDStillFailsTheWholePage() {
+    // `library_id` is null when SpanDAC could not identify the song, and a
+    // page holding such a play is read whole, not refused.
+    private func playWithLibraryID(_ seq: Int, _ libraryID: String?) -> String {
+        let field = libraryID.map { "\"library_id\":\($0)," } ?? ""
+        return """
+        {"seq":\(seq),"play_id":"P-\(seq)","alias":null,\(field)
+         "title":"T\(seq)","artist":"A","completed_at":"2026-09-25T01:36:27.496Z",
+         "end":"advance","duration_s":100.0,"position_s":99.0}
+        """
+    }
+
+    func testANullLibraryIDDecodesAsUnidentifiedAndKeepsTheRestOfThePlay() throws {
+        let noLibraryID = """
+        {"seq":2,"play_id":"B3A4F0D2","alias":null,"library_id":null,"title":"X","artist":"Y",
+         "completed_at":"2026-09-25T01:50:02.100Z","end":"advance","duration_s":128.6,"position_s":128.1}
+        """
+        let wire = Wire([page(latest: 2, nextAfter: 2, more: false, plays: [play(1), noLibraryID])])
+        let result = try control(wire).completedPlays(ledgerID: nil, after: 0, limit: 200)
+        XCTAssertEqual(result.plays.count, 2)
+        XCTAssertEqual(result.plays[0].libraryID, "i.1")
+        XCTAssertNil(result.plays[1].libraryID)
+        XCTAssertEqual(result.plays[1].title, "X")
+        XCTAssertEqual(result.plays[1].artist, "Y")
+        XCTAssertEqual(result.plays[1].playID, "B3A4F0D2")
+    }
+
+    func testAMissingLibraryIDKeyDecodesAsUnidentified() throws {
+        let wire = Wire([page(latest: 1, nextAfter: 1, more: false, plays: [playWithLibraryID(1, nil)])])
+        let result = try control(wire).completedPlays(ledgerID: nil, after: 0, limit: 200)
+        XCTAssertEqual(result.plays.count, 1)
+        XCTAssertNil(result.plays[0].libraryID)
+        XCTAssertEqual(result.plays[0].title, "T1")
+    }
+
+    func testAnEmptyLibraryIDIsNotAnIdentity() throws {
+        let wire = Wire([page(latest: 1, nextAfter: 1, more: false, plays: [playWithLibraryID(1, "\"\"")])])
+        let result = try control(wire).completedPlays(ledgerID: nil, after: 0, limit: 200)
+        XCTAssertNil(result.plays[0].libraryID)
+    }
+
+    func testAPresentLibraryIDDecodesAsItself() throws {
+        let wire = Wire([page(latest: 1, nextAfter: 1, more: false, plays: [playWithLibraryID(1, "\"i.abc\"")])])
+        let result = try control(wire).completedPlays(ledgerID: nil, after: 0, limit: 200)
+        XCTAssertEqual(result.plays[0].libraryID, "i.abc")
+    }
+
+    func testALibraryIDThatIsNeitherTextNorNullIsMalformed() {
+        assertMalformed(page(latest: 1, nextAfter: 1, more: false, plays: [playWithLibraryID(1, "42")]))
+        assertMalformed(page(latest: 1, nextAfter: 1, more: false, plays: [playWithLibraryID(1, "true")]))
+    }
+
+    func testACatalogueOriginPlayWithANullLibraryIDDecodesAsUnidentified() throws {
         let noLibraryID = """
         {"seq":1,"play_id":"PLAY-C","alias":"854956139719541203","library_id":null,
          "title":"Spontaneous (feat. Little Dragon)","artist":"Flying Lotus",
          "completed_at":"2026-09-25T03:52:34.100Z","end":"advance","duration_s":128.647,
          "position_s":127.82,"origin":"catalogue","catalog_id":"1458871225"}
         """
-        assertMalformed(page(latest: 1, nextAfter: 1, more: false, plays: [noLibraryID]))
+        let wire = Wire([page(latest: 1, nextAfter: 1, more: false, plays: [noLibraryID])])
+        let result = try control(wire).completedPlays(ledgerID: nil, after: 0, limit: 200)
+        XCTAssertNil(result.plays[0].libraryID)
     }
 
     /// Records that carry `origin`/`catalog_id` are longer, so a real page may

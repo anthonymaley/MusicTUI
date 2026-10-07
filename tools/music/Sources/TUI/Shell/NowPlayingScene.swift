@@ -64,14 +64,22 @@ final class NowPlayingScene: Scene {
     let id: SceneID = .nowPlaying
     let tabTitle = "Now"
     var footerHint: String {
-        // Bridge has no control grid and no Up Next list, so seek and Quiet are
-        // what remain. `x` became a Now key in its own right on 2026-09-22
-        // (spec 6.2's row); it pauses Bridge, never Music.app (ruling 12.7).
+        // On SpanDAC the grid's live rows and seek and Quiet are the keys; Up
+        // Next can be browsed when SpanDAC reports its rows, but Enter's jump
+        // is refused there (ruling 12.13), so it is not advertised. `x` became
+        // a Now key in its own right on 2026-09-22 (spec 6.2's row); it pauses
+        // Bridge, never Music.app (ruling 12.7).
         // Every SpanDAC-shaped choice on this tab follows where the sound is
         // (`effectiveOutput`), never the stored output (Codex review 101,
         // blocking 1): with SpanDAC on this Mac not serving, MusicTUI's
         // controls are the live ones.
-        if routing.effectiveOutput.usesSource { return "[ ] Seek  x Quiet" }
+        if routing.effectiveOutput.usesSource {
+            if spanDACGridShown {
+                return gridFocused ? "\u{2191}\u{2193} Row  Enter Set  \u{2192} Release  [ ] Seek  x Quiet"
+                                   : "\u{2190} Controls  s Shuffle  r Repeat  [ ] Seek  x Quiet"
+            }
+            return "[ ] Seek  x Quiet"
+        }
         return gridFocused
             ? "\u{2191}\u{2193} Row  Enter Set  \u{2192} Up Next  [ ] Seek  \u{2014} controls"
             : "\u{2191}\u{2193} Browse  \u{2190} Controls  Enter Jump  [ ] Seek  l \u{2665}"
@@ -120,6 +128,18 @@ final class NowPlayingScene: Scene {
     private var gridFocused = false
     private var gridRow = 0
 
+    // SpanDAC's grid. `spanDACGridShown`: whether the last frame drew it (keys
+    // only act on it while it is on screen). `lastBridge`: what the last tick or
+    // render saw, which the keys read to decide offered / current. A press
+    // overrides SpanDAC's own state for a moment, so the cell moves at once
+    // instead of after the next poll; it is guarded by `bridgeModesLock` because
+    // a failed press clears it from the action queue.
+    private var spanDACGridShown = false
+    private var lastBridge: BridgeNow? = nil
+    private let bridgeModesLock = NSLock()
+    private var bridgeModesOverride: (shuffle: Bool?, repeatMode: String?, at: Date)? = nil
+    static let bridgeModesOverrideSeconds: TimeInterval = 2.5
+
     // Genius Shuffle latch: set when we trigger it, cleared once a real playlist
     // or app queue takes over (Music exposes no genius flag — see geniusShouldClear).
     private var geniusActive = false
@@ -167,10 +187,30 @@ final class NowPlayingScene: Scene {
     private var restInbox: [(track: String, album: String, hit: (id: String, url: String)?)] = []
     private var artDirty = false
 
+    // SpanDAC cover by persistent ID (no fetchable artwork URL). The extraction
+    // is an osascript run, so it goes on its own serial queue from tick(), never
+    // from render(); `bridgeCoverPaths` (hit) and `bridgeCoverTried` (hit OR
+    // miss, so a song with no embedded art is asked once) are guarded by
+    // artLock, the same handoff as the REST fallback. Keyed by the hex ID.
+    private let bridgeCoverQueue = DispatchQueue(label: "music.now.bridgecover")
+    private var bridgeCoverPaths: [String: String] = [:]
+    private var bridgeCoverTried: Set<String> = []
+    /// (hex persistent ID, temp path) -> path of the written cover, or nil.
+    /// Production runs the Library tab's `extractLibraryTrackArtwork`; tests
+    /// inject a fake so nothing touches a real Music.app.
+    private let bridgeCoverExtractor: (String, String) -> String?
+
+    /// Blocks until queued cover extractions finish. Tests only.
+    func waitForBridgeCover() { bridgeCoverQueue.sync {} }
+
     init(backend: AppleScriptBackend, appQueue: AppQueueStore, status: StatusStore, actions: ActionRunner,
          routing: RoutingCoordinator,
          restArtworkAPI: RESTAPIBackend? = nil, kittyEnabled: Bool = false,
-         setArtSize: @escaping (Int, Int) -> Void = { _, _ in }) {
+         setArtSize: @escaping (Int, Int) -> Void = { _, _ in },
+         bridgeCoverExtractor: ((String, String) -> String?)? = nil) {
+        self.bridgeCoverExtractor = bridgeCoverExtractor ?? { pid, path in
+            extractLibraryTrackArtwork(backend: backend, persistentID: pid, to: path)
+        }
         self.routing = routing
         self.backend = backend
         self.appQueue = appQueue
@@ -232,6 +272,7 @@ final class NowPlayingScene: Scene {
     @discardableResult
     func tick(snapshot: NowPlayingSnapshot) -> Bool {
         menuShownLastFrame = menuActive(snapshot)
+        lastBridge = snapshot.bridge
         pendingFromStopped = snapshot.queueEnded
         if snapshot.queueEnded {
             pendingSeedTitle = snapshot.endedTrack
@@ -274,6 +315,9 @@ final class NowPlayingScene: Scene {
         // serial queue and signals back through artDirty.
         if case .active(let np) = snapshot.outcome, let api = restArtworkAPI,
            snapshot.artLines.isEmpty, snapshot.artPath == nil,
+           // Bridge's album line is the sent row's; it must not start a REST
+           // lookup for a player whose cover has its own rung.
+           snapshot.bridge == nil,
            !np.album.isEmpty, !np.artist.isEmpty {
             let albumKey = nowAlbumKey(album: np.album, artist: np.artist)
             let trackTag = trackKey(title: np.track, artist: np.artist)
@@ -284,6 +328,25 @@ final class NowPlayingScene: Scene {
                     guard let self else { return }
                     self.artLock.lock()
                     self.restInbox.append((trackTag, albumKey, hit))
+                    self.artLock.unlock()
+                }
+            }
+        }
+        // SpanDAC cover by persistent ID: ask Music's library once per song,
+        // off this thread. Only when there is no fetchable URL (bridgeCoverSource).
+        if let bridge = snapshot.bridge,
+           case .library(let pid) = bridgeCoverSource(artworkURL: bridge.artworkURL, persistentID: bridge.persistentID) {
+            artLock.lock()
+            let fresh = bridgeCoverTried.insert(pid).inserted
+            artLock.unlock()
+            if fresh {
+                bridgeCoverQueue.async { [weak self] in
+                    guard let self else { return }
+                    let path = self.bridgeCoverExtractor(pid, libraryCoverTempPath(albumID: "spandac-\(pid)"))
+                    guard let path else { return }
+                    self.artLock.lock()
+                    self.bridgeCoverPaths[pid] = path
+                    self.artDirty = true
                     self.artLock.unlock()
                 }
             }
@@ -348,6 +411,8 @@ final class NowPlayingScene: Scene {
         for r in frame.bodyY..<(frame.bodyY + frame.bodyHeight) {
             out += ANSICode.moveTo(row: r, col: 1) + ANSICode.clearLine
         }
+        spanDACGridShown = false
+        lastBridge = snapshot.bridge
         guard frame.bodyHeight > 4, frame.width > 30 else { return out }
 
         // Neither branch below draws the kitty art path (that lives in the
@@ -438,6 +503,8 @@ final class NowPlayingScene: Scene {
                 artBlock = .kitty(id: id, transmit: escape)
             } else if !artLines.isEmpty {
                 artBlock = .lines(artLines)
+            } else if let block = bridgeCoverBlock(snapshot.bridge, gw: gw, artRows: artRows) {
+                artBlock = block
             } else if let hit = restArt[nowAlbumKey(album: np.album, artist: np.artist)] {
                 artBlock = artwork.block(key: hit.id,
                                          url: ArtworkStore.resolveURL(hit.url, width: 300, height: 300),
@@ -471,9 +538,10 @@ final class NowPlayingScene: Scene {
         out += ANSICode.moveTo(row: my, col: leftX) + "\(ANSICode.dim)\(truncText(np.album, to: metaW))\(ANSICode.reset)"
         my += 2
         // No duration means no progress is KNOWN, which is not the same as a
-        // zero-length track at position zero. Bridge reports no position, and the
-        // old bar rendered "0:00 ●──── 0:00" over a playing song and never moved
-        // — a reading invented by the renderer rather than reported by anything.
+        // zero-length track at position zero. A SpanDAC that sends no duration
+        // leaves it at zero, and the old bar rendered "0:00 ●──── 0:00" over a
+        // playing song and never moved — a reading invented by the renderer
+        // rather than reported by anything.
         // Radio already refuses to draw one for live stations, for this reason.
         if np.duration > 0 {
             let elapsed = formatTime(np.position)
@@ -492,15 +560,24 @@ final class NowPlayingScene: Scene {
             out += ANSICode.moveTo(row: my, col: leftX) + "\(ANSICode.cyan)\u{266A} \(ANSICode.reset)\(ANSICode.brightWhite)\(truncText(cleanContextName(snapshot.contextName), to: metaW - 3))\(ANSICode.reset)"
         }
 
+        let gridStartY: Int
         if let bridge = snapshot.bridge {
             let hasContextLine = geniusActive || !snapshot.contextName.isEmpty
-            return renderBridgeActive(bridge, startY: hasContextLine ? my + 1 : my, x: leftX, width: metaW,
-                                      bottom: frame.bodyY + frame.bodyHeight - 1, into: out)
+            let drawn = renderBridgeActive(bridge, startY: hasContextLine ? my + 1 : my, x: leftX, width: metaW,
+                                           bottom: frame.bodyY + frame.bodyHeight - 1, into: out)
+            out = drawn.out
+            gridStartY = drawn.gridStartY
+            // SpanDAC's Up Next is drawn by the same code below, from the rows
+            // the poller built out of its `row` / `next_rows`. With none (an
+            // older SpanDAC, or a play this process did not send) there is
+            // nothing honest to list, so no header either.
+            if rows.isEmpty { return out }
+        } else {
+            // Playback-control grid (shuffle/order/repeat/genius). Always shows live
+            // active state; `c` focuses it for arrow-navigation + Enter.
+            gridStartY = my + 2
+            out += renderControlGrid(startY: gridStartY, x: leftX, bottom: frame.bodyY + frame.bodyHeight - 1)
         }
-
-        // Playback-control grid (shuffle/order/repeat/genius). Always shows live
-        // active state; `c` focuses it for arrow-navigation + Enter.
-        out += renderControlGrid(startY: my + 2, x: leftX, bottom: frame.bodyY + frame.bodyHeight - 1)
 
         // --- Up Next: right pane (wide) or below the metadata (narrow) ---
         // Stacked mode used to start the list at the same row as the control
@@ -508,7 +585,7 @@ final class NowPlayingScene: Scene {
         // other. stackedListStartY mirrors the grid's own row-count/clamp math
         // so the list always starts below wherever the grid actually stopped.
         let listX = twoPane ? (leftX + leftW + 2) : leftX
-        let listY = twoPane ? frame.bodyY : NowPlayingScene.stackedListStartY(gridStartY: my + 2, gridBottom: listBottom)
+        let listY = twoPane ? frame.bodyY : NowPlayingScene.stackedListStartY(gridStartY: gridStartY, gridBottom: listBottom)
         let listW = twoPane ? max(20, frame.width - listX - 1) : (frame.width - 6)
         if geniusActive {
             // Genius's real queue isn't scriptable (the snapshot shows the
@@ -541,6 +618,35 @@ final class NowPlayingScene: Scene {
         return out
     }
 
+    /// SpanDAC's cover through the same ArtworkStore and hero ladder as the REST
+    /// fallback. A fetchable http(s) URL goes in as it is; failing that, the
+    /// cover extracted from the library by persistent ID goes in as a file URL
+    /// once tick()'s extraction has landed (nil, so the gradient, until then).
+    private func bridgeCoverBlock(_ bridge: BridgeNow?, gw: Int, artRows: Int) -> ArtBlock? {
+        guard let bridge else { return nil }
+        let onReady: () -> Void = { [weak self] in
+            guard let self else { return }
+            self.artLock.lock(); self.artDirty = true; self.artLock.unlock()
+        }
+        switch bridgeCoverSource(artworkURL: bridge.artworkURL, persistentID: bridge.persistentID) {
+        case .remote(let url):
+            // Keyed on a hash of the URL so the on-disk cache name stays short and stable.
+            return artwork.block(key: "spandac-\(String(format: "%08x", kittyImageID(forKey: url)))",
+                                 url: ArtworkStore.resolveURL(url, width: 600, height: 600),
+                                 width: gw, height: artRows,
+                                 kitty: kittyEnabled && gw > 0, onReady: onReady)
+        case .library(let pid):
+            artLock.lock(); let path = bridgeCoverPaths[pid]; artLock.unlock()
+            guard let path else { return nil }
+            return artwork.block(key: "spandac-lib-\(pid)",
+                                 url: URL(fileURLWithPath: path).absoluteString,
+                                 width: gw, height: artRows,
+                                 kitty: kittyEnabled && gw > 0, onReady: onReady)
+        case .none:
+            return nil
+        }
+    }
+
     /// Bridge's empty state: what Bridge is doing, then the way in.
     ///
     /// The digits are the tab strip's real ones (`tabs` in Shell.swift: 3 is
@@ -555,27 +661,32 @@ final class NowPlayingScene: Scene {
         return out
     }
 
-    /// Bridge's lines below the track metadata, in place of the control grid
-    /// and Up Next.
+    /// Bridge's lines below the track metadata, in place of Music.app's
+    /// control grid. Returns the row the grid (or its sentence) starts on, so
+    /// the shared Up Next below can stack under it in a narrow frame.
     ///
-    /// **No Up Next.** `slice.status` carries counts and a position, never the
-    /// track list, so the position line is all that can honestly be said about
-    /// what comes next. Shuffle and repeat are not on the wire at all.
+    /// The status and position lines, then the same Shuffle / Order / Repeat /
+    /// Genius grid Music.app shows, driven by SpanDAC's own shuffle and repeat
+    /// when the app lists the ops; an older build gets the sentence it always
+    /// did. Up Next is not drawn here: it is the shared list in `render`.
     private func renderBridgeActive(_ bridge: BridgeNow, startY: Int, x: Int, width: Int,
-                                    bottom: Int, into base: String) -> String {
+                                    bottom: Int, into base: String) -> (out: String, gridStartY: Int) {
         var out = base
         var y = startY
         for line in [bridgeStatusLine(bridge), bridgePositionLine(bridge)].compactMap({ $0 }) {
-            guard y <= bottom else { return out }
+            guard y <= bottom else { return (out, y + 1) }
             out += ANSICode.moveTo(row: y, col: x) + "\(ANSICode.dim)\(truncText(line, to: width))\(ANSICode.reset)"
             y += 1
         }
         y += 1
-        if y <= bottom {
+        if bridge.offersShuffle || bridge.offersRepeat {
+            if y <= bottom { spanDACGridShown = true }
+            out += renderControlGrid(startY: y, x: x, bottom: bottom, bridge: bridge)
+        } else if y <= bottom {
             out += ANSICode.moveTo(row: y, col: x)
-                + "\(ANSICode.dim)\(truncText("Shuffle and repeat aren't available on SpanDAC.", to: width))\(ANSICode.reset)"
+                + "\(ANSICode.dim)\(truncText(spanDACNoModesSentence, to: width))\(ANSICode.reset)"
         }
-        return out
+        return (out, y)
     }
 
     /// Stacked-mode Up Next start row: one blank spacer row below wherever the
@@ -594,13 +705,21 @@ final class NowPlayingScene: Scene {
     /// The playback-control grid: a label column then option cells per row.
     /// Active value is bright; the focused row (when the grid has focus) is
     /// marked with ▸ and Enter cycles its value.
-    private func renderControlGrid(startY: Int, x: Int, bottom: Int) -> String {
+    ///
+    /// With a `bridge`, SpanDAC's state fills the cells and the rows it has no
+    /// control for (Order, Genius, or an op the app does not list) are dimmed
+    /// whole: no active cell, never the focus marker.
+    private func renderControlGrid(startY: Int, x: Int, bottom: Int, bridge: BridgeNow? = nil) -> String {
         var out = ""
+        let live = bridge.map { effectiveBridgeModes($0) }
         var y = startY
         let labelW = 8
         for row in 0..<ControlGrid.rowCount {
             guard y <= bottom else { break }
-            let rowFocused = gridFocused && row == gridRow
+            let enabled = bridge.map {
+                ControlGrid.spanDACEnabled(row: row, offersShuffle: $0.offersShuffle, offersRepeat: $0.offersRepeat)
+            } ?? true
+            let rowFocused = gridFocused && row == gridRow && enabled
             out += ANSICode.moveTo(row: y, col: x)
             let marker = rowFocused ? "\(ANSICode.cyan)\u{25B8}\(ANSICode.reset)" : " "
             let label = ControlGrid.labels[row]
@@ -608,11 +727,20 @@ final class NowPlayingScene: Scene {
             let labelStyled = rowFocused ? "\(ANSICode.brightWhite)\(padLabel)\(ANSICode.reset)"
                                          : "\(ANSICode.dim)\(padLabel)\(ANSICode.reset)"
             out += "\(marker) \(labelStyled) "
-            let active = modes.flatMap { ControlGrid.activeColumn(row: row, modes: $0) }
+            let active: Int?
+            if let live {
+                active = enabled ? ControlGrid.spanDACActiveColumn(row: row, shuffle: live.shuffle, repeatMode: live.repeatMode) : nil
+            } else {
+                active = modes.flatMap { ControlGrid.activeColumn(row: row, modes: $0) }
+            }
             var line = ""
             for col in 0..<ControlGrid.cellCount(row: row) {
                 let cell = ControlGrid.cells[row][col]
-                if col == active {
+                if !enabled {
+                    // Dim and struck through (a terminal without strikethrough
+                    // still shows it dim, with no active cell).
+                    line += "\(ANSICode.dim)\u{1B}[9m \(cell) \(ANSICode.reset) "
+                } else if col == active {
                     line += "\(ANSICode.brightWhite)[\(cell)]\(ANSICode.reset) "
                 } else {
                     line += "\(ANSICode.dim) \(cell) \(ANSICode.reset) "
@@ -837,8 +965,45 @@ final class NowPlayingScene: Scene {
         // Bridge draws no grid, so nothing may focus it: the grid keys become
         // no-ops, and a focus left over from Music.app mode is dropped.
         if routing.effectiveOutput.usesSource {
-            gridFocused = false
-            if case .left = key { return .none }
+            if !spanDACGridShown { gridFocused = false }
+            switch key {
+            case .char("s"), .char("S"): guard askMatrix(.persistentShuffleMode) else { return .redraw }
+                                         spanDACToggleShuffle(); return .redraw
+            case .char("r"), .char("R"): guard askMatrix(.persistentRepeatMode) else { return .redraw }
+                                         spanDACCycleRepeat(); return .redraw
+            case .char("m"), .char("M"): status.post(spanDACRowUnavailable(ControlRow.order.rawValue), error: true)
+                                         return .redraw
+            default: break
+            }
+            if !spanDACGridShown {
+                // Nothing to focus.
+                if case .left = key { return .none }
+            } else if let b = lastBridge {
+                let enabled = { (r: Int) in ControlGrid.spanDACEnabled(row: r, offersShuffle: b.offersShuffle, offersRepeat: b.offersRepeat) }
+                func step(_ d: Int) -> Int {
+                    ControlGrid.spanDACStep(from: gridRow, by: d, offersShuffle: b.offersShuffle, offersRepeat: b.offersRepeat)
+                }
+                switch key {
+                case .left:
+                    // Focus lands on a live row, never a disabled one.
+                    if !enabled(gridRow) { gridRow = step(1) }
+                    if !enabled(gridRow) { gridRow = step(-1) }
+                case .up where gridFocused:    gridRow = step(-1); return .redraw
+                case .down where gridFocused:  gridRow = step(1); return .redraw
+                case .home where gridFocused:  gridRow = enabled(0) ? 0 : step(1); return .redraw
+                case .end where gridFocused:
+                    gridRow = enabled(ControlGrid.rowCount - 1) ? ControlGrid.rowCount - 1 : step(-1); return .redraw
+                case .enter where gridFocused:
+                    guard askMatrix(.persistentShuffleMode) else { return .redraw }
+                    switch ControlRow(rawValue: gridRow) {
+                    case .shuffle:    spanDACToggleShuffle()
+                    case .repeatMode: spanDACCycleRepeat()
+                    default:          status.post(spanDACRowUnavailable(gridRow), error: true)
+                    }
+                    return .redraw
+                default: break
+                }
+            }
         }
 
         // Focus model: ← focuses the control grid (left pane), → the Up Next
@@ -973,6 +1138,68 @@ final class NowPlayingScene: Scene {
             triggerGenius(); return .redraw
         default:
             return .none
+        }
+    }
+
+    // MARK: SpanDAC's shuffle and repeat (the grid's two live rows, and `s` / `r`).
+
+    /// SpanDAC's shuffle and repeat as the grid shows them: its own state from
+    /// the last status, unless a press of ours is newer than the poll could know.
+    private func effectiveBridgeModes(_ b: BridgeNow, now: Date = Date()) -> (shuffle: Bool?, repeatMode: String?) {
+        bridgeModesLock.lock(); defer { bridgeModesLock.unlock() }
+        if let o = bridgeModesOverride, now.timeIntervalSince(o.at) < Self.bridgeModesOverrideSeconds {
+            return (o.shuffle ?? b.shuffle, o.repeatMode ?? b.repeatMode)
+        }
+        return (b.shuffle, b.repeatMode)
+    }
+
+    private func setBridgeModesOverride(shuffle: Bool? = nil, repeatMode: String? = nil) {
+        // Merged, so a press of one row keeps the other row's pending press.
+        bridgeModesLock.lock()
+        let now = Date()
+        let live = bridgeModesOverride.flatMap { now.timeIntervalSince($0.at) < Self.bridgeModesOverrideSeconds ? $0 : nil }
+        bridgeModesOverride = (shuffle ?? live?.shuffle, repeatMode ?? live?.repeatMode, now)
+        bridgeModesLock.unlock()
+    }
+
+    private func clearBridgeModesOverride() {
+        bridgeModesLock.lock(); bridgeModesOverride = nil; bridgeModesLock.unlock()
+    }
+
+    /// Why a row cannot be set: Order and Genius have no SpanDAC equivalent.
+    private func spanDACRowUnavailable(_ row: Int) -> String {
+        "\(ControlGrid.labels[row]) isn't available on SpanDAC."
+    }
+
+    /// Shuffle on SpanDAC. An older build that does not list `slice.shuffle`
+    /// gets the sentence the Now tab always showed and nothing is sent.
+    private func spanDACToggleShuffle() {
+        guard let b = lastBridge, b.offersShuffle else {
+            status.post(spanDACNoModesSentence, error: true); return
+        }
+        let on = !(effectiveBridgeModes(b).shuffle ?? false)
+        setBridgeModesOverride(shuffle: on)
+        actions.run("Shuffle") { [routing] in
+            do {
+                try routing.perform(.persistentShuffleMode, musicApp: {},
+                                    source: { try $0.control.setShuffle(on) }, unaffected: {})
+            } catch { self.clearBridgeModesOverride(); throw error }
+        }
+    }
+
+    /// Repeat on SpanDAC: off, all, one, as the Music.app grid cycles.
+    private func spanDACCycleRepeat() {
+        guard let b = lastBridge, b.offersRepeat else {
+            status.post(spanDACNoModesSentence, error: true); return
+        }
+        let current = effectiveBridgeModes(b).repeatMode.flatMap(RepeatMode.init(rawValue:)) ?? .off
+        let next = current.next
+        setBridgeModesOverride(repeatMode: next.rawValue)
+        actions.run("Repeat") { [routing] in
+            do {
+                try routing.perform(.persistentRepeatMode, musicApp: {},
+                                    source: { try $0.control.setRepeat(next) }, unaffected: {})
+            } catch { self.clearBridgeModesOverride(); throw error }
         }
     }
 

@@ -118,8 +118,11 @@ func macSpanDACRowState(readiness: SourceReadiness, output: SourceOutputInfo?) -
     if readiness == .checking { return .checking }
     switch output?.dac {
     case .unknown?: return .checking
-    case .notConnected?: return .notReady("plug in your DAC")
-    case .connected?, nil: break
+    case .notConnected? where output?.switchable != true: return .notReady("plug in your DAC")
+    // A DAC that is plugged in but not the sound output (`switchable`) is
+    // selectable: choosing it makes it the Mac's output. It is as ready as
+    // `readiness` says, no more.
+    case .notConnected?, .connected?, nil: break
     }
     switch readiness {
     case .ready: return .ready
@@ -168,6 +171,12 @@ func spandacRowDetail(state: SpanDACRowState, output: SourceOutputInfo?, device:
         return SpanDACRowDetail(text: output?.dac == .unknown ? "checking the DAC" : "checking\u{2026}",
                                 tone: .neutral)
     case .ready:
+        if isThisMac, let output, output.dac == .notConnected, output.switchable {
+            let rate = output.maxRateHz.map(formatSampleRate)
+            let name = [output.name, rate].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " \u{00B7} ")
+            return SpanDACRowDetail(text: "\(name.isEmpty ? "your DAC" : name)  select to make it the Mac's output",
+                                    tone: .neutral)
+        }
         let dac = spandacOutputDetail(output)
         return SpanDACRowDetail(text: dac.isEmpty ? "ready" : "ready  \(dac)", tone: .ready)
     case .notPaired(let pairable):
@@ -342,7 +351,7 @@ final class SpeakersScene: Scene {
 
     /// This Mac's row before the switch.
     private var macDataState: MacDataRowState {
-        macDataRowState(readiness: bridgeReadiness, installed: macInstalled,
+        macDataRowState(readiness: bridgeDataReadiness, installed: macInstalled,
                         starting: startInFlight, startOutcome: startOutcome)
     }
 
@@ -401,11 +410,16 @@ final class SpeakersScene: Scene {
     /// Bridge's own last-reported state. Owned by the main loop and written ONLY
     /// in `tick()`; background work posts to `inboxReadiness` instead.
     private var bridgeReadiness: SourceReadiness = .checking
+    /// The same status read for music DATA (`SourceStatus.dataReadiness`): the
+    /// DAC and the player are the output's concern, never the data's. Written
+    /// with `bridgeReadiness`, by `tick()` only.
+    private var bridgeDataReadiness: SourceReadiness = .checking
     /// What the Mac's SpanDAC last said about its DAC; written with
     /// `bridgeReadiness`, by `tick()` only.
     private var macOutput: SourceOutputInfo? = nil
     private let readinessLock = NSLock()
-    private var inboxReadiness: (readiness: SourceReadiness, output: SourceOutputInfo?, installed: Bool?)? = nil   // guarded by readinessLock
+    private var inboxReadiness: (readiness: SourceReadiness, data: SourceReadiness,
+                                 output: SourceOutputInfo?, installed: Bool?)? = nil   // guarded by readinessLock
     private var readinessInFlight = false
     private var lastReadinessKick = Date.distantPast   // clock(), tick()-thread only
     private var lastCountdownSecond = 0                // tick()-thread only
@@ -449,10 +463,20 @@ final class SpeakersScene: Scene {
     private var startOutcome: MacSpanDACStartOutcome? = nil
     private var inboxStart: MacSpanDACStartOutcome? = nil        // guarded by readinessLock
     private var inboxStopProblem: String?? = nil                 // guarded by readinessLock
+    /// Why SpanDAC could not make its DAC the Mac's sound output on the last
+    /// Enter (`slice.useDAC` refused), shown on the Mac row while that DAC is
+    /// still switchable. Main loop only; arrives through `inboxOutputProblem`
+    /// (`.some(nil)` clears it).
+    private var macOutputProblem: String? = nil
+    private var inboxOutputProblem: String?? = nil               // guarded by readinessLock
     /// Whether SpanDAC on this Mac's control socket exists. Injectable so a
     /// test never looks at the real one; with "not running", its absence is
     /// what lets "Stop using" leave a SpanDAC on this Mac that is not there.
     private let macSocketExists: () -> Bool
+    /// Where a switch away from MusicTUI's own player confirms it is not
+    /// playing. Required at construction; production passes
+    /// `liveMusicAppPauseConfirmation`.
+    private let confirmMusicAppPaused: () throws -> Bool
 
     /// Test-only: the switch screen is up.
     var isShowingSwitchScreen: Bool { showingSwitchScreen }
@@ -463,7 +487,7 @@ final class SpeakersScene: Scene {
     /// Test-only: lands a Mac status in the inbox exactly as a probe would,
     /// so a test can set the DAC the Mac reports without a socket.
     func deliverMacStatusForTest(readiness: SourceReadiness, output: SourceOutputInfo?) {
-        publishReadiness(readiness, output: output)
+        publishReadiness(readiness, data: macDataReadiness(readiness), output: output)
     }
 
     /// The pairing Enter started, and the output epoch at that moment: a pair
@@ -496,6 +520,7 @@ final class SpeakersScene: Scene {
 
     init(backend: AppleScriptBackend, status: StatusStore, actions: ActionRunner,
          routing: RoutingCoordinator,
+         confirmMusicAppPaused: @escaping () throws -> Bool,
          makeSourceClient: (() -> SourceAppClient)? = nil,
          makeNetworkClient: ((String) -> SourceAppClient)? = nil,
          spandac: SpanDACOutputsDriving? = nil,
@@ -514,6 +539,7 @@ final class SpeakersScene: Scene {
         // Nil means the coordinator's Mac client, whose licence cache hears
         // every status this tab reads; a bare `SourceAppClient()` would not.
         self.makeSourceClient = makeSourceClient ?? { routing.client(for: .source) }
+        self.confirmMusicAppPaused = confirmMusicAppPaused
         self.makeNetworkClient = makeNetworkClient
         self.spandac = spandac
         self.macName = macName
@@ -541,24 +567,27 @@ final class SpeakersScene: Scene {
     /// version wrote `bridgeReadiness` directly from `ActionRunner`'s background
     /// queue while `render` read it on the main loop — a data race that happened
     /// to be invisible because the write never ran at all.
-    private func publishReadiness(_ readiness: SourceReadiness, output: SourceOutputInfo?,
-                                  installed: Bool? = nil) {
+    private func publishReadiness(_ readiness: SourceReadiness, data: SourceReadiness,
+                                  output: SourceOutputInfo?, installed: Bool? = nil) {
         readinessLock.lock()
-        inboxReadiness = (readiness, output, installed)
+        inboxReadiness = (readiness, data, output, installed)
         readinessLock.unlock()
     }
 
     /// One status read of the Mac's SpanDAC: its readiness and its DAC. The
     /// readiness is exactly what `SourceAppClient.readiness()` answers; the
     /// status is read once so the DAC comes from the same answer.
-    private static func readMacStatus(_ client: SourceAppClient) -> (SourceReadiness, SourceOutputInfo?) {
+    private static func readMacStatus(_ client: SourceAppClient)
+        -> (readiness: SourceReadiness, data: SourceReadiness, output: SourceOutputInfo?) {
         do {
             let status = try client.control.status()
             // Not serving: the licence line is the whole story. Its DAC says
             // nothing a person can use while SpanDAC will not play.
-            return (status.readiness, status.licence?.serving == false ? nil : status.output)
+            return (status.readiness, status.dataReadiness,
+                    status.licence?.serving == false ? nil : status.output)
         } catch {
-            return (SourceReadiness.from(error), nil)
+            let readiness = SourceReadiness.from(error)
+            return (readiness, readiness, nil)
         }
     }
 
@@ -578,11 +607,12 @@ final class SpeakersScene: Scene {
         let make = makeSourceClient
         let starter = routing.macStarter
         DispatchQueue.global().async { [weak self] in
-            let (readiness, output) = Self.readMacStatus(make())
+            let (readiness, data, output) = Self.readMacStatus(make())
             // Installed: LaunchServices or its socket knows it, or it just
             // answered. Asking never starts it.
             let answered = readiness != .checking && readiness != .notRunning
-            self?.publishReadiness(readiness, output: output, installed: answered || starter.isInstalled)
+            self?.publishReadiness(readiness, data: data, output: output,
+                                   installed: answered || starter.isInstalled)
         }
     }
 
@@ -624,8 +654,13 @@ final class SpeakersScene: Scene {
         readinessLock.lock()
         let start = inboxStart; inboxStart = nil
         let problem = inboxStopProblem; inboxStopProblem = nil
+        let outputProblem = inboxOutputProblem; inboxOutputProblem = nil
         readinessLock.unlock()
         var changed = false
+        if let outputProblem, outputProblem != macOutputProblem {
+            macOutputProblem = outputProblem
+            changed = true
+        }
         if let start {
             startInFlight = false
             changed = true
@@ -656,7 +691,7 @@ final class SpeakersScene: Scene {
             guard let self else { return }
             defer { self.dataActionFinishedForTest?() }
             let result = try self.routing.acceptSpanDACData(readiness: {
-                macDataReadiness(Self.readMacStatus(make()).0)
+                macDataReadiness(Self.readMacStatus(make()).data)
             })
             if case .switched = result { self.status.post(switchedToSpanDACData) }
         }
@@ -697,8 +732,7 @@ final class SpeakersScene: Scene {
                     pauseOutgoing: { outgoing in
                         switch outgoing {
                         case .musicApp:
-                            return try confirmMusicAppNotPlaying(session: liveMusicAppPauseSession,
-                                                                 isRunning: liveMusicAppMayBeRunning)
+                            return try self.confirmMusicAppPaused()
                         case .source:
                             if (try? confirmBridgeNotPlaying(client.control)) == true { return true }
                             return macAbsent()
@@ -777,8 +811,7 @@ final class SpeakersScene: Scene {
                 pauseOutgoing: { outgoing in
                     switch outgoing {
                     case .musicApp:
-                        return try confirmMusicAppNotPlaying(session: liveMusicAppPauseSession,
-                                                             isRunning: liveMusicAppMayBeRunning)
+                        return try self.confirmMusicAppPaused()
                     case .source:
                         return try confirmBridgeNotPlaying(clientFor(outgoing).control)
                     case .networkSource:
@@ -793,7 +826,9 @@ final class SpeakersScene: Scene {
                 })
             switch result {
             case .alreadyInMode:
-                break
+                // Enter on the SpanDAC row that is already the output: when its
+                // DAC is still not the Mac's output, ask again.
+                if target == .source { self.makeMacOutputTheDAC(client) }
             case .switched(let mode):
                 // Through the inbox, like every other background result. Writing
                 // `bridgeReadiness` here would reinstate the main-loop/background
@@ -803,14 +838,60 @@ final class SpeakersScene: Scene {
                 case .networkSource(let id):
                     self.spandac?.probe(id)
                     self.status.post("Output: SpanDAC · \(targetName ?? "on the network")")
-                case .source, .musicApp:
-                    let (readiness, output) = Self.readMacStatus(client)
-                    self.publishReadiness(readiness, output: output)
-                    self.status.post(mode == .source ? "Output: SpanDAC · \(self.macName)" : "Output: \(musicTUIOutputName)")
+                case .source:
+                    // The selection is committed and the outgoing player is
+                    // paused and cleared (inside `switchMode`): only now may
+                    // SpanDAC move the Mac's sound output to its DAC.
+                    self.makeMacOutputTheDAC(client)
+                    self.status.post("Output: SpanDAC · \(self.macName)")
+                case .musicApp:
+                    let (readiness, data, output) = Self.readMacStatus(client)
+                    self.publishReadiness(readiness, data: data, output: output)
+                    self.status.post("Output: \(musicTUIOutputName)")
                 }
             }
         }
     }
+
+    /// Reads the Mac's status and, when its DAC is plugged in but not the sound
+    /// output (`switchable`) and this SpanDAC lists `output.use_dac`, sends
+    /// `slice.useDAC`. Always publishes the freshest status; a refusal is kept
+    /// for the row (SpanDAC's own detail, else a fallback). An older SpanDAC
+    /// without the capability is left alone: its switch is at the first play.
+    /// Runs on the action queue, after the selection is committed.
+    private func makeMacOutputTheDAC(_ client: SourceAppClient) {
+        var fresh: SourceStatus
+        do {
+            fresh = try client.control.status()
+        } catch {
+            let readiness = SourceReadiness.from(error)
+            publishReadiness(readiness, data: readiness, output: nil)
+            return
+        }
+        var problem: String? = nil
+        if fresh.output?.switchable == true, fresh.offersUseDAC {
+            do {
+                fresh = try client.control.useDAC() ?? client.control.status()
+            } catch let refusal as SourceUseDACRefusal {
+                // The refusal carries the status it left behind: publish that,
+                // not the one read before the operation.
+                if let after = refusal.status { fresh = after }
+                problem = (refusal.detail?.isEmpty ?? true) ? Self.notTheMacsSoundOutput : refusal.detail
+            } catch SourceAppError.refused(let detail) {
+                problem = (detail.isEmpty || detail == "no detail") ? Self.notTheMacsSoundOutput : detail
+            } catch {
+                problem = Self.notTheMacsSoundOutput
+            }
+        }
+        readinessLock.lock()
+        inboxOutputProblem = .some(problem)
+        readinessLock.unlock()
+        publishReadiness(fresh.readiness, data: fresh.dataReadiness, output: fresh.output)
+        if let problem { status.post("SpanDAC is selected, but \(problem)") }
+    }
+
+    /// Shown on the Mac row when `slice.useDAC` is refused without a reason.
+    static let notTheMacsSoundOutput = "not the Mac's sound output"
 
     @discardableResult
     func tick(snapshot: NowPlayingSnapshot) -> Bool {
@@ -838,9 +919,17 @@ final class SpeakersScene: Scene {
         readinessLock.unlock()
         if let freshReadiness {
             readinessInFlight = false
-            if freshReadiness.readiness != bridgeReadiness || freshReadiness.output != macOutput {
+            if freshReadiness.readiness != bridgeReadiness || freshReadiness.data != bridgeDataReadiness
+                || freshReadiness.output != macOutput {
                 bridgeReadiness = freshReadiness.readiness
+                bridgeDataReadiness = freshReadiness.data
                 macOutput = freshReadiness.output
+                changed = true
+            }
+            // A refusal belongs to a DAC that is still not the output; once it
+            // is, or is gone, the old reason is stale.
+            if macOutput?.switchable != true, macOutputProblem != nil {
+                macOutputProblem = nil
                 changed = true
             }
             if let installed = freshReadiness.installed, installed != macInstalled {
@@ -848,7 +937,7 @@ final class SpeakersScene: Scene {
                 changed = true
             }
             // A status that reads ready for music data ends a failed start.
-            if startOutcome != nil, macDataReadiness(bridgeReadiness) == .ready {
+            if startOutcome != nil, macDataReadiness(bridgeDataReadiness) == .ready {
                 startOutcome = nil
                 changed = true
             }
@@ -859,7 +948,7 @@ final class SpeakersScene: Scene {
         // asked (every install from before the data route included: no
         // migration). After Esc, only Enter on this Mac's row shows it.
         if !switchScreenAutoShown, !dataSwitched, routing.ceremony == .neverShown,
-           macDataReadiness(bridgeReadiness) == .ready {
+           macDataReadiness(bridgeDataReadiness) == .ready {
             switchScreenAutoShown = true
             showingSwitchScreen = true
             changed = true
@@ -1262,7 +1351,7 @@ final class SpeakersScene: Scene {
             let isCursor = dispIdx == cursor
             switch dispRow {
             case .spandacMac:
-                let detail: SpanDACRowDetail
+                var detail: SpanDACRowDetail
                 if !switched {
                     detail = macDataRowDetail(macDataState)
                 } else if macInstalled == false {
@@ -1270,6 +1359,11 @@ final class SpeakersScene: Scene {
                 } else {
                     detail = spandacRowDetail(state: macRowState, output: macOutput, device: macName,
                                               isThisMac: true, now: now)
+                    if let problem = macOutputProblem, macRowState == .ready, macOutput?.switchable == true {
+                        // The switch was asked for and refused: SpanDAC stays the
+                        // output, and the row says why. Enter asks again.
+                        detail = SpanDACRowDetail(text: problem, tone: .warning)
+                    }
                 }
                 spandacLine(isCursor: isCursor, selected: routing.mode == .source && !blocked, name: macName, detail: detail)
                 // Before the switch, SpanDACs on the network are drawn under

@@ -75,7 +75,8 @@ final class SpanDACLicenceEffectiveOutputTests: XCTestCase {
     private func outputScene(_ c: RoutingCoordinator, speakers: [[String: Any]] = []) -> SpeakersScene {
         SpeakersScene(backend: AppleScriptBackend(executable: "/usr/bin/true"),
                       status: StatusStore(), actions: ActionRunner(status: StatusStore()),
-                      routing: c, macName: "Studio Mac",
+                      routing: c, confirmMusicAppPaused: musicAppPauseTripwire,
+                      macName: "Studio Mac",
                       fetchSpeakers: { speakers },
                       fetchEQ: { _ in EQSnapshot(enabled: false, current: nil, presets: []) },
                       fetchVisualizer: { _ in false },

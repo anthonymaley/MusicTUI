@@ -17,7 +17,9 @@ struct BridgeNow: Equatable {
     enum Queue: Equatable {
         case none
         case building(ready: Int?, requested: Int)
-        case complete(requested: Int)
+        /// `present` is set only when SpanDAC queued fewer songs than were
+        /// requested; nil when every requested song is present or it did not say.
+        case complete(requested: Int, present: Int? = nil)
         case invalid(reason: String, built: Int?, requested: Int)
     }
     var link: Link
@@ -26,6 +28,22 @@ struct BridgeNow: Equatable {
     var artist: String
     var queue: Queue
     var index: Int?           // 0-based, within present entries
+    /// The playing song's cover, when SpanDAC sends one. Nil draws the same
+    /// gradient placeholder as a Music.app track with no artwork.
+    var artworkURL: String? = nil
+    /// The playing song's Music.app persistent ID as SpanDAC sends it (a signed
+    /// decimal alias, verbatim), when it sends one: the way to a cover when `artworkURL` is absent or not fetchable.
+    /// When the status has none, the poller fills it with the alias of the
+    /// sent row the status's `row` names (`spanDACQueueWindow`), so the cover
+    /// takes the same rung either way.
+    var persistentID: String? = nil
+    /// SpanDAC's shuffle and repeat state, and which of the two it offers
+    /// control of (its `capabilities` named the op). Defaults read as an older
+    /// build: no state, nothing offered.
+    var shuffle: Bool? = nil
+    var repeatMode: String? = nil
+    var offersShuffle = false
+    var offersRepeat = false
 
     /// Before Bridge has answered even once.
     static let empty = BridgeNow(link: .checking, playback: "idle", title: "", artist: "",
@@ -48,7 +66,9 @@ func bridgeNow(from status: SourceStatus) -> BridgeNow {
     let queue: BridgeNow.Queue
     switch status.queuePhase {
     case "building": queue = .building(ready: status.queuePresent, requested: requested)
-    case "complete": queue = .complete(requested: requested)
+    case "complete":
+        let short = status.queuePresent.flatMap { $0 >= 0 && $0 < requested ? $0 : nil }
+        queue = .complete(requested: requested, present: short)
     case "invalid":
         queue = .invalid(reason: status.queueReason ?? "the queue could not be built",
                          built: status.queueBuiltBeforeFailure, requested: requested)
@@ -56,8 +76,15 @@ func bridgeNow(from status: SourceStatus) -> BridgeNow {
     }
     return BridgeNow(link: link, playback: status.playback,
                      title: status.title ?? "", artist: status.artist ?? "",
-                     queue: queue, index: status.queueIndex)
+                     queue: queue, index: status.queueIndex, artworkURL: status.artworkURL,
+                     persistentID: status.persistentID,
+                     shuffle: status.shuffle, repeatMode: status.repeatMode,
+                     offersShuffle: status.offersShuffle, offersRepeat: status.offersRepeat)
 }
+
+/// What the Now tab says in place of the control grid when SpanDAC does not
+/// list `slice.shuffle` or `slice.repeat` (an older build).
+let spanDACNoModesSentence = "Shuffle and repeat aren't available on SpanDAC."
 
 /// Keeps a failed read from flashing a diagnosis.
 ///
@@ -115,6 +142,10 @@ func bridgeStatusLine(_ b: BridgeNow) -> String? {
         guard let ready else { return "Building queue of \(requested)\u{2026}" }
         return "Building queue: \(ready) of \(requested) ready."
     }
+    // SpanDAC queued fewer songs than asked for: a finished queue, said as it is.
+    if case .complete(let requested, let present?) = b.queue {
+        return "\(present) of \(requested) queued."
+    }
     return nil
 }
 
@@ -124,9 +155,68 @@ func bridgePositionLine(_ b: BridgeNow) -> String? {
     guard let index = b.index else { return nil }
     let requested: Int
     switch b.queue {
-    case .building(_, let m), .complete(let m): requested = m
+    case .building(_, let m): requested = m
+    // The index counts the songs that are present, so a short queue's total is
+    // the songs there, not the number asked for.
+    case .complete(let m, let present): requested = present ?? m
     case .none, .invalid: return nil
     }
     guard requested > 0, index >= 0, index < requested else { return nil }
     return "Song \(index + 1) of \(requested)"
+}
+
+/// SpanDAC's queue as the Now tab's EXISTING Up Next draws it: the same
+/// `TrackListEntry` rows the Music.app path fills `surrounding` with, the
+/// playing row first (`isCurrent`), then every row after it (the renderer
+/// scrolls, as it does for the Music.app path, which passes its whole queue). `index` is the
+/// row's 1-based place in the list the client sent.
+///
+/// `sent` is what the current play sent (`RoutingCoordinator.spanDACPlayedRows`);
+/// `row` and `next_rows` index it. Without `next_rows`, the rows after `row` in
+/// sent order stand in. `current` is the sent row at `row`: its alias is the
+/// cover's way in when the status carries no persistent ID.
+///
+/// **Nothing is shown that the status does not vouch for.** No sent list, no
+/// `row`, a `row` outside the list, or a row whose title is not the title the
+/// status reports playing (a play from another process, say) all give nothing,
+/// which leaves the Now tab exactly as it was before this existed.
+///
+/// `token` is the `queue_token` the play's reply carried (Codex 106, finding 6).
+/// When there is one, the rows are used only while the status echoes the same
+/// token, so another process's queue can never borrow them: no Up Next, no
+/// album line, no persistent-id fallback for the cover. Without one (a legacy
+/// play on a SpanDAC that predates tokens) the title check above is the whole
+/// rule, as before, but only for a status that carries no token either: a
+/// status that does describes an assignment this play holds no token for. A
+/// `slice.playLibrary` reply without its token is refused, so a whole play never
+/// records none.
+///
+/// `shuffled` is true when the play was a shuffle SpanDAC made itself.
+func spanDACQueueWindow(sent: [MusicRow]?, token: String? = nil, shuffled: Bool = false,
+                        status: SourceStatus) -> (current: MusicRow?, entries: [TrackListEntry]) {
+    guard let sent, let at = status.row, sent.indices.contains(at) else { return (nil, []) }
+    // The play recorded a token: these rows describe that assignment and no
+    // other. A status that echoes a different token (another process replaced
+    // the queue) or none (the player was unloaded) shows its own data only.
+    // No token recorded (an older SpanDAC's legacy play): the title check below is
+    // all there is, but only while the status carries no assignment's token either.
+    // One that does describes an assignment this play holds no token for.
+    if let token { if status.queueToken != token { return (nil, []) } }
+    else if status.queueToken != nil { return (nil, []) }
+    let current = sent[at]
+    if let title = status.title?.trimmingCharacters(in: .whitespaces), !title.isEmpty,
+       title.lowercased() != current.title.trimmingCharacters(in: .whitespaces).lowercased() {
+        return (nil, [])
+    }
+    // `next_rows` absent: in sent order the rows after `row` stand in, as ever.
+    // But a play SpanDAC shuffled itself, or a status that says shuffle is on,
+    // has no order the sent rows could stand in for, and SpanDAC may leave
+    // `next_rows` out then: no Up Next list, never an error and never a guess.
+    let unorderedWithoutNextRows = shuffled || status.shuffle == true
+    let next = status.nextRows.map { $0.filter { sent.indices.contains($0) } }
+        ?? (unorderedWithoutNextRows ? [] : Array((at + 1)..<sent.count))
+    func entry(_ i: Int, current: Bool) -> TrackListEntry {
+        TrackListEntry(index: i + 1, name: sent[i].title, artist: sent[i].artist, isCurrent: current, album: sent[i].album)
+    }
+    return (current, [entry(at, current: true)] + next.map { entry($0, current: false) })
 }

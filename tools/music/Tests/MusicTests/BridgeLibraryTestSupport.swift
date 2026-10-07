@@ -39,6 +39,12 @@ final class BridgeLibraryReadsWire {
     private var repliesByOp: [String: [String]]
     private var countByOp: [String: Int] = [:]
     private var gates: [String: [Int: DispatchSemaphore]] = [:]
+    /// When true, `slice.status` is a poll rather than a one-shot: once scripted,
+    /// its last reply keeps answering. A scene play now reads the status for
+    /// SpanDAC's capabilities before it sends anything, so a scene test that
+    /// scripted ONE status for the read after its queue would otherwise have it
+    /// eaten by the read before. Off by default: the CLI tests count status reads.
+    var stickyStatus = false
 
     init(_ repliesByOp: [String: [String]] = [:]) {
         self.repliesByOp = repliesByOp
@@ -73,7 +79,8 @@ final class BridgeLibraryReadsWire {
         let n = countByOp[op, default: 0]
         countByOp[op] = n + 1
         let replies = repliesByOp[op] ?? []
-        let reply = n < replies.count ? replies[n] : Self.unscripted(op)
+        let reply = n < replies.count ? replies[n]
+            : (op == "slice.status" && stickyStatus ? (replies.last ?? Self.unscripted(op)) : Self.unscripted(op))
         let gate = gates[op]?[n]
         lock.unlock()
         _ = gate?.wait(timeout: .now() + 5)
@@ -89,6 +96,11 @@ final class BridgeLibraryReadsWire {
     func sent(_ op: String) -> [[String: Any]] {
         lock.lock(); defer { lock.unlock() }
         return requests.filter { ($0["op"] as? String) == op }
+    }
+    /// Every request's op, in the order they arrived.
+    func opsInOrder() -> [String] {
+        lock.lock(); defer { lock.unlock() }
+        return requests.compactMap { $0["op"] as? String }
     }
     var requestCount: Int { lock.lock(); defer { lock.unlock() }; return requests.count }
 }
@@ -147,11 +159,12 @@ final class BridgeSelectedFlag {
 /// and `BridgeSwitchPauseTests` already cover).
 func libraryTestScene(flag: BridgeSelectedFlag, wire: BridgeLibraryReadsWire,
                       spy: LibraryAppleScriptSpy, status: StatusStore = StatusStore(),
-                      warmUpSleep: @escaping (TimeInterval) -> Void = { _ in }) -> LibraryScene {
+                      warmUpSleep: @escaping (TimeInterval) -> Void = { _ in },
+                      routing given: RoutingCoordinator? = nil) -> LibraryScene {
     let store = PlaybackModeStore(path: NSTemporaryDirectory() + "mode-\(UUID().uuidString).json")
     store.set(.source)
-    let routing = RoutingCoordinator(store: store, surface: .tui,
-                                     makeSource: { SourceAppClient(path: "/nonexistent", transport: wire.transport) })
+    let routing = given ?? RoutingCoordinator(store: store, surface: .tui,
+                                              makeSource: { SourceAppClient(path: "/nonexistent", transport: wire.transport) })
     return LibraryScene(backend: AppleScriptBackend(executable: "/usr/bin/true"), routing: routing,
                         sources: spy.sources(), appQueue: AppQueueStore(), status: status,
                         actions: ActionRunner(status: status),

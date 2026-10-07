@@ -550,6 +550,27 @@ final class CLIDataRouteTests: XCTestCase {
         XCTAssertEqual(h.dataWire.requestCount, 0)
     }
 
+    /// A chosen DAC that is plugged in but is not the sound output
+    /// (`switchable`) plays: SpanDAC makes it the Mac's output at play start.
+    /// Only the readiness check reaches the output first, as for any ready Mac.
+    func testPlayingOnTheMacSpanDACReachesPlayWhenTheDACIsSwitchable() throws {
+        let switchableStatus =
+            #"{"ok":true,"status":{"playback":"idle","authorization":"authorized","contract":\#(sourceContractVersion),"output":{"dac":"not_connected","switchable":true,"name":"SSL 2+","max_rate_hz":192000}}}"#
+        let h = CLIDataRouteHarness(output: .source, data: .accepted,
+                                    dataReplies: ["slice.status": [switchableStatus]],
+                                    outputReplies: ["slice.status": [switchableStatus],
+                                                    "slice.queue": [#"{"ok":true,"skipped_unavailable":0}"#]])
+        try cacheRows(h, [SongResult(index: 1, title: "Angel", artist: "Massive Attack", album: "Mezzanine",
+                                     catalogId: "", origin: .bridgeLibrary, bridgeID: "l.1")])
+        let (error, calls) = play(h, ["1"])
+        XCTAssertEqual(calls, [])
+        XCTAssertEqual(h.io.out, ["Playing 'Angel' on SpanDAC."], "no DAC refusal printed")
+        XCTAssertNil(error, "a switchable DAC is not a refusal")
+        XCTAssertEqual(h.outputWire.requests.compactMap { $0["op"] as? String }, ["slice.status", "slice.queue", "slice.status"],
+                       "readiness, the play itself (SpanDAC switches the output as it starts), then the status read after it")
+        XCTAssertEqual(h.dataWire.requestCount, 0)
+    }
+
     // MARK: - Blocked state
 
     func testBlockedStateCLIRefusesSoundAndReadsOpen() throws {

@@ -151,7 +151,8 @@ final class SpanDACLicenceNoticeTests: XCTestCase {
     private func scene(_ routing: RoutingCoordinator) -> SpeakersScene {
         SpeakersScene(backend: AppleScriptBackend(executable: "/usr/bin/true"),
                       status: StatusStore(), actions: ActionRunner(status: StatusStore()),
-                      routing: routing, macName: "Studio Mac",
+                      routing: routing, confirmMusicAppPaused: musicAppPauseTripwire,
+                      macName: "Studio Mac",
                       fetchSpeakers: { [] },
                       fetchEQ: { _ in EQSnapshot(enabled: false, current: nil, presets: []) },
                       fetchVisualizer: { _ in false },

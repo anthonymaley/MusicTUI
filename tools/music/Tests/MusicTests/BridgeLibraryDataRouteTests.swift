@@ -362,6 +362,56 @@ final class BridgeLibraryDataRouteTests: XCTestCase {
         XCTAssertEqual(r.built.outputModes, [], "an output client was built for a play that must not run")
     }
 
+    /// Codex 117, finding 1: an output switch that lands while `slice.listRev` is
+    /// in flight is refused with `perform`'s own sentence. The fallback listing read
+    /// is never started (it would answer `too_large` here), and no output client is
+    /// built for the stale play.
+    private func switchWhileTheRevisionIsHeld(kind: String, listingOp: String, listingPage: String,
+                                              listingReply: String, scene scenePicker: (LibraryScene) -> Void) throws {
+        let r = rig(output: .source, data: .accepted)
+        r.data.stickyStatus = true
+        r.data.script("slice.status", [#"{"ok":true,"op":"slice.status","status":{"playback":"idle","contract":3,"authorization":"authorized","capabilities":["play.library"]}}"#])
+        r.data.script(kind == "album" ? "slice.libraryAlbums" : "slice.libraryArtists", [listingPage])
+        r.data.script("slice.listRev", [#"{"ok":true,"op":"slice.listRev","kind":"\#(kind)","list_rev":"rev-1","count":1001}"#])
+        r.data.gate(op: "slice.listRev", at: 0)
+        r.data.script(listingOp, [listingReply])
+        let s = libraryScene(r)
+        goToSubView(s, kind == "album" ? .albums : .artists)
+        XCTAssertTrue(settleScene(s) { s.render(frame: frame, snapshot: idle).contains(kind == "album" ? "In Rainbows" : "Radiohead") })
+        let listingReadsBefore = r.data.sent(listingOp).count   // an album's preview may have read it already
+        _ = s.handle(.char("p"))
+        XCTAssertTrue(wait { r.data.reached(op: "slice.listRev", at: 0) }, "the play never asked for the revision")
+
+        let switched = try r.routing.switchMode(to: .networkSource("0E6A3F6C-4B51-4D1B-9E1E-5C2A8D3B7F10"), readiness: { .ready },
+                                                pauseOutgoing: { _ in true }, dropQueue: { _ in })
+        XCTAssertEqual(switched, .switched(to: .networkSource("0E6A3F6C-4B51-4D1B-9E1E-5C2A8D3B7F10")))
+        r.data.release(op: "slice.listRev")
+
+        XCTAssertTrue(wait { r.status.current()?.text != nil && r.status.current()?.text != "" && r.status.current()?.isError == true },
+                      "got: \(String(describing: r.status.current()?.text))")
+        XCTAssertEqual(r.status.current()?.text, sourceChangedNothingPlayed,
+                       "the stale play showed the fallback read's sentence instead")
+        XCTAssertEqual(r.data.sent(listingOp).count, listingReadsBefore, "a fallback listing read started after the switch")
+        XCTAssertEqual(r.data.sent("slice.listRev").count, 1)
+        XCTAssertTrue(r.output.sent("slice.queue").isEmpty)
+        XCTAssertTrue(r.output.sent("slice.playLibrary").isEmpty)
+        XCTAssertEqual(r.built.outputModes, [], "an output client was built for a play that must not run")
+    }
+
+    func testAnArtistPlayWhoseRevisionReadCrossedASwitchIsRefusedBeforeAnyFallbackRead() throws {
+        try switchWhileTheRevisionIsHeld(
+            kind: "artist", listingOp: "slice.libraryArtistSongs", listingPage: artistPage,
+            listingReply: #"{"ok":false,"op":"slice.libraryArtistSongs","error":{"kind":"too_large","detail":"Too many songs to list."}}"#,
+            scene: { _ in })
+    }
+
+    func testAnAlbumPlayWhoseRevisionReadCrossedASwitchIsRefusedBeforeAnyFallbackRead() throws {
+        try switchWhileTheRevisionIsHeld(
+            kind: "album", listingOp: "slice.libraryAlbumTracks", listingPage: albumPage,
+            listingReply: #"{"ok":false,"op":"slice.libraryAlbumTracks","error":{"kind":"too_large","detail":"Too many songs to list."}}"#,
+            scene: { _ in })
+    }
+
     // MARK: - Blocked and open data
 
     func testBlockedStateLibraryIsTheShippedPathAndPlaysNothing() {
