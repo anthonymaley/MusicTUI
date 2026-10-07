@@ -236,6 +236,36 @@ final class SpanDACMacPlayOutGateTests: XCTestCase {
         XCTAssertEqual(c.playOutMode, .source)
     }
 
+    /// Path level (Codex review of 903825f): during a Mac play-out, which
+    /// branch each action ran. Nothing that acts on the sounding output or on
+    /// its current track runs on MusicTUI: Quiet reaches the play-out, the
+    /// mode cells and the current-track verbs are refused before any branch.
+    /// `.eq`, `.visualizer` and `.volume` set Apple's Music app's own state and
+    /// still run there; that is reported, not decided here.
+    func testDuringAMacPlayOutNothingActingOnTheSoundingOutputRunsOnMusicTUI() {
+        let settingsOnly: Set<MusicTUIAction> = [.eq, .visualizer, .volume]
+        let forbidden = musicTUIOutputVerbs
+            .union(MusicTUIAction.allCases.filter(\.readsMusicAppCurrentTrack))
+            .subtracting(settingsOnly)
+        for surface in InvocationSurface.allCases {
+            for action in MusicTUIAction.allCases {
+                let (rig, c) = macPlayingOut(surface)
+                rig.reply = LicenceRig.pausesWhenAsked(serving: false)
+                let log = BranchLog()
+                let sentBefore = rig.sent.count
+                _ = try? run(c, action, log, origin: .openData(resultNumber: nil))
+                let label = "\(surface) \(action)"
+                if forbidden.contains(action) {
+                    XCTAssertFalse(log.log.contains { $0.hasPrefix("musicApp") }, "ran on MusicTUI: \(label)")
+                }
+                if action == .quiet {
+                    XCTAssertEqual(log.log, ["source"], label)
+                    XCTAssertEqual(rig.sent.dropFirst(sentBefore).map(\.tag), [rig.tag(.source)], label)
+                }
+            }
+        }
+    }
+
     // MARK: - A chosen play is refused, never a replacement
 
     /// Every chosen play, from either surface: refused before any pause is
@@ -359,6 +389,16 @@ final class SpanDACMacPlayOutGateTests: XCTestCase {
                         // and nothing reaches the device playing out.
                         XCTAssertNotEqual(thrown, macPlayOutSentence, label)
                         XCTAssertFalse(rig.sent.dropFirst(sentBefore).contains { $0.tag == rig.tag(device) }, label)
+                        // And the branch that ran is the one the selection's
+                        // matrix names, and no other (Codex review of 903825f).
+                        let ran = log.log
+                        XCTAssertLessThanOrEqual(ran.count, 1, label)
+                        switch routeAction(action, selection: c.selection, from: surface).sound {
+                        case .musicApp:   XCTAssertTrue(ran.allSatisfy { $0.hasPrefix("musicApp:") }, "\(label) \(ran)")
+                        case .source:     XCTAssertTrue(ran.allSatisfy { $0 == "source" }, "\(label) \(ran)")
+                        case .unaffected: XCTAssertEqual(ran, ["unaffected"], label)
+                        case .refused:    XCTAssertEqual(ran, [], label); XCTAssertNotNil(thrown, label)
+                        }
                     }
                 }
             }
