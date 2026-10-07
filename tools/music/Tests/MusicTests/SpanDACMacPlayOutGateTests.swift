@@ -152,6 +152,26 @@ final class SpanDACMacPlayOutGateTests: XCTestCase {
 
     // MARK: - Codex review of 903825f: Quiet, the mode cells and the current track
 
+    /// A SpanDAC Now snapshot that offers both mode cells, shuffle on and
+    /// repeat all, read through a poller over a fixture client of its own.
+    private func modesSnapshot() -> NowPlayingSnapshot {
+        let store = NowPlayingStore()
+        let modeStore = PlaybackModeStore(path: NSTemporaryDirectory() + "mode-\(UUID().uuidString).json")
+        modeStore.set(.source)
+        let reply = #"{"ok":true,"op":"slice.status","status":{"playback":"playing","contract":3,"authorization":"authorized","title":"Teardrop","artist":"Massive Attack","shuffle":true,"repeat":"all","capabilities":["slice.status","slice.shuffle","slice.repeat"],"queue":{"phase":"complete","requested":2,"present":2,"index":0}}}"#
+        let client = { SourceAppClient(path: "/nonexistent", transport: { _, _ in reply }) }
+        let p = PlaybackPoller(store: store, backend: AppleScriptBackend(executable: "/usr/bin/true"), appQueue: AppQueueStore(),
+                               queueStore: QueueStore(path: NSTemporaryDirectory() + "q-\(UUID().uuidString).json"),
+                               routing: RoutingCoordinator(store: modeStore, surface: .tui, makeSource: client),
+                               makeSourceClient: client)
+        p.tick()
+        return store.read()
+    }
+
+    private func plain(_ s: String) -> String {
+        s.replacingOccurrences(of: "\u{1B}\\[[0-9;?]*[A-Za-z]", with: "", options: .regularExpression)
+    }
+
     /// Finding 1. Now shows `x Quiet` during a Mac play-out (the effective
     /// output is SpanDAC), so `x` must pause the SpanDAC that is sounding, on
     /// the play-out's own client, and never run Apple's Music app `pause`.
@@ -171,6 +191,32 @@ final class SpanDACMacPlayOutGateTests: XCTestCase {
                       "the play-out's own SpanDAC was paused: \(sent.map(\.line))")
         XCTAssertFalse(status.current()?.isError ?? false, "\(status.current()?.text ?? "")")
         XCTAssertEqual(c.playOutMode, .source, "a pause does not end the play-out")
+    }
+
+    /// Finding 2. The SpanDAC grid is live during a Mac play-out, so `s` and
+    /// `r` are refused in the play-out sentence: no optimistic cell change,
+    /// nothing sent, no AppleScript.
+    func testShuffleAndRepeatDuringAMacPlayOutAreRefusedWithNoOptimisticChange() {
+        let snap = modesSnapshot()
+        XCTAssertTrue(snap.bridge?.offersShuffle ?? false)
+        for key in [KeyPress.char("s"), .char("r")] {
+            let (rig, c) = macPlayingOut()
+            let counter = AppleScriptCallCounter()
+            let status = StatusStore()
+            let (scene, actions) = nowScene(c, backend: counter.backend, status: status)
+            _ = scene.tick(snapshot: snap)
+            let before = plain(scene.render(frame: shellLayout(width: 120, height: 40), snapshot: snap))
+            XCTAssertTrue(before.contains("[On]") && before.contains("[All]"), before)
+            let sentBefore = rig.sent.count
+            _ = scene.handle(key)
+            actions.waitUntilIdle()
+            let after = plain(scene.render(frame: shellLayout(width: 120, height: 40), snapshot: snap))
+            XCTAssertEqual(status.current()?.text, macPlayOutSentence, "\(key)")
+            XCTAssertTrue(after.contains("[On]") && after.contains("[All]"), "no optimistic change: \(key) \(after)")
+            XCTAssertEqual(rig.sent.count, sentBefore, "\(key)")
+            XCTAssertEqual(counter.callCount, 0, "\(key)")
+            XCTAssertEqual(c.playOutMode, .source)
+        }
     }
 
     // MARK: - A chosen play is refused, never a replacement

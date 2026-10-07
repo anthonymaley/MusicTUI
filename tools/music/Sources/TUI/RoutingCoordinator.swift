@@ -631,9 +631,7 @@ final class RoutingCoordinator {
             // A provider built for an action that can start sound is not built
             // over a play-out either (the same gate as `route`; no caller
             // chooses one today).
-            if let target = settled.playOut, action.playOutClass == .startsOrReplacesSound {
-                throw ActionError(message: playOutRefusal(target, settled))
-            }
+            if let why = playOutRefusal(for: action, settled) { throw ActionError(message: why) }
             let now = settled.selection
             let routed = routeAction(action, selection: now, from: surface)
             func choice(_ provider: Provider) -> ProviderChoice<Provider> {
@@ -1041,14 +1039,29 @@ final class RoutingCoordinator {
     /// The caller holds `order`; `settled` is this action's one instant.
     private func gatePlayOut(_ target: PlaybackMode, action: MusicTUIAction, settled: Settled,
                              source: (SourceAppClient) throws -> Void) throws -> Bool {
-        switch action.playOutClass {
-        case .followsThePlayOut:
+        if action.playOutClass == .followsThePlayOut {
             try source(playOutClient(for: target))
             return true
-        case .startsOrReplacesSound:
-            throw ActionError(message: playOutRefusal(target, settled))
-        case .cannotStartSound:
-            return false
+        }
+        if let why = playOutRefusal(for: action, settled) { throw ActionError(message: why) }
+        return false
+    }
+
+    /// What the play-out gate says to `action` now, or nil when it lets it
+    /// through (no play-out, or an action that follows it or cannot start
+    /// sound). For a scene that acts before it routes: the Now tab's mode cells
+    /// move optimistically and `l` runs AppleScript on its own, so they ask
+    /// this first and show the refusal instead. `route` re-decides under
+    /// `order`, so a play-out that begins after this answer is still refused.
+    func playOutRefusal(for action: MusicTUIAction) -> String? {
+        playOutRefusal(for: action, settledState())
+    }
+
+    private func playOutRefusal(for action: MusicTUIAction, _ settled: Settled) -> String? {
+        guard let target = settled.playOut else { return nil }
+        switch action.playOutClass {
+        case .startsOrReplacesSound: return playOutRefusal(target, settled)
+        case .followsThePlayOut, .cannotStartSound: return nil
         }
     }
 

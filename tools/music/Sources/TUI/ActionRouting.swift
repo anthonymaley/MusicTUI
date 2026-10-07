@@ -724,10 +724,12 @@ extension MusicTUIAction {
              .genius,                          // Genius Shuffle rebuilds the queue and plays it
              .airplayRoute,                    // a route heal's tier 2 pauses, then `play`s
              .similarToCurrentTrack,           // bare `music similar`: its TTY picker plays
-             .suggestFromCurrentTrack:         // bare `music suggest`: its TTY picker plays
+             .suggestFromCurrentTrack,         // bare `music suggest`: its TTY picker plays
+             .persistentShuffleMode,           // reorders what plays next (named in the ruling)
+             .persistentRepeatMode:            // replays past the queue's end
             return .startsOrReplacesSound
 
-        case .persistentShuffleMode, .persistentRepeatMode, .volume,
+        case .volume,
              .playlistListing, .discoverFeed, .discoverRefresh, .catalogSearch, .searchLibrary,
              .radioSearch, .recent, .rotation, .radioCatalogueBrowse, .radioStationLookup,
              .newReleases, .newReleasesLikeCurrentTrack,

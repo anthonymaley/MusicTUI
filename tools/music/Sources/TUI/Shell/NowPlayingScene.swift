@@ -894,11 +894,21 @@ final class NowPlayingScene: Scene {
     /// Asked on both axes: the SOUND route decides, so a blocked output
     /// (C-REPAIR) refuses in its own sentence, and SpanDAC data with the
     /// MusicTUI output keeps these keys as shipped.
+    ///
+    /// The play-out gate first (Codex review of 903825f): during a SpanDAC
+    /// play-out the selection names MusicTUI while the sound is SpanDAC's, so
+    /// the matrix alone would let a mode cell move, or `l` favourite Apple's
+    /// Music app's track, against the queue that is actually playing.
     private func askMatrix(_ action: MusicTUIAction) -> Bool {
+        // A refused jump or Genius play means nothing started: it stays.
+        // A refused mode toggle or favorite is a transient status.
+        let stays = action == .queueJump || action == .genius
+        if let why = routing.playOutRefusal(for: action) {
+            status.post(why, error: true, untilStateChange: stays)
+            return false
+        }
         if case .refused(let why) = routeAction(action, selection: routing.selection, from: .tui).sound {
-            // A refused jump or Genius play means nothing started: it stays.
-            // A refused mode toggle or favorite is a transient status.
-            status.post(why, error: true, untilStateChange: action == .queueJump || action == .genius)
+            status.post(why, error: true, untilStateChange: stays)
             return false
         }
         return true
