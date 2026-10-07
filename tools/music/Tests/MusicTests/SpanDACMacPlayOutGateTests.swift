@@ -236,14 +236,35 @@ final class SpanDACMacPlayOutGateTests: XCTestCase {
         XCTAssertEqual(c.playOutMode, .source)
     }
 
+    /// Codex re-review of 266bf35. `+`/`−` during a Mac play-out would set the
+    /// silent Music app's `sound volume`, so MusicTUI's next play starts
+    /// louder: refused in the SpanDAC column's own volume sentence, through
+    /// the shell's real body, with no AppleScript and nothing sent.
+    func testVolumeDuringAMacPlayOutIsRefusedAndRunsNoAppleScript() {
+        for surface in InvocationSurface.allCases {
+            let (rig, c) = macPlayingOut(surface)
+            let counter = AppleScriptCallCounter()
+            let sentBefore = rig.sent.count
+            XCTAssertThrowsError(try globalVolume(5, routing: c, backend: counter.backend), "\(surface)") {
+                let expected: String
+                if case .refused(let why) = routeAction(.volume, in: .source, from: surface) { expected = why }
+                else { expected = "the SpanDAC column refuses volume" }
+                XCTAssertEqual(($0 as? ActionError)?.message, expected, "\(surface)")
+            }
+            XCTAssertEqual(counter.callCount, 0, "no `set sound volume` reached Apple's Music app: \(surface)")
+            XCTAssertEqual(rig.sent.count, sentBefore, "\(surface)")
+            XCTAssertEqual(c.playOutMode, .source)
+        }
+    }
+
     /// Path level (Codex review of 903825f): during a Mac play-out, which
     /// branch each action ran. Nothing that acts on the sounding output or on
     /// its current track runs on MusicTUI: Quiet reaches the play-out, the
-    /// mode cells and the current-track verbs are refused before any branch.
-    /// `.eq`, `.visualizer` and `.volume` set Apple's Music app's own state and
-    /// still run there; that is reported, not decided here.
+    /// mode cells, volume and the current-track verbs are refused before any
+    /// branch. `.eq` and `.visualizer` are Apple's Music app's own settings in
+    /// every column of the matrix, and run there.
     func testDuringAMacPlayOutNothingActingOnTheSoundingOutputRunsOnMusicTUI() {
-        let settingsOnly: Set<MusicTUIAction> = [.eq, .visualizer, .volume]
+        let settingsOnly: Set<MusicTUIAction> = [.eq, .visualizer]
         let forbidden = musicTUIOutputVerbs
             .union(MusicTUIAction.allCases.filter(\.readsMusicAppCurrentTrack))
             .subtracting(settingsOnly)
@@ -257,6 +278,9 @@ final class SpanDACMacPlayOutGateTests: XCTestCase {
                 let label = "\(surface) \(action)"
                 if forbidden.contains(action) {
                     XCTAssertFalse(log.log.contains { $0.hasPrefix("musicApp") }, "ran on MusicTUI: \(label)")
+                }
+                if action == .volume {
+                    XCTAssertEqual(log.log, [], "neither branch ran: \(label)")
                 }
                 if action == .quiet {
                     XCTAssertEqual(log.log, ["source"], label)
@@ -374,6 +398,15 @@ final class SpanDACMacPlayOutGateTests: XCTestCase {
                         XCTAssertEqual(rig.sent.count, sentBefore, label)
                         XCTAssertEqual(c.playSerial, serial, label)
                         XCTAssertEqual(c.playOutMode, device, label)
+                    case .notServedOnThePlayOut:
+                        if device == .source, case .refused(let why) = routeAction(action, in: .source, from: surface) {
+                            XCTAssertEqual(thrown, why, label)
+                        } else {
+                            XCTAssertEqual(thrown, sentence, label)
+                        }
+                        XCTAssertEqual(log.log, [], label)
+                        XCTAssertEqual(rig.sent.count, sentBefore, label)
+                        XCTAssertEqual(c.playOutMode, device, label)
                     case .readsTheCurrentTrack:
                         XCTAssertEqual(thrown, device == .source ? currentTrackIsStaleInBridge : sentence, label)
                         XCTAssertEqual(log.log, [], label)
@@ -421,11 +454,12 @@ final class SpanDACMacPlayOutGateTests: XCTestCase {
 
     /// The CLI verbs that can start sound but do not dispatch through the
     /// coordinator (`music speaker`'s route heal, bare `music suggest`'s
-    /// picker), and the current-track verbs (`music love`, `music remove`),
-    /// are gated by `refuseInBridge`, which reads the stored files. A
-    /// play-out exists only while the stored output is a SpanDAC, and for
-    /// every such stored selection that gate refuses every one of them, so
-    /// none can sound, or act on a stale track, beside a play-out either.
+    /// picker), the current-track verbs (`music love`, `music remove`) and
+    /// `music volume` are gated by `refuseInBridge`, which reads the stored
+    /// files. A play-out exists only while the stored output is a SpanDAC, and
+    /// for every such stored selection that gate refuses every one of them, so
+    /// none can sound, act on a stale track, or set the silent Music app's
+    /// volume beside a play-out either.
     func testTheCLIFileGateRefusesEverySoundStartingActionWhileASpanDACIsStored() {
         let stored: [EffectiveSelection] = [
             .consistent(data: .spandacMac, output: .source),
@@ -435,7 +469,7 @@ final class SpanDACMacPlayOutGateTests: XCTestCase {
         ]
         for selection in stored {
             for action in MusicTUIAction.allCases
-            where action.playOutClass == .startsOrReplacesSound || action.playOutClass == .readsTheCurrentTrack {
+            where [.startsOrReplacesSound, .readsTheCurrentTrack, .notServedOnThePlayOut].contains(action.playOutClass) {
                 XCTAssertNotNil(cliBridgeRefusal(action, selection: selection), "\(selection) \(action)")
             }
         }

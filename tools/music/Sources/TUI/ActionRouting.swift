@@ -701,6 +701,12 @@ enum PlayOutClass: Equatable {
     /// SpanDAC is playing (Anthony, 2026-09-16 13:36): refused during a
     /// play-out, before any branch runs (Codex review of 903825f).
     case readsTheCurrentTrack
+    /// Acts on the sound, but a SpanDAC output does not serve it and Apple's
+    /// Music app is silent: run there it would change nothing audible now and
+    /// carry into MusicTUI's next play (volume: that play starts louder).
+    /// Refused during a play-out, before any branch runs, in the SpanDAC
+    /// column's own sentence (Codex re-review of 266bf35).
+    case notServedOnThePlayOut
     /// Cannot start sound: routed exactly as without a play-out.
     case cannotStartSound
 }
@@ -740,8 +746,10 @@ extension MusicTUIAction {
              .newReleasesLikeCurrentTrack:
             return .readsTheCurrentTrack
 
-        case .volume,
-             .playlistListing, .discoverFeed, .discoverRefresh, .catalogSearch, .searchLibrary,
+        case .volume:                          // the silent Music app's level, not SpanDAC's
+            return .notServedOnThePlayOut
+
+        case .playlistListing, .discoverFeed, .discoverRefresh, .catalogSearch, .searchLibrary,
              .radioSearch, .recent, .rotation, .radioCatalogueBrowse, .radioStationLookup,
              .newReleases,
              .similar, .suggest,               // with a title or --from: no picker, a read

@@ -1036,6 +1036,8 @@ final class RoutingCoordinator {
     ///   returning cannot find two players (Codex review 104).
     /// - `readsTheCurrentTrack`: refused the same way, in the current-track
     ///   sentence on this Mac (Codex review of 903825f).
+    /// - `notServedOnThePlayOut`: refused the same way, in the SpanDAC
+    ///   column's own sentence on this Mac (volume; Codex re-review of 266bf35).
     /// - `cannotStartSound`: returns false, and ordinary routing decides.
     ///
     /// The caller holds `order`; `settled` is this action's one instant.
@@ -1069,6 +1071,14 @@ final class RoutingCoordinator {
         // output's sentence, which the matrix already gave these verbs.
         case .readsTheCurrentTrack:
             return target.networkSourceID == nil ? currentTrackIsStaleInBridge : playOutRefusal(target, settled)
+        // On this Mac, the sentence the SpanDAC column gives the action from
+        // this surface (volume: the source plays at the Mac's output level).
+        // An iPhone/iPad play-out keeps the blocked output's sentence, as above.
+        case .notServedOnThePlayOut:
+            if target.networkSourceID == nil, case .refused(let why) = routeAction(action, in: target, from: surface) {
+                return why
+            }
+            return playOutRefusal(target, settled)
         case .followsThePlayOut, .cannotStartSound: return nil
         }
     }

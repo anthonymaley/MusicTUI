@@ -64,6 +64,18 @@ func globalSkip(_ step: Int, routing: RoutingCoordinator,
     }
 }
 
+/// The global `+` and `−`, one coalesced `delta`: Apple's Music app's own
+/// `sound volume`, through the coordinator. Refused on a SpanDAC output
+/// (MusicKit exposes no player volume, and the Mac's output level is not the
+/// player's to set) and during a SpanDAC play-out, where the Music app is
+/// silent and a change would only make MusicTUI's next play start louder.
+func globalVolume(_ delta: Int, routing: RoutingCoordinator, backend: AppleScriptBackend) throws {
+    try routing.perform(.volume,
+        musicApp: { _ = try syncRun { try await backend.runMusic("set sound volume to (sound volume + \(delta))") } },
+        source: { _ in },
+        unaffected: {})
+}
+
 /// The footer's playback keys for where the sound is now, not the stored
 /// choice (Codex review 101, blocking 1).
 func shellFooterGlobals(for routing: RoutingCoordinator) -> String {
@@ -589,12 +601,7 @@ func runShell() {
                 actions.run("Volume") {
                     let d = volumeDelta.take()
                     guard d != 0 else { return }
-                    // Refused in Source Mode: MusicKit exposes no player volume,
-                    // and the Mac's output level is not the player's to set.
-                    try routing.perform(.volume,
-                        musicApp: { _ = try syncRun { try await backend.runMusic("set sound volume to (sound volume + \(d))") } },
-                        source: { _ in },
-                        unaffected: {})
+                    try globalVolume(d, routing: routing, backend: backend)
                 }
             // next/prev drive the app-owned queue when one is active (the poller
             // can't rely on Music's queue post-26.x); otherwise Music's own controls.
