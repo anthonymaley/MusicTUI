@@ -57,15 +57,15 @@ func fetchPlaybackModes(_ backend: AppleScriptBackend) throws -> PlaybackModes {
 }
 
 func setShuffleEnabled(_ backend: AppleScriptBackend, _ on: Bool) throws {
-    _ = try syncRun { try await backend.runMusic("set shuffle enabled to \(on)") }
+    _ = try backend.runMusicBlocking("set shuffle enabled to \(on)")
 }
 
 func setShuffleMode(_ backend: AppleScriptBackend, _ mode: ShuffleMode) throws {
-    _ = try syncRun { try await backend.runMusic("set shuffle mode to \(mode.rawValue)") }
+    _ = try backend.runMusicBlocking("set shuffle mode to \(mode.rawValue)")
 }
 
 func setSongRepeat(_ backend: AppleScriptBackend, _ mode: RepeatMode) throws {
-    _ = try syncRun { try await backend.runMusic("set song repeat to \(mode.rawValue)") }
+    _ = try backend.runMusicBlocking("set song repeat to \(mode.rawValue)")
 }
 
 /// One-shot: rebuilds the queue from the current song. UI-scripted; Accessibility.

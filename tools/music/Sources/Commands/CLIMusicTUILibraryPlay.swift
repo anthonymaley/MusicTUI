@@ -186,9 +186,9 @@ func liveCLIMusicTUILibraryPlay() -> CLIMusicTUILibraryPlaying {
     let backend = AppleScriptBackend()
     return PersistentIDCLILibraryPlay(
         library: AppleScriptPersistentIDReader(run: { script in
-            try syncRun { try await backend.runMusic(script, timeout: 60) }
+            try backend.runMusicBlocking(script, timeout: 60)
         }),
-        run: { script in try? syncRun { try await backend.runMusic(script) } },
+        run: { script in try? backend.runMusicBlocking(script) },
         launch: detachedLaunch,
         selfCheck: .shared,
         afterPlay: { json in showNowPlaying(json: json, waitForPlay: true) })

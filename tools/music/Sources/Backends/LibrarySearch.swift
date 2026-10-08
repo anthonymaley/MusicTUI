@@ -207,12 +207,12 @@ func librarySearchResults(term: String, artist: String?, album: String?,
     let backend = AppleScriptBackend()
     var rows: [LibrarySearchRow] = []
     if wantsTracks && hasFilter {
-        let raw = try syncRun { try await backend.runMusic(librarySearchScript(term: term, artist: artist, album: album), timeout: 60) }
+        let raw = try backend.runMusicBlocking(librarySearchScript(term: term, artist: artist, album: album), timeout: 60)
         rows = parseLibrarySearchRows(raw)
     }
     var names: [String] = []
     if types.contains(.playlists) {
-        let raw = try syncRun { try await backend.runMusic(libraryPlaylistNamesScript()) }
+        let raw = try backend.runMusicBlocking(libraryPlaylistNamesScript())
         names = raw.trimmingCharacters(in: .whitespacesAndNewlines).components(separatedBy: String(asRowSep)).filter { !$0.isEmpty }
     }
     return groupLibrarySearch(rows: rows, playlistNames: names, term: term, types: types, limit: limit)

@@ -99,10 +99,10 @@ final class AppQueueStore {
 func playQueueTrack(backend: AppleScriptBackend, playlist: String, position: Int) -> Bool {
     if playlist == persistentIDQueueSource {
         let script = persistentIDPlayScript(persistentIDOfQueueEntry(position))
-        return (try? syncRun { try await backend.runMusic(script) }) != nil
+        return (try? backend.runMusicBlocking(script)) != nil
     }
     let esc = escapeAppleScriptString(playlist)
-    return (try? syncRun { try await backend.runMusic("play track \(position) of playlist \"\(esc)\"") }) != nil
+    return (try? backend.runMusicBlocking("play track \(position) of playlist \"\(esc)\"")) != nil
 }
 
 // MARK: - Entries addressed by persistent ID (C-HANDOFF)
@@ -827,7 +827,7 @@ func appQueueWindow(_ q: AppQueue) -> (tracks: [TrackListEntry], name: String) {
 @discardableResult
 func shufflePlayCurrent(backend: AppleScriptBackend, appQueue: AppQueueStore) -> Bool {
     guard let q = appQueue.read() else {
-        return (try? syncRun { try await backend.runMusic("set shuffle enabled to (not shuffle enabled)") }) != nil
+        return (try? backend.runMusicBlocking("set shuffle enabled to (not shuffle enabled)")) != nil
     }
     let reordered = q.tracks.shuffled()
     appQueue.set(AppQueue(playlistName: q.playlistName, tracks: reordered, currentIndex: 1, displayName: q.displayName))

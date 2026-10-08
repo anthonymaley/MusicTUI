@@ -1381,9 +1381,9 @@ final class PlaylistsScene: Scene {
                     // Music's context again. Inside the branch, so a refused
                     // play leaves the queue as it was.
                     store.clear()
-                    try require((try? syncRun { try await self.backend.runMusic("set shuffle enabled to \(shuffle)") }) != nil,
+                    try require((try? self.backend.runMusicBlocking("set shuffle enabled to \(shuffle)")) != nil,
                                 "Couldn't set shuffle for '\(name)'.")
-                    try require((try? syncRun { try await self.backend.runMusic("play playlist \"\(esc)\"") }) != nil,
+                    try require((try? self.backend.runMusicBlocking("play playlist \"\(esc)\"")) != nil,
                                 "Couldn't play '\(name)'.")
                 },
                 source: { _ in throw ActionError(message: LibraryProvenance.bridgeSelectedMusicAppList) },

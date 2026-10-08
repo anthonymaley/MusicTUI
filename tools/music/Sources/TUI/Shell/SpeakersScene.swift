@@ -1751,7 +1751,7 @@ final class SpeakersScene: Scene {
             let verifier = RouteVerifier()
             let ip = playing ? verifier.resolver.resolveIP(forSpeaker: name) : nil
             let baseline = ip.flatMap { try? verifier.snapshot(ip: $0) }
-            try require((try? syncRun { try await self.backend.runMusic("set selected of AirPlay device \"\(esc)\" to \(active)") }) != nil,
+            try require((try? self.backend.runMusicBlocking("set selected of AirPlay device \"\(esc)\" to \(active)")) != nil,
                         "Couldn't \(active ? "add" : "remove") '\(name)'.")
             // Short timeout — this runs on the serial action queue and must
             // not stall the shell. No heal here: the toast points at the
@@ -1780,7 +1780,7 @@ final class SpeakersScene: Scene {
         speakerTargets.set(name, row.volume)
         actions.run("Volume") {
             guard let v = self.speakerTargets.take(name) else { return }
-            try require((try? syncRun { try await self.backend.runMusic("set sound volume of AirPlay device \"\(esc)\" to \(v)") }) != nil,
+            try require((try? self.backend.runMusicBlocking("set sound volume of AirPlay device \"\(esc)\" to \(v)")) != nil,
                         "Couldn't set '\(name)' volume.")
         }
     }

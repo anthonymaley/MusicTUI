@@ -29,7 +29,7 @@ func isAssistiveAccessDenial(_ message: String) -> Bool {
 func runMusicUIScript(_ backend: AppleScriptBackend, _ script: String,
                       hint: String = musicUIAccessibilityHint) throws -> String {
     do {
-        return try syncRun { try await backend.run(script) }
+        return try backend.runBlocking(script)
     } catch let error as AppleScriptBackend.ScriptError {
         if case .executionFailed(let msg) = error, isAssistiveAccessDenial(msg) {
             throw AppleScriptBackend.ScriptError.executionFailed(hint)

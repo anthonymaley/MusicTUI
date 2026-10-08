@@ -134,7 +134,7 @@ func playViaMusicApp(args: [String], playlist: String?, album: String?, song: St
                 throw ExitCode.failure
             }
             let outcome = playBoundedAlbum(title: album, rows: rows) { script in
-                try? syncRun { try await backend.runMusic(script) }
+                try? backend.runMusicBlocking(script)
             }
             if let message = albumOutcomeMessage(outcome, title: album) {
                 print(message)
@@ -182,7 +182,7 @@ func playViaMusicApp(args: [String], playlist: String?, album: String?, song: St
                 throw ExitCode.failure
             }
             let outcome = playBoundedArtist(name: artist, tracks: resolution.tracks) { script in
-                try? syncRun { try await backend.runMusic(script) }
+                try? backend.runMusicBlocking(script)
             }
             if let message = artistOutcomeMessage(outcome, name: artist) {
                 print(message)
@@ -368,7 +368,7 @@ func playViaMusicApp(args: [String], playlist: String?, album: String?, song: St
                             // as the old inline script did. Intentional: this
                             // is what makes positional match `--album`.
                             let outcome = playBoundedAlbum(title: query, rows: albumRows ?? []) { s in
-                                try? syncRun { try await backend.runMusic(s) }
+                                try? backend.runMusicBlocking(s)
                             }
                             if let message = albumOutcomeMessage(outcome, title: query) {
                                 print(message)
@@ -448,7 +448,7 @@ func playBoundedSongLive(backend: AppleScriptBackend, title: String, artist: Str
             let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines)
             return (trimmed?.isEmpty ?? true) ? nil : trimmed
         },
-        run: { script in try? syncRun { try await backend.runMusic(script) } })
+        run: { script in try? backend.runMusicBlocking(script) })
 }
 
 /// Play a song and report whether the caller may still try the catalog.
@@ -545,7 +545,7 @@ func firstPlayablePosition(_ rows: [LibraryAlbumRow]) -> Int? {
 /// `whose name contains` query is a fraction of that, and the row we are
 /// looking for matches the title by construction.
 func libraryRowsMatchingTitle(backend: AppleScriptBackend, title: String) -> [LibraryRowIdentity]? {
-    libraryRowsMatchingTitle(run: { script in try? syncRun({ try await backend.runMusic(script) }) }, title: title)
+    libraryRowsMatchingTitle(run: { script in try? backend.runMusicBlocking(script) }, title: title)
 }
 
 /// The same read through any script runner, so a caller that must never reach
@@ -621,7 +621,7 @@ func addCatalogRowAndPlayBounded(backend: AppleScriptBackend,
 
     let result = playResolvedCatalogRow(
         resolution, title: title, note: { print($0) },
-        run: { script in try? syncRun { try await backend.runMusic(script) } },
+        run: { script in try? backend.runMusicBlocking(script) },
         launch: detachedLaunch)
     if result == .playing { return true }
     if case .refused(let message?) = result { print(message) }
@@ -692,7 +692,7 @@ struct CatalogAddPlaySeams {
 
     static func live(backend: AppleScriptBackend, showsProgress: Bool) -> CatalogAddPlaySeams {
         var seams = CatalogAddPlaySeams(
-            run: { script in try? syncRun { try await backend.runMusic(script) } },
+            run: { script in try? backend.runMusicBlocking(script) },
             launch: detachedLaunch,
             wait: { seconds in try? syncRun { try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000)) } })
         if showsProgress {
@@ -976,7 +976,7 @@ func runPause(env: CLIBridgeEnv, musicApp: () throws -> Void = pauseViaMusicApp)
 
 func pauseViaMusicApp() throws {
     let backend = AppleScriptBackend()
-    _ = try syncRun { try await backend.runMusic("pause") }
+    _ = try backend.runMusicBlocking("pause")
     print("Paused.")
 }
 
@@ -995,7 +995,7 @@ func runSkip(json: Bool, env: CLIBridgeEnv, musicApp: (Bool) throws -> Void = sk
 
 func skipViaMusicApp(json: Bool) throws {
     let backend = AppleScriptBackend()
-    _ = try syncRun { try await backend.runMusic("next track") }
+    _ = try backend.runMusicBlocking("next track")
     showNowPlaying(json: json, waitForPlay: true)
 }
 
@@ -1014,7 +1014,7 @@ func runBack(json: Bool, env: CLIBridgeEnv, musicApp: (Bool) throws -> Void = ba
 
 func backViaMusicApp(json: Bool) throws {
     let backend = AppleScriptBackend()
-    _ = try syncRun { try await backend.runMusic("previous track") }
+    _ = try backend.runMusicBlocking("previous track")
     showNowPlaying(json: json, waitForPlay: true)
 }
 
@@ -1032,7 +1032,7 @@ func runStop(env: CLIBridgeEnv, musicApp: () throws -> Void = stopViaMusicApp) t
 
 func stopViaMusicApp() throws {
     let backend = AppleScriptBackend()
-    _ = try syncRun { try await backend.runMusic("stop") }
+    _ = try backend.runMusicBlocking("stop")
     print("Stopped.")
 }
 
@@ -1307,7 +1307,7 @@ func shuffleViaMusicApp(state: String?, json: Bool) throws {
     let backend = AppleScriptBackend()
     let newState: String
     if let on = try parseShuffleWord(state) {
-        _ = try syncRun { try await backend.runMusic("set shuffle enabled to \(on)") }
+        _ = try backend.runMusicBlocking("set shuffle enabled to \(on)")
         newState = on ? "on" : "off"
     } else {
         let result = try syncRun {
@@ -1343,7 +1343,7 @@ func runRepeat(mode: String, env: CLIBridgeEnv, musicApp: (String) throws -> Voi
 func repeatViaMusicApp(mode: String) throws {
     let m = try parseRepeatWord(mode).rawValue
     let backend = AppleScriptBackend()
-    _ = try syncRun { try await backend.runMusic("set song repeat to \(m)") }
+    _ = try backend.runMusicBlocking("set song repeat to \(m)")
     print("Repeat \(m).")
 }
 

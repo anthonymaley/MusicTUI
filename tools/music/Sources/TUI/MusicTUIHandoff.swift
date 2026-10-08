@@ -381,7 +381,7 @@ func liveMusicTUIHandoff(backend: AppleScriptBackend, appQueue: AppQueueStore,
         // CHOSEN: 60 s for one read of every track of a play (the shipped
         // default is 45 s); unmeasured for a very large artist.
         library: AppleScriptPersistentIDReader(run: { script in
-            try syncRun { try await backend.runMusic(script, timeout: 60) }
+            try backend.runMusicBlocking(script, timeout: 60)
         }),
         player: AppQueueHandoffPlayer(store: appQueue, playFirst: { queue in
             playQueueTrack(backend: backend, playlist: queue.playlistName, position: queue.currentSourcePosition)

@@ -153,7 +153,7 @@ func classifyMusicRunningProbe(_ raw: String?) -> MusicRunningProbeResult {
 /// play" is the exact symptom a watcher bug would also produce.
 func musicRunningProbeResult() -> MusicRunningProbeResult {
     let backend = AppleScriptBackend()
-    let raw = try? syncRun { try await backend.run(musicIsRunningScript()) }
+    let raw = try? backend.runBlocking(musicIsRunningScript())
     let result = classifyMusicRunningProbe(raw)
     if result == .probeFailed {
         verbose("music running probe failed (threw, or returned neither \"true\" nor \"false\"); "
@@ -391,7 +391,7 @@ struct WatchContainer: ParsableCommand {
         }
         let backend = AppleScriptBackend()
         func music(_ script: String) -> String? {
-            try? syncRun { try await backend.runMusic(script) }
+            try? backend.runMusicBlocking(script)
         }
         let trackIDs = resolveTrackIDs(idsOption: ids, manifestPath: manifest)
         // `isRunning` defaults to `musicIsRunningNow` (§16.3/§18.2) — omitted

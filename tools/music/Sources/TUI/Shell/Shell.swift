@@ -43,7 +43,7 @@ func musicTUISkip(_ step: Int, backend: AppleScriptBackend, appQueue: AppQueueSt
         return
     }
     let verb = step > 0 ? "next track" : "previous track"
-    _ = try syncRun { try await backend.runMusic(verb) }
+    _ = try backend.runMusicBlocking(verb)
 }
 
 /// The global Next (`step` 1) and Previous (`-1`) keys (Codex review 101,
@@ -71,7 +71,7 @@ func globalSkip(_ step: Int, routing: RoutingCoordinator,
 /// silent and a change would only make MusicTUI's next play start louder.
 func globalVolume(_ delta: Int, routing: RoutingCoordinator, backend: AppleScriptBackend) throws {
     try routing.perform(.volume,
-        musicApp: { _ = try syncRun { try await backend.runMusic("set sound volume to (sound volume + \(delta))") } },
+        musicApp: { _ = try backend.runMusicBlocking("set sound volume to (sound volume + \(delta))") },
         source: { _ in },
         unaffected: {})
 }
@@ -593,7 +593,7 @@ func runShell() {
                 actions.run("Play/pause") {
                     // The SpanDAC branch is shared with the Now tab's control row.
                     try performSourceTransport(.playPause, routing: routing,
-                        musicApp: { _ = try syncRun { try await backend.runMusic("playpause") } })
+                        musicApp: { _ = try backend.runMusicBlocking("playpause") })
                 }
             case .volumeUp, .volumeDown:
                 // Coalesced: holding the key accumulates one delta, applied once.

@@ -864,7 +864,7 @@ final class NowPlayingScene: Scene {
             appQueue.clear()
             actions.run("Pause") { [routing] in
                 try routing.perform(.quiet,
-                    musicApp: { _ = try syncRun { try await self.backend.runMusic("pause") } },
+                    musicApp: { _ = try self.backend.runMusicBlocking("pause") },
                     // Ruling 12.7: Quiet pauses the SELECTED output, not
                     // Music.app. Taken literally the old line paused Music.app
                     // from Bridge, against rule 3.

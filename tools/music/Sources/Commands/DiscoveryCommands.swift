@@ -347,8 +347,8 @@ func handleSongAction(_ action: MultiSelectAction, songs: [CatalogSong], api: RE
             print("Created '\(name)' but it hasn't synced to this Mac yet — try `music play \(name)` in a moment.")
             return
         }
-        _ = try syncRun { try await backend.runMusic("set shuffle enabled to true") }
-        _ = try syncRun { try await backend.runMusic("play playlist \"\(escapeAppleScriptString(name))\"") }
+        _ = try backend.runMusicBlocking("set shuffle enabled to true")
+        _ = try backend.runMusicBlocking("play playlist \"\(escapeAppleScriptString(name))\"")
         print("Shuffling \(indices.count) tracks. Run `music playlist cleanup` when done.")
 
     case .confirmed, .cancelled:

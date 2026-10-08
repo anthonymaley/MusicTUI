@@ -77,7 +77,7 @@ func fetchLibraryTrackRows(backend: AppleScriptBackend) -> LibraryReadResult {
     // `?? ""` here used to launder a failed AppleScript call into an empty
     // string, which parsed to zero rows and was indistinguishable from an empty
     // library all the way up the stack. The failure is reported instead.
-    guard let raw = try? syncRun({ try await backend.runMusic(libraryBulkReadScript(), timeout: 60) }) else {
+    guard let raw = try? backend.runMusicBlocking(libraryBulkReadScript(), timeout: 60) else {
         return .failure
     }
     return .success(parseLibraryTrackRows(raw))

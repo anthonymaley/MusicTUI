@@ -336,7 +336,7 @@ private func discoverLiveCopyParts(backend: AppleScriptBackend, routing: Routing
 /// `timeout`; nil when the call failed or ran past its bound.
 private func discoverLiveScriptRunner(backend: AppleScriptBackend, timeout: TimeInterval) -> ScriptRunner {
     return { script in
-        try? syncRun { try await backend.runMusic(script, timeout: timeout) }
+        try? backend.runMusicBlocking(script, timeout: timeout)
     }
 }
 

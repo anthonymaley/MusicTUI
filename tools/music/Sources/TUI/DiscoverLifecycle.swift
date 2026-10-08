@@ -957,7 +957,7 @@ func spandacCreateFailureOutcome(_ error: Error) -> DiscoverPlayOutcome {
 /// keeps polling until the timeout, never falsely claiming readiness.
 func discoverReadPlaylistTrackCount(name: String, backend: AppleScriptBackend) -> Int {
     let esc = escapeAppleScriptString(name)
-    guard let raw = try? syncRun({ try await backend.runMusic("return (count of tracks of playlist \"\(esc)\") as text") })
+    guard let raw = try? backend.runMusicBlocking("return (count of tracks of playlist \"\(esc)\") as text")
     else { return 0 }
     return Int(raw.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
 }
@@ -991,7 +991,7 @@ func makeDiscoverLifecycleCoordinator(backend: AppleScriptBackend, status: Statu
                                       album: DiscoverAlbumSeams? = nil) -> DiscoverLifecycleCoordinator {
     var seams = DiscoverLifecycleCoordinator.Seams(
         runSweep: { script in
-            _ = try syncRun { try await backend.runMusic(script) }
+            _ = try backend.runMusicBlocking(script)
         },
         create: { name, ids in
             guard let api = makeArtworkAPI(), api.userToken != nil else { throw AuthError.userTokenRequired }
@@ -1000,35 +1000,35 @@ func makeDiscoverLifecycleCoordinator(backend: AppleScriptBackend, status: Statu
         readCount: { name in discoverReadPlaylistTrackCount(name: name, backend: backend) },
         play: { scripts in
             for script in scripts {
-                _ = try syncRun { try await backend.runMusic(script) }
+                _ = try backend.runMusicBlocking(script)
             }
         },
         confirmRead: { name in
             let script = discoverConfirmationScript(playlistName: name)
-            let raw = try? syncRun { try await backend.runMusic(script, timeout: discoverConfirmationReadTimeout) }
+            let raw = try? backend.runMusicBlocking(script, timeout: discoverConfirmationReadTimeout)
             return raw?.trimmingCharacters(in: .whitespacesAndNewlines) ?? discoverNotYetToken
         },
         post: discoverToastPoster(status: status),
         scheduler: .live,
         readCountByPersistentID: { hex in
-            guard let raw = try? syncRun({ try await backend.runMusic(discoverTrackCountScript(persistentID: hex)) })
+            guard let raw = try? backend.runMusicBlocking(discoverTrackCountScript(persistentID: hex))
             else { return 0 }
             return Int(raw.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
         },
         confirmReadByPersistentID: { hex in
             let script = discoverConfirmationScript(persistentID: hex)
-            let raw = try? syncRun { try await backend.runMusic(script, timeout: discoverConfirmationReadTimeout) }
+            let raw = try? backend.runMusicBlocking(script, timeout: discoverConfirmationReadTimeout)
             return raw?.trimmingCharacters(in: .whitespacesAndNewlines) ?? discoverNotYetToken
         },
         readContainerTrackIDsByPersistentID: { hex in
-            guard let raw = try? syncRun({ try await backend.runMusic(discoverContainerTrackIDsScript(persistentID: hex)) })
+            guard let raw = try? backend.runMusicBlocking(discoverContainerTrackIDsScript(persistentID: hex))
             else { return nil }
             return parseContainerTrackIDsInOrder(raw)
         },
         readTracksByPersistentID: { hexes in
             // CHOSEN: 60 s for one read of every track, as the hand-off's.
             try AppleScriptPersistentIDReader(run: { script in
-                try syncRun { try await backend.runMusic(script, timeout: 60) }
+                try backend.runMusicBlocking(script, timeout: 60)
             }).tracks(persistentIDs: hexes)
         })
     seams.copy = copy
