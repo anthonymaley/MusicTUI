@@ -509,28 +509,63 @@ final class BridgeLibraryDataRouteTests: XCTestCase {
         XCTAssertEqual(r.handoff.calls, [])
     }
 
-    /// Fill every cooperative-pool thread with a blocking sleep, run `body`
-    /// while they are all held, then wait for them to finish so nothing leaks
-    /// into the next test. One task per active processor: the pool's width on
-    /// Darwin. Each holds its thread for `hold` seconds, longer than `body`'s
-    /// 3-second waits, so a body that needs a pool thread fails rather than
-    /// squeezing through after the sleepers wake.
-    private func withSaturatedCooperativePool(hold: useconds_t = 4_000_000, _ body: () -> Void) {
-        let width = ProcessInfo.processInfo.activeProcessorCount
+    /// Fill every cooperative-pool thread with a blocker, run `body` while they
+    /// are all held, then release and join every blocker before returning, so
+    /// nothing leaks into the next test, including when an assertion here or
+    /// in `body` fails.
+    ///
+    /// The pool's width is measured, not assumed: it starts one blocker per
+    /// active processor, then adds one at a time until an added blocker cannot
+    /// start, which is the evidence the pool is full. Each blocker waits on a
+    /// release semaphore that is signalled only after `body`, so the pool stays
+    /// full for all of `body`'s waits; the 10-second bound on that wait is only
+    /// a safety net should the release never come.
+    private func withSaturatedCooperativePool(_ body: () -> Void) {
+        let release = ReleaseGate()
+        let joined = DispatchGroup()
         let started = AtomicCounter()
-        let finished = AtomicCounter()
-        for _ in 0..<width {
-            Task.detached {
+        var blockers: [Task<Void, Never>] = []
+        func addBlocker() {
+            joined.enter()
+            blockers.append(Task.detached {
                 started.increment()
-                usleep(hold)
-                finished.increment()
+                release.hold(atMost: 10)
+                joined.leave()
+            })
+        }
+        defer {
+            // One signal per blocker, including one still queued for a thread:
+            // it takes its signal once a released blocker frees one.
+            release.open(blockers.count)
+            if joined.wait(timeout: .now() + 15) == .timedOut {
+                blockers.forEach { $0.cancel() }
+                XCTFail("the saturating tasks did not finish after release")
             }
         }
-        XCTAssertTrue(wait(seconds: 2) { started.value == width },
-                      "only \(started.value) of \(width) pool threads were taken; the pool is not saturated")
+
+        let initial = ProcessInfo.processInfo.activeProcessorCount
+        for _ in 0..<initial { addBlocker() }
+        guard wait(seconds: 2, { started.value == initial }) else {
+            return XCTFail("only \(started.value) of \(initial) blockers started")
+        }
+        var saturated = false
+        for _ in 0..<(initial * 4) {
+            let before = started.value
+            addBlocker()
+            if !wait(seconds: 0.3, { started.value > before }) { saturated = true; break }
+        }
+        guard saturated else {
+            return XCTFail("\(started.value) blockers all started; the pool is not saturated")
+        }
         body()
-        XCTAssertTrue(wait(seconds: Double(hold) / 1_000_000 + 2) { finished.value == width },
-                      "the saturating tasks did not drain")
+    }
+
+    /// The blockers' release, behind sync methods: a blocking semaphore wait
+    /// written directly in a `Task` body is flagged in an async context.
+    private final class ReleaseGate: @unchecked Sendable {
+        private let semaphore = DispatchSemaphore(value: 0)
+        func hold(atMost seconds: Double) { _ = semaphore.wait(timeout: .now() + seconds) }
+        func open(_ count: Int) { for _ in 0..<count { semaphore.signal() } }
     }
 
     private final class AtomicCounter: @unchecked Sendable {
