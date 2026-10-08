@@ -63,10 +63,10 @@ final class ActionRoutingTests: XCTestCase {
         XCTAssertEqual(routeAction(.persistentShuffleMode, in: .source, from: .tui), .source)
         XCTAssertEqual(routeAction(.persistentShuffleMode, in: .source, from: .cli), .source,
                        "`music shuffle` is served on SpanDAC")
-        // 12.13: the queue-row jump is deferred from v1 and must refuse visibly.
-        guard case .refused = routeAction(.queueJump, in: .source, from: .tui) else {
-            return XCTFail("queue-row jump is deferred from v1 and must refuse")
-        }
+        // 12.13 deferred the queue-row jump from v1 and refused it visibly. It is
+        // routed now (`slice.queueJump`); the Now scene sends only where the Mac's
+        // SpanDAC lists `queue.jump`, and otherwise keeps the visible refusal.
+        XCTAssertEqual(routeAction(.queueJump, in: .source, from: .tui), .source)
         // 12.1 + rule 9, now a STALE row kept as it is (score: data route and
         // output, step 1): the scenes read SpanDAC's own library with a SpanDAC
         // output selected and never route this row; the data axis
@@ -129,10 +129,10 @@ final class ActionRoutingTests: XCTestCase {
         .playPause: .source, .next: .source, .previous: .source,
         .collectionShuffle: .source, .volume: .refused,
         // 6.2 Now Playing
-        // Ruling 12.13 deferred the queue-row jump from v1: spec 6.2 and DoD 3
-        // require a VISIBLE refusal, not a source route. 933e85d predates the
-        // narrowing and routed it to the source.
-        .queueJump: .refused, .seek: .source,
+        // Ruling 12.13 deferred the queue-row jump from v1 (a visible refusal).
+        // `slice.queueJump` serves it now: routed to the source, with the
+        // capability and carrier gates in the Now scene.
+        .queueJump: .source, .seek: .source,
         // Served since SpanDAC grew slice.shuffle / slice.repeat (the Now
         // grid's Shuffle and Repeat cells); the CLI clause still refuses.
         .persistentShuffleMode: .source, .persistentRepeatMode: .source,

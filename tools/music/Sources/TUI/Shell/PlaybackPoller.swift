@@ -262,13 +262,14 @@ final class PlaybackPoller {
             }
             result = .success(status)
             lastBridgeSurrounding = window.entries
+            lastBridgeQueueToken = window.entries.isEmpty ? nil : played?.token
             // The album is the sent row's, vouched for by the same title check
             // that gates the list; absent that, it stays empty.
             album = window.current?.album ?? ""
         }
         let bridge = bridgeLink.record(result)
         // A second consecutive miss reports a stop; the list goes with it.
-        if case .failure = result, !bridgeLink.inGrace { lastBridgeSurrounding = [] }
+        if case .failure = result, !bridgeLink.inGrace { lastBridgeSurrounding = []; lastBridgeQueueToken = nil }
 
         let outcome: PollOutcome
         switch result {
@@ -288,6 +289,7 @@ final class PlaybackPoller {
         // Next is SpanDAC's own, in the same rows the Music.app path draws.
         var snap = NowPlayingSnapshot(outcome: outcome, history: [], surrounding: lastBridgeSurrounding)
         snap.bridge = bridge
+        snap.spanDACQueueToken = lastBridgeQueueToken
         store.write(snap)
     }
 
@@ -295,6 +297,7 @@ final class PlaybackPoller {
     private var bridgeLink = BridgeLinkTracker()
     private var lastBridgeOutcome: PollOutcome = .stopped
     private var lastBridgeSurrounding: [TrackListEntry] = []
+    private var lastBridgeQueueToken: String?
 
     private func bridgeOutcome(_ status: SourceStatus, album: String) -> PollOutcome {
         let state: String

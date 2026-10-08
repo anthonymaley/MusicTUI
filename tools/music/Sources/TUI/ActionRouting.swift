@@ -545,12 +545,14 @@ func routeAction(_ action: MusicTUIAction,
         // dispatches it to Bridge (`slice.heavyRotation`, Part 2 P9); this TUI
         // column stays refused (D10). Ruling 12.15: a person reads "SpanDAC".
         return .refused("Heavy rotation is on the command line only in this version: music rotation.")
-    /// Ruling 12.13 (2026-09-15) deferred the queue-row jump from v1. Spec 6.2
-    /// and DoD 3 require a VISIBLE refusal: `933e85d` predates the narrowing and
-    /// routed it to the source, which would have shipped a jump that silently
-    /// did the wrong thing against a queue the TUI cannot address yet.
+    /// Ruling 12.13 (2026-09-15) deferred the queue-row jump from v1, refused
+    /// visibly (spec 6.2, DoD 3) while the TUI could not address a SpanDAC queue.
+    /// It can now: `slice.queueJump` names the displayed queue by its token and
+    /// the row by its place in the list the play sent. Routed to the source, and
+    /// the Now scene sends only to the Mac's SpanDAC when it lists `queue.jump`;
+    /// anything else keeps `queueJumpRefusal`. Never to Apple's Music app.
     case .queueJump:
-        return .refused("Jumping to a queue row is MusicTUI only in this version.")
+        return .source
 
     case .genius:
         return .refused("Genius is a feature of Apple's Music player.")
@@ -757,6 +759,11 @@ extension MusicTUIAction {
         }
     }
 }
+
+/// Enter on an Up Next row cannot jump on this SpanDAC output: a SpanDAC on the
+/// network, one that does not list `queue.jump`, or no displayed queue to name.
+/// The sentence the matrix always gave, kept so the refusal reads the same.
+let queueJumpRefusal = "Jumping to a queue row is MusicTUI only in this version."
 
 /// Said when a new play is refused while SpanDAC on this Mac finishes the queue
 /// it had when its licence stopped serving (Anthony, 2026-10-05 16:07). The

@@ -111,6 +111,13 @@ final class NowPlayingScene: Scene {
     private var pendingFromStopped = false   // menu opened from an auto queue-end (playback stopped)
     private var wantsPlaylists = false
     private var contextNameNow = ""          // cleaned context name from the latest snapshot
+    /// The `queue_token` of the SpanDAC queue `rows` draws: what Enter's jump names.
+    private var displayedQueueToken: String? = nil
+    /// A queue jump's reply, drawn at the next tick instead of waiting a poll for
+    /// SpanDAC's status to say the same: the entries it describes and its token.
+    /// Written from the action queue, taken on the tick, under `jumpLock`.
+    private var jumpInbox: (entries: [TrackListEntry], token: String)? = nil
+    private let jumpLock = NSLock()
 
     // Shuffle/repeat state, fetched on a background inbox (the poller is left
     // untouched). Mirrors SpeakersScene's EQ inbox.
@@ -286,6 +293,7 @@ final class NowPlayingScene: Scene {
             pendingSource = nil
         }
         rows = snapshot.surrounding
+        displayedQueueToken = snapshot.spanDACQueueToken
         contextNameNow = cleanContextName(snapshot.contextName)
         // Snap the cursor to the current track when the track changes; leave it
         // alone otherwise so the user can browse Up Next. Consume the change
@@ -303,6 +311,18 @@ final class NowPlayingScene: Scene {
         if cursor >= rows.count { cursor = max(0, rows.count - 1) }
 
         var changed = false
+
+        // A jump's reply: the queue SpanDAC says it is in now, current row first.
+        // The next poll says the same and replaces it.
+        jumpLock.lock()
+        let jumped = jumpInbox; jumpInbox = nil
+        jumpLock.unlock()
+        if let jumped {
+            rows = jumped.entries
+            displayedQueueToken = jumped.token
+            cursor = 0
+            changed = true
+        }
 
         // REST artwork fallback: reached only when the poller found NO embedded
         // artwork for this track (extractArtwork returned nothing — true of
@@ -1076,8 +1096,13 @@ final class NowPlayingScene: Scene {
             let context = contextNameNow
             let store = self.appQueue
             let routing = self.routing
+            // Stamped at the keypress, with the queue the row was drawn for: a
+            // switch that commits before the action runs, or a play that
+            // replaces that queue, sends nothing.
+            let stamp = routing.stamp
+            let queueToken = displayedQueueToken
             actions.run("Play") {
-                try routing.perform(.queueJump,
+                try routing.perform(.queueJump, expecting: stamp,
                     musicApp: {
                         // Jump within the app-owned queue by the row's play-order position.
                         if let (pl, pos) = store.jump(to: row.index) {
@@ -1103,9 +1128,19 @@ final class NowPlayingScene: Scene {
                         }
                         try require(playLibraryTrack(backend: backend, title: row.name, artist: row.artist), "'\(row.name)' not found in the library.")
                     },
-                    // The matrix refuses a queue-row jump on every SpanDAC
-                    // output, so this is never reached; it fails closed.
-                    source: { _ in throw bridgeNotWiredYet("Jumping to a queue row") },
+                    // SpanDAC's own jump, by the displayed queue's token and the
+                    // row's place in the list the play sent. A SpanDAC that
+                    // cannot jump refuses visibly; the body above never runs.
+                    source: { client in
+                        let jumped = try jumpSpanDACQueue(routing: routing, client: client,
+                                                          displayedToken: queueToken, entryIndex: row.index)
+                        let entries = spanDACQueueJumpEntries(routing: routing, result: jumped)
+                        if !entries.isEmpty {
+                            self.jumpLock.lock()
+                            self.jumpInbox = (entries, jumped.queueToken)
+                            self.jumpLock.unlock()
+                        }
+                    },
                     unaffected: {})
             }
             return .redraw

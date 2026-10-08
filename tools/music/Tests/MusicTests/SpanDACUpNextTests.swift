@@ -215,15 +215,16 @@ final class SpanDACUpNextTests: XCTestCase {
         XCTAssertTrue(plain.contains("Song 150 \u{2014} Artist 150"), "a row far past 20 is reachable by scrolling")
     }
 
-    func testNowDrawsSpanDACsUpNextWithTheSharedListAndEnterStaysRefused() throws {
+    func testNowDrawsSpanDACsUpNextWithTheSharedListAndEnterWithoutTheCapabilityStaysRefused() throws {
         let text = reply(title: "Song 1", extra: #","row":1,"next_rows":[3,2]"#)
         let r = routing(reply: text)
         r.recordSpanDACPlay([song(0), song(1), song(2), song(3)])
         let snap = poll(r, reply: text)
 
         let status = StatusStore()
+        let actions = ActionRunner(status: status)
         let scene = NowPlayingScene(backend: AppleScriptBackend(executable: "/usr/bin/true"), appQueue: AppQueueStore(),
-                                    status: status, actions: ActionRunner(status: status), routing: r,
+                                    status: status, actions: actions, routing: r,
                                     bridgeCoverExtractor: { _, _ in nil })
         scene.tick(snapshot: snap)
         let plain = scene.render(frame: shellLayout(width: 120, height: 40), snapshot: snap)
@@ -237,10 +238,13 @@ final class SpanDACUpNextTests: XCTestCase {
         scene.tick(snapshot: bare)
         XCTAssertFalse(scene.render(frame: shellLayout(width: 120, height: 40), snapshot: bare).contains("Up Next"))
 
-        // Enter on a row: the queue jump is refused on SpanDAC (ruling 12.13).
+        // Enter on a row of a SpanDAC that does not list `queue.jump` (this
+        // fixture's status carries no capabilities): the visible refusal, nothing
+        // sent. The jump itself is `SpanDACQueueJumpRoutingTests`.
         scene.tick(snapshot: snap)
         _ = scene.handle(.down)
         _ = scene.handle(.enter)
+        actions.waitUntilIdle()
         XCTAssertEqual(status.current()?.text, "Jumping to a queue row is MusicTUI only in this version.")
     }
 }

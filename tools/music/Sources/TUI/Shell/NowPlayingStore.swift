@@ -20,6 +20,11 @@ struct NowPlayingSnapshot {
     /// and the Music.app path never sets it, so a nil here is also the promise
     /// that the Now tab renders exactly as it did before Bridge existed.
     var bridge: BridgeNow? = nil
+    /// The `queue_token` of the play whose rows `surrounding` draws, while Bridge
+    /// is selected and those rows are vouched for by the status. Nil when no rows
+    /// are shown, or the play recorded no token (an older SpanDAC): Enter on an
+    /// Up Next row has nothing to name then, and does not send.
+    var spanDACQueueToken: String? = nil
 }
 
 /// Thread-safe box around the latest snapshot. The poller calls `write`; the

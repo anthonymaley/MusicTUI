@@ -520,11 +520,16 @@ final class RoutingCoordinator {
     /// `musicApp` body is the SHIPPED one, so it runs only where the matrix
     /// names the shipped path: a SpanDAC row on the MusicTUI output, which
     /// needs the path its origin names, refuses here.
+    ///
+    /// `expecting`: the stamp taken at the keypress, for a body that waits its
+    /// turn on the action queue. If either epoch moved, nothing runs and it
+    /// throws `sourceChangedNothingPlayed`, as the form below does.
     func perform(_ action: MusicTUIAction,
+                 expecting: (epoch: Int, dataEpoch: Int)? = nil,
                  musicApp: () throws -> Void,
                  source: (SourceAppClient) throws -> Void,
                  unaffected: () throws -> Void) throws {
-        try route(action, expecting: nil, origin: nil, shippedOnly: true,
+        try route(action, expecting: expecting, origin: nil, shippedOnly: true,
                   musicApp: { _ in try musicApp() },
                   source: source, unaffected: unaffected)
     }
@@ -738,6 +743,19 @@ final class RoutingCoordinator {
     /// read against an older play's list.
     func spanDACPlayedRows() -> [MusicRow]? {
         spanDACPlay()?.rows
+    }
+
+    /// Re-binds the current play's rows to the token a queue jump's reply carried,
+    /// ONLY IF the play recorded under `serial` is still the current one and still
+    /// holds `old`: the jump moved SpanDAC's player inside the same assignment, and
+    /// the rows describe it under the new token. A later play, or a token that is
+    /// no longer `old`, changes nothing. Returns whether the rows were re-bound.
+    @discardableResult
+    func rebindSpanDACPlayToken(from old: String, to new: String) -> Bool {
+        state.lock(); defer { state.unlock() }
+        guard let sent = _spanDACSent, sent.serial == _playSerial, sent.token == old else { return false }
+        _spanDACSent = (sent.serial, sent.rows, new, sent.listRev, sent.shuffled)
+        return true
     }
 
     /// The current play's rows with the token its reply carried, the
