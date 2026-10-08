@@ -452,19 +452,20 @@ final class BridgePlaylistsPlaySceneTests: XCTestCase {
         let wire = BridgeLibraryReadsWire(["slice.libraryPlaylists": [onePlaylistPage],
                                            "slice.queue": [queueOK], "slice.status": [statusOK]])
         wire.stickyStatus = true   // a play reads SpanDAC's capabilities before it queues
-        // Three-zone: the preview consumes the first scripted reply, the drill-in the second.
-        wire.script("slice.libraryPlaylistTracks", [tracksPage(songs, total: 40, skipped: 2),
-                                                     tracksPage(songs, total: 40, skipped: 2)])
+        // Two-zone: no preview, so the one scripted reply is the drill-in's own.
+        wire.script("slice.libraryPlaylistTracks", [tracksPage(songs, total: 40, skipped: 2)])
         let status = StatusStore()
         let s = playlistsTestScene(flag: BridgeSelectedFlag(true), wire: wire, spy: PlaylistAppleScriptSpy(),
-                                   status: status, width: 160)
-        XCTAssertTrue(settleScene(s) { s.render(frame: threeZoneFrame, snapshot: idle).contains("Chill") })
-        _ = s.handle(.enter)
-        // Wait for the rows to be INSTALLED (the tracks pane header carries the
-        // drained total/skipped), not merely for the request to be sent.
+                                   status: status, width: 120)
+        XCTAssertTrue(settleScene(s) { s.render(frame: frame, snapshot: idle).contains("Chill") })
+        _ = s.handle(.enter)   // drill in
+        // Wait for the drill-in's rows to be INSTALLED (the tracks pane header
+        // carries the drained total/skipped), not merely for the request to be
+        // sent, then flush the walk's separate `done`.
         XCTAssertTrue(settleScene(s) {
             s.render(frame: threeZoneFrame, snapshot: idle).contains("Tracks 40 \u{00B7} 2 videos skipped")
         }, "the tracks pane never showed its loaded header")
+        flushTicks(s)
         for _ in 0..<4 { _ = s.handle(.down) }   // cursor at row index 4 -> track 5
         let selected = "\(ANSICode.inverse)05  Track 5"
         XCTAssertTrue(s.render(frame: threeZoneFrame, snapshot: idle).contains(selected),
