@@ -28,15 +28,14 @@ final class RouteHealerTests: XCTestCase {
     // MARK: - tier escalation (backend seam + injected verifier)
 
     /// Records scripts and can fail the first N list-writes, so a tier can be
-    /// forced to fail its reroute and escalate. Uses LockedBox (sync accessors)
-    /// rather than a raw lock — locking directly in an async body is the pattern
-    /// TimeoutFlag/LockedBox exist to avoid. Calls are serial (syncRun blocks),
-    /// so the box is only here to satisfy the async-context rule, not contention.
+    /// forced to fail its reroute and escalate. The seam is synchronous and the
+    /// healer calls it serially, so LockedBox guards against no contention; it
+    /// keeps the fake safe if a test ever drives it from more than one thread.
     private final class FakeScripting: MusicScripting, @unchecked Sendable {
         let scripts = LockedBox<[String]>([])
         private let failListWrites: LockedBox<Int>
         init(failListWrites: Int = 0) { self.failListWrites = LockedBox(failListWrites) }
-        func runMusic(_ script: String, timeout: TimeInterval) async throws -> String {
+        func runMusicBlocking(_ script: String, timeout: TimeInterval) throws -> String {
             scripts.set(scripts.get() + [script])
             var fail = false
             if script.contains("set current AirPlay devices"), failListWrites.get() > 0 {

@@ -10,8 +10,10 @@ import Foundation
 
 /// The slice of AppleScriptBackend that RouteHealer drives — a seam so the tier
 /// escalation ladder can be unit-tested without spawning osascript.
+/// Synchronous, because the healer is: a blocking call through `syncRun`
+/// would wait on Swift's cooperative pool for each script.
 protocol MusicScripting {
-    func runMusic(_ script: String, timeout: TimeInterval) async throws -> String
+    func runMusicBlocking(_ script: String, timeout: TimeInterval) throws -> String
 }
 
 extension AppleScriptBackend: MusicScripting {}
@@ -67,7 +69,7 @@ struct RouteHealer {
                 .map { "AirPlay device \"\(escapeAppleScriptString($0))\"" }
                 .joined(separator: ", ")
             do {
-                _ = try syncRun { try await backend.runMusic("set current AirPlay devices to {\(list)}", timeout: 45) }
+                _ = try backend.runMusicBlocking("set current AirPlay devices to {\(list)}", timeout: 45)
                 return true
             } catch {
                 verbose("heal: list-write to {\(names.joined(separator: ", "))} failed: \(error.localizedDescription)")
@@ -78,13 +80,13 @@ struct RouteHealer {
             verbose("heal: baseline snapshot for \(ip) failed — skipping tier")
             return false
         }
-        if pauseBracket { _ = try? syncRun { try await backend.runMusic("pause", timeout: 45) } }
+        if pauseBracket { _ = try? backend.runMusicBlocking("pause", timeout: 45) }
         guard listWrite(away) else { return false }
         // HomePods need a beat to tear down; 1.5s matches resetAirPlaySpeakers.
         delay(1.5)
         guard listWrite(back) else { return false }
         if pauseBracket {
-            do { _ = try syncRun { try await backend.runMusic("play", timeout: 45) } }
+            do { _ = try backend.runMusicBlocking("play", timeout: 45) }
             catch { verbose("heal: play after tier-2 reroute failed: \(error.localizedDescription)") }
         }
         do {
