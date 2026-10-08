@@ -1,12 +1,38 @@
 import Foundation
 
-/// Thread-safe one-way flag for the osascript watchdog (sync accessors so the
-/// async `run` body doesn't lock directly).
-final class TimeoutFlag: @unchecked Sendable {
+/// The one arbitration between a script's natural exit and its watchdog, under
+/// one lock. The exit side (the process's termination handler, or the caller
+/// once it has seen exit and both EOFs) records `exited`; the watchdog may
+/// claim the timeout, and terminate, only while `exited` is still false. So a
+/// script that exits before its deadline is never reported as a timeout, even
+/// when draining its pipes runs past the deadline (a grandchild holding them).
+final class ScriptExitArbiter: @unchecked Sendable {
     private let lock = NSLock()
-    private var value = false
-    func set() { lock.lock(); value = true; lock.unlock() }
-    func get() -> Bool { lock.lock(); defer { lock.unlock() }; return value }
+    private var exited = false
+    private var timedOut = false
+
+    /// The process has exited. Idempotent; a timeout already claimed stands.
+    func recordExit() { lock.lock(); exited = true; lock.unlock() }
+
+    /// The watchdog's claim: if the process has not exited, record the timeout
+    /// and run `terminate` while still holding the lock, so no exit can be
+    /// recorded between the check and the kill. Returns whether it claimed.
+    @discardableResult
+    func claimTimeout(terminate: () -> Void) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        guard !exited else { return false }
+        timedOut = true
+        terminate()
+        return true
+    }
+
+    /// Read once, after exit and both EOFs: records the exit (the caller has
+    /// seen it) and returns whether the watchdog claimed the timeout first.
+    func finish() -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        exited = true
+        return timedOut
+    }
 }
 
 struct AppleScriptBackend {
@@ -94,6 +120,7 @@ struct AppleScriptBackend {
     /// we block on the read. Reads start BEFORE the wait for exit for the same
     /// reason. A watchdog kill closes the script's ends of both pipes, so both
     /// reads still return, and the timeout is reported only after they have.
+    /// Exit versus timeout is decided once, by `ScriptExitArbiter`.
     func runBlocking(_ script: String, timeout: TimeInterval = 45) throws -> String {
         try ExternalCallTripwire.shared.check(.appleScript(script: script))
         verbose("osascript: \(script.prefix(200))")
@@ -107,14 +134,18 @@ struct AppleScriptBackend {
         process.standardOutput = stdout
         process.standardError = stderr
 
+        // Set before launch so no exit can be missed. On a launch failure the
+        // handler never runs, and nothing waits on it: the outcome is read
+        // after `waitUntilExit`, never from the handler.
+        let arbiter = ScriptExitArbiter()
+        process.terminationHandler = { _ in arbiter.recordExit() }
+
         // A launch failure throws here, before any reader or watchdog exists,
         // so nothing is left waiting on a pipe no process will ever close.
         try process.run()
 
-        let timedOut = TimeoutFlag()
         let watchdog = DispatchWorkItem {
-            timedOut.set()
-            if process.isRunning { process.terminate() }
+            arbiter.claimTimeout { process.terminate() }
         }
         DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: watchdog)
 
@@ -128,7 +159,9 @@ struct AppleScriptBackend {
 
         // Read once, after exit and both EOFs: this one read is the decision
         // between a natural exit and a timeout, so it cannot be made twice.
-        if timedOut.get() {
+        // A watchdog that fires during a drain that outlives the script (a
+        // grandchild holding a pipe) finds `exited` and claims nothing.
+        if arbiter.finish() {
             verbose("osascript timed out after \(Int(timeout))s, terminated")
             throw ScriptError.timeout(String(script.prefix(80)))
         }

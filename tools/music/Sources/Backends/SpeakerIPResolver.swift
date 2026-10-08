@@ -181,7 +181,7 @@ struct CachingSpeakerResolver: SpeakerIPResolving {
 }
 
 /// Minimal thread-safe box for the semaphore-bridged Bonjour callbacks
-/// (same shape as TimeoutFlag in AppleScriptBackend.swift).
+/// (sync accessors, like ScriptExitArbiter in AppleScriptBackend.swift).
 final class LockedBox<T>: @unchecked Sendable {
     private let lock = NSLock()
     private var value: T

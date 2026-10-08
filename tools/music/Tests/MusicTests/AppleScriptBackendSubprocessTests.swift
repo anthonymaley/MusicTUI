@@ -125,6 +125,18 @@ final class AppleScriptBackendSubprocessTests: XCTestCase {
         XCTAssertLessThan(Date().timeIntervalSince(start), 5)
     }
 
+    /// The script exits at once, well inside the watchdog, but a background
+    /// grandchild holds its stdout open past the deadline, so the drain ends
+    /// after the watchdog fires. A natural exit before the deadline is the
+    /// script's outcome, not a timeout: the watchdog may claim the timeout
+    /// only for a process that has not exited.
+    func testExitBeforeTheDeadlineIsNotATimeoutWhenTheDrainEndsAfterIt() {
+        let b = backend("echo done\n( sleep 1.5 ) &\nexit 0")
+        let result = within(10) { Result { try b.runBlocking("x", timeout: 0.3) } }
+        guard case .success(let out)? = result else { return XCTFail("got \(String(describing: result))") }
+        XCTAssertTrue(out.contains("done"), "output: \(out)")
+    }
+
     /// Exits land on both sides of the watchdog, and some exactly on it: each
     /// run is one outcome, either the output or a timeout, with no crash and
     /// (async) no second resume of the continuation, which traps.
