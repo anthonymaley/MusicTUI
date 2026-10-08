@@ -452,17 +452,26 @@ final class BridgePlaylistsPlaySceneTests: XCTestCase {
         let wire = BridgeLibraryReadsWire(["slice.libraryPlaylists": [onePlaylistPage],
                                            "slice.queue": [queueOK], "slice.status": [statusOK]])
         wire.stickyStatus = true   // a play reads SpanDAC's capabilities before it queues
-        wire.script("slice.libraryPlaylistTracks", [tracksPage(songs, total: 40, skipped: 2)])
+        // Three-zone: the preview consumes the first scripted reply, the drill-in the second.
+        wire.script("slice.libraryPlaylistTracks", [tracksPage(songs, total: 40, skipped: 2),
+                                                     tracksPage(songs, total: 40, skipped: 2)])
         let status = StatusStore()
         let s = playlistsTestScene(flag: BridgeSelectedFlag(true), wire: wire, spy: PlaylistAppleScriptSpy(),
-                                   status: status, width: 120)
-        XCTAssertTrue(settleScene(s) { s.render(frame: frame, snapshot: idle).contains("Chill") })
+                                   status: status, width: 160)
+        XCTAssertTrue(settleScene(s) { s.render(frame: threeZoneFrame, snapshot: idle).contains("Chill") })
         _ = s.handle(.enter)
-        XCTAssertTrue(settleScene(s) { !wire.sent("slice.libraryPlaylistTracks").isEmpty })
+        // Wait for the rows to be INSTALLED (the tracks pane header carries the
+        // drained total/skipped), not merely for the request to be sent.
+        XCTAssertTrue(settleScene(s) {
+            s.render(frame: threeZoneFrame, snapshot: idle).contains("Tracks 40 \u{00B7} 2 videos skipped")
+        }, "the tracks pane never showed its loaded header")
         for _ in 0..<4 { _ = s.handle(.down) }   // cursor at row index 4 -> track 5
+        let selected = "\(ANSICode.inverse)05  Track 5"
+        XCTAssertTrue(s.render(frame: threeZoneFrame, snapshot: idle).contains(selected),
+                      "track 5 is not the selected row before Enter")
         _ = s.handle(.enter)
         XCTAssertTrue(settleScene(s) { !wire.sent("slice.queue").isEmpty })
-        let req = wire.sent("slice.queue").first!
+        guard let req = wire.sent("slice.queue").first else { XCTFail("no slice.queue was sent"); return }
         XCTAssertEqual((req["library_ids"] as? [String])?.count, 36)
         XCTAssertEqual(req["library_ids"] as? [String], songs[4...].map(\.0))
         // Enter on track 5 is a chosen start point — `start_required` must
