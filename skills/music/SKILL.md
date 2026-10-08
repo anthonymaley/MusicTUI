@@ -119,8 +119,10 @@ What's different from Music.app mode:
 - **Volume and speaker commands refuse** (`music volume`, `music speaker
   ...`): there's no AirPlay routing from the CLI on Bridge yet. Use MusicTUI's
   Output tab, or switch Output back to Music.app.
-- **`music shuffle`/`music repeat` and `music playlist temp` refuse** the
-  same way.
+- **`music playlist temp` refuses** the same way. `music shuffle [on|off]`
+  and `music repeat off|one|all` work on Bridge, as the Now tab's Shuffle and
+  Repeat cells do; a Bridge too old to offer them says `Shuffle and repeat
+  aren't available on SpanDAC.` and sends nothing.
 - `music eq` and `music visualizer` are Music.app settings either way; they
   don't touch what Bridge plays.
 - `music now --json` on Bridge never carries `album`, `duration`, `position`,
@@ -388,7 +390,7 @@ music auth set-token <TOKEN>                  # save user token from browser
 | No auth | play, pause, skip, back, stop, now, shuffle, repeat, speaker, volume, radio list/play/add, search --library | search, add, playlist (API), similar, suggest, new-releases, mix, radio search |
 | Developer token only | Above + search, radio search | add, playlist (API), similar, suggest, new-releases, mix |
 | Both tokens | Everything | — |
-| Bridge selected (any token tier) | play (named forms and `N`), search (catalog and `--library`), a song link, radio list/search/play/add, discover, playlist list/tracks, similar, recent, rotation — none of these need a developer key | shuffle, repeat, speaker, volume, playlist temp, suggest, new-releases, mix, add, playlist (API) |
+| Bridge selected (any token tier) | play (named forms and `N`), search (catalog and `--library`), a song link, shuffle and repeat, radio list/search/play/add, discover, playlist list/tracks, similar, recent, rotation — none of these need a developer key | speaker, volume, playlist temp, suggest, new-releases, mix, add, playlist (API) |
 
 ## Workflow: Complex Requests
 
@@ -447,7 +449,7 @@ Always use `--json` when you need to parse the output programmatically.
 - **"No tracks found"**: Try a broader search query
 - **"No station found for..."**: Radio search is shallow; ask the user for the station's share URL from music.apple.com and use `music radio play <url>` / `music radio add <url>` instead
 - **Speaker commands fail**: Check exact speaker name with `music speaker list`
-- **"Bridge output is selected, and ... isn't available from the CLI on Bridge yet."**: That command isn't wired to Bridge (volume, speakers, shuffle/repeat, `playlist temp`, plain `play <words>` and any non-song Apple Music link). Use MusicTUI, or switch Output to Music.app on the Output tab.
+- **"Bridge output is selected, and ... isn't available from the CLI on Bridge yet."**: That command isn't wired to Bridge (volume, speakers, `playlist temp`, plain `play <words>` and any non-song Apple Music link). Use MusicTUI, or switch Output to Music.app on the Output tab.
 - **"Bridge output is selected, and music suggest needs Apple Music account reads Bridge doesn't serve."** / **"...music new-releases needs a catalogue artist lookup Bridge doesn't serve."**: Bridge has no op for either read. Switch Output to Music.app to use them.
 - **"Bridge doesn't serve the Recently Played rail. Switch Output to Music.app to use music discover --recent."**: same reason, for `discover --recent` specifically; plain `music discover` is served.
 - **"Bridge catalogue search returns songs and albums only in this version."**: drop `--types artists`/`playlists` when Bridge is selected, or switch Output to Music.app.
