@@ -22,9 +22,7 @@ let sourceQueueJumpCapability = "queue.jump"
 struct SpanDACQueueJumpResult {
     /// The status the jump left behind, decoded as `slice.status` would be.
     let status: SourceStatus
-    /// The token of the assignment standing after the jump. Usually the one
-    /// sent; the rows kept for the play are re-bound to it (never trusted
-    /// without it).
+    /// The token of the assignment standing after the jump: always the one sent.
     let queueToken: String
 }
 
@@ -55,23 +53,29 @@ extension SourceAppControl {
             throw SourceAppError.refused("a queue jump needs a row of 0 or more")
         }
         let reply = try send(Self.queueJumpBody(token: token, row: row), over: libraryTransport)
-        return try Self.queueJumpResult(from: reply, readingWith: self)
+        return try Self.queueJumpResult(from: reply, requested: token, readingWith: self)
     }
 
-    /// A successful reply, fail closed: a status that decodes, and a nonblank
-    /// top-level `queue_token` that the embedded status echoes when it carries
-    /// one. A reply missing either is a peer that broke the contract, and no
-    /// rows are re-bound against it.
-    static func queueJumpResult(from reply: [String: Any],
+    /// A successful reply, fail closed, for the queue that was asked about: SpanDAC
+    /// replies ok only when the request's token still stood and the song is
+    /// playing, and returns that same token at the top level AND in the status.
+    /// A status that decodes; a top-level `queue_token` and the status's both
+    /// equal to `requested` (an absent one is malformed too); `playback`
+    /// `playing`. A reply that is any less is a peer that broke the contract, or a
+    /// reply for another queue, and never a jump.
+    static func queueJumpResult(from reply: [String: Any], requested: String,
                                 readingWith control: SourceAppControl) throws -> SpanDACQueueJumpResult {
         guard let wireStatus = reply["status"] as? [String: Any],
               let status = decodeStatus(wireStatus, readingWith: control) else {
             throw SourceAppError.malformedReply("SpanDAC's \(sourceQueueJumpOp) reply has no status")
         }
-        guard let token = queueToken(reply["queue_token"]),
-              status.queueToken == nil || status.queueToken == token else {
+        guard let token = queueToken(reply["queue_token"]), token == requested, status.queueToken == token else {
             throw SourceAppError.malformedReply(
-                "SpanDAC's \(sourceQueueJumpOp) reply has no queue_token, or two that differ")
+                "SpanDAC's \(sourceQueueJumpOp) reply is not for the queue that was asked about")
+        }
+        guard status.playback == "playing" else {
+            throw SourceAppError.malformedReply(
+                "SpanDAC's \(sourceQueueJumpOp) reply says it is not playing (\(status.playback))")
         }
         return SpanDACQueueJumpResult(status: status, queueToken: token)
     }

@@ -25,8 +25,8 @@ import Foundation
 ///   queue would index the wrong songs.
 /// - `entryIndex` is the entry's 1-based `index`; the wire's `row` is 0-based.
 ///
-/// On success the kept rows follow the token the reply carried, so the next
-/// `slice.status` (echoing it) still draws Up Next.
+/// A reply for any other token, or one that is not playing, is a refusal: the
+/// kept rows are the queue that was asked about, and are never re-bound.
 func jumpSpanDACQueue(routing: RoutingCoordinator, client: SourceAppClient,
                       displayedToken: String?, entryIndex: Int) throws -> SpanDACQueueJumpResult {
     guard routing.mode == .source,
@@ -42,7 +42,6 @@ func jumpSpanDACQueue(routing: RoutingCoordinator, client: SourceAppClient,
             throw ActionError(message: queueJumpRefusal)
         }
         let result = try client.control.queueJump(token: token, row: row)
-        routing.rebindSpanDACPlayToken(from: token, to: result.queueToken)
         return result
     } catch let error as SourceAppError {
         throw ActionError(message: error.message)

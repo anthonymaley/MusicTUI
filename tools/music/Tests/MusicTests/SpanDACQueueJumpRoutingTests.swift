@@ -44,7 +44,7 @@ final class SpanDACQueueJumpRoutingTests: XCTestCase {
         var title = "Song 1", row = 1, next = [2, 3, 4]
         /// nil: a success whose status moves to `jumped`.
         var jumpReply: String?
-        var jumped = (title: "Song 3", row: 3, next: [4], token: "tok-2")
+        var jumped = (title: "Song 3", row: 3, next: [4], token: "tok-1")
 
         func status(title: String, row: Int, next: [Int], token: String?) -> String {
             let caps = capabilities.map { "\"\($0)\"" }.joined(separator: ",")
@@ -228,10 +228,13 @@ final class SpanDACQueueJumpRoutingTests: XCTestCase {
             #"{"ok":false,"op":"slice.queueJump","error":{"kind":"\#(kind)","detail":"\#(detail)"}}"#
         }
         let cases: [(String, String, String)] = [
-            ("stale_queue", "The queue changed.", "SpanDAC refused: The queue changed."),
+            ("stale_token", "The queue changed.", "SpanDAC refused: The queue changed."),
             ("shuffled", "A shuffled queue can't be jumped.", "SpanDAC refused: A shuffled queue can't be jumped."),
-            ("row_unbound", "That row isn't in the queue.", "SpanDAC refused: That row isn't in the queue."),
-            ("row_ambiguous", "That song is in the queue twice.", "SpanDAC refused: That song is in the queue twice."),
+            ("unbound_row", "That row isn't in the queue.", "SpanDAC refused: That row isn't in the queue."),
+            ("ambiguous_row", "That song is in the queue twice.", "SpanDAC refused: That song is in the queue twice."),
+            ("bad_request", "The player could not play that row; playback was paused",
+             "SpanDAC refused: The player could not play that row; playback was paused"),
+            ("player_disconnected", "SpanDAC lost its player.", "SpanDAC lost its player."),
             (spanDACLicenceRefusalKind, "SpanDAC isn't licensed.", "SpanDAC isn't licensed."),
         ]
         for (kind, detail, shown) in cases {
@@ -248,23 +251,50 @@ final class SpanDACQueueJumpRoutingTests: XCTestCase {
         }
     }
 
-    func testAMalformedSuccessIsRefusedAndKeepsTheOldToken() {
-        let h = harness()
-        h.fixture.jumpReply = #"{"ok":true,"op":"slice.queueJump"}"#
-        let snap = poll(h)
-        pressEnterOnSong2(h, snap)
-        XCTAssertEqual(h.status.current()?.isError, true)
-        XCTAssertEqual(h.coordinator.spanDACPlay()?.token, "tok-1")
+    /// A reply for another queue is never a jump: the rows kept for tok-1 are not
+    /// re-bound to anything, and the person is told.
+    func testASuccessThatIsNotForTheQueueAskedAboutIsRefusedAndChangesNothing() {
+        func reply(top: String?, statusToken: String?, playback: String = "playing") -> String {
+            let h = Fixture()
+            let s = h.status(title: "Song 3", row: 3, next: [4], token: statusToken)
+                .replacingOccurrences(of: #""playback":"playing""#, with: #""playback":"\#(playback)""#)
+            let t = top.map { #","queue_token":"\#($0)""# } ?? ""
+            return #"{"ok":true,"op":"slice.queueJump","status":\#(s)\#(t)}"#
+        }
+        let cases: [(String, String)] = [
+            ("no status", #"{"ok":true,"op":"slice.queueJump"}"#),
+            ("another queue's token, in both places", reply(top: "tok-2", statusToken: "tok-2")),
+            ("top-level and status differ", reply(top: "tok-1", statusToken: "tok-2")),
+            ("no token in the status", reply(top: "tok-1", statusToken: nil)),
+            ("no top-level token", reply(top: nil, statusToken: "tok-1")),
+            ("paused", reply(top: "tok-1", statusToken: "tok-1", playback: "paused")),
+            ("loading", reply(top: "tok-1", statusToken: "tok-1", playback: "loading")),
+        ]
+        for (label, text) in cases {
+            let h = harness()
+            h.fixture.jumpReply = text
+            let snap = poll(h)
+            let before = h.counter.callCount
+            pressEnterOnSong2(h, snap)
+            XCTAssertEqual(h.jumps.count, 1, label)
+            XCTAssertEqual(h.status.current()?.isError, true, label)
+            XCTAssertNotNil(h.status.current()?.text, label)
+            XCTAssertEqual(h.coordinator.spanDACPlay()?.token, "tok-1", label)
+            XCTAssertEqual(h.counter.callCount, before, label)
+            // Nothing was drawn from the reply: the old queue is still Now's.
+            h.scene.tick(snapshot: snap)
+            XCTAssertTrue(upNext(h, snap).contains("Song 2 \u{2014} Artist 2"), label)
+        }
     }
 
     // MARK: success
 
-    func testSuccessRebindsTheKeptRowsAndDrawsTheReplysQueue() {
+    func testSuccessKeepsTheQueueAndDrawsTheReplysRows() {
         let h = harness()
         let snap = poll(h)
         pressEnterOnSong2(h, snap)
         XCTAssertNil(h.status.current())
-        XCTAssertEqual(h.coordinator.spanDACPlay()?.token, "tok-2", "the kept rows follow the token the reply carried")
+        XCTAssertEqual(h.coordinator.spanDACPlay()?.token, "tok-1", "the same queue still stands")
         XCTAssertEqual(h.coordinator.spanDACPlay()?.rows.count, 5)
 
         // The next tick, even over the poll taken before the jump, shows the
@@ -274,12 +304,32 @@ final class SpanDACQueueJumpRoutingTests: XCTestCase {
         XCTAssertTrue(shown.contains("Song 4 \u{2014} Artist 4"), shown)
         XCTAssertFalse(shown.contains("Song 2 \u{2014} Artist 2"), "the rows before the jump are gone: \(shown)")
 
-        // And the poll that follows, which reads the status echoing tok-2,
-        // keeps the list rather than dropping it for a mismatched token.
-        h.fixture.title = "Song 3"; h.fixture.row = 3; h.fixture.next = [4]; h.fixture.token = "tok-2"
+        // And the poll that follows, reading the status after the jump, keeps the list.
+        h.fixture.title = "Song 3"; h.fixture.row = 3; h.fixture.next = [4]
         let after = poll(h)
         XCTAssertEqual(after.surrounding.map(\.name), ["Song 3", "Song 4"])
-        XCTAssertEqual(after.spanDACQueueToken, "tok-2")
+        XCTAssertEqual(after.spanDACQueueToken, "tok-1")
+    }
+
+    /// Enter on the row already playing is sent like any other (SpanDAC decides
+    /// what it means) and its success is handled the same way.
+    func testEnterOnTheCurrentlyPlayingRowIsSentAndItsSuccessHandled() {
+        let h = harness()
+        h.fixture.jumped = (title: "Song 1", row: 1, next: [2, 3, 4], token: "tok-1")
+        let snap = poll(h)
+        let before = h.counter.callCount
+        h.scene.tick(snapshot: snap)
+        _ = h.scene.handle(.enter)            // cursor 0: the current row, entry index 2
+        h.actions.waitUntilIdle()
+        XCTAssertEqual(h.jumps.count, 1)
+        let sent = try? JSONSerialization.jsonObject(with: Data(h.jumps[0].utf8)) as? [String: Any]
+        XCTAssertEqual(sent?["queue_token"] as? String, "tok-1")
+        XCTAssertEqual(sent?["row"] as? Int, 1, "entry index 2 is wire row 1")
+        XCTAssertNil(h.status.current(), "a success posts no refusal")
+        XCTAssertEqual(h.counter.callCount, before)
+        XCTAssertEqual(h.coordinator.spanDACPlay()?.token, "tok-1")
+        h.scene.tick(snapshot: snap)
+        XCTAssertTrue(upNext(h, snap).contains("Song 2 \u{2014} Artist 2"), "Up Next still drawn after the success")
     }
 
     // MARK: MusicTUI output: unchanged

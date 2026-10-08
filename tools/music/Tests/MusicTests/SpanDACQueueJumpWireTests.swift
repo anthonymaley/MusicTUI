@@ -7,12 +7,12 @@ import XCTest
 /// transport only: no socket, no player.
 final class SpanDACQueueJumpWireTests: XCTestCase {
 
-    private func status(token: String? = "tok-2", title: String = "Song 3") -> String {
+    private func status(token: String? = "tok-1", title: String = "Song 3", playback: String = "playing") -> String {
         let t = token.map { #","queue_token":"\#($0)""# } ?? ""
-        return #"{"playback":"playing","contract":3,"authorization":"authorized","title":"\#(title)","artist":"A","row":2,"next_rows":[3,4],"capabilities":["slice.status","queue.jump"],"queue":{"phase":"complete","requested":5,"present":5,"index":2}\#(t)}"#
+        return #"{"playback":"\#(playback)","contract":3,"authorization":"authorized","title":"\#(title)","artist":"A","row":2,"next_rows":[3,4],"capabilities":["slice.status","queue.jump"],"queue":{"phase":"complete","requested":5,"present":5,"index":2}\#(t)}"#
     }
 
-    private func ok(top: String? = "tok-2", status: String? = nil) -> String {
+    private func ok(top: String? = "tok-1", status: String? = nil) -> String {
         let t = top.map { #","queue_token":"\#($0)""# } ?? ""
         return #"{"ok":true,"op":"slice.queueJump","status":\#(status ?? self.status())\#(t)}"#
     }
@@ -60,7 +60,7 @@ final class SpanDACQueueJumpWireTests: XCTestCase {
         XCTAssertEqual(sent["op"] as? String, "slice.queueJump")
         XCTAssertEqual(sent["queue_token"] as? String, "tok-1")
         XCTAssertEqual(sent["row"] as? Int, 2)
-        XCTAssertEqual(result.queueToken, "tok-2")
+        XCTAssertEqual(result.queueToken, "tok-1", "the token that stood, returned")
         XCTAssertEqual(result.status.title, "Song 3")
         XCTAssertEqual(result.status.row, 2)
     }
@@ -80,19 +80,19 @@ final class SpanDACQueueJumpWireTests: XCTestCase {
             ("no status", #"{"ok":true,"op":"slice.queueJump","queue_token":"tok-2"}"#),
             ("no top-level token", ok(top: nil)),
             ("blank token", ok(top: "  ")),
-            ("tokens differ", ok(top: "tok-9")),
+            ("top-level and status tokens differ", ok(top: "tok-9")),
+            ("a token other than the one asked for, in both places",
+             ok(top: "tok-2", status: status(token: "tok-2"))),
+            ("no token in the status", ok(status: status(token: nil))),
+            ("paused, not playing", ok(status: status(playback: "paused"))),
+            ("loading, not playing", ok(status: status(playback: "loading"))),
+            ("stopped, not playing", ok(status: status(playback: "stopped"))),
         ]
         for (label, text) in cases {
             XCTAssertThrowsError(try control(Wire(), reply: { text }).queueJump(token: "tok-1", row: 0), label) {
                 guard case SourceAppError.malformedReply = $0 else { return XCTFail("\(label): \($0)") }
             }
         }
-    }
-
-    func testAStatusWithoutATokenIsNotContradictedByTheTopLevelOne() throws {
-        let r = try control(Wire(), reply: { self.ok(status: self.status(token: nil)) }).queueJump(token: "tok-1", row: 0)
-        XCTAssertEqual(r.queueToken, "tok-2")
-        XCTAssertNil(r.status.queueToken)
     }
 
     // MARK: the error envelope
@@ -102,10 +102,11 @@ final class SpanDACQueueJumpWireTests: XCTestCase {
             #"{"ok":false,"op":"slice.queueJump","error":{"kind":"\#(kind)","detail":"\#(detail)"}}"#
         }
         let cases: [(String, String, SourceAppError)] = [
-            ("stale_queue", "The queue changed.", .refused("The queue changed.")),
+            ("stale_token", "The queue changed.", .refused("The queue changed.")),
             ("shuffled", "A shuffled queue has no rows to jump to.", .refused("A shuffled queue has no rows to jump to.")),
-            ("row_unbound", "That row is not in the queue.", .refused("That row is not in the queue.")),
-            ("row_ambiguous", "That song is in the queue twice.", .refused("That song is in the queue twice.")),
+            ("unbound_row", "That row is not in the queue.", .refused("That row is not in the queue.")),
+            ("ambiguous_row", "That song is in the queue twice.", .refused("That song is in the queue twice.")),
+            ("bad_request", "The player could not play that row; playback was paused", .refused("The player could not play that row; playback was paused")),
             (spanDACLicenceRefusalKind, "SpanDAC needs a licence.", .unlicensed("SpanDAC needs a licence.")),
             ("unknown_op", "", .unsupported(sourceQueueJumpOp)),
             ("player_disconnected", "Lost the player.", .playerDisconnected("Lost the player.")),

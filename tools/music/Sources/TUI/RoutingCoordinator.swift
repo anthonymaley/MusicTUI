@@ -745,19 +745,6 @@ final class RoutingCoordinator {
         spanDACPlay()?.rows
     }
 
-    /// Re-binds the current play's rows to the token a queue jump's reply carried,
-    /// ONLY IF the play recorded under `serial` is still the current one and still
-    /// holds `old`: the jump moved SpanDAC's player inside the same assignment, and
-    /// the rows describe it under the new token. A later play, or a token that is
-    /// no longer `old`, changes nothing. Returns whether the rows were re-bound.
-    @discardableResult
-    func rebindSpanDACPlayToken(from old: String, to new: String) -> Bool {
-        state.lock(); defer { state.unlock() }
-        guard let sent = _spanDACSent, sent.serial == _playSerial, sent.token == old else { return false }
-        _spanDACSent = (sent.serial, sent.rows, new, sent.listRev, sent.shuffled)
-        return true
-    }
-
     /// The current play's rows with the token its reply carried, the
     /// `list_rev` they were read under, and whether SpanDAC shuffled the play.
     func spanDACPlay() -> (rows: [MusicRow], token: String?, listRev: String?, shuffled: Bool)? {
