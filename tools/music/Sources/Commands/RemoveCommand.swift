@@ -10,9 +10,7 @@ struct Remove: ParsableCommand {
         try refuseInBridge(.removeCurrentTrackFromPlaylist, json: json)
         let backend = AppleScriptBackend()
 
-        let trackResult = try syncRun {
-            try await backend.runMusic("return name of current track & (ASCII character 31) & artist of current track")
-        }
+        let trackResult = try backend.runMusicBlocking("return name of current track & (ASCII character 31) & artist of current track")
         let parts = trackResult.trimmingCharacters(in: .whitespacesAndNewlines).split(separator: asFieldSep)
         guard parts.count >= 2 else {
             print("Nothing playing.")
@@ -28,8 +26,7 @@ struct Remove: ParsableCommand {
             // Guard the missing-playlist case in-script so it returns NOT_FOUND
             // cleanly; any *thrown* error is then a real failure (permission,
             // Music not running) worth surfacing — not a silent "not found".
-            let check = try syncRun {
-                try await backend.runMusic("""
+            let check = try backend.runMusicBlocking("""
                     if not (exists playlist "\(escapedPlaylist)") then return "NOT_FOUND"
                     set matches to (every track of playlist "\(escapedPlaylist)" whose name is "\(escapedTitle)" and artist is "\(escapedArtist)")
                     if (count of matches) = 0 then
@@ -42,7 +39,6 @@ struct Remove: ParsableCommand {
                         return "NOT_FOUND"
                     end if
                 """)
-            }
             return check.trimmingCharacters(in: .whitespacesAndNewlines) == "DELETED"
         }
 
@@ -60,15 +56,13 @@ struct Remove: ParsableCommand {
         }
 
         if target.isEmpty {
-            let playlistResult = try syncRun {
-                try await backend.runMusic("""
+            let playlistResult = try backend.runMusicBlocking("""
                     if exists current playlist then
                         return name of current playlist
                     else
                         return "NO_PLAYLIST"
                     end if
                 """)
-            }
             let playlistName = playlistResult.trimmingCharacters(in: .whitespacesAndNewlines)
             if playlistName == "NO_PLAYLIST" {
                 print(json ? "{\"removed\":false,\"error\":\"not playing from a playlist\"}" : "Not playing from a playlist.")
@@ -77,9 +71,7 @@ struct Remove: ParsableCommand {
             report(removedFrom: try deleteTrack(from: playlistName) ? [playlistName] : [])
 
         } else if target.count == 1 && target[0].lowercased() == "all" {
-            let allPlaylists = try syncRun {
-                try await backend.runMusic("get name of every user playlist")
-            }
+            let allPlaylists = try backend.runMusicBlocking("get name of every user playlist")
             let names = allPlaylists.trimmingCharacters(in: .whitespacesAndNewlines)
                 .split(separator: ",")
                 .map { $0.trimmingCharacters(in: .whitespaces) }

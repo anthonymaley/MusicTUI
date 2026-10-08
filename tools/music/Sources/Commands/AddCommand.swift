@@ -147,9 +147,7 @@ struct Add: ParsableCommand {
             songToAdd = song
         } else if !to.isEmpty {
             let backend = AppleScriptBackend()
-            let result = try syncRun {
-                try await backend.runMusic("return name of current track & (ASCII character 31) & artist of current track")
-            }
+            let result = try backend.runMusicBlocking("return name of current track & (ASCII character 31) & artist of current track")
             guard let fields = parseCurrentTrackFields(result) else {
                 if json {
                     print(OutputFormat(mode: .json).render(

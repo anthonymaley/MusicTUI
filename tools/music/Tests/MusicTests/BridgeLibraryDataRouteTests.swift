@@ -468,4 +468,75 @@ final class BridgeLibraryDataRouteTests: XCTestCase {
         XCTAssertEqual(r.data.requestCount + r.output.requestCount, 0)
         XCTAssertEqual(r.handoff.calls, [])
     }
+
+    // MARK: - A saturated cooperative pool
+
+    /// The shipped AppleScript plays must not depend on Swift's cooperative
+    /// thread pool. They used to: `syncRun` parked the caller on a semaphore
+    /// and ran the subprocess in a new `Task`, so with every pool thread busy
+    /// the play's AppleScript never started (the app queue was set at once, the
+    /// AppleScript call did not happen for as long as the pool stayed full).
+    /// This occupies every pool thread for a few seconds, then plays an album
+    /// and a song row and requires each to reach AppleScript within the usual
+    /// 3-second wait, while the pool is still full.
+    func testShippedAppleScriptPlaysDoNotWaitOnASaturatedCooperativePool() {
+        let r = rig(output: .musicApp, data: .missing)
+        let queue = AppQueueStore()
+        let tracks = (1...3).map { TrackListEntry(index: $0, name: "T\($0)", artist: "A", isCurrent: false, album: "Album") }
+        let spy = LibraryAppleScriptSpy()
+        spy.songs = [LibrarySong(id: "a1", title: "Old", artist: "X", album: "Y")]
+        let s = libraryScene(r, spy: spy, appQueue: queue, resolved: AlbumResolution(tracks: tracks, matched: 3))
+
+        goToSubView(s, .songs)
+        XCTAssertTrue(settleScene(s) { s.songsForTest.map(\.id) == ["a1"] })
+
+        withSaturatedCooperativePool {
+            s.playAlbum(title: "Album", artist: "A", shuffle: false)
+            XCTAssertTrue(wait { queue.read()?.displayName == "Album" }, "the shipped album body did not run")
+            XCTAssertTrue(wait { r.counter.callCount > 0 },
+                          "with the cooperative pool full, the album play never reached AppleScript")
+        }
+
+        withSaturatedCooperativePool {
+            let before = r.counter.callCount
+            _ = s.handle(.enter)
+            XCTAssertTrue(wait { r.counter.callCount > before },
+                          "with the cooperative pool full, the song row never reached AppleScript")
+        }
+
+        XCTAssertEqual(r.built.dataCount, 0)
+        XCTAssertEqual(r.built.outputModes, [])
+        XCTAssertEqual(r.handoff.calls, [])
+    }
+
+    /// Fill every cooperative-pool thread with a blocking sleep, run `body`
+    /// while they are all held, then wait for them to finish so nothing leaks
+    /// into the next test. One task per active processor: the pool's width on
+    /// Darwin. Each holds its thread for `hold` seconds, longer than `body`'s
+    /// 3-second waits, so a body that needs a pool thread fails rather than
+    /// squeezing through after the sleepers wake.
+    private func withSaturatedCooperativePool(hold: useconds_t = 4_000_000, _ body: () -> Void) {
+        let width = ProcessInfo.processInfo.activeProcessorCount
+        let started = AtomicCounter()
+        let finished = AtomicCounter()
+        for _ in 0..<width {
+            Task.detached {
+                started.increment()
+                usleep(hold)
+                finished.increment()
+            }
+        }
+        XCTAssertTrue(wait(seconds: 2) { started.value == width },
+                      "only \(started.value) of \(width) pool threads were taken; the pool is not saturated")
+        body()
+        XCTAssertTrue(wait(seconds: Double(hold) / 1_000_000 + 2) { finished.value == width },
+                      "the saturating tasks did not drain")
+    }
+
+    private final class AtomicCounter: @unchecked Sendable {
+        private let lock = NSLock()
+        private var count = 0
+        func increment() { lock.lock(); count += 1; lock.unlock() }
+        var value: Int { lock.lock(); defer { lock.unlock() }; return count }
+    }
 }

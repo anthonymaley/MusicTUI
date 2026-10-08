@@ -185,8 +185,7 @@ func persistentIDPlayScript(_ persistentID: String) -> String {
 /// bulk reads (`tracks 1 thru n`), never per-element, per the perf convention.
 func fetchPlaylistTracks(backend: AppleScriptBackend, playlist: String) -> [TrackListEntry] {
     let esc = escapeAppleScriptString(playlist)
-    guard let raw = try? syncRun({
-        try await backend.runMusic("""
+    guard let raw = try? backend.runMusicBlocking("""
             set fs to (ASCII character 31)
             set total to count of tracks of playlist "\(esc)"
             set output to ""
@@ -200,8 +199,7 @@ func fetchPlaylistTracks(backend: AppleScriptBackend, playlist: String) -> [Trac
                 end repeat
             end if
             return output
-        """)
-    }) else { return [] }
+        """) else { return [] }
     var out: [TrackListEntry] = []
     for line in raw.components(separatedBy: "\n") where !line.isEmpty {
         let f = line.split(separator: asFieldSep, maxSplits: 3).map(String.init)
@@ -233,16 +231,14 @@ func parseLibraryTrackPositions(_ raw: String) -> [TrackListEntry] {
 /// read. `whereClause` is an AppleScript boolean over `t`, already escaped by the
 /// caller.
 func fetchLibraryTracksWithPositions(backend: AppleScriptBackend, whereClause: String) -> [TrackListEntry] {
-    let raw = (try? syncRun {
-        try await backend.runMusic("""
+    let raw = (try? backend.runMusicBlocking("""
             set fs to (ASCII character 31)
             set out to ""
             repeat with t in (every track of playlist "Library" whose \(whereClause))
                 set out to out & (index of t) & fs & (name of t) & fs & (artist of t) & fs & (album of t) & linefeed
             end repeat
             return out
-        """, timeout: 30)
-    }) ?? ""
+        """, timeout: 30)) ?? ""
     return parseLibraryTrackPositions(raw)
 }
 
@@ -651,9 +647,7 @@ func resolveSongPlaybackTrack(backend: AppleScriptBackend, title: String, artist
 /// took 46.5s against the 30s watchdog. See that function for the measurements.
 /// The watchdog stays at 30s: the bulk read measured 0.3s.
 func fetchLibraryAlbumRows(backend: AppleScriptBackend, whereClause: String) -> [LibraryAlbumRow]? {
-    guard let raw = try? syncRun({
-        try await backend.runMusic(libraryAlbumRowsScript(whereClause: whereClause), timeout: 30)
-    }) else { return nil }
+    guard let raw = try? backend.runMusicBlocking(libraryAlbumRowsScript(whereClause: whereClause), timeout: 30) else { return nil }
     return parseLibraryAlbumRows(raw)
 }
 

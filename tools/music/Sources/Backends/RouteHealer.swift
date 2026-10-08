@@ -171,10 +171,8 @@ func verifyAndHealRoutes(speakers: [String], backend: AppleScriptBackend,
 /// The (advisory, often-lying) scripting claims for a device — used only as
 /// failure-path context in heal messages. Shared by the verify pass and wake.
 func readScriptingClaims(for speaker: String, backend: AppleScriptBackend) -> String {
-    (try? syncRun {
-        try await backend.runMusic("""
+    (try? backend.runMusicBlocking("""
             get "selected=" & (selected of AirPlay device "\(escapeAppleScriptString(speaker))" as text) & \
             " active=" & (active of AirPlay device "\(escapeAppleScriptString(speaker))" as text)
-        """)
-    })?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "unreadable"
+        """))?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "unreadable"
 }

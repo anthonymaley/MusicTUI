@@ -65,9 +65,7 @@ func listPlaylists(json: Bool) throws {
 
     // Fallback to AppleScript
     let backend = AppleScriptBackend()
-    let result = try syncRun {
-        try await backend.runMusic("get name of every playlist")
-    }
+    let result = try backend.runMusicBlocking("get name of every playlist")
     let names = result.trimmingCharacters(in: .whitespacesAndNewlines)
         .split(separator: ",")
         .map { $0.trimmingCharacters(in: .whitespaces) }
@@ -142,8 +140,7 @@ func showPlaylistTracks(name: String, json: Bool) throws {
 
     // Fallback to AppleScript
     let backend = AppleScriptBackend()
-    let result = try syncRun {
-        try await backend.runMusic("""
+    let result = try backend.runMusicBlocking("""
             set fs to (ASCII character 31)
             set trackList to every track of playlist "\(escapeAppleScriptString(name))"
             set output to ""
@@ -155,7 +152,6 @@ func showPlaylistTracks(name: String, json: Bool) throws {
             end repeat
             return output
         """)
-    }
     let parsedTracks = parsePlaylistTrackLines(result)
 
     let cache = ResultCache()
@@ -745,10 +741,8 @@ func albumSweepGuardedScript(prefixes: [String], deferReturn: String, countDelet
 }
 
 func createEmptyPlaylistViaAppleScript(name: String, backend: AppleScriptBackend) throws {
-    _ = try syncRun {
-        try await backend.runMusic(
+    _ = try backend.runMusicBlocking(
             "make new playlist with properties {name:\"\(escapeAppleScriptString(name))\"}")
-    }
 }
 
 struct PlaylistCreate: ParsableCommand {
@@ -889,9 +883,7 @@ struct PlaylistDelete: ParsableCommand {
             }
         }
         let backend = AppleScriptBackend()
-        _ = try syncRun {
-            try await backend.runMusic(playlistDeleteScript(name: name))
-        }
+        _ = try backend.runMusicBlocking(playlistDeleteScript(name: name))
         print(json ? "{\"deleted\":\"\(name)\"}" : "Deleted playlist '\(name)'.")
     }
 }
@@ -1061,12 +1053,10 @@ struct PlaylistRemove: ParsableCommand {
         let backend = AppleScriptBackend()
         let escPlaylist = escapeAppleScriptString(playlist)
         let escTitle = escapeAppleScriptString(title)
-        _ = try syncRun {
-            try await backend.runMusic("""
+        _ = try backend.runMusicBlocking("""
                 set t to (first track of playlist "\(escPlaylist)" whose name contains "\(escTitle)")
                 delete t
             """)
-        }
         print("Removed '\(title)' from '\(playlist)'.")
     }
 }
@@ -1079,8 +1069,7 @@ struct PlaylistShare: ParsableCommand {
     func run() throws {
         let backend = AppleScriptBackend()
         let escName = escapeAppleScriptString(name)
-        let trackList = try syncRun {
-            try await backend.runMusic("""
+        let trackList = try backend.runMusicBlocking("""
                 set trackList to every track of playlist "\(escName)"
                 set output to ""
                 repeat with t in trackList
@@ -1089,25 +1078,21 @@ struct PlaylistShare: ParsableCommand {
                 end repeat
                 return output
             """)
-        }
         let message = "Check out my playlist '\(name)': \(trackList.trimmingCharacters(in: .whitespacesAndNewlines))"
 
         if let recipient = imessage {
             let escaped = escapeAppleScriptString(message)
-            _ = try syncRun {
-                try await backend.run("""
+            _ = try backend.runBlocking("""
                     tell application "Messages"
                         set targetService to 1st account whose service type = iMessage
                         set targetBuddy to participant "\(escapeAppleScriptString(recipient))" of targetService
                         send "\(escaped)" to targetBuddy
                     end tell
                 """)
-            }
             print("Sent to \(recipient) via iMessage.")
         } else if let addr = email {
             let escaped = escapeAppleScriptString(message)
-            _ = try syncRun {
-                try await backend.run("""
+            _ = try backend.runBlocking("""
                     tell application "Mail"
                         set newMessage to make new outgoing message with properties {subject:"Playlist: \(escName)", content:"\(escaped)", visible:true}
                         tell newMessage
@@ -1116,7 +1101,6 @@ struct PlaylistShare: ParsableCommand {
                         activate
                     end tell
                 """)
-            }
             print("Email composed to \(addr).")
         } else {
             print("Specify --imessage or --email")
@@ -1152,21 +1136,15 @@ func playlistTempViaMusicApp(items: [String]) throws {
     let name = manualTempPlaylistName()
     let backend = AppleScriptBackend()
 
-    _ = try syncRun {
-        try await backend.runMusic("make new playlist with properties {name:\"\(escapeAppleScriptString(name))\"}")
-    }
+    _ = try backend.runMusicBlocking("make new playlist with properties {name:\"\(escapeAppleScriptString(name))\"}")
 
     for i in stride(from: 0, to: items.count, by: 2) {
         duplicateLibraryTrack(backend: backend, title: items[i], artist: items[i + 1], toPlaylist: name)
     }
 
     // Split into separate calls to avoid parameter error -50
-    _ = try syncRun {
-        try await backend.runMusic("set shuffle enabled to true")
-    }
-    _ = try syncRun {
-        try await backend.runMusic("play playlist \"\(escapeAppleScriptString(name))\"")
-    }
+    _ = try backend.runMusicBlocking("set shuffle enabled to true")
+    _ = try backend.runMusicBlocking("play playlist \"\(escapeAppleScriptString(name))\"")
     print("Playing temp playlist with \(items.count / 2) tracks. Run `music playlist cleanup` when done.")
 }
 
@@ -1189,9 +1167,7 @@ struct PlaylistCreateFrom: ParsableCommand {
         if devToken == nil || userToken == nil {
             let backend = AppleScriptBackend()
             let escName = escapeAppleScriptString(name)
-            _ = try syncRun {
-                try await backend.runMusic("make new playlist with properties {name:\"\(escName)\"}")
-            }
+            _ = try backend.runMusicBlocking("make new playlist with properties {name:\"\(escName)\"}")
             var added = 0
             var missing: [TitleArtist] = []
             for pair in pairs {
@@ -1206,9 +1182,7 @@ struct PlaylistCreateFrom: ParsableCommand {
             }
             guard added > 0 else {
                 // Match the REST path's contract: nothing found, nothing left behind.
-                _ = try? syncRun {
-                    try await backend.runMusic("delete (every playlist whose name is \"\(escName)\")")
-                }
+                _ = try? backend.runMusicBlocking("delete (every playlist whose name is \"\(escName)\")")
                 print("No tracks found. Playlist not created.")
                 print("Finding tracks you do not own needs a Music User Token. Run: music auth setup")
                 throw ExitCode.failure
@@ -1313,9 +1287,7 @@ struct PlaylistCleanup: ParsableCommand {
     static let configuration = CommandConfiguration(commandName: "cleanup", abstract: "Delete all temp playlists.")
     func run() throws {
         let backend = AppleScriptBackend()
-        let result = try syncRun {
-            try await backend.runMusic(playlistCleanupScript())
-        }
+        let result = try backend.runMusicBlocking(playlistCleanupScript())
         print(playlistCleanupMessage(parsePlaylistCleanupResult(result)))
     }
 }

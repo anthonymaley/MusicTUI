@@ -37,8 +37,7 @@ func libraryTrackLookupScript(title: String, artist: String) -> String {
 func duplicateLibraryTrack(backend: AppleScriptBackend, title: String, artist: String, toPlaylist playlist: String) -> Bool {
     let result: String
     do {
-        result = try syncRun({
-            try await backend.runMusic("""
+        result = try backend.runMusicBlocking("""
                 \(libraryTrackLookupScript(title: title, artist: artist))
                 if (count of results) > 0 then
                     duplicate item 1 of results to playlist "\(escapeAppleScriptString(playlist))"
@@ -46,7 +45,6 @@ func duplicateLibraryTrack(backend: AppleScriptBackend, title: String, artist: S
                 end if
                 return "NOT_FOUND"
             """)
-        })
     } catch {
         errorOut("✗ Couldn't add to '\(playlist)' via library: \(error.localizedDescription)")
         return false
@@ -61,14 +59,12 @@ func waitForLocalPlaylist(backend: AppleScriptBackend, name: String, minTracks: 
     let esc = escapeAppleScriptString(name)
     let deadline = Date().addingTimeInterval(timeoutSeconds)
     while Date() < deadline {
-        let count = (try? syncRun {
-            try await backend.runMusic("""
+        let count = (try? backend.runMusicBlocking("""
                 if exists playlist "\(esc)" then
                     return (count of tracks of playlist "\(esc)") as text
                 end if
                 return "-1"
-            """)
-        }).flatMap { Int($0.trimmingCharacters(in: .whitespacesAndNewlines)) } ?? -1
+            """)).flatMap { Int($0.trimmingCharacters(in: .whitespacesAndNewlines)) } ?? -1
         if count >= minTracks { return true }
         usleep(500_000)
     }

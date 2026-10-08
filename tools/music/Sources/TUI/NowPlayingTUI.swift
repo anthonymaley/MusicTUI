@@ -45,8 +45,7 @@ enum PollOutcome {
 /// no loved/disliked — nothing in the shell renders them, and this script runs
 /// every second.
 func pollNowPlaying(backend: AppleScriptBackend = AppleScriptBackend()) -> PollOutcome {
-    guard let result = try? syncRun({
-        try await backend.runMusic("""
+    guard let result = try? backend.runMusicBlocking("""
             try
                 set state to player state as text
                 if state is "stopped" then return "STOPPED"
@@ -59,8 +58,7 @@ func pollNowPlaying(backend: AppleScriptBackend = AppleScriptBackend()) -> PollO
                 return t & fs & a & fs & al & fs & (round d) & fs & (round p) & fs & state
             end try
             return "STOPPED"
-        """)
-    }) else { return .unavailable }
+        """) else { return .unavailable }
 
     let trimmed = result.trimmingCharacters(in: .whitespacesAndNewlines)
     if trimmed == "STOPPED" { return .stopped }
@@ -75,8 +73,7 @@ func pollNowPlaying(backend: AppleScriptBackend = AppleScriptBackend()) -> PollO
 }
 
 func pollSurroundingTracks(backend: AppleScriptBackend = AppleScriptBackend()) -> [TrackListEntry] {
-    guard let result = try? syncRun({
-        try await backend.runMusic("""
+    guard let result = try? backend.runMusicBlocking("""
             try
                 set cp to current playlist
                 set ct to current track
@@ -100,8 +97,7 @@ func pollSurroundingTracks(backend: AppleScriptBackend = AppleScriptBackend()) -
                 return output
             end try
             return ""
-        """)
-    }) else { return [] }
+        """) else { return [] }
 
     let trimmed = result.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmed.isEmpty else { return [] }
@@ -122,8 +118,7 @@ func pollAlbumTracks(for np: NowPlayingState, backend: AppleScriptBackend = Appl
     let currentTitle = np.track
     let currentArtist = np.artist
 
-    guard !album.isEmpty, let result = try? syncRun({
-        try await backend.runMusic("""
+    guard !album.isEmpty, let result = try? backend.runMusicBlocking("""
             try
                 set currentDisc to 0
                 try
@@ -152,8 +147,7 @@ func pollAlbumTracks(for np: NowPlayingState, backend: AppleScriptBackend = Appl
                 return output
             end try
             return ""
-        """)
-    }) else { return pollSurroundingTracks(backend: backend) }
+        """) else { return pollSurroundingTracks(backend: backend) }
 
     let trimmed = result.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmed.isEmpty else { return pollSurroundingTracks(backend: backend) }
@@ -207,8 +201,7 @@ func pollAlbumTracks(for np: NowPlayingState, backend: AppleScriptBackend = Appl
 /// instead of just less likely).
 func extractArtwork(to artPath: String) -> String? {
     let backend = AppleScriptBackend()
-    guard let result = try? syncRun({
-        try await backend.runMusic("""
+    guard let result = try? backend.runMusicBlocking("""
             try
                 set artworks_ to artworks of current track
                 if (count of artworks_) > 0 then
@@ -222,8 +215,7 @@ func extractArtwork(to artPath: String) -> String? {
                 end if
             end try
             return "NONE"
-        """)
-    }) else { return nil }
+        """) else { return nil }
     if result.trimmingCharacters(in: .whitespacesAndNewlines) == "OK" {
         return artPath
     }
@@ -330,16 +322,14 @@ func trackKey(title: String, artist: String) -> String {
 /// caller can surface "not found" instead of silently doing nothing.
 @discardableResult
 func playLibraryTrack(backend: AppleScriptBackend, title: String, artist: String) -> Bool {
-    guard let result = try? syncRun({
-        try await backend.runMusic("""
+    guard let result = try? backend.runMusicBlocking("""
             \(libraryTrackLookupScript(title: title, artist: artist))
             if (count of results) > 0 then
                 play item 1 of results
                 return "PLAYED"
             end if
             return "NONE"
-        """)
-    }) else { return false }
+        """) else { return false }
     return result.trimmingCharacters(in: .whitespacesAndNewlines) == "PLAYED"
 }
 

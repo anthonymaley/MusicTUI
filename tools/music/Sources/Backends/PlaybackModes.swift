@@ -46,10 +46,8 @@ func parsePlaybackModes(_ raw: String) -> PlaybackModes? {
 }
 
 func fetchPlaybackModes(_ backend: AppleScriptBackend) throws -> PlaybackModes {
-    let raw = try syncRun {
-        try await backend.runMusic(
+    let raw = try backend.runMusicBlocking(
             "return (shuffle enabled as string) & \",\" & (shuffle mode as string) & \",\" & (song repeat as string)")
-    }
     guard let modes = parsePlaybackModes(raw) else {
         throw AppleScriptBackend.ScriptError.executionFailed("unparseable playback modes: \(raw.prefix(60))")
     }

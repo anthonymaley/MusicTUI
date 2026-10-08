@@ -97,16 +97,14 @@ private let eqReadBody = """
 /// and we don't want to open it. The live reads can be stale after UI changes,
 /// but on a fresh launch (before the window is ever opened) they're accurate.
 private func eqSnapshotFromScripting(_ backend: AppleScriptBackend, names: [String]) -> EQSnapshot {
-    let raw = (try? syncRun {
-        try await backend.runMusic("""
+    let raw = (try? backend.runMusicBlocking("""
             set en to (EQ enabled) as string
             set cur to ""
             try
                 set cur to name of current EQ preset
             end try
             return en & (character id 30) & cur
-            """)
-    })?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            """))?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     let f = raw.components(separatedBy: "\u{1E}")
     return EQSnapshot(enabled: f.first == "true",
                       current: (f.count > 1 && !f[1].isEmpty) ? f[1] : nil,
@@ -118,8 +116,7 @@ private func eqSnapshotFromScripting(_ backend: AppleScriptBackend, names: [Stri
 /// only if already open, else falls back to the scripting layer.
 func fetchEQSnapshot(_ backend: AppleScriptBackend, openWindow: Bool = true) throws -> EQSnapshot {
     // Preset names: the scripting dictionary path still works for these.
-    let namesRaw = try syncRun {
-        try await backend.runMusic("""
+    let namesRaw = try backend.runMusicBlocking("""
             set us to character id 31
             set nameList to ""
             repeat with p in EQ presets
@@ -127,8 +124,7 @@ func fetchEQSnapshot(_ backend: AppleScriptBackend, openWindow: Bool = true) thr
                 set nameList to nameList & (name of p)
             end repeat
             return nameList
-            """)
-    }.trimmingCharacters(in: .whitespacesAndNewlines)
+            """).trimmingCharacters(in: .whitespacesAndNewlines)
     let names = namesRaw.isEmpty ? [] : namesRaw.components(separatedBy: "\u{1F}")
 
     let raw: String
@@ -151,13 +147,11 @@ func fetchEQSnapshot(_ backend: AppleScriptBackend, openWindow: Bool = true) thr
 /// sparkline. Preamp is not included.
 func fetchEQBands(_ backend: AppleScriptBackend, name: String) throws -> [Double] {
     let esc = escapeAppleScriptString(name)
-    let raw = try syncRun {
-        try await backend.runMusic("""
+    let raw = try backend.runMusicBlocking("""
             tell EQ preset "\(esc)"
                 return (band 1 as string) & "," & (band 2 as string) & "," & (band 3 as string) & "," & (band 4 as string) & "," & (band 5 as string) & "," & (band 6 as string) & "," & (band 7 as string) & "," & (band 8 as string) & "," & (band 9 as string) & "," & (band 10 as string)
             end tell
             """)
-    }
     return raw.trimmingCharacters(in: .whitespacesAndNewlines)
         .components(separatedBy: ",").compactMap(Double.init)
 }
@@ -207,8 +201,7 @@ func eqEnsurePreset(_ backend: AppleScriptBackend, preset: VenuePreset) throws {
     let bandSets = preset.bands.enumerated()
         .map { "set band \($0.offset + 1) to \($0.element)" }
         .joined(separator: "\n                ")
-    _ = try syncRun {
-        try await backend.runMusic("""
+    _ = try backend.runMusicBlocking("""
             if not (exists EQ preset "\(esc)") then
                 make new EQ preset with properties {name:"\(esc)"}
                 tell EQ preset "\(esc)"
@@ -217,20 +210,17 @@ func eqEnsurePreset(_ backend: AppleScriptBackend, preset: VenuePreset) throws {
                 end tell
             end if
             """)
-    }
 }
 
 /// Returns true if a preset was deleted, false if it didn't exist.
 func eqDeletePreset(_ backend: AppleScriptBackend, name: String) throws -> Bool {
     let esc = escapeAppleScriptString(name)
-    let raw = try syncRun {
-        try await backend.runMusic("""
+    let raw = try backend.runMusicBlocking("""
             if exists EQ preset "\(esc)" then
                 delete EQ preset "\(esc)"
                 return "deleted"
             end if
             return "absent"
             """)
-    }
     return raw.trimmingCharacters(in: .whitespacesAndNewlines) == "deleted"
 }

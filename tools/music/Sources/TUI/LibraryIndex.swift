@@ -278,9 +278,7 @@ func resolveLibraryCover(albumID: String, embeddedPath: String?, restHit: (id: S
 /// extractArtwork(to:) in NowPlayingTUI.swift, which is bound to `current
 /// track` and can't be reused for a browsed album.
 func extractLibraryTrackArtwork(backend: AppleScriptBackend, persistentID: String, to path: String) -> String? {
-    guard let result = try? syncRun({
-        try await backend.runMusic(libraryTrackArtworkScript(persistentID: persistentID, path: path))
-    }) else { return nil }
+    guard let result = try? backend.runMusicBlocking(libraryTrackArtworkScript(persistentID: persistentID, path: path)) else { return nil }
     return result.trimmingCharacters(in: .whitespacesAndNewlines) == "OK" ? path : nil
 }
 

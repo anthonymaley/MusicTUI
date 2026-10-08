@@ -39,8 +39,7 @@ func parseContextQueue(_ raw: String) -> ContextQueue {
 /// index (current-2 .. current+40, clamped). Returns an empty ContextQueue when
 /// there is no usable playlist context (caller falls back to album tracks).
 func pollContextQueue(np: NowPlayingState, backend: AppleScriptBackend = AppleScriptBackend()) -> ContextQueue {
-    guard let raw = try? syncRun({
-        try await backend.runMusic("""
+    guard let raw = try? backend.runMusicBlocking("""
             try
                 set cp to current playlist
                 set cpName to name of cp
@@ -64,8 +63,7 @@ func pollContextQueue(np: NowPlayingState, backend: AppleScriptBackend = AppleSc
                 return output
             end try
             return ""
-        """)
-    }) else { return ContextQueue(name: "", currentIndex: -1, total: 0, tracks: []) }
+        """) else { return ContextQueue(name: "", currentIndex: -1, total: 0, tracks: []) }
     return parseContextQueue(raw)
 }
 

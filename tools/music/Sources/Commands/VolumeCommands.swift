@@ -22,9 +22,7 @@ struct Vol: ParsableCommand {
                 var actionErrors: [String] = []
                 runVolumeMixer(speakers: &speakers) { name, volume in
                     do {
-                        _ = try syncRun {
-                            try await backend.runMusic("set sound volume of AirPlay device \"\(escapeAppleScriptString(name))\" to \(volume)")
-                        }
+                        _ = try backend.runMusicBlocking("set sound volume of AirPlay device \"\(escapeAppleScriptString(name))\" to \(volume)")
                     } catch {
                         actionErrors.append("Couldn't set \(name) volume: \(error.localizedDescription)")
                     }
@@ -53,8 +51,7 @@ struct Vol: ParsableCommand {
                 let delta = arg == "up" ? 10 : -10
                 // Per-device try: one unreachable speaker must not abort the
                 // volume change for the rest of the group.
-                let result = try syncRun {
-                    try await backend.runMusic("""
+                let result = try backend.runMusicBlocking("""
                         set output to ""
                         repeat with d in (every AirPlay device whose selected is true)
                             try
@@ -68,15 +65,13 @@ struct Vol: ParsableCommand {
                         end repeat
                         return output
                     """)
-                }
                 let summary = result.trimmingCharacters(in: .whitespacesAndNewlines)
                 print(json ? "{\"ok\":true,\"action\":\"\(arg)\"}" : summary)
             } else if let vol = Int(arg) {
                 guard (0...100).contains(vol) else {
                     throw ValidationError("Volume must be 0-100.")
                 }
-                let result = try syncRun {
-                    try await backend.runMusic("""
+                let result = try backend.runMusicBlocking("""
                         set output to ""
                         repeat with d in (every AirPlay device whose selected is true)
                             try
@@ -87,7 +82,6 @@ struct Vol: ParsableCommand {
                         end repeat
                         return "\(vol) — " & output
                     """)
-                }
                 print(json ? "{\"ok\":true,\"volume\":\(vol)}" : result.trimmingCharacters(in: .whitespacesAndNewlines))
             } else {
                 // `music volume abc` used to exit 0 with no output at all.
@@ -105,9 +99,7 @@ struct Vol: ParsableCommand {
         }
         let speakerName = args.dropLast().joined(separator: " ")
         let resolved = try resolveSpeakerName(speakerName, backend: backend)
-        _ = try syncRun {
-            try await backend.runMusic("set sound volume of AirPlay device \"\(escapeAppleScriptString(resolved))\" to \(vol)")
-        }
+        _ = try backend.runMusicBlocking("set sound volume of AirPlay device \"\(escapeAppleScriptString(resolved))\" to \(vol)")
         print(json ? "{\"ok\":true,\"speaker\":\"\(resolved)\",\"volume\":\(vol)}" : "\(resolved) [\(vol)]")
     }
 }

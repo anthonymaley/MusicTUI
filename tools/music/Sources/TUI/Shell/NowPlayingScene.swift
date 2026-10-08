@@ -921,9 +921,7 @@ final class NowPlayingScene: Scene {
         actions.run("Seek") { [routing, backend] in
             try routing.perform(.seek,
                 musicApp: {
-                    _ = try syncRun {
-                        try await backend.runMusic("set player position to (player position \(offset < 0 ? "-" : "+") \(abs(offset)))")
-                    }
+                    _ = try backend.runMusicBlocking("set player position to (player position \(offset < 0 ? "-" : "+") \(abs(offset)))")
                 },
                 source: { try $0.control.seek(byOffset: offset) },
                 unaffected: {})
@@ -1118,8 +1116,7 @@ final class NowPlayingScene: Scene {
             // the feedback.
             let status = self.status
             actions.run("Favorite") {
-                let result = try syncRun {
-                    try await self.backend.runMusic("""
+                let result = try self.backend.runMusicBlocking("""
                         if player state is stopped then return "NOTHING"
                         set favorited of current track to (not favorited of current track)
                         if favorited of current track then
@@ -1127,7 +1124,6 @@ final class NowPlayingScene: Scene {
                         end if
                         return "OFF" & (ASCII character 31) & name of current track
                     """)
-                }
                 let parts = result.trimmingCharacters(in: .whitespacesAndNewlines).split(separator: asFieldSep).map(String.init)
                 try require(parts.first != "NOTHING", "Nothing playing.")
                 let title = parts.count > 1 ? parts[1] : "track"

@@ -128,9 +128,7 @@ func executeSpeakerAction(_ action: SpeakerAction, json: Bool) throws {
         let resolved = try resolveSpeakerName(name, backend: backend)
         let playing = playerIsPlaying(backend: backend)
         let capture = playing ? captureRouteBaseline(for: resolved) : (ip: nil, baseline: nil)
-        _ = try syncRun {
-            try await backend.runMusic("set selected of AirPlay device \"\(escapeAppleScriptString(resolved))\" to true")
-        }
+        _ = try backend.runMusicBlocking("set selected of AirPlay device \"\(escapeAppleScriptString(resolved))\" to true")
         print("Added \(resolved).")
         if playing {
             verifyRoute(speaker: resolved, backend: backend, baseline: capture.baseline, ip: capture.ip)
@@ -142,12 +140,8 @@ func executeSpeakerAction(_ action: SpeakerAction, json: Bool) throws {
         let resolved = try resolveSpeakerName(name, backend: backend)
         let playing = playerIsPlaying(backend: backend)
         let capture = playing ? captureRouteBaseline(for: resolved) : (ip: nil, baseline: nil)
-        _ = try syncRun {
-            try await backend.runMusic("set selected of AirPlay device \"\(escapeAppleScriptString(resolved))\" to true")
-        }
-        _ = try syncRun {
-            try await backend.runMusic("set sound volume of AirPlay device \"\(escapeAppleScriptString(resolved))\" to \(volume)")
-        }
+        _ = try backend.runMusicBlocking("set selected of AirPlay device \"\(escapeAppleScriptString(resolved))\" to true")
+        _ = try backend.runMusicBlocking("set sound volume of AirPlay device \"\(escapeAppleScriptString(resolved))\" to \(volume)")
         print("Added \(resolved) [\(volume)].")
         if playing {
             verifyRoute(speaker: resolved, backend: backend, baseline: capture.baseline, ip: capture.ip)
@@ -157,9 +151,7 @@ func executeSpeakerAction(_ action: SpeakerAction, json: Bool) throws {
 
     case .remove(let name):
         let resolved = try resolveSpeakerName(name, backend: backend)
-        _ = try syncRun {
-            try await backend.runMusic("set selected of AirPlay device \"\(escapeAppleScriptString(resolved))\" to false")
-        }
+        _ = try backend.runMusicBlocking("set selected of AirPlay device \"\(escapeAppleScriptString(resolved))\" to false")
         print("Removed \(resolved).")
 
     case .exclusive(let name):
@@ -170,11 +162,8 @@ func executeSpeakerAction(_ action: SpeakerAction, json: Bool) throws {
         // with NO outputs at all if the target failed after the teardown. Also
         // per-device try — one unreachable device must not abort the rest (an
         // AppleScript repeat dies on the first error otherwise).
-        _ = try syncRun {
-            try await backend.runMusic("set selected of AirPlay device \"\(escapeAppleScriptString(resolved))\" to true")
-        }
-        _ = try syncRun {
-            try await backend.runMusic("""
+        _ = try backend.runMusicBlocking("set selected of AirPlay device \"\(escapeAppleScriptString(resolved))\" to true")
+        _ = try backend.runMusicBlocking("""
                 repeat with d in (every AirPlay device)
                     try
                         if name of d is not "\(escapeAppleScriptString(resolved))" and selected of d then
@@ -183,7 +172,6 @@ func executeSpeakerAction(_ action: SpeakerAction, json: Bool) throws {
                     end try
                 end repeat
             """)
-        }
         print("Switched to \(resolved) only.")
         if playing {
             verifyRoute(speaker: resolved, backend: backend, baseline: capture.baseline, ip: capture.ip)
@@ -200,9 +188,7 @@ func executeSpeakerAction(_ action: SpeakerAction, json: Bool) throws {
         for idx in idxs {
             let speaker = try cache.lookupSpeaker(index: idx)
             let capture = playing ? captureRouteBaseline(for: speaker.name) : (ip: nil, baseline: nil)
-            _ = try syncRun {
-                try await backend.runMusic("set selected of AirPlay device \"\(escapeAppleScriptString(speaker.name))\" to true")
-            }
+            _ = try backend.runMusicBlocking("set selected of AirPlay device \"\(escapeAppleScriptString(speaker.name))\" to true")
             print("Added \(speaker.name).")
             if playing {
                 verifyRoute(speaker: speaker.name, backend: backend, baseline: capture.baseline, ip: capture.ip)
@@ -214,9 +200,7 @@ func executeSpeakerAction(_ action: SpeakerAction, json: Bool) throws {
             // Wake a specific speaker: select it, then reset to establish a clean connection
             let resolved = try resolveSpeakerName(name, backend: backend)
             do {
-                _ = try syncRun {
-                    try await backend.runMusic("set selected of AirPlay device \"\(escapeAppleScriptString(resolved))\" to true")
-                }
+                _ = try backend.runMusicBlocking("set selected of AirPlay device \"\(escapeAppleScriptString(resolved))\" to true")
             } catch {
                 // A sleeping device erroring on first select is the very case
                 // wake exists for — say so instead of dumping AppleScript noise.
@@ -282,9 +266,7 @@ func executeSpeakerAction(_ action: SpeakerAction, json: Bool) throws {
 
 /// Cheap shared player-state read for the routing cases.
 func playerIsPlaying(backend: AppleScriptBackend) -> Bool {
-    (((try? syncRun {
-        try await backend.runMusic("player state as text")
-    }) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)) == "playing"
+    (((try? backend.runMusicBlocking("player state as text")) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)) == "playing"
 }
 
 /// Pre-route capture — only worth paying for while playing (the Bonjour
@@ -390,9 +372,7 @@ private func runSpeakerTUI() throws {
     let result = runMultiSelectList(title: "AirPlay Speakers", items: &items, onToggle: { idx, selected in
         let name = devices[idx]["name"] as! String
         do {
-            _ = try syncRun {
-                try await backend.runMusic("set selected of AirPlay device \"\(escapeAppleScriptString(name))\" to \(selected)")
-            }
+            _ = try backend.runMusicBlocking("set selected of AirPlay device \"\(escapeAppleScriptString(name))\" to \(selected)")
         } catch {
             actionErrors.append("Couldn't \(selected ? "add" : "remove") \(name): \(error.localizedDescription)")
         }
@@ -401,9 +381,7 @@ private func runSpeakerTUI() throws {
         let name = devices[idx]["name"] as! String
         let vol = volumes[idx]
         do {
-            _ = try syncRun {
-                try await backend.runMusic("set sound volume of AirPlay device \"\(escapeAppleScriptString(name))\" to \(vol)")
-            }
+            _ = try backend.runMusicBlocking("set sound volume of AirPlay device \"\(escapeAppleScriptString(name))\" to \(vol)")
         } catch {
             actionErrors.append("Couldn't set \(name) volume: \(error.localizedDescription)")
         }
@@ -468,8 +446,7 @@ func parseSpeakerDeviceBlocks(_ raw: String) -> [[String: Any]] {
 /// round-trip entirely.
 func fetchSpeakerDevices() throws -> [[String: Any]] {
     let backend = AppleScriptBackend()
-    let result = try syncRun {
-        try await backend.runMusic("""
+    let result = try backend.runMusicBlocking("""
             set astid to AppleScript's text item delimiters
             set AppleScript's text item delimiters to linefeed
             set ns to (name of every AirPlay device) as text
@@ -480,7 +457,6 @@ func fetchSpeakerDevices() throws -> [[String: Any]] {
             set sep to linefeed & "=====" & linefeed
             return ns & sep & sels & sep & vols & sep & ks
         """, timeout: 20)
-    }
     let devices = parseSpeakerDeviceBlocks(result)
     if !devices.isEmpty {
         let speakerResults = devices.enumerated().map { (i, d) in
@@ -528,9 +504,7 @@ func resetAirPlaySpeakers(backend: AppleScriptBackend, only: Set<String>? = nil)
     for s in speakers {
         verbose("deselecting \(s.name)...")
         do {
-            _ = try syncRun {
-                try await backend.runMusic("set selected of AirPlay device \"\(escapeAppleScriptString(s.name))\" to false")
-            }
+            _ = try backend.runMusicBlocking("set selected of AirPlay device \"\(escapeAppleScriptString(s.name))\" to false")
         } catch {
             verbose("deselect failed for \(s.name): \(error.localizedDescription)")
         }
@@ -545,9 +519,7 @@ func resetAirPlaySpeakers(backend: AppleScriptBackend, only: Set<String>? = nil)
     for s in speakers {
         verbose("reselecting \(s.name)...")
         do {
-            _ = try syncRun {
-                try await backend.runMusic("set selected of AirPlay device \"\(escapeAppleScriptString(s.name))\" to true")
-            }
+            _ = try backend.runMusicBlocking("set selected of AirPlay device \"\(escapeAppleScriptString(s.name))\" to true")
         } catch {
             verbose("reselect failed for \(s.name): \(error.localizedDescription)")
         }
@@ -556,9 +528,7 @@ func resetAirPlaySpeakers(backend: AppleScriptBackend, only: Set<String>? = nil)
     // Restore per-speaker volumes (deselect can reset to default)
     for s in speakers {
         do {
-            _ = try syncRun {
-                try await backend.runMusic("set sound volume of AirPlay device \"\(escapeAppleScriptString(s.name))\" to \(s.volume)")
-            }
+            _ = try backend.runMusicBlocking("set sound volume of AirPlay device \"\(escapeAppleScriptString(s.name))\" to \(s.volume)")
         } catch {
             verbose("volume restore failed for \(s.name): \(error.localizedDescription)")
         }

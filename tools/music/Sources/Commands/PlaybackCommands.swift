@@ -104,12 +104,10 @@ func playViaMusicApp(args: [String], playlist: String?, album: String?, song: St
         // Existing flag-based behavior takes priority
         if let playlist = playlist {
             let escPlaylist = escapeAppleScriptString(playlist)
-            _ = try syncRun {
-                try await backend.runMusic("""
+            _ = try backend.runMusicBlocking("""
                     set shuffle enabled to true
                     play playlist "\(escPlaylist)"
                 """)
-            }
             showNowPlaying(json: json, waitForPlay: true)
             return
         }
@@ -277,15 +275,12 @@ func playViaMusicApp(args: [String], playlist: String?, album: String?, song: St
             if !parsed.speakers.isEmpty {
                 for speaker in parsed.speakers {
                     let escSpeaker = escapeAppleScriptString(speaker)
-                    _ = try syncRun {
-                        try await backend.runMusic("set selected of AirPlay device \"\(escSpeaker)\" to true")
-                    }
+                    _ = try backend.runMusicBlocking("set selected of AirPlay device \"\(escSpeaker)\" to true")
                 }
                 let nameList = parsed.speakers
                     .map { "\"\(escapeAppleScriptString($0))\"" }
                     .joined(separator: ", ")
-                _ = try syncRun {
-                    try await backend.runMusic("""
+                _ = try backend.runMusicBlocking("""
                         repeat with d in (every AirPlay device)
                             try
                                 if selected of d and (name of d is not in {\(nameList)}) then
@@ -294,30 +289,23 @@ func playViaMusicApp(args: [String], playlist: String?, album: String?, song: St
                             end try
                         end repeat
                     """)
-                }
                 if let vol = parsed.volume {
                     for speaker in parsed.speakers {
                         let escSpeaker = escapeAppleScriptString(speaker)
-                        _ = try syncRun {
-                            try await backend.runMusic("set sound volume of AirPlay device \"\(escSpeaker)\" to \(vol)")
-                        }
+                        _ = try backend.runMusicBlocking("set sound volume of AirPlay device \"\(escSpeaker)\" to \(vol)")
                     }
                     print(parsed.speakers.map { "\($0) [\(vol)]" }.joined(separator: ", "))
                 }
             }
 
             if parsed.shuffle {
-                _ = try syncRun {
-                    try await backend.runMusic("set shuffle enabled to true")
-                }
+                _ = try backend.runMusicBlocking("set shuffle enabled to true")
             }
 
             let strategies = PlayResolution.plan(queryArgs: parsed.queryArgs)
             if strategies.isEmpty {
                 // Speakers routed (or no args survived parsing) — just resume.
-                _ = try syncRun {
-                    try await backend.runMusic("play")
-                }
+                _ = try backend.runMusicBlocking("play")
             } else {
                 var played = false
                 for strategy in strategies {
@@ -331,8 +319,7 @@ func playViaMusicApp(args: [String], playlist: String?, album: String?, song: St
                         // the generic not-found message rather than surfacing a
                         // distinct error, consistent with the other resolution
                         // helpers in this file.
-                        let playlistResult = try? syncRun {
-                            try await backend.runMusic("""
+                        let playlistResult = try? backend.runMusicBlocking("""
                                 try
                                     play playlist "\(escapedQuery)"
                                     return "PLAYED"
@@ -340,7 +327,6 @@ func playViaMusicApp(args: [String], playlist: String?, album: String?, song: St
                                     return "NO_PLAYLIST"
                                 end try
                             """)
-                        }
                         let playlistPlayed = (playlistResult?
                             .trimmingCharacters(in: .whitespacesAndNewlines) == "PLAYED")
 
@@ -396,9 +382,7 @@ func playViaMusicApp(args: [String], playlist: String?, album: String?, song: St
                     throw ExitCode.failure
                 }
                 if parsed.shuffle {
-                    _ = try syncRun {
-                        try await backend.runMusic("set shuffle enabled to true")
-                    }
+                    _ = try backend.runMusicBlocking("set shuffle enabled to true")
                 }
             }
             // Routing issued while paused is untrusted (2/2 spike corruptions
@@ -416,9 +400,7 @@ func playViaMusicApp(args: [String], playlist: String?, album: String?, song: St
         }
 
         // No args → resume
-        _ = try syncRun {
-            try await backend.runMusic("play")
-        }
+        _ = try backend.runMusicBlocking("play")
         showNowPlaying(json: json, waitForPlay: true)
 }
 
@@ -441,10 +423,8 @@ func playBoundedSongLive(backend: AppleScriptBackend, title: String, artist: Str
             fetchLibraryAlbumRows(backend: backend, whereClause: whereClause)
         },
         readIdentifier: { index in
-            let raw = try? syncRun {
-                try await backend.runMusic(
+            let raw = try? backend.runMusicBlocking(
                     "return persistent ID of track \(index) of playlist \"Library\"")
-            }
             let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines)
             return (trimmed?.isEmpty ?? true) ? nil : trimmed
         },
@@ -1114,8 +1094,7 @@ func showNowPlaying(json: Bool = false, waitForPlay: Bool = false) {
     // device (the per-list repeat below is local, no Apple Events).
     let result: String
     do {
-        result = try syncRun({
-        try await backend.runMusic("""
+        result = try backend.runMusicBlocking("""
             set fs to (ASCII character 31)
             set info to ""
             repeat 10 times
@@ -1158,7 +1137,6 @@ func showNowPlaying(json: Bool = false, waitForPlay: Bool = false) {
             end try
             return info & fs & spk
         """)
-        })
     } catch {
         if json {
             print(#"{"error": "could not read now playing"}"#)
@@ -1243,15 +1221,13 @@ func seekViaMusicApp(position: String, json: Bool) throws {
     let backend = AppleScriptBackend()
     let script = target.delta.map { "set player position to (player position + \($0))" }
         ?? "set player position to \(target.absolute!)"
-    let result = try syncRun {
-        try await backend.runMusic("""
+    let result = try backend.runMusicBlocking("""
             if player state is stopped then return "NOTHING"
             \(script)
             delay 0.2
             set p to player position
             return (round p) as text
         """)
-    }
     let trimmed = result.trimmingCharacters(in: .whitespacesAndNewlines)
     if trimmed == "NOTHING" {
         print(json ? "{\"ok\":false,\"error\":\"nothing playing\"}" : "Nothing playing.")
@@ -1310,8 +1286,7 @@ func shuffleViaMusicApp(state: String?, json: Bool) throws {
         _ = try backend.runMusicBlocking("set shuffle enabled to \(on)")
         newState = on ? "on" : "off"
     } else {
-        let result = try syncRun {
-            try await backend.runMusic("""
+        let result = try backend.runMusicBlocking("""
                 if shuffle enabled then
                     set shuffle enabled to false
                     return "off"
@@ -1320,7 +1295,6 @@ func shuffleViaMusicApp(state: String?, json: Bool) throws {
                     return "on"
                 end if
             """)
-        }
         newState = result.trimmingCharacters(in: .whitespacesAndNewlines)
     }
     print(json ? "{\"shuffle\":\"\(newState)\"}" : "Shuffle \(newState).")

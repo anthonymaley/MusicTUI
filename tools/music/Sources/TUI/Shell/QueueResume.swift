@@ -132,14 +132,12 @@ func queueShouldClear(active: AppQueue?, lastWritten: AppQueue?) -> Bool {
 /// (Apple FB19908171) — returns nil rather than surfacing an error. Called
 /// once at save time and once at startup restore; never per poll tick.
 func currentTrackPersistentID(backend: AppleScriptBackend) -> String? {
-    guard let result = try? syncRun({
-        try await backend.runMusic("""
+    guard let result = try? backend.runMusicBlocking("""
             try
                 return persistent id of current track
             end try
             return ""
-        """)
-    }) else { return nil }
+        """) else { return nil }
     let trimmed = result.trimmingCharacters(in: .whitespacesAndNewlines)
     return trimmed.isEmpty ? nil : trimmed
 }

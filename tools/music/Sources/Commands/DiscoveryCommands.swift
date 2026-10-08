@@ -29,9 +29,7 @@ struct Similar: ParsableCommand {
             searchQuery = artist != nil ? "\(title) \(artist!)" : title
         } else {
             let backend = AppleScriptBackend()
-            let result = try syncRun {
-                try await backend.runMusic("return name of current track & \" \" & artist of current track")
-            }
+            let result = try backend.runMusicBlocking("return name of current track & \" \" & artist of current track")
             searchQuery = result.trimmingCharacters(in: .whitespacesAndNewlines)
         }
 
@@ -144,9 +142,7 @@ struct Suggest: ParsableCommand {
             }
         } else {
             let backend = AppleScriptBackend()
-            let result = try syncRun {
-                try await backend.runMusic("return name of current track & (ASCII character 31) & artist of current track")
-            }
+            let result = try backend.runMusicBlocking("return name of current track & (ASCII character 31) & artist of current track")
             if let seed = parseSeedTrack(result) {
                 let found = try syncRun { try await api.searchSongs(query: "\(seed.name) \(seed.artist)", limit: 1) }
                 if let s = found.first { seedSongIDs.append(s.id) }
@@ -238,9 +234,7 @@ struct NewReleases: ParsableCommand {
             seedArtist = artist
         } else if likeCurrent {
             let backend = AppleScriptBackend()
-            let result = try syncRun {
-                try await backend.runMusic("return artist of current track")
-            }
+            let result = try backend.runMusicBlocking("return artist of current track")
             seedArtist = result.trimmingCharacters(in: .whitespacesAndNewlines)
         } else {
             print("Specify --like-current or --artist")
@@ -300,8 +294,7 @@ func handleSongAction(_ action: MultiSelectAction, songs: [CatalogSong], api: RE
     switch action {
     case .played(let idx):
         let song = songs[idx]
-        let result = try syncRun {
-            try await backend.runMusic("""
+        let result = try backend.runMusicBlocking("""
                 \(libraryTrackLookupScript(title: song.title, artist: song.artist))
                 if (count of results) > 0 then
                     play item 1 of results
@@ -310,7 +303,6 @@ func handleSongAction(_ action: MultiSelectAction, songs: [CatalogSong], api: RE
                     return "NOT_FOUND"
                 end if
             """)
-        }
         if result.trimmingCharacters(in: .whitespacesAndNewlines) == "NOT_FOUND" {
             try syncRun { try await api.addToLibrary(songIDs: [song.id]) }
             try syncRun { try await Task.sleep(nanoseconds: 4_000_000_000) }

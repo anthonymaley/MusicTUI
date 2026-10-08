@@ -25,13 +25,11 @@ struct Unlove: ParsableCommand {
 
 private func setFavorited(_ value: Bool, json: Bool) throws {
     let backend = AppleScriptBackend()
-    let result = try syncRun {
-        try await backend.runMusic("""
+    let result = try backend.runMusicBlocking("""
             if player state is stopped then return "NOTHING"
             set favorited of current track to \(value)
             return name of current track & (ASCII character 31) & artist of current track
         """)
-    }
     let trimmed = result.trimmingCharacters(in: .whitespacesAndNewlines)
     if trimmed == "NOTHING" {
         print(json ? "{\"ok\":false,\"error\":\"nothing playing\"}" : "Nothing playing.")

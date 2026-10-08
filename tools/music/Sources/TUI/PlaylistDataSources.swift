@@ -134,9 +134,7 @@ func legacyQueueSweepScript() -> String {
 }
 
 func sweepQueuePlaylists(backend: AppleScriptBackend) {
-    _ = try? syncRun {
-        try await backend.runMusic(legacyQueueSweepScript())
-    }
+    _ = try? backend.runMusicBlocking(legacyQueueSweepScript())
 }
 
 /// Player states in which the current playlist is NOT in use and may be swept.
@@ -381,8 +379,7 @@ func parseRailPlaylistNames(_ raw: String) -> (names: [String], subscription: Se
 /// classes in one call; downstream code resolves `playlist "name"` generically,
 /// which covers both.
 func fetchUserPlaylistNames(backend: AppleScriptBackend) -> (names: [String], subscription: Set<String>) {
-    guard let result = try? syncRun({
-        try await backend.runMusic("""
+    guard let result = try? backend.runMusicBlocking("""
             set fs to (ASCII character 31)
             set output to ""
             repeat with p in (every user playlist)
@@ -394,8 +391,7 @@ func fetchUserPlaylistNames(backend: AppleScriptBackend) -> (names: [String], su
                 set output to output & "S" & fs & name of p
             end repeat
             return output
-        """)
-    }) else { return ([], []) }
+        """) else { return ([], []) }
     return parseRailPlaylistNames(result)
 }
 
@@ -411,8 +407,7 @@ func makePlaylistDataSources(backend: AppleScriptBackend, names: [String], artwo
         guard idx >= 0, idx < names.count else { return nil }
         let plName = names[idx]
         let escapedPlName = escapeAppleScriptString(plName)
-        guard let trackResult = try? syncRun({
-            try await backend.runMusic("""
+        guard let trackResult = try? backend.runMusicBlocking("""
                 set n to count of tracks of playlist "\(escapedPlName)"
                 set output to ""
                 if n > 0 then
@@ -424,8 +419,7 @@ func makePlaylistDataSources(backend: AppleScriptBackend, names: [String], artwo
                     end repeat
                 end if
                 return (n as text) & "|" & output
-            """)
-        }) else { return nil }
+            """) else { return nil }
         let parsed = parsePlaylistTracksResult(trackResult)
         let preview = PlaylistPreview(name: plName, trackCount: parsed.count, tracks: parsed.lines)
         trackCache[idx] = preview
@@ -464,13 +458,11 @@ func makePlaylistDataSources(backend: AppleScriptBackend, names: [String], artwo
 
             """
         }
-        guard let result = try? syncRun({
-            try await backend.runMusic("""
+        guard let result = try? backend.runMusicBlocking("""
                 set output to ""
                 \(clauses)
                 return output
-            """)
-        }) else { return [:] }
+            """) else { return [:] }
         var out: [Int: (Int, Int, Bool, String)] = [:]
         for line in result.split(separator: "\n") {
             if let p = parsePlaylistMetaLine(line) {
@@ -484,8 +476,7 @@ func makePlaylistDataSources(backend: AppleScriptBackend, names: [String], artwo
         if let c = previewCacheLight[idx] { return c }
         guard idx >= 0, idx < names.count else { return nil }
         let esc = escapeAppleScriptString(names[idx])
-        guard let res = try? syncRun({
-            try await backend.runMusic("""
+        guard let res = try? backend.runMusicBlocking("""
                 set total to count of tracks of playlist "\(esc)"
                 set n to total
                 if n > 40 then set n to 40
@@ -499,8 +490,7 @@ func makePlaylistDataSources(backend: AppleScriptBackend, names: [String], artwo
                     end repeat
                 end if
                 return output
-            """)
-        }) else { return nil }
+            """) else { return nil }
         let lines = res.trimmingCharacters(in: .whitespacesAndNewlines)
             .split(separator: "\n").map(String.init)
         previewCacheLight[idx] = lines
