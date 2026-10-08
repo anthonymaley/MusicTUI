@@ -114,6 +114,25 @@ struct AppleScriptBackend {
         """
     }
 
+    /// Under XCTest the real interpreter is refused before any `Process` exists.
+    /// Not a switch: tests run concurrently, so a shared "allow for a moment"
+    /// flag would let one test's window cover another's stray call. A test that
+    /// needs the script path injects a fake `executable`.
+    ///
+    /// "Under XCTest" is `XCTestCase` being loaded into this process. XCTest is
+    /// linked only into the test bundle, so the shipped `music` never has the
+    /// class, and unlike `XCTestConfigurationFilePath` it does not depend on
+    /// which runner set the environment. The path is resolved through symlinks
+    /// and `..`, so an alias of the interpreter is refused as well.
+    static func denyRealInterpreterUnderTest(_ executable: String) throws {
+        guard NSClassFromString("XCTestCase") != nil else { return }
+        let resolved = URL(fileURLWithPath: executable).standardized.resolvingSymlinksInPath().path
+        let real = URL(fileURLWithPath: "/usr/bin/osascript").resolvingSymlinksInPath().path
+        guard resolved == real || resolved == "/usr/bin/osascript" else { return }
+        throw ScriptError.executionFailed(
+            "the real osascript is refused inside the test process; inject a fake interpreter via AppleScriptBackend(executable:)")
+    }
+
     /// The one subprocess core: `run`, on the calling thread, which it blocks
     /// until the script has exited and both of its pipes are at end of file.
     ///
@@ -126,6 +145,7 @@ struct AppleScriptBackend {
     /// Exit versus timeout is decided once, by `ScriptExitArbiter`.
     func runBlocking(_ script: String, timeout: TimeInterval = 45) throws -> String {
         try ExternalCallTripwire.shared.check(.appleScript(script: script))
+        try Self.denyRealInterpreterUnderTest(executable)
         verbose("osascript: \(script.prefix(200))")
 
         let process = Process()
