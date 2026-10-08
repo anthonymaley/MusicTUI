@@ -465,12 +465,16 @@ final class CLIBridgeTransportCommandTests: XCTestCase {
 
     /// A SpanDAC status that offers the modes it names, with its current state.
     private func modesStatus(shuffle: Bool? = nil, repeatMode: String? = nil,
-                             capabilities: [String] = ["slice.status", "slice.shuffle", "slice.repeat"]) -> String {
+                             capabilities: [String] = ["slice.status", "slice.shuffle", "slice.repeat"],
+                             licenceServing: Bool? = nil) -> String {
         var fields = [#""playback":"playing""#, #""authorization":"authorized""#,
                       #""contract":\#(sourceContractVersion)"#,
                       #""capabilities":[\#(capabilities.map { "\"\($0)\"" }.joined(separator: ","))]"#]
         if let shuffle { fields.append(#""shuffle":\#(shuffle)"#) }
         if let repeatMode { fields.append(#""repeat":"\#(repeatMode)""#) }
+        if let licenceServing {
+            fields.append(#""licence":{"serving":\#(licenceServing),"state":"\#(licenceServing ? "licensed" : "none")","text":"Licence text."}"#)
+        }
         return #"{"ok":true,"status":{"# + fields.joined(separator: ",") + "}}"
     }
 
@@ -536,6 +540,31 @@ final class CLIBridgeTransportCommandTests: XCTestCase {
                 XCTAssertThrowsError(try run(h.env), label) { XCTAssertEqual($0 as? ExitCode, .failure, label) }
             }
             XCTAssertEqual(h.io.out, [spanDACNoModesSentence], label)
+            XCTAssertEqual(h.wire.sent("slice.shuffle").count + h.wire.sent("slice.repeat").count, 0, label)
+            XCTAssertEqual(calls, [], label)
+            XCTAssertTrue(S.isFree(h.lockPath), label)
+        }
+    }
+
+    /// Codex review of e40f314, finding 1: the licence lapses between
+    /// `cliDispatch`'s readiness read and the body's own status read under the
+    /// lock. The second reply is unlicensed and, like any not-serving SpanDAC,
+    /// lists no mode ops; the person reads the licence reason, not "aren't
+    /// available", and no mode is sent.
+    func testALicenceThatLapsesBeforeTheLockedReadSaysSoAndSendsNothing() throws {
+        let lapsed = modesStatus(capabilities: ["slice.status"], licenceServing: false)
+        let expected = cliBridgeNotReadySentence(.unavailable(spanDACNotLicensedLine("Licence text.")))
+        let cases: [(String, (CLIBridgeEnv) throws -> Void)] = [
+            ("shuffle on", { try runShuffle(state: "on", json: false, env: $0, musicApp: { _, _ in XCTFail() }) }),
+            ("shuffle toggle", { try runShuffle(state: nil, json: false, env: $0, musicApp: { _, _ in XCTFail() }) }),
+            ("repeat all", { try runRepeat(mode: "all", env: $0, musicApp: { _ in XCTFail() }) }),
+        ]
+        for (label, run) in cases {
+            let h = harness(.source, ["slice.status": [ready, lapsed], "slice.shuffle": [ok], "slice.repeat": [ok]])
+            let (_, calls) = try withTripwire { () throws -> Void in
+                XCTAssertThrowsError(try run(h.env), label) { XCTAssertEqual($0 as? ExitCode, .failure, label) }
+            }
+            XCTAssertEqual(h.io.out, [expected], label)
             XCTAssertEqual(h.wire.sent("slice.shuffle").count + h.wire.sent("slice.repeat").count, 0, label)
             XCTAssertEqual(calls, [], label)
             XCTAssertTrue(S.isFree(h.lockPath), label)

@@ -121,8 +121,8 @@ What's different from Music.app mode:
   Output tab, or switch Output back to Music.app.
 - **`music playlist temp` refuses** the same way. `music shuffle [on|off]`
   and `music repeat off|one|all` work on Bridge, as the Now tab's Shuffle and
-  Repeat cells do; a Bridge too old to offer them says `Shuffle and repeat
-  aren't available on SpanDAC.` and sends nothing.
+  Repeat cells do. If SpanDAC does not offer these controls, MusicTUI says
+  `Shuffle and repeat aren't available on SpanDAC.` and changes nothing.
 - `music eq` and `music visualizer` are Music.app settings either way; they
   don't touch what Bridge plays.
 - `music now --json` on Bridge never carries `album`, `duration`, `position`,

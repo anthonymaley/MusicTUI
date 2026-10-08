@@ -126,15 +126,28 @@ func bridgeSeekCommand(_ session: CLIBridgeSession, position: String, json: Bool
 
 // MARK: - shuffle, repeat
 
+/// The status read under the lock, held to `cliDispatch`'s rule first (Codex
+/// review of e40f314, finding 1): a SpanDAC that stopped being ready since that
+/// read, a lapsed licence above all, says why in the same sentence, and only a
+/// ready one is asked about the op. A not-serving SpanDAC lists no mode ops, so
+/// asking the op first would call a licence lapse "not available".
+private func readyModesStatus(_ control: SourceControlling) throws -> SourceStatus {
+    let status = try control.status()
+    guard status.readiness == .ready else {
+        throw ActionError(message: cliBridgeNotReadySentence(status.readiness))
+    }
+    return status
+}
+
 /// `music shuffle [on|off]` with Bridge selected: the Now tab's rule. Inside the
-/// one lock the status says whether SpanDAC offers `slice.shuffle`; an older
-/// build that does not gets `spanDACNoModesSentence` and nothing is sent. `on`
-/// nil toggles from the status's shuffle (none reads as off, so it turns on).
-/// Prints what the Music.app body prints.
+/// one lock the status says whether SpanDAC offers `slice.shuffle`; one that
+/// does not gets `spanDACNoModesSentence` and no mode is sent. `on` nil toggles
+/// from the status's shuffle (none reads as off, so it turns on). Prints what
+/// the Music.app body prints.
 func bridgeShuffleCommand(_ session: CLIBridgeSession, on requested: Bool?, json: Bool,
                           env: CLIBridgeEnv) throws {
     let on = try session.mutate { control -> Bool in
-        let status = try control.status()
+        let status = try readyModesStatus(control)
         guard status.offersShuffle else { throw ActionError(message: spanDACNoModesSentence) }
         let on = requested ?? !(status.shuffle ?? false)
         try control.setShuffle(on)
@@ -148,7 +161,7 @@ func bridgeShuffleCommand(_ session: CLIBridgeSession, on requested: Bool?, json
 /// rule as shuffle. Prints what the Music.app body prints.
 func bridgeRepeatCommand(_ session: CLIBridgeSession, mode: RepeatMode, env: CLIBridgeEnv) throws {
     try session.mutate { control in
-        guard try control.status().offersRepeat else { throw ActionError(message: spanDACNoModesSentence) }
+        guard try readyModesStatus(control).offersRepeat else { throw ActionError(message: spanDACNoModesSentence) }
         try control.setRepeat(mode)
     }
     env.out("Repeat \(mode.rawValue).")
