@@ -851,6 +851,10 @@ protocol SourceControlling {
                      shuffle: Bool) throws -> SpanDACPlayResult
     /// `slice.listRev`: a container's complete-list revision without its rows.
     func listRev(kind: LibraryPlayKind, id: String?) throws -> SpanDACListRev
+    /// `slice.queueJump`: jump the player to one row of the queue being shown,
+    /// named by its `queue_token` and 0-based `row`. Sent only when
+    /// `capabilities()` lists `queue.jump`.
+    func queueJump(token: String, row: Int) throws -> SpanDACQueueJumpResult
     // NOTE: `SourceAppControl`'s own declaration below defaults `startRequired`
     // to `false`; a protocol requirement's default only applies to callers
     // holding a `SourceControlling`-typed value, so `BridgeMusicProviderTests`'
@@ -939,6 +943,9 @@ extension SourceControlling {
     }
     func listRev(kind: LibraryPlayKind, id: String?) throws -> SpanDACListRev {
         throw SourceAppError.unsupported(sourceListRevOp)
+    }
+    func queueJump(token: String, row: Int) throws -> SpanDACQueueJumpResult {
+        throw SourceAppError.unsupported(sourceQueueJumpOp)
     }
     func recommendations(limit: Int) throws -> [DiscoverRail] {
         throw SourceAppError.unsupported("slice.recommendations")
