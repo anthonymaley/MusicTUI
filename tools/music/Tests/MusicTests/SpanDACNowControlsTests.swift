@@ -277,10 +277,10 @@ final class SpanDACNowControlsTests: XCTestCase {
         XCTAssertTrue(plain(s.render(frame: frame, snapshot: snap)).contains("[On]"))
     }
 
-    func testTheTUIServesShuffleAndRepeatOnSpanDACButTheCLIStillRefuses() {
+    func testTheTUIAndTheCLIBothServeShuffleAndRepeatOnSpanDAC() {
         for a in [MusicTUIAction.persistentShuffleMode, .persistentRepeatMode] {
             XCTAssertEqual(routeAction(a, in: .source, from: .tui), .source, "\(a)")
-            XCTAssertEqual(routeAction(a, in: .source, from: .cli), .refused(cliShuffleRepeatNotServed), "\(a)")
+            XCTAssertEqual(routeAction(a, in: .source, from: .cli), .source, "\(a)")
         }
     }
 }

@@ -1261,8 +1261,31 @@ func seekViaMusicApp(position: String, json: Bool) throws {
     print(json ? "{\"ok\":true,\"position\":\(pos)}" : "Position \(formatTime(pos)).")
 }
 
-// Shuffle and repeat MODES dispatch with Bridge refused (D7: their TUI-table
-// reason), so in Music.app mode their shipped bodies run inside the output lock.
+// Shuffle and repeat MODES are validated before dispatch, so a bad word reaches
+// neither output. With SpanDAC selected they send `slice.shuffle` /
+// `slice.repeat` (`bridgeShuffleCommand`, `bridgeRepeatCommand`); in Music.app
+// mode their shipped bodies run inside the output lock.
+
+/// `music shuffle`'s word: nil toggles, "on"/"off" (any case) set it. Anything
+/// else is the shipped ValidationError. (`music shuffle banana` used to print
+/// "Shuffle banana." and set it OFF.)
+func parseShuffleWord(_ state: String?) throws -> Bool? {
+    guard let state else { return nil }
+    switch state.lowercased() {
+    case "on":  return true
+    case "off": return false
+    default: throw ValidationError("Shuffle must be on or off (or omitted to toggle).")
+    }
+}
+
+/// `music repeat`'s word: off, one or all (any case); anything else is the
+/// shipped ValidationError.
+func parseRepeatWord(_ mode: String) throws -> RepeatMode {
+    guard let parsed = RepeatMode(rawValue: mode.lowercased()) else {
+        throw ValidationError("Repeat mode must be off, one, or all.")
+    }
+    return parsed
+}
 
 struct Shuffle: ParsableCommand {
     static let configuration = CommandConfiguration(abstract: "Toggle shuffle (or set on/off).")
@@ -1275,19 +1298,17 @@ struct Shuffle: ParsableCommand {
 
 func runShuffle(state: String?, json: Bool, env: CLIBridgeEnv,
                 musicApp: (String?, Bool) throws -> Void = shuffleViaMusicApp) throws {
+    let wanted = try parseShuffleWord(state)
     try cliDispatch(.persistentShuffleMode, json: json, env: env, musicApp: { try musicApp(state, json) },
-                    bridge: cliBridgeNotServed(.persistentShuffleMode))
+                    bridge: { try bridgeShuffleCommand($0, on: wanted, json: json, env: env) })
 }
 
 func shuffleViaMusicApp(state: String?, json: Bool) throws {
     let backend = AppleScriptBackend()
     let newState: String
-    if let state = state {
-        let s = state.lowercased()
-        // `music shuffle banana` used to print "Shuffle banana." and set it OFF.
-        guard s == "on" || s == "off" else { throw ValidationError("Shuffle must be on or off (or omitted to toggle).") }
-        _ = try syncRun { try await backend.runMusic("set shuffle enabled to \(s == "on")") }
-        newState = s
+    if let on = try parseShuffleWord(state) {
+        _ = try syncRun { try await backend.runMusic("set shuffle enabled to \(on)") }
+        newState = on ? "on" : "off"
     } else {
         let result = try syncRun {
             try await backend.runMusic("""
@@ -1314,15 +1335,13 @@ struct Repeat_: ParsableCommand {
 }
 
 func runRepeat(mode: String, env: CLIBridgeEnv, musicApp: (String) throws -> Void = repeatViaMusicApp) throws {
+    let wanted = try parseRepeatWord(mode)
     try cliDispatch(.persistentRepeatMode, json: false, env: env, musicApp: { try musicApp(mode) },
-                    bridge: cliBridgeNotServed(.persistentRepeatMode))
+                    bridge: { try bridgeRepeatCommand($0, mode: wanted, env: env) })
 }
 
 func repeatViaMusicApp(mode: String) throws {
-    let m = mode.lowercased()
-    guard ["off", "one", "all"].contains(m) else {
-        throw ValidationError("Repeat mode must be off, one, or all.")
-    }
+    let m = try parseRepeatWord(mode).rawValue
     let backend = AppleScriptBackend()
     _ = try syncRun { try await backend.runMusic("set song repeat to \(m)") }
     print("Repeat \(m).")

@@ -58,12 +58,11 @@ final class ActionRoutingTests: XCTestCase {
         // SpanDAC now has its own shuffle and repeat ops (slice.shuffle,
         // slice.repeat), so the TUI serves them (Anthony, 2026-10-05, "make the
         // existing ControlGrid work on SpanDAC"), the Now tab sending them only
-        // when the app lists the op. The CLI still refuses (below).
+        // when the app lists the op. The CLI sends them too, on the same rule.
         XCTAssertEqual(routeAction(.collectionShuffle, in: .source, from: .tui), .source)
         XCTAssertEqual(routeAction(.persistentShuffleMode, in: .source, from: .tui), .source)
-        guard case .refused = routeAction(.persistentShuffleMode, in: .source, from: .cli) else {
-            return XCTFail("`music shuffle` stays refused on SpanDAC")
-        }
+        XCTAssertEqual(routeAction(.persistentShuffleMode, in: .source, from: .cli), .source,
+                       "`music shuffle` is served on SpanDAC")
         // 12.13: the queue-row jump is deferred from v1 and must refuse visibly.
         guard case .refused = routeAction(.queueJump, in: .source, from: .tui) else {
             return XCTFail("queue-row jump is deferred from v1 and must refuse")
@@ -264,6 +263,8 @@ final class ActionRoutingTests: XCTestCase {
         .discoverFeed, .playlistListing, .similar,
         // P9 (D9 passed for both)
         .recent, .rotation,
+        // `music shuffle` / `music repeat` (`slice.shuffle`, `slice.repeat`)
+        .persistentShuffleMode, .persistentRepeatMode,
     ]
 
     func testTheDispatchedSetIsExactlyS7sPlusP6s() {
@@ -506,8 +507,8 @@ final class ActionRoutingTests: XCTestCase {
         XCTAssertGreaterThan(checked, 0)
     }
 
-    /// D7's wording, pinned: shuffle/repeat modes, volume and AirPlay keep the
-    /// TUI table's reasons; everything else names what is not served.
+    /// D7's wording, pinned: volume and AirPlay keep the TUI table's reasons;
+    /// everything else names what is not served.
     func testNotServedReasonsAreD7s() {
         for action in [MusicTUIAction.volume, .airplayRoute] {
             guard case .refused(let tui) = routeAction(action, in: .source, from: .tui) else {
@@ -517,9 +518,11 @@ final class ActionRoutingTests: XCTestCase {
         }
         // The naming rule (score: data route and output): the non-SpanDAC
         // output is MusicTUI in every sentence a person reads.
-        // Shuffle and repeat are served by the TUI now; the CLI keeps its reason.
+        // Shuffle and repeat are served by the CLI as well as the TUI now: they
+        // route to the source, and the old "MusicTUI only" sentence is gone.
         for a in [MusicTUIAction.persistentShuffleMode, .persistentRepeatMode] {
-            XCTAssertEqual(cliBridgeNotServedReason(a), "Shuffle and repeat modes are MusicTUI only for now.")
+            XCTAssertEqual(routeAction(a, in: .source, from: .cli), .source, "\(a)")
+            XCTAssertNotEqual(cliBridgeNotServedReason(a), "Shuffle and repeat modes are MusicTUI only for now.")
         }
         XCTAssertEqual(routeAction(.cliPlayQuery, in: .source, from: .cli),
                        .refused("SpanDAC output is selected, and music play <words> isn't available from the CLI on SpanDAC yet. Use it from the TUI, or switch Output to MusicTUI."))

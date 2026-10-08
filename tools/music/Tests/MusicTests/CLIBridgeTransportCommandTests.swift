@@ -427,7 +427,10 @@ final class CLIBridgeTransportCommandTests: XCTestCase {
     // MARK: shuffle, repeat, playlist temp (and radio play's Music.app arguments)
     //
     // Part 2 P7 serves `radio play` through Bridge, so it left the refused
-    // verbs; its Bridge and Music.app paths are `CLIBridgeRadioTests`.
+    // verbs; its Bridge and Music.app paths are `CLIBridgeRadioTests`. Shuffle
+    // and repeat left them too: their SpanDAC bodies are the "served on
+    // SpanDAC" tests below. They stay in this list for the Music.app-mode
+    // tests, which still run their shipped bodies inside the lock.
 
     private func refusedVerbs() -> [(String, MusicTUIAction, (CLIBridgeEnv, Bool, @escaping () -> Void) throws -> Void)] {
         [
@@ -441,7 +444,8 @@ final class CLIBridgeTransportCommandTests: XCTestCase {
     }
 
     func testRefusedVerbsRefuseOnBridgeBeforeAnyRequest() throws {
-        for (name, action, run) in refusedVerbs() {
+        // Only `playlist temp` is still refused with SpanDAC selected.
+        for (name, action, run) in refusedVerbs() where action == .playlistTemp {
             let h = harness(.source, ["slice.status": [ready]])
             var ran = 0
             let (_, calls) = try withTripwire { () throws -> Void in
@@ -455,10 +459,108 @@ final class CLIBridgeTransportCommandTests: XCTestCase {
             XCTAssertEqual(calls, [], name)
             XCTAssertTrue(S.isFree(h.lockPath), name)
         }
-        // shuffle --json: one refusal document.
-        let h = harness(.source)
-        XCTAssertThrowsError(try runShuffle(state: nil, json: true, env: h.env, musicApp: { _, _ in XCTFail() }))
-        XCTAssertEqual(h.io.out, [cliFailureText(cliBridgeNotServedReason(.persistentShuffleMode), json: true)])
+    }
+
+    // MARK: shuffle and repeat served on SpanDAC (`slice.shuffle`, `slice.repeat`)
+
+    /// A SpanDAC status that offers the modes it names, with its current state.
+    private func modesStatus(shuffle: Bool? = nil, repeatMode: String? = nil,
+                             capabilities: [String] = ["slice.status", "slice.shuffle", "slice.repeat"]) -> String {
+        var fields = [#""playback":"playing""#, #""authorization":"authorized""#,
+                      #""contract":\#(sourceContractVersion)"#,
+                      #""capabilities":[\#(capabilities.map { "\"\($0)\"" }.joined(separator: ","))]"#]
+        if let shuffle { fields.append(#""shuffle":\#(shuffle)"#) }
+        if let repeatMode { fields.append(#""repeat":"\#(repeatMode)""#) }
+        return #"{"ok":true,"status":{"# + fields.joined(separator: ",") + "}}"
+    }
+
+    func testShuffleOnAndOffAreServedOnSpanDAC() throws {
+        for (word, expectOn) in [("on", true), ("OFF", false), ("On", true)] {
+            for asJSON in [false, true] {
+                let h = harness(.source, ["slice.status": [ready, modesStatus(shuffle: !expectOn)], "slice.shuffle": [ok]])
+                let (_, calls) = try withTripwire {
+                    try runShuffle(state: word, json: asJSON, env: h.env, musicApp: { _, _ in XCTFail("Music.app ran") })
+                }
+                let shown = expectOn ? "on" : "off"
+                XCTAssertEqual(h.io.out, [asJSON ? "{\"shuffle\":\"\(shown)\"}" : "Shuffle \(shown)."], word)
+                let sent = h.wire.sent("slice.shuffle")
+                XCTAssertEqual(sent.count, 1, word)
+                XCTAssertEqual(sent.first?["on"] as? Bool, expectOn, word)
+                XCTAssertEqual(h.seen.locked("slice.shuffle"), [true], "the mutation holds the lock")
+                XCTAssertEqual(calls, [])
+            }
+        }
+    }
+
+    func testBareShuffleTogglesFromTheStatusAndTreatsNoStateAsOff() throws {
+        for (current, expectOn) in [(true as Bool?, false), (false, true), (nil, true)] {
+            let h = harness(.source, ["slice.status": [ready, modesStatus(shuffle: current)], "slice.shuffle": [ok]])
+            let (_, calls) = try withTripwire {
+                try runShuffle(state: nil, json: false, env: h.env, musicApp: { _, _ in XCTFail("Music.app ran") })
+            }
+            XCTAssertEqual(h.wire.sent("slice.shuffle").first?["on"] as? Bool, expectOn, "\(String(describing: current))")
+            XCTAssertEqual(h.io.out, [expectOn ? "Shuffle on." : "Shuffle off."])
+            XCTAssertEqual(calls, [])
+        }
+    }
+
+    func testRepeatOffOneAllAreServedOnSpanDAC() throws {
+        for word in ["off", "one", "all", "ONE"] {
+            let h = harness(.source, ["slice.status": [ready, modesStatus(repeatMode: "off")], "slice.repeat": [ok]])
+            let (_, calls) = try withTripwire {
+                try runRepeat(mode: word, env: h.env, musicApp: { _ in XCTFail("Music.app ran") })
+            }
+            XCTAssertEqual(h.wire.sent("slice.repeat").first?["mode"] as? String, word.lowercased(), word)
+            XCTAssertEqual(h.io.out, ["Repeat \(word.lowercased())."], word)
+            XCTAssertEqual(h.seen.locked("slice.repeat"), [true])
+            XCTAssertEqual(calls, [])
+        }
+    }
+
+    /// An older SpanDAC that does not list the op: the sentence the Now tab
+    /// shows, and nothing is sent.
+    func testOlderSpanDACWithoutTheModesSaysSoAndSendsNothing() throws {
+        let older = modesStatus(capabilities: ["slice.status"])
+        let onlyShuffle = modesStatus(capabilities: ["slice.status", "slice.shuffle"])
+        let onlyRepeat = modesStatus(capabilities: ["slice.status", "slice.repeat"])
+        let cases: [(String, String, (CLIBridgeEnv) throws -> Void)] = [
+            ("shuffle on, none offered", older, { try runShuffle(state: "on", json: false, env: $0, musicApp: { _, _ in XCTFail() }) }),
+            ("shuffle toggle, none offered", older, { try runShuffle(state: nil, json: false, env: $0, musicApp: { _, _ in XCTFail() }) }),
+            ("repeat all, none offered", older, { try runRepeat(mode: "all", env: $0, musicApp: { _ in XCTFail() }) }),
+            ("shuffle, only repeat offered", onlyRepeat, { try runShuffle(state: "on", json: false, env: $0, musicApp: { _, _ in XCTFail() }) }),
+            ("repeat, only shuffle offered", onlyShuffle, { try runRepeat(mode: "all", env: $0, musicApp: { _ in XCTFail() }) }),
+        ]
+        for (label, status, run) in cases {
+            let h = harness(.source, ["slice.status": [ready, status], "slice.shuffle": [ok], "slice.repeat": [ok]])
+            let (_, calls) = try withTripwire { () throws -> Void in
+                XCTAssertThrowsError(try run(h.env), label) { XCTAssertEqual($0 as? ExitCode, .failure, label) }
+            }
+            XCTAssertEqual(h.io.out, [spanDACNoModesSentence], label)
+            XCTAssertEqual(h.wire.sent("slice.shuffle").count + h.wire.sent("slice.repeat").count, 0, label)
+            XCTAssertEqual(calls, [], label)
+            XCTAssertTrue(S.isFree(h.lockPath), label)
+        }
+    }
+
+    /// A bad word is refused before dispatch, in the shipped ValidationError
+    /// words, on both outputs; nothing is sent and no body runs.
+    func testBadShuffleAndRepeatWordsAreRefusedBeforeEitherOutputIsTouched() throws {
+        for mode in [PlaybackMode.source, .musicApp] {
+            let h = harness(mode, ["slice.status": [ready, modesStatus()], "slice.shuffle": [ok], "slice.repeat": [ok]])
+            let (_, calls) = try withTripwire { () throws -> Void in
+                XCTAssertThrowsError(try runShuffle(state: "banana", json: false, env: h.env,
+                                                    musicApp: { _, _ in XCTFail("Music.app ran") })) {
+                    XCTAssertEqual(($0 as? ValidationError)?.message, "Shuffle must be on or off (or omitted to toggle).")
+                }
+                XCTAssertThrowsError(try runRepeat(mode: "sometimes", env: h.env,
+                                                   musicApp: { _ in XCTFail("Music.app ran") })) {
+                    XCTAssertEqual(($0 as? ValidationError)?.message, "Repeat mode must be off, one, or all.")
+                }
+            }
+            XCTAssertEqual(h.wire.requestCount, 0, "\(mode): nothing sent to SpanDAC, not even a status read")
+            XCTAssertEqual(h.io.out, [])
+            XCTAssertEqual(calls, [])
+        }
     }
 
     func testRefusedVerbsTakeTheLockInMusicAppMode() throws {

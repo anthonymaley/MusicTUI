@@ -289,6 +289,10 @@ let cliDispatchedOnBridge: Set<MusicTUIAction> = [
     // (`slice.heavyRotation`). D9 passed for both (B2): Bridge returned the
     // same account-level history as the REST path on three occasions.
     .recent, .rotation,
+    // `music shuffle [on|off]` and `music repeat off|one|all` (`slice.shuffle`,
+    // `slice.repeat`), as the Now tab's Shuffle and Repeat cells send them. A
+    // SpanDAC that does not list the op is told so in the Bridge body.
+    .persistentShuffleMode, .persistentRepeatMode,
 ]
 
 /// CLI actions that keep their shipped backend while Bridge is selected
@@ -323,17 +327,10 @@ let cliBridgeExceptions: Set<MusicTUIAction> = [
     .visualizer,
 ]
 
-/// What `music shuffle` and `music repeat` say with SpanDAC selected. The TUI
-/// serves them now (the Now tab's Shuffle and Repeat cells); the CLI does not.
-let cliShuffleRepeatNotServed = "Shuffle and repeat modes are MusicTUI only for now."
-
-/// D7's reason for a CLI action Bridge does not serve. Shuffle and repeat
-/// modes, volume and AirPlay keep the TUI table's reasons; everything else
-/// names what is not available.
+/// D7's reason for a CLI action Bridge does not serve. Volume and AirPlay keep
+/// the TUI table's reasons; everything else names what is not available.
 func cliBridgeNotServedReason(_ action: MusicTUIAction) -> String {
     switch action {
-    case .persistentShuffleMode, .persistentRepeatMode:
-        return cliShuffleRepeatNotServed
     case .volume, .airplayRoute:
         if case .refused(let why) = routeAction(action, in: .source, from: .tui) { return why }
     // Part 2 P8, Q1 default (D10, verbatim): Bridge serves no op for these,
@@ -362,8 +359,8 @@ private func cliBridgeNotServedWhat(_ action: MusicTUIAction) -> String {
     case .cliPlayCatalogSong:       return "music play <Apple Music link>"
     case .radioStationPlay:         return "music radio play"
     case .playlistTemp:             return "music playlist temp"
-    case .persistentShuffleMode:    return "music shuffle"
-    case .persistentRepeatMode:     return "music repeat"
+    case .persistentShuffleMode:    return "music shuffle"   // dispatched; named so none is blank
+    case .persistentRepeatMode:     return "music repeat"    // dispatched; named so none is blank
     case .volume:                   return "music volume"
     case .airplayRoute:             return "music speaker"
     case .nowStatus:                return "music now"
@@ -516,11 +513,11 @@ func routeAction(_ action: MusicTUIAction,
          .libraryArtistTierFilter, .playlistsOpenNowPlaying:
         return .unaffected
 
-    // Served by the source, TUI only (the CLI clause above never reaches here
-    // for them: `music shuffle` / `music repeat` stay refused, with
-    // `cliShuffleRepeatNotServed`). SpanDAC has its own shuffle and repeat
-    // (`slice.shuffle`, `slice.repeat`); the Now tab sends them only when the
-    // app's `capabilities` list the op, and says so itself when it does not.
+    // Served by the source (the CLI clause above routes them here too, since
+    // `music shuffle` / `music repeat` are in `cliDispatchedOnBridge`). SpanDAC
+    // has its own shuffle and repeat (`slice.shuffle`, `slice.repeat`); the Now
+    // tab and the CLI send them only when the app's `capabilities` list the op,
+    // and say so themselves when it does not.
     case .persistentShuffleMode, .persistentRepeatMode:
         return .source
 

@@ -12,12 +12,11 @@ final class CLIBridgeGateTests: XCTestCase {
     /// Slice 3 D7: the playback verbs Bridge does not serve from the CLI yet
     /// refuse in their not-served words. (Part 2, P6: the Apple Music song link
     /// left this list; it is dispatched, so the gate fails closed on it below.
-    /// P7: so did `radio play`.)
+    /// P7: so did `radio play`; `music shuffle` and `music repeat` followed.)
     func testUnservedPlaybackVerbsRefuseWithTheirD7WordsOnBridge() {
         XCTAssertEqual(cliBridgeRefusal(.cliPlayCatalogSong, mode: .source), cliGateOnDispatchedAction)
         XCTAssertEqual(cliBridgeRefusal(.radioStationPlay, mode: .source), cliGateOnDispatchedAction)
-        let verbs: [MusicTUIAction] = [.cliPlayQuery, .persistentShuffleMode,
-                                       .persistentRepeatMode, .playlistTemp]
+        let verbs: [MusicTUIAction] = [.cliPlayQuery, .playlistTemp]
         for action in verbs {
             XCTAssertEqual(cliBridgeRefusal(action, mode: .source), cliBridgeNotServedReason(action), "\(action)")
         }
@@ -162,6 +161,12 @@ final class CLIBridgeGateTests: XCTestCase {
         // owns only the two `run()`s in PlaylistCommands.swift).
         let verbFile: [String: String] = ["runPlaylistList": "CLIBridgeListings.swift",
                                           "runPlaylistTracks": "CLIBridgeListings.swift"]
+        // `music shuffle` and `music repeat` parse their word before dispatching
+        // (the same pure parse the Music.app body uses), for both outputs.
+        let validatesArgumentsFirst: [String: String] = [
+            "runShuffle": "let wanted = try parseShuffleWord(",
+            "runRepeat": "let wanted = try parseRepeatWord(",
+        ]
         for (file, command, verb) in dispatching {
             let source = try String(contentsOf: commands.appendingPathComponent(file), encoding: .utf8)
             guard let firstLine = firstLineOfRun(command, in: source)
@@ -171,8 +176,18 @@ final class CLIBridgeGateTests: XCTestCase {
             let verbSource = try verbFile[verb].map {
                 try String(contentsOf: commands.appendingPathComponent($0), encoding: .utf8)
             } ?? source
-            XCTAssertEqual(firstStatement(ofFunction: verb, in: verbSource).map { $0.hasPrefix("try cliDispatch(") }, true,
-                           "\(verb) must start with try cliDispatch(")
+            if let validation = validatesArgumentsFirst[verb] {
+                // Pure argument validation may precede the route, so a bad
+                // word reaches neither output; the very next statement must
+                // be the dispatch. It touches no player and sends no request.
+                XCTAssertEqual(firstStatement(ofFunction: verb, in: verbSource).map { $0.hasPrefix(validation) }, true,
+                               "\(verb) validates its word first")
+                XCTAssertEqual(firstStatement(ofFunction: verb, in: verbSource, after: 1).map { $0.hasPrefix("try cliDispatch(") }, true,
+                               "\(verb) must dispatch straight after validating")
+            } else {
+                XCTAssertEqual(firstStatement(ofFunction: verb, in: verbSource).map { $0.hasPrefix("try cliDispatch(") }, true,
+                               "\(verb) must start with try cliDispatch(")
+            }
         }
 
         let playback = try String(contentsOf: commands.appendingPathComponent("PlaybackCommands.swift"), encoding: .utf8)
@@ -195,12 +210,14 @@ final class CLIBridgeGateTests: XCTestCase {
         return String(source[run.upperBound...].prefix { $0 != "\n" })
     }
 
-    /// The first statement of top-level `func <name>(`, trimmed.
-    private func firstStatement(ofFunction name: String, in source: String) -> String? {
+    /// The first statement of top-level `func <name>(`, trimmed; `after` skips
+    /// that many single-line statements first.
+    private func firstStatement(ofFunction name: String, in source: String, after skipped: Int = 0) -> String? {
         guard let decl = source.range(of: "\nfunc \(name)("),
               let open = source.range(of: "{\n", range: decl.upperBound..<source.endIndex)
         else { return nil }
-        return String(source[open.upperBound...].prefix { $0 != "\n" })
-            .trimmingCharacters(in: .whitespaces)
+        let lines = source[open.upperBound...].split(separator: "\n", omittingEmptySubsequences: false)
+        guard skipped < lines.count else { return nil }
+        return String(lines[skipped]).trimmingCharacters(in: .whitespaces)
     }
 }

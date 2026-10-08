@@ -124,6 +124,36 @@ func bridgeSeekCommand(_ session: CLIBridgeSession, position: String, json: Bool
     }
 }
 
+// MARK: - shuffle, repeat
+
+/// `music shuffle [on|off]` with Bridge selected: the Now tab's rule. Inside the
+/// one lock the status says whether SpanDAC offers `slice.shuffle`; an older
+/// build that does not gets `spanDACNoModesSentence` and nothing is sent. `on`
+/// nil toggles from the status's shuffle (none reads as off, so it turns on).
+/// Prints what the Music.app body prints.
+func bridgeShuffleCommand(_ session: CLIBridgeSession, on requested: Bool?, json: Bool,
+                          env: CLIBridgeEnv) throws {
+    let on = try session.mutate { control -> Bool in
+        let status = try control.status()
+        guard status.offersShuffle else { throw ActionError(message: spanDACNoModesSentence) }
+        let on = requested ?? !(status.shuffle ?? false)
+        try control.setShuffle(on)
+        return on
+    }
+    let word = on ? "on" : "off"
+    env.out(json ? "{\"shuffle\":\"\(word)\"}" : "Shuffle \(word).")
+}
+
+/// `music repeat off|one|all` with Bridge selected, under the same capability
+/// rule as shuffle. Prints what the Music.app body prints.
+func bridgeRepeatCommand(_ session: CLIBridgeSession, mode: RepeatMode, env: CLIBridgeEnv) throws {
+    try session.mutate { control in
+        guard try control.status().offersRepeat else { throw ActionError(message: spanDACNoModesSentence) }
+        try control.setRepeat(mode)
+    }
+    env.out("Repeat \(mode.rawValue).")
+}
+
 // MARK: - shared
 
 /// D5's observation after an accepted mutation: `resultLines` then the now
@@ -153,10 +183,9 @@ func bridgeShowAfterMutation(_ session: CLIBridgeSession, json: Bool, env: CLIBr
     }
 }
 
-/// The Bridge branch of a verb the matrix refuses from the CLI (shuffle,
-/// repeat, radio play, playlist temp). Unreachable while the matrix refuses
-/// it; if the route ever changed without a Bridge body, it refuses rather than
-/// doing nothing.
+/// The Bridge branch of a verb the matrix refuses from the CLI (playlist temp).
+/// Unreachable while the matrix refuses it; if the route ever changed without a
+/// Bridge body, it refuses rather than doing nothing.
 func cliBridgeNotServed(_ action: MusicTUIAction) -> (CLIBridgeSession) throws -> Void {
     { _ in throw ActionError(message: cliBridgeNotServedReason(action)) }
 }

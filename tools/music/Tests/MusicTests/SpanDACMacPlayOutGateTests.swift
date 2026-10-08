@@ -105,6 +105,32 @@ final class SpanDACMacPlayOutGateTests: XCTestCase {
         XCTAssertEqual(c.playOutMode, .source)
     }
 
+    /// `music shuffle on` and `music repeat all` are `.persistentShuffleMode` /
+    /// `.persistentRepeatMode`, dispatched on SpanDAC now. During a Mac play-out
+    /// the one gate still refuses them first, in its sentence: neither the
+    /// Music.app body nor the SpanDAC branch runs and nothing is sent.
+    func testCLIShuffleAndRepeatDuringAMacPlayOutAreRefusedAndSendNothing() throws {
+        let (rig, c) = macPlayingOut(.cli)
+        let printed = BranchLog()
+        let env = CLIBridgeEnv(routing: c, modeStore: rig.modes,
+                               cache: ResultCache(directory: rig.dir + "/cache"),
+                               out: { printed.append($0) }, err: { _ in }, sleep: { _ in })
+        let ran = BranchLog()
+        let sentBefore = rig.sent.count
+        let verbs: [(String, () throws -> Void)] = [
+            ("shuffle on", { try runShuffle(state: "on", json: false, env: env, musicApp: { _, _ in ran.append("musicApp") }) }),
+            ("shuffle", { try runShuffle(state: nil, json: false, env: env, musicApp: { _, _ in ran.append("musicApp") }) }),
+            ("repeat all", { try runRepeat(mode: "all", env: env, musicApp: { _ in ran.append("musicApp") }) }),
+        ]
+        for (label, verb) in verbs {
+            XCTAssertThrowsError(try verb(), label) { XCTAssertTrue($0 is ExitCode, "\($0)") }
+        }
+        XCTAssertEqual(printed.log, Array(repeating: macPlayOutSentence, count: 3))
+        XCTAssertEqual(ran.log, [], "the shipped bodies never ran")
+        XCTAssertEqual(rig.sent.count, sentBefore, "nothing sent to SpanDAC")
+        XCTAssertEqual(c.playOutMode, .source)
+    }
+
     // MARK: - Scene paths that used to start sound after only `askMatrix`
 
     private func nowScene(_ c: RoutingCoordinator, backend: AppleScriptBackend,

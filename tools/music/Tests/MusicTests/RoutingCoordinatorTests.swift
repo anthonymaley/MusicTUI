@@ -343,18 +343,19 @@ final class RoutingCoordinatorTests: XCTestCase {
     /// `ActionError(message: ...)`, because ArgumentParser renders a
     /// `LocalizedError` by its description.
     ///
-    /// The subject is `persistentShuffleMode` (`music shuffle`), still refused
-    /// from the CLI with Bridge selected, with its TUI-table reason (slice 3
-    /// D7). `stop` was the subject until S6 dispatched it to Bridge.
+    /// The subject is `playlistTemp` (`music playlist temp`), still refused
+    /// from the CLI with Bridge selected, with D7's not-served reason (slice 3
+    /// D7). `stop` was the subject until S6 dispatched it to Bridge, and
+    /// `persistentShuffleMode` until the CLI served shuffle and repeat.
     func testCLIPrintsARefusalsReason() {
         let r = Recorder()
         let c = coordinator(mode: .source, recorder: r, surface: .cli)
-        guard case .refused(let reason) = routeAction(.persistentShuffleMode, in: .source, from: .cli) else {
-            return XCTFail("shuffle mode must still refuse from the CLI in Source Mode")
+        guard case .refused(let reason) = routeAction(.playlistTemp, in: .source, from: .cli) else {
+            return XCTFail("playlist temp must still refuse from the CLI in Source Mode")
         }
-        XCTAssertEqual(reason, "Shuffle and repeat modes are MusicTUI only for now.")
+        XCTAssertEqual(reason, cliBridgeNotServedReason(.playlistTemp))
         do {
-            try c.perform(.persistentShuffleMode, musicApp: { r.append("musicApp") },
+            try c.perform(.playlistTemp, musicApp: { r.append("musicApp") },
                           source: { _ in r.append("source") }, unaffected: { r.append("unaffected") })
             XCTFail("expected a refusal")
         } catch {

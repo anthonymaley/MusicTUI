@@ -81,9 +81,12 @@ final class CLIInventoryTests: XCTestCase {
         Row(invocation: "discover", command: "Discover", letter: .served, enforcement: .route(.discoverFeed), owner: "S8, P8"),
         Row(invocation: "similar <title>", command: "Similar", letter: .served, enforcement: .route(.similar), owner: "S8, P8"),
 
+        // `slice.shuffle` / `slice.repeat`, sent only when SpanDAC lists the op
+        // (an older build is told so and nothing is sent). Were refused (S6).
+        Row(invocation: "shuffle", command: "Shuffle", letter: .served, enforcement: .route(.persistentShuffleMode), owner: "S6, CLI shuffle/repeat"),
+        Row(invocation: "repeat", command: "Repeat_", letter: .served, enforcement: .route(.persistentRepeatMode), owner: "S6, CLI shuffle/repeat"),
+
         // Refused before any side effect.
-        Row(invocation: "shuffle", command: "Shuffle", letter: .refused, enforcement: .route(.persistentShuffleMode), owner: "S6"),
-        Row(invocation: "repeat", command: "Repeat_", letter: .refused, enforcement: .route(.persistentRepeatMode), owner: "S6"),
         Row(invocation: "play <words> (and any non-song Apple Music link)", command: "Play", letter: .refused, enforcement: .route(.cliPlayQuery), owner: "S7 (Q1: refuse)"),
         Row(invocation: "add N (SpanDAC library or catalogue row)", command: "Add", letter: .refused, enforcement: .provenance(.addToLibrary), owner: "S3, P6 (Q3: refuse)"),
         Row(invocation: "add --to P (no song)", command: "Add", letter: .refused, enforcement: .route(.addCurrentTrackToPlaylist), owner: "existing"),
@@ -308,8 +311,10 @@ final class CLIInventoryTests: XCTestCase {
         // `discover --recent`, refused in the Bridge body, is a row of its own
         // (+1 row).
         // P9: recent and rotation moved M → S (D9 pass). No M row remains.
-        XCTAssertEqual(count(.served), 24)
-        XCTAssertEqual(count(.refused), 23)
+        // CLI shuffle/repeat: `shuffle` and `repeat` moved R → S (`slice.shuffle`,
+        // `slice.repeat`).
+        XCTAssertEqual(count(.served), 26)
+        XCTAssertEqual(count(.refused), 21)
         XCTAssertEqual(count(.migration), 0)
         XCTAssertEqual(count(.exception), 19)
         XCTAssertEqual(inventory.count, 66)

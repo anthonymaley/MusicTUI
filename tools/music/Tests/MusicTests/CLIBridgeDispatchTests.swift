@@ -111,12 +111,12 @@ final class CLIBridgeDispatchTests: XCTestCase {
         let env = CLIBridgeEnv.test(mode: .source, wire: wire, io: io)
         var ran = false
         let (_, calls) = try withTripwire { () throws -> Void in
-            XCTAssertThrowsError(try cliDispatch(.persistentShuffleMode, json: json, env: env,
+            XCTAssertThrowsError(try cliDispatch(.playlistTemp, json: json, env: env,
                                                  musicApp: { ran = true }, bridge: { _ in ran = true })) {
                 XCTAssertEqual($0 as? ExitCode, .failure)
             }
         }
-        let shipped = captureStdout { try refuseInBridge(.persistentShuffleMode, json: json, mode: .source) }
+        let shipped = captureStdout { try refuseInBridge(.playlistTemp, json: json, mode: .source) }
         XCTAssertEqual(shipped.error as? ExitCode, .failure)
         XCTAssertFalse(shipped.output.isEmpty)
         XCTAssertEqual(io.stdoutBytes, shipped.output, "json: \(json)")
