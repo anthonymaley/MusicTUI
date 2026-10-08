@@ -125,6 +125,22 @@ final class AppleScriptBackendSubprocessTests: XCTestCase {
         XCTAssertLessThan(Date().timeIntervalSince(start), 5)
     }
 
+    /// The termination handler arrives asynchronously: a watchdog can fire
+    /// after the script has exited but before the handler has recorded it.
+    /// The claim must see the exit itself and neither claim nor terminate.
+    func testAWatchdogAfterAnUnreportedExitClaimsNothingAndTerminatesNothing() {
+        let arbiter = ScriptExitArbiter()
+        XCTAssertFalse(arbiter.claimTimeout(isRunning: { false }), "an exited script was claimed as a timeout")
+        XCTAssertFalse(arbiter.finish(), "an exited script was reported as a timeout")
+    }
+
+    func testAWatchdogOnARunningScriptClaimsTheTimeout() {
+        let arbiter = ScriptExitArbiter()
+        XCTAssertTrue(arbiter.claimTimeout(isRunning: { true }))
+        arbiter.recordExit()   // the kill's own exit does not undo the claim
+        XCTAssertTrue(arbiter.finish())
+    }
+
     /// The script exits at once, well inside the watchdog, but a background
     /// grandchild holds its stdout open past the deadline, so the drain ends
     /// after the watchdog fires. A natural exit before the deadline is the

@@ -3,7 +3,8 @@ import Foundation
 /// The one arbitration between a script's natural exit and its watchdog, under
 /// one lock. The exit side (the process's termination handler, or the caller
 /// once it has seen exit and both EOFs) records `exited`; the watchdog may
-/// claim the timeout, and terminate, only while `exited` is still false. So a
+/// claim the timeout only while `exited` is false and the process itself is
+/// still running, then terminates outside the lock. So a
 /// script that exits before its deadline is never reported as a timeout, even
 /// when draining its pipes runs past the deadline (a grandchild holding them).
 final class ScriptExitArbiter: @unchecked Sendable {
@@ -14,15 +15,17 @@ final class ScriptExitArbiter: @unchecked Sendable {
     /// The process has exited. Idempotent; a timeout already claimed stands.
     func recordExit() { lock.lock(); exited = true; lock.unlock() }
 
-    /// The watchdog's claim: if the process has not exited, record the timeout
-    /// and run `terminate` while still holding the lock, so no exit can be
-    /// recorded between the check and the kill. Returns whether it claimed.
-    @discardableResult
-    func claimTimeout(terminate: () -> Void) -> Bool {
+    /// The watchdog's claim. The termination handler is delivered
+    /// asynchronously, so `exited` can still be false for a script that has
+    /// already exited: the claim also asks the process itself, under the same
+    /// lock, and an exit it sees there is recorded as the natural outcome. On a
+    /// claim the caller terminates, outside this lock, so the arbiter never
+    /// depends on how Foundation delivers the handler. Returns whether it claimed.
+    func claimTimeout(isRunning: () -> Bool) -> Bool {
         lock.lock(); defer { lock.unlock() }
         guard !exited else { return false }
+        guard isRunning() else { exited = true; return false }
         timedOut = true
-        terminate()
         return true
     }
 
@@ -145,7 +148,7 @@ struct AppleScriptBackend {
         try process.run()
 
         let watchdog = DispatchWorkItem {
-            arbiter.claimTimeout { process.terminate() }
+            if arbiter.claimTimeout(isRunning: { process.isRunning }) { process.terminate() }
         }
         DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: watchdog)
 
