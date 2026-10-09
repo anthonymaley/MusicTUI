@@ -1066,14 +1066,17 @@ final class RoutingCoordinator {
         playOutRefusal(for: action, settledState())
     }
 
-    /// The sentence `perform(action, ...)` would refuse with right now, or nil
-    /// when it would run a branch: the play-out gate, then the matrix, read at
-    /// one instant under `state` only. It takes no ordering boundary and runs
-    /// no branch, so a scene may ask it on the keypress (before an optimistic
-    /// change) and on every footer render without waiting on a switch.
-    /// `perform` re-decides when the action runs, so this is advice, never the
-    /// authority. Covers refusals only: it does not stand in for the epoch
-    /// check or an origin check, which no caller of this has.
+    /// The sentence `perform(action, ...)` would most likely refuse with right
+    /// now, or nil: the play-out gate, then the matrix's refusal. ADVISORY, and
+    /// written for `.volume`-class actions (those with no origin, no epoch
+    /// stamp and a shipped path): it does not model `route`'s post-matrix
+    /// `networkUnproven` refusal or its shipped-path/origin check, so complete
+    /// it before another action adopts it. It runs no branch and takes no
+    /// ordering boundary, so a scene may ask it on the keypress (before an
+    /// optimistic change) and on every footer render without waiting on a
+    /// switch. It is not free of effects: `settledState()` takes in the licence
+    /// cache, which can advance `_dataEpoch` and set or clear `playOut`.
+    /// `perform` re-decides when the action runs; this is never the authority.
     func refusal(for action: MusicTUIAction) -> String? {
         let settled = settledState()
         if let why = playOutRefusal(for: action, settled) { return why }

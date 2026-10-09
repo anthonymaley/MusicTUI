@@ -1779,14 +1779,15 @@ final class SpeakersScene: Scene {
     }
     /// Asked at the keypress, BEFORE the bar moves: when the coordinator would
     /// refuse `.volume` (a SpanDAC output, or a SpanDAC play-out) nothing is
-    /// changed and the refusal reaches the person as the usual action toast,
-    /// through the coordinator itself (its own sentence, decided again when the
-    /// action runs). False means refused.
+    /// changed and the refusal reaches the person as the usual action toast.
+    /// The toast carries the sentence the KEYPRESS was refused with, not a
+    /// second decision made when the queue runs: if routing relaxes in between
+    /// (a play-out ends), a re-decided `perform` would run nothing and the
+    /// keypress would vanish without a word. (The write itself, in
+    /// `setVolume`, does re-decide, for the opposite race.) False means refused.
     private func speakerVolumeAllowed() -> Bool {
-        guard routing.refusal(for: .volume) != nil else { return true }
-        actions.run("Volume") {
-            try self.routing.perform(.volume, musicApp: {}, source: { _ in }, unaffected: {})
-        }
+        guard let why = routing.refusal(for: .volume) else { return true }
+        actions.run("Volume") { throw ActionError(message: why) }
         return false
     }
 
