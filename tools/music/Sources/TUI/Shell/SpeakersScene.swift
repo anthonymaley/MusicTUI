@@ -306,7 +306,9 @@ final class SpeakersScene: Scene {
             return "\(move)   Enter Play here\(forget)   \(always)"
         case .speaker?:
             let enter = routing.mode.usesSource ? "Enter Use \(musicTUIOutputName)" : "Enter Toggle"
-            return "\(move)   \(enter)   \u{2190}\u{2192} Volume   \(always)"
+            // The arrows are offered only where the coordinator would run them.
+            let volume = routing.refusal(for: .volume) == nil ? "   \u{2190}\u{2192} Volume" : ""
+            return "\(move)   \(enter)\(volume)   \(always)"
         case .musicApp?:
             return "\(move)   Enter Use \(musicTUIOutputName)   \(always)"
         case .eq?, .preset?:
@@ -1696,6 +1698,7 @@ final class SpeakersScene: Scene {
             let currentRow = displayRows.indices.contains(cursor) ? displayRows[cursor] : nil
             switch currentRow {
             case .speaker(let i):
+                guard speakerVolumeAllowed() else { return .redraw }
                 rows[i].volume = max(0, rows[i].volume - 5)
                 lastMutation = Date()
                 setVolume(rows[i])
@@ -1714,6 +1717,7 @@ final class SpeakersScene: Scene {
             let currentRow = displayRows.indices.contains(cursor) ? displayRows[cursor] : nil
             switch currentRow {
             case .speaker(let i):
+                guard speakerVolumeAllowed() else { return .redraw }
                 rows[i].volume = min(100, rows[i].volume + 5)
                 lastMutation = Date()
                 setVolume(rows[i])
@@ -1773,6 +1777,19 @@ final class SpeakersScene: Scene {
             }
         }
     }
+    /// Asked at the keypress, BEFORE the bar moves: when the coordinator would
+    /// refuse `.volume` (a SpanDAC output, or a SpanDAC play-out) nothing is
+    /// changed and the refusal reaches the person as the usual action toast,
+    /// through the coordinator itself (its own sentence, decided again when the
+    /// action runs). False means refused.
+    private func speakerVolumeAllowed() -> Bool {
+        guard routing.refusal(for: .volume) != nil else { return true }
+        actions.run("Volume") {
+            try self.routing.perform(.volume, musicApp: {}, source: { _ in }, unaffected: {})
+        }
+        return false
+    }
+
     private func setVolume(_ row: SpeakerRow) {
         // Coalesced per speaker: holding an arrow applies only the final target.
         let esc = escapeAppleScriptString(row.name)
@@ -1780,8 +1797,15 @@ final class SpeakersScene: Scene {
         speakerTargets.set(name, row.volume)
         actions.run("Volume") {
             guard let v = self.speakerTargets.take(name) else { return }
-            try require((try? self.backend.runMusicBlocking("set sound volume of AirPlay device \"\(esc)\" to \(v)")) != nil,
-                        "Couldn't set '\(name)' volume.")
+            // Through the coordinator like the global `+`/`-` (`globalVolume`):
+            // the write runs only where the contract lets volume run.
+            try self.routing.perform(.volume,
+                musicApp: {
+                    try require((try? self.backend.runMusicBlocking("set sound volume of AirPlay device \"\(esc)\" to \(v)")) != nil,
+                                "Couldn't set '\(name)' volume.")
+                },
+                source: { _ in },
+                unaffected: {})
         }
     }
     /// EQ on/off — shared by the power row (Enter) and the 'e' shortcut.

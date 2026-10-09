@@ -1066,6 +1066,23 @@ final class RoutingCoordinator {
         playOutRefusal(for: action, settledState())
     }
 
+    /// The sentence `perform(action, ...)` would refuse with right now, or nil
+    /// when it would run a branch: the play-out gate, then the matrix, read at
+    /// one instant under `state` only. It takes no ordering boundary and runs
+    /// no branch, so a scene may ask it on the keypress (before an optimistic
+    /// change) and on every footer render without waiting on a switch.
+    /// `perform` re-decides when the action runs, so this is advice, never the
+    /// authority. Covers refusals only: it does not stand in for the epoch
+    /// check or an origin check, which no caller of this has.
+    func refusal(for action: MusicTUIAction) -> String? {
+        let settled = settledState()
+        if let why = playOutRefusal(for: action, settled) { return why }
+        if case .refused(let why) = routeAction(action, selection: settled.selection, from: surface).sound {
+            return licensed(why, settled)
+        }
+        return nil
+    }
+
     private func playOutRefusal(for action: MusicTUIAction, _ settled: Settled) -> String? {
         guard let target = settled.playOut else { return nil }
         switch action.playOutClass {

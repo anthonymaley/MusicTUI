@@ -159,7 +159,9 @@ func makeOutputTabScene(dir: String, mode: PlaybackMode, spandac: SpanDACOutputs
                         starter: FakeMacStarter = FakeMacStarter(),
                         dataClients: BuildCounter = BuildCounter(),
                         confirmMusicAppPaused: @escaping () throws -> Bool = musicAppPauseTripwire,
-                        macSocketExists: @escaping () -> Bool = { false }) -> SpeakersScene {
+                        macSocketExists: @escaping () -> Bool = { false },
+                        backend: AppleScriptBackend = AppleScriptBackend(executable: "/usr/bin/true"),
+                        actions: ActionRunner? = nil) -> SpeakersScene {
     let store = PlaybackModeStore(path: dir + "/mode.json")
     store.set(mode)
     let dataStore = DataProviderStore(path: dir + "/data.json")
@@ -178,8 +180,8 @@ func makeOutputTabScene(dir: String, mode: PlaybackMode, spandac: SpanDACOutputs
                                          return SourceAppClient(path: "/nonexistent", transport: { _, _ in throw SourceAppError.notRunning })
                                      },
                                      starter: starter)
-    return SpeakersScene(backend: AppleScriptBackend(executable: "/usr/bin/true"),
-                         status: status, actions: ActionRunner(status: status), routing: routing,
+    return SpeakersScene(backend: backend,
+                         status: status, actions: actions ?? ActionRunner(status: status), routing: routing,
                          confirmMusicAppPaused: confirmMusicAppPaused,
                          makeSourceClient: local, makeNetworkClient: network, spandac: spandac,
                          macName: macName, clock: clock,

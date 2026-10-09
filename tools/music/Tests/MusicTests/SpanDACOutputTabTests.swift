@@ -713,9 +713,12 @@ final class SpanDACOutputTabTests: XCTestCase {
                        network: @escaping (String) -> SourceAppClient = { _ in
                            SourceAppClient(path: "/fake", transport: { _, _ in outputTabReadyReply })
                        },
-                       clock: @escaping () -> Date = Date.init) -> SpeakersScene {
+                       clock: @escaping () -> Date = Date.init,
+                       backend: AppleScriptBackend = AppleScriptBackend(executable: "/usr/bin/true"),
+                       actions: ActionRunner? = nil) -> SpeakersScene {
         let s = makeOutputTabScene(dir: dir, mode: mode, spandac: outputs, speakers: speakers, status: status,
-                                   macReply: macReply, network: network, clock: clock)
+                                   macReply: macReply, network: network, clock: clock,
+                                   backend: backend, actions: actions)
         settleOutputTab(s, speakers: speakers.count)
         return s
     }
@@ -1090,7 +1093,7 @@ final class SpanDACOutputTabTests: XCTestCase {
         put(s, at: 3)
         XCTAssertEqual(s.footerHint, "\(move)   Enter Stop using SpanDAC   \(always)")
         put(s, at: 4)
-        XCTAssertEqual(s.footerHint, "\(move)   Enter Use MusicTUI   \u{2190}\u{2192} Volume   \(always)")
+        XCTAssertEqual(s.footerHint, "\(move)   Enter Use MusicTUI   \(always)", "volume is refused on a SpanDAC output, so the hint is not offered")
         fake.isPairing = true
         XCTAssertEqual(s.footerHint, "Esc Cancel pairing")
         fake.isPairing = false
@@ -1101,5 +1104,68 @@ final class SpanDACOutputTabTests: XCTestCase {
                           speakers: [["name": "Kitchen", "selected": true, "volume": 50]])
         put(music, at: 2)
         XCTAssertEqual(music.footerHint, "\(move)   Enter Toggle   \u{2190}\u{2192} Volume   \(always)")
+    }
+
+    // MARK: - Per-speaker volume obeys the routing contract
+
+    /// A stand-in for osascript that appends each script (`$2`, after `-e`) to
+    /// a file and exits 0. Tests never reach the real interpreter.
+    private func recordingBackend() throws -> (AppleScriptBackend, scripts: () -> [String]) {
+        let fake = dir + "/osascript"
+        let record = dir + "/scripts.txt"
+        try "#!/bin/sh\nprintf '%s\\n--END--\\n' \"$2\" >> '\(record)'\n".write(toFile: fake, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: fake)
+        return (AppleScriptBackend(executable: fake), {
+            ((try? String(contentsOfFile: record, encoding: .utf8)) ?? "")
+                .components(separatedBy: "\n--END--\n").filter { !$0.isEmpty }
+        })
+    }
+
+    private func kitchenVolume(_ s: SpeakersScene) -> Int? { s.speakerRowsForTest.first { $0.name == "Kitchen" }?.volume }
+
+    private let kitchen: [[String: Any]] = [["name": "Kitchen", "selected": true, "volume": 50]]
+
+    func testArrowsOnASpeakerRowWriteNothingAndRefuseWhileSpanDACIsSelected() throws {
+        let (backend, scripts) = try recordingBackend()
+        let status = StatusStore()
+        let actions = ActionRunner(status: status)
+        let s = scene(mode: .source, outputs: FakeSpanDACOutputs(), status: status, speakers: kitchen,
+                      backend: backend, actions: actions)
+        put(s, at: 2)
+        XCTAssertEqual(s.footerHint.contains("Enter Use MusicTUI"), true, "the cursor is on the Kitchen row: \(s.footerHint)")
+        for key in [KeyPress.right, .left] {
+            _ = s.handle(key)
+            actions.waitUntilIdle()
+            XCTAssertEqual(scripts(), [], "no AppleScript is sent while SpanDAC is selected (\(key))")
+            XCTAssertEqual(kitchenVolume(s), 50, "the bar does not move (\(key))")
+            let toast = status.current()
+            XCTAssertEqual(toast?.text, "Volume is MusicTUI only; the source plays at the Mac's output level.")
+            XCTAssertEqual(toast?.isError, true)
+        }
+    }
+
+    func testRightOnASpeakerRowSetsTheVolumeWhileMusicTUIIsSelected() throws {
+        let (backend, scripts) = try recordingBackend()
+        let status = StatusStore()
+        let actions = ActionRunner(status: status)
+        let s = scene(mode: .musicApp, outputs: FakeSpanDACOutputs(), status: status, speakers: kitchen,
+                      backend: backend, actions: actions)
+        put(s, at: 2)
+        _ = s.handle(.right)
+        actions.waitUntilIdle()
+        XCTAssertEqual(kitchenVolume(s), 55)
+        let sent = scripts()
+        XCTAssertEqual(sent.count, 1, "\(sent)")
+        XCTAssertTrue(sent.first?.contains(#"set sound volume of AirPlay device "Kitchen" to 55"#) == true, "\(sent)")
+        XCTAssertNil(status.current(), "a normal change posts nothing")
+    }
+
+    func testSpeakerRowFooterOffersVolumeOnlyWhereItIsAllowed() {
+        let spandac = scene(mode: .source, outputs: FakeSpanDACOutputs(), speakers: kitchen)
+        put(spandac, at: 2)
+        XCTAssertFalse(spandac.footerHint.contains("Volume"), spandac.footerHint)
+        let music = scene(mode: .musicApp, outputs: FakeSpanDACOutputs(), speakers: kitchen)
+        put(music, at: 2)
+        XCTAssertTrue(music.footerHint.contains("\u{2190}\u{2192} Volume"), music.footerHint)
     }
 }
