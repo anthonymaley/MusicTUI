@@ -1139,7 +1139,7 @@ final class SpanDACOutputTabTests: XCTestCase {
             XCTAssertEqual(scripts(), [], "no AppleScript is sent while SpanDAC is selected (\(key))")
             XCTAssertEqual(kitchenVolume(s), 50, "the bar does not move (\(key))")
             let toast = status.current()
-            XCTAssertEqual(toast?.text, "Volume is MusicTUI only; the source plays at the Mac's output level.")
+            XCTAssertEqual(toast?.text, "Volume is MusicTUI only; SpanDAC plays at the Mac's output level.")
             XCTAssertEqual(toast?.isError, true)
         }
     }

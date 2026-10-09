@@ -523,7 +523,7 @@ func routeAction(_ action: MusicTUIAction,
 
     // Refused, each with what to do instead.
     case .volume:
-        return .refused("Volume is MusicTUI only; the source plays at the Mac's output level.")
+        return .refused("Volume is MusicTUI only; SpanDAC plays at the Mac's output level.")
     case .loveTrack, .addToLibrary, .addCurrentTrackToPlaylist,
          .removeCurrentTrackFromPlaylist, .playlistWrite:
         return .refused("Library changes are MusicTUI only in this version.")
@@ -531,7 +531,7 @@ func routeAction(_ action: MusicTUIAction,
         // Codex B1: mix calls api.createPlaylist and populates it.
         return .refused("mix creates a playlist, which is MusicTUI only in this version.")
     case .playlistTemp:
-        return .refused("Temporary playlists exist to bound Apple's Music player; the source builds its own queue.")
+        return .refused("Temporary playlists exist to bound Apple's Music player; SpanDAC builds its own queue.")
     case .similar, .similarToCurrentTrack, .suggest, .suggestFromCurrentTrack:
         return .refused("Not available through SpanDAC in this version.")
 
@@ -559,7 +559,7 @@ func routeAction(_ action: MusicTUIAction,
     case .airplayRoute:
         // Anthony, 2026-09-13: "airplay stays in TUI. the point of the bridge is
         // DAC not airplay."
-        return .refused("AirPlay applies on the MusicTUI output; the source plays to the Mac's wired output.")
+        return .refused("AirPlay applies on the MusicTUI output; SpanDAC plays to the Mac's wired output.")
     }
 }
 

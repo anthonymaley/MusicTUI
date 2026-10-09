@@ -742,4 +742,29 @@ final class ActionRoutingTests: XCTestCase {
                               "\(explicit) and \(current) were split but classify identically")
         }
     }
+
+    // MARK: Refusal wording (Anthony, 2026-10-09 15:30; ruling 12.15: a person reads "SpanDAC")
+
+    /// No refusal a person can read names "the source", the internal name.
+    func testNoSourceModeRefusalSaysTheSource() {
+        for surface in InvocationSurface.allCases {
+            for action in MusicTUIAction.allCases {
+                if case .refused(let sentence) = routeAction(action, in: .source, from: surface) {
+                    XCTAssertFalse(sentence.lowercased().contains("the source"),
+                                   "\(action) from \(surface) reads: \(sentence)")
+                }
+            }
+        }
+    }
+
+    func testTheThreeSpanDACRefusalsNameSpanDAC() {
+        let expected: [MusicTUIAction: String] = [
+            .volume: "Volume is MusicTUI only; SpanDAC plays at the Mac's output level.",
+            .playlistTemp: "Temporary playlists exist to bound Apple's Music player; SpanDAC builds its own queue.",
+            .airplayRoute: "AirPlay applies on the MusicTUI output; SpanDAC plays to the Mac's wired output.",
+        ]
+        for (action, sentence) in expected {
+            XCTAssertEqual(routeAction(action, in: .source, from: .tui), .refused(sentence), "\(action)")
+        }
+    }
 }

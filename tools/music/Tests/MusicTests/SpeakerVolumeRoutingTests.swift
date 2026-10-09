@@ -15,7 +15,7 @@ import XCTest
 
 final class SpeakerVolumeRoutingTests: XCTestCase {
 
-    private let volumeSentence = "Volume is MusicTUI only; the source plays at the Mac's output level."
+    private let volumeSentence = "Volume is MusicTUI only; SpanDAC plays at the Mac's output level."
     private var dir: String!
 
     override func setUp() {
