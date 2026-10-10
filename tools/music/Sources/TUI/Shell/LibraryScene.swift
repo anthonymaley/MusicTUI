@@ -1038,12 +1038,29 @@ final class LibraryScene: Scene {
         songs = []
         songsLoaded = false
         songsFetchStarted = false
-        songsDone = false
         bridgeSongTotal = nil
         bridgeFailure = nil
         bridgeWarming = false
         songsSource = nil
-        inboxLock.lock(); songsWalkEpoch += 1; bridgeSongRowsByID = [:]; inboxLock.unlock()
+        // One critical section: the epoch bump that stops every walk and EVERY
+        // Songs inbox field a walk may already have posted. `tick` applies this
+        // reset before it drains, so anything left here (a finished re-ask's
+        // whole list, its flags, total, failure) would be applied on top of
+        // the new provenance in the same tick. `songsDone` is a walk's write
+        // under this lock too.
+        inboxLock.lock()
+        songsWalkEpoch += 1
+        bridgeSongRowsByID = [:]
+        songsPending = []
+        songsDone = false
+        songsResetPending = false
+        songsReplacePending = false
+        songsReplaceIsReask = false
+        songsAwaitingReplacement = false
+        songsTotalPending = nil
+        bridgeFailurePending = nil
+        bridgeWarmingPending = false
+        inboxLock.unlock()
         if nav.subView == .songs { returnToRoot(.songs) }
     }
 

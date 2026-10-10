@@ -781,6 +781,10 @@ final class PlaylistsScene: Scene {
             if let anchor {
                 if let idx = bridgePlaylistRows.firstIndex(where: { $0.id == anchor }) {
                     plCursor = idx
+                    // Still in the list but filtered out of the rail: the cursor
+                    // is about to move to a visible row, so a pane left bound to
+                    // this id would split from it. Close it, as for a vanished row.
+                    if focus == .tracks, !bridgeVisibleIndices().contains(idx) { closeBridgeDrillIn() }
                 } else if focus == .tracks {
                     closeBridgeDrillIn()   // the playlist is gone: no pane for a row that isn't there
                 }

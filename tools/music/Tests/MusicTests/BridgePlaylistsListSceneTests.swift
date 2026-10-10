@@ -486,4 +486,36 @@ final class BridgePlaylistsListSceneTests: XCTestCase {
         XCTAssertEqual(s.railCursorForTest, 0)
     }
 
+
+    /// Filter "Bravo", drilled into B. The fresh list renames B to "B" and adds
+    /// "Bravo New": B is still in the list but no longer in what the rail shows,
+    /// so the pane must close rather than stay bound to a row the rail dropped.
+    func testADrilledInPlaylistThatNoLongerMatchesTheFilterResetsTheDrillIn() {
+        let (s, wire) = staleRailScene(fresh: [(id: "plB", title: "B"), (id: "plN", title: "Bravo New"), (id: "plA", title: "Alpha")],
+                                       extra: ["slice.libraryPlaylistTracks": [trackList("BravoSong")]])
+        _ = s.handle(.char("/"))
+        for c in "Bravo" { _ = s.handle(.char(c)) }
+        _ = s.handle(.enter)                 // apply the filter
+        _ = s.handle(.enter)                 // drill into the one match
+        XCTAssertTrue(settleScene(s) { s.drilledTrackTitlesForTest == ["BravoSong"] })
+        XCTAssertEqual(s.drilledPlaylistIDForTest, "plB")
+        wire.release(op: "slice.libraryPlaylists", at: 1)
+        XCTAssertTrue(settleScene(s) { s.railNamesForTest == ["Bravo New"] }, "\(s.railNamesForTest)")
+        XCTAssertNil(s.drilledPlaylistIDForTest, "the pane stayed bound to a playlist the rail no longer shows")
+        XCTAssertTrue(s.drilledTrackTitlesForTest.isEmpty)
+        XCTAssertEqual(s.railCursorForTest, 1, "the cursor is not on the one visible row")
+    }
+
+    /// Not drilled: the cursor moves to a visible row, so the hero and `p` agree
+    /// with what the rail shows.
+    func testAFilteredSelectionThatNoLongerMatchesMovesToAVisibleRow() {
+        let (s, wire) = staleRailScene(fresh: [(id: "plB", title: "B"), (id: "plN", title: "Bravo New"), (id: "plA", title: "Alpha")])
+        _ = s.handle(.char("/"))
+        for c in "Bravo" { _ = s.handle(.char(c)) }
+        _ = s.handle(.enter)
+        wire.release(op: "slice.libraryPlaylists", at: 1)
+        XCTAssertTrue(settleScene(s) { s.railNamesForTest == ["Bravo New"] })
+        XCTAssertEqual(s.railCursorForTest, 1)
+    }
 }
+

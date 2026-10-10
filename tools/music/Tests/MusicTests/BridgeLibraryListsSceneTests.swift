@@ -563,6 +563,28 @@ final class BridgeLibraryListsSceneTests: XCTestCase {
         XCTAssertEqual(s.navCursorForTest, 2, "the cursor stayed on index 1, which is now a different song")
     }
 
+    /// A re-ask whose whole list finished and was posted, but not yet drained,
+    /// when the output switched: the tick applies the provenance reset BEFORE it
+    /// drains, and the old SpanDAC replacement must not survive it.
+    func testAPostedSongsReAskResultDoesNotSurviveAProvenanceSwitch() {
+        let wire = BridgeLibraryReadsWire(["slice.librarySongs": [
+            songsReply("old", "Old Song", generation: 1, stale: true),
+            songsReply("new", "New Song", generation: 2, stale: false),
+            songsReply("new", "New Song", generation: 2, stale: false)]])
+        let flag = BridgeSelectedFlag(true)
+        let s = libraryTestScene(flag: flag, wire: wire, spy: LibraryAppleScriptSpy())
+        goToSubView(s, .songs)
+        _ = s.tick(snapshot: idle)           // kicks the walk; nothing has landed to drain yet
+        let deadline = Date().addingTimeInterval(3)
+        while Date() < deadline && !wire.reached(op: "slice.librarySongs", at: 2) { usleep(2_000) }
+        Thread.sleep(forTimeInterval: 0.2)   // the re-walk has finished and posted
+        flag.selected = false                // switch data provenance, still NO tick
+        _ = s.tick(snapshot: idle)           // reset first, then drain
+        XCTAssertTrue(s.songsForTest.isEmpty, "a SpanDAC re-ask result survived the provenance switch: \(s.songsForTest.map(\.id))")
+        for _ in 0..<5 { _ = s.tick(snapshot: idle) }
+        XCTAssertFalse(s.songsForTest.contains { $0.id == "new" || $0.id == "old" })
+    }
+
     /// `r` pressed while a re-ask is waiting: the old walk's token dies at the
     /// keypress, not at the next tick, so its probe cannot go on to re-read.
     func testRInvalidatesAWaitingSongsReAskAtTheKeypress() {
