@@ -237,6 +237,162 @@ final class BridgeListFeedTests: XCTestCase {
         Thread.sleep(forTimeInterval: 0.2)   // give the walk a moment to resume and stop
         XCTAssertEqual(script.callCount, 2, "the walk fetched a THIRD page after the feed was released")
     }
+
+    // MARK: - Re-asking a stale snapshot
+    //
+    // SpanDAC serves a snapshot older than 600 s marked `stale`, starts one
+    // background refresh and never pushes the result, so a feed that asked once
+    // keeps the old list for the rest of the run. These pin the re-ask: keep the
+    // stale rows, probe again every `LibraryReask.interval`, replace with the
+    // first unflagged read, stop at `maxTotalWait`.
+
+    private func flagged(_ ids: [String], stale: Bool = true, refreshing: Bool = false) -> MusicPage {
+        MusicPage(rows: ids.map { MusicRow(id: $0, title: $0, artist: "a", album: nil, kind: .album) },
+                  nextCursor: nil, total: ids.count, generation: 1, stale: stale, refreshing: refreshing)
+    }
+
+    /// An injected `sleep` that records what it was asked for and can hold the
+    /// FIRST call until the test lets it go.
+    fileprivate final class SleepRecorder {
+        private let lock = NSLock()
+        private var values: [TimeInterval] = []
+        let firstGate = DispatchSemaphore(value: 0)
+        private let gateFirst: Bool
+        init(gateFirst: Bool = false) { self.gateFirst = gateFirst }
+        var calls: [TimeInterval] { lock.lock(); defer { lock.unlock() }; return values }
+        func sleep(_ s: TimeInterval) {
+            lock.lock(); values.append(s); let first = values.count == 1; lock.unlock()
+            if gateFirst && first { _ = firstGate.wait(timeout: .now() + 5) }
+        }
+    }
+
+    private func reaskFeed(_ fetch: @escaping (String?, Int) throws -> MusicPage,
+                           _ sleeper: SleepRecorder) -> BridgeListFeed<Row> {
+        BridgeListFeed<Row>(fetch: fetch, map: { Row(id: $0.id) }, sleep: sleeper.sleep)
+    }
+
+    func testAStaleReplyIsKeptThenReplacedByTheFirstFreshReadAfterTheInterval() {
+        let script = ScriptedFetch([flagged(["old"]),                 // initial walk: stale
+                                    flagged(["old"]),                 // probe 1: still stale
+                                    flagged(["new"], stale: false),   // probe 2: fresh
+                                    flagged(["new"], stale: false)])  // the re-walk
+        let sleeper = SleepRecorder(gateFirst: true)   // hold the wait so the stale list is observable
+        let f = reaskFeed(script.fetch, sleeper)
+        f.start()
+
+        var replaces: [[Row]] = []
+        var done = false
+        XCTAssertTrue(settleUntil {
+            let d = f.drain()
+            if let r = d.replace { replaces.append(r) }
+            if d.done { done = true }
+            return !replaces.isEmpty
+        }, "the stale list was not shown")
+        sleeper.firstGate.signal()
+        XCTAssertTrue(settleUntil {
+            let d = f.drain()
+            if let r = d.replace { replaces.append(r) }
+            if d.done { done = true }
+            return replaces.count >= 2
+        }, "the fresh list never replaced the stale one: \(replaces)")
+        XCTAssertEqual(replaces, [[Row(id: "old")], [Row(id: "new")]])
+        XCTAssertTrue(done, "the first walk's done must still be reported")
+        XCTAssertEqual(sleeper.calls, [LibraryReask.interval, LibraryReask.interval])
+        XCTAssertEqual(script.callCount, 4)
+    }
+
+    func testARefreshingReplyIsAlsoReAsked() {
+        let script = ScriptedFetch([flagged(["old"], stale: false, refreshing: true),
+                                    flagged(["new"], stale: false),
+                                    flagged(["new"], stale: false)])
+        let f = reaskFeed(script.fetch, SleepRecorder())
+        f.start()
+        var last: [Row]? = nil
+        XCTAssertTrue(settleUntil {
+            if let r = f.drain().replace { last = r }
+            return last == [Row(id: "new")]
+        })
+    }
+
+    func testAFreshReplyIsNeverReAsked() {
+        let script = ScriptedFetch([flagged(["a"], stale: false)])
+        let sleeper = SleepRecorder()
+        let f = reaskFeed(script.fetch, sleeper)
+        f.start()
+        XCTAssertTrue(settleUntil { f.drain().done })
+        usleep(80_000)   // long enough for a re-ask to have started if one were going to
+        XCTAssertEqual(script.callCount, 1)
+        XCTAssertTrue(sleeper.calls.isEmpty)
+    }
+
+    func testTheReAskStopsAtTheBound() {
+        let lock = NSLock()
+        var fetches = 0
+        let sleeper = SleepRecorder()
+        let bounded = reaskFeed({ _, _ in
+            lock.lock(); fetches += 1; lock.unlock()
+            return self.flagged(["old"])
+        }, sleeper)
+        let expected = Int(LibraryReask.maxTotalWait / LibraryReask.interval)
+        bounded.start()
+        XCTAssertTrue(settleUntil(5) { sleeper.calls.count == expected })
+        usleep(80_000)
+        XCTAssertEqual(sleeper.calls.count, expected, "asked past the bound")
+        XCTAssertEqual(sleeper.calls.reduce(0, +), LibraryReask.maxTotalWait)
+        lock.lock(); let n = fetches; lock.unlock()
+        XCTAssertEqual(n, 1 + expected, "one walk, then one probe per interval")
+        XCTAssertGreaterThan(LibraryReask.maxTotalWait, 150 * 2, "must comfortably exceed a ~150 s live refresh")
+    }
+
+    func testAResetWhileWaitingDropsTheReAsk() {
+        let script = ScriptedFetch([flagged(["old"]), flagged(["new"], stale: false), flagged(["new"], stale: false)])
+        let sleeper = SleepRecorder(gateFirst: true)
+        let f = reaskFeed(script.fetch, sleeper)
+        f.start()
+        XCTAssertTrue(settleUntil { !sleeper.calls.isEmpty }, "never reached the re-ask wait")
+        f.reset()                          // the provenance switched while it waited
+        sleeper.firstGate.signal()
+        usleep(80_000)
+        XCTAssertEqual(script.callCount, 1, "a re-ask went out after a provenance switch")
+        let d = f.drain()
+        XCTAssertNil(d.replace)
+        XCTAssertTrue(d.append.isEmpty)
+    }
+
+    func testAReAskResultThatOutlivedAResetIsDropped() {
+        let script = ScriptedFetch([flagged(["old"]), flagged(["new"], stale: false), flagged(["new"], stale: false)])
+        script.gate(at: 2)                 // hold the re-walk's page
+        let f = reaskFeed(script.fetch, SleepRecorder())
+        f.start()
+        XCTAssertTrue(settleUntil { script.callCount > 2 }, "never reached the re-walk")
+        _ = f.drain()
+        f.reset()
+        script.release(at: 2)
+        usleep(80_000)
+        let d = f.drain()
+        XCTAssertNil(d.replace, "a re-ask result landed after a provenance switch")
+        XCTAssertTrue(d.append.isEmpty)
+    }
+
+    func testStartWhileAReAskIsInFlightDoesNotStackAnother() {
+        let script = ScriptedFetch([flagged(["old"]), flagged(["new"], stale: false), flagged(["new"], stale: false)])
+        script.gate(at: 1)                 // hold the first probe
+        let f = reaskFeed(script.fetch, SleepRecorder())
+        f.start()
+        XCTAssertTrue(settleUntil { script.callCount > 1 }, "never reached the probe")
+        f.start()
+        f.start()
+        usleep(80_000)
+        XCTAssertEqual(script.callCount, 2, "a second walk started beside the re-ask")
+        script.release(at: 1)
+        var last: [Row]? = nil
+        XCTAssertTrue(settleUntil {
+            if let r = f.drain().replace { last = r }
+            return last == [Row(id: "new")]
+        })
+        XCTAssertEqual(script.callCount, 3)
+    }
+
 }
 
 private extension BridgeListFeedTests.ScriptedFetch {

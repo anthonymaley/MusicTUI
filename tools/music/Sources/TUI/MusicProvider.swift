@@ -419,6 +419,54 @@ enum LibraryWarmUp {
     static let gaveUp = "SpanDAC is still preparing your library"
 }
 
+/// How a list asks again when SpanDAC answered from a snapshot it was still
+/// refreshing.
+///
+/// SpanDAC serves its held library even past its 600 s age, marking the reply
+/// `stale: true`, and starts ONE background refresh (`refreshing: true`); it
+/// never pushes the result, so a client that asked once keeps the old list for
+/// the rest of its run (live case, 2026-10-10: a playlist added since the
+/// snapshot stayed missing). A flagged list therefore keeps what it got and
+/// asks again until a reply comes back unflagged.
+///
+/// **5 s between asks.** The wait is spent on a one-page probe, so asking costs
+/// one local-socket round trip (~1 ms), and 5 s keeps a fresh result within a
+/// few seconds of landing without a busy loop.
+///
+/// **600 s in all.** A live refresh took about 150 s on the Studio, so 600 s is
+/// four times that, and equal to SpanDAC's own snapshot age: a refresh that has
+/// not landed by then is not going to, and the list stops asking rather than
+/// polling for the rest of the run. Spent in seconds waited (not wall time),
+/// like `LibraryWarmUp`, so an injected `sleep` makes it deterministic.
+enum LibraryReask {
+    static let interval: TimeInterval = 5
+    static let maxTotalWait: TimeInterval = 600
+
+    /// A page that says its snapshot is old or being rebuilt.
+    static func flagged(_ page: MusicPage) -> Bool { page.stale || page.refreshing }
+
+    /// Probes the list's first page every `interval` until it comes back
+    /// unflagged, then calls `rewalk` (which re-reads the whole list and
+    /// returns whether THAT read was flagged again). Returns when a fresh list
+    /// landed, the bound is spent, `isCurrent` turns false (a provenance switch
+    /// outlived this), or a probe fails — a failed re-ask leaves the list on
+    /// screen as it was.
+    static func run(sleep: (TimeInterval) -> Void,
+                    isCurrent: () -> Bool,
+                    probe: () throws -> MusicPage,
+                    rewalk: () -> Bool) {
+        var waited: TimeInterval = 0
+        while waited < maxTotalWait {
+            sleep(interval)
+            waited += interval
+            guard isCurrent() else { return }
+            guard let page = try? probe() else { return }
+            if flagged(page) { continue }
+            if !rewalk() { return }
+        }
+    }
+}
+
 /// One warm-up budget, spent across however many requests share it, in seconds
 /// of waiting rather than in attempts (D5).
 ///

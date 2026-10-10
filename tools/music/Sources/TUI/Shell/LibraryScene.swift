@@ -347,6 +347,10 @@ final class LibraryScene: Scene {
     /// serialises Music.app's bulk reads; a Bridge walk contends for none of
     /// them, so it is kept out of that budget entirely and guarded here.
     private var bridgeWalkInFlight = false
+    /// Bumped each time a Bridge songs walk starts. A stale-snapshot re-ask
+    /// (`LibraryReask`) holds the token of the walk it followed and stops as
+    /// soon as a newer walk (`r`) has started, so two never feed the list.
+    private var bridgeSongsWalkToken = 0
     /// The rows a SpanDAC songs walk delivered, by id, under `inboxLock`, so a
     /// song played on the MusicTUI output reaches the hand-off as the row
     /// SpanDAC gave, not one rebuilt from the list's display fields.
@@ -651,6 +655,7 @@ final class LibraryScene: Scene {
         let alreadyWalking = bridgeWalkInFlight
         if !alreadyWalking {
             bridgeWalkInFlight = true
+            bridgeSongsWalkToken += 1
             bridgeFailurePending = nil
         }
         inboxLock.unlock()
@@ -664,22 +669,29 @@ final class LibraryScene: Scene {
         // resurrecting a list that has already reloaded from the other
         // backend.
         let epoch = songsWalkEpoch
+        inboxLock.lock(); let token = bridgeSongsWalkToken; inboxLock.unlock()
         // `self` is captured weakly and touched only per page, so a walk of 157
         // pages cannot keep a dismissed scene alive to its end, and a torn-down
         // scene stops the walk at its next page.
         Thread.detachNewThread { [weak self] in
-            let failure = walkLibrarySongs(provider, limit: 100,
+            // One full read of the list. Run once for the walk itself and again
+            // for each re-ask that follows a stale snapshot; `flagged` says
+            // whether any page of THIS read was stale or refreshing.
+            func readList() -> (failure: MusicProviderError?, flagged: Bool) {
+                var flagged = false
+                let failure = walkLibrarySongs(provider, limit: 100,
                 onPage: { [weak self] page in
                     guard let self else { return false }   // scene gone -> stop the walk
-                    // `stale` and `refreshing` are read and deliberately not
-                    // acted on: a page from an older snapshot is a page, and
-                    // the rows render exactly as a fresh one's do.
+                    // Freshness is information, never a failure: a page from an
+                    // older snapshot renders exactly as a fresh one's does. It
+                    // is noted so the list can ask again (`LibraryReask`).
+                    if LibraryReask.flagged(page) { flagged = true }
                     let rows = page.rows.map {
                         LibrarySong(id: $0.id, title: $0.title, artist: $0.artist, album: $0.album ?? "")
                     }
                     self.inboxLock.lock()
                     defer { self.inboxLock.unlock() }
-                    guard self.songsWalkEpoch == epoch else { return false }   // reset since -> stop
+                    guard self.songsWalkEpoch == epoch, self.bridgeSongsWalkToken == token else { return false }   // reset (or a newer walk) since -> stop
                     for row in page.rows { self.bridgeSongRowsByID[row.id] = row }
                     if self.songsAwaitingReplacement {
                         // First page of the new generation: it REPLACES what is
@@ -706,7 +718,8 @@ final class LibraryScene: Scene {
                     // underneath it.
                     self.inboxLock.lock()
                     defer { self.inboxLock.unlock() }
-                    guard self.songsWalkEpoch == epoch else { return }
+                    guard self.songsWalkEpoch == epoch, self.bridgeSongsWalkToken == token else { return }
+                    flagged = false
                     self.songsAwaitingReplacement = true
                     self.songsPending = []
                     self.songsTotalPending = nil
@@ -715,28 +728,64 @@ final class LibraryScene: Scene {
                     guard let self else { return }
                     self.inboxLock.lock()
                     defer { self.inboxLock.unlock() }
-                    guard self.songsWalkEpoch == epoch else { return }
+                    guard self.songsWalkEpoch == epoch, self.bridgeSongsWalkToken == token else { return }
                     self.bridgeWarmingPending = true
                 },
                 sleep: sleep)
-            guard let self else { return }
-            let sentence = failure.map { $0.errorDescription ?? "SpanDAC couldn't read your library" }
-            self.inboxLock.lock()
-            self.bridgeWalkInFlight = false
-            let stillCurrent = self.songsWalkEpoch == epoch   // else: reset since -> the ending is dropped too
-            if stillCurrent {
-                self.songsDone = true
-                self.bridgeFailurePending = sentence
-                self.bridgeWarmingPending = false   // it is over, one way or the other
+                return (failure, flagged)
             }
-            self.inboxLock.unlock()
-            // Also on the footer, because the list's own message only shows
-            // while the list is EMPTY (`libraryStatus` has no "rows present but
-            // the read failed" state). A walk that dies after its third page
-            // would otherwise leave a partial library looking complete —
-            // exactly the silence rule 3 forbids.
-            if stillCurrent, let sentence { self.status.post(sentence, error: true) }
+
+            /// A failure ends the read in Bridge's own sentence, on the footer
+            /// too, because the list's own message only shows while the list is
+            /// EMPTY (`libraryStatus` has no "rows present but the read failed"
+            /// state). A walk that dies after its third page would otherwise
+            /// leave a partial library looking complete — exactly the silence
+            /// rule 3 forbids.
+            func finish(_ failure: MusicProviderError?, firstRead: Bool) -> Bool {
+                guard let self else { return false }
+                let sentence = failure.map { $0.errorDescription ?? "SpanDAC couldn't read your library" }
+                self.inboxLock.lock()
+                if firstRead { self.bridgeWalkInFlight = false }
+                let stillCurrent = self.songsWalkEpoch == epoch   // else: reset since -> the ending is dropped too
+                    && self.bridgeSongsWalkToken == token
+                if stillCurrent {
+                    self.songsDone = true
+                    self.bridgeFailurePending = sentence
+                    self.bridgeWarmingPending = false   // it is over, one way or the other
+                }
+                self.inboxLock.unlock()
+                if stillCurrent, let sentence { self.status.post(sentence, error: true) }
+                return stillCurrent
+            }
+
+            let first = readList()
+            // `bridgeWalkInFlight` is released by the first read's ending alone:
+            // a re-ask must never hold `r` off.
+            let current = finish(first.failure, firstRead: true)
+            guard current, first.failure == nil, first.flagged else { return }
+
+            // SpanDAC answered from a snapshot it was still refreshing and will
+            // never push the result: keep what is shown and ask again.
+            LibraryReask.run(
+                sleep: sleep,
+                isCurrent: { [weak self] in self?.bridgeSongsWalkIsCurrent(epoch: epoch, token: token) ?? false },
+                probe: { try provider.librarySongs(cursor: nil, limit: 100) },
+                rewalk: { [weak self] in
+                    guard let self, self.bridgeSongsWalkIsCurrent(epoch: epoch, token: token) else { return false }
+                    // The replacement path a generation restart uses: the first
+                    // page swaps the list wholesale, and the cursor re-clamps.
+                    self.inboxLock.lock()
+                    self.songsAwaitingReplacement = true
+                    self.inboxLock.unlock()
+                    let again = readList()
+                    return finish(again.failure, firstRead: false) && again.failure == nil && again.flagged
+                })
         }
+    }
+
+    private func bridgeSongsWalkIsCurrent(epoch: Int, token: Int) -> Bool {
+        inboxLock.lock(); defer { inboxLock.unlock() }
+        return songsWalkEpoch == epoch && bridgeSongsWalkToken == token
     }
 
     /// Ask Bridge for the Songs list again, on a person's `r`. Its own retry,

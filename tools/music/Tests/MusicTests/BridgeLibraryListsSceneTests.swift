@@ -446,4 +446,78 @@ final class BridgeLibraryListsSceneTests: XCTestCase {
         XCTAssertTrue(out.contains("Drone Logic"), "a filter typed before the rows arrived never matched once they loaded")
         XCTAssertFalse(out.contains("Other Album"), "the filter matched a row it should have excluded")
     }
+
+    // MARK: - Songs re-asks a stale snapshot
+
+    private func songsReply(_ id: String, _ title: String, generation: Int, stale: Bool) -> String {
+        """
+        {"ok":true,"op":"slice.librarySongs","generation":\(generation),"total":1,"stale":\(stale),"refreshing":\(stale),
+         "items":[{"id":"\(id)","title":"\(title)","artist":"Radiohead","album":"In Rainbows","kind":"song"}],
+         "next_cursor":null}
+        """
+    }
+
+    /// A stale Songs read is shown, then — after one interval, on a one-page
+    /// probe — replaced wholesale by the first unflagged read.
+    func testAStaleSongsListIsShownThenReplacedByTheFreshRead() {
+        let wire = BridgeLibraryReadsWire(["slice.librarySongs": [
+            songsReply("old", "Old Song", generation: 1, stale: true),    // the walk
+            songsReply("old", "Old Song", generation: 1, stale: false),   // probe: refresh landed
+            songsReply("new", "New Song", generation: 2, stale: false)]]) // the re-walk
+        wire.gate(op: "slice.librarySongs", at: 1)
+        let waits = ReaskWaits()
+        let s = libraryTestScene(flag: BridgeSelectedFlag(true), wire: wire, spy: LibraryAppleScriptSpy(),
+                                 warmUpSleep: waits.record)
+        goToSubView(s, .songs)
+        XCTAssertTrue(settleScene(s) { s.songsForTest.map(\.id) == ["old"] }, "the stale list was not shown")
+        XCTAssertTrue(settleScene(s) { wire.reached(op: "slice.librarySongs", at: 1) }, "no re-ask probe went out")
+        XCTAssertEqual(s.songsForTest.map(\.id), ["old"], "the list changed before a fresh read existed")
+        wire.release(op: "slice.librarySongs", at: 1)
+        XCTAssertTrue(settleScene(s) { s.songsForTest.map(\.id) == ["new"] }, "the fresh read never replaced the stale list")
+        XCTAssertEqual(waits.all, [LibraryReask.interval])
+        XCTAssertEqual(wire.sent("slice.librarySongs").count, 3)
+    }
+
+    func testAFreshSongsListIsNeverReAsked() {
+        let wire = BridgeLibraryReadsWire(["slice.librarySongs": [songsReply("a", "A", generation: 1, stale: false)]])
+        let waits = ReaskWaits()
+        let s = libraryTestScene(flag: BridgeSelectedFlag(true), wire: wire, spy: LibraryAppleScriptSpy(),
+                                 warmUpSleep: waits.record)
+        goToSubView(s, .songs)
+        XCTAssertTrue(settleScene(s) { s.songsForTest.map(\.id) == ["a"] })
+        Thread.sleep(forTimeInterval: 0.1)
+        XCTAssertEqual(wire.sent("slice.librarySongs").count, 1)
+        XCTAssertTrue(waits.all.isEmpty)
+    }
+
+    /// The probe is held while the output flips away from SpanDAC: the re-ask
+    /// must not land its list on the Music.app list that replaced it.
+    func testASongsReAskThatOutlivedAProvenanceSwitchIsDropped() {
+        let wire = BridgeLibraryReadsWire(["slice.librarySongs": [
+            songsReply("old", "Old Song", generation: 1, stale: true),
+            songsReply("new", "New Song", generation: 2, stale: false),
+            songsReply("new", "New Song", generation: 2, stale: false)]])
+        wire.gate(op: "slice.librarySongs", at: 1)
+        let flag = BridgeSelectedFlag(true)
+        let s = libraryTestScene(flag: flag, wire: wire, spy: LibraryAppleScriptSpy())
+        goToSubView(s, .songs)
+        XCTAssertTrue(settleScene(s) { wire.reached(op: "slice.librarySongs", at: 1) })
+        flag.selected = false
+        XCTAssertTrue(settleScene(s) { s.songsForTest.isEmpty }, "the provenance reset never cleared the list")
+        wire.release(op: "slice.librarySongs", at: 1)
+        Thread.sleep(forTimeInterval: 0.2)
+        for _ in 0..<10 { _ = s.tick(snapshot: idle) }
+        XCTAssertFalse(s.songsForTest.contains { $0.id == "new" }, "a SpanDAC re-ask landed after the switch")
+        XCTAssertEqual(wire.sent("slice.librarySongs").count, 2, "the re-walk went out after the switch")
+    }
+
 }
+
+/// An injected warm-up/re-ask sleep that records what it was asked for.
+private final class ReaskWaits {
+    private let lock = NSLock()
+    private var taken: [TimeInterval] = []
+    var all: [TimeInterval] { lock.lock(); defer { lock.unlock() }; return taken }
+    func record(_ seconds: TimeInterval) { lock.lock(); taken.append(seconds); lock.unlock() }
+}
+
