@@ -877,4 +877,26 @@ final class BridgePlaylistsPlaySceneTests: XCTestCase {
         XCTAssertEqual(counter.callCount, 0, "playTrack ran an AppleScript call before checking routing.mode")
         XCTAssertEqual(status.current()?.text, LibraryProvenance.bridgeSelectedMusicAppList)
     }
+
+    // MARK: - The tracks feed never re-asks a stale reply
+
+    /// A drilled-in tracks pane is read by a cursor-bearing list: swapping it
+    /// for a longer or shorter one under `trCursor` is not something a stale
+    /// snapshot may do. Only the four top-level lists re-ask.
+    func testAFlaggedTracksReplyIsNeverReAsked() {
+        let flaggedTracks = """
+        {"ok":true,"op":"slice.libraryPlaylistTracks","generation":3,"total":1,"stale":true,"refreshing":true,
+         "items":[{"id":"i.a","title":"Old","artist":"Art","kind":"song"}],"next_cursor":null,"skipped_videos":0}
+        """
+        let wire = BridgeLibraryReadsWire(["slice.libraryPlaylists": [onePlaylistPage]])
+        wire.script("slice.libraryPlaylistTracks", [flaggedTracks, tracksPage([("i.b", "New", "Art")])])
+        let s = settledScene(wire: wire)
+        _ = s.handle(.enter)
+        XCTAssertTrue(settleScene(s) { s.render(frame: threeZoneFrame, snapshot: idle).contains("Old") })
+        flushTicks(s)
+        usleep(100_000)
+        flushTicks(s)
+        XCTAssertEqual(wire.sent("slice.libraryPlaylistTracks").count, 1, "the tracks feed re-asked a flagged reply")
+        XCTAssertTrue(s.render(frame: threeZoneFrame, snapshot: idle).contains("Old"))
+    }
 }

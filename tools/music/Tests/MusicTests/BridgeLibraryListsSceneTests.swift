@@ -511,6 +511,74 @@ final class BridgeLibraryListsSceneTests: XCTestCase {
         XCTAssertEqual(wire.sent("slice.librarySongs").count, 2, "the re-walk went out after the switch")
     }
 
+
+    // MARK: - A replacement keeps the selected row by id
+
+    private func albumsReply(_ ids: [String], stale: Bool) -> String {
+        let rows = ids.map { "{\"id\":\"\($0)\",\"title\":\"T\($0)\",\"artist\":\"Art\",\"track_count\":9,\"kind\":\"album\"}" }
+            .joined(separator: ",")
+        return """
+        {"ok":true,"op":"slice.libraryAlbums","generation":3,"total":\(ids.count),"stale":\(stale),"refreshing":\(stale),
+         "items":[\(rows)],"next_cursor":null}
+        """
+    }
+
+    func testAnAlbumsReplacementKeepsTheSelectedAlbumWhenARowIsInsertedAbove() {
+        let wire = BridgeLibraryReadsWire(["slice.libraryAlbums": [
+            albumsReply(["x", "y"], stale: true),
+            albumsReply(["new", "x", "y"], stale: false),
+            albumsReply(["new", "x", "y"], stale: false)]])
+        wire.gate(op: "slice.libraryAlbums", at: 1)
+        let s = libraryTestScene(flag: BridgeSelectedFlag(true), wire: wire, spy: LibraryAppleScriptSpy())
+        goToSubView(s, .albums)
+        XCTAssertTrue(settleScene(s) { s.render(frame: frame, snapshot: idle).contains("Tx") })
+        XCTAssertTrue(settleScene(s) { wire.reached(op: "slice.libraryAlbums", at: 1) })
+        _ = s.handle(.down)   // y
+        XCTAssertEqual(s.navCursorForTest, 1)
+        wire.release(op: "slice.libraryAlbums", at: 1)
+        XCTAssertTrue(settleScene(s) { s.render(frame: frame, snapshot: idle).contains("Tnew") })
+        XCTAssertEqual(s.navCursorForTest, 2, "the cursor stayed on index 1, which is now a different album")
+    }
+
+    func testASongsReplacementKeepsTheSelectedSongWhenARowIsInsertedAbove() {
+        func songs(_ ids: [String], stale: Bool) -> String {
+            let rows = ids.map { "{\"id\":\"\($0)\",\"title\":\"S\($0)\",\"artist\":\"Art\",\"album\":\"Alb\",\"kind\":\"song\"}" }
+                .joined(separator: ",")
+            return """
+            {"ok":true,"op":"slice.librarySongs","generation":3,"total":\(ids.count),"stale":\(stale),"refreshing":\(stale),
+             "items":[\(rows)],"next_cursor":null}
+            """
+        }
+        let wire = BridgeLibraryReadsWire(["slice.librarySongs": [
+            songs(["x", "y"], stale: true), songs(["new", "x", "y"], stale: false), songs(["new", "x", "y"], stale: false)]])
+        wire.gate(op: "slice.librarySongs", at: 1)
+        let s = libraryTestScene(flag: BridgeSelectedFlag(true), wire: wire, spy: LibraryAppleScriptSpy())
+        goToSubView(s, .songs)
+        XCTAssertTrue(settleScene(s) { s.songsForTest.map(\.id) == ["x", "y"] })
+        XCTAssertTrue(settleScene(s) { wire.reached(op: "slice.librarySongs", at: 1) })
+        _ = s.handle(.down)
+        XCTAssertEqual(s.navCursorForTest, 1)
+        wire.release(op: "slice.librarySongs", at: 1)
+        XCTAssertTrue(settleScene(s) { s.songsForTest.map(\.id) == ["new", "x", "y"] })
+        XCTAssertEqual(s.navCursorForTest, 2, "the cursor stayed on index 1, which is now a different song")
+    }
+
+    /// `r` pressed while a re-ask is waiting: the old walk's token dies at the
+    /// keypress, not at the next tick, so its probe cannot go on to re-read.
+    func testRInvalidatesAWaitingSongsReAskAtTheKeypress() {
+        let wire = BridgeLibraryReadsWire(["slice.librarySongs": [
+            songsReply("old", "Old Song", generation: 1, stale: true),
+            songsReply("new", "New Song", generation: 2, stale: false),
+            songsReply("new", "New Song", generation: 2, stale: false)]])
+        wire.gate(op: "slice.librarySongs", at: 1)
+        let s = libraryTestScene(flag: BridgeSelectedFlag(true), wire: wire, spy: LibraryAppleScriptSpy())
+        goToSubView(s, .songs)
+        XCTAssertTrue(settleScene(s) { wire.reached(op: "slice.librarySongs", at: 1) })
+        s.retryBridgeSongsForTest()          // no tick after it
+        wire.release(op: "slice.librarySongs", at: 1)
+        Thread.sleep(forTimeInterval: 0.2)
+        XCTAssertEqual(wire.sent("slice.librarySongs").count, 2, "the old re-ask went on to re-read after `r`")
+    }
 }
 
 /// An injected warm-up/re-ask sleep that records what it was asked for.

@@ -394,4 +394,96 @@ final class BridgePlaylistsListSceneTests: XCTestCase {
         XCTAssertEqual(built?.names, ["Chill", "Deep House"])
         XCTAssertEqual(built?.subscription, ["Deep House"])
     }
+
+    // MARK: - Re-asking a stale snapshot (the Playlists rail)
+
+    private func rail(_ items: [(id: String, title: String)], stale: Bool) -> String {
+        let rows = items.map { "{\"id\":\"\($0.id)\",\"title\":\"\($0.title)\",\"kind\":\"playlist\"}" }.joined(separator: ",")
+        return """
+        {"ok":true,"op":"slice.libraryPlaylists","generation":3,"total":\(items.count),"stale":\(stale),"refreshing":\(stale),
+         "items":[\(rows)],"next_cursor":null}
+        """
+    }
+    private func trackList(_ title: String) -> String {
+        """
+        {"ok":true,"op":"slice.libraryPlaylistTracks","generation":3,"total":1,
+         "items":[{"id":"t.\(title)","title":"\(title)","artist":"Art","kind":"song"}],"next_cursor":null,"skipped_videos":0}
+        """
+    }
+    private let queueOK = "{\"ok\":true,\"op\":\"slice.queue\"}"
+    private let statusOK = "{\"ok\":true,\"op\":\"slice.status\",\"status\":{\"playback\":\"playing\"}}"
+
+    /// A scene on a stale rail [A, B] whose re-ask probe is held, so the stale
+    /// list can be driven before the fresh one lands.
+    private func staleRailScene(fresh: [(id: String, title: String)], extra: [String: [String]] = [:])
+        -> (PlaylistsScene, BridgeLibraryReadsWire) {
+        let a = (id: "plA", title: "Alpha"), b = (id: "plB", title: "Bravo")
+        let wire = BridgeLibraryReadsWire(["slice.libraryPlaylists": [
+            rail([a, b], stale: true),        // the walk
+            rail(fresh, stale: false),        // the probe
+            rail(fresh, stale: false)]])      // the re-walk
+        for (op, replies) in extra { wire.script(op, replies) }
+        wire.gate(op: "slice.libraryPlaylists", at: 1)
+        let s = playlistsTestScene(flag: BridgeSelectedFlag(true), wire: wire, spy: PlaylistAppleScriptSpy(), width: 120)
+        XCTAssertTrue(settleScene(s) { s.railNamesForTest == ["Alpha", "Bravo"] }, "the stale rail was not shown")
+        XCTAssertTrue(settleScene(s) { wire.reached(op: "slice.libraryPlaylists", at: 1) }, "no re-ask probe went out")
+        return (s, wire)
+    }
+
+    func testAStaleRailIsShownThenReplacedByTheFreshOne() {
+        let (s, wire) = staleRailScene(fresh: [(id: "plF", title: "Friday"), (id: "plA", title: "Alpha"), (id: "plB", title: "Bravo")])
+        XCTAssertEqual(s.railNamesForTest, ["Alpha", "Bravo"], "the rail changed before a fresh read existed")
+        wire.release(op: "slice.libraryPlaylists", at: 1)
+        XCTAssertTrue(settleScene(s) { s.railNamesForTest == ["Friday", "Alpha", "Bravo"] },
+                      "the playlist added since the snapshot never appeared: \(s.railNamesForTest)")
+        XCTAssertEqual(wire.sent("slice.libraryPlaylists").count, 3)
+    }
+
+    /// Insert above the selection: the cursor follows Bravo to its new index,
+    /// so `p` plays Bravo, not whatever now sits at index 1.
+    func testAReplacementKeepsTheSelectedPlaylistWhenARowIsInsertedAbove() {
+        let (s, wire) = staleRailScene(fresh: [(id: "plF", title: "Friday"), (id: "plA", title: "Alpha"), (id: "plB", title: "Bravo")],
+                                       extra: ["slice.libraryPlaylistTracks": [trackList("Bravo")],
+                                               "slice.queue": [queueOK], "slice.status": [statusOK]])
+        _ = s.handle(.down)
+        XCTAssertEqual(s.railCursorForTest, 1)
+        wire.release(op: "slice.libraryPlaylists", at: 1)
+        XCTAssertTrue(settleScene(s) { s.railNamesForTest == ["Friday", "Alpha", "Bravo"] })
+        XCTAssertEqual(s.railCursorForTest, 2, "the selection stayed on index 1, which is now Alpha")
+        _ = s.handle(.char("p"))
+        XCTAssertTrue(settleScene(s) { !wire.sent("slice.libraryPlaylistTracks").isEmpty })
+        XCTAssertEqual(wire.sent("slice.libraryPlaylistTracks").last?["id"] as? String, "plB",
+                       "p acted on a playlist other than the selected one")
+    }
+
+    /// Drilled into Bravo when the fresh rail lands: the rail cursor and the
+    /// open tracks pane still agree.
+    func testADrilledInPlaylistStaysCoherentWithTheRailWhenARowIsInsertedAbove() {
+        let (s, wire) = staleRailScene(fresh: [(id: "plF", title: "Friday"), (id: "plA", title: "Alpha"), (id: "plB", title: "Bravo")],
+                                       extra: ["slice.libraryPlaylistTracks": [trackList("BravoSong")]])
+        _ = s.handle(.down)
+        _ = s.handle(.enter)
+        XCTAssertTrue(settleScene(s) { s.drilledTrackTitlesForTest == ["BravoSong"] })
+        wire.release(op: "slice.libraryPlaylists", at: 1)
+        XCTAssertTrue(settleScene(s) { s.railNamesForTest == ["Friday", "Alpha", "Bravo"] })
+        XCTAssertEqual(s.railCursorForTest, 2)
+        XCTAssertEqual(s.drilledPlaylistIDForTest, "plB")
+        XCTAssertEqual(s.drilledTrackTitlesForTest, ["BravoSong"], "the open tracks pane was lost")
+    }
+
+    /// The playlist drilled into is gone from the fresh rail: the drill-in
+    /// closes rather than leaving a tracks pane for a row that is not there.
+    func testADrilledInPlaylistThatVanishedResetsTheDrillIn() {
+        let (s, wire) = staleRailScene(fresh: [(id: "plA", title: "Alpha")],
+                                       extra: ["slice.libraryPlaylistTracks": [trackList("BravoSong")]])
+        _ = s.handle(.down)
+        _ = s.handle(.enter)
+        XCTAssertTrue(settleScene(s) { s.drilledTrackTitlesForTest == ["BravoSong"] })
+        wire.release(op: "slice.libraryPlaylists", at: 1)
+        XCTAssertTrue(settleScene(s) { s.railNamesForTest == ["Alpha"] })
+        XCTAssertNil(s.drilledPlaylistIDForTest, "the tracks pane still belongs to a playlist that is gone")
+        XCTAssertTrue(s.drilledTrackTitlesForTest.isEmpty)
+        XCTAssertEqual(s.railCursorForTest, 0)
+    }
+
 }

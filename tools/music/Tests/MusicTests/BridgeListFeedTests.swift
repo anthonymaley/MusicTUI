@@ -268,7 +268,7 @@ final class BridgeListFeedTests: XCTestCase {
 
     private func reaskFeed(_ fetch: @escaping (String?, Int) throws -> MusicPage,
                            _ sleeper: SleepRecorder) -> BridgeListFeed<Row> {
-        BridgeListFeed<Row>(fetch: fetch, map: { Row(id: $0.id) }, sleep: sleeper.sleep)
+        BridgeListFeed<Row>(fetch: fetch, map: { Row(id: $0.id) }, sleep: sleeper.sleep, reasksStale: true)
     }
 
     func testAStaleReplyIsKeptThenReplacedByTheFirstFreshReadAfterTheInterval() {
@@ -299,6 +299,19 @@ final class BridgeListFeedTests: XCTestCase {
         XCTAssertTrue(done, "the first walk's done must still be reported")
         XCTAssertEqual(sleeper.calls, [LibraryReask.interval, LibraryReask.interval])
         XCTAssertEqual(script.callCount, 4)
+    }
+
+    /// The drill-in tracks feed is built without the opt-in: a flagged tracks
+    /// read is shown as it is and never swapped under the tracks cursor.
+    func testAFeedThatDidNotOptInNeverReAsksAFlaggedReply() {
+        let script = ScriptedFetch([flagged(["t1"]), flagged(["t2"], stale: false), flagged(["t2"], stale: false)])
+        let sleeper = SleepRecorder()
+        let f = BridgeListFeed<Row>(fetch: script.fetch, map: { Row(id: $0.id) }, sleep: sleeper.sleep)
+        f.start()
+        XCTAssertTrue(settleUntil { f.drain().done })
+        usleep(80_000)
+        XCTAssertEqual(script.callCount, 1)
+        XCTAssertTrue(sleeper.calls.isEmpty)
     }
 
     func testARefreshingReplyIsAlsoReAsked() {

@@ -35,6 +35,11 @@ final class BridgeListFeed<Row> {
         /// `total`. nil until a page has landed, when SpanDAC sent none, and
         /// once two pages of one attempt disagree (they describe different lists).
         var listRev: String?
+        /// `replace` came from a stale-snapshot re-ask (`LibraryReask`) rather
+        /// than from a walk's first page: the same list, read again, so the
+        /// scene keeps its selection by row id instead of by index. One-shot,
+        /// like `replace`.
+        var reasked: Bool = false
     }
 
     private let lock = NSLock()
@@ -46,6 +51,11 @@ final class BridgeListFeed<Row> {
     /// today's behaviour for Albums and Artists; a playlist's tracks feed
     /// (C3) passes Bridge's own maximum of 500.
     private let limit: Int
+    /// Opt-in. Only the four top-level lists (Playlists, Songs, Albums,
+    /// Artists) ask again when SpanDAC says its snapshot is stale: a list with a
+    /// cursor inside it (a drilled-in tracks pane) must never be swapped for a
+    /// different length under that cursor, so it keeps the default of off.
+    private let reasksStale: Bool
 
     private var walking = false
     /// A stale-snapshot re-ask is waiting or running (see `LibraryReask`). It
@@ -66,15 +76,18 @@ final class BridgeListFeed<Row> {
     private var pendingDone = false
     private var pendingSkippedVideos: Int? = nil
     private var pendingListRev: String? = nil
+    private var pendingReasked = false
 
     init(fetch: @escaping (String?, Int) throws -> MusicPage,
         map: @escaping (MusicRow) -> Row,
         sleep: @escaping (TimeInterval) -> Void = { Thread.sleep(forTimeInterval: $0) },
-        limit: Int = 100) {
+        limit: Int = 100,
+        reasksStale: Bool = false) {
         self.fetch = fetch
         self.map = map
         self.sleep = sleep
         self.limit = limit
+        self.reasksStale = reasksStale
     }
 
     /// Starts one walk unless one is already in flight, and clears the last
@@ -115,6 +128,7 @@ final class BridgeListFeed<Row> {
                     self.pendingAppend.append(contentsOf: rows)
                 } else {
                     self.pendingReplace = rows
+                    self.pendingReasked = false   // a walk's own first page, not a re-ask's
                     self.pendingAppend = []
                     replacedThisAttempt = true
                 }
@@ -172,7 +186,7 @@ final class BridgeListFeed<Row> {
             // stays on screen and this same thread asks again until a read
             // comes back unflagged. `reasking` is set under the lock that
             // cleared `walking`, so no `start()` can slip between the two.
-            let reask = error == nil && sawFlagged
+            let reask = self.reasksStale && error == nil && sawFlagged
             if reask { self.reasking = true }
             self.lock.unlock()
             guard reask else { return }
@@ -226,6 +240,7 @@ final class BridgeListFeed<Row> {
                 self.pendingTotal = total
                 self.pendingSkippedVideos = skipped
                 self.pendingListRev = listRev
+                self.pendingReasked = true
                 return flagged   // still flagged: keep asking, within the same bound
             })
         lock.lock()
@@ -255,6 +270,7 @@ final class BridgeListFeed<Row> {
         pendingDone = false
         pendingSkippedVideos = nil
         pendingListRev = nil
+        pendingReasked = false
         lock.unlock()
     }
 
@@ -277,7 +293,9 @@ final class BridgeListFeed<Row> {
         lock.lock()
         let out = Drained(replace: pendingReplace, append: pendingAppend, total: pendingTotal,
                           failure: pendingFailure, warming: pendingWarming, done: pendingDone,
-                          skippedVideos: pendingSkippedVideos, listRev: pendingListRev)
+                          skippedVideos: pendingSkippedVideos, listRev: pendingListRev,
+                          reasked: pendingReasked)
+        pendingReasked = false
         pendingReplace = nil
         pendingAppend = []
         pendingDone = false

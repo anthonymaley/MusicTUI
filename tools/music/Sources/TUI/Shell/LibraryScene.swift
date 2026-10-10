@@ -205,7 +205,8 @@ final class LibraryScene: Scene {
                 return try provider.libraryAlbums(cursor: cursor, limit: limit)
             },
             map: { LibraryAlbum(id: $0.id, name: $0.title, artist: $0.artist, trackCount: $0.trackCount ?? 0) },
-            sleep: sleep)
+            sleep: sleep,
+            reasksStale: true)
     }()
     private lazy var artistsFeed: BridgeListFeed<LibraryArtist> = {
         let sleep = warmUpSleep
@@ -217,7 +218,8 @@ final class LibraryScene: Scene {
                 return try provider.libraryArtists(cursor: cursor, limit: limit)
             },
             map: { LibraryArtist(id: $0.id, name: $0.title) },
-            sleep: sleep)
+            sleep: sleep,
+            reasksStale: true)
     }()
     private var bridgeAlbumTotal: Int? = nil
     private var bridgeArtistTotal: Int? = nil
@@ -270,6 +272,8 @@ final class LibraryScene: Scene {
 
     /// Cursor position within the visible rows, for tests.
     var navCursorForTest: Int { nav.cursor }
+    /// The `r` retry of the Bridge songs list, for tests that press it without a tick.
+    func retryBridgeSongsForTest() { retryBridgeSongs() }
 
     /// Which of artists / albums / songs is showing, for tests.
     var subViewForTest: LibrarySubView { nav.subView }
@@ -340,6 +344,9 @@ final class LibraryScene: Scene {
     /// drain REPLACES the list rather than appending to it, so the two
     /// generations are never on screen together.
     private var songsReplacePending = false
+    /// That replacement is a stale-snapshot re-ask's whole list, so the cursor
+    /// follows the selected song by id (see tick).
+    private var songsReplaceIsReask = false
     /// Bridge said "not ready yet". Drained like the rest so render never reads
     /// it off the walk's thread.
     private var bridgeWarmingPending = false
@@ -677,8 +684,14 @@ final class LibraryScene: Scene {
             // One full read of the list. Run once for the walk itself and again
             // for each re-ask that follows a stale snapshot; `flagged` says
             // whether any page of THIS read was stale or refreshing.
-            func readList() -> (failure: MusicProviderError?, flagged: Bool) {
+            func readList(reask: Bool = false) -> (failure: MusicProviderError?, flagged: Bool) {
                 var flagged = false
+                // A re-ask collects the WHOLE list and posts it once, so the
+                // swap is wholesale and the selected row can be found by id in
+                // the finished list (a first page alone may not contain it).
+                var collected: [LibrarySong] = []
+                var collectedRows: [MusicRow] = []
+                var collectedTotal: Int? = nil
                 let failure = walkLibrarySongs(provider, limit: 100,
                 onPage: { [weak self] page in
                     guard let self else { return false }   // scene gone -> stop the walk
@@ -692,6 +705,12 @@ final class LibraryScene: Scene {
                     self.inboxLock.lock()
                     defer { self.inboxLock.unlock() }
                     guard self.songsWalkEpoch == epoch, self.bridgeSongsWalkToken == token else { return false }   // reset (or a newer walk) since -> stop
+                    if reask {
+                        collected.append(contentsOf: rows)
+                        collectedRows.append(contentsOf: page.rows)
+                        if let total = page.total { collectedTotal = total }
+                        return true
+                    }
                     for row in page.rows { self.bridgeSongRowsByID[row.id] = row }
                     if self.songsAwaitingReplacement {
                         // First page of the new generation: it REPLACES what is
@@ -720,6 +739,7 @@ final class LibraryScene: Scene {
                     defer { self.inboxLock.unlock() }
                     guard self.songsWalkEpoch == epoch, self.bridgeSongsWalkToken == token else { return }
                     flagged = false
+                    if reask { collected = []; collectedRows = []; collectedTotal = nil; return }
                     self.songsAwaitingReplacement = true
                     self.songsPending = []
                     self.songsTotalPending = nil
@@ -732,6 +752,17 @@ final class LibraryScene: Scene {
                     self.bridgeWarmingPending = true
                 },
                 sleep: sleep)
+                if reask, failure == nil, let self {
+                    self.inboxLock.lock()
+                    if self.songsWalkEpoch == epoch, self.bridgeSongsWalkToken == token {
+                        for row in collectedRows { self.bridgeSongRowsByID[row.id] = row }
+                        self.songsPending = collected
+                        self.songsReplacePending = true
+                        self.songsReplaceIsReask = true
+                        self.songsTotalPending = collectedTotal
+                    }
+                    self.inboxLock.unlock()
+                }
                 return (failure, flagged)
             }
 
@@ -745,7 +776,7 @@ final class LibraryScene: Scene {
                 guard let self else { return false }
                 let sentence = failure.map { $0.errorDescription ?? "SpanDAC couldn't read your library" }
                 self.inboxLock.lock()
-                if firstRead { self.bridgeWalkInFlight = false }
+                if firstRead, self.bridgeSongsWalkToken == token { self.bridgeWalkInFlight = false }
                 let stillCurrent = self.songsWalkEpoch == epoch   // else: reset since -> the ending is dropped too
                     && self.bridgeSongsWalkToken == token
                 if stillCurrent {
@@ -772,12 +803,7 @@ final class LibraryScene: Scene {
                 probe: { try provider.librarySongs(cursor: nil, limit: 100) },
                 rewalk: { [weak self] in
                     guard let self, self.bridgeSongsWalkIsCurrent(epoch: epoch, token: token) else { return false }
-                    // The replacement path a generation restart uses: the first
-                    // page swaps the list wholesale, and the cursor re-clamps.
-                    self.inboxLock.lock()
-                    self.songsAwaitingReplacement = true
-                    self.inboxLock.unlock()
-                    let again = readList()
+                    let again = readList(reask: true)
                     return finish(again.failure, firstRead: false) && again.failure == nil && again.flagged
                 })
         }
@@ -793,6 +819,13 @@ final class LibraryScene: Scene {
     /// consulted here.
     private func retryBridgeSongs() {
         inboxLock.lock()
+        // Invalidate the old walk (and any re-ask following it) at the
+        // keypress, not at the next tick's load: until then it could still
+        // send one more read or publish into the list `r` just cleared. The
+        // old walk's ending clears `bridgeWalkInFlight` only for its own
+        // token, so the flag is released here for the walk `r` is about to start.
+        bridgeSongsWalkToken += 1
+        bridgeWalkInFlight = false
         songsResetPending = true
         songsPending = []
         songsTotalPending = nil
@@ -1010,8 +1043,7 @@ final class LibraryScene: Scene {
         bridgeFailure = nil
         bridgeWarming = false
         songsSource = nil
-        songsWalkEpoch += 1
-        inboxLock.lock(); bridgeSongRowsByID = [:]; inboxLock.unlock()
+        inboxLock.lock(); songsWalkEpoch += 1; bridgeSongRowsByID = [:]; inboxLock.unlock()
         if nav.subView == .songs { returnToRoot(.songs) }
     }
 
@@ -1117,6 +1149,7 @@ final class LibraryScene: Scene {
         let songsWalkDone = songsDone
         let songsRestarted = songsResetPending; songsResetPending = false
         let songsReplaced = songsReplacePending; songsReplacePending = false
+        let songsReaskReplaced = songsReplaceIsReask; songsReplaceIsReask = false
         let landedSongTotal = songsTotalPending
         let landedBridgeFailure = bridgeFailurePending
         let landedWarming = bridgeWarmingPending
@@ -1213,6 +1246,11 @@ final class LibraryScene: Scene {
         // page 1's sort order ended) always found nothing, which is exactly
         // what the live gate saw ("Drone Logic" / "Daniel Avery", both
         // sorted well past a small first page). Both must apply, every tick.
+        // A re-ask replacement is the same list read again: follow the selected
+        // row by id rather than leave the cursor on whichever album moved into
+        // its index. Only at the root list; a drilled level carries its own id.
+        let albumAnchor = albumsDrain.reasked && albumsDrain.replace != nil && isAlbumList
+            ? selectionUnderCursor()?.id : nil
         if let replace = albumsDrain.replace {
             albums = replace
         }
@@ -1220,6 +1258,9 @@ final class LibraryScene: Scene {
             albums.append(contentsOf: albumsDrain.append)
         }
         if albumsDrain.replace != nil || !albumsDrain.append.isEmpty {
+            if let albumAnchor, let pos = visibleAlbumIndices().firstIndex(where: { albums[$0].id == albumAnchor }) {
+                nav.cursor = pos
+            }
             epArtists = albumArtistSet(from: albums, minTracks: 2, maxTracks: 5)
             albumArtists = albumArtistSet(from: albums, minTracks: 6)
             let visible = visibleAlbumIndices().count
@@ -1237,6 +1278,8 @@ final class LibraryScene: Scene {
         let artistsDrain = artistsFeed.drain()
         // Same fix as Albums above, same reason: `replace` and `append` can
         // both be non-empty in one drain, and both must be applied.
+        let artistAnchor = artistsDrain.reasked && artistsDrain.replace != nil && isArtistList
+            ? selectionUnderCursor()?.id : nil
         if let replace = artistsDrain.replace {
             artists = replace
         }
@@ -1244,6 +1287,9 @@ final class LibraryScene: Scene {
             artists.append(contentsOf: artistsDrain.append)
         }
         if artistsDrain.replace != nil || !artistsDrain.append.isEmpty {
+            if let artistAnchor, let pos = visibleArtistIndices().firstIndex(where: { artists[$0].id == artistAnchor }) {
+                nav.cursor = pos
+            }
             let visible = visibleArtistIndices().count
             if isArtistList, nav.cursor >= visible { nav.cursor = max(0, visible - 1); railScroll = 0 }
             changed = true
@@ -1272,7 +1318,11 @@ final class LibraryScene: Scene {
         // library changing underneath must not blank the list a person is
         // reading.
         if songsReplaced {
+            let songAnchor = songsReaskReplaced && isSongList ? selectionUnderCursor()?.id : nil
             songs = newSongs
+            if let songAnchor, let pos = visibleSongIndices().firstIndex(where: { songs[$0].id == songAnchor }) {
+                nav.cursor = pos
+            }
             let visible = visibleSongIndices().count
             if case .songList = nav.current, nav.cursor >= visible {
                 nav.cursor = max(0, visible - 1); railScroll = 0

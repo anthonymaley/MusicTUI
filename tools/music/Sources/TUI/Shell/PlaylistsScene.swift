@@ -142,6 +142,10 @@ final class PlaylistsScene: Scene {
 
     /// Rail cursor, an index into the whole playlist list, for tests.
     var railCursorForTest: Int { plCursor }
+    /// The playlist whose tracks pane is open (nil when none), for tests.
+    var drilledPlaylistIDForTest: String? { bridgeTracksPlaylistID }
+    /// The open tracks pane's titles, for tests.
+    var drilledTrackTitlesForTest: [String] { bridgeTracksRows.map(\.title) }
     private var trCursor = 0
     private var trScroll = 0
     private var meta: [PlaylistMeta]
@@ -224,7 +228,8 @@ final class PlaylistsScene: Scene {
                 return try provider.libraryPlaylists(cursor: cursor, limit: limit)
             },
             map: { $0 },
-            sleep: sleep)
+            sleep: sleep,
+            reasksStale: true)
     }()
     /// Bridge's rows, already stripped of MusicTUI's own temp containers at
     /// drain time (D1) — this IS "the visible rows" the header counts and the
@@ -765,7 +770,21 @@ final class PlaylistsScene: Scene {
         // finding).
         let bridgeDrain = playlistsFeed.drain()
         if let replace = bridgeDrain.replace {
+            // A re-ask replacement is the SAME list read again, so the row the
+            // person is on (or has drilled into) is followed by id to wherever
+            // it now sits; an index would land on whichever playlist moved
+            // into its place while the tracks pane still belonged to the old one.
+            let anchor: String? = bridgeDrain.reasked
+                ? (focus == .tracks ? bridgeTracksPlaylistID : currentBridgeRow()?.id)
+                : nil
             bridgePlaylistRows = replace.filter { !isTempPlaylistName($0.title) }
+            if let anchor {
+                if let idx = bridgePlaylistRows.firstIndex(where: { $0.id == anchor }) {
+                    plCursor = idx
+                } else if focus == .tracks {
+                    closeBridgeDrillIn()   // the playlist is gone: no pane for a row that isn't there
+                }
+            }
             reclampBridgeCursorToFilter()
             changed = true
         }
@@ -1098,6 +1117,24 @@ final class PlaylistsScene: Scene {
     }
 
     // MARK: playback (user-initiated; brief inline stall acceptable)
+
+    /// Closes the tracks pane and forgets its playlist, back to the rail. The
+    /// same teardown `←` does, plus the pane's rows, because the playlist they
+    /// belonged to is no longer in the list.
+    private func closeBridgeDrillIn() {
+        bridgeTracksFeed?.reset()
+        bridgeTracksFeed = nil
+        bridgeTracksRows = []
+        bridgeTracksListRev = nil
+        bridgeTracksDone = false
+        bridgeTracksTotal = nil
+        bridgeTracksFailure = nil
+        bridgeTracksWarming = false
+        bridgeTracksPlaylistID = nil
+        bridgeTracksPlaylistName = nil
+        trCursor = 0; trScroll = 0
+        focus = .playlists
+    }
 
     /// C3 item 2: drills into the playlist under the rail cursor. Resets the
     /// old tracks feed (its own epoch drops anything already in flight from
