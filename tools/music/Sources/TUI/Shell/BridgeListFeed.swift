@@ -51,11 +51,23 @@ final class BridgeListFeed<Row> {
     /// today's behaviour for Albums and Artists; a playlist's tracks feed
     /// (C3) passes Bridge's own maximum of 500.
     private let limit: Int
-    /// Opt-in. Only the four top-level lists (Playlists, Songs, Albums,
-    /// Artists) ask again when SpanDAC says its snapshot is stale: a list with a
-    /// cursor inside it (a drilled-in tracks pane) must never be swapped for a
-    /// different length under that cursor, so it keeps the default of off.
+    /// Opt-in. The four top-level lists (Playlists, Songs, Albums, Artists) and
+    /// the playlist tracks drill-in ask again when SpanDAC says its snapshot is
+    /// stale. A re-ask result arrives as ONE `replace` with `reasked == true`,
+    /// swapping the list under a live cursor, so the scene that opts in must
+    /// follow its selected row by identity and clamp its cursor and scroll into
+    /// the new count (the tracks drill-in does: row id plus occurrence among
+    /// equal ids, else the numeric cursor, clamped). A list that cannot do that
+    /// keeps the default of off.
     private let reasksStale: Bool
+
+    /// Test-only completion seam: one enter per worker thread `start()` spawns,
+    /// one leave when that thread ends by any route (dropped, failed, done,
+    /// re-ask finished). Changes no behavior.
+    private let workers = DispatchGroup()
+    func waitForWorkersForTest(timeout: TimeInterval) -> Bool {
+        workers.wait(timeout: .now() + timeout) == .success
+    }
 
     private var walking = false
     /// A stale-snapshot re-ask is waiting or running (see `LibraryReask`). It
@@ -115,7 +127,10 @@ final class BridgeListFeed<Row> {
         var replacedThisAttempt = false
         var sawFlagged = false   // any page of this attempt said stale/refreshing
 
+        let workers = self.workers
+        workers.enter()
         Thread.detachNewThread { [weak self] in
+            defer { workers.leave() }
             let error = walkLibraryPages(fetch: fetch, limit: limit, onPage: { [weak self] page in
                 guard let self else { return false }   // feed gone -> stop the walk
                 self.lock.lock()
