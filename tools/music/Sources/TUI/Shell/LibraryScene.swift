@@ -245,7 +245,7 @@ final class LibraryScene: Scene {
     /// plain `String` failure does not conform to `Error`, and this outcome
     /// is never thrown, only pattern-matched.
     private enum BridgeTracksOutcome {
-        case success([MusicRow], listRev: String?)
+        case success([MusicRow], listRev: String?, flagged: Bool)
         case failure(String)
     }
     /// Which rail's provenance epoch governs a given track fetch: the Albums
@@ -257,11 +257,28 @@ final class LibraryScene: Scene {
     private enum AlbumRailEpochSource { case albums, artists }
     private var bridgeTracksInbox:
         [(albumID: String, epochSource: AlbumRailEpochSource, epoch: Int, result: BridgeTracksOutcome)] = []
-    /// Albums whose tracks came back flagged stale/refreshing and are being
-    /// asked for again (`LibraryReask`). Under `inboxLock`. An album in here is
-    /// not kicked again; cleared with the other album caches on a provenance
-    /// switch.
-    private var bridgeTracksReasking: Set<String> = []
+    /// Albums whose CACHED tracks came back flagged stale/refreshing (main
+    /// thread only). One of them is asked for again only while it is the album
+    /// the person is looking at (`syncTracksReask`).
+    private var bridgeTracksStale: Set<String> = []
+    /// Re-ask state, all under `inboxLock`. `tracksReaskToken` is bumped
+    /// whenever the focused/drilled album changes, the sub-view changes, or a
+    /// provenance switch lands, which ends every worker holding an older token
+    /// at its next check: at most ONE album polls at a time (a worker per
+    /// visited album would leave a 600 s poller behind each one scrolled
+    /// past). `tracksReaskRunning` is the token of the live worker, if any;
+    /// `tracksReaskGaveUp` holds albums whose bound ran out or whose probe
+    /// failed, so a focus change does not restart a spent budget forever.
+    /// `lastTickAt` is the heartbeat: `tick` runs only while this tab shows.
+    private var tracksReaskToken = 0
+    private var tracksReaskRunning: Int? = nil
+    private var tracksReaskGaveUp: Set<String> = []
+    private var lastTickAt: Date = .distantPast
+    private static let tabLiveWindow: TimeInterval = 3
+    /// What `tracksReaskToken` was last bumped for (main thread only).
+    private var tracksReaskFocus: String? = nil
+    /// The artist whose albums are open, as the tick last saw it (main thread only).
+    private var artistAlbumsReaskWanted: String? = nil
     /// Bumped (under `inboxLock`) each time an artist's albums are opened, so a
     /// re-ask for the artist the person left stops asking.
     private var artistAlbumsReaskToken = 0
@@ -289,6 +306,9 @@ final class LibraryScene: Scene {
     /// The cached track titles per album, for tests.
     var trackCacheForTest: [String: [String]] { trackCache }
     var artistAlbumsForTest: [LibraryAlbum] { artistAlbums }
+    var artistAlbumsFailureForTest: String? { artistAlbumsFailure }
+    /// Fired when an artist's FIRST albums read thread ends, posted or dropped.
+    var artistAlbumsReadFinishedForTest: (() -> Void)?
 
     /// Which of artists / albums / songs is showing, for tests.
     var subViewForTest: LibrarySubView { nav.subView }
@@ -440,6 +460,9 @@ final class LibraryScene: Scene {
     /// reason `resolveAlbum` is one: the bounded-retry rule is worth a test, and
     /// a test should not pay seconds of real wall clock to prove it.
     private let warmUpSleep: (TimeInterval) -> Void
+    /// The clock the tab-is-live heartbeat reads; a seam so a test can "leave
+    /// the tab" without waiting.
+    private let now: () -> Date
 
     /// The tier filter's SWR cache (`rememberArtistTiers` / `cachedArtistTiers`),
     /// Music.app's own — never fed from Bridge rows (see the `a` handler and
@@ -460,7 +483,9 @@ final class LibraryScene: Scene {
          makeProvider: @escaping () -> MusicDataProvider? = { nil },
          handoff: MusicTUIHandoff = RefusingHandoff(),
          warmUpSleep: @escaping (TimeInterval) -> Void = { Thread.sleep(forTimeInterval: $0) },
-         resultCache: ResultCache = ResultCache()) {
+         resultCache: ResultCache = ResultCache(),
+         now: @escaping () -> Date = { Date() }) {
+        self.now = now
         self.resolveAlbum = resolveAlbum
         self.resolveArtist = resolveArtist
         self.makeProvider = makeProvider
@@ -905,34 +930,50 @@ final class LibraryScene: Scene {
         // provenance switch (or a manual Bridge retry) bumps it, and either
         // branch below (Bridge or Music.app) can equally outlive one.
         let epoch = artistsSourceEpoch
+        // One token per open, for both branches: only the latest open's reads
+        // may post. Without it the single-slot inboxes let an ABANDONED
+        // artist's slow first read land after the current artist's and
+        // overwrite it, and the tick then drops the overwriter, leaving the
+        // current artist on "Loading albums…" for good.
+        inboxLock.lock()
+        artistAlbumsReaskToken += 1
+        let token = artistAlbumsReaskToken
+        inboxLock.unlock()
+        artistAlbumsReaskWanted = artistID
         if let provider = makeProvider() {
             let sleep = warmUpSleep
-            inboxLock.lock()
-            artistAlbumsReaskToken += 1
-            let token = artistAlbumsReaskToken
-            inboxLock.unlock()
             Thread.detachNewThread { [weak self] in
                 do {
                     let list = try retryingWhileWarming(sleep: sleep) {
                         try provider.artistAlbums(artistID: artistID)
                     }
-                    guard let self else { return }
-                    self.inboxLock.lock()
-                    self.artistAlbumsInbox = (artistID, epoch, Self.libraryAlbums(from: list))
-                    self.inboxLock.unlock()
+                    // The strong `self` lives only in this block: nothing holds
+                    // the scene across the re-ask's waits.
+                    do {
+                        guard let self else { return }
+                        self.inboxLock.lock()
+                        if self.artistsSourceEpoch == epoch, self.artistAlbumsReaskToken == token {
+                            self.artistAlbumsInbox = (artistID, epoch, Self.libraryAlbums(from: list))
+                        }
+                        self.inboxLock.unlock()
+                        self.artistAlbumsReadFinishedForTest?()
+                    }
                     // SpanDAC served this from a snapshot it is still
                     // refreshing and will not push the result: ask again.
                     if LibraryReask.flagged(list) {
-                        self.reaskArtistAlbums(provider: provider, artistID: artistID, epoch: epoch,
-                                               token: token, sleep: sleep)
+                        Self.reaskArtistAlbums(scene: WeakScene(self), provider: provider, artistID: artistID,
+                                               epoch: epoch, token: token, sleep: sleep)
                     }
                 } catch {
                     guard let self else { return }
                     let sentence = (error as? MusicProviderError)?.errorDescription
                         ?? "Couldn't read that artist's albums from SpanDAC."
                     self.inboxLock.lock()
-                    self.pendingArtistAlbumsFailure = (artistID, epoch, sentence)
+                    if self.artistsSourceEpoch == epoch, self.artistAlbumsReaskToken == token {
+                        self.pendingArtistAlbumsFailure = (artistID, epoch, sentence)
+                    }
                     self.inboxLock.unlock()
+                    self.artistAlbumsReadFinishedForTest?()
                 }
             }
             return
@@ -942,7 +983,9 @@ final class LibraryScene: Scene {
             let fetched = sources.onArtistAlbums(artistID)
             guard let self else { return }
             self.inboxLock.lock()
-            self.artistAlbumsInbox = (artistID, epoch, fetched)
+            if self.artistsSourceEpoch == epoch, self.artistAlbumsReaskToken == token {
+                self.artistAlbumsInbox = (artistID, epoch, fetched)
+            }
             self.inboxLock.unlock()
         }
     }
@@ -953,73 +996,151 @@ final class LibraryScene: Scene {
         }
     }
 
+    /// Current = same provenance, same open, and the Library tab still ticking.
+    /// Under `inboxLock`.
     private func artistAlbumsReaskIsCurrent(epoch: Int, token: Int) -> Bool {
         inboxLock.lock(); defer { inboxLock.unlock() }
-        return artistsSourceEpoch == epoch && artistAlbumsReaskToken == token
+        return artistsSourceEpoch == epoch && artistAlbumsReaskToken == token && tabIsLiveLocked()
+    }
+
+    private func tabIsLiveLocked() -> Bool {
+        now().timeIntervalSince(lastTickAt) <= Self.tabLiveWindow
     }
 
     /// Asks for one artist's albums again until SpanDAC answers unflagged,
     /// posting each read to `artistAlbumsInbox`; the tick applies it only if
-    /// that artist is still the open level and the epoch matches.
-    private func reaskArtistAlbums(provider: MusicDataProvider, artistID: String, epoch: Int,
-                                   token: Int, sleep: @escaping (TimeInterval) -> Void) {
+    /// that artist is still the open level and the epoch matches. Static, and
+    /// it holds the scene weakly (`scene` is a strong reference only to start
+    /// from; the caller's thread frame drops it), so a closed scene is not
+    /// kept alive for up to 600 s.
+    private static func reaskArtistAlbums(scene ref: WeakScene, provider: MusicDataProvider,
+                                          artistID: String, epoch: Int, token: Int,
+                                          sleep: @escaping (TimeInterval) -> Void) {
+        let weakScene = ref   // box: `scene` below is re-read on every call
         LibraryReask.run(
             sleep: sleep,
-            isCurrent: { [weak self] in self?.artistAlbumsReaskIsCurrent(epoch: epoch, token: token) ?? false },
+            isCurrent: { weakScene.scene?.artistAlbumsReaskIsCurrent(epoch: epoch, token: token) ?? false },
             probe: {
                 let list = try provider.artistAlbums(artistID: artistID)
                 return MusicPage(rows: list.rows, nextCursor: nil, total: list.rows.count, generation: list.generation,
                                  stale: list.stale, refreshing: list.refreshing)
             },
-            rewalk: { [weak self] in
-                guard let self, self.artistAlbumsReaskIsCurrent(epoch: epoch, token: token),
+            rewalk: {
+                // Re-check BEFORE the read (no request for a stale open), and
+                // again under the lock before posting.
+                guard let scene = weakScene.scene,
+                      scene.artistAlbumsReaskIsCurrent(epoch: epoch, token: token),
                       let list = try? provider.artistAlbums(artistID: artistID) else { return false }
-                self.inboxLock.lock()
-                if self.artistsSourceEpoch == epoch, self.artistAlbumsReaskToken == token {
-                    self.artistAlbumsInbox = (artistID, epoch, Self.libraryAlbums(from: list))
-                }
-                self.inboxLock.unlock()
-                return LibraryReask.flagged(list)
+                scene.inboxLock.lock()
+                let post = scene.artistsSourceEpoch == epoch && scene.artistAlbumsReaskToken == token
+                    && scene.tabIsLiveLocked()
+                if post { scene.artistAlbumsInbox = (artistID, epoch, Self.libraryAlbums(from: list)) }
+                scene.inboxLock.unlock()
+                return post && LibraryReask.flagged(list)
             })
-        reaskFinishedForTest?()
+        weakScene.scene?.reaskFinishedForTest?()
     }
 
-    private func albumRailEpochIsCurrent(_ source: AlbumRailEpochSource, _ epoch: Int) -> Bool {
+    private final class WeakScene {
+        weak var scene: LibraryScene?
+        init(_ scene: LibraryScene?) { self.scene = scene }
+    }
+
+    private func tracksReaskIsCurrent(token: Int, source: AlbumRailEpochSource, epoch: Int) -> Bool {
         inboxLock.lock(); defer { inboxLock.unlock() }
-        return (source == .artists ? artistsSourceEpoch : albumsSourceEpoch) == epoch
+        return tracksReaskToken == token && tabIsLiveLocked()
+            && (source == .artists ? artistsSourceEpoch : albumsSourceEpoch) == epoch
     }
 
-    /// Asks for one album's tracks again until SpanDAC answers unflagged. Each
-    /// read goes to `bridgeTracksInbox` under the epoch the first one was
-    /// kicked with, so the tick overwrites that album's cache entry, or drops
-    /// the read after a provenance switch.
-    private func reaskBridgeTracks(provider: MusicDataProvider, albumID: String,
-                                   epochSource: AlbumRailEpochSource, epoch: Int,
-                                   sleep: @escaping (TimeInterval) -> Void) {
-        LibraryReask.run(
-            sleep: sleep,
-            isCurrent: { [weak self] in self?.albumRailEpochIsCurrent(epochSource, epoch) ?? false },
-            probe: {
-                let list = try provider.albumTracks(albumID: albumID)
-                return MusicPage(rows: list.rows, nextCursor: nil, total: list.rows.count, generation: list.generation,
-                                 stale: list.stale, refreshing: list.refreshing)
-            },
-            rewalk: { [weak self] in
-                guard let self, self.albumRailEpochIsCurrent(epochSource, epoch),
-                      let list = try? provider.albumTracks(albumID: albumID) else { return false }
-                self.inboxLock.lock()
-                self.bridgeTracksInbox.append((albumID, epochSource, epoch, .success(list.rows, listRev: list.listRev)))
-                self.inboxLock.unlock()
-                return LibraryReask.flagged(list)
-            })
-        inboxLock.lock()
-        // Only this epoch's mark: a switch cleared the set, and the album may
-        // since have been marked again by a newer read.
-        if (epochSource == .artists ? artistsSourceEpoch : albumsSourceEpoch) == epoch {
-            bridgeTracksReasking.remove(albumID)
+    /// Runs on the main thread each tick. Ties the tracks re-ask to the album
+    /// the person is looking at (the drilled one, or the focused rail row):
+    /// when that changes, the token moves and any older worker stops at its
+    /// next check; then, if that album's cached tracks are flagged and nothing
+    /// is polling for it, one worker starts.
+    ///
+    /// **One current album, not one worker per album.** A poller per visited
+    /// album would leave up to 600 s of probing behind every row scrolled past.
+    /// A single token is the simplest thing that bounds it, and an album the
+    /// person comes back to is restarted from `bridgeTracksStale` rather than
+    /// lost.
+    private func syncTracksReask() {
+        var wantedID: String? = nil
+        var source: AlbumRailEpochSource = .albums
+        var epoch = 0
+        if currentAlbumSource == .bridge, isTracksLevel || isAlbumRail, let a = focusedAlbum() {
+            wantedID = a.id
+            source = nav.subView == .artists ? .artists : .albums
+            epoch = source == .artists ? artistsSourceEpoch : albumsSourceEpoch
         }
+        let focus = wantedID.map { "\(source)/\(epoch)/\($0)" }
+        inboxLock.lock()
+        if focus != tracksReaskFocus { tracksReaskFocus = focus; tracksReaskToken += 1 }
+        let token = tracksReaskToken
+        let start = wantedID.map {
+            bridgeTracksStale.contains($0) && !tracksReaskGaveUp.contains($0) && tracksReaskRunning != token
+        } ?? false
+        if start { tracksReaskRunning = token }
         inboxLock.unlock()
-        reaskFinishedForTest?()
+        guard start, let albumID = wantedID else { return }
+        guard let provider = makeProvider() else {
+            inboxLock.lock(); if tracksReaskRunning == token { tracksReaskRunning = nil }; inboxLock.unlock()
+            return
+        }
+        let sleep = warmUpSleep
+        Thread.detachNewThread { [weak self] in
+            // `self` is weak here and in every closure below: nothing holds the
+            // scene across `run`'s waits, and each probe/rewalk re-checks.
+            var fresh = false
+            LibraryReask.run(
+                sleep: sleep,
+                isCurrent: { [weak self] in
+                    self?.tracksReaskIsCurrent(token: token, source: source, epoch: epoch) ?? false
+                },
+                probe: {
+                    let list = try provider.albumTracks(albumID: albumID)
+                    return MusicPage(rows: list.rows, nextCursor: nil, total: list.rows.count,
+                                     generation: list.generation, stale: list.stale, refreshing: list.refreshing)
+                },
+                rewalk: { [weak self] in
+                    guard let scene = self,
+                          scene.tracksReaskIsCurrent(token: token, source: source, epoch: epoch),
+                          let list = try? provider.albumTracks(albumID: albumID) else { return false }
+                    let flagged = LibraryReask.flagged(list)
+                    scene.inboxLock.lock()
+                    let post = scene.tracksReaskToken == token && scene.tabIsLiveLocked()
+                        && (source == .artists ? scene.artistsSourceEpoch : scene.albumsSourceEpoch) == epoch
+                    if post {
+                        scene.bridgeTracksInbox.append((albumID, source, epoch,
+                            .success(list.rows, listRev: list.listRev, flagged: flagged)))
+                    }
+                    scene.inboxLock.unlock()
+                    if post && !flagged { fresh = true }
+                    return post && flagged
+                })
+            guard let scene = self else { return }
+            scene.inboxLock.lock()
+            if scene.tracksReaskRunning == token { scene.tracksReaskRunning = nil }
+            // Still current yet not fresh: the bound ran out or a read failed.
+            // (A worker ended by a focus change, tab leave or switch is not
+            // spent: it restarts when the album is current again.)
+            let current = scene.tracksReaskToken == token && scene.tabIsLiveLocked()
+                && (source == .artists ? scene.artistsSourceEpoch : scene.albumsSourceEpoch) == epoch
+            if current && !fresh { scene.tracksReaskGaveUp.insert(albumID) }
+            scene.inboxLock.unlock()
+            scene.reaskFinishedForTest?()
+        }
+    }
+
+    /// Runs on the main thread each tick: the artist whose albums are open
+    /// decides which artist-albums worker may live. Backing out, changing
+    /// sub-view or opening another artist moves the token.
+    private func syncArtistAlbumsReask() {
+        let open = nav.subView == .artists ? currentArtistID() : nil
+        guard open != artistAlbumsReaskWanted else { return }
+        artistAlbumsReaskWanted = open
+        inboxLock.lock()
+        artistAlbumsReaskToken += 1
+        inboxLock.unlock()
     }
 
     /// Kick a serial background fetch of one album's tracks, unless it's already
@@ -1035,10 +1156,6 @@ final class LibraryScene: Scene {
     /// means in practice.
     private func kickTrackFetch(albumID: String, title: String, artist: String) {
         guard trackCache[albumID] == nil, !previewInFlight.contains(albumID) else { return }
-        inboxLock.lock()
-        let reasking = bridgeTracksReasking.contains(albumID)
-        inboxLock.unlock()
-        guard !reasking else { return }
         if currentAlbumSource == .bridge {
             guard bridgeTrackFailures[albumID] == nil else { return }
             guard let provider = makeProvider() else { return }   // output changed under us; do nothing
@@ -1056,17 +1173,14 @@ final class LibraryScene: Scene {
                 do {
                     let list = try retryingWhileWarming(sleep: sleep) { try provider.albumTracks(albumID: albumID) }
                     guard let self else { return }
-                    let reask = LibraryReask.flagged(list)
+                    // Posted as it came; if flagged, the tick notes it and asks
+                    // again while this is the album being looked at
+                    // (`syncTracksReask`), since SpanDAC never pushes the
+                    // refreshed list.
                     self.inboxLock.lock()
-                    self.bridgeTracksInbox.append((albumID, epochSource, epoch, .success(list.rows, listRev: list.listRev)))
-                    if reask { self.bridgeTracksReasking.insert(albumID) }
+                    self.bridgeTracksInbox.append((albumID, epochSource, epoch,
+                        .success(list.rows, listRev: list.listRev, flagged: LibraryReask.flagged(list))))
                     self.inboxLock.unlock()
-                    // Posted as it came; now ask again until it is fresh, then
-                    // overwrite it (SpanDAC never pushes the refreshed list).
-                    if reask {
-                        self.reaskBridgeTracks(provider: provider, albumID: albumID,
-                                               epochSource: epochSource, epoch: epoch, sleep: sleep)
-                    }
                 } catch {
                     guard let self else { return }
                     let sentence = (error as? MusicProviderError)?.errorDescription
@@ -1186,7 +1300,16 @@ final class LibraryScene: Scene {
         bridgeAlbumsFailure = nil
         bridgeAlbumsWarming = false
         albumsSource = nil
+        // The epoch and everything a worker keyed on it may have posted move in
+        // ONE critical section: the background re-ask predicates read the
+        // epochs under `inboxLock`, so an unlocked bump was a data race, and a
+        // read between the bump and a later clear could post under the new epoch.
+        inboxLock.lock()
         albumsSourceEpoch += 1
+        tracksReaskToken += 1
+        tracksReaskFocus = nil
+        bridgeTracksInbox = []
+        inboxLock.unlock()
         albumsFeed.reset()
         // Tier sets are derived from `albums`; a library switch invalidates
         // them along with it.
@@ -1204,20 +1327,22 @@ final class LibraryScene: Scene {
         bridgeArtistsFailure = nil
         bridgeArtistsWarming = false
         artistsSource = nil
+        // See `resetAlbumsList`: epoch bump, re-ask invalidation and the inbox
+        // clears below in one critical section. Nothing else is taken inside.
+        inboxLock.lock()
         artistsSourceEpoch += 1
+        artistAlbumsReaskToken += 1
+        tracksReaskToken += 1
+        tracksReaskFocus = nil
+        artistAlbumsInbox = nil
+        pendingArtistAlbumsFailure = nil
+        bridgeTracksInbox = []
+        inboxLock.unlock()
+        artistAlbumsReaskWanted = nil
         artistsFeed.reset()
         artistAlbums = []
         artistAlbumsLoaded = false
         artistAlbumsFailure = nil
-        // Defense in depth: the epoch bump above already makes tick's drain
-        // drop these two on arrival (they are checked against
-        // `artistsSourceEpoch`), but clearing them here too means a stale
-        // one already sitting in the inbox is gone immediately rather than
-        // lingering, unread, until the next background post replaces it.
-        inboxLock.lock()
-        artistAlbumsInbox = nil
-        pendingArtistAlbumsFailure = nil
-        inboxLock.unlock()
         if nav.subView == .artists { returnToRoot(.artists) }
     }
 
@@ -1241,8 +1366,9 @@ final class LibraryScene: Scene {
         // too means it is gone immediately.
         inboxLock.lock()
         bridgeTracksInbox = []
-        bridgeTracksReasking = []
+        tracksReaskGaveUp = []
         inboxLock.unlock()
+        bridgeTracksStale = []
     }
 
     /// Drop back to a sub-view's root level when a provenance reset catches it
@@ -1258,6 +1384,7 @@ final class LibraryScene: Scene {
 
     func tick(snapshot: NowPlayingSnapshot) -> Bool {
         var changed = false
+        inboxLock.lock(); lastTickAt = now(); inboxLock.unlock()
         if snapToPlayingPending, case .songList = nav.current,
            case .active(let np) = snapshot.outcome, !songs.isEmpty {
             snapToPlayingPending = false
@@ -1535,7 +1662,13 @@ final class LibraryScene: Scene {
                 trackAnchor = shown[nav.cursor].id
             }
             switch item.result {
-            case .success(let rows, let listRev):
+            case .success(let rows, let listRev, let flagged):
+                if flagged {
+                    bridgeTracksStale.insert(item.albumID)
+                } else {
+                    bridgeTracksStale.remove(item.albumID)
+                    inboxLock.lock(); tracksReaskGaveUp.remove(item.albumID); inboxLock.unlock()
+                }
                 if let trackAnchor, let pos = rows.firstIndex(where: { $0.id == trackAnchor }) { nav.cursor = pos }
                 bridgeTracks[item.albumID] = rows
                 bridgeTrackRevs[item.albumID] = listRev
@@ -1555,6 +1688,7 @@ final class LibraryScene: Scene {
             changed = true
         }
         if artLanded { changed = true }
+        syncArtistAlbumsReask()
         // Clamp the track cursor once the drilled album's tracks land.
         if case .tracks(let id, _, _) = nav.current, let t = trackCache[id], nav.cursor >= t.count {
             nav.cursor = max(0, t.count - 1)
@@ -1579,6 +1713,7 @@ final class LibraryScene: Scene {
         if (isAlbumRail || isTracksLevel), currentAlbumSource != .bridge, let a = focusedAlbum() {
             kickCoverFetch(albumID: a.id)
         }
+        syncTracksReask()
         return changed
     }
 

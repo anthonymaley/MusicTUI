@@ -160,7 +160,8 @@ final class BridgeSelectedFlag {
 func libraryTestScene(flag: BridgeSelectedFlag, wire: BridgeLibraryReadsWire,
                       spy: LibraryAppleScriptSpy, status: StatusStore = StatusStore(),
                       warmUpSleep: @escaping (TimeInterval) -> Void = { _ in },
-                      routing given: RoutingCoordinator? = nil) -> LibraryScene {
+                      routing given: RoutingCoordinator? = nil,
+                      now: @escaping () -> Date = { Date() }) -> LibraryScene {
     let store = PlaybackModeStore(path: NSTemporaryDirectory() + "mode-\(UUID().uuidString).json")
     store.set(.source)
     let routing = given ?? RoutingCoordinator(store: store, surface: .tui,
@@ -176,7 +177,8 @@ func libraryTestScene(flag: BridgeSelectedFlag, wire: BridgeLibraryReadsWire,
                         },
                         warmUpSleep: warmUpSleep,
                         // Never the real ~/.config/music/artist-tiers.json (C2 isolation).
-                        resultCache: temporaryResultCache().cache)
+                        resultCache: temporaryResultCache().cache,
+                        now: now)
 }
 
 /// `[` / `]` cycles Artists → Albums → Songs; lands on `sub` from wherever
