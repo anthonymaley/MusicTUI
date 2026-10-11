@@ -878,25 +878,23 @@ final class BridgePlaylistsPlaySceneTests: XCTestCase {
         XCTAssertEqual(status.current()?.text, LibraryProvenance.bridgeSelectedMusicAppList)
     }
 
-    // MARK: - The tracks feed never re-asks a stale reply
+    // MARK: - The tracks feed re-asks a stale reply
 
-    /// A drilled-in tracks pane is read by a cursor-bearing list: swapping it
-    /// for a longer or shorter one under `trCursor` is not something a stale
-    /// snapshot may do. Only the four top-level lists re-ask.
-    func testAFlaggedTracksReplyIsNeverReAsked() {
+    /// A drilled-in tracks pane re-asks like the top-level lists; the cursor
+    /// safety of the swap is covered in `BridgePlaylistsTracksReaskTests`.
+    func testAFlaggedTracksReplyIsReAskedAndTheFreshOneReplacesIt() {
         let flaggedTracks = """
         {"ok":true,"op":"slice.libraryPlaylistTracks","generation":3,"total":1,"stale":true,"refreshing":true,
          "items":[{"id":"i.a","title":"Old","artist":"Art","kind":"song"}],"next_cursor":null,"skipped_videos":0}
         """
         let wire = BridgeLibraryReadsWire(["slice.libraryPlaylists": [onePlaylistPage]])
-        wire.script("slice.libraryPlaylistTracks", [flaggedTracks, tracksPage([("i.b", "New", "Art")])])
+        wire.script("slice.libraryPlaylistTracks", [flaggedTracks, tracksPage([("i.b", "New", "Art")]),
+                                                     tracksPage([("i.b", "New", "Art")])])
         let s = settledScene(wire: wire)
         _ = s.handle(.enter)
-        XCTAssertTrue(settleScene(s) { s.render(frame: threeZoneFrame, snapshot: idle).contains("Old") })
-        flushTicks(s)
-        usleep(100_000)
-        flushTicks(s)
-        XCTAssertEqual(wire.sent("slice.libraryPlaylistTracks").count, 1, "the tracks feed re-asked a flagged reply")
-        XCTAssertTrue(s.render(frame: threeZoneFrame, snapshot: idle).contains("Old"))
+        XCTAssertTrue(settleScene(s) { s.render(frame: threeZoneFrame, snapshot: idle).contains("New") },
+                      "the fresh tracks never replaced the stale ones")
+        XCTAssertEqual(wire.sent("slice.libraryPlaylistTracks").count, 3)
+        XCTAssertFalse(s.render(frame: threeZoneFrame, snapshot: idle).contains("Old"))
     }
 }

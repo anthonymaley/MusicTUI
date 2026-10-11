@@ -148,6 +148,11 @@ final class PlaylistsScene: Scene {
     var drilledTrackTitlesForTest: [String] { bridgeTracksRows.map(\.title) }
     private var trCursor = 0
     private var trScroll = 0
+    /// The tracks pane's cursor / scroll / read identity / total, for tests.
+    var trackCursorForTest: Int { trCursor }
+    var trackScrollForTest: Int { trScroll }
+    var drilledListRevForTest: String? { bridgeTracksListRev }
+    var drilledTotalForTest: Int? { bridgeTracksTotal }
     private var meta: [PlaylistMeta]
     private var loaded: Set<Int> = []
     private var fullCache: [Int: PlaylistPreview] = [:]
@@ -810,7 +815,23 @@ final class PlaylistsScene: Scene {
         if let feed = bridgeTracksFeed {
             let drain = feed.drain()
             if let replace = drain.replace {
+                // A re-ask replacement is the SAME playlist read again, so the
+                // selected track is followed to wherever it now sits. Identity
+                // is (row id, which occurrence of that id): a playlist may
+                // repeat a song, and the id alone would jump to the first copy.
+                // When it is gone the cursor stays at its index; either way it
+                // and the scroll are clamped into the new count (an empty list
+                // included), or render's `trScroll..<end` traps on a shrunk list.
+                let keep: (id: String, occurrence: Int)? = drain.reasked && trCursor < bridgeTracksRows.count
+                    ? (bridgeTracksRows[trCursor].id,
+                       bridgeTracksRows[..<trCursor].filter { $0.id == bridgeTracksRows[trCursor].id }.count)
+                    : nil
                 bridgeTracksRows = replace
+                if let keep {
+                    let matches = replace.indices.filter { replace[$0].id == keep.id }
+                    if let at = matches.count > keep.occurrence ? matches[keep.occurrence] : matches.last { trCursor = at }
+                }
+                clampBridgeTracksCursor()
                 changed = true
             }
             if !drain.append.isEmpty {
@@ -823,7 +844,7 @@ final class PlaylistsScene: Scene {
                 bridgeTracksFailure = drain.failure
                 // D4: a failure clears the rows and keeps the sentence — a
                 // walk that failed never shows a partial list.
-                if drain.failure != nil { bridgeTracksRows = []; bridgeTracksListRev = nil }
+                if drain.failure != nil { bridgeTracksRows = []; bridgeTracksListRev = nil; clampBridgeTracksCursor() }
                 changed = true
             }
             if bridgeTracksWarming != drain.warming { bridgeTracksWarming = drain.warming; changed = true }
@@ -1122,6 +1143,12 @@ final class PlaylistsScene: Scene {
 
     // MARK: playback (user-initiated; brief inline stall acceptable)
 
+    /// Keeps the tracks pane's cursor and scroll inside the current rows.
+    private func clampBridgeTracksCursor() {
+        trCursor = min(max(0, trCursor), max(0, bridgeTracksRows.count - 1))
+        trScroll = min(max(0, trScroll), trCursor)
+    }
+
     /// Closes the tracks pane and forgets its playlist, back to the rail. The
     /// same teardown `←` does, plus the pane's rows, because the playlist they
     /// belonged to is no longer in the list.
@@ -1169,7 +1196,8 @@ final class PlaylistsScene: Scene {
             },
             map: { $0 },
             sleep: sleep,
-            limit: Self.bridgeTracksPageLimit)
+            limit: Self.bridgeTracksPageLimit,
+            reasksStale: true)
         bridgeTracksFeed = feed
         feed.start()
     }
