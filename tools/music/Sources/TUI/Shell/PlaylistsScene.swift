@@ -153,6 +153,7 @@ final class PlaylistsScene: Scene {
     var trackScrollForTest: Int { trScroll }
     var drilledListRevForTest: String? { bridgeTracksListRev }
     var drilledTotalForTest: Int? { bridgeTracksTotal }
+    var drilledFeedForTest: BridgeListFeed<MusicRow>? { bridgeTracksFeed }
     private var meta: [PlaylistMeta]
     private var loaded: Set<Int> = []
     private var fullCache: [Int: PlaylistPreview] = [:]
@@ -819,7 +820,7 @@ final class PlaylistsScene: Scene {
                 // selected track is followed to wherever it now sits. Identity
                 // is (row id, which occurrence of that id): a playlist may
                 // repeat a song, and the id alone would jump to the first copy.
-                // When it is gone the cursor stays at its index; either way it
+                // When that exact occurrence is gone the cursor stays at its index; either way it
                 // and the scroll are clamped into the new count (an empty list
                 // included), or render's `trScroll..<end` traps on a shrunk list.
                 let keep: (id: String, occurrence: Int)? = drain.reasked && trCursor < bridgeTracksRows.count
@@ -829,7 +830,8 @@ final class PlaylistsScene: Scene {
                 bridgeTracksRows = replace
                 if let keep {
                     let matches = replace.indices.filter { replace[$0].id == keep.id }
-                    if let at = matches.count > keep.occurrence ? matches[keep.occurrence] : matches.last { trCursor = at }
+                    // Exactly this occurrence, or nothing: another copy of the song is a different row.
+                    if matches.count > keep.occurrence { trCursor = matches[keep.occurrence] }
                 }
                 clampBridgeTracksCursor()
                 changed = true

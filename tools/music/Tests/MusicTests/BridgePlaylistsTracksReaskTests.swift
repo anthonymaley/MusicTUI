@@ -101,6 +101,20 @@ final class BridgePlaylistsTracksReaskTests: XCTestCase {
         XCTAssertEqual(s.trackCursorForTest, 3)
     }
 
+    /// The cursor is on the SECOND x; the fresh list has only one. It must not
+    /// jump to the first copy (Enter would then play a different row): the
+    /// numeric cursor stays, clamped.
+    func testARemovedOccurrenceKeepsTheNumericCursorNotAnotherCopy() {
+        let (s, wire) = scene([tracks(["x", "y", "x"], stale: true, rev: "r1"),
+                               tracks(["x", "y", "z"], stale: false, rev: "r2"),
+                               tracks(["x", "y", "z"], stale: false, rev: "r2")])
+        drill(s, wire, expecting: 3)
+        _ = s.handle(.down); _ = s.handle(.down)   // the second x
+        wire.release(op: "slice.libraryPlaylistTracks", at: 1)
+        XCTAssertTrue(settleScene(s) { s.drilledTrackTitlesForTest == ["Song x", "Song y", "Song z"] })
+        XCTAssertEqual(s.trackCursorForTest, 2, "the cursor jumped to another copy of the song")
+    }
+
     func testASelectedTrackThatVanishedClampsInRange() {
         let (s, wire) = scene([tracks(ids("a", 6), stale: true, rev: "r1"),
                                tracks(["b1", "b2"], stale: false, rev: "r2"), tracks(["b1", "b2"], stale: false, rev: "r2")])
@@ -119,12 +133,12 @@ final class BridgePlaylistsTracksReaskTests: XCTestCase {
                                tracks(["f1", "f2", "f3"], stale: false, rev: "r2"),
                                tracks(["p2"], stale: false, rev: "r9")])
         drill(s, wire, expecting: 2)
+        let oldFeed = s.drilledFeedForTest
         _ = s.handle(.left)
         wire.release(op: "slice.libraryPlaylistTracks", at: 1)
-        // The released probe comes back unflagged and its re-walk still sends one
-        // first-page read before the epoch check drops it; let that go first.
-        XCTAssertTrue(settleScene(s) { wire.reached(op: "slice.libraryPlaylistTracks", at: 2) })
-        for _ in 0..<40 { _ = s.tick(snapshot: idle); usleep(5_000) }
+        // Wait for the abandoned worker to actually finish (not a sleep).
+        XCTAssertTrue(oldFeed?.waitForWorkersForTest(timeout: 5) ?? false, "the old worker never finished")
+        _ = s.tick(snapshot: idle)
         // Leaving keeps the pane's last rows (as before); the fresh read must not touch them.
         XCTAssertEqual(s.drilledTrackTitlesForTest, ["Song a1", "Song a2"], "the dropped fresh read replaced the rows")
         XCTAssertEqual(s.drilledListRevForTest, "r1")
@@ -133,7 +147,7 @@ final class BridgePlaylistsTracksReaskTests: XCTestCase {
         XCTAssertTrue(settleScene(s) { s.drilledTrackTitlesForTest == ["Song p2"] },
                       "pl2 \(s.drilledPlaylistIDForTest ?? "nil") wire \(wire.sent("slice.libraryPlaylistTracks").map { $0["id"] as? String ?? "" }) cur \(s.railCursorForTest) " +
                       "pl2 showed: \(s.drilledTrackTitlesForTest)")
-        for _ in 0..<40 { _ = s.tick(snapshot: idle); usleep(5_000) }
+        _ = s.tick(snapshot: idle)
         XCTAssertEqual(s.drilledPlaylistIDForTest, "pl2")
         XCTAssertEqual(s.drilledTrackTitlesForTest, ["Song p2"], "the old playlist's fresh read leaked in")
         XCTAssertEqual(s.drilledListRevForTest, "r9")
