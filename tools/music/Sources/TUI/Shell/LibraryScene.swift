@@ -752,16 +752,19 @@ final class LibraryScene: Scene {
                     self.bridgeWarmingPending = true
                 },
                 sleep: sleep)
-                if reask, failure == nil, let self {
-                    self.inboxLock.lock()
-                    if self.songsWalkEpoch == epoch, self.bridgeSongsWalkToken == token {
-                        for row in collectedRows { self.bridgeSongRowsByID[row.id] = row }
-                        self.songsPending = collected
-                        self.songsReplacePending = true
-                        self.songsReplaceIsReask = true
-                        self.songsTotalPending = collectedTotal
+                // `scene`, not `let self`: macOS 14's Swift rejects the
+                // shorthand inside a nested function ("implicit use of
+                // 'self' in closure"; bottles run 38089514252).
+                if reask, failure == nil, let scene = self {
+                    scene.inboxLock.lock()
+                    if scene.songsWalkEpoch == epoch, scene.bridgeSongsWalkToken == token {
+                        for row in collectedRows { scene.bridgeSongRowsByID[row.id] = row }
+                        scene.songsPending = collected
+                        scene.songsReplacePending = true
+                        scene.songsReplaceIsReask = true
+                        scene.songsTotalPending = collectedTotal
                     }
-                    self.inboxLock.unlock()
+                    scene.inboxLock.unlock()
                 }
                 return (failure, flagged)
             }
@@ -773,19 +776,19 @@ final class LibraryScene: Scene {
             /// leave a partial library looking complete — exactly the silence
             /// rule 3 forbids.
             func finish(_ failure: MusicProviderError?, firstRead: Bool) -> Bool {
-                guard let self else { return false }
+                guard let scene = self else { return false }   // see `scene` above
                 let sentence = failure.map { $0.errorDescription ?? "SpanDAC couldn't read your library" }
-                self.inboxLock.lock()
-                if firstRead, self.bridgeSongsWalkToken == token { self.bridgeWalkInFlight = false }
-                let stillCurrent = self.songsWalkEpoch == epoch   // else: reset since -> the ending is dropped too
-                    && self.bridgeSongsWalkToken == token
+                scene.inboxLock.lock()
+                if firstRead, scene.bridgeSongsWalkToken == token { scene.bridgeWalkInFlight = false }
+                let stillCurrent = scene.songsWalkEpoch == epoch   // else: reset since -> the ending is dropped too
+                    && scene.bridgeSongsWalkToken == token
                 if stillCurrent {
-                    self.songsDone = true
-                    self.bridgeFailurePending = sentence
-                    self.bridgeWarmingPending = false   // it is over, one way or the other
+                    scene.songsDone = true
+                    scene.bridgeFailurePending = sentence
+                    scene.bridgeWarmingPending = false   // it is over, one way or the other
                 }
-                self.inboxLock.unlock()
-                if stillCurrent, let sentence { self.status.post(sentence, error: true) }
+                scene.inboxLock.unlock()
+                if stillCurrent, let sentence { scene.status.post(sentence, error: true) }
                 return stillCurrent
             }
 
