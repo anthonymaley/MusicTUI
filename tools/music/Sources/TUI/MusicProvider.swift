@@ -445,6 +445,10 @@ enum LibraryReask {
     /// A page that says its snapshot is old or being rebuilt.
     static func flagged(_ page: MusicPage) -> Bool { page.stale || page.refreshing }
 
+    /// A drill-in reply (an album's tracks, an artist's albums) that says the
+    /// same. These are complete lists, not pages, but SpanDAC flags them alike.
+    static func flagged(_ list: MusicList) -> Bool { list.stale || list.refreshing }
+
     /// Probes the list's first page every `interval` until it comes back
     /// unflagged, then calls `rewalk` (which re-reads the whole list and
     /// returns whether THAT read was flagged again). Returns when a fresh list

@@ -1,0 +1,239 @@
+import XCTest
+@testable import music
+
+/// A drill-in reply (an album's tracks, an artist's albums) flagged stale or
+/// refreshing is shown, then replaced by the first unflagged read, exactly as
+/// the four root lists are (`LibraryReask`). Uses the shared support from
+/// `BridgeLibraryTestSupport.swift`; the sleep is injected, so nothing waits.
+final class BridgeLibraryDrillReaskTests: XCTestCase {
+
+    private let frame = shellLayout(width: 140, height: 30)
+    private let idle = NowPlayingSnapshot(outcome: .stopped, history: [], surrounding: [])
+
+    private let albumPage = """
+    {"ok":true,"op":"slice.libraryAlbums","generation":3,"total":1,
+     "items":[{"id":"al1","title":"In Rainbows","artist":"Radiohead","track_count":3,"kind":"album"}],
+     "next_cursor":null}
+    """
+    private let artistPage = """
+    {"ok":true,"op":"slice.libraryArtists","generation":3,"total":1,
+     "items":[{"id":"ar1","title":"Radiohead","kind":"artist"}],"next_cursor":null}
+    """
+
+    private func tracks(_ ids: [String], stale: Bool) -> String {
+        let items = ids.map { "{\"id\":\"\($0)\",\"title\":\"T\($0)\",\"artist\":\"Radiohead\",\"album\":\"In Rainbows\",\"kind\":\"song\"}" }
+            .joined(separator: ",")
+        return "{\"ok\":true,\"op\":\"slice.libraryAlbumTracks\",\"generation\":3,\"stale\":\(stale),\"refreshing\":\(stale),\"items\":[\(items)]}"
+    }
+    private func artistAlbums(_ ids: [String], stale: Bool) -> String {
+        let items = ids.map { "{\"id\":\"\($0)\",\"title\":\"A\($0)\",\"artist\":\"Radiohead\",\"track_count\":9,\"kind\":\"album\"}" }
+            .joined(separator: ",")
+        return "{\"ok\":true,\"op\":\"slice.libraryArtistAlbums\",\"generation\":3,\"stale\":\(stale),\"refreshing\":\(stale),\"items\":[\(items)]}"
+    }
+    private func artists(_ ids: [String], stale: Bool) -> String {
+        let items = ids.map { "{\"id\":\"\($0)\",\"title\":\"R\($0)\",\"kind\":\"artist\"}" }.joined(separator: ",")
+        return "{\"ok\":true,\"op\":\"slice.libraryArtists\",\"generation\":3,\"total\":\(ids.count),\"stale\":\(stale),\"refreshing\":\(stale),\"items\":[\(items)],\"next_cursor\":null}"
+    }
+
+    /// Waits for the re-ask to end, however it ended.
+    private func finished(_ gate: DispatchSemaphore) -> Bool { gate.wait(timeout: .now() + 3) == .success }
+
+    private func sceneAtAlbumTracks(_ wire: BridgeLibraryReadsWire, flag: BridgeSelectedFlag = BridgeSelectedFlag(true),
+                                    waits: DrillWaits = DrillWaits(), ended: DispatchSemaphore? = nil) -> LibraryScene {
+        let s = libraryTestScene(flag: flag, wire: wire, spy: LibraryAppleScriptSpy(), warmUpSleep: waits.record)
+        if let ended { s.reaskFinishedForTest = { ended.signal() } }
+        goToSubView(s, .albums)
+        XCTAssertTrue(settleScene(s) { s.render(frame: frame, snapshot: idle).contains("In Rainbows") })
+        _ = s.handle(.enter)
+        return s
+    }
+
+    // MARK: - Album tracks
+
+    func testAStaleAlbumTracksReplyIsReAskedAndTheFreshReadOverwritesTheCache() {
+        let wire = BridgeLibraryReadsWire(["slice.libraryAlbums": [albumPage],
+            "slice.libraryAlbumTracks": [tracks(["a", "b", "c"], stale: true),
+                                         tracks(["a", "b", "c"], stale: false),
+                                         tracks(["n", "a", "b", "c"], stale: false)]])
+        wire.gate(op: "slice.libraryAlbumTracks", at: 1)
+        let waits = DrillWaits()
+        let s = sceneAtAlbumTracks(wire, waits: waits)
+        XCTAssertTrue(settleScene(s) { s.trackCacheForTest["al1"] == ["Ta", "Tb", "Tc"] }, "the stale tracks were not shown")
+        XCTAssertTrue(settleScene(s) { wire.reached(op: "slice.libraryAlbumTracks", at: 1) }, "no re-ask probe went out")
+        _ = s.handle(.down)   // b
+        XCTAssertEqual(s.navCursorForTest, 1)
+        wire.release(op: "slice.libraryAlbumTracks", at: 1)
+        XCTAssertTrue(settleScene(s) { s.trackCacheForTest["al1"] == ["Tn", "Ta", "Tb", "Tc"] }, "the fresh read never overwrote the cache")
+        XCTAssertEqual(s.navCursorForTest, 2, "the track cursor stayed on index 1, which is now a different track")
+        XCTAssertEqual(waits.all, [LibraryReask.interval])
+        XCTAssertEqual(wire.sent("slice.libraryAlbumTracks").count, 3)
+    }
+
+    func testTheTrackCursorIsClampedWhenTheFreshReadIsShorter() {
+        let wire = BridgeLibraryReadsWire(["slice.libraryAlbums": [albumPage],
+            "slice.libraryAlbumTracks": [tracks(["a", "b", "c"], stale: true),
+                                         tracks(["a", "b", "c"], stale: false),
+                                         tracks(["a"], stale: false)]])
+        wire.gate(op: "slice.libraryAlbumTracks", at: 1)
+        let s = sceneAtAlbumTracks(wire)
+        XCTAssertTrue(settleScene(s) { s.trackCacheForTest["al1"]?.count == 3 })
+        XCTAssertTrue(settleScene(s) { wire.reached(op: "slice.libraryAlbumTracks", at: 1) })
+        _ = s.handle(.down); _ = s.handle(.down)
+        XCTAssertEqual(s.navCursorForTest, 2)
+        wire.release(op: "slice.libraryAlbumTracks", at: 1)
+        XCTAssertTrue(settleScene(s) { s.trackCacheForTest["al1"] == ["Ta"] })
+        XCTAssertEqual(s.navCursorForTest, 0, "the cursor was left past the end of the shorter list")
+    }
+
+    func testAFreshAlbumTracksReplyIsNeverReAsked() {
+        let wire = BridgeLibraryReadsWire(["slice.libraryAlbums": [albumPage],
+            "slice.libraryAlbumTracks": [tracks(["a"], stale: false)]])
+        let waits = DrillWaits()
+        let s = sceneAtAlbumTracks(wire, waits: waits)
+        XCTAssertTrue(settleScene(s) { s.trackCacheForTest["al1"] == ["Ta"] })
+        for _ in 0..<5 { _ = s.tick(snapshot: idle) }
+        XCTAssertEqual(wire.sent("slice.libraryAlbumTracks").count, 1)
+        XCTAssertTrue(waits.all.isEmpty)
+    }
+
+    func testAStaleAlbumIsNotKickedAgainWhileItsReAskWaits() {
+        let wire = BridgeLibraryReadsWire(["slice.libraryAlbums": [albumPage],
+            "slice.libraryAlbumTracks": [tracks(["a"], stale: true), tracks(["a"], stale: false), tracks(["n", "a"], stale: false)]])
+        wire.gate(op: "slice.libraryAlbumTracks", at: 1)
+        let s = sceneAtAlbumTracks(wire)
+        XCTAssertTrue(settleScene(s) { wire.reached(op: "slice.libraryAlbumTracks", at: 1) })
+        for _ in 0..<20 { _ = s.tick(snapshot: idle) }
+        XCTAssertEqual(wire.sent("slice.libraryAlbumTracks").count, 2, "the album was read again while its re-ask waited")
+        wire.release(op: "slice.libraryAlbumTracks", at: 1)
+    }
+
+    func testAnAlbumTracksReAskThatOutlivedAProvenanceSwitchIsDropped() {
+        let wire = BridgeLibraryReadsWire(["slice.libraryAlbums": [albumPage],
+            "slice.libraryAlbumTracks": [tracks(["a"], stale: true), tracks(["n"], stale: false), tracks(["n"], stale: false)]])
+        wire.gate(op: "slice.libraryAlbumTracks", at: 1)
+        let flag = BridgeSelectedFlag(true)
+        let ended = DispatchSemaphore(value: 0)
+        let s = sceneAtAlbumTracks(wire, flag: flag, ended: ended)
+        XCTAssertTrue(settleScene(s) { wire.reached(op: "slice.libraryAlbumTracks", at: 1) })
+        flag.selected = false
+        XCTAssertTrue(settleScene(s) { s.trackCacheForTest.isEmpty }, "the provenance reset never cleared the caches")
+        wire.release(op: "slice.libraryAlbumTracks", at: 1)
+        XCTAssertTrue(finished(ended), "the re-ask never ended")
+        for _ in 0..<10 { _ = s.tick(snapshot: idle) }
+        XCTAssertTrue(s.trackCacheForTest.isEmpty, "a SpanDAC re-ask landed after the switch: \(s.trackCacheForTest)")
+        XCTAssertEqual(wire.sent("slice.libraryAlbumTracks").count, 2, "the re-walk went out after the switch")
+    }
+
+    // MARK: - Artist albums
+
+    private func sceneAtArtistAlbums(_ wire: BridgeLibraryReadsWire, flag: BridgeSelectedFlag = BridgeSelectedFlag(true),
+                                     ended: DispatchSemaphore? = nil) -> LibraryScene {
+        let s = libraryTestScene(flag: flag, wire: wire, spy: LibraryAppleScriptSpy())
+        if let ended { s.reaskFinishedForTest = { ended.signal() } }
+        goToSubView(s, .artists)
+        XCTAssertTrue(settleScene(s) { s.render(frame: frame, snapshot: idle).contains("Radiohead") })
+        _ = s.handle(.enter)
+        return s
+    }
+
+    func testAStaleArtistAlbumsListIsReplacedAndTheCursorFollowsTheSelectedAlbum() {
+        let wire = BridgeLibraryReadsWire(["slice.libraryArtists": [artistPage],
+            "slice.libraryArtistAlbums": [artistAlbums(["x", "y"], stale: true),
+                                          artistAlbums(["x", "y"], stale: false),
+                                          artistAlbums(["new", "x", "y"], stale: false)]])
+        wire.gate(op: "slice.libraryArtistAlbums", at: 1)
+        let s = sceneAtArtistAlbums(wire)
+        XCTAssertTrue(settleScene(s) { s.artistAlbumsForTest.map(\.id) == ["x", "y"] }, "the stale list was not shown")
+        XCTAssertTrue(settleScene(s) { wire.reached(op: "slice.libraryArtistAlbums", at: 1) })
+        _ = s.handle(.down)
+        XCTAssertEqual(s.navCursorForTest, 1)
+        wire.release(op: "slice.libraryArtistAlbums", at: 1)
+        XCTAssertTrue(settleScene(s) { s.artistAlbumsForTest.map(\.id) == ["new", "x", "y"] })
+        XCTAssertEqual(s.navCursorForTest, 2, "the cursor stayed on index 1, which is now a different album")
+    }
+
+    func testTheArtistAlbumsCursorIsClampedWhenTheFreshListIsShorter() {
+        let wire = BridgeLibraryReadsWire(["slice.libraryArtists": [artistPage],
+            "slice.libraryArtistAlbums": [artistAlbums(["x", "y", "z"], stale: true),
+                                          artistAlbums(["x", "y", "z"], stale: false),
+                                          artistAlbums(["x"], stale: false)]])
+        wire.gate(op: "slice.libraryArtistAlbums", at: 1)
+        let s = sceneAtArtistAlbums(wire)
+        XCTAssertTrue(settleScene(s) { s.artistAlbumsForTest.count == 3 })
+        XCTAssertTrue(settleScene(s) { wire.reached(op: "slice.libraryArtistAlbums", at: 1) })
+        _ = s.handle(.down); _ = s.handle(.down)
+        XCTAssertEqual(s.navCursorForTest, 2)
+        wire.release(op: "slice.libraryArtistAlbums", at: 1)
+        XCTAssertTrue(settleScene(s) { s.artistAlbumsForTest.map(\.id) == ["x"] })
+        XCTAssertEqual(s.navCursorForTest, 0)
+    }
+
+    func testAnArtistAlbumsReAskThatOutlivedAProvenanceSwitchIsDropped() {
+        let wire = BridgeLibraryReadsWire(["slice.libraryArtists": [artistPage],
+            "slice.libraryArtistAlbums": [artistAlbums(["x"], stale: true),
+                                          artistAlbums(["n"], stale: false), artistAlbums(["n"], stale: false)]])
+        wire.gate(op: "slice.libraryArtistAlbums", at: 1)
+        let flag = BridgeSelectedFlag(true)
+        let ended = DispatchSemaphore(value: 0)
+        let s = sceneAtArtistAlbums(wire, flag: flag, ended: ended)
+        XCTAssertTrue(settleScene(s) { wire.reached(op: "slice.libraryArtistAlbums", at: 1) })
+        flag.selected = false
+        XCTAssertTrue(settleScene(s) { s.artistAlbumsForTest.isEmpty })
+        wire.release(op: "slice.libraryArtistAlbums", at: 1)
+        XCTAssertTrue(finished(ended), "the re-ask never ended")
+        for _ in 0..<10 { _ = s.tick(snapshot: idle) }
+        XCTAssertTrue(s.artistAlbumsForTest.isEmpty, "a SpanDAC re-ask landed after the switch")
+        XCTAssertEqual(wire.sent("slice.libraryArtistAlbums").count, 2, "the re-walk went out after the switch")
+    }
+
+    func testAnArtistAlbumsReAskDoesNotPaintOnAnotherArtistsList() {
+        let two = """
+        {"ok":true,"op":"slice.libraryArtists","generation":3,"total":2,
+         "items":[{"id":"ar1","title":"Radiohead","kind":"artist"},{"id":"ar2","title":"Slowdive","kind":"artist"}],"next_cursor":null}
+        """
+        let wire = BridgeLibraryReadsWire(["slice.libraryArtists": [two],
+            "slice.libraryArtistAlbums": [artistAlbums(["x"], stale: true),
+                                          artistAlbums(["x"], stale: false), artistAlbums(["other"], stale: false)]])
+        wire.gate(op: "slice.libraryArtistAlbums", at: 1)
+        let ended = DispatchSemaphore(value: 0)
+        let s = libraryTestScene(flag: BridgeSelectedFlag(true), wire: wire, spy: LibraryAppleScriptSpy())
+        s.reaskFinishedForTest = { ended.signal() }
+        goToSubView(s, .artists)
+        XCTAssertTrue(settleScene(s) { s.render(frame: frame, snapshot: idle).contains("Slowdive") })
+        _ = s.handle(.enter)                                     // ar1
+        XCTAssertTrue(settleScene(s) { wire.reached(op: "slice.libraryArtistAlbums", at: 1) })
+        _ = s.handle(.escape)
+        _ = s.handle(.down)
+        _ = s.handle(.enter)                                     // ar2
+        wire.release(op: "slice.libraryArtistAlbums", at: 1)
+        XCTAssertTrue(finished(ended))
+        XCTAssertTrue(settleScene(s) { s.artistAlbumsForTest.map(\.id) == ["other"] })
+        for _ in 0..<10 { _ = s.tick(snapshot: idle) }
+        XCTAssertEqual(s.artistAlbumsForTest.map(\.id), ["other"], "ar1's re-ask painted on ar2's list")
+        XCTAssertEqual(wire.sent("slice.libraryArtistAlbums").count, 3, "ar1's re-ask went on to re-read after ar2 was opened")
+    }
+
+    // MARK: - Artists root keeps the selected artist by id
+
+    func testAnArtistsReplacementKeepsTheSelectedArtistWhenARowIsInsertedAbove() {
+        let wire = BridgeLibraryReadsWire(["slice.libraryArtists": [
+            artists(["x", "y"], stale: true), artists(["new", "x", "y"], stale: false), artists(["new", "x", "y"], stale: false)]])
+        wire.gate(op: "slice.libraryArtists", at: 1)
+        let s = libraryTestScene(flag: BridgeSelectedFlag(true), wire: wire, spy: LibraryAppleScriptSpy())
+        goToSubView(s, .artists)
+        XCTAssertTrue(settleScene(s) { s.render(frame: frame, snapshot: idle).contains("Rx") })
+        XCTAssertTrue(settleScene(s) { wire.reached(op: "slice.libraryArtists", at: 1) })
+        _ = s.handle(.down)   // y
+        XCTAssertEqual(s.navCursorForTest, 1)
+        wire.release(op: "slice.libraryArtists", at: 1)
+        XCTAssertTrue(settleScene(s) { s.render(frame: frame, snapshot: idle).contains("Rnew") })
+        XCTAssertEqual(s.navCursorForTest, 2, "the cursor stayed on index 1, which is now a different artist")
+    }
+}
+
+private final class DrillWaits {
+    private let lock = NSLock()
+    private var taken: [TimeInterval] = []
+    var all: [TimeInterval] { lock.lock(); defer { lock.unlock() }; return taken }
+    func record(_ seconds: TimeInterval) { lock.lock(); taken.append(seconds); lock.unlock() }
+}

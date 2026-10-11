@@ -500,12 +500,14 @@ final class BridgeLibraryListsSceneTests: XCTestCase {
         wire.gate(op: "slice.librarySongs", at: 1)
         let flag = BridgeSelectedFlag(true)
         let s = libraryTestScene(flag: flag, wire: wire, spy: LibraryAppleScriptSpy())
+        let ended = DispatchSemaphore(value: 0)
+        s.reaskFinishedForTest = { ended.signal() }
         goToSubView(s, .songs)
         XCTAssertTrue(settleScene(s) { wire.reached(op: "slice.librarySongs", at: 1) })
         flag.selected = false
         XCTAssertTrue(settleScene(s) { s.songsForTest.isEmpty }, "the provenance reset never cleared the list")
         wire.release(op: "slice.librarySongs", at: 1)
-        Thread.sleep(forTimeInterval: 0.2)
+        XCTAssertEqual(ended.wait(timeout: .now() + 3), .success, "the re-ask never ended")
         for _ in 0..<10 { _ = s.tick(snapshot: idle) }
         XCTAssertFalse(s.songsForTest.contains { $0.id == "new" }, "a SpanDAC re-ask landed after the switch")
         XCTAssertEqual(wire.sent("slice.librarySongs").count, 2, "the re-walk went out after the switch")
@@ -573,11 +575,11 @@ final class BridgeLibraryListsSceneTests: XCTestCase {
             songsReply("new", "New Song", generation: 2, stale: false)]])
         let flag = BridgeSelectedFlag(true)
         let s = libraryTestScene(flag: flag, wire: wire, spy: LibraryAppleScriptSpy())
+        let ended = DispatchSemaphore(value: 0)
+        s.reaskFinishedForTest = { ended.signal() }
         goToSubView(s, .songs)
         _ = s.tick(snapshot: idle)           // kicks the walk; nothing has landed to drain yet
-        let deadline = Date().addingTimeInterval(3)
-        while Date() < deadline && !wire.reached(op: "slice.librarySongs", at: 2) { usleep(2_000) }
-        Thread.sleep(forTimeInterval: 0.2)   // the re-walk has finished and posted
+        XCTAssertEqual(ended.wait(timeout: .now() + 3), .success, "the re-ask never ended")   // the re-walk has finished and posted
         flag.selected = false                // switch data provenance, still NO tick
         _ = s.tick(snapshot: idle)           // reset first, then drain
         XCTAssertTrue(s.songsForTest.isEmpty, "a SpanDAC re-ask result survived the provenance switch: \(s.songsForTest.map(\.id))")
@@ -594,11 +596,13 @@ final class BridgeLibraryListsSceneTests: XCTestCase {
             songsReply("new", "New Song", generation: 2, stale: false)]])
         wire.gate(op: "slice.librarySongs", at: 1)
         let s = libraryTestScene(flag: BridgeSelectedFlag(true), wire: wire, spy: LibraryAppleScriptSpy())
+        let ended = DispatchSemaphore(value: 0)
+        s.reaskFinishedForTest = { ended.signal() }
         goToSubView(s, .songs)
         XCTAssertTrue(settleScene(s) { wire.reached(op: "slice.librarySongs", at: 1) })
         s.retryBridgeSongsForTest()          // no tick after it
         wire.release(op: "slice.librarySongs", at: 1)
-        Thread.sleep(forTimeInterval: 0.2)
+        XCTAssertEqual(ended.wait(timeout: .now() + 3), .success, "the old re-ask never ended")
         XCTAssertEqual(wire.sent("slice.librarySongs").count, 2, "the old re-ask went on to re-read after `r`")
     }
 }
