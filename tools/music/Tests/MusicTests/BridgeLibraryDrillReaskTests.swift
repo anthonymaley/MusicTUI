@@ -358,6 +358,100 @@ final class BridgeLibraryDrillReaskScopeTests: XCTestCase {
 
     final class Clock { var date = Date(timeIntervalSince1970: 1_000_000) }
 
+    // MARK: artist albums: a heartbeat-ended re-ask resumes; a spent one does not
+
+    private func artistReaskScene(_ wire: BridgeLibraryReadsWire, clock: Clock, sleep: @escaping (TimeInterval) -> Void = { _ in },
+                                  ended: Counter) -> LibraryScene {
+        let s = libraryTestScene(flag: BridgeSelectedFlag(true), wire: wire, spy: LibraryAppleScriptSpy(),
+                                 warmUpSleep: sleep, now: { clock.date })
+        s.reaskFinishedForTest = { ended.bump() }
+        goToSubView(s, .artists)
+        XCTAssertTrue(settleScene(s) { s.render(frame: frame, snapshot: idle).contains("Slowdive") })
+        _ = s.handle(.enter)
+        return s
+    }
+
+    func testAnArtistAlbumsReAskEndedByLeavingTheTabResumesWhenTheTabTicksAgain() {
+        let wire = BridgeLibraryReadsWire(["slice.libraryArtists": [twoArtists],
+            "slice.libraryArtistAlbums": [artistAlbums(["x"], stale: true), artistAlbums(["x"], stale: false),
+                                          artistAlbums(["x"], stale: false), artistAlbums(["n"], stale: false)]])
+        wire.gate(op: "slice.libraryArtistAlbums", at: 1)
+        let clock = Clock(), ended = Counter()
+        let s = artistReaskScene(wire, clock: clock, ended: ended)
+        XCTAssertTrue(settleScene(s) { wire.reached(op: "slice.libraryArtistAlbums", at: 1) })
+        clock.date.addTimeInterval(60)           // the tab stops ticking
+        wire.release(op: "slice.libraryArtistAlbums", at: 1)
+        XCTAssertTrue(count(ended, 1))
+        XCTAssertEqual(wire.sent("slice.libraryArtistAlbums").count, 2, "the re-ask went on while the tab was not showing")
+        XCTAssertEqual(s.artistAlbumsForTest.map(\.id), ["x"])
+        XCTAssertTrue(settleScene(s) { s.artistAlbumsForTest.map(\.id) == ["n"] }, "coming back never resumed the re-ask")
+        XCTAssertEqual(wire.sent("slice.libraryArtistAlbums").count, 4)
+    }
+
+    func testAnArtistAlbumsReAskEndedByAMainThreadStallResumes() {
+        let wire = BridgeLibraryReadsWire(["slice.libraryArtists": [twoArtists],
+            "slice.libraryArtistAlbums": [artistAlbums(["x"], stale: true), artistAlbums(["x"], stale: false),
+                                          artistAlbums(["n"], stale: false)]])
+        let clock = Clock(), ended = Counter()
+        // The first wait outlasts the heartbeat window while the main thread
+        // is not ticking: a stall over 3 s.
+        let stalled = Counter()
+        let s = artistReaskScene(wire, clock: clock, sleep: { _ in
+            if stalled.value == 0 { stalled.bump(); clock.date.addTimeInterval(10) }
+        }, ended: ended)
+        XCTAssertTrue(settleScene(s) { ended.value >= 1 }, "the stalled re-ask never ended")
+        XCTAssertEqual(wire.sent("slice.libraryArtistAlbums").count, 1, "the stalled re-ask probed anyway")
+        XCTAssertTrue(settleScene(s) { s.artistAlbumsForTest.map(\.id) == ["n"] }, "the stalled re-ask never resumed")
+    }
+
+    func testASpentArtistAlbumsReAskDoesNotRestart() {
+        let wire = BridgeLibraryReadsWire(["slice.libraryArtists": [twoArtists],
+            "slice.libraryArtistAlbums": [artistAlbums(["x"], stale: true)]])   // the probe is unscripted: it fails
+        let clock = Clock(), ended = Counter()
+        let s = artistReaskScene(wire, clock: clock, ended: ended)
+        XCTAssertTrue(settleScene(s) { ended.value >= 1 }, "the attempt never ended")
+        for _ in 0..<20 { _ = s.tick(snapshot: idle) }
+        XCTAssertEqual(wire.sent("slice.libraryArtistAlbums").count, 2, "a spent attempt restarted")
+        XCTAssertEqual(ended.value, 1)
+    }
+
+    // MARK: Music.app artist first read, adverse order
+
+    func testAnAbandonedMusicAppArtistsFirstReadDoesNotOverwriteTheCurrentArtists() {
+        let gate = DispatchSemaphore(value: 0)
+        let spy = LibraryAppleScriptSpy()
+        spy.artists = [LibraryArtist(id: "ar1", name: "Radiohead"), LibraryArtist(id: "ar2", name: "Slowdive")]
+        let reads = Counter()
+        let base = spy.sources()
+        let sources = LibraryDataSources(
+            onAlbums: base.onAlbums, onSongs: base.onSongs, onArtists: base.onArtists,
+            onAlbumTracks: base.onAlbumTracks,
+            onArtistAlbums: { id in
+                if id == "ar1" { _ = gate.wait(timeout: .now() + 5) }
+                reads.bump()
+                return [LibraryAlbum(id: "alb-\(id)", name: "Album \(id)", artist: id, trackCount: 1)]
+            },
+            onAlbumCover: base.onAlbumCover)
+        let store = PlaybackModeStore(path: NSTemporaryDirectory() + "mode-\(UUID().uuidString).json")
+        store.set(.source)
+        let wire = BridgeLibraryReadsWire()
+        let routing = RoutingCoordinator(store: store, surface: .tui,
+                                         makeSource: { SourceAppClient(path: "/nonexistent", transport: wire.transport) })
+        let s = LibraryScene(backend: AppleScriptBackend(executable: "/usr/bin/true"), routing: routing,
+                             sources: sources, appQueue: AppQueueStore(), status: StatusStore(),
+                             actions: ActionRunner(status: StatusStore()), makeProvider: { nil },
+                             warmUpSleep: { _ in }, resultCache: temporaryResultCache().cache)
+        goToSubView(s, .artists)
+        XCTAssertTrue(settleScene(s) { s.render(frame: frame, snapshot: idle).contains("Slowdive") })
+        _ = s.handle(.enter)                                     // ar1: held
+        _ = s.handle(.escape); _ = s.handle(.down); _ = s.handle(.enter)   // ar2
+        XCTAssertTrue(count(reads, 1), "ar2's read never finished")
+        gate.signal()                                            // ar1 lands LAST
+        XCTAssertTrue(count(reads, 2))
+        XCTAssertTrue(settleScene(s) { s.artistAlbumsForTest.map(\.id) == ["alb-ar2"] }, "ar2 was left on Loading albums")
+    }
+
+
     func testLeavingTheLibraryTabStopsTheReAskAndReturningResumesIt() {
         let wire = BridgeLibraryReadsWire(["slice.libraryAlbums": [threeAlbums],
             "slice.libraryAlbumTracks": [tracks(["a"], stale: true), tracks(["a"], stale: false),

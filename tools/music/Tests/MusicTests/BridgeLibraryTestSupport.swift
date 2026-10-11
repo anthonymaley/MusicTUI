@@ -148,8 +148,15 @@ final class LibraryAppleScriptSpy {
 /// `RoutingCoordinator`'s own switch machinery this way, exactly the seam
 /// `LibraryScene.makeProvider` exists for.
 final class BridgeSelectedFlag {
-    var selected: Bool
-    init(_ selected: Bool) { self.selected = selected }
+    private let lock = NSLock()
+    private var value: Bool
+    /// Read by a feed's fetch closure on a background thread while the test
+    /// thread flips it, so the pair is lock-protected.
+    var selected: Bool {
+        get { lock.lock(); defer { lock.unlock() }; return value }
+        set { lock.lock(); value = newValue; lock.unlock() }
+    }
+    init(_ selected: Bool) { self.value = selected }
 }
 
 /// The production shape of the factory: a provider only while `flag.selected`

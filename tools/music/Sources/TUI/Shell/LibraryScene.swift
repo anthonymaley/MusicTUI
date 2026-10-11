@@ -279,6 +279,14 @@ final class LibraryScene: Scene {
     private var tracksReaskFocus: String? = nil
     /// The artist whose albums are open, as the tick last saw it (main thread only).
     private var artistAlbumsReaskWanted: String? = nil
+    /// The artist-albums analogue of the tracks re-ask state, under `inboxLock`:
+    /// the artist whose SHOWN rows are flagged, the token of the live worker,
+    /// and the artist whose attempt is spent (bound out or a read failed while
+    /// that artist stayed current), which does not restart. A worker ended by
+    /// the heartbeat, a back-out or a switch is none of those: it resumes.
+    private var artistAlbumsStaleFor: String? = nil
+    private var artistAlbumsReaskRunning: Int? = nil
+    private var artistAlbumsSpentFor: String? = nil
     /// Bumped (under `inboxLock`) each time an artist's albums are opened, so a
     /// re-ask for the artist the person left stops asking.
     private var artistAlbumsReaskToken = 0
@@ -407,7 +415,7 @@ final class LibraryScene: Scene {
     // tell "the same artist, still on this output" apart from "the same
     // artist id, now on the other library", and Bridge's and Music.app's id
     // spaces are not guaranteed disjoint by anything checked here).
-    private var artistAlbumsInbox: (artistID: String, epoch: Int, albums: [LibraryAlbum])? = nil
+    private var artistAlbumsInbox: (artistID: String, epoch: Int, albums: [LibraryAlbum], flagged: Bool)? = nil
     /// C3 item 4: a failed Bridge artist-albums read, tagged like
     /// `artistAlbumsInbox` so a stale failure for an abandoned artist OR an
     /// abandoned output is dropped rather than overwriting the current
@@ -938,8 +946,11 @@ final class LibraryScene: Scene {
         inboxLock.lock()
         artistAlbumsReaskToken += 1
         let token = artistAlbumsReaskToken
-        inboxLock.unlock()
+        artistAlbumsStaleFor = nil
+        artistAlbumsReaskRunning = nil
+        artistAlbumsSpentFor = nil
         artistAlbumsReaskWanted = artistID
+        inboxLock.unlock()
         if let provider = makeProvider() {
             let sleep = warmUpSleep
             Thread.detachNewThread { [weak self] in
@@ -947,23 +958,18 @@ final class LibraryScene: Scene {
                     let list = try retryingWhileWarming(sleep: sleep) {
                         try provider.artistAlbums(artistID: artistID)
                     }
-                    // The strong `self` lives only in this block: nothing holds
-                    // the scene across the re-ask's waits.
-                    do {
-                        guard let self else { return }
-                        self.inboxLock.lock()
-                        if self.artistsSourceEpoch == epoch, self.artistAlbumsReaskToken == token {
-                            self.artistAlbumsInbox = (artistID, epoch, Self.libraryAlbums(from: list))
-                        }
-                        self.inboxLock.unlock()
-                        self.artistAlbumsReadFinishedForTest?()
+                    guard let self else { return }
+                    // Posted as it came. If it is flagged the tick notes that
+                    // and, while this artist stays open, asks again
+                    // (`syncArtistAlbumsReask`): SpanDAC never pushes the
+                    // refreshed list.
+                    self.inboxLock.lock()
+                    if self.artistsSourceEpoch == epoch, self.artistAlbumsReaskToken == token {
+                        self.artistAlbumsInbox = (artistID, epoch, Self.libraryAlbums(from: list),
+                                                  LibraryReask.flagged(list))
                     }
-                    // SpanDAC served this from a snapshot it is still
-                    // refreshing and will not push the result: ask again.
-                    if LibraryReask.flagged(list) {
-                        Self.reaskArtistAlbums(scene: WeakScene(self), provider: provider, artistID: artistID,
-                                               epoch: epoch, token: token, sleep: sleep)
-                    }
+                    self.inboxLock.unlock()
+                    self.artistAlbumsReadFinishedForTest?()
                 } catch {
                     guard let self else { return }
                     let sentence = (error as? MusicProviderError)?.errorDescription
@@ -984,7 +990,7 @@ final class LibraryScene: Scene {
             guard let self else { return }
             self.inboxLock.lock()
             if self.artistsSourceEpoch == epoch, self.artistAlbumsReaskToken == token {
-                self.artistAlbumsInbox = (artistID, epoch, fetched)
+                self.artistAlbumsInbox = (artistID, epoch, fetched, false)
             }
             self.inboxLock.unlock()
         }
@@ -1007,16 +1013,17 @@ final class LibraryScene: Scene {
         now().timeIntervalSince(lastTickAt) <= Self.tabLiveWindow
     }
 
-    /// Asks for one artist's albums again until SpanDAC answers unflagged,
-    /// posting each read to `artistAlbumsInbox`; the tick applies it only if
-    /// that artist is still the open level and the epoch matches. Static, and
-    /// it holds the scene weakly (`scene` is a strong reference only to start
-    /// from; the caller's thread frame drops it), so a closed scene is not
-    /// kept alive for up to 600 s.
+    /// One worker asking for the open artist's albums again until SpanDAC
+    /// answers unflagged, posting each read to `artistAlbumsInbox`; the tick
+    /// applies it only if that artist is still the open level and the epoch
+    /// matches. Static, holding the scene weakly, so a closed scene is not
+    /// kept alive for up to 600 s. On return it records whether the attempt is
+    /// spent (still current but not fresh) or merely ended (resumable).
     private static func reaskArtistAlbums(scene ref: WeakScene, provider: MusicDataProvider,
                                           artistID: String, epoch: Int, token: Int,
                                           sleep: @escaping (TimeInterval) -> Void) {
         let weakScene = ref   // box: `scene` below is re-read on every call
+        var fresh = false
         LibraryReask.run(
             sleep: sleep,
             isCurrent: { weakScene.scene?.artistAlbumsReaskIsCurrent(epoch: epoch, token: token) ?? false },
@@ -1031,14 +1038,25 @@ final class LibraryScene: Scene {
                 guard let scene = weakScene.scene,
                       scene.artistAlbumsReaskIsCurrent(epoch: epoch, token: token),
                       let list = try? provider.artistAlbums(artistID: artistID) else { return false }
+                let flagged = LibraryReask.flagged(list)
                 scene.inboxLock.lock()
                 let post = scene.artistsSourceEpoch == epoch && scene.artistAlbumsReaskToken == token
                     && scene.tabIsLiveLocked()
-                if post { scene.artistAlbumsInbox = (artistID, epoch, Self.libraryAlbums(from: list)) }
+                if post {
+                    scene.artistAlbumsInbox = (artistID, epoch, Self.libraryAlbums(from: list), flagged)
+                }
                 scene.inboxLock.unlock()
-                return post && LibraryReask.flagged(list)
+                if post && !flagged { fresh = true }
+                return post && flagged
             })
-        weakScene.scene?.reaskFinishedForTest?()
+        guard let scene = weakScene.scene else { return }
+        scene.inboxLock.lock()
+        if scene.artistAlbumsReaskRunning == token { scene.artistAlbumsReaskRunning = nil }
+        let current = scene.artistsSourceEpoch == epoch && scene.artistAlbumsReaskToken == token
+            && scene.tabIsLiveLocked()
+        if current && !fresh { scene.artistAlbumsSpentFor = artistID }
+        scene.inboxLock.unlock()
+        scene.reaskFinishedForTest?()
     }
 
     private final class WeakScene {
@@ -1136,11 +1154,28 @@ final class LibraryScene: Scene {
     /// sub-view or opening another artist moves the token.
     private func syncArtistAlbumsReask() {
         let open = nav.subView == .artists ? currentArtistID() : nil
-        guard open != artistAlbumsReaskWanted else { return }
-        artistAlbumsReaskWanted = open
+        let epoch = artistsSourceEpoch
         inboxLock.lock()
-        artistAlbumsReaskToken += 1
+        if open != artistAlbumsReaskWanted {
+            artistAlbumsReaskWanted = open
+            artistAlbumsReaskToken += 1
+        }
+        let token = artistAlbumsReaskToken
+        let start = open != nil && artistAlbumsStaleFor == open && artistAlbumsSpentFor != open
+            && artistAlbumsReaskRunning != token
+        if start { artistAlbumsReaskRunning = token }
         inboxLock.unlock()
+        guard start, let artistID = open else { return }
+        guard let provider = makeProvider() else {
+            inboxLock.lock(); if artistAlbumsReaskRunning == token { artistAlbumsReaskRunning = nil }; inboxLock.unlock()
+            return
+        }
+        let sleep = warmUpSleep
+        let ref = WeakScene(self)
+        Thread.detachNewThread {
+            Self.reaskArtistAlbums(scene: ref, provider: provider, artistID: artistID,
+                                   epoch: epoch, token: token, sleep: sleep)
+        }
     }
 
     /// Kick a serial background fetch of one album's tracks, unless it's already
@@ -1337,8 +1372,11 @@ final class LibraryScene: Scene {
         artistAlbumsInbox = nil
         pendingArtistAlbumsFailure = nil
         bridgeTracksInbox = []
-        inboxLock.unlock()
+        artistAlbumsStaleFor = nil
+        artistAlbumsReaskRunning = nil
+        artistAlbumsSpentFor = nil
         artistAlbumsReaskWanted = nil
+        inboxLock.unlock()
         artistsFeed.reset()
         artistAlbums = []
         artistAlbumsLoaded = false
@@ -1606,6 +1644,14 @@ final class LibraryScene: Scene {
             var albumAnchor: String? = nil
             if artistAlbumsLoaded, case .artistAlbums = nav.current { albumAnchor = selectionUnderCursor()?.id }
             artistAlbums = freshArtistAlbums.albums
+            inboxLock.lock()
+            if freshArtistAlbums.flagged {
+                artistAlbumsStaleFor = freshArtistAlbums.artistID
+            } else {
+                artistAlbumsStaleFor = nil
+                artistAlbumsSpentFor = nil
+            }
+            inboxLock.unlock()
             artistAlbumsLoaded = true
             artistAlbumsFailure = nil
             if case .artistAlbums = nav.current {
