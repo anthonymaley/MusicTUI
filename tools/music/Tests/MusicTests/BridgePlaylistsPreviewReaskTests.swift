@@ -133,6 +133,14 @@ final class BridgePlaylistsPreviewReaskTests: XCTestCase {
         _ = s.tick(snapshot: idle)
     }
 
+    /// Waits for a condition WITHOUT ticking the scene, for the tests that mean
+    /// "no tick has run since".
+    private func waitWithoutTicking(_ until: () -> Bool) -> Bool {
+        let deadline = Date().addingTimeInterval(3)
+        while Date() < deadline { if until() { return true }; usleep(2_000) }
+        return until()
+    }
+
     private func finished(_ gate: DispatchSemaphore) -> Bool { gate.wait(timeout: .now() + 3) == .success }
 
     /// Ticks the scene (which drains the preview landing that starts a worker)
@@ -207,6 +215,66 @@ final class BridgePlaylistsPreviewReaskTests: XCTestCase {
                       "coming back did not resume the re-ask")
         XCTAssertEqual(wire.reads("pl0"), 5)
         XCTAssertTrue(finished(ended))
+    }
+
+    /// Round 2: leaving the preview context revokes the re-ask on the spot. A
+    /// worker whose probe was already in flight must not send its re-walk or
+    /// post it just because no tick has run since: the next tick drains the
+    /// inbox BEFORE it notices the focus moved.
+    private func sceneWithProbeInFlight(_ replies: [String], rail: [String] = ["pl0", "pl1"])
+        -> (PlaylistsScene, PreviewWire, Clock, DispatchSemaphore) {
+        let wire = PreviewWire(rail: rail, replies: ["pl0": replies, "pl1": [page(["One"], flagged: false)]])
+        wire.hold("pl0", read: 1)
+        let clock = Clock(), ended = DispatchSemaphore(value: 0)
+        let s = makeScene(wire, clock: clock, ended: ended)
+        rest(s, clock)
+        XCTAssertTrue(settleScene(s) { wire.reached("pl0", read: 1) }, "pl0's probe never went out")
+        return (s, wire, clock, ended)
+    }
+
+    func testMovingTheCursorRevokesAnInFlightReAskWithoutATick() {
+        let (s, wire, _, ended) = sceneWithProbeInFlight([
+            page(["Old"], flagged: true), page(["Old"], flagged: false),
+            page(["Old"], flagged: false),                         // the resumed probe (a re-walk now would eat this)
+            page(["Back"], flagged: false)])                       // the resumed re-walk
+        _ = s.handle(.down)                                        // no tick follows
+        wire.release("pl0", read: 1)
+        XCTAssertTrue(finished(ended), "the re-ask never ended")
+        XCTAssertEqual(wire.reads("pl0"), 2, "a re-walk went out after the cursor moved")
+        XCTAssertEqual(s.bridgePreviewPostsPending, 0, "a late result was posted after the cursor moved")
+        for _ in 0..<5 { _ = s.tick(snapshot: idle) }
+        XCTAssertEqual(s.previewTitlesForTest("pl0"), ["Old"], "a late result was applied")
+        // Back on the unspent playlist: the re-ask resumes, and the ended worker did not strand it.
+        _ = s.handle(.up)
+        XCTAssertTrue(settleScene(s) { s.previewTitlesForTest("pl0") == ["Back"] }, "coming back did not resume the re-ask")
+        XCTAssertEqual(wire.reads("pl0"), 4)
+        XCTAssertTrue(finished(ended))
+    }
+
+    func testDrillingInRevokesAnInFlightReAskWithoutATick() {
+        let (s, wire, _, ended) = sceneWithProbeInFlight([
+            page(["Old"], flagged: true), page(["Old"], flagged: false),
+            page(["Drilled"], flagged: false),                     // the drill-in's own read
+            page(["Late"], flagged: false)])                       // the re-walk, if it went out
+        _ = s.handle(.enter)                                       // no tick follows
+        XCTAssertTrue(waitWithoutTicking { wire.reached("pl0", read: 2) }, "the drill-in never read")
+        wire.release("pl0", read: 1)
+        XCTAssertTrue(finished(ended), "the re-ask never ended")
+        XCTAssertEqual(wire.reads("pl0"), 3, "a re-walk went out after the drill-in")
+        XCTAssertEqual(s.previewTitlesForTest("pl0"), ["Old"], "a late result replaced the preview")
+        for _ in 0..<5 { _ = s.tick(snapshot: idle) }
+        XCTAssertEqual(s.previewTitlesForTest("pl0"), ["Old"])
+        XCTAssertEqual(wire.reads("pl0"), 3)
+    }
+
+    func testLeavingTheSceneRevokesAnInFlightReAskWithoutATick() {
+        let (s, wire, _, ended) = sceneWithProbeInFlight([
+            page(["Old"], flagged: true), page(["Old"], flagged: false), page(["Late"], flagged: false)])
+        _ = s.handle(.escape)                                      // pops the scene; no tick follows
+        wire.release("pl0", read: 1)
+        XCTAssertTrue(finished(ended), "the re-ask never ended")
+        XCTAssertEqual(wire.reads("pl0"), 2, "a re-walk went out after the scene was left")
+        XCTAssertEqual(s.bridgePreviewPostsPending, 0)
     }
 
     /// (d) A provenance switch outlives the re-ask: its late result is dropped.

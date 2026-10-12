@@ -297,6 +297,18 @@ final class PlaylistsScene: Scene {
         bridgePreviewGeneration += 1
         bridgePreviewToken = nil
         bridgeWantedLock.unlock()
+        // The re-ask is revoked on the spot too, not at the next tick: `tick`
+        // drains the preview inbox BEFORE it syncs the re-ask, so a worker whose
+        // probe was already in flight would otherwise still see its playlist as
+        // current, send the re-walk and post it. Taken after `bridgeWantedLock`
+        // is released (the two are never nested). The next tick publishes the
+        // focus again if the pane is live, and a playlist that is stale and not
+        // spent resumes; an obsolete worker still clears `previewReaskRunning`
+        // when it returns.
+        previewInboxLock.lock()
+        previewReaskToken += 1
+        previewReaskFocus = nil
+        previewInboxLock.unlock()
     }
     /// `flagged`: SpanDAC said this page came from an old snapshot it is still
     /// refreshing. The rows are shown regardless; the flag is what makes the
