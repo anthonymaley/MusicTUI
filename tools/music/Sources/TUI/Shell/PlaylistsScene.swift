@@ -154,6 +154,14 @@ final class PlaylistsScene: Scene {
     var drilledListRevForTest: String? { bridgeTracksListRev }
     var drilledTotalForTest: Int? { bridgeTracksTotal }
     var drilledFeedForTest: BridgeListFeed<MusicRow>? { bridgeTracksFeed }
+    /// The preview pane's cached song titles for a playlist, for tests.
+    func previewTitlesForTest(_ pid: String) -> [String]? { bridgePreview[pid]?.map(\.title) }
+    /// The track count the preview (or a drill-in, or a play) last recorded, for tests.
+    func previewTotalForTest(_ pid: String) -> Int? { trackCounts[pid] }
+    /// Fired when a preview re-ask worker returns, whichever way it ended, so a
+    /// test waits for the end of the work rather than a duration. Set before the
+    /// preview is kicked; nil in production.
+    var previewReaskFinishedForTest: (() -> Void)?
     private var meta: [PlaylistMeta]
     private var loaded: Set<Int> = []
     private var fullCache: [Int: PlaylistPreview] = [:]
@@ -290,10 +298,38 @@ final class PlaylistsScene: Scene {
         bridgePreviewToken = nil
         bridgeWantedLock.unlock()
     }
+    /// `flagged`: SpanDAC said this page came from an old snapshot it is still
+    /// refreshing. The rows are shown regardless; the flag is what makes the
+    /// preview worth asking for again (`syncPreviewReask`). A walked play's
+    /// landing is a complete, just-read list and carries none.
     private enum BridgePreviewOutcome {
-        case success(rows: [MusicRow], total: Int, skippedVideos: Int)
+        case success(rows: [MusicRow], total: Int, skippedVideos: Int, flagged: Bool = false)
         case failure(String)
     }
+    /// Preview re-ask state, all under `previewInboxLock`. A stale-flagged
+    /// preview is asked for again until SpanDAC answers unflagged, by ONE
+    /// worker, for the playlist the person is resting on (the same condition as
+    /// the preview token). `previewReaskToken` is bumped whenever that focus
+    /// changes or a provenance switch lands, which ends a worker holding an
+    /// older token at its next check; `previewReaskRunning` is the token of the
+    /// live worker, and nothing else starts while it is non-nil, so a cursor
+    /// scrolled across many stale playlists never leaves a poller behind each.
+    /// `previewReaskSpent` holds playlists whose bound ran out or whose read
+    /// failed while they stayed current: no restart for them until a provenance
+    /// reset. A worker ended by a focus move, a tab leave or a switch is not
+    /// spent, and resumes when the playlist is current again. `previewTickAt`
+    /// is the heartbeat (`tick` runs only while this tab shows) and
+    /// `previewReaskEpoch` mirrors `railEpoch` for the worker threads, which
+    /// must not read the main-thread variable.
+    private struct PreviewReaskFocus: Equatable { let id: String; let epoch: Int }
+    private var previewReaskStale: Set<String> = []
+    private var previewReaskSpent: Set<String> = []
+    private var previewReaskToken = 0
+    private var previewReaskRunning: Int? = nil
+    private var previewReaskFocus: PreviewReaskFocus? = nil
+    private var previewReaskEpoch = 0
+    private var previewTickAt: Date = .distantPast
+    private static let previewTabLiveWindow: TimeInterval = 3
     /// Rule 10: epoch-carrying, same discipline as every other inbox here.
     private var bridgePreviewInbox: [(id: String, epoch: Int, outcome: BridgePreviewOutcome)] = []
     /// How many walked-playlist results wait in the preview inbox, not yet drained by
@@ -593,6 +629,11 @@ final class PlaylistsScene: Scene {
         fullInbox = [:]
         bridgePreviewInbox = []
         bridgePreviewDropped = []
+        previewReaskStale = []
+        previewReaskSpent = []
+        previewReaskFocus = nil
+        previewReaskToken += 1
+        previewReaskEpoch = railEpoch
         previewInboxLock.unlock()
         // Bridge structures.
         bridgePlaylistRows = []
@@ -670,6 +711,7 @@ final class PlaylistsScene: Scene {
 
     func tick(snapshot: NowPlayingSnapshot) -> Bool {
         var changed = false
+        previewInboxLock.lock(); previewTickAt = now(); previewInboxLock.unlock()
 
         // D7: before anything else this tick, so a rail reset here also
         // reloads from the right source this same tick.
@@ -759,10 +801,13 @@ final class PlaylistsScene: Scene {
             bridgePreviewInFlight.remove(pid)
             guard epoch == railEpoch else { continue }   // rule 10: outlived a provenance switch
             switch outcome {
-            case .success(let rows, let total, let skippedVideos):
+            case .success(let rows, let total, let skippedVideos, let flagged):
                 bridgePreview[pid] = rows
                 trackCounts[pid] = total
                 skippedVideoCounts[pid] = skippedVideos
+                previewInboxLock.lock()
+                if flagged { previewReaskStale.insert(pid) } else { previewReaskStale.remove(pid) }
+                previewInboxLock.unlock()
             case .failure(let sentence):
                 bridgePreviewFailure[pid] = sentence
             }
@@ -919,7 +964,8 @@ final class PlaylistsScene: Scene {
                             self.previewInboxLock.lock()
                             self.bridgePreviewInbox.append(
                                 (pid, epoch, .success(rows: page.rows, total: page.total ?? page.rows.count,
-                                                      skippedVideos: page.skippedVideos)))
+                                                      skippedVideos: page.skippedVideos,
+                                                      flagged: LibraryReask.flagged(page))))
                             self.previewInboxLock.unlock()
                         } catch {
                             let sentence = (error as? MusicProviderError)?.errorDescription
@@ -934,7 +980,94 @@ final class PlaylistsScene: Scene {
         } else {
             bridgePreviewRest = nil
         }
+        syncPreviewReask(token: previewToken)
         return changed
+    }
+
+    /// Current = the same focus (token), the same provenance, and this tab
+    /// still ticking. Under `previewInboxLock`.
+    private func previewReaskIsCurrentLocked(token: Int, epoch: Int) -> Bool {
+        previewReaskToken == token && previewReaskEpoch == epoch
+            && now().timeIntervalSince(previewTickAt) <= Self.previewTabLiveWindow
+    }
+
+    private func previewReaskIsCurrent(token: Int, epoch: Int) -> Bool {
+        previewInboxLock.lock(); defer { previewInboxLock.unlock() }
+        return previewReaskIsCurrentLocked(token: token, epoch: epoch)
+    }
+
+    /// Runs on the tick thread each tick. The focused Bridge rail playlist
+    /// (`previewToken`, non-nil only while the pane is live) decides which
+    /// playlist a re-ask worker may serve: when it changes the token moves and an
+    /// older worker stops at its next check. If that playlist's shown preview is
+    /// flagged, not spent, and no worker is running, one starts.
+    ///
+    /// The worker runs `LibraryReask.run` with the injected sleep: a one-page
+    /// probe (the same 50-row read the preview makes) every 5 s until it comes
+    /// back unflagged, then a re-read that is posted to `bridgePreviewInbox` (with
+    /// its flag) only while the playlist is still current. It holds the scene
+    /// weakly, so a closed scene is not kept alive for up to 600 s.
+    private func syncPreviewReask(token previewToken: BridgePreviewToken?) {
+        let wantedID = previewToken?.id
+        let focus = previewToken.map { PreviewReaskFocus(id: $0.id, epoch: $0.epoch) }
+        previewInboxLock.lock()
+        if focus != previewReaskFocus { previewReaskFocus = focus; previewReaskToken += 1 }
+        let token = previewReaskToken
+        let epoch = previewReaskEpoch
+        let start = wantedID.map {
+            previewReaskStale.contains($0) && !previewReaskSpent.contains($0) && previewReaskRunning == nil
+        } ?? false
+        if start { previewReaskRunning = token }
+        previewInboxLock.unlock()
+        guard start, let pid = wantedID else { return }
+        guard let provider = makeProvider() else {
+            previewInboxLock.lock(); if previewReaskRunning == token { previewReaskRunning = nil }; previewInboxLock.unlock()
+            return
+        }
+        let sleep = warmUpSleep
+        Thread.detachNewThread { [weak self] in
+            var fresh = false
+            LibraryReask.run(
+                sleep: sleep,
+                isCurrent: { [weak self] in self?.previewReaskIsCurrent(token: token, epoch: epoch) ?? false },
+                probe: {
+                    try provider.playlistTracks(playlistID: pid, cursor: nil, limit: PlaylistsScene.bridgePreviewLimit)
+                },
+                rewalk: { [weak self] in
+                    // Re-check BEFORE the read (no request for a playlist the
+                    // person has left), and again under the lock before posting.
+                    guard let scene = self,
+                          scene.previewReaskIsCurrent(token: token, epoch: epoch),
+                          let page = try? provider.playlistTracks(
+                              playlistID: pid, cursor: nil, limit: PlaylistsScene.bridgePreviewLimit)
+                    else { return false }
+                    let flagged = LibraryReask.flagged(page)
+                    scene.previewInboxLock.lock()
+                    let post = scene.previewReaskIsCurrentLocked(token: token, epoch: epoch)
+                    if post {
+                        scene.bridgePreviewInbox.append(
+                            (pid, epoch, .success(rows: page.rows, total: page.total ?? page.rows.count,
+                                                  skippedVideos: page.skippedVideos, flagged: flagged)))
+                        // Not stale any more from this moment, so a tick that
+                        // runs before the landing drains cannot start another worker.
+                        if !flagged { scene.previewReaskStale.remove(pid) }
+                    }
+                    scene.previewInboxLock.unlock()
+                    if post && !flagged { fresh = true }
+                    return post && flagged
+                })
+            guard let scene = self else { return }
+            scene.previewInboxLock.lock()
+            if scene.previewReaskRunning == token { scene.previewReaskRunning = nil }
+            // Still current yet not fresh: the bound ran out or a read failed.
+            // (A worker ended by a focus move, tab leave or switch is not
+            // spent: it restarts when the playlist is current again.)
+            if scene.previewReaskIsCurrentLocked(token: token, epoch: epoch) && !fresh {
+                scene.previewReaskSpent.insert(pid)
+            }
+            scene.previewInboxLock.unlock()
+            scene.previewReaskFinishedForTest?()
+        }
     }
 
     func render(frame: ShellFrame, snapshot: NowPlayingSnapshot) -> String {
