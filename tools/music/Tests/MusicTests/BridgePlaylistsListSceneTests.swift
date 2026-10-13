@@ -278,6 +278,7 @@ final class BridgePlaylistsListSceneTests: XCTestCase {
         let gate = DispatchSemaphore(value: 0)
         // Blocks until released, so its result can be made to land AFTER a
         // full round trip through Bridge and back.
+        let tempCache = temporaryPlaylistMetaCache()
         let blockedSources = PlaylistDataSources(
             onMeta: { idxs in
                 gate.wait()
@@ -289,7 +290,7 @@ final class BridgePlaylistsListSceneTests: XCTestCase {
                                                            surface: .tui, makeSource: { SourceAppClient(path: "/nonexistent", transport: wire.transport) }),
                                playlists: ["Slow Playlist"], sources: blockedSources,
                                appQueue: AppQueueStore(), status: StatusStore(), actions: ActionRunner(status: StatusStore()),
-                               metaCache: temporaryPlaylistMetaCache().cache,
+                               metaCache: tempCache.cache,
                                makeProvider: {
                                    flag.selected
                                        ? BridgeMusicProvider(control: SourceAppControl(path: "/nonexistent", transport: wire.transport, libraryTransport: wire.transport))
@@ -306,14 +307,19 @@ final class BridgePlaylistsListSceneTests: XCTestCase {
                       "the second Music.app load never landed")
 
         gate.signal()
-        Thread.sleep(forTimeInterval: 0.2)
+        // The refresh thread posts its result and only then saves the cache, so
+        // the saved 999 means the stale post has already been made (and, if the
+        // epoch check works, is waiting to be dropped by the ticks below).
+        let deadline = Date().addingTimeInterval(5)
+        while tempCache.cache.load()["Slow Playlist"]?.count != 999, Date() < deadline { usleep(2_000) }
+        XCTAssertEqual(tempCache.cache.load()["Slow Playlist"]?.count, 999, "the gated onMeta refresh never finished")
         for _ in 0..<10 { _ = s.tick(snapshot: idle) }
 
         let out = s.render(frame: frame, snapshot: idle)
         XCTAssertFalse(out.contains("999"), "a stale onMeta result from before the flip landed on the reloaded list: \(out)")
     }
 
-    func testABridgePageGatedUntilAfterAFlipToMusicAppNeverAppears() {
+    func testABridgePageGatedUntilAfterAFlipToMusicAppNeverAppears() throws {
         let page1 = """
         {"ok":true,"op":"slice.libraryPlaylists","generation":3,"total":1,
          "items":[{"id":"pl1","title":"Gated SpanDAC Playlist","kind":"playlist"}],"next_cursor":null}
@@ -327,12 +333,22 @@ final class BridgePlaylistsListSceneTests: XCTestCase {
 
         XCTAssertTrue(settleScene(s) { wire.reached(op: "slice.libraryPlaylists", at: 0) },
                       "never reached the gated first page")
+        // The rail's own feed is private; reach it by reflection so the test can
+        // wait for ITS walk thread to end instead of a duration.
+        let feed = Mirror(reflecting: s).children.lazy.compactMap { $0.value as? BridgeListFeed<MusicRow> }.first
         flag.selected = false   // flip away from Bridge while the page is in flight
         XCTAssertTrue(settleScene(s) { s.render(frame: frame, snapshot: idle).contains("Music.app Playlist") },
                       "the provenance reset never reloaded Music.app")
         wire.release(op: "slice.libraryPlaylists", at: 0)
-        Thread.sleep(forTimeInterval: 0.15)
+        // The gated walk has taken the page and ended: whatever it was going to
+        // post has been posted (or dropped), so the ticks below see the outcome.
+        let walkedFeed = try XCTUnwrap(feed, "the rail's BridgeListFeed was not found on the scene")
+        XCTAssertTrue(walkedFeed.waitForWorkersForTest(timeout: 5), "the gated walk never finished")
         for _ in 0..<10 { _ = s.tick(snapshot: idle) }
+        // Music.app's rail never draws Bridge's rows, so the render alone cannot
+        // show a leak: read the scene's own Bridge rows (private, by reflection).
+        let bridgeRows = Mirror(reflecting: s).children.first { $0.label == "bridgePlaylistRows" }?.value as? [MusicRow]
+        XCTAssertEqual(bridgeRows?.map(\.title), [], "the gated page's rows were kept after the reset (nil: bridgePlaylistRows not found)")
         let out = s.render(frame: frame, snapshot: idle)
         XCTAssertFalse(out.contains("Gated SpanDAC Playlist"), "a SpanDAC row landed after the rail had reset to Music.app: \(out)")
     }

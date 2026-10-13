@@ -56,6 +56,19 @@ private func entry(_ seq: Int, _ state: EntryState, reported: Bool = false) -> P
 
 final class PlaySyncWorkerTests: XCTestCase {
 
+    /// Waits for the worker's own thread (the one its passes ran on) to exit,
+    /// so nothing more can run or post: what a test asserts next is final, not
+    /// a snapshot taken inside a sleep.
+    private func waitForWorkerThreadToExit(_ runner: FakeRunner, timeout: TimeInterval = 5) -> Bool {
+        guard let thread = runner.threads.last else { return false }
+        let deadline = Date().addingTimeInterval(timeout)
+        while !thread.isFinished {
+            if Date() >= deadline { return false }
+            usleep(2_000)
+        }
+        return true
+    }
+
     private func makeWorker(bridge: Bool, runner: FakeRunner, log: PostLog,
                             interval: TimeInterval = 30, firstDelay: TimeInterval = 5) -> PlaySyncWorker {
         PlaySyncWorker(isBridgeSelected: { bridge }, runner: runner,
@@ -280,9 +293,8 @@ final class PlaySyncWorkerTests: XCTestCase {
         let began = Date()
         worker.stop()
         XCTAssertLessThan(Date().timeIntervalSince(began), 1.0)
-        let count = runner.calls.count
-        Thread.sleep(forTimeInterval: 0.2)
-        XCTAssertEqual(runner.calls.count, count)
+        XCTAssertTrue(waitForWorkerThreadToExit(runner), "the worker's thread never exited after stop")
+        XCTAssertEqual(runner.calls.count, 1, "a pass ran after stop")
     }
 
     func testStopReturnsWithinTwoAndAHalfSecondsWhilePassIsBlocked() {
@@ -302,7 +314,7 @@ final class PlaySyncWorkerTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(took, 1.5, "stop waits for a pass in progress, up to its bound")
         // The pass is left to finish on its own; it posts nothing after stop.
         gate.signal()
-        Thread.sleep(forTimeInterval: 0.1)
+        XCTAssertTrue(waitForWorkerThreadToExit(runner), "the worker's thread never exited after the pass was released")
         XCTAssertEqual(log.items, [])
         XCTAssertEqual(runner.calls.count, 1)
     }
