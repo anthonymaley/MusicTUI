@@ -293,11 +293,12 @@ final class BridgeLibraryListsSceneTests: XCTestCase {
         flag.selected = false   // flip away from Bridge while page 2 is in flight
         XCTAssertTrue(settleScene(s) { s.songsForTest.isEmpty }, "the provenance reset never cleared the list")
         wire.release(op: "slice.librarySongs", at: 1)
-        // Give the abandoned walk a moment to try to land its second page,
-        // THEN drain — `render` alone never calls `tick`, so without this the
-        // test would pass vacuously regardless of whether the epoch guard
-        // held.
-        Thread.sleep(forTimeInterval: 0.2)
+        // Wait for the abandoned walk to END (it has tried to land its second
+        // page by then), THEN drain — `render` alone never calls `tick`, so
+        // without this the test would pass vacuously regardless of whether the
+        // epoch guard held.
+        XCTAssertTrue(settleScene(s) { wire.threadEnded(op: "slice.librarySongs", at: 1) },
+                      "the abandoned walk never ended")
         for _ in 0..<10 { _ = s.tick(snapshot: idle) }
         let out = s.render(frame: frame, snapshot: idle)
         XCTAssertFalse(out.contains("Nude"), "a SpanDAC row landed after the list had reset to Music.app: \(out)")
@@ -335,11 +336,13 @@ final class BridgeLibraryListsSceneTests: XCTestCase {
         XCTAssertTrue(settleScene(s) { s.render(frame: frame, snapshot: idle).contains("(no albums)") },
                       "the provenance reset never cleared the list")
         wire.release(op: "slice.libraryAlbums", at: 1)
-        // Give the abandoned walk a moment to try to land its second page,
-        // THEN drain — `render` alone never calls `tick`, so without this the
-        // test would pass vacuously regardless of whether the epoch guard
-        // (already exercised at the unit level in `BridgeListFeedTests`) held.
-        Thread.sleep(forTimeInterval: 0.15)
+        // Wait for the abandoned walk to END (it has tried to land its second
+        // page by then), THEN drain — `render` alone never calls `tick`, so
+        // without this the test would pass vacuously regardless of whether the
+        // epoch guard (already exercised at the unit level in
+        // `BridgeListFeedTests`) held.
+        XCTAssertTrue(settleScene(s) { wire.threadEnded(op: "slice.libraryAlbums", at: 1) },
+                      "the abandoned walk never ended")
         for _ in 0..<10 { _ = s.tick(snapshot: idle) }
         let out = s.render(frame: frame, snapshot: idle)
         XCTAssertFalse(out.contains("In Rainbows") || out.contains("Stale Second Page"),
@@ -485,7 +488,9 @@ final class BridgeLibraryListsSceneTests: XCTestCase {
                                  warmUpSleep: waits.record)
         goToSubView(s, .songs)
         XCTAssertTrue(settleScene(s) { s.songsForTest.map(\.id) == ["a"] })
-        Thread.sleep(forTimeInterval: 0.1)
+        // A re-ask would run on the walk's own thread, so once that thread has
+        // ended there is nothing left that could still send one.
+        XCTAssertTrue(settleScene(s) { wire.threadEnded(op: "slice.librarySongs", at: 0) }, "the walk never ended")
         XCTAssertEqual(wire.sent("slice.librarySongs").count, 1)
         XCTAssertTrue(waits.all.isEmpty)
     }

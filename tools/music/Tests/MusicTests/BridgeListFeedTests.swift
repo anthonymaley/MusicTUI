@@ -21,12 +21,22 @@ final class BridgeListFeedTests: XCTestCase {
         private var script: [MusicPage]
         private var calls = 0
         private var gates: [Int: DispatchSemaphore] = [:]
+        private var threads: [Int: Thread] = [:]
 
         init(_ script: [MusicPage]) { self.script = script }
 
         func gate(at n: Int) { lock.lock(); gates[n] = DispatchSemaphore(value: 0); lock.unlock() }
         func release(at n: Int) { lock.lock(); let g = gates[n]; lock.unlock(); g?.signal() }
         var callCount: Int { lock.lock(); defer { lock.unlock() }; return calls }
+
+        /// True once the thread that made call `n` has ENDED, which is later than
+        /// the call returning: the walk's page post, its epoch check and its
+        /// ending have all run by then. The signal for "the abandoned work has
+        /// finished", so a test asserts after it instead of after a sleep.
+        func threadEnded(at n: Int) -> Bool {
+            lock.lock(); let t = threads[n]; lock.unlock()
+            return t?.isFinished ?? false
+        }
 
         func fetch(_ cursor: String?, _ limit: Int) throws -> MusicPage {
             lock.lock()
@@ -35,6 +45,7 @@ final class BridgeListFeedTests: XCTestCase {
             guard n < script.count else { lock.unlock(); throw MusicProviderError.unavailable("unscripted call \(n)") }
             let result = script[n]
             let gate = gates[n]
+            threads[n] = Thread.current
             lock.unlock()
             _ = gate?.wait(timeout: .now() + 5)
             return result
@@ -154,9 +165,10 @@ final class BridgeListFeedTests: XCTestCase {
         XCTAssertTrue(settleUntil { script.reachedGateAt1() })
         f.reset()
         script.release(at: 1)
-        // Give the (now-abandoned) walk a moment to try to post; it must not
-        // land anything after the reset.
-        Thread.sleep(forTimeInterval: 0.1)
+        // Wait for the (now-abandoned) walk to END, so it has had its chance to
+        // post; it must not land anything after the reset. The feed's worker
+        // group covers every walk thread it started.
+        XCTAssertTrue(f.waitForWorkersForTest(timeout: 5), "the abandoned walk never ended")
         let d = f.drain()
         XCTAssertNil(d.replace)
         XCTAssertTrue(d.append.isEmpty)
@@ -204,16 +216,21 @@ final class BridgeListFeedTests: XCTestCase {
         XCTAssertTrue(settleUntil { script.callCount > 1 }, "walk B never reached its own (gated) first page")
 
         script.release(at: 0)                                  // let walk A's blocked fetch return
-        Thread.sleep(forTimeInterval: 0.15)                     // give A's (should-be-no-op) ending a moment
+        // A's thread has ended, so its (should-be-no-op) ending has run. The
+        // group can't say this: B is still blocked, so it holds the group open.
+        XCTAssertTrue(settleUntil { script.threadEnded(at: 0) }, "walk A never ended")
 
         // The race: if A's ending wrongly cleared `walking`, THIS call
         // launches a rogue walk C while B is still blocked at index 1.
         f.start()
-        Thread.sleep(forTimeInterval: 0.1)
-        XCTAssertEqual(script.callCount, 2,
-                      "a third walk started while the second was still legitimately in flight")
 
         script.release(at: 1)                                  // let walk B finish
+        // Every walk thread, B and a rogue C alike, has ended once the group
+        // drains, so the count below is final rather than a snapshot. C's
+        // fetch (index 2) is not gated: it would already have been made.
+        XCTAssertTrue(f.waitForWorkersForTest(timeout: 5), "a walk never ended")
+        XCTAssertEqual(script.callCount, 2,
+                      "a third walk started while the second was still legitimately in flight")
         let drained = settleUntil(3.0) { let d = f.drain(); return d.done || d.failure != nil }
         XCTAssertTrue(drained, "walk B never finished")
         XCTAssertNil(f.drain().failure, "an unscripted (rogue walk) call was recorded as a failure")
@@ -234,7 +251,10 @@ final class BridgeListFeedTests: XCTestCase {
         XCTAssertTrue(settleUntil { script.callCount > 1 }, "never reached the gated second page")
         f = nil   // drop the only strong reference while blocked mid-page
         script.release(at: 1)
-        Thread.sleep(forTimeInterval: 0.2)   // give the walk a moment to resume and stop
+        // The feed is gone, so its worker group is out of reach: wait on the
+        // thread that made the gated call instead. It has ended once the walk
+        // has either stopped or gone on to fetch a third page.
+        XCTAssertTrue(settleUntil { script.threadEnded(at: 1) }, "the walk never ended")
         XCTAssertEqual(script.callCount, 2, "the walk fetched a THIRD page after the feed was released")
     }
 

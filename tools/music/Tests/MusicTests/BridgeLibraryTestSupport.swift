@@ -39,6 +39,9 @@ final class BridgeLibraryReadsWire {
     private var repliesByOp: [String: [String]]
     private var countByOp: [String: Int] = [:]
     private var gates: [String: [Int: DispatchSemaphore]] = [:]
+    /// The thread that served each request, so a test can tell when the walk or
+    /// fetch behind it has ENDED rather than guessing with a sleep.
+    private var threads: [String: [Int: Thread]] = [:]
     /// When true, `slice.status` is a poll rather than a one-shot: once scripted,
     /// its last reply keeps answering. A scene play now reads the status for
     /// SpanDAC's capabilities before it sends anything, so a scene test that
@@ -71,6 +74,18 @@ final class BridgeLibraryReadsWire {
         return (countByOp[op] ?? 0) > n
     }
 
+    /// True once the thread that served the Nth (0-based) request of `op` has
+    /// ENDED, which is later than the request returning: the page post, the
+    /// epoch check and the walk's ending (or a re-ask the walk would have gone on
+    /// to start) have all run by then. A test uses it to know that abandoned
+    /// background work has finished, then drains and asserts, instead of
+    /// sleeping and hoping the work was done. Only for requests made from a
+    /// background thread: the test's own thread never ends.
+    func threadEnded(op: String, at n: Int) -> Bool {
+        lock.lock(); let t = threads[op]?[n]; lock.unlock()
+        return t?.isFinished ?? false
+    }
+
     func transport(_ path: String, _ line: String) throws -> String {
         let body = ((try? JSONSerialization.jsonObject(with: Data(line.utf8))) as? [String: Any]) ?? [:]
         let op = body["op"] as? String ?? ""
@@ -82,6 +97,7 @@ final class BridgeLibraryReadsWire {
         let reply = n < replies.count ? replies[n]
             : (op == "slice.status" && stickyStatus ? (replies.last ?? Self.unscripted(op)) : Self.unscripted(op))
         let gate = gates[op]?[n]
+        threads[op, default: [:]][n] = Thread.current
         lock.unlock()
         _ = gate?.wait(timeout: .now() + 5)
         return reply
