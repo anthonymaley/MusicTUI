@@ -340,7 +340,8 @@ final class BridgeListFeedTests: XCTestCase {
         XCTAssertTrue(settleUntil { script.callCount == 2 }, "the probe never started")
         f.reset()
         script.release(at: 1)
-        usleep(150_000)   // long enough for a re-walk to have fetched if one were going to
+        // The worker has ended, so a re-walk it was going to make has been made.
+        XCTAssertTrue(f.waitForWorkersForTest(timeout: 5), "the re-ask worker never ended")
         XCTAssertEqual(script.callCount, 2, "a reset during the probe still cost a first-page read")
     }
 
