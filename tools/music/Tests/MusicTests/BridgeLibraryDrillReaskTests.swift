@@ -356,7 +356,16 @@ final class BridgeLibraryDrillReaskScopeTests: XCTestCase {
         XCTAssertEqual(wire.sent("slice.libraryAlbumTracks").count, 7)
     }
 
-    final class Clock { var date = Date(timeIntervalSince1970: 1_000_000) }
+    /// Read by the scene's worker thread (`now: { clock.date }`) and written by
+    /// the test thread, so the storage is lock-guarded.
+    final class Clock {
+        private let lock = NSLock()
+        private var stored = Date(timeIntervalSince1970: 1_000_000)
+        var date: Date {
+            get { lock.lock(); defer { lock.unlock() }; return stored }
+            set { lock.lock(); stored = newValue; lock.unlock() }
+        }
+    }
 
     // MARK: artist albums: a heartbeat-ended re-ask resumes; a spent one does not
 
