@@ -327,6 +327,23 @@ final class BridgeListFeedTests: XCTestCase {
         })
     }
 
+    /// A `reset()` that lands while the probe is in flight must not cost a
+    /// first-page read: the probe's unflagged reply earns a re-walk only if the
+    /// feed is still current.
+    func testAResetDuringTheProbeSpendsNoFurtherRead() {
+        let script = ScriptedFetch([flagged(["old"]),                 // initial walk: stale
+                                    flagged(["new"], stale: false),   // the probe: fresh, but gated
+                                    flagged(["new"], stale: false)])  // the re-walk's first page: must never be read
+        script.gate(at: 1)
+        let f = reaskFeed(script.fetch, SleepRecorder())
+        f.start()
+        XCTAssertTrue(settleUntil { script.callCount == 2 }, "the probe never started")
+        f.reset()
+        script.release(at: 1)
+        usleep(150_000)   // long enough for a re-walk to have fetched if one were going to
+        XCTAssertEqual(script.callCount, 2, "a reset during the probe still cost a first-page read")
+    }
+
     func testAFreshReplyIsNeverReAsked() {
         let script = ScriptedFetch([flagged(["a"], stale: false)])
         let sleeper = SleepRecorder()

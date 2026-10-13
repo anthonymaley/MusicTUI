@@ -226,6 +226,9 @@ final class BridgeListFeed<Row> {
             isCurrent: { [weak self] in self?.currentEpochMatches(myEpoch) ?? false },
             probe: { try fetch(nil, limit) },
             rewalk: { [weak self] in
+                // `walkLibraryPages` reads page 1 before its epoch check, so a
+                // reset that outlived the probe is caught here instead.
+                guard self?.currentEpochMatches(myEpoch) ?? false else { return false }
                 var rows: [Row] = []
                 var total: Int? = nil
                 var skipped: Int? = nil

@@ -466,6 +466,9 @@ enum LibraryReask {
             guard isCurrent() else { return }
             guard let page = try? probe() else { return }
             if flagged(page) { continue }
+            // A switch that landed while the probe was in flight: the re-walk's
+            // first page would be read for nothing.
+            guard isCurrent() else { return }
             if !rewalk() { return }
         }
     }
