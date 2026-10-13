@@ -93,7 +93,9 @@ final class SpanDACLinkTests: XCTestCase {
         XCTAssertEqual(got, .unsafeCipher)
         XCTAssertEqual(got?.sentence, "SpanDAC negotiated an unsafe cipher; update it")
         XCTAssertEqual(server.negotiatedSuites, [0x00A8], "the peer did reach .ready on 0x00A8")
-        Thread.sleep(forTimeInterval: 0.2)
+        // The peer's read ended (the client dropped the connection), so no byte
+        // can still be on its way: the count below is final, not a snapshot.
+        XCTAssertTrue(server.waitForPeerToEnd(timeout: 5), "the client never dropped the connection")
         XCTAssertEqual(server.applicationBytes, 0, "not one application byte may reach a peer on a non-FS suite")
     }
 
@@ -122,8 +124,7 @@ final class SpanDACLinkTests: XCTestCase {
         // A port that was just listening and is not any more.
         let server = try LoopbackPSKServer(identity: identity, key: key, reply: "{}")
         let port = server.port
-        server.stop()
-        Thread.sleep(forTimeInterval: 0.2)
+        server.stopAndWaitUntilClosed()
         let started = Date()
         let got = failure { try transport(nil, port: port).exchange("x", timeout: 10) }
         XCTAssertEqual(got, .asleep)
@@ -231,6 +232,11 @@ final class LoopbackPSKServer {
     private var _requests: [String] = []
     private var _suites: [UInt16] = []
     private var _bytes = 0
+    /// Signalled once per connection whose read ended (the peer closed it, or it
+    /// failed), so a test can wait for the end of the stream rather than a duration.
+    private let peerEnded = DispatchSemaphore(value: 0)
+    /// Signalled when the listener reaches `.cancelled`: its socket is closed.
+    private let listenerCancelled: DispatchSemaphore
     private(set) var port: UInt16 = 0
 
     var requests: [String] { lock.lock(); defer { lock.unlock() }; return _requests }
@@ -253,7 +259,12 @@ final class LoopbackPSKServer {
         parameters.requiredLocalEndpoint = .hostPort(host: "127.0.0.1", port: .any)
         listener = try NWListener(using: parameters)
         let ready = DispatchSemaphore(value: 0)
-        listener.stateUpdateHandler = { if case .ready = $0 { ready.signal() } }
+        let cancelled = DispatchSemaphore(value: 0)
+        listenerCancelled = cancelled
+        listener.stateUpdateHandler = { state in
+            if case .ready = state { ready.signal() }
+            if case .cancelled = state { cancelled.signal() }
+        }
         listener.newConnectionHandler = { [unowned self] connection in
             self.lock.lock(); self.connections.append(connection); self.lock.unlock()
             connection.stateUpdateHandler = { [unowned self] state in
@@ -293,12 +304,27 @@ final class LoopbackPSKServer {
                 return
             }
             if error == nil && !done { self.read(connection, buffer: buffer, reply: reply, closeAfterRequest: closeAfterRequest) }
+            else { self.peerEnded.signal() }
         }
+    }
+
+    /// Waits for a connection's read to end: the client closed it (or it
+    /// failed), so nothing more can arrive on it.
+    func waitForPeerToEnd(timeout: TimeInterval) -> Bool {
+        peerEnded.wait(timeout: .now() + timeout) == .success
     }
 
     func stop() {
         listener.cancel()
         lock.lock(); let open = connections; lock.unlock()
         open.forEach { $0.cancel() }
+    }
+
+    /// `stop()`, then waits until the listener has actually closed its socket,
+    /// so a connect made next is refused rather than racing the teardown. Once
+    /// per server: the cancelled state is signalled only once.
+    func stopAndWaitUntilClosed() {
+        stop()
+        _ = listenerCancelled.wait(timeout: .now() + 5)
     }
 }

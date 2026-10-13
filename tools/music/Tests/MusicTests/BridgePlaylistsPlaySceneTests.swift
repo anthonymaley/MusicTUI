@@ -45,8 +45,10 @@ final class BridgePlaylistsPlaySceneTests: XCTestCase {
 
     /// Settles the rail on the one scripted playlist, at the rail focus, at
     /// two-zone width (no automatic preview read).
-    private func settledScene(wire: BridgeLibraryReadsWire, flag: BridgeSelectedFlag = BridgeSelectedFlag(true)) -> PlaylistsScene {
-        let s = playlistsTestScene(flag: flag, wire: wire, spy: PlaylistAppleScriptSpy(), width: 120)
+    private func settledScene(wire: BridgeLibraryReadsWire, flag: BridgeSelectedFlag = BridgeSelectedFlag(true),
+                              status: StatusStore = StatusStore(), actions: ActionRunner? = nil) -> PlaylistsScene {
+        let s = playlistsTestScene(flag: flag, wire: wire, spy: PlaylistAppleScriptSpy(), status: status,
+                                   actions: actions, width: 120)
         XCTAssertTrue(settleScene(s) { s.render(frame: frame, snapshot: idle).contains("Chill") },
                       "the rail never settled on the scripted playlist")
         return s
@@ -153,9 +155,13 @@ final class BridgePlaylistsPlaySceneTests: XCTestCase {
         let failure = """
         {"ok":false,"op":"slice.libraryPlaylistTracks","error":{"kind":"upstream","upstream_kind":"other","detail":"Couldn't read that playlist from your library."}}
         """
+        // The queue and status are scripted so a play that wrongly went ahead WOULD succeed.
         let wire = BridgeLibraryReadsWire(["slice.libraryPlaylists": [onePlaylistPage],
-                                           "slice.libraryPlaylistTracks": [page1, failure]])
-        let s = settledScene(wire: wire)
+                                           "slice.libraryPlaylistTracks": [page1, failure],
+                                           "slice.queue": [queueOK], "slice.status": [statusOK]])
+        wire.stickyStatus = true   // a play reads SpanDAC's capabilities before it queues
+        let status = StatusStore(); let actions = ActionRunner(status: status)
+        let s = settledScene(wire: wire, status: status, actions: actions)
         _ = s.handle(.enter)
         XCTAssertTrue(settleScene(s) {
             s.render(frame: threeZoneFrame, snapshot: idle).contains("Couldn't read that playlist from your library")
@@ -164,7 +170,7 @@ final class BridgePlaylistsPlaySceneTests: XCTestCase {
         XCTAssertFalse(out.contains("Alpha"), "the first page's row was still shown after the failure: \(out)")
 
         _ = s.handle(.enter)   // Enter at the tracks level, with the walk failed
-        Thread.sleep(forTimeInterval: 0.1)
+        actions.waitUntilIdle()   // any play it queued has run to its end
         XCTAssertTrue(wire.sent("slice.queue").isEmpty, "Enter sent a queue after the walk failed")
     }
 
@@ -380,14 +386,18 @@ final class BridgePlaylistsPlaySceneTests: XCTestCase {
             let failure = """
             {"ok":false,"op":"slice.libraryPlaylistTracks","error":{"kind":"\(kind)","detail":"\(detail)"}}
             """
+            // The queue and status are scripted so a play that wrongly went ahead WOULD succeed.
             let wire = BridgeLibraryReadsWire(["slice.libraryPlaylists": [onePlaylistPage],
-                                               "slice.libraryPlaylistTracks": [failure]])
-            let s = settledScene(wire: wire)
+                                               "slice.libraryPlaylistTracks": [failure],
+                                               "slice.queue": [queueOK], "slice.status": [statusOK]])
+            wire.stickyStatus = true   // a play reads SpanDAC's capabilities before it queues
+            let status = StatusStore(); let actions = ActionRunner(status: status)
+            let s = settledScene(wire: wire, status: status, actions: actions)
             _ = s.handle(.enter)
             XCTAssertTrue(settleScene(s) { s.render(frame: threeZoneFrame, snapshot: idle).contains(detail) },
                           "kind \(kind) never showed")
             _ = s.handle(.char("p"))
-            Thread.sleep(forTimeInterval: 0.1)
+            actions.waitUntilIdle()   // any play it queued has run to its end
             XCTAssertTrue(wire.sent("slice.queue").isEmpty, "kind \(kind): p sent a queue after the drill-in failed")
         }
     }
@@ -731,7 +741,8 @@ final class BridgePlaylistsPlaySceneTests: XCTestCase {
     /// `bridgeVisibleIndices()`, not just bounds.
     func testAZeroMatchFilterHidesTheHeroAndBlocksPSEnterAndRight() {
         let wire = BridgeLibraryReadsWire(["slice.libraryPlaylists": [onePlaylistPage]])
-        let s = settledScene(wire: wire)   // rail settled on "Chill" (two-zone: no preview auto-kick)
+        let status = StatusStore(); let actions = ActionRunner(status: status)
+        let s = settledScene(wire: wire, status: status, actions: actions)   // rail settled on "Chill" (two-zone: no preview auto-kick)
         XCTAssertTrue(s.render(frame: frame, snapshot: idle).contains("Chill"))
 
         _ = s.handle(.char("/"))
@@ -746,8 +757,14 @@ final class BridgePlaylistsPlaySceneTests: XCTestCase {
         _ = s.handle(.char("p"))
         _ = s.handle(.char("s"))
         _ = s.handle(.enter)   // now the drill-in Enter (filtering already false)
+        let enterFeed = s.drilledFeedForTest
         _ = s.handle(.right)
-        Thread.sleep(forTimeInterval: 0.2)
+        let rightFeed = s.drilledFeedForTest
+        // Everything those keys could have started has run to its end: the
+        // queued plays, and a tracks walk if a drill-in opened one.
+        actions.waitUntilIdle()
+        XCTAssertTrue(enterFeed?.waitForWorkersForTest(timeout: 5) ?? true, "a drill-in walk from Enter never finished")
+        XCTAssertTrue(rightFeed?.waitForWorkersForTest(timeout: 5) ?? true, "a drill-in walk from → never finished")
         XCTAssertEqual(wire.requestCount, before,
                        "p/s/Enter/→ sent a request against a row the filter hides")
         XCTAssertTrue(wire.sent("slice.libraryPlaylistTracks").isEmpty)
@@ -829,10 +846,12 @@ final class BridgePlaylistsPlaySceneTests: XCTestCase {
     func testMusicAppModePAndEnterReachTheInjectedBackendAndNeverTheWire() {
         let wire = BridgeLibraryReadsWire()
         let spy = PlaylistAppleScriptSpy()
-        let s = playlistsTestScene(flag: BridgeSelectedFlag(false), wire: wire, spy: spy, names: ["My Playlist"])
+        let status = StatusStore(); let actions = ActionRunner(status: status)
+        let s = playlistsTestScene(flag: BridgeSelectedFlag(false), wire: wire, spy: spy, status: status,
+                                   names: ["My Playlist"], actions: actions)
         XCTAssertTrue(settleScene(s) { s.render(frame: frame, snapshot: idle).contains("My Playlist") })
         _ = s.handle(.char("p"))
-        Thread.sleep(forTimeInterval: 0.2)
+        actions.waitUntilIdle()   // the play it queued has run to its end
         XCTAssertEqual(wire.requestCount, 0, "Music.app mode's p reached the wire")
     }
 
@@ -856,8 +875,9 @@ final class BridgePlaylistsPlaySceneTests: XCTestCase {
         let sources = PlaylistDataSources(onMeta: { _ in [:] }, onPreview: { _ in nil },
                                           onTracks: { _ in nil }, onArtworkMap: nil)
         let status = StatusStore()
+        let actions = ActionRunner(status: status)
         let s = PlaylistsScene(backend: counter.backend, routing: routing, playlists: ["Chill"], sources: sources,
-                               appQueue: AppQueueStore(), status: status, actions: ActionRunner(status: status),
+                               appQueue: AppQueueStore(), status: status, actions: actions,
                                metaCache: temporaryPlaylistMetaCache().cache,
                                makeProvider: { nil })   // the SCENE still thinks Music.app is selected — the race
         XCTAssertEqual(s.railSourceForTest, .musicApp)
@@ -873,7 +893,7 @@ final class BridgePlaylistsPlaySceneTests: XCTestCase {
         }
         _ = s.handle(.enter)   // tracks level: playTrack, with routing.mode already .source
 
-        Thread.sleep(forTimeInterval: 0.3)   // let the action queue run
+        actions.waitUntilIdle()   // the action queue has run playTrack to its end
         XCTAssertEqual(counter.callCount, 0, "playTrack ran an AppleScript call before checking routing.mode")
         XCTAssertEqual(status.current()?.text, LibraryProvenance.bridgeSelectedMusicAppList)
     }

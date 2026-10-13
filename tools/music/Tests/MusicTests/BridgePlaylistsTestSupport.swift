@@ -57,6 +57,7 @@ final class PlaylistAppleScriptSpy {
 /// Bridge path, where `railSource` stays nil until the first `tick()`.
 func playlistsTestScene(flag: BridgeSelectedFlag, wire: BridgeLibraryReadsWire, spy: PlaylistAppleScriptSpy,
                         status: StatusStore = StatusStore(), names: [String] = [],
+                        actions: ActionRunner? = nil,
                         warmUpSleep: @escaping (TimeInterval) -> Void = { _ in },
                         width: Int = 138,
                         now: @escaping () -> Date = Date.init,
@@ -73,7 +74,7 @@ func playlistsTestScene(flag: BridgeSelectedFlag, wire: BridgeLibraryReadsWire, 
                                               makeSource: { SourceAppClient(path: "/nonexistent", transport: wire.transport) })
     return PlaylistsScene(backend: AppleScriptBackend(executable: "/usr/bin/true"), routing: routing,
                           playlists: names, sources: names.isEmpty ? .empty : spy.sources(),
-                          appQueue: AppQueueStore(), status: status, actions: ActionRunner(status: status),
+                          appQueue: AppQueueStore(), status: status, actions: actions ?? ActionRunner(status: status),
                           // Never the real ~/.config/music/playlist-meta.json (C0 isolation).
                           metaCache: temporaryPlaylistMetaCache().cache,
                           makeProvider: {

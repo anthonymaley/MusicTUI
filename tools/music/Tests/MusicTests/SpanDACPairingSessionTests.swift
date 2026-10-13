@@ -22,6 +22,11 @@ final class LoopbackPairingPeer {
     private let abortAtHello: String?
     private let lock = NSLock()
     private var _closedAt: Date?
+    /// Signalled when the controller's side of a connection ends (it closed, or
+    /// the read failed), so a test waits for the end of the stream, not a duration.
+    private let controllerEnded = DispatchSemaphore(value: 0)
+    /// Signalled when the listener reaches `.cancelled`: its socket is closed.
+    private let listenerCancelled: DispatchSemaphore
     private(set) var port: UInt16 = 0
     var closedAt: Date? { lock.lock(); defer { lock.unlock() }; return _closedAt }
 
@@ -34,7 +39,12 @@ final class LoopbackPairingPeer {
         parameters.requiredLocalEndpoint = .hostPort(host: "127.0.0.1", port: .any)
         listener = try NWListener(using: parameters)
         let ready = DispatchSemaphore(value: 0)
-        listener.stateUpdateHandler = { if case .ready = $0 { ready.signal() } }
+        let cancelled = DispatchSemaphore(value: 0)
+        listenerCancelled = cancelled
+        listener.stateUpdateHandler = { state in
+            if case .ready = state { ready.signal() }
+            if case .cancelled = state { cancelled.signal() }
+        }
         listener.newConnectionHandler = { [unowned self] connection in
             connection.start(queue: self.queue)
             self.read(connection, Data())
@@ -69,7 +79,13 @@ final class LoopbackPairingPeer {
                 if t == "done" { self.close(connection, after: self.closeDelay); return }
             }
             if error == nil && !done { self.read(connection, buffer) }
+            else { self.controllerEnded.signal() }
         }
+    }
+
+    /// Waits for the controller to end its side of the connection.
+    func waitForControllerToEnd(timeout: TimeInterval) -> Bool {
+        controllerEnded.wait(timeout: .now() + timeout) == .success
     }
 
     private func write(_ connection: NWConnection, _ line: String) {
@@ -84,6 +100,14 @@ final class LoopbackPairingPeer {
     }
 
     func stop() { listener.cancel() }
+
+    /// `stop()`, then waits until the listener has actually closed its socket,
+    /// so a connect made next is refused rather than racing the teardown. Once
+    /// per peer: the cancelled state is signalled only once.
+    func stopAndWaitUntilClosed() {
+        stop()
+        _ = listenerCancelled.wait(timeout: .now() + 5)
+    }
 }
 
 final class SpanDACPairingSessionTests: XCTestCase {
@@ -187,7 +211,9 @@ final class SpanDACPairingSessionTests: XCTestCase {
         handle.answer(matches: true)
         XCTAssertEqual(events.finished.wait(timeout: .now() + 5), .success)
         XCTAssertEqual(events.result, .failure(.notSaved("disk full")))
-        Thread.sleep(forTimeInterval: 0.2)
+        // The controller ended its side of the connection, so a late `done`
+        // can no longer arrive: the check below is final, not a snapshot.
+        XCTAssertTrue(responder.waitForControllerToEnd(timeout: 5), "the controller never closed the pairing connection")
         XCTAssertFalse(src.gotDone)
     }
 
@@ -209,8 +235,7 @@ final class SpanDACPairingSessionTests: XCTestCase {
     func testNothingListeningIsAClosedWindow() throws {
         let responder = try LoopbackPairingPeer(source: source())
         let port = responder.port
-        responder.stop()
-        Thread.sleep(forTimeInterval: 0.2)
+        responder.stopAndWaitUntilClosed()
         let events = Events()
         _ = begin(port, events: events)
         XCTAssertEqual(events.finished.wait(timeout: .now() + 12), .success)
