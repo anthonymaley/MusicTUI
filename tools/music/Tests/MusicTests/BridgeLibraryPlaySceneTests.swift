@@ -398,12 +398,13 @@ final class BridgeLibraryPlaySceneTests: XCTestCase {
                       "the fresh tracks never landed")
 
         wire.release(op: "slice.libraryAlbumTracks", at: 0)    // now let the STALE fetch land
-        // Give the stale post a moment to reach the inbox, THEN drain it —
-        // `render` alone never calls `tick`, so without this the drain (where
-        // the epoch guard lives) never runs and the test would pass
-        // vacuously regardless of the fix. Proven red-then-green against
-        // this exact test.
-        Thread.sleep(forTimeInterval: 0.15)
+        // Wait for the stale fetch's thread to END (its post has reached the
+        // inbox by then), THEN drain it — `render` alone never calls `tick`, so
+        // without this the drain (where the epoch guard lives) never runs and
+        // the test would pass vacuously regardless of the fix. Proven
+        // red-then-green against this exact test.
+        XCTAssertTrue(settleScene(s) { wire.threadEnded(op: "slice.libraryAlbumTracks", at: 0) },
+                      "the stale fetch never ended")
         for _ in 0..<10 { _ = s.tick(snapshot: idle) }
         let out = s.render(frame: frame, snapshot: idle)
         XCTAssertFalse(out.contains("Tstale1"), "a stale SpanDAC tracks result landed after an output switch: \(out)")
@@ -449,12 +450,13 @@ final class BridgeLibraryPlaySceneTests: XCTestCase {
                       "the fresh artist-albums result never landed")
 
         wire.release(op: "slice.libraryArtistAlbums", at: 0)   // now let the STALE fetch land
-        // Give the stale post a moment to reach the inbox, THEN drain it —
-        // `render` alone never calls `tick`, so without this the drain (where
-        // the epoch guard lives) never runs and the test would pass
-        // vacuously regardless of the fix. Proven red-then-green against
-        // this exact test.
-        Thread.sleep(forTimeInterval: 0.15)
+        // Wait for the stale fetch's thread to END (its post has reached the
+        // inbox by then), THEN drain it — `render` alone never calls `tick`, so
+        // without this the drain (where the epoch guard lives) never runs and
+        // the test would pass vacuously regardless of the fix. Proven
+        // red-then-green against this exact test.
+        XCTAssertTrue(settleScene(s) { wire.threadEnded(op: "slice.libraryArtistAlbums", at: 0) },
+                      "the stale fetch never ended")
         for _ in 0..<10 { _ = s.tick(snapshot: idle) }
         let out = s.render(frame: frame, snapshot: idle)
         XCTAssertFalse(out.contains("Stale Album"),

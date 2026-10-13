@@ -94,6 +94,9 @@ final class BridgeLibraryDataRouteTests: XCTestCase {
         let counter: AppleScriptCallCounter
         let handoff: HandoffSpy
         let status: StatusStore
+        /// The scene's action queue, kept so a test can wait for every queued
+        /// play to have run to its end (`waitUntilIdle`).
+        let actions: ActionRunner
     }
 
     private func rig(output mode: PlaybackMode, data file: DataFile) -> Rig {
@@ -121,7 +124,8 @@ final class BridgeLibraryDataRouteTests: XCTestCase {
             starter: NeverStartsMacSpanDAC())
         let status = StatusStore()
         return Rig(routing: routing, data: data, output: output, built: built,
-                   counter: AppleScriptCallCounter(), handoff: HandoffSpy(), status: status)
+                   counter: AppleScriptCallCounter(), handoff: HandoffSpy(), status: status,
+                   actions: ActionRunner(status: status))
     }
 
     private func libraryScene(_ r: Rig, spy: LibraryAppleScriptSpy = LibraryAppleScriptSpy(),
@@ -129,7 +133,7 @@ final class BridgeLibraryDataRouteTests: XCTestCase {
                               resolved: AlbumResolution? = nil) -> LibraryScene {
         let routing = r.routing
         return LibraryScene(backend: r.counter.backend, routing: routing, sources: spy.sources(),
-                            appQueue: appQueue, status: r.status, actions: ActionRunner(status: r.status),
+                            appQueue: appQueue, status: r.status, actions: r.actions,
                             resolveAlbum: { backend, title, artist in
                                 resolved ?? resolveAlbumPlaybackTracks(backend: backend, title: title, artist: artist)
                             },
@@ -431,7 +435,10 @@ final class BridgeLibraryDataRouteTests: XCTestCase {
                       "got: \(String(describing: r.status.current()?.text))")
         s.playAlbum(title: "Album", artist: "A", shuffle: false)
         XCTAssertTrue(wait { r.status.current()?.text == finishSwitchingToSpanDAC })
-        Thread.sleep(forTimeInterval: 0.2)
+        // The first refusal already put that text up, so the wait above says
+        // nothing about the second play: wait for the action queue to run both
+        // to their ends, then assert nothing got past the refusal.
+        r.actions.waitUntilIdle()
 
         XCTAssertEqual(r.counter.callCount, 0, "a blocked play reached AppleScript")
         XCTAssertEqual(r.built.dataCount, 0, "blocked built a SpanDAC data client")
