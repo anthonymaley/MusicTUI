@@ -128,8 +128,10 @@ final class BridgePlaylistsTracksReaskTests: XCTestCase {
     /// Left before the fresh list lands: it is dropped, and does not leak
     /// into the next drill-in either.
     func testALateResultAfterLeavingTheDrillInIsDropped() {
+        // No reply for a re-walk: the drill-in is left while the probe is in
+        // flight, so the re-walk's read is never made (the wire answers in
+        // order, so a scripted reply for it would be handed to pl2 instead).
         let (s, wire) = scene([tracks(["a1", "a2"], stale: true, rev: "r1"),
-                               tracks(["f1", "f2", "f3"], stale: false, rev: "r2"),
                                tracks(["f1", "f2", "f3"], stale: false, rev: "r2"),
                                tracks(["p2"], stale: false, rev: "r9")])
         drill(s, wire, expecting: 2)
@@ -151,5 +153,7 @@ final class BridgePlaylistsTracksReaskTests: XCTestCase {
         XCTAssertEqual(s.drilledPlaylistIDForTest, "pl2")
         XCTAssertEqual(s.drilledTrackTitlesForTest, ["Song p2"], "the old playlist's fresh read leaked in")
         XCTAssertEqual(s.drilledListRevForTest, "r9")
+        XCTAssertEqual(wire.sent("slice.libraryPlaylistTracks").map { $0["id"] as? String ?? "" }, ["pl1", "pl1", "pl2"],
+                       "leaving during the probe still cost the old playlist a re-walk read")
     }
 }
