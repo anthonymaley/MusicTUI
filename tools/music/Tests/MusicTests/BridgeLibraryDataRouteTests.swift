@@ -497,10 +497,22 @@ final class BridgeLibraryDataRouteTests: XCTestCase {
         goToSubView(s, .songs)
         XCTAssertTrue(settleScene(s) { s.songsForTest.map(\.id) == ["a1"] })
 
+        // Run the counter's fake interpreter once, here, before the pool is
+        // held. The first exec of a freshly written script costs macOS a
+        // one-time check of the new file (measured 1.6 to 2.9 s on the Studio,
+        // and 8.6 s once under heavy machine load; a
+        // second exec of the same file takes about 20 ms). Paid inside the
+        // 3-second wait below, that cost alone turned this test red with the
+        // pool doing nothing wrong. This call blocks the test's own thread,
+        // not the pool, and the pool is not yet saturated.
+        _ = try? r.counter.backend.runBlocking("warm-up")
+        XCTAssertEqual(r.counter.callCount, 1, "the warm-up never reached the fake interpreter")
+
         withSaturatedCooperativePool {
+            let before = r.counter.callCount
             s.playAlbum(title: "Album", artist: "A", shuffle: false)
             XCTAssertTrue(wait { queue.read()?.displayName == "Album" }, "the shipped album body did not run")
-            XCTAssertTrue(wait { r.counter.callCount > 0 },
+            XCTAssertTrue(wait { r.counter.callCount > before },
                           "with the cooperative pool full, the album play never reached AppleScript")
         }
 
