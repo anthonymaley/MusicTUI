@@ -130,6 +130,17 @@ struct BridgeMusicProvider: MusicDataProvider {
         (try? control.capabilities())?.contains(sourcePlayLibraryCapability) ?? false
     }
 
+    /// True only when SpanDAC's own `capabilities` list `library.refresh`; a
+    /// status that cannot be read is "no".
+    func supportsLibraryRefresh() -> Bool {
+        (try? control.capabilities())?.contains(sourceLibraryRefreshCapability) ?? false
+    }
+
+    func libraryRefresh() throws {
+        do { try control.libraryRefresh() }
+        catch let error as SourceAppError { throw Self.translate(error) }
+    }
+
     func playLibrary(kind: LibraryPlayKind, id: String?, start: LibraryPlayStart?, listRev: String?,
                      shuffle: Bool) throws -> SpanDACPlayResult {
         do { return try control.playLibrary(kind: kind, id: id, start: start, listRev: listRev, shuffle: shuffle) }

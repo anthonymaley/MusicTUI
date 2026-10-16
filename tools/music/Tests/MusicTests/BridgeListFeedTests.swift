@@ -365,6 +365,61 @@ final class BridgeListFeedTests: XCTestCase {
         XCTAssertEqual(script.callCount, 2, "a reset during the probe still cost a first-page read")
     }
 
+    // MARK: - A person-asked refresh
+
+    /// One buffered, `reasked` replacement; nothing before it, so the list on
+    /// screen is never shrunk to a first page.
+    func testARefreshPostsOneReaskedReplacementAndRunsTheHookFirst() {
+        let script = ScriptedFetch([page(["a", "b"], generation: 1, next: nil),
+                                    page(["n", "a", "b"], generation: 1, next: nil)])
+        let f = reaskFeed(script.fetch, SleepRecorder())
+        f.start()
+        XCTAssertTrue(settleUntil { f.drain().done })
+        var order: [String] = []
+        XCTAssertTrue(f.refresh(beforeWalk: { order.append("hook\(script.callCount)") }))
+        XCTAssertTrue(f.waitForWorkersForTest(timeout: 5), "the refresh worker never ended")
+        XCTAssertEqual(order, ["hook1"], "the hook must run before the re-walk's first read")
+        let d = f.drain()
+        XCTAssertEqual(d.replace, [Row(id: "n"), Row(id: "a"), Row(id: "b")])
+        XCTAssertTrue(d.reasked)
+        XCTAssertTrue(d.append.isEmpty)
+    }
+
+    func testARefreshStartsNothingWhileAWalkOrAnEarlierRefreshIsInFlight() {
+        let script = ScriptedFetch([page(["a"], generation: 1, next: nil),
+                                    page(["a", "b"], generation: 1, next: nil)])
+        script.gate(at: 0)
+        let f = reaskFeed(script.fetch, SleepRecorder())
+        f.start()
+        XCTAssertTrue(settleUntil { script.reachedGateAt0() })
+        XCTAssertFalse(f.refresh(), "a refresh started beside a walk")
+        script.release(at: 0)
+        XCTAssertTrue(f.waitForWorkersForTest(timeout: 5))
+        _ = f.drain()
+        script.gate(at: 1)
+        XCTAssertTrue(f.refresh())
+        XCTAssertTrue(settleUntil { script.reachedGateAt1() })
+        XCTAssertFalse(f.refresh(), "a second refresh started beside the first")
+        script.release(at: 1)
+        XCTAssertTrue(f.waitForWorkersForTest(timeout: 5))
+        XCTAssertEqual(script.callCount, 2)
+    }
+
+    func testAResetDuringARefreshDropsItsResult() {
+        let script = ScriptedFetch([page(["a"], generation: 1, next: nil),
+                                    page(["a", "b"], generation: 1, next: nil)])
+        let f = reaskFeed(script.fetch, SleepRecorder())
+        f.start()
+        XCTAssertTrue(settleUntil { f.drain().done })
+        script.gate(at: 1)
+        XCTAssertTrue(f.refresh())
+        XCTAssertTrue(settleUntil { script.reachedGateAt1() })
+        f.reset()
+        script.release(at: 1)
+        XCTAssertTrue(f.waitForWorkersForTest(timeout: 5))
+        XCTAssertNil(f.drain().replace, "a refresh that outlived a reset landed")
+    }
+
     func testAFreshReplyIsNeverReAsked() {
         let script = ScriptedFetch([flagged(["a"], stale: false)])
         let sleeper = SleepRecorder()

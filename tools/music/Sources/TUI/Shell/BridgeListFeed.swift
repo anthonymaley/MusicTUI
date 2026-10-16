@@ -225,45 +225,110 @@ final class BridgeListFeed<Row> {
             sleep: sleep,
             isCurrent: { [weak self] in self?.currentEpochMatches(myEpoch) ?? false },
             probe: { try fetch(nil, limit) },
-            rewalk: { [weak self] in
-                // `walkLibraryPages` reads page 1 before its epoch check, so a
-                // reset that outlived the probe is caught here instead.
-                guard self?.currentEpochMatches(myEpoch) ?? false else { return false }
-                var rows: [Row] = []
-                var total: Int? = nil
-                var skipped: Int? = nil
-                var listRev: String? = nil
-                var firstPage = true
-                var flagged = false
-                var superseded = false
-                let error = walkLibraryPages(fetch: fetch, limit: limit, onPage: { page in
-                    guard self?.currentEpochMatches(myEpoch) ?? false else { superseded = true; return false }
-                    rows.append(contentsOf: page.rows.map(map))
-                    if LibraryReask.flagged(page) { flagged = true }
-                    if let t = page.total { total = t }
-                    skipped = page.skippedVideos
-                    if firstPage { listRev = page.listRev } else if page.listRev != listRev { listRev = nil }
-                    firstPage = false
-                    return true
-                }, onRestart: {
-                    rows = []; total = nil; skipped = nil; listRev = nil; firstPage = true; flagged = false
-                }, sleep: sleep)
-                // A failed re-read leaves the list as it was, and ends the re-ask.
-                guard let self, !superseded, error == nil else { return false }
-                self.lock.lock()
-                defer { self.lock.unlock() }
-                guard self.epoch == myEpoch else { return false }
-                self.pendingReplace = rows
-                self.pendingAppend = []
-                self.pendingTotal = total
-                self.pendingSkippedVideos = skipped
-                self.pendingListRev = listRev
-                self.pendingReasked = true
-                return flagged   // still flagged: keep asking, within the same bound
+            rewalk: {
+                Self.rewalkAndPost(owner: { [weak self] in self }, myEpoch: myEpoch,
+                                   fetch: fetch, map: map, sleep: sleep, limit: limit)
             })
         lock.lock()
         if epoch == myEpoch { reasking = false }
         lock.unlock()
+    }
+
+    /// Reads the whole list again, buffered, and posts it as ONE replacement
+    /// flagged `reasked` (the same list read again, so the scene follows its
+    /// selection by row id). Returns whether the read was itself flagged, i.e.
+    /// whether the caller should keep asking. A failed or superseded read posts
+    /// nothing, leaves the list as it was, and returns false.
+    ///
+    /// Static, with the feed reached through `owner` (a weak capture), so the walk
+    /// holds no strong reference to the feed: one nobody holds any more
+    /// deallocates and the walk stops at its next page.
+    private static func rewalkAndPost(owner: () -> BridgeListFeed<Row>?,
+                                      myEpoch: Int,
+                                      fetch: (String?, Int) throws -> MusicPage,
+                                      map: (MusicRow) -> Row,
+                                      sleep: (TimeInterval) -> Void,
+                                      limit: Int) -> Bool {
+        // `walkLibraryPages` reads page 1 before its epoch check, so a
+        // reset that outlived the probe is caught here instead.
+        guard owner()?.currentEpochMatches(myEpoch) ?? false else { return false }
+        var rows: [Row] = []
+        var total: Int? = nil
+        var skipped: Int? = nil
+        var listRev: String? = nil
+        var firstPage = true
+        var flagged = false
+        var superseded = false
+        let error = walkLibraryPages(fetch: fetch, limit: limit, onPage: { page in
+            guard owner()?.currentEpochMatches(myEpoch) ?? false else { superseded = true; return false }
+            rows.append(contentsOf: page.rows.map(map))
+            if LibraryReask.flagged(page) { flagged = true }
+            if let t = page.total { total = t }
+            skipped = page.skippedVideos
+            if firstPage { listRev = page.listRev } else if page.listRev != listRev { listRev = nil }
+            firstPage = false
+            return true
+        }, onRestart: {
+            rows = []; total = nil; skipped = nil; listRev = nil; firstPage = true; flagged = false
+        }, sleep: sleep)
+        // A failed re-read leaves the list as it was, and ends the re-ask.
+        guard !superseded, error == nil, let feed = owner() else { return false }
+        feed.lock.lock()
+        defer { feed.lock.unlock() }
+        guard feed.epoch == myEpoch else { return false }
+        feed.pendingReplace = rows
+        feed.pendingAppend = []
+        feed.pendingTotal = total
+        feed.pendingSkippedVideos = skipped
+        feed.pendingListRev = listRev
+        feed.pendingReasked = true
+        return flagged   // still flagged: keep asking, within the same bound
+    }
+
+    /// A person-asked re-read of a list that is already showing. Starts nothing
+    /// (returns false) while a walk, a re-ask or an earlier refresh is in flight,
+    /// so a repeated ask never stacks a second one. Otherwise `beforeWalk` runs
+    /// on the worker (the place to tell SpanDAC to rebuild), then the list is
+    /// read again in full, buffered, and posted as ONE `reasked` replacement: the
+    /// rows on screen stay until it lands, and the scene keeps its selection by
+    /// row id. A read that comes back flagged stale/refreshing is shown and then
+    /// handed to the ordinary bounded re-ask (when this feed opts in), so the
+    /// drain's result lands. A failed read leaves the list as it was.
+    ///
+    /// It holds `reasking` for its whole life, so `start()` stays off exactly as
+    /// it does during a re-ask, and `reset()` revokes it like any other worker.
+    @discardableResult
+    func refresh(beforeWalk: @escaping () -> Void = {}) -> Bool {
+        lock.lock()
+        guard !walking, !reasking else { lock.unlock(); return false }
+        reasking = true
+        let myEpoch = epoch
+        lock.unlock()
+
+        let fetch = self.fetch
+        let map = self.map
+        let sleep = self.sleep
+        let limit = self.limit
+        let reasksStale = self.reasksStale
+
+        let workers = self.workers
+        workers.enter()
+        Thread.detachNewThread { [weak self] in
+            defer { workers.leave() }
+            beforeWalk()
+            let again = Self.rewalkAndPost(owner: { [weak self] in self }, myEpoch: myEpoch,
+                                           fetch: fetch, map: map, sleep: sleep, limit: limit)
+            guard let self else { return }
+            if again && reasksStale {
+                // `reask` clears `reasking` itself when it ends.
+                self.reask(myEpoch: myEpoch, fetch: fetch, map: map, sleep: sleep, limit: limit)
+                return
+            }
+            self.lock.lock()
+            if self.epoch == myEpoch { self.reasking = false }
+            self.lock.unlock()
+        }
+        return true
     }
 
     private func currentEpochMatches(_ e: Int) -> Bool {

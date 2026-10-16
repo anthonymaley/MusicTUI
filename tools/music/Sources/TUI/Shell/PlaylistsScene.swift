@@ -61,9 +61,11 @@ final class PlaylistsScene: Scene {
     var capturesAllInput: Bool { filtering }
     var footerHint: String {
         if filtering { return "type to filter  Enter Apply  Esc Clear" }
-        return focus == .tracks
-            ? "\u{2191}\u{2193} Track  Enter Play  \u{2190} Back"
-            : "\u{2191}\u{2193} Move  Enter Open  p Play  s Shuffle  / Filter"
+        if focus == .tracks { return "\u{2191}\u{2193} Track  Enter Play  \u{2190} Back" }
+        // `r` re-reads a healthy SpanDAC rail; the Music.app rail has no such key,
+        // and a failed one says "press r to retry" on the rail itself.
+        let refresh = railSource == .bridge && bridgeFailure == nil ? "  r Refresh" : ""
+        return "\u{2191}\u{2193} Move  Enter Open  p Play  s Shuffle  / Filter" + refresh
     }
 
     /// The rail's last two rows, when there's room for them (D8). Dim, never
@@ -1247,6 +1249,22 @@ final class PlaylistsScene: Scene {
             bridgeDone = false
             playlistsFeed.start()
             status.post("Asking SpanDAC for your playlists again\u{2026}")
+            return .none
+        // A healthy SpanDAC rail: `r` refreshes it. SpanDAC is first told to
+        // rebuild its snapshot when it lists `library.refresh` (a refusal, or a
+        // SpanDAC that predates it, is not shown), then the rail is read again
+        // with the rows and the selection kept on screen; the fresh list swaps in
+        // by playlist id (`BridgeListFeed.refresh`). While a walk, a re-ask or an
+        // earlier refresh is in flight the feed starts nothing, so a repeated `r`
+        // says nothing and costs nothing. The Music.app rail has no such key.
+        case .char("r") where railSource == .bridge && focus == .playlists && bridgeFailure == nil:
+            let provider = makeProvider
+            if playlistsFeed.refresh(beforeWalk: {
+                guard let provider = provider(), provider.supportsLibraryRefresh() else { return }
+                try? provider.libraryRefresh()
+            }) {
+                status.post("Refreshing your playlists\u{2026}")
+            }
             return .none
         // C3 item 2: the tracks-level retry — starts a new walk, exactly as
         // a drill-in does.
