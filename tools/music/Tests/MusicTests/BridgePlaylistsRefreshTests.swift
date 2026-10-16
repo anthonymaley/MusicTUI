@@ -122,7 +122,7 @@ final class BridgePlaylistsRefreshTests: XCTestCase {
         XCTAssertTrue(s.render(frame: frame, snapshot: idle).contains("Alpha"))
 
         wire.release(op: "slice.libraryPlaylists", at: 1)
-        waitForText(store, "Playlists refreshed.", s)
+        waitForText(store, "Playlists refreshed. New playlists need a song; press r again.", s)
         XCTAssertTrue(settleScene(s) { s.railNamesForTest == ["Friday", "Alpha", "Bravo"] },
                       "the new playlist never appeared: \(s.railNamesForTest)")
         XCTAssertEqual(s.railCursorForTest, 2, "the selection stayed on index 1, which is now Alpha")
@@ -224,7 +224,7 @@ final class BridgePlaylistsRefreshTests: XCTestCase {
         let store = StatusStore()
         let s = settledScene(wire, status: store)
         _ = s.handle(.char("r"))
-        waitForText(store, "Playlists refreshed.", s)
+        waitForText(store, "Playlists refreshed. New playlists need a song; press r again.", s)
     }
 
     // MARK: - a reset revokes a refresh before it starts
@@ -263,7 +263,7 @@ final class BridgePlaylistsRefreshTests: XCTestCase {
         XCTAssertTrue(settleScene(s) { wire.reached(op: "slice.libraryRefresh", at: 1) }, "no follow-up ask went out")
         XCTAssertEqual(text(store), "Refreshing your playlists\u{2026}", "T ending is not the refresh the person asked for")
         wire.release(op: "slice.libraryRefresh", at: 1)
-        waitForText(store, "Playlists refreshed.", s)
+        waitForText(store, "Playlists refreshed. New playlists need a song; press r again.", s)
         XCTAssertTrue(settleScene(s) { s.railNamesForTest == ["Friday", "Alpha", "Bravo"] })
         XCTAssertEqual(wire.sent("slice.libraryRefresh").count, 2)
         XCTAssertEqual(wire.sent("slice.libraryPlaylists").count, 3, "the list is read again once U's install is seen, not on T's")
@@ -293,7 +293,7 @@ final class BridgePlaylistsRefreshTests: XCTestCase {
         let store = StatusStore()
         let s = settledScene(wire, status: store)
         _ = s.handle(.char("r"))
-        waitForText(store, "Playlists refreshed.", s)
+        waitForText(store, "Playlists refreshed. New playlists need a song; press r again.", s)
         XCTAssertTrue(settleScene(s) { s.railNamesForTest == ["Friday", "Alpha", "Bravo"] })
         XCTAssertEqual(wire.sent("slice.libraryRefresh").count, 2, "never more than one follow-up")
         XCTAssertEqual(wire.sent("slice.status").count, 6, "U's install was not what ended the wait")
@@ -346,7 +346,7 @@ final class BridgePlaylistsRefreshTests: XCTestCase {
         XCTAssertTrue(settleScene(s) { wire.reached(op: "slice.libraryPlaylists", at: 2) }, "the re-ask never probed")
         XCTAssertEqual(text(store), "Refreshing your playlists\u{2026}", "it must not claim a refresh before the install is seen")
         wire.release(op: "slice.libraryPlaylists", at: 2)
-        waitForText(store, "Playlists refreshed.", s)
+        waitForText(store, "Playlists refreshed. New playlists need a song; press r again.", s)
         XCTAssertTrue(settleScene(s) { s.railNamesForTest == ["Friday", "Alpha", "Bravo", "Gamma"] },
                       "the drain's result never landed: \(s.railNamesForTest)")
         XCTAssertEqual(s.railCursorForTest, 2, "the selection was not kept by id across the re-ask")
@@ -457,7 +457,7 @@ final class BridgePlaylistsRefreshTests: XCTestCase {
         XCTAssertEqual(text(store), "Already refreshing your playlists\u{2026}", "a repeated r said nothing")
         _ = s.handle(.char("r"))
         wire.release(op: "slice.libraryPlaylists", at: 1)
-        waitForText(store, "Playlists refreshed.", s)
+        waitForText(store, "Playlists refreshed. New playlists need a song; press r again.", s)
         XCTAssertTrue(settleScene(s) { wire.threadEnded(op: "slice.libraryPlaylists", at: 2) }, "the refresh worker never ended")
         XCTAssertEqual(wire.sent("slice.libraryRefresh").count, 1)
         XCTAssertEqual(wire.sent("slice.libraryPlaylists").count, 3)
@@ -485,14 +485,14 @@ final class BridgePlaylistsRefreshTests: XCTestCase {
         _ = s.handle(.down)
 
         _ = s.handle(.char("r"))
-        waitForText(store, "Playlists refreshed.", s)
+        waitForText(store, "Playlists refreshed. New playlists need a song; press r again.", s)
         XCTAssertTrue(settleScene(s) { s.railNamesForTest == ["Friday", "Alpha", "Bravo"] })
         XCTAssertEqual(s.railCursorForTest, 2, "the selection was not kept by id")
         gate.open()   // the old re-ask wakes up, and finds it has been taken over
         XCTAssertTrue(s.playlistsFeedForTest.waitForWorkersForTest(timeout: 5), "a worker never ended")
         XCTAssertEqual(wire.sent("slice.libraryRefresh").count, 2, "the ask, then its one follow-up")
         XCTAssertEqual(wire.sent("slice.libraryPlaylists").count, 3, "the old re-ask read after it was taken over")
-        XCTAssertEqual(text(store), "Playlists refreshed.", "the old re-ask spoke after the takeover")
+        XCTAssertEqual(text(store), "Playlists refreshed. New playlists need a song; press r again.", "the old re-ask spoke after the takeover")
         _ = s.tick(snapshot: idle)
         XCTAssertEqual(s.railNamesForTest, ["Friday", "Alpha", "Bravo"], "the old re-ask posted rows after the takeover")
     }

@@ -765,7 +765,11 @@ final class PlaylistsScene: Scene {
         static let deferred = "SpanDAC can't refresh right now; showing the list it has. Try again in a minute."
         static let refreshing = "Refreshing your playlists\u{2026}"
         static let alreadyRefreshing = "Already refreshing your playlists\u{2026}"
-        static let installed = "Playlists refreshed."
+        /// The second sentence because a newly made EMPTY playlist was absent from
+        /// both MusicKit routes for at least 15 minutes (2026-10-16), and a drain
+        /// listed it within 3 minutes of its first song; SpanDAC pushes nothing,
+        /// so the person presses r again.
+        static let installed = "Playlists refreshed. New playlists need a song; press r again."
         static let failed = "SpanDAC couldn't refresh your playlists; showing the list it has."
         static let restarted = "SpanDAC restarted; showing its fresh list."
         static let stillRefreshing = "SpanDAC is still refreshing; press r again shortly."
