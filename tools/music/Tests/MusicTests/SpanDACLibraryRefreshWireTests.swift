@@ -22,9 +22,10 @@ final class SpanDACLibraryRefreshWireTests: XCTestCase {
     private func refreshReply(_ outcome: String, _ ticket: String, instance: String = #""inst-1""#) -> String {
         #"{"ok":true,"op":"slice.libraryRefresh","outcome":"\#(outcome)","ticket":\#(ticket),"instance":\#(instance)}"#
     }
-    private func statusReply(_ fact: String?) -> String {
+    private func statusReply(_ fact: String?, libraryInstance: String? = nil) -> String {
         let f = fact.map { #","library_refresh":\#($0)"# } ?? ""
-        return #"{"ok":true,"op":"slice.status","status":{"playback":"stopped","capabilities":["library.refresh"]\#(f)}}"#
+        let top = libraryInstance.map { #""library_instance":\#($0),"# } ?? ""
+        return #"{"ok":true,"op":"slice.status",\#(top)"status":{"playback":"stopped","capabilities":["library.refresh"]\#(f)}}"#
     }
 
     func testTheNamesAreTheFixedContractNames() {
@@ -45,7 +46,7 @@ final class SpanDACLibraryRefreshWireTests: XCTestCase {
     func testTheCompletionFactIsASliceStatusReadOnTheOrdinaryTransport() throws {
         let wire = Wire()
         let done = try control(wire, ordinary: { self.statusReply(#"{"instance":"inst-1","ticket":7,"result":"installed"}"#) })
-            .libraryRefreshCompletion()
+            .libraryRefreshStatus().completion
         XCTAssertEqual(done, SpanDACLibraryRefreshCompletion(instance: "inst-1", ticket: 7, result: .installed))
         XCTAssertEqual(wire.library, [], "the status read went down the library transport")
         XCTAssertEqual(wire.ordinary.count, 1)
@@ -88,7 +89,7 @@ final class SpanDACLibraryRefreshWireTests: XCTestCase {
 
     func testTheCompletionFactDecodes() throws {
         func fact(_ raw: String?) throws -> SpanDACLibraryRefreshCompletion? {
-            try control(Wire(), ordinary: { self.statusReply(raw) }).libraryRefreshCompletion()
+            try control(Wire(), ordinary: { self.statusReply(raw) }).libraryRefreshStatus().completion
         }
         XCTAssertEqual(try fact(#"{"instance":"i","ticket":7,"result":"installed"}"#), .init(instance: "i", ticket: 7, result: .installed))
         XCTAssertEqual(try fact(#"{"instance":"i","ticket":8,"result":"failed"}"#), .init(instance: "i", ticket: 8, result: .failed))
@@ -103,9 +104,25 @@ final class SpanDACLibraryRefreshWireTests: XCTestCase {
                     #"{"instance":"i","ticket":"7","result":"installed"}"#, #"{"instance":"i","ticket":-1,"result":"installed"}"#,
                     #"{"ticket":7,"result":"installed"}"#, #"{"instance":" ","ticket":7,"result":"installed"}"#,
                     #""installed""#] {
-            XCTAssertThrowsError(try control(Wire(), ordinary: { self.statusReply(raw) }).libraryRefreshCompletion(), raw) { error in
+            XCTAssertThrowsError(try control(Wire(), ordinary: { self.statusReply(raw) }).libraryRefreshStatus(), raw) { error in
                 guard case SourceAppError.malformedReply = error else { return XCTFail("\(error) for \(raw)") }
             }
+        }
+    }
+
+    func testLibraryInstanceIsReadFromTheTopLevelOfEveryStatusReply() throws {
+        func instance(_ reply: String) throws -> String? {
+            try control(Wire(), ordinary: { reply }).libraryRefreshStatus().libraryInstance
+        }
+        XCTAssertEqual(try instance(statusReply(nil, libraryInstance: #""inst-1""#)), "inst-1")
+        XCTAssertEqual(try instance(statusReply("null", libraryInstance: #""inst-2""#)), "inst-2", "present while the fact is null")
+        XCTAssertNil(try instance(statusReply(nil)), "absent: the fact's own instance is the fallback")
+        XCTAssertNil(try instance(statusReply(nil, libraryInstance: "null")))
+        // A SpanDAC that puts it inside the status object is read too.
+        XCTAssertEqual(try instance(#"{"ok":true,"op":"slice.status","status":{"playback":"stopped","library_instance":"in-status"}}"#),
+                       "in-status")
+        for bad in ["7", #""  ""#, "true"] {
+            XCTAssertThrowsError(try instance(statusReply(nil, libraryInstance: bad)), bad)
         }
     }
 

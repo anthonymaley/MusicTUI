@@ -311,8 +311,6 @@ final class BridgeListFeed<Row> {
         case restarted
         /// A follow-up ask was declined.
         case deferred
-        /// A follow-up ask only joined a drain that was already running.
-        case stillJoined
     }
 
     /// How a `refresh` ended, for the caller to tell the person. Never delivered
@@ -367,8 +365,12 @@ final class BridgeListFeed<Row> {
 
         let workers = self.workers
         workers.enter()
+        afterClaimForTest?()
         Thread.detachNewThread { [weak self] in
             defer { workers.leave() }
+            // A `reset()` that landed between the claim and this thread starting
+            // revoked the refresh: it sends nothing and says nothing.
+            guard self?.currentEpochMatches(myEpoch) ?? false else { return }
             let check = begin()
             // Weak all the way down: a feed nobody holds deallocates, and this stops.
             let current: () -> Bool = { self?.currentEpochMatches(myEpoch) ?? false }
@@ -416,6 +418,10 @@ final class BridgeListFeed<Row> {
         }
         return true
     }
+
+    /// Test-only: runs on the caller's thread after `refresh` has claimed the feed
+    /// and before its worker starts, the one point a `reset()` can land in.
+    var afterClaimForTest: (() -> Void)?
 
     private func currentEpochMatches(_ e: Int) -> Bool {
         lock.lock(); defer { lock.unlock() }

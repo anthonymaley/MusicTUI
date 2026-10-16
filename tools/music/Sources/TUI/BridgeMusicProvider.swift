@@ -141,8 +141,8 @@ struct BridgeMusicProvider: MusicDataProvider {
         catch let error as SourceAppError { throw Self.translate(error) }
     }
 
-    func libraryRefreshCompletion() throws -> SpanDACLibraryRefreshCompletion? {
-        do { return try control.libraryRefreshCompletion() }
+    func libraryRefreshStatus() throws -> SpanDACLibraryRefreshStatus {
+        do { return try control.libraryRefreshStatus() }
         catch let error as SourceAppError { throw Self.translate(error) }
     }
 

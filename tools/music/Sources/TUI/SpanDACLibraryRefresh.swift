@@ -23,7 +23,10 @@ import Foundation
 //
 //   "library_refresh":{"instance":"<id>","ticket":7,"result":"installed"|"failed"|"cancelled"}  or  null
 //
-// set atomically with the install, failure or cancellation. It is trusted only
+// set atomically with the install, failure or cancellation. Every `slice.status`
+// reply on the Mac's Unix socket also carries a top-level `library_instance`:
+// the SpanDAC process answering, whether or not any rebuild has ended, so a
+// restart is visible while `library_refresh` is still null. It is trusted only
 // when its `instance` is the one the op's reply named and its `ticket` is at
 // least the ask's. A list's `generation` advances on
 // EVERY successful install, content changed or not, so it is never read as proof
@@ -44,6 +47,17 @@ enum SpanDACLibraryRefreshOutcome: Equatable {
     case joined(ticket: Int, instance: String)
     /// SpanDAC will not rebuild right now.
     case deferred
+}
+
+/// What `slice.status` says about rebuilds: the SpanDAC process answering, and
+/// how the latest rebuild ended.
+struct SpanDACLibraryRefreshStatus: Equatable {
+    /// `library_instance`; nil from a SpanDAC (or a socket) that does not carry it.
+    let libraryInstance: String?
+    /// `library_refresh`; nil when null or absent.
+    let completion: SpanDACLibraryRefreshCompletion?
+
+    static let none = SpanDACLibraryRefreshStatus(libraryInstance: nil, completion: nil)
 }
 
 /// How a rebuild ended, as `slice.status` reports the latest one.
@@ -90,13 +104,23 @@ extension SourceAppControl {
         }
     }
 
-    /// The `library_refresh` fact of `slice.status`, on the ordinary transport:
-    /// nil when it is null or absent (no rebuild has ended yet, or a SpanDAC that
-    /// does not carry it). Present but unreadable is malformed.
-    func libraryRefreshCompletion() throws -> SpanDACLibraryRefreshCompletion? {
+    /// `slice.status`'s rebuild facts, on the ordinary transport. `library_instance`
+    /// is read from the top level of the reply (and from the status object, should
+    /// a SpanDAC put it there). Either is nil when null or absent; present but
+    /// unreadable is malformed.
+    func libraryRefreshStatus() throws -> SpanDACLibraryRefreshStatus {
         let reply = try send(["op": "slice.status"])
-        guard let status = reply["status"] as? [String: Any] else { return nil }
-        return try Self.libraryRefreshCompletion(fromStatus: status)
+        let status = reply["status"] as? [String: Any]
+        let raw = reply["library_instance"] ?? status?["library_instance"]
+        var instance: String? = nil
+        if let raw, !(raw is NSNull) {
+            guard let id = Self.instanceID(raw) else {
+                throw SourceAppError.malformedReply("SpanDAC's library_instance is not readable")
+            }
+            instance = id
+        }
+        let completion = try status.flatMap { try Self.libraryRefreshCompletion(fromStatus: $0) }
+        return SpanDACLibraryRefreshStatus(libraryInstance: instance, completion: completion)
     }
 
     static func libraryRefreshCompletion(fromStatus status: [String: Any]) throws -> SpanDACLibraryRefreshCompletion? {
@@ -110,7 +134,7 @@ extension SourceAppControl {
     }
 
     /// A SpanDAC process's id: non-blank text.
-    private static func instanceID(_ raw: Any?) -> String? {
+    fileprivate static func instanceID(_ raw: Any?) -> String? {
         guard let text = raw as? String, !text.trimmingCharacters(in: .whitespaces).isEmpty else { return nil }
         return text
     }

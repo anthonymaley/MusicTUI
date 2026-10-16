@@ -455,6 +455,27 @@ final class BridgeListFeedTests: XCTestCase {
         XCTAssertNil(f.drain().replace)
     }
 
+    /// A `reset()` between the claim and the worker starting revokes the refresh
+    /// before it does anything: no `begin`, no read, no `end`.
+    func testAResetBeforeTheRefreshWorkerStartsRunsNothing() {
+        let script = ScriptedFetch([page(["a"], generation: 1, next: nil), page(["a", "b"], generation: 1, next: nil)])
+        let f = reaskFeed(script.fetch, SleepRecorder())
+        f.start()
+        XCTAssertTrue(settleUntil { f.drain().done })
+        var began = false
+        var ends: [BridgeListFeed<Row>.RefreshEnd] = []
+        f.afterClaimForTest = { f.reset() }
+        XCTAssertTrue(f.refresh(begin: { began = true; return nil }, end: { ends.append($0) }))
+        XCTAssertTrue(f.waitForWorkersForTest(timeout: 5))
+        XCTAssertFalse(began, "begin ran for a revoked refresh")
+        XCTAssertTrue(ends.isEmpty)
+        XCTAssertEqual(script.callCount, 1, "a revoked refresh read the list")
+        XCTAssertNil(f.drain().replace)
+        f.afterClaimForTest = nil
+        XCTAssertTrue(f.refresh(), "the revoked refresh left the feed claimed")
+        XCTAssertTrue(f.waitForWorkersForTest(timeout: 5))
+    }
+
     func testAResetDuringARefreshDropsItsResult() {
         let script = ScriptedFetch([page(["a"], generation: 1, next: nil),
                                     page(["a", "b"], generation: 1, next: nil)])

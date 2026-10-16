@@ -427,7 +427,7 @@ final class LibraryReadTimeoutTests: XCTestCase {
         try control.queue(libraryIDs: ["i.a"])
         try control.pause()
         _ = try control.libraryRefresh()
-        _ = try control.libraryRefreshCompletion()
+        _ = try control.libraryRefreshStatus()
 
         // The library read, the queue (which may wait on the player preparing
         // its first song) and the library refresh use the long timeout; status

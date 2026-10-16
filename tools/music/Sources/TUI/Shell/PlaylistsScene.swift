@@ -127,6 +127,7 @@ final class PlaylistsScene: Scene {
     private var railSource: ListSource? = nil
     private var railEpoch = 0
     var railSourceForTest: ListSource? { railSource }
+    var playlistsFeedForTest: BridgeListFeed<MusicRow> { playlistsFeed }
     /// The current rail's names, in rail order — Bridge's (filtered) or
     /// Music.app's, whichever `railSource` says is live.
     var railNamesForTest: [String] {
@@ -805,7 +806,7 @@ final class PlaylistsScene: Scene {
                 case .settled(.failed): status.post(RefreshText.failed, error: true)
                 case .settled(.restarted): status.post(RefreshText.restarted)
                 case .settled(.deferred): status.post(RefreshText.deferred)
-                case .settled(.stillJoined), .settled(.pending), .boundSpent: status.post(RefreshText.stillRefreshing)
+                case .settled(.pending), .boundSpent: status.post(RefreshText.stillRefreshing)
                 case .readFailed: status.post(RefreshText.readFailed, error: true)
                 }
             })

@@ -33,10 +33,11 @@ final class BridgePlaylistsRefreshTests: XCTestCase {
     """
 
     /// A `slice.status` reply. `fact` is the raw `library_refresh` value.
-    private func status(advertising: Bool = true, fact: String = "null") -> String {
+    private func status(advertising: Bool = true, fact: String = "null", libraryInstance: String? = nil) -> String {
         let caps = advertising ? "[\"slice.status\",\"library.refresh\"]" : "[\"slice.status\"]"
+        let top = libraryInstance.map { "\"library_instance\":\"\($0)\"," } ?? ""
         return """
-        {"ok":true,"op":"slice.status","status":{"playback":"stopped","capabilities":\(caps),"library_refresh":\(fact)}}
+        {"ok":true,"op":"slice.status",\(top)"status":{"playback":"stopped","capabilities":\(caps),"library_refresh":\(fact)}}
         """
     }
     private func fact(_ ticket: Int, _ result: String, instance: String = "inst-1") -> String {
@@ -174,6 +175,56 @@ final class BridgePlaylistsRefreshTests: XCTestCase {
         XCTAssertEqual(wire.sent("slice.libraryRefresh").count, 1)
     }
 
+    /// `library_instance` is on every status reply, so a restart shows while
+    /// `library_refresh` is still null: at once, not after the bound.
+    func testADifferentLibraryInstanceWhileTheFactIsNullMeansRestartedAtOnce() {
+        let wire = BridgeLibraryReadsWire([
+            "slice.libraryPlaylists": [rail([alpha, bravo]), rail([alpha, bravo]), rail([friday, alpha, bravo])],
+            "slice.status": [status(libraryInstance: "inst-1"), status(libraryInstance: "inst-1"),
+                             status(libraryInstance: "inst-1"), status(libraryInstance: "inst-2")],
+            "slice.libraryRefresh": [started7]])
+        let store = StatusStore()
+        let s = settledScene(wire, status: store)
+        _ = s.handle(.char("r"))
+        waitForText(store, "SpanDAC restarted; showing its fresh list.", s)
+        XCTAssertTrue(settleScene(s) { s.railNamesForTest == ["Friday", "Alpha", "Bravo"] })
+        XCTAssertEqual(wire.sent("slice.status").count, 4, "the wait went on after the restart was seen")
+    }
+
+    /// Without `library_instance` the fact's own instance is the fallback; with it
+    /// matching, a null fact is simply not yet.
+    func testAMatchingLibraryInstanceWithANullFactIsStillPending() {
+        let wire = BridgeLibraryReadsWire([
+            "slice.libraryPlaylists": [rail([alpha, bravo]), rail([alpha, bravo]), rail([friday, alpha, bravo])],
+            "slice.status": [status(libraryInstance: "inst-1"), status(libraryInstance: "inst-1"),
+                             status(libraryInstance: "inst-1"), status(libraryInstance: "inst-1"),
+                             status(fact: "{\"instance\":\"inst-1\",\"ticket\":7,\"result\":\"installed\"}",
+                                    libraryInstance: "inst-1")],
+            "slice.libraryRefresh": [started7]])
+        let store = StatusStore()
+        let s = settledScene(wire, status: store)
+        _ = s.handle(.char("r"))
+        waitForText(store, "Playlists refreshed.", s)
+    }
+
+    // MARK: - a reset revokes a refresh before it starts
+
+    func testAResetBeforeTheWorkerStartsSendsNothingAndSaysNothing() {
+        let wire = BridgeLibraryReadsWire([
+            "slice.libraryPlaylists": [rail([alpha, bravo]), rail([friday, alpha, bravo])],
+            "slice.status": [status()],
+            "slice.libraryRefresh": [started7]])
+        let store = StatusStore()
+        let s = settledScene(wire, status: store)
+        let feed = s.playlistsFeedForTest
+        feed.afterClaimForTest = { feed.reset() }   // the provenance switch lands between the claim and the worker
+        let before = wire.requestCount
+        _ = s.handle(.char("r"))
+        XCTAssertTrue(feed.waitForWorkersForTest(timeout: 5), "the refresh worker never ended")
+        XCTAssertEqual(wire.requestCount, before, "a revoked refresh still reached the wire")
+        XCTAssertNil(text(store), "a revoked refresh still spoke")
+    }
+
     // MARK: - joined is not started
 
     /// The drain a `joined` ask attached to may have read the library before `r`
@@ -211,17 +262,22 @@ final class BridgePlaylistsRefreshTests: XCTestCase {
         XCTAssertEqual(wire.sent("slice.libraryRefresh").count, 2, "never more than one follow-up")
     }
 
-    func testJoinedThenTheFollowUpJoinsAgainStopsWithoutAThirdAsk() {
+    /// The follow-up answers `joined` U: that drain began after T ended, so after
+    /// the keypress. It is waited on like any started one, with no further ask.
+    func testJoinedThenTheFollowUpJoinsAgainWaitsForThatTicketAndTrustsItsInstall() {
         let wire = BridgeLibraryReadsWire([
-            "slice.libraryPlaylists": [rail([alpha, bravo]), rail([alpha, bravo]), rail([alpha, bravo])],
-            "slice.status": [status(), status(), status(), installed(7)],
+            "slice.libraryPlaylists": [rail([alpha, bravo]), rail([alpha, bravo]), rail([friday, alpha, bravo])],
+            // probe, capability, check before the first read, T ends (the follow-up goes out), U not yet, U installs
+            "slice.status": [status(), status(), status(), installed(7), installed(7), installed(8)],
             "slice.libraryRefresh": [reply("joined", ticket: 7), reply("joined", ticket: 8), reply("joined", ticket: 9)]])
         let store = StatusStore()
         let s = settledScene(wire, status: store)
         _ = s.handle(.char("r"))
-        waitForText(store, "SpanDAC is still refreshing; press r again shortly.", s)
-        XCTAssertTrue(settleScene(s) { wire.threadEnded(op: "slice.libraryPlaylists", at: 2) })
+        waitForText(store, "Playlists refreshed.", s)
+        XCTAssertTrue(settleScene(s) { s.railNamesForTest == ["Friday", "Alpha", "Bravo"] })
         XCTAssertEqual(wire.sent("slice.libraryRefresh").count, 2, "never more than one follow-up")
+        XCTAssertEqual(wire.sent("slice.status").count, 6, "U's install was not what ended the wait")
+        XCTAssertEqual(wire.sent("slice.libraryPlaylists").count, 3, "the final read is the one after U's install")
     }
 
     func testJoinedThenTheFollowUpIsRefusedSaysSpanDACCouldNotRefresh() {
