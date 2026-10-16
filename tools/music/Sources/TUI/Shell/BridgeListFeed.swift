@@ -372,14 +372,25 @@ final class BridgeListFeed<Row> {
     ///
     /// It holds `reasking` for its whole life, so `start()` stays off exactly as
     /// it does during a re-ask, and `reset()` revokes it like any other worker.
+    ///
+    /// `alreadyRefreshing` runs under the feed's lock when a refresh is already in
+    /// flight, so whatever it posts lands before that refresh's `end` can: the
+    /// worker clears `refreshing` under this lock before it calls `end`. Posting
+    /// after `refresh` returns instead could overwrite an `end` that slipped in.
     @discardableResult
     func refresh(begin: @escaping () -> (() -> RefreshProgress)? = { nil },
-                 end: @escaping (RefreshEnd) -> Void = { _ in }) -> RefreshClaim {
+                 end: @escaping (RefreshEnd) -> Void = { _ in },
+                 alreadyRefreshing: () -> Void = {}) -> RefreshClaim {
         lock.lock()
         guard !walking else { lock.unlock(); return .busy }
         var claim = RefreshClaim.started
         if reasking {
-            guard !refreshing else { lock.unlock(); return .alreadyRefreshing }
+            guard !refreshing else {
+                alreadyRefreshing()
+                lock.unlock()
+                afterAlreadyRefreshingForTest?()
+                return .alreadyRefreshing
+            }
             epoch += 1   // the old re-ask's every post and its ending are now dropped
             claim = .tookOver
         }
@@ -452,6 +463,10 @@ final class BridgeListFeed<Row> {
     /// Test-only: runs on the caller's thread after `refresh` has claimed the feed
     /// and before its worker starts, the one point a `reset()` can land in.
     var afterClaimForTest: (() -> Void)?
+
+    /// Test-only: runs on the caller's thread after an `alreadyRefreshing` claim has
+    /// released the lock, the point where the running refresh can end and post.
+    var afterAlreadyRefreshingForTest: (() -> Void)?
 
     private func currentEpochMatches(_ e: Int) -> Bool {
         lock.lock(); defer { lock.unlock() }

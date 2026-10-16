@@ -791,7 +791,7 @@ final class PlaylistsScene: Scene {
         let provider = makeProvider
         let status = self.status
         let epoch = railEpoch
-        let claim = playlistsFeed.refresh(
+        playlistsFeed.refresh(
             begin: { [weak self] () -> (() -> BridgeListFeed<MusicRow>.RefreshProgress)? in
                 guard let p = provider() else { return nil }
                 let advertised = p.supportsLibraryRefresh()
@@ -816,9 +816,10 @@ final class PlaylistsScene: Scene {
                 case .settled(.pending), .boundSpent: status.post(RefreshText.stillRefreshing)
                 case .readFailed: status.post(RefreshText.readFailed, error: true)
                 }
-            })
-        // A refresh already running is not started twice; say so rather than nothing.
-        if claim == .alreadyRefreshing { status.post(RefreshText.alreadyRefreshing) }
+            },
+            // A refresh already running is not started twice; say so rather than
+            // nothing, under the feed's lock so its finished line always lands after.
+            alreadyRefreshing: { status.post(RefreshText.alreadyRefreshing) })
     }
 
     // MARK: Scene

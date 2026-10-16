@@ -463,6 +463,31 @@ final class BridgePlaylistsRefreshTests: XCTestCase {
         XCTAssertEqual(wire.sent("slice.libraryPlaylists").count, 3)
     }
 
+    /// The running refresh ends in the gap after a second `r` is told "already
+    /// refreshing". Its finished line must stay: it carries the one instruction
+    /// for a new playlist, and the second `r` saying so must not cover it.
+    func testTheFinishedLineWinsOverAnAlreadyRefreshingThatRacedIt() {
+        let wire = BridgeLibraryReadsWire([
+            "slice.libraryPlaylists": [rail([alpha, bravo]), rail([alpha, bravo]), rail([friday, alpha, bravo])],
+            "slice.status": [status(), status(), status(), installed(7)],
+            "slice.libraryRefresh": [started7]])
+        wire.gate(op: "slice.libraryPlaylists", at: 1)
+        let store = StatusStore()
+        let s = settledScene(wire, status: store)
+        _ = s.handle(.char("r"))
+        XCTAssertTrue(settleScene(s) { wire.reached(op: "slice.libraryPlaylists", at: 1) })
+        let feed = s.playlistsFeedForTest
+        feed.afterAlreadyRefreshingForTest = {
+            feed.afterAlreadyRefreshingForTest = nil
+            wire.release(op: "slice.libraryPlaylists", at: 1)
+            XCTAssertTrue(feed.waitForWorkersForTest(timeout: 5), "the refresh worker never ended")
+        }
+        _ = s.handle(.char("r"))
+        XCTAssertEqual(text(store), "Playlists refreshed. New playlists need a song; press r again.",
+                       "\"Already refreshing\" covered the finished line")
+        XCTAssertEqual(wire.sent("slice.libraryRefresh").count, 1)
+    }
+
     // MARK: - r during a plain stale re-ask takes over
 
     /// Opening Playlists on a stale snapshot starts the plain re-ask. `r` then must
