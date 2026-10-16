@@ -488,6 +488,38 @@ final class BridgePlaylistsRefreshTests: XCTestCase {
         XCTAssertEqual(wire.sent("slice.libraryRefresh").count, 1)
     }
 
+    /// The other side of that race: a refresh releases its claim, and the next `r`
+    /// starts a new one before the first has spoken. The new refresh's line must
+    /// stay; the first's "refreshed" must not say it finished while one is running.
+    func testAnEndingRefreshNeverCoversTheNextRefreshsLine() {
+        let wire = BridgeLibraryReadsWire([
+            "slice.libraryPlaylists": [rail([alpha, bravo]), rail([alpha, bravo]), rail([friday, alpha, bravo]),
+                                       rail([friday, alpha, bravo]), rail([friday, alpha, bravo])],
+            "slice.status": [status(), status(), status(), installed(7), status(), status(), installed(9)],
+            "slice.libraryRefresh": [started7, reply("started", ticket: 9)]])
+        wire.gate(op: "slice.libraryPlaylists", at: 3)
+        let store = StatusStore()
+        let s = settledScene(wire, status: store)
+        let released = DispatchSemaphore(value: 0), proceed = DispatchSemaphore(value: 0)
+        let once = NSLock(); var fired = false
+        s.playlistsFeedForTest.afterRefreshReleasedForTest = {
+            once.lock(); let first = !fired; fired = true; once.unlock()
+            guard first else { return }
+            released.signal()
+            proceed.wait()
+        }
+        _ = s.handle(.char("r"))
+        XCTAssertEqual(released.wait(timeout: .now() + 5), .success, "the first refresh never released its claim")
+        _ = s.handle(.char("r"))
+        XCTAssertTrue(settleScene(s) { wire.reached(op: "slice.libraryPlaylists", at: 3) }, "the second refresh never started")
+        proceed.signal()
+        XCTAssertTrue(settleScene(s) { wire.threadEnded(op: "slice.libraryPlaylists", at: 2) }, "the first refresh never ended")
+        XCTAssertEqual(text(store), "Refreshing your playlists\u{2026}", "the first refresh's ending covered the second's line")
+        wire.release(op: "slice.libraryPlaylists", at: 3)
+        waitForText(store, "Playlists refreshed. New playlists need a song; press r again.", s)
+        XCTAssertEqual(wire.sent("slice.libraryRefresh").count, 2)
+    }
+
     // MARK: - r during a plain stale re-ask takes over
 
     /// Opening Playlists on a stale snapshot starts the plain re-ask. `r` then must

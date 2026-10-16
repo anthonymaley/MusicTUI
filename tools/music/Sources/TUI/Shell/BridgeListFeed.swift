@@ -373,10 +373,11 @@ final class BridgeListFeed<Row> {
     /// It holds `reasking` for its whole life, so `start()` stays off exactly as
     /// it does during a re-ask, and `reset()` revokes it like any other worker.
     ///
-    /// `alreadyRefreshing` runs under the feed's lock when a refresh is already in
-    /// flight, so whatever it posts lands before that refresh's `end` can: the
-    /// worker clears `refreshing` under this lock before it calls `end`. Posting
-    /// after `refresh` returns instead could overwrite an `end` that slipped in.
+    /// `end` and `alreadyRefreshing` both run under the feed's lock, so the status
+    /// line follows the claim: a refresh's ending lands before the claim is
+    /// released, so neither a second `r`'s "already refreshing" nor the next
+    /// refresh's own lines can be covered by it, or cover it. Both must only post
+    /// (take no lock of this feed's and call nothing back into it).
     @discardableResult
     func refresh(begin: @escaping () -> (() -> RefreshProgress)? = { nil },
                  end: @escaping (RefreshEnd) -> Void = { _ in },
@@ -451,11 +452,16 @@ final class BridgeListFeed<Row> {
                 }
             }()
             guard let self else { return }
+            // `end` runs before the claim is released, so a refresh the next `r`
+            // starts can only speak after this one's ending, never under it.
             self.lock.lock()
             let still = self.epoch == myEpoch
-            if still { self.reasking = false; self.refreshing = false }
+            if still {
+                if let ended { end(ended) }
+                self.reasking = false; self.refreshing = false
+            }
             self.lock.unlock()
-            if still, let ended { end(ended) }
+            self.afterRefreshReleasedForTest?()
         }
         return claim
     }
@@ -467,6 +473,10 @@ final class BridgeListFeed<Row> {
     /// Test-only: runs on the caller's thread after an `alreadyRefreshing` claim has
     /// released the lock, the point where the running refresh can end and post.
     var afterAlreadyRefreshingForTest: (() -> Void)?
+
+    /// Test-only: runs on a refresh's worker after it has released its claim, the
+    /// point where the next `r` can start a new refresh.
+    var afterRefreshReleasedForTest: (() -> Void)?
 
     private func currentEpochMatches(_ e: Int) -> Bool {
         lock.lock(); defer { lock.unlock() }
