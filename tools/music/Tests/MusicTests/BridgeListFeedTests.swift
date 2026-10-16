@@ -376,9 +376,10 @@ final class BridgeListFeedTests: XCTestCase {
         f.start()
         XCTAssertTrue(settleUntil { f.drain().done })
         var order: [String] = []
-        XCTAssertTrue(f.refresh(beforeWalk: { order.append("hook\(script.callCount)") }))
+        XCTAssertTrue(f.refresh(begin: { order.append("begin\(script.callCount)"); return nil },
+                                end: { order.append("end:\($0)") }))
         XCTAssertTrue(f.waitForWorkersForTest(timeout: 5), "the refresh worker never ended")
-        XCTAssertEqual(order, ["hook1"], "the hook must run before the re-walk's first read")
+        XCTAssertEqual(order, ["begin1", "end:listOnly"], "begin must run before the re-walk's first read")
         let d = f.drain()
         XCTAssertEqual(d.replace, [Row(id: "n"), Row(id: "a"), Row(id: "b")])
         XCTAssertTrue(d.reasked)
@@ -405,6 +406,55 @@ final class BridgeListFeedTests: XCTestCase {
         XCTAssertEqual(script.callCount, 2)
     }
 
+    /// With a completion check the list is read after a verdict is seen, and the
+    /// loop spends `LibraryReask`'s interval, not its own.
+    func testARefreshWithACheckReadsAgainAfterTheVerdictAndEndsSettled() {
+        let script = ScriptedFetch([page(["a"], generation: 1, next: nil),
+                                    page(["a"], generation: 1, next: nil),     // first re-read: before the install
+                                    page(["n", "a"], generation: 1, next: nil)])  // the re-read after the verdict
+        let sleeper = SleepRecorder()
+        let f = reaskFeed(script.fetch, sleeper)
+        f.start()
+        XCTAssertTrue(settleUntil { f.drain().done })
+        var verdicts: [BridgeListFeed<Row>.RefreshProgress] = [.pending, .pending, .installed]
+        var ends: [BridgeListFeed<Row>.RefreshEnd] = []
+        var readsAtCheck: [Int] = []
+        XCTAssertTrue(f.refresh(begin: { { readsAtCheck.append(script.callCount); return verdicts.removeFirst() } },
+                                end: { ends.append($0) }))
+        XCTAssertTrue(f.waitForWorkersForTest(timeout: 5))
+        XCTAssertEqual(ends, [.settled(.installed)])
+        XCTAssertEqual(readsAtCheck, [1, 2, 2], "each check must come before the read it vouches for")
+        XCTAssertEqual(sleeper.calls, [LibraryReask.interval, LibraryReask.interval], "one interval per wait")
+        XCTAssertEqual(f.drain().replace, [Row(id: "n"), Row(id: "a")])
+        XCTAssertEqual(script.callCount, 3)
+    }
+
+    func testARefreshWithACheckThatNeverSettlesEndsAtTheBound() {
+        let script = ScriptedFetch([page(["a"], generation: 1, next: nil), page(["a"], generation: 1, next: nil)])
+        let sleeper = SleepRecorder()
+        let f = reaskFeed(script.fetch, sleeper)
+        f.start()
+        XCTAssertTrue(settleUntil { f.drain().done })
+        var ends: [BridgeListFeed<Row>.RefreshEnd] = []
+        XCTAssertTrue(f.refresh(begin: { { .pending } }, end: { ends.append($0) }))
+        XCTAssertTrue(f.waitForWorkersForTest(timeout: 5))
+        XCTAssertEqual(ends, [.boundSpent])
+        XCTAssertEqual(sleeper.calls.reduce(0, +), LibraryReask.maxTotalWait)
+        XCTAssertEqual(script.callCount, 2, "an unflagged list was re-read while only the check was pending")
+    }
+
+    func testARefreshWhoseReadFailsEndsReadFailedAndPostsNothing() {
+        let script = ScriptedFetch([page(["a"], generation: 1, next: nil)])   // the re-read is unscripted: it throws
+        let f = reaskFeed(script.fetch, SleepRecorder())
+        f.start()
+        XCTAssertTrue(settleUntil { f.drain().done })
+        var ends: [BridgeListFeed<Row>.RefreshEnd] = []
+        XCTAssertTrue(f.refresh(end: { ends.append($0) }))
+        XCTAssertTrue(f.waitForWorkersForTest(timeout: 5))
+        XCTAssertEqual(ends, [.readFailed])
+        XCTAssertNil(f.drain().replace)
+    }
+
     func testAResetDuringARefreshDropsItsResult() {
         let script = ScriptedFetch([page(["a"], generation: 1, next: nil),
                                     page(["a", "b"], generation: 1, next: nil)])
@@ -412,12 +462,14 @@ final class BridgeListFeedTests: XCTestCase {
         f.start()
         XCTAssertTrue(settleUntil { f.drain().done })
         script.gate(at: 1)
-        XCTAssertTrue(f.refresh())
+        var ends: [BridgeListFeed<Row>.RefreshEnd] = []
+        XCTAssertTrue(f.refresh(end: { ends.append($0) }))
         XCTAssertTrue(settleUntil { script.reachedGateAt1() })
         f.reset()
         script.release(at: 1)
         XCTAssertTrue(f.waitForWorkersForTest(timeout: 5))
         XCTAssertNil(f.drain().replace, "a refresh that outlived a reset landed")
+        XCTAssertTrue(ends.isEmpty, "a refresh that outlived a reset still spoke: \(ends)")
     }
 
     func testAFreshReplyIsNeverReAsked() {

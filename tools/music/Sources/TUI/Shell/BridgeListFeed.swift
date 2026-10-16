@@ -226,8 +226,12 @@ final class BridgeListFeed<Row> {
             isCurrent: { [weak self] in self?.currentEpochMatches(myEpoch) ?? false },
             probe: { try fetch(nil, limit) },
             rewalk: {
-                Self.rewalkAndPost(owner: { [weak self] in self }, myEpoch: myEpoch,
-                                   fetch: fetch, map: map, sleep: sleep, limit: limit)
+                // A read that did not post (failed, or superseded) ends the re-ask.
+                if case .posted(let flagged) = Self.rewalkAndPost(owner: { [weak self] in self }, myEpoch: myEpoch,
+                                                                  fetch: fetch, map: map, sleep: sleep, limit: limit) {
+                    return flagged
+                }
+                return false
             })
         lock.lock()
         if epoch == myEpoch { reasking = false }
@@ -236,9 +240,9 @@ final class BridgeListFeed<Row> {
 
     /// Reads the whole list again, buffered, and posts it as ONE replacement
     /// flagged `reasked` (the same list read again, so the scene follows its
-    /// selection by row id). Returns whether the read was itself flagged, i.e.
-    /// whether the caller should keep asking. A failed or superseded read posts
-    /// nothing, leaves the list as it was, and returns false.
+    /// selection by row id). Says whether it posted, and if so whether the read
+    /// was itself flagged (the caller should keep asking). A failed or superseded
+    /// read posts nothing and leaves the list as it was.
     ///
     /// Static, with the feed reached through `owner` (a weak capture), so the walk
     /// holds no strong reference to the feed: one nobody holds any more
@@ -248,10 +252,10 @@ final class BridgeListFeed<Row> {
                                       fetch: (String?, Int) throws -> MusicPage,
                                       map: (MusicRow) -> Row,
                                       sleep: (TimeInterval) -> Void,
-                                      limit: Int) -> Bool {
+                                      limit: Int) -> RewalkResult {
         // `walkLibraryPages` reads page 1 before its epoch check, so a
         // reset that outlived the probe is caught here instead.
-        guard owner()?.currentEpochMatches(myEpoch) ?? false else { return false }
+        guard owner()?.currentEpochMatches(myEpoch) ?? false else { return .dropped }
         var rows: [Row] = []
         var total: Int? = nil
         var skipped: Int? = nil
@@ -272,33 +276,84 @@ final class BridgeListFeed<Row> {
             rows = []; total = nil; skipped = nil; listRev = nil; firstPage = true; flagged = false
         }, sleep: sleep)
         // A failed re-read leaves the list as it was, and ends the re-ask.
-        guard !superseded, error == nil, let feed = owner() else { return false }
+        guard !superseded, let feed = owner() else { return .dropped }
         feed.lock.lock()
         defer { feed.lock.unlock() }
-        guard feed.epoch == myEpoch else { return false }
+        guard feed.epoch == myEpoch else { return .dropped }
+        guard error == nil else { return .failed }
         feed.pendingReplace = rows
         feed.pendingAppend = []
         feed.pendingTotal = total
         feed.pendingSkippedVideos = skipped
         feed.pendingListRev = listRev
         feed.pendingReasked = true
-        return flagged   // still flagged: keep asking, within the same bound
+        return .posted(flagged: flagged)   // still flagged: keep asking, within the same bound
+    }
+
+    private enum RewalkResult {
+        /// The replacement is posted; `flagged` says the read itself was stale/refreshing.
+        case posted(flagged: Bool)
+        /// The read failed; the list is as it was.
+        case failed
+        /// A `reset()` (or the feed's end) got there first; nothing to say to anyone.
+        case dropped
+    }
+
+    /// How a rebuild the list is waiting on stands (the caller's reading of
+    /// SpanDAC's completion fact). The feed only tells `pending` from the rest:
+    /// any other verdict is final, and the list is read once more after it.
+    enum RefreshProgress: Equatable {
+        case pending
+        case installed
+        /// The rebuild failed or was cancelled.
+        case failed
+        /// A different SpanDAC process answered: it restarted.
+        case restarted
+        /// A follow-up ask was declined.
+        case deferred
+        /// A follow-up ask only joined a drain that was already running.
+        case stillJoined
+    }
+
+    /// How a `refresh` ended, for the caller to tell the person. Never delivered
+    /// for a refresh a `reset()` outlived.
+    enum RefreshEnd: Equatable {
+        /// No completion fact was awaited: the list was read again, and any
+        /// stale-snapshot re-ask it earned has run its course.
+        case listOnly
+        /// The awaited rebuild reached a final verdict (anything but `pending`)
+        /// and the list was read again after that was seen.
+        case settled(RefreshProgress)
+        /// The awaited rebuild did not report within `LibraryReask`'s bound.
+        case boundSpent
+        /// The list itself could not be read; it stays as it was.
+        case readFailed
     }
 
     /// A person-asked re-read of a list that is already showing. Starts nothing
     /// (returns false) while a walk, a re-ask or an earlier refresh is in flight,
-    /// so a repeated ask never stacks a second one. Otherwise `beforeWalk` runs
-    /// on the worker (the place to tell SpanDAC to rebuild), then the list is
-    /// read again in full, buffered, and posted as ONE `reasked` replacement: the
-    /// rows on screen stay until it lands, and the scene keeps its selection by
-    /// row id. A read that comes back flagged stale/refreshing is shown and then
-    /// handed to the ordinary bounded re-ask (when this feed opts in), so the
-    /// drain's result lands. A failed read leaves the list as it was.
+    /// so a repeated ask never stacks a second one.
+    ///
+    /// `begin` runs first on the worker (the place to tell SpanDAC to rebuild).
+    /// It returns the check for the rebuild's completion, or nil when there is
+    /// none to wait for. Then the list is read again in full, buffered, and
+    /// posted as ONE `reasked` replacement: the rows on screen stay until it
+    /// lands, and the scene keeps its selection by row id.
+    ///
+    /// What follows is `LibraryReask`'s loop on its own interval and bound, not a
+    /// second one. While the last read was flagged stale/refreshing it probes one
+    /// page and re-reads when the probe comes back clean; while a check is
+    /// supplied it also asks the check each interval. The check is asked BEFORE
+    /// each full read, so a verdict of installed/failed means the read that
+    /// follows it came after the rebuild ended. A settled verdict re-reads once
+    /// and ends; with no check the loop ends when a read comes back unflagged.
+    /// `end` is told how it went (not if a `reset()` got there first).
     ///
     /// It holds `reasking` for its whole life, so `start()` stays off exactly as
     /// it does during a re-ask, and `reset()` revokes it like any other worker.
     @discardableResult
-    func refresh(beforeWalk: @escaping () -> Void = {}) -> Bool {
+    func refresh(begin: @escaping () -> (() -> RefreshProgress)? = { nil },
+                 end: @escaping (RefreshEnd) -> Void = { _ in }) -> Bool {
         lock.lock()
         guard !walking, !reasking else { lock.unlock(); return false }
         reasking = true
@@ -309,24 +364,55 @@ final class BridgeListFeed<Row> {
         let map = self.map
         let sleep = self.sleep
         let limit = self.limit
-        let reasksStale = self.reasksStale
 
         let workers = self.workers
         workers.enter()
         Thread.detachNewThread { [weak self] in
             defer { workers.leave() }
-            beforeWalk()
-            let again = Self.rewalkAndPost(owner: { [weak self] in self }, myEpoch: myEpoch,
-                                           fetch: fetch, map: map, sleep: sleep, limit: limit)
-            guard let self else { return }
-            if again && reasksStale {
-                // `reask` clears `reasking` itself when it ends.
-                self.reask(myEpoch: myEpoch, fetch: fetch, map: map, sleep: sleep, limit: limit)
-                return
+            let check = begin()
+            // Weak all the way down: a feed nobody holds deallocates, and this stops.
+            let current: () -> Bool = { self?.currentEpochMatches(myEpoch) ?? false }
+            func reread() -> RewalkResult {
+                Self.rewalkAndPost(owner: { [weak self] in self }, myEpoch: myEpoch,
+                                   fetch: fetch, map: map, sleep: sleep, limit: limit)
             }
+            let ended: RefreshEnd? = {
+                var verdict = check?() ?? .pending
+                var lastFlagged: Bool
+                switch reread() {
+                case .dropped: return nil
+                case .failed: return .readFailed
+                case .posted(let flagged): lastFlagged = flagged
+                }
+                var waited: TimeInterval = 0
+                while true {
+                    if check != nil, verdict != .pending { return .settled(verdict) }
+                    guard lastFlagged || check != nil else { return .listOnly }
+                    guard waited < LibraryReask.maxTotalWait else { return check != nil ? .boundSpent : .listOnly }
+                    sleep(LibraryReask.interval)
+                    waited += LibraryReask.interval
+                    guard current() else { return nil }
+                    verdict = check?() ?? .pending
+                    var reads = verdict != .pending
+                    if !reads && lastFlagged {
+                        guard let page = try? fetch(nil, limit) else { return .readFailed }
+                        reads = !LibraryReask.flagged(page)
+                    }
+                    guard reads else { continue }
+                    guard current() else { return nil }
+                    switch reread() {
+                    case .dropped: return nil
+                    case .failed: return .readFailed
+                    case .posted(let flagged): lastFlagged = flagged
+                    }
+                }
+            }()
+            guard let self else { return }
             self.lock.lock()
-            if self.epoch == myEpoch { self.reasking = false }
+            let still = self.epoch == myEpoch
+            if still { self.reasking = false }
             self.lock.unlock()
+            if still, let ended { end(ended) }
         }
         return true
     }

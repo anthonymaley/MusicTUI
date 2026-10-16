@@ -62,9 +62,13 @@ final class PlaylistsScene: Scene {
     var footerHint: String {
         if filtering { return "type to filter  Enter Apply  Esc Clear" }
         if focus == .tracks { return "\u{2191}\u{2193} Track  Enter Play  \u{2190} Back" }
-        // `r` re-reads a healthy SpanDAC rail; the Music.app rail has no such key,
-        // and a failed one says "press r to retry" on the rail itself.
-        let refresh = railSource == .bridge && bridgeFailure == nil ? "  r Refresh" : ""
+        // `r` re-reads a healthy SpanDAC rail. It is a "Refresh" when SpanDAC
+        // advertises `library.refresh` (read once per rail, after it loads, and
+        // again on every `r`), and otherwise a "Reload": the list is read again
+        // but SpanDAC is not asked to rebuild it. The Music.app rail has no such
+        // key, and a failed one says "press r to retry" on the rail itself.
+        let refresh = railSource == .bridge && bridgeFailure == nil
+            ? (libraryRefreshAdvertisedForFooter ? "  r Refresh" : "  r Reload") : ""
         return "\u{2191}\u{2193} Move  Enter Open  p Play  s Shuffle  / Filter" + refresh
     }
 
@@ -255,6 +259,35 @@ final class PlaylistsScene: Scene {
     private var bridgeTotal: Int? = nil
     private var bridgeFailure: String? = nil
     private var bridgeWarming = false
+
+    // Whether SpanDAC lists `library.refresh`, as last read. Read off the main
+    // thread (after the rail loads, and by every `r`), so it is lock-guarded and
+    // carries the rail epoch it was read under; a reset forgets it.
+    private let libraryRefreshLock = NSLock()
+    private var libraryRefreshAdvertised: (epoch: Int, value: Bool)? = nil
+    private var libraryRefreshProbeEpoch: Int? = nil
+    private var libraryRefreshAdvertisedForFooter: Bool {
+        libraryRefreshLock.lock(); defer { libraryRefreshLock.unlock() }
+        guard let known = libraryRefreshAdvertised, known.epoch == railEpoch else { return false }
+        return known.value
+    }
+    private func noteLibraryRefreshAdvertised(_ value: Bool, epoch: Int) {
+        libraryRefreshLock.lock()
+        libraryRefreshAdvertised = (epoch, value)
+        libraryRefreshLock.unlock()
+    }
+    /// Reads the capability once per rail epoch, once the rail has loaded, so the
+    /// footer can say what `r` will do before it is pressed.
+    private func probeLibraryRefreshCapabilityIfNeeded() {
+        guard railSource == .bridge, bridgeDone, libraryRefreshProbeEpoch != railEpoch else { return }
+        libraryRefreshProbeEpoch = railEpoch
+        let epoch = railEpoch
+        let provider = makeProvider
+        Thread.detachNewThread { [weak self] in
+            guard let value = provider()?.supportsLibraryRefresh() else { return }
+            self?.noteLibraryRefreshAdvertised(value, epoch: epoch)
+        }
+    }
 
     // C3: track counts and skipped-video counts, keyed by Bridge playlist id
     // — shared by the preview, the drill-in and a play, whichever populates
@@ -655,6 +688,10 @@ final class PlaylistsScene: Scene {
         bridgeTotal = nil
         bridgeFailure = nil
         bridgeWarming = false
+        libraryRefreshLock.lock()
+        libraryRefreshAdvertised = nil
+        libraryRefreshLock.unlock()
+        libraryRefreshProbeEpoch = nil
         playlistsFeed.reset()
         trackCounts = [:]
         skippedVideoCounts = [:]
@@ -714,6 +751,64 @@ final class PlaylistsScene: Scene {
         loaded = []
         seedMetaFromCache()
         startBackgroundRefresh()
+    }
+
+    // MARK: - Refreshing a healthy SpanDAC rail
+
+    /// What `r` says, in the order a refresh can speak. Short, because the status
+    /// line is one row.
+    enum RefreshText {
+        /// SpanDAC was not asked to rebuild (no capability, or the ask failed):
+        /// the list is only read again, which still helps after a SpanDAC restart.
+        static let notAsked = "Reading your playlists from SpanDAC again\u{2026}"
+        static let deferred = "SpanDAC can't refresh right now; showing the list it has. Try again in a minute."
+        static let refreshing = "Refreshing your playlists\u{2026}"
+        static let installed = "Playlists refreshed."
+        static let failed = "SpanDAC couldn't refresh your playlists; showing the list it has."
+        static let restarted = "SpanDAC restarted; showing its fresh list."
+        static let stillRefreshing = "SpanDAC is still refreshing; press r again shortly."
+        static let readFailed = "Couldn't read your playlists."
+    }
+
+    /// `r` on a healthy SpanDAC rail. On the feed's worker: if SpanDAC lists
+    /// `library.refresh`, ask it to rebuild (`slice.libraryRefresh`) and read what
+    /// it did with the ask. Only a `started`/`joined` reply, with its ticket, is
+    /// called a refresh, and only then is `slice.status`'s completion fact awaited
+    /// (`LibraryRefreshWatch`, run by `BridgeListFeed.refresh` inside
+    /// `LibraryReask`'s bound; a `joined` ask is followed up once there). Not advertised,
+    /// or any failure of the status read or the op, is said plainly as a reload,
+    /// then the list is read again all the same. `deferred` is said once, with no
+    /// wait. The rows and selection stay on screen throughout.
+    private func refreshBridgePlaylists() {
+        let provider = makeProvider
+        let status = self.status
+        let epoch = railEpoch
+        playlistsFeed.refresh(
+            begin: { [weak self] () -> (() -> BridgeListFeed<MusicRow>.RefreshProgress)? in
+                guard let p = provider() else { return nil }
+                let advertised = p.supportsLibraryRefresh()
+                self?.noteLibraryRefreshAdvertised(advertised, epoch: epoch)
+                guard advertised else { status.post(RefreshText.notAsked); return nil }
+                let outcome: SpanDACLibraryRefreshOutcome
+                do { outcome = try p.libraryRefresh() } catch { status.post(RefreshText.notAsked); return nil }
+                guard let watch = LibraryRefreshWatch(provider: p, outcome: outcome) else {
+                    status.post(RefreshText.deferred)
+                    return nil
+                }
+                status.post(RefreshText.refreshing)
+                return { watch.progress() }
+            },
+            end: { ended in
+                switch ended {
+                case .listOnly: break   // `begin` already said what was asked
+                case .settled(.installed): status.post(RefreshText.installed)
+                case .settled(.failed): status.post(RefreshText.failed, error: true)
+                case .settled(.restarted): status.post(RefreshText.restarted)
+                case .settled(.deferred): status.post(RefreshText.deferred)
+                case .settled(.stillJoined), .settled(.pending), .boundSpent: status.post(RefreshText.stillRefreshing)
+                case .readFailed: status.post(RefreshText.readFailed, error: true)
+                }
+            })
     }
 
     // MARK: Scene
@@ -869,6 +964,7 @@ final class PlaylistsScene: Scene {
         if bridgeFailure != bridgeDrain.failure { bridgeFailure = bridgeDrain.failure; changed = true }
         if bridgeWarming != bridgeDrain.warming { bridgeWarming = bridgeDrain.warming; changed = true }
         if bridgeDrain.done && !bridgeDone { bridgeDone = true; changed = true }
+        probeLibraryRefreshCapabilityIfNeeded()
 
         // C3 item 2: the drill-in's own tracks feed, same replace-then-append
         // discipline (rule 9) as the list above.
@@ -1250,21 +1346,9 @@ final class PlaylistsScene: Scene {
             playlistsFeed.start()
             status.post("Asking SpanDAC for your playlists again\u{2026}")
             return .none
-        // A healthy SpanDAC rail: `r` refreshes it. SpanDAC is first told to
-        // rebuild its snapshot when it lists `library.refresh` (a refusal, or a
-        // SpanDAC that predates it, is not shown), then the rail is read again
-        // with the rows and the selection kept on screen; the fresh list swaps in
-        // by playlist id (`BridgeListFeed.refresh`). While a walk, a re-ask or an
-        // earlier refresh is in flight the feed starts nothing, so a repeated `r`
-        // says nothing and costs nothing. The Music.app rail has no such key.
+        // A healthy SpanDAC rail: `r` refreshes it. See `refreshBridgePlaylists`.
         case .char("r") where railSource == .bridge && focus == .playlists && bridgeFailure == nil:
-            let provider = makeProvider
-            if playlistsFeed.refresh(beforeWalk: {
-                guard let provider = provider(), provider.supportsLibraryRefresh() else { return }
-                try? provider.libraryRefresh()
-            }) {
-                status.post("Refreshing your playlists\u{2026}")
-            }
+            refreshBridgePlaylists()
             return .none
         // C3 item 2: the tracks-level retry — starts a new walk, exactly as
         // a drill-in does.

@@ -394,6 +394,9 @@ final class LibraryReadTimeoutTests: XCTestCase {
     private let status = """
     {"ok":true,"op":"slice.status","status":{"playback":"paused","contract":3,"authorization":"authorized"}}
     """
+    private let refreshReply = """
+    {"ok":true,"op":"slice.libraryRefresh","outcome":"started","ticket":7,"instance":"inst-1"}
+    """
 
     /// The values themselves. A regression here is a person watching an empty
     /// library, or a transport key that hangs for half a minute.
@@ -415,21 +418,30 @@ final class LibraryReadTimeoutTests: XCTestCase {
                                            tally.ordinary.append(line); return status
                                        },
                                        libraryTransport: { [self] _, line in
-                                           tally.library.append(line); return page
+                                           tally.library.append(line)
+                                           return line.contains("slice.libraryRefresh") ? refreshReply : page
                                        })
 
         _ = try control.librarySongs(cursor: nil, limit: 100)
         _ = try control.status()
         try control.queue(libraryIDs: ["i.a"])
         try control.pause()
+        _ = try control.libraryRefresh()
+        _ = try control.libraryRefreshCompletion()
 
-        // The library read and the queue (which may wait on the player
-        // preparing its first song) use the long timeout; status and pause do not.
-        XCTAssertEqual(tally.library.count, 2, "the library read or the queue did not use the long-timeout transport")
+        // The library read, the queue (which may wait on the player preparing
+        // its first song) and the library refresh use the long timeout; status
+        // (the completion fact is a status read) and pause do not.
+        XCTAssertEqual(tally.library.count, 3, "the library read, the queue or the refresh did not use the long-timeout transport")
         XCTAssertTrue(tally.library[0].contains("slice.librarySongs"))
         XCTAssertTrue(tally.library[1].contains("slice.queue"))
-        XCTAssertEqual(tally.ordinary.count, 2, "an ordinary op was sent down the long-timeout transport")
-        XCTAssertTrue(tally.ordinary.allSatisfy { !$0.contains("slice.librarySongs") && !$0.contains("slice.queue") })
+        XCTAssertTrue(tally.library[2].contains("slice.libraryRefresh"))
+        XCTAssertEqual(tally.ordinary.count, 3, "an ordinary op was sent down the long-timeout transport")
+        XCTAssertTrue(tally.ordinary.allSatisfy {
+            !$0.contains("slice.librarySongs") && !$0.contains("slice.queue") && !$0.contains("slice.libraryRefresh")
+        })
+        XCTAssertEqual(tally.ordinary.filter { $0.contains("slice.status") }.count, 2,
+                       "the completion fact is read from slice.status on the ordinary transport")
     }
 
     /// The one-transport test seam still serves every op, so no existing test

@@ -857,7 +857,10 @@ protocol SourceControlling {
     func queueJump(token: String, row: Int) throws -> SpanDACQueueJumpResult
     /// `slice.libraryRefresh`: ask SpanDAC to rebuild its library snapshot now.
     /// Sent only when `capabilities()` lists `library.refresh`.
-    func libraryRefresh() throws
+    func libraryRefresh() throws -> SpanDACLibraryRefreshOutcome
+    /// `slice.status`'s `library_refresh` fact: how the latest rebuild ended, nil
+    /// when none has.
+    func libraryRefreshCompletion() throws -> SpanDACLibraryRefreshCompletion?
     // NOTE: `SourceAppControl`'s own declaration below defaults `startRequired`
     // to `false`; a protocol requirement's default only applies to callers
     // holding a `SourceControlling`-typed value, so `BridgeMusicProviderTests`'
@@ -950,9 +953,10 @@ extension SourceControlling {
     func queueJump(token: String, row: Int) throws -> SpanDACQueueJumpResult {
         throw SourceAppError.unsupported(sourceQueueJumpOp)
     }
-    func libraryRefresh() throws {
+    func libraryRefresh() throws -> SpanDACLibraryRefreshOutcome {
         throw SourceAppError.unsupported(sourceLibraryRefreshOp)
     }
+    func libraryRefreshCompletion() throws -> SpanDACLibraryRefreshCompletion? { nil }
     func recommendations(limit: Int) throws -> [DiscoverRail] {
         throw SourceAppError.unsupported("slice.recommendations")
     }
