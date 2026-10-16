@@ -4,7 +4,7 @@ import Foundation
 /// Reads a `slice.libraryRefresh` ask's outcome off `slice.status`, for
 /// `BridgeListFeed.refresh`'s completion check.
 ///
-/// **Trust.** A restart is seen two ways: `library_instance` (on every status
+/// **Trust.** A restart is seen two ways: `library_instance` (inside the status object, on every status
 /// reply on the Mac socket, so it shows while `library_refresh` is still null)
 /// differing from the instance the op's reply named, or, where that is absent,
 /// the `library_refresh` fact's own `instance` differing. Either is `restarted`:

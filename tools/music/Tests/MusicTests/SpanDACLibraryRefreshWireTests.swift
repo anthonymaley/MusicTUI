@@ -24,8 +24,8 @@ final class SpanDACLibraryRefreshWireTests: XCTestCase {
     }
     private func statusReply(_ fact: String?, libraryInstance: String? = nil) -> String {
         let f = fact.map { #","library_refresh":\#($0)"# } ?? ""
-        let top = libraryInstance.map { #""library_instance":\#($0),"# } ?? ""
-        return #"{"ok":true,"op":"slice.status",\#(top)"status":{"playback":"stopped","capabilities":["library.refresh"]\#(f)}}"#
+        let inst = libraryInstance.map { #","library_instance":\#($0)"# } ?? ""
+        return #"{"ok":true,"op":"slice.status","status":{"playback":"stopped","capabilities":["library.refresh"]\#(inst)\#(f)}}"#
     }
 
     func testTheNamesAreTheFixedContractNames() {
@@ -110,7 +110,7 @@ final class SpanDACLibraryRefreshWireTests: XCTestCase {
         }
     }
 
-    func testLibraryInstanceIsReadFromTheTopLevelOfEveryStatusReply() throws {
+    func testLibraryInstanceIsReadFromTheStatusObject() throws {
         func instance(_ reply: String) throws -> String? {
             try control(Wire(), ordinary: { reply }).libraryRefreshStatus().libraryInstance
         }
@@ -118,12 +118,21 @@ final class SpanDACLibraryRefreshWireTests: XCTestCase {
         XCTAssertEqual(try instance(statusReply("null", libraryInstance: #""inst-2""#)), "inst-2", "present while the fact is null")
         XCTAssertNil(try instance(statusReply(nil)), "absent: the fact's own instance is the fallback")
         XCTAssertNil(try instance(statusReply(nil, libraryInstance: "null")))
-        // A SpanDAC that puts it inside the status object is read too.
-        XCTAssertEqual(try instance(#"{"ok":true,"op":"slice.status","status":{"playback":"stopped","library_instance":"in-status"}}"#),
-                       "in-status")
         for bad in ["7", #""  ""#, "true"] {
             XCTAssertThrowsError(try instance(statusReply(nil, libraryInstance: bad)), bad)
         }
+    }
+
+    /// The decoder also accepts the root of the reply, as a fallback; the status
+    /// object wins when both are present.
+    func testLibraryInstanceAtTheRootOfTheReplyIsTheFallback() throws {
+        func instance(_ reply: String) throws -> String? {
+            try control(Wire(), ordinary: { reply }).libraryRefreshStatus().libraryInstance
+        }
+        XCTAssertEqual(try instance(#"{"ok":true,"op":"slice.status","library_instance":"at-root","status":{"playback":"stopped"}}"#),
+                       "at-root")
+        XCTAssertEqual(try instance(#"{"ok":true,"op":"slice.status","library_instance":"at-root","status":{"playback":"stopped","library_instance":"nested"}}"#),
+                       "nested")
     }
 
     /// A provider whose status cannot be read says "not advertised": the capability

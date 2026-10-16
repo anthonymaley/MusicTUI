@@ -764,6 +764,7 @@ final class PlaylistsScene: Scene {
         static let notAsked = "Reading your playlists from SpanDAC again\u{2026}"
         static let deferred = "SpanDAC can't refresh right now; showing the list it has. Try again in a minute."
         static let refreshing = "Refreshing your playlists\u{2026}"
+        static let alreadyRefreshing = "Already refreshing your playlists\u{2026}"
         static let installed = "Playlists refreshed."
         static let failed = "SpanDAC couldn't refresh your playlists; showing the list it has."
         static let restarted = "SpanDAC restarted; showing its fresh list."
@@ -779,12 +780,14 @@ final class PlaylistsScene: Scene {
     /// `LibraryReask`'s bound; a `joined` ask is followed up once there). Not advertised,
     /// or any failure of the status read or the op, is said plainly as a reload,
     /// then the list is read again all the same. `deferred` is said once, with no
-    /// wait. The rows and selection stay on screen throughout.
+    /// wait. The rows and selection stay on screen throughout. A plain stale
+    /// re-ask already running is taken over (the feed ends it), and a refresh
+    /// already running is told so (`alreadyRefreshing`).
     private func refreshBridgePlaylists() {
         let provider = makeProvider
         let status = self.status
         let epoch = railEpoch
-        playlistsFeed.refresh(
+        let claim = playlistsFeed.refresh(
             begin: { [weak self] () -> (() -> BridgeListFeed<MusicRow>.RefreshProgress)? in
                 guard let p = provider() else { return nil }
                 let advertised = p.supportsLibraryRefresh()
@@ -810,6 +813,8 @@ final class PlaylistsScene: Scene {
                 case .readFailed: status.post(RefreshText.readFailed, error: true)
                 }
             })
+        // A refresh already running is not started twice; say so rather than nothing.
+        if claim == .alreadyRefreshing { status.post(RefreshText.alreadyRefreshing) }
     }
 
     // MARK: Scene

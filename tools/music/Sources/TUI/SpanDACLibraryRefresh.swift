@@ -23,10 +23,12 @@ import Foundation
 //
 //   "library_refresh":{"instance":"<id>","ticket":7,"result":"installed"|"failed"|"cancelled"}  or  null
 //
-// set atomically with the install, failure or cancellation. Every `slice.status`
-// reply on the Mac's Unix socket also carries a top-level `library_instance`:
-// the SpanDAC process answering, whether or not any rebuild has ended, so a
-// restart is visible while `library_refresh` is still null. It is trusted only
+// set atomically with the install, failure or cancellation. The same status
+// object also carries `library_instance` (the SpanDAC process answering) on every
+// reply on the Mac's Unix socket, whether or not any rebuild has ended, so a
+// restart is visible while `library_refresh` is still null:
+//
+//   {"ok":true,"op":"slice.status","status":{...,"library_instance":"<uuid>","library_refresh":...}} It is trusted only
 // when its `instance` is the one the op's reply named and its `ticket` is at
 // least the ask's. A list's `generation` advances on
 // EVERY successful install, content changed or not, so it is never read as proof
@@ -105,13 +107,13 @@ extension SourceAppControl {
     }
 
     /// `slice.status`'s rebuild facts, on the ordinary transport. `library_instance`
-    /// is read from the top level of the reply (and from the status object, should
-    /// a SpanDAC put it there). Either is nil when null or absent; present but
+    /// is read from the status object, where SpanDAC puts it (and, as a fallback,
+    /// from the root of the reply). Either is nil when null or absent; present but
     /// unreadable is malformed.
     func libraryRefreshStatus() throws -> SpanDACLibraryRefreshStatus {
         let reply = try send(["op": "slice.status"])
         let status = reply["status"] as? [String: Any]
-        let raw = reply["library_instance"] ?? status?["library_instance"]
+        let raw = status?["library_instance"] ?? reply["library_instance"]
         var instance: String? = nil
         if let raw, !(raw is NSNull) {
             guard let id = Self.instanceID(raw) else {

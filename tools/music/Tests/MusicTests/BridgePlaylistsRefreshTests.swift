@@ -35,9 +35,9 @@ final class BridgePlaylistsRefreshTests: XCTestCase {
     /// A `slice.status` reply. `fact` is the raw `library_refresh` value.
     private func status(advertising: Bool = true, fact: String = "null", libraryInstance: String? = nil) -> String {
         let caps = advertising ? "[\"slice.status\",\"library.refresh\"]" : "[\"slice.status\"]"
-        let top = libraryInstance.map { "\"library_instance\":\"\($0)\"," } ?? ""
+        let inst = libraryInstance.map { "\"library_instance\":\"\($0)\"," } ?? ""
         return """
-        {"ok":true,"op":"slice.status",\(top)"status":{"playback":"stopped","capabilities":\(caps),"library_refresh":\(fact)}}
+        {"ok":true,"op":"slice.status","status":{"playback":"stopped","capabilities":\(caps),\(inst)"library_refresh":\(fact)}}
         """
     }
     private func fact(_ ticket: Int, _ result: String, instance: String = "inst-1") -> String {
@@ -54,18 +54,38 @@ final class BridgePlaylistsRefreshTests: XCTestCase {
     {"ok":false,"op":"slice.libraryRefresh","error":{"kind":"unknown_op","detail":"no such op"}}
     """
 
-    private func scene(_ wire: BridgeLibraryReadsWire, status store: StatusStore = StatusStore()) -> PlaylistsScene {
+    /// A `sleep` that holds its FIRST call until the test lets it go, and says when
+    /// it is held; every later call returns at once. The plain re-ask's wait.
+    private final class FirstSleepGate {
+        let entered = DispatchSemaphore(value: 0)
+        private let release = DispatchSemaphore(value: 0)
+        private let lock = NSLock()
+        private var calls = 0
+        private var held = false
+        var isHeld: Bool { lock.lock(); defer { lock.unlock() }; return held }
+        func sleep(_ seconds: TimeInterval) {
+            lock.lock(); calls += 1; let first = calls == 1; if first { held = true }; lock.unlock()
+            guard first else { return }
+            entered.signal()
+            _ = release.wait(timeout: .now() + 10)
+        }
+        func open() { release.signal() }
+    }
+
+    private func scene(_ wire: BridgeLibraryReadsWire, status store: StatusStore = StatusStore(),
+                       sleep: @escaping (TimeInterval) -> Void = { _ in }) -> PlaylistsScene {
         wire.stickyStatus = true
         return playlistsTestScene(flag: BridgeSelectedFlag(true), wire: wire, spy: PlaylistAppleScriptSpy(),
-                                  status: store, width: 120)
+                                  status: store, warmUpSleep: sleep, width: 120)
     }
 
     /// The scene on its first rail, with the capability probe read and its answer
     /// in hand (the footer shows it), so `r` finds the status reads where the
     /// test scripted them.
     private func settledScene(_ wire: BridgeLibraryReadsWire, status store: StatusStore = StatusStore(),
-                              rail names: [String] = ["Alpha", "Bravo"]) -> PlaylistsScene {
-        let s = scene(wire, status: store)
+                              rail names: [String] = ["Alpha", "Bravo"],
+                              sleep: @escaping (TimeInterval) -> Void = { _ in }) -> PlaylistsScene {
+        let s = scene(wire, status: store, sleep: sleep)
         XCTAssertTrue(settleScene(s) { s.railNamesForTest == names }, "the first rail never landed")
         XCTAssertTrue(settleScene(s) { wire.reached(op: "slice.status", at: 0) }, "the capability probe never ran")
         XCTAssertTrue(settleScene(s) { s.footerHint.contains("  r R") }, "the footer never learned the capability")
@@ -175,7 +195,7 @@ final class BridgePlaylistsRefreshTests: XCTestCase {
         XCTAssertEqual(wire.sent("slice.libraryRefresh").count, 1)
     }
 
-    /// `library_instance` is on every status reply, so a restart shows while
+    /// `library_instance` is in every status object, so a restart shows while
     /// `library_refresh` is still null: at once, not after the bound.
     func testADifferentLibraryInstanceWhileTheFactIsNullMeansRestartedAtOnce() {
         let wire = BridgeLibraryReadsWire([
@@ -434,12 +454,47 @@ final class BridgePlaylistsRefreshTests: XCTestCase {
         _ = s.handle(.char("r"))
         XCTAssertTrue(settleScene(s) { wire.reached(op: "slice.libraryPlaylists", at: 1) })
         _ = s.handle(.char("r"))
+        XCTAssertEqual(text(store), "Already refreshing your playlists\u{2026}", "a repeated r said nothing")
         _ = s.handle(.char("r"))
         wire.release(op: "slice.libraryPlaylists", at: 1)
         waitForText(store, "Playlists refreshed.", s)
         XCTAssertTrue(settleScene(s) { wire.threadEnded(op: "slice.libraryPlaylists", at: 2) }, "the refresh worker never ended")
         XCTAssertEqual(wire.sent("slice.libraryRefresh").count, 1)
         XCTAssertEqual(wire.sent("slice.libraryPlaylists").count, 3)
+    }
+
+    // MARK: - r during a plain stale re-ask takes over
+
+    /// Opening Playlists on a stale snapshot starts the plain re-ask. `r` then must
+    /// not be dropped by its single-flight: it sends the op, and the drain it joins
+    /// predates the keypress, so the follow-up is exactly right. The old re-ask
+    /// posts nothing once it is taken over.
+    func testRDuringAPlainReAskTakesOverAndLandsThroughTheRefreshPath() {
+        let wire = BridgeLibraryReadsWire([
+            "slice.libraryPlaylists": [rail([alpha, bravo], flagged: true),   // the walk: stale, so a plain re-ask waits
+                                       rail([alpha, bravo]),                  // the refresh's first read
+                                       rail([friday, alpha, bravo])],         // the read after U's install
+            // probe, capability, check before the first read, T ends (the follow-up goes out), U installs
+            "slice.status": [status(), status(), status(), installed(7), installed(9)],
+            "slice.libraryRefresh": [reply("joined", ticket: 7), reply("started", ticket: 9)]])
+        let gate = FirstSleepGate()
+        let store = StatusStore()
+        let s = settledScene(wire, status: store, sleep: gate.sleep)
+        XCTAssertTrue(gate.isHeld, "the plain re-ask was not waiting")
+        XCTAssertTrue(wire.sent("slice.libraryRefresh").isEmpty)
+        _ = s.handle(.down)
+
+        _ = s.handle(.char("r"))
+        waitForText(store, "Playlists refreshed.", s)
+        XCTAssertTrue(settleScene(s) { s.railNamesForTest == ["Friday", "Alpha", "Bravo"] })
+        XCTAssertEqual(s.railCursorForTest, 2, "the selection was not kept by id")
+        gate.open()   // the old re-ask wakes up, and finds it has been taken over
+        XCTAssertTrue(s.playlistsFeedForTest.waitForWorkersForTest(timeout: 5), "a worker never ended")
+        XCTAssertEqual(wire.sent("slice.libraryRefresh").count, 2, "the ask, then its one follow-up")
+        XCTAssertEqual(wire.sent("slice.libraryPlaylists").count, 3, "the old re-ask read after it was taken over")
+        XCTAssertEqual(text(store), "Playlists refreshed.", "the old re-ask spoke after the takeover")
+        _ = s.tick(snapshot: idle)
+        XCTAssertEqual(s.railNamesForTest, ["Friday", "Alpha", "Bravo"], "the old re-ask posted rows after the takeover")
     }
 
     // MARK: - a failure retry is unchanged

@@ -75,6 +75,10 @@ final class BridgeListFeed<Row> {
     /// list, never a second beside it — and is cleared by the re-ask's own end
     /// (epoch-checked, like `walking`) or by `reset()`.
     private var reasking = false
+    /// What `reasking` is: a person-asked `refresh` rather than the plain
+    /// stale-snapshot re-ask. A refresh is single-flight; a plain re-ask is taken
+    /// over by one (see `refresh`). Meaningful only while `reasking`.
+    private var refreshing = false
     /// Bumped by `reset()`. Every post the walk thread makes is checked
     /// against the epoch it started under; a mismatch means `reset()` ran
     /// since, and the post — including the walk's own ending — is dropped.
@@ -313,6 +317,18 @@ final class BridgeListFeed<Row> {
         case deferred
     }
 
+    /// What `refresh` did with the ask.
+    enum RefreshClaim: Equatable {
+        /// A refresh began.
+        case started
+        /// A refresh began, and ended the plain re-ask that was running.
+        case tookOver
+        /// A refresh is already in flight; nothing was started.
+        case alreadyRefreshing
+        /// The list's own walk is still running; nothing was started.
+        case busy
+    }
+
     /// How a `refresh` ended, for the caller to tell the person. Never delivered
     /// for a refresh a `reset()` outlived.
     enum RefreshEnd: Equatable {
@@ -328,9 +344,16 @@ final class BridgeListFeed<Row> {
         case readFailed
     }
 
-    /// A person-asked re-read of a list that is already showing. Starts nothing
-    /// (returns false) while a walk, a re-ask or an earlier refresh is in flight,
-    /// so a repeated ask never stacks a second one.
+    /// A person-asked re-read of a list that is already showing.
+    ///
+    /// **Claiming.** Nothing starts (`busy`) while the list's own walk is running.
+    /// A refresh already in flight is single-flight (`alreadyRefreshing`): a
+    /// repeated ask never stacks a second one. A PLAIN stale-snapshot re-ask in
+    /// flight is taken over (`tookOver`): that re-ask is waiting on a drain that
+    /// began before this ask, so it must not be the one the person waits behind.
+    /// The takeover bumps the epoch, so every later post and the ending of the old
+    /// worker are dropped (it stops at its next epoch check, posting nothing), and
+    /// the rows already drained stay on screen. Exactly one worker posts rows.
     ///
     /// `begin` runs first on the worker (the place to tell SpanDAC to rebuild).
     /// It returns the check for the rebuild's completion, or nil when there is
@@ -351,10 +374,17 @@ final class BridgeListFeed<Row> {
     /// it does during a re-ask, and `reset()` revokes it like any other worker.
     @discardableResult
     func refresh(begin: @escaping () -> (() -> RefreshProgress)? = { nil },
-                 end: @escaping (RefreshEnd) -> Void = { _ in }) -> Bool {
+                 end: @escaping (RefreshEnd) -> Void = { _ in }) -> RefreshClaim {
         lock.lock()
-        guard !walking, !reasking else { lock.unlock(); return false }
+        guard !walking else { lock.unlock(); return .busy }
+        var claim = RefreshClaim.started
+        if reasking {
+            guard !refreshing else { lock.unlock(); return .alreadyRefreshing }
+            epoch += 1   // the old re-ask's every post and its ending are now dropped
+            claim = .tookOver
+        }
         reasking = true
+        refreshing = true
         let myEpoch = epoch
         lock.unlock()
 
@@ -412,11 +442,11 @@ final class BridgeListFeed<Row> {
             guard let self else { return }
             self.lock.lock()
             let still = self.epoch == myEpoch
-            if still { self.reasking = false }
+            if still { self.reasking = false; self.refreshing = false }
             self.lock.unlock()
             if still, let ended { end(ended) }
         }
-        return true
+        return claim
     }
 
     /// Test-only: runs on the caller's thread after `refresh` has claimed the feed
@@ -437,6 +467,7 @@ final class BridgeListFeed<Row> {
         epoch += 1
         walking = false
         reasking = false
+        refreshing = false
         pendingReplace = nil
         pendingAppend = []
         pendingTotal = nil

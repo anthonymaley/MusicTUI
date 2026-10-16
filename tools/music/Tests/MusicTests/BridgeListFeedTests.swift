@@ -376,8 +376,8 @@ final class BridgeListFeedTests: XCTestCase {
         f.start()
         XCTAssertTrue(settleUntil { f.drain().done })
         var order: [String] = []
-        XCTAssertTrue(f.refresh(begin: { order.append("begin\(script.callCount)"); return nil },
-                                end: { order.append("end:\($0)") }))
+        XCTAssertEqual(f.refresh(begin: { order.append("begin\(script.callCount)"); return nil },
+                                 end: { order.append("end:\($0)") }), .started)
         XCTAssertTrue(f.waitForWorkersForTest(timeout: 5), "the refresh worker never ended")
         XCTAssertEqual(order, ["begin1", "end:listOnly"], "begin must run before the re-walk's first read")
         let d = f.drain()
@@ -393,14 +393,14 @@ final class BridgeListFeedTests: XCTestCase {
         let f = reaskFeed(script.fetch, SleepRecorder())
         f.start()
         XCTAssertTrue(settleUntil { script.reachedGateAt0() })
-        XCTAssertFalse(f.refresh(), "a refresh started beside a walk")
+        XCTAssertEqual(f.refresh(), .busy, "a refresh started beside a walk")
         script.release(at: 0)
         XCTAssertTrue(f.waitForWorkersForTest(timeout: 5))
         _ = f.drain()
         script.gate(at: 1)
-        XCTAssertTrue(f.refresh())
+        XCTAssertEqual(f.refresh(), .started)
         XCTAssertTrue(settleUntil { script.reachedGateAt1() })
-        XCTAssertFalse(f.refresh(), "a second refresh started beside the first")
+        XCTAssertEqual(f.refresh(), .alreadyRefreshing, "a second refresh started beside the first")
         script.release(at: 1)
         XCTAssertTrue(f.waitForWorkersForTest(timeout: 5))
         XCTAssertEqual(script.callCount, 2)
@@ -419,8 +419,8 @@ final class BridgeListFeedTests: XCTestCase {
         var verdicts: [BridgeListFeed<Row>.RefreshProgress] = [.pending, .pending, .installed]
         var ends: [BridgeListFeed<Row>.RefreshEnd] = []
         var readsAtCheck: [Int] = []
-        XCTAssertTrue(f.refresh(begin: { { readsAtCheck.append(script.callCount); return verdicts.removeFirst() } },
-                                end: { ends.append($0) }))
+        XCTAssertEqual(f.refresh(begin: { { readsAtCheck.append(script.callCount); return verdicts.removeFirst() } },
+                                 end: { ends.append($0) }), .started)
         XCTAssertTrue(f.waitForWorkersForTest(timeout: 5))
         XCTAssertEqual(ends, [.settled(.installed)])
         XCTAssertEqual(readsAtCheck, [1, 2, 2], "each check must come before the read it vouches for")
@@ -436,7 +436,7 @@ final class BridgeListFeedTests: XCTestCase {
         f.start()
         XCTAssertTrue(settleUntil { f.drain().done })
         var ends: [BridgeListFeed<Row>.RefreshEnd] = []
-        XCTAssertTrue(f.refresh(begin: { { .pending } }, end: { ends.append($0) }))
+        XCTAssertEqual(f.refresh(begin: { { .pending } }, end: { ends.append($0) }), .started)
         XCTAssertTrue(f.waitForWorkersForTest(timeout: 5))
         XCTAssertEqual(ends, [.boundSpent])
         XCTAssertEqual(sleeper.calls.reduce(0, +), LibraryReask.maxTotalWait)
@@ -449,7 +449,7 @@ final class BridgeListFeedTests: XCTestCase {
         f.start()
         XCTAssertTrue(settleUntil { f.drain().done })
         var ends: [BridgeListFeed<Row>.RefreshEnd] = []
-        XCTAssertTrue(f.refresh(end: { ends.append($0) }))
+        XCTAssertEqual(f.refresh(end: { ends.append($0) }), .started)
         XCTAssertTrue(f.waitForWorkersForTest(timeout: 5))
         XCTAssertEqual(ends, [.readFailed])
         XCTAssertNil(f.drain().replace)
@@ -457,6 +457,32 @@ final class BridgeListFeedTests: XCTestCase {
 
     /// A `reset()` between the claim and the worker starting revokes the refresh
     /// before it does anything: no `begin`, no read, no `end`.
+    /// A plain stale re-ask is waiting on a drain that predates the ask: a refresh
+    /// takes over, and the old worker posts nothing after it.
+    func testARefreshTakesOverAPlainReAskAndTheOldWorkerPostsNothing() {
+        let script = ScriptedFetch([flagged(["old"]),                    // the walk: stale, so a re-ask begins
+                                    page(["new"], generation: 1, next: nil)])   // the refresh's read
+        let sleeper = SleepRecorder(gateFirst: true)
+        let f = reaskFeed(script.fetch, sleeper)
+        f.start()
+        XCTAssertTrue(settleUntil { !sleeper.calls.isEmpty }, "the plain re-ask never began waiting")
+        var ends: [BridgeListFeed<Row>.RefreshEnd] = []
+        XCTAssertEqual(f.refresh(end: { ends.append($0) }), .tookOver)
+        var replaces: [[Row]] = []
+        XCTAssertTrue(settleUntil {
+            let d = f.drain()
+            if let r = d.replace { replaces.append(r) }
+            return replaces.last == [Row(id: "new")] && !ends.isEmpty
+        }, "the refresh never landed: \(replaces)")
+        sleeper.firstGate.signal()   // the old re-ask wakes up
+        XCTAssertTrue(f.waitForWorkersForTest(timeout: 5), "a worker never ended")
+        XCTAssertEqual(script.callCount, 2, "the old re-ask read after it was taken over")
+        XCTAssertNil(f.drain().replace, "the old re-ask posted rows after the takeover")
+        XCTAssertEqual(ends, [.listOnly])
+        XCTAssertEqual(f.refresh(), .started, "the takeover left the feed claimed")
+        XCTAssertTrue(f.waitForWorkersForTest(timeout: 5))
+    }
+
     func testAResetBeforeTheRefreshWorkerStartsRunsNothing() {
         let script = ScriptedFetch([page(["a"], generation: 1, next: nil), page(["a", "b"], generation: 1, next: nil)])
         let f = reaskFeed(script.fetch, SleepRecorder())
@@ -465,14 +491,14 @@ final class BridgeListFeedTests: XCTestCase {
         var began = false
         var ends: [BridgeListFeed<Row>.RefreshEnd] = []
         f.afterClaimForTest = { f.reset() }
-        XCTAssertTrue(f.refresh(begin: { began = true; return nil }, end: { ends.append($0) }))
+        XCTAssertEqual(f.refresh(begin: { began = true; return nil }, end: { ends.append($0) }), .started)
         XCTAssertTrue(f.waitForWorkersForTest(timeout: 5))
         XCTAssertFalse(began, "begin ran for a revoked refresh")
         XCTAssertTrue(ends.isEmpty)
         XCTAssertEqual(script.callCount, 1, "a revoked refresh read the list")
         XCTAssertNil(f.drain().replace)
         f.afterClaimForTest = nil
-        XCTAssertTrue(f.refresh(), "the revoked refresh left the feed claimed")
+        XCTAssertEqual(f.refresh(), .started, "the revoked refresh left the feed claimed")
         XCTAssertTrue(f.waitForWorkersForTest(timeout: 5))
     }
 
@@ -484,7 +510,7 @@ final class BridgeListFeedTests: XCTestCase {
         XCTAssertTrue(settleUntil { f.drain().done })
         script.gate(at: 1)
         var ends: [BridgeListFeed<Row>.RefreshEnd] = []
-        XCTAssertTrue(f.refresh(end: { ends.append($0) }))
+        XCTAssertEqual(f.refresh(end: { ends.append($0) }), .started)
         XCTAssertTrue(settleUntil { script.reachedGateAt1() })
         f.reset()
         script.release(at: 1)
