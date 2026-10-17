@@ -148,7 +148,8 @@ final class DiscoverScene: Scene {
     /// rails never wait on them (`DiscoverFeed.sectionRails`'s one deadline).
     private var sectionsInbox: (generation: Int, rails: [DiscoverRail])?   // guarded by inboxLock
     private var genresInbox: (generation: Int, genres: [DiscoverGenre])?   // guarded by inboxLock
-    private var genreChartsInbox: (generation: Int, request: Int, genre: DiscoverGenre, rails: [DiscoverRail])?   // guarded by inboxLock
+    private var genreChartsInbox: (generation: Int, request: Int, genre: DiscoverGenre, shown: DiscoverGenre?,
+                                   rails: [DiscoverRail])?   // guarded by inboxLock
     private var railsReadInbox: RowsRead?        // guarded by inboxLock
     private var tracksReadInbox: RowsRead?       // guarded by inboxLock
     /// Where the rows on screen were read (tick/handle thread only). A play
@@ -419,6 +420,7 @@ final class DiscoverScene: Scene {
     /// charts stay on screen until they land.
     private func choose(_ choice: DiscoverGenre?) {
         guard choice != genre else { return }
+        let previous = genre
         genre = choice
         genreRequest += 1
         guard let choice else {
@@ -428,12 +430,33 @@ final class DiscoverScene: Scene {
         status.post("Loading Top charts for \(choice.name)\u{2026}")
         let generation = fetchGeneration
         let request = genreRequest
+        // The genre whose charts are on screen now, for the row to go back to
+        // if this read finds none.
+        let shown = previous
         DispatchQueue.global().async { [weak self] in
             guard let self else { return }
             let charts = (try? self.chooseFeed(.discoverFeed))?.provider.discoverGenreCharts(choice) ?? []
             self.inboxLock.lock()
-            self.genreChartsInbox = (generation, request, choice, charts)
+            // Only a newer read takes the slot: an older one finishing late
+            // must not evict the current result before tick() drains it.
+            if let held = self.genreChartsInbox,
+               (held.generation, held.request) > (generation, request) {
+                self.inboxLock.unlock(); return
+            }
+            self.genreChartsInbox = (generation, request, choice, shown, charts)
             self.inboxLock.unlock()
+        }
+    }
+
+    /// Put the cursor back on `target` after the root's rows changed, if it
+    /// is still there. Only the root level is rebuilt under the cursor.
+    private func keepCursor(on target: DiscoverSelection) {
+        guard case .root = current.level else { return }
+        let all = rows
+        let count = selectableDiscoverIndices(all).count
+        if let at = (0..<count).first(where: { discoverSelection(rows: all, cursor: $0) == target }) {
+            cursorIndex = at
+            clampScroll()
         }
     }
 
@@ -1035,7 +1058,10 @@ final class DiscoverScene: Scene {
                 guard sections.contains(where: { $0.section?.isChart ?? false }) else { return }
                 let genres = provider.discoverGenres()
                 self.inboxLock.lock()
-                self.genresInbox = (generation, genres)
+                // Newer only, as for the genre charts below.
+                if (self.genresInbox?.generation ?? 0) <= generation {
+                    self.genresInbox = (generation, genres)
+                }
                 self.inboxLock.unlock()
             }
         }
@@ -1084,20 +1110,24 @@ final class DiscoverScene: Scene {
             failed = rails.isEmpty
             changed = true
         }
-        // The genre row appears above the charts once the genres land. The
-        // root's rows grow by two (a heading and the row), both BELOW the
-        // rails and the first sections, so the cursor stays where it was.
+        // The genre row appears above the charts once the genres land. It is
+        // selectable, so a cursor already in the charts would slip a row:
+        // keep it on the row it was on, by what that row is.
         if let incomingGenres, incomingGenres.generation == fetchGeneration,
            loaded, railsRead != nil, !incomingGenres.genres.isEmpty {
+            let wasOn = selection
             genres = incomingGenres.genres
             feedVersion += 1
+            if let wasOn { keepCursor(on: wasOn) }
             changed = true
         }
         if let incomingGenreCharts, incomingGenreCharts.generation == fetchGeneration,
            incomingGenreCharts.request == genreRequest {
             if incomingGenreCharts.rails.isEmpty {
-                // The old charts stay, under the genre's own name in the row:
-                // the row says what was asked, the line says what happened.
+                // The charts on screen stay, and so the row goes back to
+                // naming them; the line says what happened.
+                genre = incomingGenreCharts.shown
+                feedVersion += 1
                 status.post("No Top charts for \(incomingGenreCharts.genre.name) right now.", error: true)
             } else {
                 replaceCharts(with: incomingGenreCharts.rails)

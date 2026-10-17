@@ -32,6 +32,11 @@ final class SectionWebService {
     /// URL fragment (query included) -> body, asked before `bodies`: the
     /// genre charts share the charts path and differ only by `&genre=`.
     var fragmentBodies: [String: String?] = [:]
+    /// URL fragment -> a gate, as `gates` but for one query (one genre).
+    var fragmentGates: [String: DispatchSemaphore] = [:]
+    /// URL fragment -> how many of those reads have answered.
+    private var answered: [String: Int] = [:]
+    func answeredCount(_ fragment: String) -> Int { lock.lock(); defer { lock.unlock() }; return answered[fragment] ?? 0 }
 
     init(bodies: [String: String?] = SectionWebService.fullFeed) { self.bodies = bodies }
 
@@ -42,8 +47,15 @@ final class SectionWebService {
             lock.lock(); stored.append(url)
             let bodies = self.bodies, gate = gates[path], delay = delays[path]
             let fragment = fragmentBodies.first { url.contains($0.key) }
+            let fragmentGate = fragmentGates.first { url.contains($0.key) }?.value
             lock.unlock()
+            defer {
+                lock.lock()
+                if let key = fragment?.key { answered[key, default: 0] += 1 }
+                lock.unlock()
+            }
             if let gate { _ = gate.wait(timeout: .now() + 10); gate.signal() }
+            if let fragmentGate { _ = fragmentGate.wait(timeout: .now() + 10); fragmentGate.signal() }
             if let delay { Thread.sleep(forTimeInterval: delay) }
             if let fragment {
                 guard let body = fragment.value else { return nil }
@@ -726,6 +738,8 @@ final class DiscoverSectionsTests: XCTestCase {
         settle(s, seconds: 3) { r.status.current()?.text.contains("No Top charts") ?? false }
         XCTAssertEqual(r.status.current()?.text, "No Top charts for Jazz right now.")
         XCTAssertEqual(chartTitles(s), allCharts)
+        XCTAssertNil(s.genre, "the row goes back to naming the charts on screen")
+        XCTAssertTrue(s.render(frame: shellLayout(width: 120, height: 80), snapshot: idle).contains("Genre: All genres"))
     }
 
     /// A refresh reads the storefront's charts again, so the genre resets.
@@ -741,5 +755,77 @@ final class DiscoverSectionsTests: XCTestCase {
         settle(s) { !s.genres.isEmpty }
         XCTAssertNil(s.genre)
         XCTAssertFalse(chartTitles(s).contains { $0.contains("Hip-Hop") })
+    }
+
+    /// Both genre reads answer before any tick, the older one LAST: the
+    /// current result must survive (Codex review of e8f4b6c, finding 1).
+    func testAnOlderGenreReadAnsweringLastDoesNotEvictTheCurrentOne() {
+        let data = SceneDataRig(output: .musicApp, accepted: false)
+        let web = SectionWebService()
+        web.fragmentBodies["&genre=18"] = SectionWebService.hipHopCharts
+        web.fragmentBodies["&genre=11"] = SectionWebService.hipHopCharts.replacingOccurrences(of: "Rap", with: "Jazz")
+        let s = rig(data, web: web).scene
+        settle(s) { !s.genres.isEmpty }
+        let hold = DispatchSemaphore(value: 0)
+        web.fragmentGates["&genre=18"] = hold
+
+        // No tick between here and the end of the two reads.
+        cursorToGenreRow(s); _ = s.handle(.enter); pick("Hip-Hop/Rap", in: s)
+        cursorToGenreRow(s); _ = s.handle(.enter); pick("Jazz", in: s)
+        let deadline = Date().addingTimeInterval(5)
+        while web.answeredCount("&genre=11") < 1 && Date() < deadline { usleep(2_000) }
+        hold.signal()
+        while web.answeredCount("&genre=18") < 1 && Date() < deadline { usleep(2_000) }
+        usleep(50_000)   // the scene's own write follows the answer
+
+        settle(s) { chartTitles(s).first?.contains("Jazz") ?? false }
+        XCTAssertEqual(s.genre, DiscoverGenre(id: "11", name: "Jazz"))
+        XCTAssertEqual(chartTitles(s), ["Top Songs \u{00B7} Jazz", "Top Albums \u{00B7} Jazz"])
+    }
+
+    /// The genre row lands while the cursor is in the charts: the cursor
+    /// stays on its row (Codex review of e8f4b6c, finding 2).
+    func testTheGenreRowLandingKeepsTheCursorOnItsRow() {
+        let data = SceneDataRig(output: .musicApp, accepted: false)
+        let web = SectionWebService()
+        let hold = DispatchSemaphore(value: 0)
+        web.gates["/v1/catalog/us/genres"] = hold
+        defer { hold.signal() }
+        let s = rig(data, web: web).scene
+        settle(s) { s.rails.contains { $0.section == .topSongs } }
+        let frame = shellLayout(width: 120, height: 80)
+        for _ in 0..<60 where !s.render(frame: frame, snapshot: idle).contains("\(ANSICode.inverse)Song One") {
+            _ = s.handle(.down)
+        }
+        XCTAssertTrue(s.render(frame: frame, snapshot: idle).contains("\(ANSICode.inverse)Song One"))
+
+        hold.signal()
+        settle(s) { !s.genres.isEmpty }
+        let out = s.render(frame: frame, snapshot: idle)
+        XCTAssertTrue(out.contains("\(ANSICode.inverse)Song One"), "the cursor left its row when the genre row landed")
+        XCTAssertTrue(out.contains("Genre: All genres"))
+    }
+
+    /// `p` on a genre chart's album: the same web-data refusal as every
+    /// section album, nothing added to his library, no SpanDAC request.
+    func testPlayAllOnAGenreChartAlbumRefusesLikeAnySectionAlbum() {
+        let data = SceneDataRig(output: .musicApp, accepted: false)
+        let web = SectionWebService()
+        web.fragmentBodies["&genre=18"] = SectionWebService.hipHopCharts
+        web.bodies["/v1/catalog/us/albums/ha1"] = SectionWebService.albumTracks("ha1")
+        let r = rig(data, web: web)
+        let s = r.scene
+        settle(s) { !s.genres.isEmpty }
+        cursorToGenreRow(s); _ = s.handle(.enter); pick("Hip-Hop/Rap", in: s)
+        settle(s) { chartTitles(s).first?.contains("Hip-Hop") ?? false }
+        let frame = shellLayout(width: 120, height: 80)
+        for _ in 0..<60 where !s.render(frame: frame, snapshot: idle).contains("\(ANSICode.inverse)Rap Album") {
+            _ = s.handle(.down)
+        }
+        XCTAssertEqual(s.handle(.char("p")), .push(.nowPlaying))
+        drain(r.actions)
+        XCTAssertEqual(r.status.current()?.text, DiscoverScene.webDataPlayRefused("Rap Album"))
+        XCTAssertEqual(r.created.ids, [])
+        XCTAssertTrue(data.sent.isEmpty)
     }
 }
