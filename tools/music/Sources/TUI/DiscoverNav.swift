@@ -18,6 +18,8 @@ enum DiscoverLevel: Equatable {
     case root
     case rail(DiscoverRail)
     case tracks(DiscoverItem)
+    /// The genre list, opened from the Top charts' genre row.
+    case genres
 }
 
 struct DiscoverFrameState: Equatable {

@@ -52,6 +52,15 @@ struct OpenMusicProvider: DiscoverProviding, StationProviding {
         discover?.sectionRails() ?? []
     }
 
+    /// The web-service feed's genres and genre charts; none without a feed.
+    func discoverGenres() -> [DiscoverGenre] {
+        discover?.genres() ?? []
+    }
+
+    func discoverGenreCharts(_ genre: DiscoverGenre) -> [DiscoverRail] {
+        discover?.genreChartRails(genre: genre) ?? []
+    }
+
     // MARK: - StationProviding
 
     var catalogueAvailable: Bool { catalog != nil }

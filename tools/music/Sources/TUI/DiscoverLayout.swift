@@ -69,6 +69,10 @@ func discoverFooterHint(_ selection: DiscoverSelection?, canGoBack: Bool, canRef
         }
     case .viewAll:
         return "\u{2191}\u{2193} Move  Enter View all" + refresh + back
+    case .genre:
+        return "\u{2191}\u{2193} Move  Enter Choose genre" + refresh + back
+    case .genreChoice:
+        return "\u{2191}\u{2193} Move  Enter Show charts" + back
     case nil:
         return "\u{2191}\u{2193} Move" + refresh + back
     }
@@ -85,8 +89,12 @@ func discoverRightArrowActivates(_ selection: DiscoverSelection?) -> Bool {
         case .album, .playlist: return true
         case .station, .song:   return false
         }
-    case .viewAll:  return true
-    case nil:       return false
+    case .viewAll:      return true
+    // The genre row only opens a list; a genre in the list re-reads the
+    // charts, which is a choice, so → leaves it to Enter.
+    case .genre:        return true
+    case .genreChoice:  return false
+    case nil:           return false
     }
 }
 
@@ -136,6 +144,10 @@ func discoverPanelAction(_ selection: DiscoverSelection) -> String {
         }
     case .viewAll(let rail):
         return "Enter  View all \(rail.items.count)"
+    case .genre:
+        return "Enter  Choose a genre"
+    case .genreChoice:
+        return "Enter  Show its charts"
     }
 }
 
@@ -200,6 +212,16 @@ func discoverPanelLines(selection: DiscoverSelection, width w: Int) -> [String] 
         lines.append("\(ANSICode.brightWhite)\(truncText(rail.title, to: w))\(ANSICode.reset)")
         lines.append("")
         lines.append("\(ANSICode.dim)\(rail.items.count) items\(ANSICode.reset)")
+    case .genre(let genre), .genreChoice(let genre):
+        lines.append("\(ANSICode.amber)GENRE\(ANSICode.reset)")
+        lines.append("\(ANSICode.brightWhite)\(truncText(genre?.name ?? "All genres", to: w))\(ANSICode.reset)")
+        lines.append("")
+        let about = genre == nil
+            ? "The storefront's Top charts across every genre."
+            : "Top Songs and Top Albums for this genre. Apple has no genre playlist chart."
+        for chunk in discoverWrapText(about, to: w, maxLines: 4) {
+            lines.append("\(ANSICode.dim)\(chunk)\(ANSICode.reset)")
+        }
     case .item(let item):
         lines.append("\(ANSICode.amber)\(discoverPanelBadge(item.detail))\(ANSICode.reset)")
         lines.append("\(ANSICode.brightWhite)\(truncText(item.name, to: w))\(ANSICode.reset)")

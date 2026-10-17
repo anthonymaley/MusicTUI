@@ -65,6 +65,18 @@ final class DiscoverScene: Scene {
     // Readable, not private, so the feed binding is observable from a test.
     private(set) var rails: [DiscoverRail] = []
     private(set) var trackRows: [DiscoverItem] = []
+    /// The storefront's genres, read after the sections from the same
+    /// provider. Empty: no genre row (SpanDAC data, or a read that failed).
+    private(set) var genres: [DiscoverGenre] = []
+    /// The genre the Top charts show; nil is All genres. Resets with the rows
+    /// (refresh, a change of data source) and on every launch.
+    private(set) var genre: DiscoverGenre?
+    /// The All-genres chart sections as the sections read served them, so
+    /// choosing All genres again puts them back without a read.
+    private var allGenreCharts: [DiscoverRail] = []
+    /// Bumped per genre choice, so a chart read a later choice replaced is
+    /// dropped rather than shown under the wrong genre.
+    private var genreRequest = 0
     /// Why the rails did not load, in words for the person. nil while loading,
     /// after a success, and for a web-service failure, which keeps its old line.
     private(set) var loadFailure: String?
@@ -94,6 +106,7 @@ final class DiscoverScene: Scene {
         case .root:            return "root"
         case .rail(let rail):  return "rail:\(rail.id)"
         case .tracks(let it):  return "tracks:\(it.id)"
+        case .genres:          return "genres"
         }
     }
 
@@ -134,6 +147,8 @@ final class DiscoverScene: Scene {
     /// The self-named sections, which land AFTER the rails so the curated
     /// rails never wait on them (`DiscoverFeed.sectionRails`'s one deadline).
     private var sectionsInbox: (generation: Int, rails: [DiscoverRail])?   // guarded by inboxLock
+    private var genresInbox: (generation: Int, genres: [DiscoverGenre])?   // guarded by inboxLock
+    private var genreChartsInbox: (generation: Int, request: Int, genre: DiscoverGenre, rails: [DiscoverRail])?   // guarded by inboxLock
     private var railsReadInbox: RowsRead?        // guarded by inboxLock
     private var tracksReadInbox: RowsRead?       // guarded by inboxLock
     /// Where the rows on screen were read (tick/handle thread only). A play
@@ -241,11 +256,13 @@ final class DiscoverScene: Scene {
         let computed: [DiscoverDisplayRow]
         switch current.level {
         case .root:
-            computed = discoverDisplayRows(rails: resolvedDiscoverRails(rails), perRail: 4)
+            computed = discoverRootRows(rails: resolvedDiscoverRails(rails), genres: genres, genre: genre)
         case .rail(let rail):
             computed = discoverDisplayRows(rails: [rail], perRail: rail.items.count)
         case .tracks:
             computed = trackRows.map { DiscoverDisplayRow.item($0) }
+        case .genres:
+            computed = [.genreChoice(nil)] + genres.map { DiscoverDisplayRow.genreChoice($0) }
         }
         rowsCacheKey = key
         rowsCache = computed
@@ -343,6 +360,16 @@ final class DiscoverScene: Scene {
         case .viewAll(let rail):
             stack = pushLevel(stack, .rail(rail))
             return .redraw
+        case .genre:
+            stack = pushLevel(stack, .genres)
+            // Open on the genre shown now, so Enter straight away changes nothing.
+            if let genre, let at = genres.firstIndex(of: genre) { cursorIndex = at + 1 }
+            clampScroll()
+            return .redraw
+        case .genreChoice(let choice):
+            stack = popLevel(stack)
+            choose(choice)
+            return .redraw
         case .item(let item):
             switch item.detail {
             case .station:
@@ -379,9 +406,42 @@ final class DiscoverScene: Scene {
                 playAllFromRail(item)
                 return .push(.nowPlaying)
             }
-        case .viewAll:
+        case .viewAll, .genre, .genreChoice:
             return .none
         }
+    }
+
+    // MARK: - Genre
+
+    /// Show the Top charts for `choice` (nil: All genres). All genres puts
+    /// back the charts the sections read served, with no read; a genre reads
+    /// its charts in the background from the provider chosen now, and the old
+    /// charts stay on screen until they land.
+    private func choose(_ choice: DiscoverGenre?) {
+        guard choice != genre else { return }
+        genre = choice
+        genreRequest += 1
+        guard let choice else {
+            replaceCharts(with: allGenreCharts)
+            return
+        }
+        status.post("Loading Top charts for \(choice.name)\u{2026}")
+        let generation = fetchGeneration
+        let request = genreRequest
+        DispatchQueue.global().async { [weak self] in
+            guard let self else { return }
+            let charts = (try? self.chooseFeed(.discoverFeed))?.provider.discoverGenreCharts(choice) ?? []
+            self.inboxLock.lock()
+            self.genreChartsInbox = (generation, request, choice, charts)
+            self.inboxLock.unlock()
+        }
+    }
+
+    /// Swap the chart sections, leaving the rails and the other sections as
+    /// they are.
+    private func replaceCharts(with charts: [DiscoverRail]) {
+        rails = rails.filter { !($0.section?.isChart ?? false) } + charts
+        feedVersion += 1
     }
 
     // MARK: - Play
@@ -863,8 +923,18 @@ final class DiscoverScene: Scene {
         trackRows = []
         railsRead = nil
         tracksRead = nil
+        resetGenre()
         feedVersion += 1
         stack = [DiscoverFrameState(level: .root, cursor: DiscoverCursor())]
+    }
+
+    /// A new read of the sections serves the All-genres charts, so the genre
+    /// goes back to All with them.
+    private func resetGenre() {
+        genres = []
+        genre = nil
+        allGenreCharts = []
+        genreRequest += 1
     }
 
     private func refresh() {
@@ -872,6 +942,7 @@ final class DiscoverScene: Scene {
         failed = false
         loadFailure = nil
         fetchStarted = false
+        resetGenre()
         stack = [DiscoverFrameState(level: .root, cursor: DiscoverCursor())]
         status.post("Refreshing Discover\u{2026}")
     }
@@ -959,6 +1030,13 @@ final class DiscoverScene: Scene {
                 self.inboxLock.lock()
                 self.sectionsInbox = (generation, sections)
                 self.inboxLock.unlock()
+                // The genre row needs the charts it re-reads, so the genres
+                // are asked for only when the sections served one.
+                guard sections.contains(where: { $0.section?.isChart ?? false }) else { return }
+                let genres = provider.discoverGenres()
+                self.inboxLock.lock()
+                self.genresInbox = (generation, genres)
+                self.inboxLock.unlock()
             }
         }
 
@@ -971,6 +1049,10 @@ final class DiscoverScene: Scene {
         railsReadInbox = nil
         let incomingSections = sectionsInbox
         sectionsInbox = nil
+        let incomingGenres = genresInbox
+        genresInbox = nil
+        let incomingGenreCharts = genreChartsInbox
+        genreChartsInbox = nil
         let incomingTracks = tracksInbox
         let incomingTracksFailure = tracksFailure
         let incomingTracksRead = tracksReadInbox
@@ -997,8 +1079,30 @@ final class DiscoverScene: Scene {
         if let incomingSections, incomingSections.generation == fetchGeneration,
            loaded, railsRead != nil, !incomingSections.rails.isEmpty {
             rails = rails.filter { $0.section == nil } + incomingSections.rails
+            allGenreCharts = incomingSections.rails.filter { $0.section?.isChart ?? false }
             feedVersion += 1
             failed = rails.isEmpty
+            changed = true
+        }
+        // The genre row appears above the charts once the genres land. The
+        // root's rows grow by two (a heading and the row), both BELOW the
+        // rails and the first sections, so the cursor stays where it was.
+        if let incomingGenres, incomingGenres.generation == fetchGeneration,
+           loaded, railsRead != nil, !incomingGenres.genres.isEmpty {
+            genres = incomingGenres.genres
+            feedVersion += 1
+            changed = true
+        }
+        if let incomingGenreCharts, incomingGenreCharts.generation == fetchGeneration,
+           incomingGenreCharts.request == genreRequest {
+            if incomingGenreCharts.rails.isEmpty {
+                // The old charts stay, under the genre's own name in the row:
+                // the row says what was asked, the line says what happened.
+                status.post("No Top charts for \(incomingGenreCharts.genre.name) right now.", error: true)
+            } else {
+                replaceCharts(with: incomingGenreCharts.rails)
+                status.post("Top charts for \(incomingGenreCharts.genre.name).")
+            }
             changed = true
         }
         if let incomingTracks {
@@ -1054,6 +1158,7 @@ final class DiscoverScene: Scene {
         case .root:            return "Discover"
         case .rail(let rail):  return rail.title
         case .tracks(let it):  return it.name
+        case .genres:          return "Genres"
         }
     }
 
@@ -1113,6 +1218,17 @@ final class DiscoverScene: Scene {
                     ? "\(ANSICode.inverse)\(label)\(ANSICode.reset)"
                     : "\(ANSICode.dim)\(label)\(ANSICode.reset)"
                 out += "    " + text
+            case .genre(let genre):
+                let label = "Genre: \(genre?.name ?? "All genres") \u{203A}"
+                out += idx == cursorRow
+                    ? "    \(ANSICode.inverse)\(label)\(ANSICode.reset)"
+                    : "    \(ANSICode.brightWhite)\(label)\(ANSICode.reset)"
+            case .genreChoice(let choice):
+                let marker = choice == genre ? "\(ANSICode.lime)\u{2022}\(ANSICode.reset)" : " "
+                let name = truncText(choice?.name ?? "All genres", to: max(1, width - 4))
+                out += "  \(marker) " + (idx == cursorRow
+                    ? "\(ANSICode.inverse)\(name)\(ANSICode.reset)"
+                    : "\(ANSICode.brightWhite)\(name)\(ANSICode.reset)")
             }
             y += 1
         }
@@ -1161,6 +1277,8 @@ final class DiscoverScene: Scene {
         switch selection {
         case .item(let item):    artKey = item.id; artTemplate = item.artworkURL
         case .viewAll(let rail): artKey = rail.id; artTemplate = rail.items.first?.artworkURL
+        case .genre(let g), .genreChoice(let g):
+            artKey = "genre:\(g?.id ?? "all")"; artTemplate = nil
         }
         // Compose the text BEFORE sizing the cover, so the hero is measured
         // against the rows genuinely left rather than a guessed reserve, and so

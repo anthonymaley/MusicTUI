@@ -160,6 +160,14 @@ enum DiscoverSection: CaseIterable, Equatable {
         }
     }
 
+    /// The storefront's charts: the three sections a genre choice re-reads.
+    var isChart: Bool {
+        switch self {
+        case .topSongs, .topAlbums, .topPlaylists: return true
+        case .recentlyAdded, .recentStations:      return false
+        }
+    }
+
     var resourceTypes: [String] {
         switch self {
         case .recentlyAdded:  return ["albums", "playlists"]
@@ -171,6 +179,33 @@ enum DiscoverSection: CaseIterable, Equatable {
     }
 }
 
+/// One of the storefront's genres, for the Top charts' genre row
+/// (`/v1/catalog/{sf}/genres`, probed 200 with 22 genres on 2026-10-17).
+/// nil wherever a genre is optional means "All genres": the storefront's own
+/// charts, as Discover shows them by default.
+struct DiscoverGenre: Equatable {
+    let id: String
+    let name: String
+}
+
+/// The chart sections for one genre, titled with it ("Top Songs · Jazz") so
+/// the headings say what changed. Ids stay distinct from the all-genre
+/// sections', so a scroll or hero state keyed on one never lands on the other.
+/// Empty charts are dropped, as `loadDiscoverSections` drops them: Apple
+/// serves no playlist chart for a genre (probed 2026-10-17), so Top Playlists
+/// is simply absent under one.
+func discoverGenreChartRails(songs: [DiscoverItem], albums: [DiscoverItem], playlists: [DiscoverItem],
+                             genre: DiscoverGenre) -> [DiscoverRail] {
+    let charts: [(DiscoverSection, [DiscoverItem])] = [(.topSongs, songs), (.topAlbums, albums), (.topPlaylists, playlists)]
+    return charts.compactMap { section, items in
+        guard !items.isEmpty else { return nil }
+        return DiscoverRail(id: "\(section.railID):genre-\(genre.id)",
+                            title: "\(section.title) \u{00B7} \(genre.name)",
+                            items: items, isRecentlyPlayed: false,
+                            resourceTypes: section.resourceTypes, section: section)
+    }
+}
+
 // MARK: - Display model (pure, so the scene's layout is testable without a network)
 
 /// A flattened Discover row. Rails become headers; items and View all are selectable.
@@ -178,6 +213,11 @@ enum DiscoverDisplayRow: Equatable {
     case header(String)
     case item(DiscoverItem)
     case viewAll(DiscoverRail)
+    /// The row above the Top charts naming the genre they show; Enter opens
+    /// the genre list. nil: All genres.
+    case genre(DiscoverGenre?)
+    /// One entry in the genre list. nil: All genres.
+    case genreChoice(DiscoverGenre?)
 }
 
 /// What the cursor is on. `.viewAll` is not a DiscoverItem, so a DiscoverItem?
@@ -188,6 +228,8 @@ enum DiscoverDisplayRow: Equatable {
 enum DiscoverSelection: Equatable {
     case item(DiscoverItem)
     case viewAll(DiscoverRail)
+    case genre(DiscoverGenre?)
+    case genreChoice(DiscoverGenre?)
 }
 
 /// Music.app's Discover leads with Top Picks and then Recently Played. Top Picks is
@@ -213,6 +255,19 @@ func discoverDisplayRows(rails: [DiscoverRail], perRail: Int) -> [DiscoverDispla
     }
 }
 
+/// Discover's top level: the rails and sections at four items each, with the
+/// Top charts under a "Charts" heading and the genre row that names what they
+/// show. No genres (SpanDAC data, a failed read): no heading or row, so the
+/// rows are exactly `discoverDisplayRows`' as before.
+func discoverRootRows(rails: [DiscoverRail], genres: [DiscoverGenre], genre: DiscoverGenre?,
+                      perRail: Int = 4) -> [DiscoverDisplayRow] {
+    let isChart: (DiscoverRail) -> Bool = { $0.section?.isChart ?? false }
+    let rest = discoverDisplayRows(rails: rails.filter { !isChart($0) }, perRail: perRail)
+    let charts = discoverDisplayRows(rails: rails.filter(isChart), perRail: perRail)
+    guard !genres.isEmpty else { return rest + charts }
+    return rest + [.header("Charts"), .genre(genre)] + charts
+}
+
 /// Indices of the rows a cursor may land on. Headers are not selectable.
 ///
 /// Deliberately an exhaustive switch rather than "anything that is not a
@@ -222,9 +277,11 @@ func discoverDisplayRows(rails: [DiscoverRail], perRail: Int) -> [DiscoverDispla
 func selectableDiscoverIndices(_ rows: [DiscoverDisplayRow]) -> [Int] {
     rows.enumerated().compactMap { i, row in
         switch row {
-        case .header:  return nil
-        case .item:    return i
-        case .viewAll: return i
+        case .header:      return nil
+        case .item:        return i
+        case .viewAll:     return i
+        case .genre:       return i
+        case .genreChoice: return i
         }
     }
 }
@@ -234,9 +291,11 @@ func discoverSelection(rows: [DiscoverDisplayRow], cursor: Int) -> DiscoverSelec
     let selectable = selectableDiscoverIndices(rows)
     guard cursor >= 0, cursor < selectable.count else { return nil }
     switch rows[selectable[cursor]] {
-    case .item(let item):  return .item(item)
-    case .viewAll(let r):  return .viewAll(r)
-    case .header:          return nil
+    case .item(let item):      return .item(item)
+    case .viewAll(let r):      return .viewAll(r)
+    case .genre(let g):        return .genre(g)
+    case .genreChoice(let g):  return .genreChoice(g)
+    case .header:              return nil
     }
 }
 
@@ -251,11 +310,20 @@ protocol DiscoverFeedReading {
     /// shown when they land: the curated rails never wait on them. Never
     /// throws; a section that could not be read is absent.
     func sectionRails() -> [DiscoverRail]
+    /// The storefront's genres for the Top charts' genre row. Never throws:
+    /// empty means no genre row.
+    func genres() -> [DiscoverGenre]
+    /// The chart sections for one genre (`discoverGenreChartRails`). Never
+    /// throws: empty means none could be read.
+    func genreChartRails(genre: DiscoverGenre) -> [DiscoverRail]
 }
 
 extension DiscoverFeedReading {
     /// No sections: what every feed but the web service's serves.
     func sectionRails() -> [DiscoverRail] { [] }
+    /// No genres, so no genre row: what every feed but the web service's serves.
+    func genres() -> [DiscoverGenre] { [] }
+    func genreChartRails(genre: DiscoverGenre) -> [DiscoverRail] { [] }
 }
 
 final class DiscoverFeed: DiscoverFeedReading {
@@ -417,8 +485,9 @@ final class DiscoverFeed: DiscoverFeedReading {
     /// The storefront's top charts, one request for all three. The response
     /// maps each requested type to an ARRAY of charts; the first chart of each
     /// type with anything in it is the one shown.
-    func charts() throws -> (songs: [DiscoverItem], albums: [DiscoverItem], playlists: [DiscoverItem]) {
-        let root = try json(at: "/v1/catalog/\(storefront)/charts?types=songs,albums,playlists&limit=\(Self.chartLimit)")
+    func charts(genreID: String? = nil) throws -> (songs: [DiscoverItem], albums: [DiscoverItem], playlists: [DiscoverItem]) {
+        let genre = genreID.map { "&genre=\($0)" } ?? ""
+        let root = try json(at: "/v1/catalog/\(storefront)/charts?types=songs,albums,playlists&limit=\(Self.chartLimit)\(genre)")
         let results = root["results"] as? [String: Any] ?? [:]
         func chart(_ type: String, _ kind: DiscoverItemKind) -> [DiscoverItem] {
             for chart in results[type] as? [[String: Any]] ?? [] {
@@ -428,6 +497,27 @@ final class DiscoverFeed: DiscoverFeedReading {
             return []
         }
         return (chart("songs", .song), chart("albums", .album), chart("playlists", .playlist))
+    }
+
+    /// The storefront's genres, in Apple's order. The root genre ("Music",
+    /// the only one with no `parentId`) is left out: the genre row's own "All
+    /// genres" stands for it. Probed 2026-10-17: 22 genres for `us`, one page.
+    func genres() -> [DiscoverGenre] {
+        guard let root = try? json(at: "/v1/catalog/\(storefront)/genres?limit=200") else { return [] }
+        return (root["data"] as? [[String: Any]] ?? []).compactMap { row in
+            guard let id = row["id"] as? String,
+                  let a = row["attributes"] as? [String: Any],
+                  let name = a["name"] as? String,
+                  a["parentId"] != nil else { return nil }
+            return DiscoverGenre(id: id, name: name)
+        }
+    }
+
+    /// One genre's Top charts, read in one request like the storefront's own.
+    func genreChartRails(genre: DiscoverGenre) -> [DiscoverRail] {
+        guard let charts = try? charts(genreID: genre.id) else { return [] }
+        return discoverGenreChartRails(songs: charts.songs, albums: charts.albums,
+                                       playlists: charts.playlists, genre: genre)
     }
 
     /// The tracks on an album or playlist, for a read-only drill-in. Both live
