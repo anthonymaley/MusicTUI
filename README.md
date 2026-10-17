@@ -538,7 +538,7 @@ Speaker lists work the same way (`~/.config/music/last-speakers.json`). Run `mus
 - **[docs/platform-notes.md](docs/platform-notes.md)**: what scripting Apple Music on macOS actually does. Measured Apple Event costs, the `-1728` breakage on non-library tracks, pre-release tracks that silently refuse to play, and why AppleScript has no concept of a radio station. Dated observations from a real system, useful whether or not you care about this project.
 - **[CONTRIBUTING.md](CONTRIBUTING.md)**: build, test, and the one rule. A green suite is not a working playback change.
 
-485 unit tests run in CI on every push. They need no Apple Developer account and no running Music.app.
+3,700+ unit tests run in CI on every push. They need no Apple Developer account and no running Music.app.
 
 ## Requirements
 
