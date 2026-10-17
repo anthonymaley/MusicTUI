@@ -1,7 +1,9 @@
 const guideStatus = document.getElementById('guide-copy-status');
 const copyTimers = new WeakMap();
+let statusGeneration = 0;
 document.querySelectorAll('[data-copy-target]').forEach(button => {
   button.addEventListener('click', async () => {
+    const generation = ++statusGeneration;
     const code = document.getElementById(button.dataset.copyTarget);
     try {
       await navigator.clipboard.writeText(code.textContent);
@@ -20,7 +22,7 @@ document.querySelectorAll('[data-copy-target]').forEach(button => {
     copyTimers.set(button, setTimeout(() => {
       button.textContent = 'Copy';
       delete button.dataset.copied;
-      guideStatus.textContent = '';
+      if (generation === statusGeneration) guideStatus.textContent = '';
     }, 3500));
   });
 });
