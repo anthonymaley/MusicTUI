@@ -658,12 +658,17 @@ final class DiscoverSectionsTests: XCTestCase {
     /// Apple's rails and above his own sections.
     func testRootRowsWithoutGenresPutTheChartsAfterApplesRails() {
         func rail(_ id: String, _ section: DiscoverSection?) -> DiscoverRail {
-            DiscoverRail(id: id, title: id, items: [], isRecentlyPlayed: false, resourceTypes: [], section: section)
+            DiscoverRail(id: id, title: id,
+                         items: [DiscoverItem(id: "\(id)-0", name: "\(id) item", subtitle: nil, url: nil,
+                                              artworkURL: nil, detail: .playlist(description: nil))],
+                         isRecentlyPlayed: false, resourceTypes: [], section: section)
         }
-        let apple = rail("A", nil), added = rail("RA", .recentlyAdded), stations = rail("RS", .recentStations)
-        let songs = rail("TS", .topSongs), albums = rail("TA", .topAlbums)
-        XCTAssertEqual(discoverRootRows(rails: [apple, added, stations, songs, albums], genres: [], genre: nil),
-                       discoverDisplayRows(rails: [apple, songs, albums, added, stations], perRail: 4))
+        let rows = discoverRootRows(rails: [rail("A", nil), rail("RA", .recentlyAdded), rail("RS", .recentStations),
+                                            rail("TS", .topSongs), rail("TA", .topAlbums)],
+                                    genres: [], genre: nil)
+        let headers = rows.compactMap { row -> String? in if case .header(let t) = row { return t }; return nil }
+        XCTAssertEqual(headers, ["A", "TS", "TA", "RA", "RS"])
+        XCTAssertFalse(rows.contains { if case .genre = $0 { return true }; return false })
     }
 
     /// The genre row sits under a "Charts by Genre" heading, straight after
