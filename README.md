@@ -411,7 +411,7 @@ Claude handles the multi-step orchestration (searching the catalog, creating pla
 
 ## Apple Music TUI
 
-Run bare `music` in a real terminal (not inside Claude Code; the TUI requires a TTY). Install `chafa` (`brew install chafa`) for album art in now-playing.
+Run bare `music` in a real terminal (not inside Claude Code; the TUI requires a TTY). Album art uses the Kitty graphics protocol where the terminal supports it and `chafa` elsewhere; Homebrew installs `chafa` with MusicTUI (from source, `brew install chafa`).
 
 **Unified shell** (`music`): a tabbed interface with **Now**, **Discover**, **Library**, **Playlists**, **Radio**, and **Speakers** tabs. The Now tab shows a 3-column layout: album art, playback metadata, and a right pane. Select a playlist on the Playlists tab to pin it on the Now tab so you can browse and replay any track while playback continues.
 
@@ -547,13 +547,13 @@ Speaker lists work the same way (`~/.config/music/last-speakers.json`). Run `mus
 - **Automation permission** (System Settings > Privacy & Security > Automation > enable for your terminal)
 - **Swift 5.9+** (only if building the music CLI)
 - **AirPods** must be connected via Bluetooth to appear as a device
-- **chafa** (optional, `brew install chafa`; enables album art in now-playing TUI)
+- **chafa** (installed by Homebrew with MusicTUI; from source, `brew install chafa` for cover art in terminals without the Kitty protocol)
 
 ## Credits
 
 - **[swift-argument-parser](https://github.com/apple/swift-argument-parser)** (Apache 2.0): the CLI's argument parsing. The only bundled dependency.
 - **[Kitty terminal graphics protocol](https://sw.kovidgoyal.net/kitty/graphics-protocol/)**: cover art renders as true pixels on Kitty, WezTerm, Ghostty, and iTerm2 3.5+. Implemented from its public spec.
-- **[chafa](https://github.com/hpjansson/chafa)** by Hans Petter Jansson: the cover-art fallback (terminal half-blocks) where the Kitty protocol isn't available. Optional (`brew install chafa`).
+- **[chafa](https://github.com/hpjansson/chafa)** by Hans Petter Jansson: the cover-art fallback (terminal half-blocks) where the Kitty protocol isn't available. Homebrew installs it with MusicTUI.
 
 Everything else is Apple's own frameworks (Foundation, CryptoKit, CoreGraphics, ImageIO, Network) plus the Apple Music AppleScript interface and the Apple Music API.
 
