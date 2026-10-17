@@ -316,6 +316,14 @@ jobs:
           mapfile -t jsons < <(ls *.json | LC_ALL=C sort)
           echo "merging: ${jsons[*]}"
 
+          # Tag order is a pour decision, not cosmetics. On a macOS with no
+          # exact bottle, Homebrew pours the FIRST same-arch line whose macOS
+          # is older or equal (`find_older_compatible_tag` is `tags.find` over
+          # declaration order), not the newest. Alphabetical order put
+          # arm64_sonoma first, so macOS 27 poured the Sonoma bottle over
+          # Tahoe (2026-10-17). Emit ARM before Intel (`BottleOrder` audit),
+          # newest macOS first within each, as Homebrew core does. A tag
+          # missing from the table fails the job rather than sorting wrongly.
           merged=$(jq -s 'map(to_entries[]) | .[0].value as $first
             | { root_url:   $first.bottle.root_url,
                 rebuild:    $first.bottle.rebuild,
@@ -323,7 +331,10 @@ jobs:
                 pkg_version:$first.formula.pkg_version,
                 tags: (map(.value.bottle.tags | to_entries[])
                        | map({tag: .key, sha256: .value.sha256, filename: .value.filename})
-                       | sort_by(.tag)) }' "${jsons[@]}")
+                       | sort_by(.tag as $t
+                           | {"sonoma": 14, "sequoia": 15, "tahoe": 26, "golden_gate": 27}[$t | sub("^arm64_"; "")] as $v
+                           | if $v == null then error("unknown bottle tag \($t): add its macOS version")
+                             else [(if ($t | startswith("arm64_")) then 0 else 1 end), -$v] end)) }' "${jsons[@]}")
           echo "$merged" | jq .
 
           # Structure must be identical across entries; only sha256 and tag differ.

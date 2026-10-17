@@ -624,6 +624,20 @@ covers nothing but itself.
 So bottle coverage is a floor rather than a list. One bottle built on the oldest
 macOS you support covers every newer macOS on that architecture.
 
+When more than one older bottle qualifies, the order of the `sha256` lines
+decides, not the version. Checked 2026-10-17, Homebrew 7.0.9, macOS 27.0.1
+(bottle tag `arm64_golden_gate`): the fallback is `tags.find` over the
+formula's declaration order, so it takes the first same-architecture line
+whose macOS is older or equal. MusicTUI 3.20.8's block listed `arm64_sonoma`
+before `arm64_tahoe` (the workflow sorted tags alphabetically), and the Studio
+poured the Sonoma bottle on macOS 27. `brew ruby` against the same tags with
+`arm64_tahoe` first chose `arm64_tahoe`. The 2026-08-30 measurement below used
+a one-tag formula, so it could not show this. List Apple Silicon before Intel
+(`brew audit --strict` enforces that much) and newest macOS first within each,
+as Homebrew core does; `bottles.yml` emits that order. A newest-first block
+audited clean in a throwaway tap, and an Intel-first control failed with "ARM
+bottles should be listed before Intel bottles".
+
 Measured on 2026-08-30, and it is worth measuring rather than trusting the
 source read. A bottle built on `macos-14`, declared in the formula as
 `arm64_sonoma` and nothing else, offered through a `file://` root_url, was
