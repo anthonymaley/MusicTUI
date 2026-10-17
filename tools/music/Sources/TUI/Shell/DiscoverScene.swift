@@ -451,9 +451,23 @@ final class DiscoverScene: Scene {
     }
 
     /// Swap the chart sections, leaving the rails and the other sections as
-    /// they are.
+    /// they are. Recently Added and Recent Stations sit BELOW the charts, so a
+    /// chart block of another size (a genre has no playlist chart) would move
+    /// a cursor there onto another row: shift the top level's cursor by the
+    /// change, by position, as the genre row's landing does.
     private func replaceCharts(with charts: [DiscoverRail]) {
+        let chartsEnd = { (rails: [DiscoverRail]) -> Int in
+            selectableDiscoverIndices(discoverRootRows(
+                rails: resolvedDiscoverRails(rails).filter { $0.section == nil || ($0.section?.isChart ?? false) },
+                genres: self.genres, genre: self.genre)).count
+        }
+        let before = chartsEnd(rails)
         rails = rails.filter { !($0.section?.isChart ?? false) } + charts
+        let after = chartsEnd(rails)
+        if after != before && stack[0].cursor.index >= before {
+            stack[0].cursor.index += after - before
+            if stack.count == 1 { clampScroll() }
+        }
         feedVersion += 1
     }
 

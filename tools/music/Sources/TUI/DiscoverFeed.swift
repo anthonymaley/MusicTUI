@@ -120,7 +120,7 @@ struct DiscoverRail: Equatable {
     let resourceTypes: [String]
     /// Which self-named section this rail is, or nil for one of Apple's For
     /// You rails. A section never competes for the five curated slots; it is
-    /// shown after them, in `DiscoverSection`'s own order.
+    /// shown after them, in the order `discoverRootRows` gives.
     var section: DiscoverSection? = nil
 }
 
@@ -133,8 +133,9 @@ struct DiscoverRail: Equatable {
 /// from SpanDAC's own reads (`bridgeDiscoverSectionRails`), one per section
 /// SpanDAC advertises; a section SpanDAC does not advertise is absent.
 ///
-/// `allCases` order IS the display order: his own library and listening
-/// first, then the storefront's charts.
+/// `allCases` order is the order they are read and stored in, not the display
+/// order: `discoverRootRows` shows the charts first, right after Apple's rails,
+/// then his own library and listening (Anthony, 2026-10-17).
 enum DiscoverSection: CaseIterable, Equatable {
     case recentlyAdded, recentStations, topSongs, topAlbums, topPlaylists
 

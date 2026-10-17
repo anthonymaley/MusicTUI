@@ -654,10 +654,16 @@ final class DiscoverSectionsTests: XCTestCase {
                        "a failed chart read is no rails")
     }
 
-    func testRootRowsWithoutGenresAreUnchanged() {
-        let rails = [DiscoverRail(id: "r", title: "R", items: [], isRecentlyPlayed: false, resourceTypes: [])]
-        XCTAssertEqual(discoverRootRows(rails: rails, genres: [], genre: nil),
-                       discoverDisplayRows(rails: rails, perRail: 4))
+    /// No genres: no heading or row, but the charts still come straight after
+    /// Apple's rails and above his own sections.
+    func testRootRowsWithoutGenresPutTheChartsAfterApplesRails() {
+        func rail(_ id: String, _ section: DiscoverSection?) -> DiscoverRail {
+            DiscoverRail(id: id, title: id, items: [], isRecentlyPlayed: false, resourceTypes: [], section: section)
+        }
+        let apple = rail("A", nil), added = rail("RA", .recentlyAdded), stations = rail("RS", .recentStations)
+        let songs = rail("TS", .topSongs), albums = rail("TA", .topAlbums)
+        XCTAssertEqual(discoverRootRows(rails: [apple, added, stations, songs, albums], genres: [], genre: nil),
+                       discoverDisplayRows(rails: [apple, songs, albums, added, stations], perRail: 4))
     }
 
     /// The genre row sits under a "Charts by Genre" heading, straight after
@@ -727,6 +733,31 @@ final class DiscoverSectionsTests: XCTestCase {
 
         XCTAssertNil(s.genre)
         XCTAssertEqual(chartTitles(s), allCharts)
+    }
+
+    /// A genre's charts land with fewer rows (no playlist chart) while the
+    /// cursor sits in Recently Added, below the charts: it stays on its row
+    /// (Codex round 3 of the Charts by Genre move).
+    func testGenreChartsLandingKeepsACursorBelowThemOnItsRow() {
+        let data = SceneDataRig(output: .musicApp, accepted: false)
+        let web = SectionWebService()
+        web.fragmentBodies["&genre=18"] = SectionWebService.hipHopCharts
+        let hold = DispatchSemaphore(value: 0)
+        web.fragmentGates["&genre=18"] = hold
+        defer { hold.signal() }
+        let s = rig(data, web: web).scene
+        settle(s) { !s.genres.isEmpty }
+        cursorToGenreRow(s); _ = s.handle(.enter); pick("Hip-Hop/Rap", in: s)
+        let frame = shellLayout(width: 120, height: 80)
+        for _ in 0..<80 where !s.render(frame: frame, snapshot: idle).contains("\(ANSICode.inverse)Bare Album") {
+            _ = s.handle(.down)
+        }
+        XCTAssertTrue(s.render(frame: frame, snapshot: idle).contains("\(ANSICode.inverse)Bare Album"))
+
+        hold.signal()
+        settle(s) { chartTitles(s).first?.contains("Hip-Hop") ?? false }
+        XCTAssertTrue(s.render(frame: frame, snapshot: idle).contains("\(ANSICode.inverse)Bare Album"),
+                      "the cursor left its row when the genre charts landed")
     }
 
     /// No charts for a genre: the old charts stay and the line says so.
