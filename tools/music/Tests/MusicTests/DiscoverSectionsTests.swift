@@ -32,6 +32,8 @@ final class SectionWebService {
     /// URL fragment (query included) -> body, asked before `bodies`: the
     /// genre charts share the charts path and differ only by `&genre=`.
     var fragmentBodies: [String: String?] = [:]
+    /// Path -> a gate for the FIRST read of that path only; later reads pass.
+    var firstReadGates: [String: DispatchSemaphore] = [:]
     /// URL fragment -> a gate, as `gates` but for one query (one genre).
     var fragmentGates: [String: DispatchSemaphore] = [:]
     /// URL fragment -> how many of those reads have answered.
@@ -48,7 +50,9 @@ final class SectionWebService {
             let bodies = self.bodies, gate = gates[path], delay = delays[path]
             let fragment = fragmentBodies.first { url.contains($0.key) }
             let fragmentGate = fragmentGates.first { url.contains($0.key) }?.value
+            let firstGate = firstReadGates.removeValue(forKey: path)
             lock.unlock()
+            if let firstGate { _ = firstGate.wait(timeout: .now() + 10) }
             defer {
                 lock.lock()
                 if let key = fragment?.key { answered[key, default: 0] += 1 }
@@ -768,15 +772,15 @@ final class DiscoverSectionsTests: XCTestCase {
         settle(s) { !s.genres.isEmpty }
         let hold = DispatchSemaphore(value: 0)
         web.fragmentGates["&genre=18"] = hold
+        let written = DispatchSemaphore(value: 0)
+        s.inboxWritten = { if $0 == "genreCharts" { written.signal() } }
 
-        // No tick between here and the end of the two reads.
+        // No tick between here and both reads' inbox writes.
         cursorToGenreRow(s); _ = s.handle(.enter); pick("Hip-Hop/Rap", in: s)
         cursorToGenreRow(s); _ = s.handle(.enter); pick("Jazz", in: s)
-        let deadline = Date().addingTimeInterval(5)
-        while web.answeredCount("&genre=11") < 1 && Date() < deadline { usleep(2_000) }
+        XCTAssertEqual(written.wait(timeout: .now() + 5), .success, "Jazz never wrote")
         hold.signal()
-        while web.answeredCount("&genre=18") < 1 && Date() < deadline { usleep(2_000) }
-        usleep(50_000)   // the scene's own write follows the answer
+        XCTAssertEqual(written.wait(timeout: .now() + 5), .success, "Hip-Hop never wrote")
 
         settle(s) { chartTitles(s).first?.contains("Jazz") ?? false }
         XCTAssertEqual(s.genre, DiscoverGenre(id: "11", name: "Jazz"))
@@ -827,5 +831,91 @@ final class DiscoverSectionsTests: XCTestCase {
         XCTAssertEqual(r.status.current()?.text, DiscoverScene.webDataPlayRefused("Rap Album"))
         XCTAssertEqual(r.created.ids, [])
         XCTAssertTrue(data.sent.isEmpty)
+    }
+
+    /// A refresh's genre list answers first and the replaced read's LAST,
+    /// both before any tick: the current list must survive (Codex round 2).
+    func testAnOlderGenreListAnsweringLastDoesNotEvictTheCurrentOne() {
+        let data = SceneDataRig(output: .musicApp, accepted: false)
+        let web = SectionWebService()
+        let hold = DispatchSemaphore(value: 0)
+        web.firstReadGates["/v1/catalog/us/genres"] = hold
+        let s = rig(data, web: web).scene
+        settle(s) { s.rails.contains { $0.section == .topSongs } }
+        let written = DispatchSemaphore(value: 0)
+        s.inboxWritten = { if $0 == "genres" { written.signal() } }
+
+        _ = s.handle(.char("r"))
+        _ = s.tick(snapshot: idle)   // starts the refresh's read; no tick after it until both writes
+        XCTAssertEqual(written.wait(timeout: .now() + 10), .success, "the refresh's list never wrote")
+        hold.signal()
+        XCTAssertEqual(written.wait(timeout: .now() + 10), .success, "the replaced list never wrote")
+
+        settle(s) { !s.genres.isEmpty }
+        XCTAssertEqual(s.genres.map(\.name), ["Hip-Hop/Rap", "Jazz"])
+    }
+
+    /// The same song in an earlier rail and in Top Songs, the cursor on the
+    /// chart's: the genre row landing keeps it on THAT occurrence.
+    func testTheGenreRowLandingKeepsTheCursorOnTheSameOccurrence() {
+        let data = SceneDataRig(output: .musicApp, accepted: false)
+        let web = SectionWebService()
+        web.bodies["/v1/me/recommendations"] = """
+        {"data":[{"id":"6-songs","type":"personal-recommendation",
+          "attributes":{"kind":"music-recommendations","resourceTypes":["songs"],
+            "title":{"stringForDisplay":"Songs For You"}},
+          "relationships":{"contents":{"data":[
+            {"id":"s1","type":"songs","attributes":{"name":"Song One","artistName":"A1"}}]}}}]}
+        """
+        let hold = DispatchSemaphore(value: 0)
+        web.gates["/v1/catalog/us/genres"] = hold
+        defer { hold.signal() }
+        let s = rig(data, web: web).scene
+        settle(s) { s.rails.contains { $0.section == .topSongs } }
+        // Down to the SECOND "Song One": the one under Top Songs.
+        var seen = 0
+        let frame = shellLayout(width: 120, height: 80)
+        for _ in 0..<60 {
+            if s.render(frame: frame, snapshot: idle).contains("\(ANSICode.inverse)Song One") {
+                seen += 1
+                if seen == 2 { break }
+            }
+            _ = s.handle(.down)
+        }
+        XCTAssertEqual(seen, 2, "never reached the chart's Song One")
+
+        hold.signal()
+        settle(s) { !s.genres.isEmpty }
+        XCTAssertTrue(s.render(frame: frame, snapshot: idle).contains("\(ANSICode.inverse)Song One"))
+        _ = s.handle(.up)
+        XCTAssertTrue(s.footerHint.contains("Choose genre"),
+                      "the cursor moved to the earlier Song One, not the chart's")
+    }
+
+    /// Hip-Hop still out, Jazz finds nothing: the row goes back to the charts
+    /// on screen (All genres), not to the pending Hip-Hop (Codex round 2).
+    func testAFailedGenreWhileAnotherIsOutNamesTheChartsOnScreen() {
+        let data = SceneDataRig(output: .musicApp, accepted: false)
+        let web = SectionWebService()
+        web.fragmentBodies["&genre=18"] = SectionWebService.hipHopCharts
+        web.fragmentBodies["&genre=11"] = .some(nil)
+        let hold = DispatchSemaphore(value: 0)
+        web.fragmentGates["&genre=18"] = hold
+        defer { hold.signal() }
+        let r = rig(data, web: web)
+        let s = r.scene
+        settle(s) { !s.genres.isEmpty }
+        let allCharts = chartTitles(s)
+
+        cursorToGenreRow(s); _ = s.handle(.enter); pick("Hip-Hop/Rap", in: s)
+        cursorToGenreRow(s); _ = s.handle(.enter); pick("Jazz", in: s)
+        settle(s, seconds: 3) { r.status.current()?.text.contains("No Top charts") ?? false }
+        XCTAssertNil(s.genre, "the row names a genre whose charts never landed")
+        XCTAssertEqual(chartTitles(s), allCharts)
+
+        hold.signal()
+        for _ in 0..<50 { _ = s.tick(snapshot: idle); usleep(2_000) }
+        XCTAssertNil(s.genre, "the replaced Hip-Hop read landed")
+        XCTAssertEqual(chartTitles(s), allCharts)
     }
 }
