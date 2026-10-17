@@ -1109,9 +1109,9 @@ final class DiscoverScene: Scene {
            loaded, railsRead != nil, !incomingGenres.genres.isEmpty {
             // By position, not by value: the same item can sit in a rail and
             // a chart. The row goes in at a known place, after every
-            // selectable row that is not a chart's.
+            // selectable row of Apple's own rails; every row below it moves.
             let chartsStart = selectableDiscoverIndices(
-                discoverRootRows(rails: resolvedDiscoverRails(rails).filter { !($0.section?.isChart ?? false) },
+                discoverRootRows(rails: resolvedDiscoverRails(rails).filter { $0.section == nil },
                                  genres: [], genre: nil)).count
             // The top level's own cursor, whichever level is showing (it is
             // the bottom of the stack, and popLevel never drops it).

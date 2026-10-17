@@ -660,14 +660,14 @@ final class DiscoverSectionsTests: XCTestCase {
                        discoverDisplayRows(rails: rails, perRail: 4))
     }
 
-    /// The genre row sits under a Charts heading, after every other section
-    /// and before the charts.
+    /// The genre row sits under a "Charts by Genre" heading, straight after
+    /// Apple's own rails and above Recently Added and Recent Stations.
     func testTheGenreRowHeadsTheCharts() {
         let data = SceneDataRig(output: .musicApp, accepted: false)
         let s = rig(data, web: SectionWebService()).scene
         settle(s) { !s.genres.isEmpty }
         let out = s.render(frame: shellLayout(width: 120, height: 80), snapshot: idle)
-        let order = ["Recent Stations", "Charts", "Genre: All genres", "Top Songs"].map { out.range(of: $0)?.lowerBound }
+        let order = ["Charts by Genre", "Genre: All genres", "Top Songs", "Recently Added", "Recent Stations"].map { out.range(of: $0)?.lowerBound }
         XCTAssertFalse(order.contains(nil), "a row is missing")
         XCTAssertEqual(order.compactMap { $0 }, order.compactMap { $0 }.sorted())
         XCTAssertTrue(data.sent.isEmpty)
@@ -808,6 +808,28 @@ final class DiscoverSectionsTests: XCTestCase {
         let out = s.render(frame: frame, snapshot: idle)
         XCTAssertTrue(out.contains("\(ANSICode.inverse)Song One"), "the cursor left its row when the genre row landed")
         XCTAssertTrue(out.contains("Genre: All genres"))
+    }
+
+    /// Recently Added sits below the charts now (2026-10-17), so the genre row
+    /// landing above it must keep a cursor there on its row too.
+    func testTheGenreRowLandingKeepsACursorInRecentlyAddedOnItsRow() {
+        let data = SceneDataRig(output: .musicApp, accepted: false)
+        let web = SectionWebService()
+        let hold = DispatchSemaphore(value: 0)
+        web.gates["/v1/catalog/us/genres"] = hold
+        defer { hold.signal() }
+        let s = rig(data, web: web).scene
+        settle(s) { s.rails.contains { $0.section == .recentlyAdded } }
+        let frame = shellLayout(width: 120, height: 80)
+        for _ in 0..<80 where !s.render(frame: frame, snapshot: idle).contains("\(ANSICode.inverse)Bare Album") {
+            _ = s.handle(.down)
+        }
+        XCTAssertTrue(s.render(frame: frame, snapshot: idle).contains("\(ANSICode.inverse)Bare Album"))
+
+        hold.signal()
+        settle(s) { !s.genres.isEmpty }
+        let out = s.render(frame: frame, snapshot: idle)
+        XCTAssertTrue(out.contains("\(ANSICode.inverse)Bare Album"), "the cursor left its row when the genre row landed")
     }
 
     /// `p` on a genre chart's album: the same web-data refusal as every

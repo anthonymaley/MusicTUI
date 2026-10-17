@@ -255,17 +255,20 @@ func discoverDisplayRows(rails: [DiscoverRail], perRail: Int) -> [DiscoverDispla
     }
 }
 
-/// Discover's top level: the rails and sections at four items each, with the
-/// Top charts under a "Charts" heading and the genre row that names what they
-/// show. No genres (SpanDAC data, a failed read): no heading or row, so the
-/// rows are exactly `discoverDisplayRows`' as before.
+/// Discover's top level: the rails and sections at four items each. The Top
+/// charts come straight after Apple's own rails, above Recently Added and
+/// Recent Stations, so the genre row is found without scrolling to the end
+/// (Anthony, 2026-10-17). With genres they sit under a "Charts by Genre"
+/// heading and the row that names what they show; with none (a SpanDAC that
+/// does not serve them, a failed read) there is no heading or row.
 func discoverRootRows(rails: [DiscoverRail], genres: [DiscoverGenre], genre: DiscoverGenre?,
                       perRail: Int = 4) -> [DiscoverDisplayRow] {
     let isChart: (DiscoverRail) -> Bool = { $0.section?.isChart ?? false }
-    let rest = discoverDisplayRows(rails: rails.filter { !isChart($0) }, perRail: perRail)
+    let apple = discoverDisplayRows(rails: rails.filter { $0.section == nil }, perRail: perRail)
     let charts = discoverDisplayRows(rails: rails.filter(isChart), perRail: perRail)
-    guard !genres.isEmpty else { return rest + charts }
-    return rest + [.header("Charts"), .genre(genre)] + charts
+    let sections = discoverDisplayRows(rails: rails.filter { $0.section != nil && !isChart($0) }, perRail: perRail)
+    guard !genres.isEmpty else { return apple + charts + sections }
+    return apple + [.header("Charts by Genre"), .genre(genre)] + charts + sections
 }
 
 /// Indices of the rows a cursor may land on. Headers are not selectable.
