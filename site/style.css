@@ -18,3 +18,4 @@
 .header nav a[aria-current=page]{color:var(--cyan)}
 @media(max-width:760px){.header nav .github-nav{display:none}}
 html:not(.js) .scene-toggle,html:not(.js) .demo-toggle{display:none}
+main[tabindex="-1"]:focus{outline:none}
