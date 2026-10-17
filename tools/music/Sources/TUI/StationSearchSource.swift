@@ -933,6 +933,10 @@ protocol SourceControlling {
     func recentStations(limit: Int) throws -> [DiscoverItem]
     /// `slice.charts` (no request fields).
     func charts() throws -> DiscoverSectionCharts
+    /// `slice.genres` (no request fields). Genre browse, step 2.
+    func genres() throws -> [DiscoverGenre]
+    /// `slice.charts {"genre"}`: one genre's three charts.
+    func charts(genre: String) throws -> DiscoverSectionCharts
 }
 
 /// Defaults for the Part 2 members: an older conformer reads as an older
@@ -986,6 +990,10 @@ extension SourceControlling {
         throw SourceAppError.unsupported(BridgeDiscoverSections.recentStationsOp)
     }
     func charts() throws -> DiscoverSectionCharts { throw SourceAppError.unsupported(BridgeDiscoverSections.chartsOp) }
+    func genres() throws -> [DiscoverGenre] { throw SourceAppError.unsupported(BridgeDiscoverSections.genresOp) }
+    func charts(genre: String) throws -> DiscoverSectionCharts {
+        throw SourceAppError.unsupported(BridgeDiscoverSections.chartsGenreCapability)
+    }
 }
 
 struct SourceAppControl: SourceControlling {
@@ -1582,6 +1590,15 @@ struct SourceAppControl: SourceControlling {
 
     func charts() throws -> DiscoverSectionCharts {
         try BridgeDiscoverSections.charts(fromReply: send(["op": BridgeDiscoverSections.chartsOp]))
+    }
+
+    func genres() throws -> [DiscoverGenre] {
+        try BridgeDiscoverSections.genres(fromReply: send(["op": BridgeDiscoverSections.genresOp]))
+    }
+
+    func charts(genre: String) throws -> DiscoverSectionCharts {
+        try BridgeDiscoverSections.charts(
+            fromReply: send(["op": BridgeDiscoverSections.chartsOp, "genre": genre]))
     }
 
     /// D5.

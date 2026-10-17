@@ -412,6 +412,9 @@ final class BridgeSurfaceWireTests: XCTestCase {
             ("slice.recentTracks", { try old.recentTracks(limit: 10) }),
             ("slice.heavyRotation", { try old.heavyRotation(limit: 10) }),
             ("slice.queue", { try old.queueReportingSkips(catalogIDs: ["1"]) }),
+            // Genre browse, step 2.
+            ("slice.genres", { try old.genres() }),
+            ("slice.charts.genre", { try old.charts(genre: "21") }),
         ]
         for (op, call) in cases {
             XCTAssertThrowsError(try call(), op) {

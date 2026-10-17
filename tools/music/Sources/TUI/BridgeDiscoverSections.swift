@@ -24,6 +24,12 @@ enum BridgeDiscoverSections {
     static let recentlyAddedOp = "slice.recentlyAdded"
     static let recentStationsOp = "slice.recentStations"
     static let chartsOp = "slice.charts"
+    /// Genre browse, step 2. `slice.genres` lists the genres; the genre-scoped
+    /// charts are `slice.charts` with a `genre` field, advertised separately
+    /// as `slice.charts.genre` because an older SpanDAC ignores the unknown
+    /// field and would answer the all-genre charts under a genre heading.
+    static let genresOp = "slice.genres"
+    static let chartsGenreCapability = "slice.charts.genre"
 
     /// What `slice.recentStations` is asked for: the web feed's own page.
     static let recentStationsLimit = DiscoverFeed.recentStationsLimit
@@ -58,6 +64,28 @@ enum BridgeDiscoverSections {
         }
         return DiscoverSectionCharts(songs: try chart("songs", .song), albums: try chart("albums", .album),
                                      playlists: try chart("playlists", .playlist))
+    }
+}
+
+extension BridgeDiscoverSections {
+    /// An ok `slice.genres` reply's `genres`, in SpanDAC's order. A missing
+    /// `genres`, or a row missing its `id` or `name`, is unreadable (a contract
+    /// violation), never a shorter list.
+    static func genres(fromReply reply: [String: Any]) throws -> [DiscoverGenre] {
+        guard let rows = reply["genres"] as? [[String: Any]] else { throw SourceAppError.unreadable }
+        return try rows.map { row in
+            guard let id = row["id"] as? String, let name = row["name"] as? String else {
+                throw SourceAppError.unreadable
+            }
+            return DiscoverGenre(id: id, name: name)
+        }
+    }
+
+    /// Genre browse is offered only when SpanDAC advertises BOTH the genre list
+    /// and the genre-scoped charts: with one alone the row would be missing its
+    /// list, or would head all-genre charts with a genre's name.
+    static func offersGenres(_ capabilities: [String]) -> Bool {
+        capabilities.contains(genresOp) && capabilities.contains(chartsGenreCapability)
     }
 }
 

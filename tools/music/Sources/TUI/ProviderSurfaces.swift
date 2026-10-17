@@ -23,7 +23,8 @@ protocol DiscoverProviding {
     /// a section that could not be read, and for a provider that serves none.
     func discoverSections() -> [DiscoverRail]
     /// The genres the Top charts can be read for. Empty: no genre row, which
-    /// is the answer for a provider that serves none (SpanDAC, for now).
+    /// is the answer for a provider that serves none (SpanDAC without
+    /// `slice.genres` and `slice.charts.genre`).
     func discoverGenres() -> [DiscoverGenre]
     /// One genre's Top chart sections. Empty: none could be read.
     func discoverGenreCharts(_ genre: DiscoverGenre) -> [DiscoverRail]

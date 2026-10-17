@@ -192,6 +192,28 @@ struct BridgeMusicProvider: MusicDataProvider {
         bridgeDiscoverSectionRails(control: control, deadline: sectionDeadline)
     }
 
+    /// Genre browse, step 2. The genres SpanDAC lists, only when it advertises
+    /// both `slice.genres` and `slice.charts.genre`; otherwise (or if either
+    /// read fails) none, so no genre row and no genre op sent. Like the web
+    /// service's genre reads this sits outside the section deadline: the scene
+    /// asks after the sections have landed, off the main thread.
+    func discoverGenres() -> [DiscoverGenre] {
+        guard let capabilities = try? control.capabilities(),
+              BridgeDiscoverSections.offersGenres(capabilities) else { return [] }
+        return (try? control.genres()) ?? []
+    }
+
+    /// One genre's charts through `slice.charts {"genre"}`, titled as the web
+    /// service's are. The capability is checked again here so a genre op is
+    /// never sent to a SpanDAC that would ignore the field.
+    func discoverGenreCharts(_ genre: DiscoverGenre) -> [DiscoverRail] {
+        guard let capabilities = try? control.capabilities(),
+              BridgeDiscoverSections.offersGenres(capabilities),
+              let charts = try? control.charts(genre: genre.id) else { return [] }
+        return discoverGenreChartRails(songs: charts.songs, albums: charts.albums,
+                                       playlists: charts.playlists, genre: genre)
+    }
+
     /// D2: `SourceAppStationSearch`'s bytes and refusal decoding, unchanged.
     func searchStations(term: String, limit: Int) throws -> [Station] {
         try control.searchStations(term: term, limit: limit)

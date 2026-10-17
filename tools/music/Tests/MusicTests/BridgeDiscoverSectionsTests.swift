@@ -405,6 +405,177 @@ final class BridgeDiscoverSectionsTests: XCTestCase {
     }
 }
 
+// MARK: - Genre browse under SpanDAC (step 2)
+
+/// `slice.genres` and `slice.charts {"genre"}`: the genre row appears only when
+/// SpanDAC advertises BOTH `slice.genres` and `slice.charts.genre`. Fakes only.
+final class BridgeDiscoverGenresTests: XCTestCase {
+
+    private typealias R = SectionReplies
+    private let idle = NowPlayingSnapshot(outcome: .stopped, history: [], surrounding: [])
+    private let both = SectionReplies.allOps + ["slice.genres", "slice.charts.genre"]
+    private let genresReply = #"{"ok":true,"op":"slice.genres","genres":[{"id":"21","name":"Rock"},{"id":"11","name":"Jazz"}]}"#
+    private let rock = DiscoverGenre(id: "21", name: "Rock")
+
+    private func wire(_ capabilities: [String]?, overrides: [String: String] = [:]) -> SectionWire {
+        var replies = ["slice.genres": genresReply]
+        replies.merge(overrides) { _, new in new }
+        return R.wire(capabilities: capabilities, overrides: replies)
+    }
+
+    private func provider(_ wire: SectionWire) -> BridgeMusicProvider {
+        BridgeMusicProvider(control: wire.control, sectionDeadline: 5)
+    }
+
+    private func genreOpsSent(_ wire: SectionWire) -> [[String: Any]] {
+        wire.sent("slice.genres") + wire.sent("slice.charts").filter { $0["genre"] != nil }
+    }
+
+    // MARK: Decoder
+
+    func testGenresDecodeInSpanDACsOrder() throws {
+        let reply = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(genresReply.utf8)) as? [String: Any])
+        XCTAssertEqual(try BridgeDiscoverSections.genres(fromReply: reply),
+                       [DiscoverGenre(id: "21", name: "Rock"), DiscoverGenre(id: "11", name: "Jazz")])
+        XCTAssertEqual(try BridgeDiscoverSections.genres(fromReply: ["genres": [[String: Any]]()]), [],
+                       "an empty list is an answer")
+    }
+
+    func testAMissingGenresOrAMalformedRowIsUnreadable() {
+        let bad: [[String: Any]] = [
+            [:],
+            ["genres": "x"],
+            ["genres": [["name": "Rock"]]],
+            ["genres": [["id": "21"]]],
+            ["genres": [["id": 21, "name": "Rock"]]],
+            ["genres": [["id": "21", "name": "Rock"], ["id": "11"]]],
+        ]
+        for reply in bad {
+            XCTAssertThrowsError(try BridgeDiscoverSections.genres(fromReply: reply), "\(reply)") {
+                XCTAssertEqual($0 as? SourceAppError, .unreadable)
+            }
+        }
+    }
+
+    // MARK: The wire and the capability gate
+
+    func testBothCapabilitiesGiveGenresAndTheGenreIsSentWithTheChartsRead() {
+        let wire = wire(both)
+        let p = provider(wire)
+        XCTAssertEqual(p.discoverGenres(), [rock, DiscoverGenre(id: "11", name: "Jazz")])
+        XCTAssertEqual(wire.sent("slice.genres").count, 1)
+
+        let rails = p.discoverGenreCharts(rock)
+        let read = wire.sent("slice.charts")
+        XCTAssertEqual(read.count, 1)
+        XCTAssertEqual(read.first?["genre"] as? String, "21")
+        XCTAssertEqual(rails.map(\.title), ["Top Songs \u{00B7} Rock", "Top Albums \u{00B7} Rock", "Top Playlists \u{00B7} Rock"])
+        XCTAssertEqual(rails.map(\.id), ["section:top-songs:genre-21", "section:top-albums:genre-21",
+                                         "section:top-playlists:genre-21"])
+        XCTAssertEqual(rails.first?.items.map(\.id), ["1706428462", "1706428463"])
+    }
+
+    func testOneCapabilityOrNoneMeansNoGenresAndNoGenreOp() {
+        let cases: [[String]?] = [R.allOps, R.allOps + ["slice.genres"], R.allOps + ["slice.charts.genre"], [], nil]
+        for caps in cases {
+            let wire = wire(caps)
+            let p = provider(wire)
+            XCTAssertEqual(p.discoverGenres(), [], "\(String(describing: caps))")
+            XCTAssertEqual(p.discoverGenreCharts(rock), [], "\(String(describing: caps))")
+            XCTAssertEqual(genreOpsSent(wire).count, 0, "\(String(describing: caps))")
+            XCTAssertEqual(wire.sent("slice.charts").count, 0, "\(String(describing: caps))")
+        }
+    }
+
+    func testAFailedReadIsNoGenresAndNoRails() {
+        for reply in [R.upstream, "not json", #"{"ok":true,"op":"slice.genres"}"#,
+                      #"{"ok":true,"op":"slice.genres","genres":[{"id":"21"}]}"#] {
+            XCTAssertEqual(provider(wire(both, overrides: ["slice.genres": reply])).discoverGenres(), [], reply)
+        }
+        let status = wire(both, overrides: ["slice.status": R.upstream])
+        XCTAssertEqual(provider(status).discoverGenres(), [])
+        XCTAssertEqual(genreOpsSent(status).count, 0, "no capabilities read, no genre op")
+
+        let chartsFail = wire(both, overrides: ["slice.charts": R.upstream])
+        XCTAssertEqual(provider(chartsFail).discoverGenreCharts(rock), [])
+        let malformed = wire(both, overrides: ["slice.charts": #"{"ok":true,"op":"slice.charts","charts":{"songs":[]}}"#])
+        XCTAssertEqual(provider(malformed).discoverGenreCharts(rock), [])
+    }
+
+    // MARK: The scene
+
+    private func lifecycle() -> DiscoverLifecycleCoordinator {
+        enum Stop: Error { case stop }
+        let seams = DiscoverLifecycleCoordinator.Seams(
+            runSweep: { _ in }, create: { _, _ in throw Stop.stop }, readCount: { _ in 0 },
+            play: { _ in }, confirmRead: { _ in "" }, post: { _ in },
+            scheduler: DiscoverScheduler(now: { Date() }, deadline: { _ in Date() }, delay: { _ in }))
+        let c = DiscoverLifecycleCoordinator(seams: seams)
+        c.completeLaunchSweep(.swept)
+        return c
+    }
+
+    private func rig(_ capabilities: [String]) -> SceneDataRig {
+        let rig = SceneDataRig(output: .source, accepted: true)
+        rig.replies["slice.status"] = R.status(capabilities)
+        rig.replies["slice.recentlyAdded"] = R.recentlyAdded
+        rig.replies["slice.recentStations"] = R.recentStations
+        rig.replies["slice.charts"] = R.charts
+        rig.replies["slice.genres"] = genresReply
+        return rig
+    }
+
+    private func scene(_ rig: SceneDataRig) -> DiscoverScene {
+        let status = StatusStore()
+        return DiscoverScene(feed: SectionWebService().feed(), status: status, actions: ActionRunner(status: status),
+                             api: RESTAPIBackend(developerToken: "d", userToken: "u", storefront: "us"),
+                             lifecycle: lifecycle(), routing: rig.coordinator(), opener: SceneRecordingOpener())
+    }
+
+    private func settle(_ s: DiscoverScene, seconds: Double = 5, until check: () -> Bool) {
+        let deadline = Date().addingTimeInterval(seconds)
+        while !check() && Date() < deadline {
+            _ = s.tick(snapshot: idle)
+            usleep(2_000)
+        }
+    }
+
+    func testTheSceneShowsTheGenreRowWhenBothAreAdvertisedAndChoosingReReadsTheCharts() {
+        let rig = rig(both)
+        let s = scene(rig)
+        settle(s) { !s.genres.isEmpty }
+        XCTAssertEqual(s.genres, [rock, DiscoverGenre(id: "11", name: "Jazz")])
+        XCTAssertTrue(s.render(frame: shellLayout(width: 120, height: 80), snapshot: idle).contains("Genre: All genres"))
+
+        for _ in 0..<60 where !s.footerHint.contains("Choose genre") { _ = s.handle(.down) }
+        XCTAssertEqual(s.handle(.enter), .redraw)
+        _ = s.handle(.home)
+        for _ in 0..<60 {
+            let out = s.render(frame: shellLayout(width: 120, height: 80), snapshot: idle)
+            if out.contains("\(ANSICode.inverse)Rock") { break }
+            _ = s.handle(.down)
+        }
+        _ = s.handle(.enter)
+        settle(s) { s.rails.contains { $0.title == "Top Songs \u{00B7} Rock" } }
+        XCTAssertEqual(s.genre, rock)
+        XCTAssertTrue(s.rails.contains { $0.title == "Top Songs \u{00B7} Rock" })
+        XCTAssertEqual(rig.sent("slice.charts").compactMap { $0.body["genre"] as? String }, ["21"])
+    }
+
+    func testTheSceneShowsNoGenreRowWithOnlyOneCapability() {
+        for caps in [R.allOps + ["slice.genres"], R.allOps + ["slice.charts.genre"], R.allOps] {
+            let rig = rig(caps)
+            let s = scene(rig)
+            settle(s) { s.rails.contains { $0.section == .topSongs } }
+            for _ in 0..<50 { _ = s.tick(snapshot: idle); usleep(2_000) }
+            XCTAssertTrue(s.genres.isEmpty, "\(caps)")
+            XCTAssertFalse(s.render(frame: shellLayout(width: 120, height: 80), snapshot: idle).contains("Genre:"), "\(caps)")
+            XCTAssertEqual(rig.sent("slice.genres").count, 0, "\(caps)")
+            XCTAssertTrue(rig.sent("slice.charts").allSatisfy { $0.body["genre"] == nil }, "\(caps)")
+        }
+    }
+}
+
 // MARK: - `music discover` under SpanDAC
 
 final class BridgeDiscoverSectionsCLITests: XCTestCase {
