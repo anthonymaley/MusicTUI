@@ -205,7 +205,9 @@ struct BridgeMusicProvider: MusicDataProvider {
 
     /// One genre's charts through `slice.charts {"genre"}`, titled as the web
     /// service's are. The capability is checked again here so a genre op is
-    /// never sent to a SpanDAC that would ignore the field.
+    /// not sent to a SpanDAC that advertises no genre support, but that check
+    /// and the read are two transactions: what makes the rails safe to title
+    /// is the reply's own `genre` echo, which `charts(genre:)` requires.
     func discoverGenreCharts(_ genre: DiscoverGenre) -> [DiscoverRail] {
         guard let capabilities = try? control.capabilities(),
               BridgeDiscoverSections.offersGenres(capabilities),

@@ -23,6 +23,9 @@ final class SectionWire {
     private var stored: [[String: Any]] = []
     private var replies: [String: String]
     private var gates: [String: DispatchSemaphore] = [:]
+    /// Answers `op` per request body, ahead of `replies`: how a test makes
+    /// `slice.charts` answer a genre-scoped request differently.
+    var responders: [String: ([String: Any]) -> String] = [:]
 
     init(_ replies: [String: String]) { self.replies = replies }
 
@@ -40,7 +43,8 @@ final class SectionWire {
     func transport(_ path: String, _ line: String) throws -> String {
         let body = ((try? JSONSerialization.jsonObject(with: Data(line.utf8))) as? [String: Any]) ?? [:]
         let op = body["op"] as? String ?? ""
-        lock.lock(); stored.append(body); let gate = gates[op]; let reply = replies[op]; lock.unlock()
+        lock.lock(); stored.append(body); let gate = gates[op]
+        let reply = responders[op]?(body) ?? replies[op]; lock.unlock()
         if let gate { _ = gate.wait(timeout: .now() + 10); gate.signal() }
         return reply ?? #"{"ok":false,"op":"\#(op)","error":{"kind":"unknown_op","detail":"unknown op"}}"#
     }
@@ -417,10 +421,28 @@ final class BridgeDiscoverGenresTests: XCTestCase {
     private let genresReply = #"{"ok":true,"op":"slice.genres","genres":[{"id":"21","name":"Rock"},{"id":"11","name":"Jazz"}]}"#
     private let rock = DiscoverGenre(id: "21", name: "Rock")
 
-    private func wire(_ capabilities: [String]?, overrides: [String: String] = [:]) -> SectionWire {
+    /// `R.charts` as a genre-scoped success: the same body with the top-level
+    /// `genre` echo, or without one when `genre` is nil.
+    private func charts(echoing genre: String?) -> String {
+        guard let genre else { return R.charts }
+        return R.charts.replacingOccurrences(of: #""op":"slice.charts","#,
+                                             with: #""op":"slice.charts","genre":"\#(genre)","#)
+    }
+
+    /// A SpanDAC advertising `capabilities`. A request carrying `genre` is
+    /// answered with the echo `echo` makes of it (default: the requested id);
+    /// one without is answered with the plain all-genre charts.
+    private func wire(_ capabilities: [String]?, overrides: [String: String] = [:],
+                      echo: @escaping (String) -> String? = { $0 }) -> SectionWire {
         var replies = ["slice.genres": genresReply]
         replies.merge(overrides) { _, new in new }
-        return R.wire(capabilities: capabilities, overrides: replies)
+        let wire = R.wire(capabilities: capabilities, overrides: replies)
+        if overrides["slice.charts"] == nil {
+            wire.responders["slice.charts"] = { [self] body in
+                charts(echoing: (body["genre"] as? String).flatMap(echo))
+            }
+        }
+        return wire
     }
 
     private func provider(_ wire: SectionWire) -> BridgeMusicProvider {
@@ -522,6 +544,7 @@ final class BridgeDiscoverGenresTests: XCTestCase {
         rig.replies["slice.recentStations"] = R.recentStations
         rig.replies["slice.charts"] = R.charts
         rig.replies["slice.genres"] = genresReply
+        rig.responders["slice.charts"] = { [self] body in charts(echoing: body["genre"] as? String) }
         return rig
     }
 
@@ -538,6 +561,31 @@ final class BridgeDiscoverGenresTests: XCTestCase {
             _ = s.tick(snapshot: idle)
             usleep(2_000)
         }
+    }
+
+    /// The capability read and the charts read are two transactions: the
+    /// reply must echo the genre asked for, or it is not that genre's charts.
+    func testGenreChartsRequireTheReplyToEchoTheRequestedGenre() {
+        let cases: [(String, (String) -> String?, Bool)] = [
+            ("no echo", { _ in nil }, false),
+            ("another genre", { _ in "11" }, false),
+            ("matching", { $0 }, true),
+        ]
+        for (name, echo, shown) in cases {
+            let wire = wire(both, echo: echo)
+            let rails = provider(wire).discoverGenreCharts(rock)
+            XCTAssertEqual(wire.sent("slice.charts").count, 1, name)
+            XCTAssertEqual(rails.isEmpty, !shown, name)
+            if shown { XCTAssertEqual(rails.count, 3, name) }
+        }
+        XCTAssertThrowsError(try wire(both, echo: { _ in nil }).control.charts(genre: "21")) {
+            XCTAssertEqual($0 as? SourceAppError, .unreadable)
+        }
+    }
+
+    /// The all-genre read needs no echo.
+    func testTheAllGenreChartsReadIsUnchanged() throws {
+        XCTAssertEqual(try wire(both).control.charts().songs.count, 2)
     }
 
     func testTheSceneShowsTheGenreRowWhenBothAreAdvertisedAndChoosingReReadsTheCharts() {

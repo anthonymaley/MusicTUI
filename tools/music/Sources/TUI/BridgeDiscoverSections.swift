@@ -81,6 +81,16 @@ extension BridgeDiscoverSections {
         }
     }
 
+    /// A genre-scoped `slice.charts` reply: the all-genre shape, but only if it
+    /// echoes the `genre` that was asked for. The capability read and this read
+    /// are two transactions, so a SpanDAC replaced between them (an older one
+    /// ignores the field) would answer all-genre charts that we would title
+    /// with the genre. A missing or different echo is unreadable.
+    static func charts(fromReply reply: [String: Any], genre: String) throws -> DiscoverSectionCharts {
+        guard reply["genre"] as? String == genre else { throw SourceAppError.unreadable }
+        return try charts(fromReply: reply)
+    }
+
     /// Genre browse is offered only when SpanDAC advertises BOTH the genre list
     /// and the genre-scoped charts: with one alone the row would be missing its
     /// list, or would head all-genre charts with a genre's name.

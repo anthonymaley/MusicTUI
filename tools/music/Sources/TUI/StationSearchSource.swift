@@ -1598,7 +1598,7 @@ struct SourceAppControl: SourceControlling {
 
     func charts(genre: String) throws -> DiscoverSectionCharts {
         try BridgeDiscoverSections.charts(
-            fromReply: send(["op": BridgeDiscoverSections.chartsOp, "genre": genre]))
+            fromReply: send(["op": BridgeDiscoverSections.chartsOp, "genre": genre]), genre: genre)
     }
 
     /// D5.

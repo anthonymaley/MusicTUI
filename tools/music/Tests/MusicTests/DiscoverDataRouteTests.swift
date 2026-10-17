@@ -62,6 +62,8 @@ final class SceneDataRig {
     /// Runs inside the transport before it answers `op`, on the caller's
     /// thread: how a test lands a switch in the middle of a round trip.
     var during: [String: () -> Void] = [:]
+    /// Answers `op` per request body, ahead of `replies`.
+    var responders: [String: ([String: Any]) -> String] = [:]
 
     init(output: PlaybackMode, accepted: Bool) {
         dir = NSTemporaryDirectory() + "music-scene-data-\(UUID().uuidString)"
@@ -95,7 +97,7 @@ final class SceneDataRig {
             let op = body["op"] as? String ?? ""
             lock.lock(); _sent.append((tag, op, body)); let hook = during[op]; lock.unlock()
             hook?()
-            lock.lock(); let reply = replies[op]; lock.unlock()
+            lock.lock(); let reply = responders[op]?(body) ?? replies[op]; lock.unlock()
             return reply ?? #"{"ok":false,"op":"?","error":{"kind":"bad_request","detail":"unexpected op"}}"#
         })
     }
