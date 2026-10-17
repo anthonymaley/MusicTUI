@@ -12,7 +12,9 @@ import ImageIO
 /// and anything unrecognized falls through to false (chafa/mono/gradient).
 func kittyGraphicsSupported(env: [String: String]) -> Bool {
     if env["KITTY_WINDOW_ID"] != nil { return true }
-    if let term = env["TERM"], term.contains("kitty") { return true }
+    // TERM is what crosses SSH (TERM_PROGRAM does not), so a Ghostty session
+    // on another Mac is recognised by its `xterm-ghostty`.
+    if let term = env["TERM"], term.contains("kitty") || term.contains("ghostty") { return true }
     let termProgram = env["TERM_PROGRAM"]
     if termProgram == "WezTerm" || termProgram == "ghostty" { return true }
     if termProgram == "iTerm.app", let version = env["TERM_PROGRAM_VERSION"] {

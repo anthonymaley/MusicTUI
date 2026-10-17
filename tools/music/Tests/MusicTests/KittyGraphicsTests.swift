@@ -25,6 +25,12 @@ final class KittyGraphicsTests: XCTestCase {
         XCTAssertTrue(kittyGraphicsSupported(env: ["TERM_PROGRAM": "ghostty"]))
     }
 
+    /// Over SSH only TERM crosses; Ghostty's is xterm-ghostty (seen on the
+    /// Studio 2026-10-17, art drew as chafa blocks).
+    func testTermXtermGhosttyOverSSHImpliesSupport() {
+        XCTAssertTrue(kittyGraphicsSupported(env: ["TERM": "xterm-ghostty", "SSH_TTY": "/dev/ttys025"]))
+    }
+
     func testITermAtOrAbove3_5ImpliesSupport() {
         XCTAssertTrue(kittyGraphicsSupported(env: [
             "TERM_PROGRAM": "iTerm.app",
