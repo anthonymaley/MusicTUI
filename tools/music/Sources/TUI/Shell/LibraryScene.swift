@@ -429,8 +429,15 @@ final class LibraryScene: Scene {
     // fetch/cache/render exactly as it does for Playlists/Radio. onReady sets
     // artDirty under inboxLock (same discipline as the streaming inboxes) and
     // tick drains it into `changed` so the swap paints on the next frame.
-    private let artwork = ArtworkStore()
+    private let artwork: ArtworkStore
     private var artDirty = false
+    // SpanDAC's top-level Albums covers: the generation and library instance of
+    // the list drain whose rows are APPLIED to `albums` (they change only when
+    // those rows do; either nil means no artwork may be asked), and the
+    // fetcher's `landed` last seen, so a landing repaints.
+    private var bridgeAlbumsGeneration: Int?
+    private var bridgeAlbumsInstance: String?
+    private var lastCoverLanded = 0
     private let kittyEnabled: Bool
     // Placement-dedup (render-thread-only, per design doc Feature 2 §3): the
     // last kitty placement this scene emitted, so an unchanged frame emits
@@ -488,6 +495,7 @@ final class LibraryScene: Scene {
          appQueue: AppQueueStore, status: StatusStore, actions: ActionRunner,
          kittyEnabled: Bool = false,
          libraryCovers: LibraryCoverFetcher? = nil,
+         artwork: ArtworkStore = ArtworkStore(),
          resolveAlbum: @escaping (AppleScriptBackend, String, String) -> AlbumResolution
              = { resolveAlbumPlaybackTracks(backend: $0, title: $1, artist: $2) },
          resolveArtist: @escaping (AppleScriptBackend, String) -> AlbumResolution
@@ -499,6 +507,7 @@ final class LibraryScene: Scene {
          now: @escaping () -> Date = { Date() }) {
         self.now = now
         self.libraryCovers = libraryCovers
+        self.artwork = artwork
         self.resolveAlbum = resolveAlbum
         self.resolveArtist = resolveArtist
         self.makeProvider = makeProvider
@@ -1340,6 +1349,8 @@ final class LibraryScene: Scene {
         bridgeAlbumsFailure = nil
         bridgeAlbumsWarming = false
         albumsSource = nil
+        bridgeAlbumsGeneration = nil
+        bridgeAlbumsInstance = nil
         // The epoch and everything a worker keyed on it may have posted move in
         // ONE critical section: the background re-ask predicates read the
         // epochs under `inboxLock`, so an unlocked bump was a data race, and a
@@ -1396,6 +1407,7 @@ final class LibraryScene: Scene {
     /// two id spaces never collide, but a stale entry would still paint the
     /// wrong tracks/cover under a NEW row that happens to reuse a position).
     private func clearAlbumCentricCaches() {
+        libraryCovers?.cancelAll()
         trackCache = [:]
         previewInFlight = []
         coverCache = [:]
@@ -1559,6 +1571,10 @@ final class LibraryScene: Scene {
             albums.append(contentsOf: albumsDrain.append)
         }
         if albumsDrain.replace != nil || !albumsDrain.append.isEmpty {
+            // The pair describes the rows now on screen: it moves only when rows
+            // are applied, never on a quiet tick.
+            bridgeAlbumsGeneration = albumsDrain.generation
+            bridgeAlbumsInstance = albumsDrain.libraryInstance
             if let albumAnchor, let pos = visibleAlbumIndices().firstIndex(where: { albums[$0].id == albumAnchor }) {
                 nav.cursor = pos
             }
@@ -1758,13 +1774,21 @@ final class LibraryScene: Scene {
         // zone mode (not just .three, unlike the track preview above), so no
         // .three gate here.
         //
-        // C3 item 3: NEVER for a Bridge-sourced album — it gets the gradient
-        // (gap G3). A transportable artwork URL for a MusicKit library item is
-        // its own unmeasured question, not this slice's to answer.
+        // NEVER for a Bridge-sourced album: SpanDAC's covers come from the shell's
+        // `LibraryCoverFetcher`, for the top-level Albums list and the tracks view
+        // drilled from it only (below). An artist's albums rail, and any album
+        // opened from it, keep the gradient: `slice.libraryArtistAlbums` answers
+        // the full snapshot's generation, not the one the artwork op binds to.
+        // Follow-up: cover those rows once that op answers the bound generation.
         if (isAlbumRail || isTracksLevel), currentAlbumSource != .bridge, let a = focusedAlbum() {
             kickCoverFetch(albumID: a.id)
         }
         syncTracksReask()
+        if let libraryCovers {
+            libraryCovers.focus(focusedAlbum().flatMap(coverTarget(for:)))
+            let landed = libraryCovers.landed
+            if landed != lastCoverLanded { lastCoverLanded = landed; changed = true }
+        }
         return changed
     }
 
@@ -2686,6 +2710,20 @@ final class LibraryScene: Scene {
         railScroll = 0
     }
 
+    /// The cover target for `a`, only where SpanDAC's covers are in scope: the
+    /// top-level Albums list, or the tracks view of an album opened from it, with
+    /// Bridge as the list's source and an applied generation and instance. The
+    /// Artists sub-view, an artist's albums rail and Songs are never in scope.
+    private func coverTarget(for a: LibraryAlbum) -> LibraryCoverFetcher.Target? {
+        guard nav.subView == .albums, currentAlbumSource == .bridge,
+              isAlbumList || (isTracksLevel && nav.stack.count == 2),
+              let generation = bridgeAlbumsGeneration, let instance = bridgeAlbumsInstance
+        else { return nil }
+        return LibraryCoverFetcher.Target(owner: .libraryAlbums, kind: .album, id: a.id,
+                                          generation: generation, libraryInstance: instance,
+                                          dataEpoch: routing.dataEpoch)
+    }
+
     private func focusedAlbum() -> LibraryAlbum? {
         let src = currentAlbums
         switch nav.current {
@@ -2989,7 +3027,8 @@ final class LibraryScene: Scene {
         let gw = z.heroWidth
         let gh = max(0, bodyBottom - y - 4)
         var artBlock: ArtBlock? = nil
-        if let hit = coverCache[a.id] ?? nil {
+        let spandacCover = coverTarget(for: a).flatMap { libraryCovers?.cover(for: $0) }
+        if let hit = (coverCache[a.id] ?? nil) ?? spandacCover {
             artBlock = artwork.block(key: hit.key,
                                      url: hit.url,
                                      // Degenerate geometry (very short/narrow terminal) skips the
