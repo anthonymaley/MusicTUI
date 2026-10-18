@@ -438,6 +438,9 @@ final class LibraryScene: Scene {
     private var bridgeAlbumsGeneration: Int?
     private var bridgeAlbumsInstance: String?
     private var lastCoverLanded = 0
+    /// The Albums list (generation and instance) already read again because SpanDAC
+    /// refused its covers as `stale_generation`: at most one re-read per list.
+    private var albumsRereadFor: LibraryCoverFetcher.StaleList?
     private let kittyEnabled: Bool
     // Placement-dedup (render-thread-only, per design doc Feature 2 §3): the
     // last kitty placement this scene emitted, so an unchanged frame emits
@@ -1351,6 +1354,7 @@ final class LibraryScene: Scene {
         albumsSource = nil
         bridgeAlbumsGeneration = nil
         bridgeAlbumsInstance = nil
+        albumsRereadFor = nil
         // The epoch and everything a worker keyed on it may have posted move in
         // ONE critical section: the background re-ask predicates read the
         // epochs under `inboxLock`, so an unlocked bump was a data race, and a
@@ -1786,6 +1790,7 @@ final class LibraryScene: Scene {
         syncTracksReask()
         if let libraryCovers {
             libraryCovers.focus(focusedAlbum().flatMap(coverTarget(for:)))
+            rereadAlbumsIfStale(libraryCovers)
             let landed = libraryCovers.landed
             if landed != lastCoverLanded { lastCoverLanded = landed; changed = true }
         }
@@ -2722,6 +2727,31 @@ final class LibraryScene: Scene {
         return LibraryCoverFetcher.Target(owner: .libraryAlbums, kind: .album, id: a.id,
                                           generation: generation, libraryInstance: instance,
                                           dataEpoch: routing.dataEpoch)
+    }
+
+    /// A SpanDAC library refresh moves its snapshot's generation, and this list is
+    /// load-once, so every cover asked under the rows on screen is refused as
+    /// `stale_generation` from then on. When the fetcher says that is the list on
+    /// screen, read it again in place, once per list: `BridgeListFeed.refresh`, the
+    /// machinery `r` uses in Playlists, with nothing to ask SpanDAC and nothing to
+    /// say. It posts ONE `reasked` replacement, which the drain applies like any
+    /// re-ask: by row id at the root list (the cursor stays on its album), silently
+    /// underneath when a tracks view is open. A failed or superseded read leaves the
+    /// list and the gradient as they were, and the list is not asked again unless it
+    /// changes.
+    private func rereadAlbumsIfStale(_ covers: LibraryCoverFetcher) {
+        guard albumsSource == .bridge, let generation = bridgeAlbumsGeneration,
+              let instance = bridgeAlbumsInstance,
+              let stale = covers.staleList(for: .libraryAlbums),
+              stale.generation == generation, stale.libraryInstance == instance,
+              albumsRereadFor != stale
+        else { return }
+        switch albumsFeed.refresh() {
+        case .started, .tookOver: albumsRereadFor = stale
+        // A walk or a person's refresh is running and will land its own rows; ask
+        // again on a later tick if the list is still the stale one.
+        case .busy, .alreadyRefreshing: break
+        }
     }
 
     private func focusedAlbum() -> LibraryAlbum? {

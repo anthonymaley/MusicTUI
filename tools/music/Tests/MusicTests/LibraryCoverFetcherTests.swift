@@ -61,6 +61,10 @@ final class LibraryCoverFetcherTests: XCTestCase {
         /// Replaces the answer for a chunk index when it returns non-nil.
         var chunkOverride: ((Int) -> LibraryArtworkReply?)?
         var corruptDigest = false
+        /// When set, SpanDAC's core is at this generation: a first request under any
+        /// other answers `stale_generation`, as the live server does once a refresh
+        /// has moved its snapshot. nil (the default) serves whatever it is asked.
+        var serverGeneration: Int?
         private(set) var firstRequests: [LibraryArtworkRequest] = []
         private(set) var chunkRequests: [String] = []
         private var transfers: [String: (request: LibraryArtworkRequest, data: Data)] = [:]
@@ -81,6 +85,7 @@ final class LibraryCoverFetcherTests: XCTestCase {
                                                 libraryInstance: libraryInstance, px: px)
             firstRequests.append(request)
             if !firstReplies.isEmpty { return firstReplies.removeFirst() }
+            if let serverGeneration, generation != serverGeneration { return .refused(.staleGeneration) }
             guard let data = covers["\(kind.rawValue)|\(id)|\(generation)"] ?? covers["\(kind.rawValue)|\(id)"] else {
                 return .refused(.noArtwork)
             }
@@ -684,6 +689,22 @@ final class LibraryCoverFetcherTests: XCTestCase {
         h.rest(gen2, at: 61)
         XCTAssertEqual(h.spandac.firstRequests.map(\.generation), [1, 2])
         XCTAssertNotNil(h.fetcher.cover(for: gen2))
+    }
+
+    func testAStaleRefusalNamesTheListItCameFromPerOwner() {
+        let h = served()
+        XCTAssertNil(h.fetcher.staleList(for: .libraryAlbums))
+        h.spandac.serverGeneration = 3
+        let gen2 = album(generation: 2)
+        h.rest(gen2)
+        XCTAssertEqual(h.fetcher.staleList(for: .libraryAlbums),
+                       LibraryCoverFetcher.StaleList(generation: 2, libraryInstance: Self.instanceA))
+        XCTAssertNil(h.fetcher.staleList(for: .playlists), "another owner's list is not named")
+        // A request under the server's generation is not a stale one and changes nothing.
+        let gen3 = album(generation: 3)
+        h.rest(gen3, at: 5)
+        XCTAssertNotNil(h.fetcher.cover(for: gen3))
+        XCTAssertEqual(h.fetcher.staleList(for: .libraryAlbums)?.generation, 2)
     }
 
     func testRestartWithTheSameGenerationIsAnotherKey() {

@@ -43,7 +43,7 @@ final class LibraryCoverFetcher {
 
     /// Which scene a target belongs to, so a focus from a scene that is not the
     /// active tab is ignored.
-    enum Owner {
+    enum Owner: Hashable {
         case libraryAlbums, playlists
 
         var scene: SceneID {
@@ -129,6 +129,13 @@ final class LibraryCoverFetcher {
 
     private enum RestPhase { case resting, readDue, reading, done }
 
+    /// The list a `stale_generation` refusal named: the generation and instance a
+    /// target carried when SpanDAC said its snapshot had moved on.
+    struct StaleList: Equatable {
+        let generation: Int
+        let libraryInstance: String
+    }
+
     private let lock = NSLock()
     // The shell's view, from `observeShell`.
     private var active: SceneID?
@@ -152,6 +159,10 @@ final class LibraryCoverFetcher {
     private var backoffUntil: [String: Date] = [:]
     private var warmingUntil: [String: Date] = [:]
     private var staleKeys: Set<String> = []
+    /// Per owner, the list the latest `stale_generation` refusal came from. Not
+    /// cleared by anything: a scene acts on it only while its APPLIED list still
+    /// carries that very generation and instance, and a new list never does.
+    private var staleLists: [Owner: StaleList] = [:]
     private var interims: [InterimKey: String] = [:]
     // The fetch worker: at most one job in flight, a newer submit replaces the
     // waiting one (the UpNextFillWorker pattern).
@@ -237,6 +248,14 @@ final class LibraryCoverFetcher {
         guard !negatives.contains(key),
               let interim = interims[interimKey(target)], installed(interim) else { return nil }
         return libraryCover(interim)
+    }
+
+    /// The list the owner's latest `stale_generation` refusal named, or nil. A scene
+    /// whose applied list has exactly this generation and instance is showing rows
+    /// from a snapshot SpanDAC has left, and should read its list again.
+    func staleList(for owner: Owner) -> StaleList? {
+        lock.lock(); defer { lock.unlock() }
+        return staleLists[owner]
     }
 
     // MARK: scheduling (lock held)
@@ -503,6 +522,8 @@ final class LibraryCoverFetcher {
         case .stale:
             // No retry for this generation; a new one is another key.
             staleKeys.insert(key)
+            staleLists[target.owner] = StaleList(generation: target.generation,
+                                                 libraryInstance: target.libraryInstance)
             forceRead = true
         case .negative:
             negatives.insert(key)
