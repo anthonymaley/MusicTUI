@@ -271,6 +271,11 @@ func runShell() {
     // pre-REST behavior, no error, no dead tab.
     let router = Router(root: .nowPlaying)
     var lastActiveScene = router.active
+    // SpanDAC's covers for the top-level Albums and Playlists heroes: ONE
+    // fetcher, shared by both scenes, cancelled from the loop below the moment
+    // the tab or the data source moves.
+    let libraryCovers = LibraryCoverFetcher(provider: { spanDACDataProvider(routing: routing) },
+                                            dataEpoch: { routing.dataEpoch })
     var scenes: [SceneID: Scene] = [.nowPlaying: NowPlayingScene(backend: backend, appQueue: appQueue, status: status, actions: actions, routing: routing, restArtworkAPI: makeArtworkAPI(), kittyEnabled: kittyEnabled,
                                                                   setArtSize: { cols, rows in poller.setDesiredArtSize(cols: cols, rows: rows) })]
     // Declaration order IS the tab strip order and the 1-6 digit shortcuts.
@@ -311,6 +316,7 @@ func runShell() {
                                        : makePlaylistDataSources(backend: backend, names: names, artworkAPI: makeArtworkAPI()),
                                    appQueue: appQueue, status: status, actions: actions,
                                    kittyEnabled: kittyEnabled,
+                                   libraryCovers: libraryCovers,
                                    makeProvider: { spanDACDataProvider(routing: routing) },
                                    loadMusicAppPlaylists: { fetchUserPlaylistNames(backend: backend) },
                                    makeSources: { makePlaylistDataSources(backend: backend, names: $0, artworkAPI: makeArtworkAPI()) },
@@ -350,6 +356,7 @@ func runShell() {
             let scene = LibraryScene(backend: backend, routing: routing,
                                      sources: makeLibraryDataSources(backend: backend, artworkAPI: makeArtworkAPI()),
                                      appQueue: appQueue, status: status, actions: actions, kittyEnabled: kittyEnabled,
+                                     libraryCovers: libraryCovers,
                                      makeProvider: { spanDACDataProvider(routing: routing) },
                                      // Owned songs by exact persistent ID.
                                      handoff: liveMusicTUIHandoff(backend: backend, appQueue: appQueue, routing: routing))
@@ -526,6 +533,9 @@ func runShell() {
         let screen = dims()
         let frame = shellLayout(width: screen.width, height: screen.height, cellW: screen.cellW, cellH: screen.cellH)
         guard let scene = ensureScene(router.active) ?? scenes[.nowPlaying] else { continue }
+        // Before any scene code runs this iteration: a tab or data-source move
+        // cancels a cover transfer synchronously.
+        libraryCovers.observeShell(active: router.active, dataEpoch: routing.dataEpoch)
         // One place catches every arrival, however the tab changed — a digit, Tab,
         // a `.push` from a scene, a `.pop` back. Before `tick`, so a scene can set
         // its cursor and have that same tick publish it.

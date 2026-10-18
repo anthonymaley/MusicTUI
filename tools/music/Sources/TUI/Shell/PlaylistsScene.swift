@@ -406,11 +406,15 @@ final class PlaylistsScene: Scene {
     private var bridgeTracksPlaylistID: String? = nil
     private var bridgeTracksPlaylistName: String? = nil
 
+    /// SpanDAC's covers for the top-level Playlists hero (the shell's one fetcher).
+    let libraryCovers: LibraryCoverFetcher?
+
     init(backend: AppleScriptBackend,
          routing: RoutingCoordinator, playlists: [String], subscriptionNames: Set<String> = [],
          sources: PlaylistDataSources,
          appQueue: AppQueueStore, status: StatusStore, actions: ActionRunner,
          kittyEnabled: Bool = false, metaCache: PlaylistMetaCache = PlaylistMetaCache(),
+         libraryCovers: LibraryCoverFetcher? = nil,
          makeProvider: @escaping () -> MusicDataProvider? = { nil },
          loadMusicAppPlaylists: @escaping () -> (names: [String], subscription: Set<String>) = { ([], []) },
          makeSources: @escaping ([String]) -> PlaylistDataSources = { _ in .empty },
@@ -419,6 +423,7 @@ final class PlaylistsScene: Scene {
          now: @escaping () -> Date = Date.init,
          screenWidth: @escaping () -> Int = { ScreenFrame.current().width }) {
         self.routing = routing
+        self.libraryCovers = libraryCovers
         self.handoff = handoff
         self.provenanceDataEpoch = routing.dataEpoch
         self.backend = backend

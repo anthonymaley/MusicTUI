@@ -480,10 +480,14 @@ final class LibraryScene: Scene {
     /// production is unchanged.
     private let resultCache: ResultCache
 
+    /// SpanDAC's covers for the top-level Albums hero (the shell's one fetcher).
+    let libraryCovers: LibraryCoverFetcher?
+
     init(backend: AppleScriptBackend,
          routing: RoutingCoordinator, sources: LibraryDataSources,
          appQueue: AppQueueStore, status: StatusStore, actions: ActionRunner,
          kittyEnabled: Bool = false,
+         libraryCovers: LibraryCoverFetcher? = nil,
          resolveAlbum: @escaping (AppleScriptBackend, String, String) -> AlbumResolution
              = { resolveAlbumPlaybackTracks(backend: $0, title: $1, artist: $2) },
          resolveArtist: @escaping (AppleScriptBackend, String) -> AlbumResolution
@@ -494,6 +498,7 @@ final class LibraryScene: Scene {
          resultCache: ResultCache = ResultCache(),
          now: @escaping () -> Date = { Date() }) {
         self.now = now
+        self.libraryCovers = libraryCovers
         self.resolveAlbum = resolveAlbum
         self.resolveArtist = resolveArtist
         self.makeProvider = makeProvider

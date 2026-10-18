@@ -55,7 +55,12 @@ final class ArtworkStore {
     // this only fires again when the displayed cover actually changes.
     private var kittyEscape: [String: String] = [:]  // key → cached transmit escape
 
-    init(cacheDir: String = NSString(string: "~/.config/music/art-cache").expandingTildeInPath,
+    /// The art cache on disk. One definition, because `LibraryCoverFetcher`
+    /// installs SpanDAC's library covers into the same directory (under `sd_`
+    /// keys) for this store to find without fetching.
+    static let defaultCacheDir = NSString(string: "~/.config/music/art-cache").expandingTildeInPath
+
+    init(cacheDir: String = ArtworkStore.defaultCacheDir,
          fetch: ((String) -> Data?)? = nil,
          render: ((String, Int, Int) -> [String])? = nil) {
         self.cacheDir = cacheDir
