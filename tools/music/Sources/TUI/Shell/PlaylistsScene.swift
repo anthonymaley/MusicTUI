@@ -219,8 +219,9 @@ final class PlaylistsScene: Scene {
     // discipline: posted under inboxLock, drained in tick); ArtworkStore then
     // owns per-cover fetch/cache/render. No token → onArtworkMap is nil and
     // gradients stay. Bridge mode's `sources` is `.empty` (`onArtworkMap`
-    // nil), so this never kicks off there either (D1: always the gradient).
-    private let artwork = ArtworkStore()
+    // nil), so this never kicks off there either. Bridge's own covers come from
+    // the shell's `libraryCovers` fetcher into the same cache directory.
+    private let artwork: ArtworkStore
     private var artMap: [String: (id: String, url: String)] = [:]
     private var artMapInbox: [String: (id: String, url: String)]? = nil
     private var artMapStarted = false
@@ -408,6 +409,12 @@ final class PlaylistsScene: Scene {
 
     /// SpanDAC's covers for the top-level Playlists hero (the shell's one fetcher).
     let libraryCovers: LibraryCoverFetcher?
+    /// The generation and library instance of the list page(s) whose rows are
+    /// APPLIED to `bridgePlaylistRows`: they change only when those rows change,
+    /// and either being nil means no cover may be asked for.
+    private var bridgePlaylistsGeneration: Int? = nil
+    private var bridgePlaylistsInstance: String? = nil
+    private var lastCoverLanded = 0
 
     init(backend: AppleScriptBackend,
          routing: RoutingCoordinator, playlists: [String], subscriptionNames: Set<String> = [],
@@ -415,6 +422,7 @@ final class PlaylistsScene: Scene {
          appQueue: AppQueueStore, status: StatusStore, actions: ActionRunner,
          kittyEnabled: Bool = false, metaCache: PlaylistMetaCache = PlaylistMetaCache(),
          libraryCovers: LibraryCoverFetcher? = nil,
+         artwork: ArtworkStore = ArtworkStore(),
          makeProvider: @escaping () -> MusicDataProvider? = { nil },
          loadMusicAppPlaylists: @escaping () -> (names: [String], subscription: Set<String>) = { ([], []) },
          makeSources: @escaping ([String]) -> PlaylistDataSources = { _ in .empty },
@@ -424,6 +432,7 @@ final class PlaylistsScene: Scene {
          screenWidth: @escaping () -> Int = { ScreenFrame.current().width }) {
         self.routing = routing
         self.libraryCovers = libraryCovers
+        self.artwork = artwork
         self.handoff = handoff
         self.provenanceDataEpoch = routing.dataEpoch
         self.backend = backend
@@ -690,6 +699,9 @@ final class PlaylistsScene: Scene {
         previewInboxLock.unlock()
         // Bridge structures.
         bridgePlaylistRows = []
+        bridgePlaylistsGeneration = nil
+        bridgePlaylistsInstance = nil
+        libraryCovers?.cancelAll()
         bridgeDone = false
         bridgeTotal = nil
         bridgeFailure = nil
@@ -954,6 +966,8 @@ final class PlaylistsScene: Scene {
                 ? (focus == .tracks ? bridgeTracksPlaylistID : currentBridgeRow()?.id)
                 : nil
             bridgePlaylistRows = replace.filter { !isTempPlaylistName($0.title) }
+            bridgePlaylistsGeneration = bridgeDrain.generation
+            bridgePlaylistsInstance = bridgeDrain.libraryInstance
             if let anchor {
                 if let idx = bridgePlaylistRows.firstIndex(where: { $0.id == anchor }) {
                     plCursor = idx
@@ -970,6 +984,8 @@ final class PlaylistsScene: Scene {
         }
         if !bridgeDrain.append.isEmpty {
             bridgePlaylistRows.append(contentsOf: bridgeDrain.append.filter { !isTempPlaylistName($0.title) })
+            bridgePlaylistsGeneration = bridgeDrain.generation
+            bridgePlaylistsInstance = bridgeDrain.libraryInstance
             // A page appended after an empty-vis replace can be the one that
             // introduces the filter's first match — see
             // `reclampBridgeCursorToFilter`'s doc comment.
@@ -1107,7 +1123,25 @@ final class PlaylistsScene: Scene {
             bridgePreviewRest = nil
         }
         syncPreviewReask(token: previewToken)
+        if let covers = libraryCovers {
+            covers.focus(bridgeCoverTarget())
+            let landed = covers.landed
+            if landed != lastCoverLanded { lastCoverLanded = landed; changed = true }
+        }
         return changed
+    }
+
+    /// The focused top-level Bridge row's cover request, or nil: only while the
+    /// rail is Bridge's and is the top-level list (not drilled into a playlist),
+    /// and only for rows whose applied list pages stated a generation and a library
+    /// instance. Temp `__album__` containers are never rows (filtered at drain).
+    private func bridgeCoverTarget() -> LibraryCoverFetcher.Target? {
+        guard railSource == .bridge, focus == .playlists, let row = currentBridgeRow(),
+              let generation = bridgePlaylistsGeneration, let instance = bridgePlaylistsInstance
+        else { return nil }
+        return LibraryCoverFetcher.Target(owner: .playlists, kind: .playlist, id: row.id,
+                                          generation: generation, libraryInstance: instance,
+                                          dataEpoch: routing.dataEpoch)
     }
 
     /// Current = the same focus (token), the same provenance, and this tab
@@ -2037,15 +2071,22 @@ final class PlaylistsScene: Scene {
         y += 2
         let gw = z.heroWidth
         let gh = max(0, bodyBottom - y - 4)
-        // D1: always the gradient — no artMap lookup and no artwork kick
-        // while `railSource == .bridge`. Same square-equivalent sizing as
-        // Music.app's hero, for visual consistency between the two rails.
-        let (pc, pr) = kittySquareRect(maxCols: gw, maxRows: gh, cellW: cellW, cellH: cellH)
-        let gradient = gradientBlock(name: row.title, width: pc, height: pr)
-        for (i, line) in gradient.enumerated() {
-            out += ANSICode.moveTo(row: y + i, col: z.heroX) + line
+        // SpanDAC's installed cover when the fetcher has one for this row, else
+        // the gradient (the shared ladder draws either at the same square rect
+        // Music.app's hero uses). No artMap lookup: that is Music.app's.
+        var artBlock: ArtBlock? = nil
+        if let target = bridgeCoverTarget(), let cover = libraryCovers?.cover(for: target) {
+            artBlock = artwork.block(key: cover.key, url: cover.url, width: gw, height: gh,
+                                     kitty: kittyEnabled && gw > 0 && gh > 0) { [weak self] in
+                guard let self else { return }
+                self.inboxLock.lock(); self.artDirty = true; self.inboxLock.unlock()
+            }
         }
-        y += pr
+        let placed = renderArtHero(artBlock: artBlock, gradientSeedText: row.title,
+                                   gw: gw, gh: gh, x: z.heroX, y: y, cellW: cellW, cellH: cellH,
+                                   lastPlaced: lastPlaced, into: &out)
+        y = placed.y
+        lastPlaced = placed.lastPlaced
         // D1: no badge, ever — Bridge exposes no smart/recent/apple flag.
         // Matches Music.app's own `else { y += 1 }` branch, plus the same
         // +1 art-trailer spacer every branch there takes first.
