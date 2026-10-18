@@ -282,7 +282,8 @@ final class LibraryCoverFetcher {
         let restSerial: Int?
         if restPhase == .readDue { restPhase = .reading; restSerial = focusSerial } else { restSerial = nil }
         let epoch = cancelEpoch
-        return { [weak self] in self?.read(epoch: epoch, restSerial: restSerial) }
+        let data = dataEpoch()
+        return { [weak self] in self?.read(epoch: epoch, dataEpoch: data, restSerial: restSerial) }
     }
 
     /// After the rest's read, with readiness valid for the target and nothing that
@@ -335,7 +336,7 @@ final class LibraryCoverFetcher {
 
     // MARK: readiness
 
-    private func read(epoch: Int, restSerial: Int?) {
+    private func read(epoch: Int, dataEpoch data: Int, restSerial: Int?) {
         lock.lock()
         guard cancelEpoch == epoch, focused != nil else {
             readInFlight = false
@@ -350,6 +351,20 @@ final class LibraryCoverFetcher {
 
         lock.lock()
         readInFlight = false
+        // A cancel (tab or source change) or a data-epoch move while the call was
+        // out makes its answer obsolete: an old "unsupported" would otherwise hold
+        // a valid target on the gradient for `unsupportedReread`, and an old
+        // transport failure would impose its retry delay on the new focus. Drop
+        // it whole and let the current focus schedule its own read.
+        if cancelEpoch != epoch || dataEpoch() != data {
+            if restSerial == focusSerial, restPhase == .reading { restPhase = .readDue }
+            // A focus built under another data epoch is dropped by the next `focus`
+            // call; reading for it now would be a wasted call.
+            let work = focused.map { $0.dataEpoch == dataEpoch() } == false ? [] : advanceLocked()
+            lock.unlock()
+            run(work)
+            return
+        }
         let t = now()
         if let result {
             readFailures = 0

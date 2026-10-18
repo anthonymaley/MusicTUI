@@ -510,6 +510,62 @@ final class LibraryCoverFetcherTests: XCTestCase {
         }
     }
 
+    // MARK: a status call that outlives the focus it was made for
+
+    /// The first status call is held "in flight" by running `whileHeld` inside it;
+    /// it then answers `stale`. Every later call gets the supported default.
+    private func holdFirstStatusCall(_ h: Harness, whileHeld: @escaping () -> Void,
+                                     answer stale: @escaping () throws -> LibraryArtworkReadiness) {
+        var calls = 0
+        h.spandac.readiness = {
+            calls += 1
+            if calls == 1 { whileHeld(); return try stale() }
+            return LibraryArtworkReadiness(supported: true, instance: Self.instanceA)
+        }
+    }
+
+    func testAStaleUnsupportedAnswerAfterATabCancelIsDiscarded() {
+        let h = served()
+        let a = album()
+        holdFirstStatusCall(h, whileHeld: { h.fetcher.observeShell(active: .playlists, dataEpoch: 0) },
+                            answer: { LibraryArtworkReadiness(supported: false, instance: Self.instanceA) })
+        h.rest(a)                                    // the read starts and is cancelled under it
+        XCTAssertEqual(h.statusReads(), 1)
+        XCTAssertNil(h.fetcher.cover(for: a))
+        h.fetcher.observeShell(active: .library, dataEpoch: 0)   // back to a valid target
+        h.rest(a, at: 1.0)
+        XCTAssertEqual(h.spandac.statusReadTimes, [0, 1.0], "a fresh read at once, not 30 s later")
+        XCTAssertEqual(h.contents(a), Self.payload(40_000))
+        XCTAssertNotNil(h.fetcher.cover(for: a))
+    }
+
+    func testAStaleUnsupportedAnswerAfterAnUnobservedDataEpochMoveIsDiscarded() {
+        let h = served()
+        let a = album()
+        holdFirstStatusCall(h, whileHeld: { h.epoch = 1 },     // no observeShell: only the live epoch moved
+                            answer: { LibraryArtworkReadiness(supported: false, instance: Self.instanceA) })
+        h.rest(a)
+        XCTAssertEqual(h.statusReads(), 1)
+        let b = album(epoch: 1)
+        h.fetcher.observeShell(active: .library, dataEpoch: 1)
+        h.rest(b, at: 1.0)
+        XCTAssertNotNil(h.fetcher.cover(for: b), "the obsolete unsupported answer must not hold the gradient")
+        XCTAssertLessThan(h.clock.t, LibraryCoverFetcher.unsupportedReread)
+    }
+
+    func testAStaleTransportFailureImposesNoRetryDelayOnTheNewFocus() {
+        let h = served()
+        let a = album()
+        holdFirstStatusCall(h, whileHeld: { h.fetcher.observeShell(active: .playlists, dataEpoch: 0) },
+                            answer: { throw ReadFailed() })
+        h.rest(a)
+        XCTAssertEqual(h.statusReads(), 1)
+        h.fetcher.observeShell(active: .library, dataEpoch: 0)
+        h.rest(a, at: 0.5)                           // inside the 1 s retry the stale failure would set
+        XCTAssertEqual(h.spandac.statusReadTimes, [0, 0.5])
+        XCTAssertNotNil(h.fetcher.cover(for: a))
+    }
+
     // MARK: interim and generations
 
     func testAGenerationBNegativeClearsTheGenerationAInterim() {
