@@ -84,10 +84,17 @@ struct MusicPage: Equatable {
     /// generation), the same on every page of one read. Nil from a SpanDAC that
     /// predates it.
     let listRev: String?
+    /// `library_instance`, on a page of `slice.libraryAlbums` or
+    /// `slice.libraryPlaylists`: the SpanDAC process that served the page. A
+    /// cover is asked for under THIS value and the page's `generation`, never a
+    /// status's. nil when the page carries none, and for every other list.
+    let libraryInstance: String?
 
     init(rows: [MusicRow], nextCursor: String?, total: Int?, generation: Int?,
-         stale: Bool = false, refreshing: Bool = false, skippedVideos: Int = 0, listRev: String? = nil) {
+         stale: Bool = false, refreshing: Bool = false, skippedVideos: Int = 0, listRev: String? = nil,
+         libraryInstance: String? = nil) {
         self.listRev = listRev
+        self.libraryInstance = libraryInstance
         self.rows = rows
         self.nextCursor = nextCursor
         self.total = total
@@ -212,6 +219,17 @@ protocol MusicDataProvider: DiscoverProviding, StationProviding, CataloguePlayin
     /// `slice.status`'s rebuild facts: the process answering (`library_instance`)
     /// and how the latest rebuild ended (`library_refresh`).
     func libraryRefreshStatus() throws -> SpanDACLibraryRefreshStatus
+    /// Whether covers can be asked for now: ONE `slice.status` read, supported only
+    /// when SpanDAC advertises `slice.libraryArtwork` and names its process. Default
+    /// unsupported.
+    func libraryArtworkReadiness() throws -> LibraryArtworkReadiness
+    /// `slice.libraryArtwork`, first chunk: one top-level album or playlist's cover,
+    /// named by the generation and `library_instance` of the list page the row came
+    /// from. The default refuses as an older SpanDAC would.
+    func libraryArtwork(kind: LibraryArtworkKind, id: String, generation: Int, libraryInstance: String,
+                        px: Int) throws -> LibraryArtworkReply
+    /// `slice.libraryArtwork`, a later chunk, by the opaque cursor the last one gave.
+    func libraryArtworkChunk(cursor: String) throws -> LibraryArtworkReply
     /// What the selected backend is doing now.
     func nowPlaying() throws -> SourceStatus
 }
@@ -273,6 +291,14 @@ extension MusicDataProvider {
         throw MusicProviderError.notImplemented(BridgeMusicProvider.unsupportedSentence(forWireOp: sourceLibraryRefreshOp))
     }
     func libraryRefreshStatus() throws -> SpanDACLibraryRefreshStatus { .none }
+    func libraryArtworkReadiness() throws -> LibraryArtworkReadiness { .unsupported }
+    func libraryArtwork(kind: LibraryArtworkKind, id: String, generation: Int, libraryInstance: String,
+                        px: Int) throws -> LibraryArtworkReply {
+        throw MusicProviderError.notImplemented(BridgeMusicProvider.unsupportedSentence(forWireOp: sourceLibraryArtworkOp))
+    }
+    func libraryArtworkChunk(cursor: String) throws -> LibraryArtworkReply {
+        throw MusicProviderError.notImplemented(BridgeMusicProvider.unsupportedSentence(forWireOp: sourceLibraryArtworkOp))
+    }
     func listRev(kind: LibraryPlayKind, id: String?) throws -> SpanDACListRev {
         throw MusicProviderError.notImplemented(BridgeMusicProvider.unsupportedSentence(forWireOp: sourceListRevOp))
     }

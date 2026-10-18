@@ -146,6 +146,25 @@ struct BridgeMusicProvider: MusicDataProvider {
         catch let error as SourceAppError { throw Self.translate(error) }
     }
 
+    /// One `slice.status` read: covers are supported only when the capability is
+    /// advertised and the status names its process.
+    func libraryArtworkReadiness() throws -> LibraryArtworkReadiness {
+        do { return try control.libraryArtworkReadiness() }
+        catch let error as SourceAppError { throw Self.translate(error) }
+    }
+
+    func libraryArtwork(kind: LibraryArtworkKind, id: String, generation: Int, libraryInstance: String,
+                        px: Int) throws -> LibraryArtworkReply {
+        do { return try control.libraryArtwork(kind: kind, id: id, generation: generation,
+                                               libraryInstance: libraryInstance, px: px) }
+        catch let error as SourceAppError { throw Self.translate(error) }
+    }
+
+    func libraryArtworkChunk(cursor: String) throws -> LibraryArtworkReply {
+        do { return try control.libraryArtworkChunk(cursor: cursor) }
+        catch let error as SourceAppError { throw Self.translate(error) }
+    }
+
     func playLibrary(kind: LibraryPlayKind, id: String?, start: LibraryPlayStart?, listRev: String?,
                      shuffle: Bool) throws -> SpanDACPlayResult {
         do { return try control.playLibrary(kind: kind, id: id, start: start, listRev: listRev, shuffle: shuffle) }
@@ -355,6 +374,8 @@ struct BridgeMusicProvider: MusicDataProvider {
             return "This SpanDAC build can't play a whole list — update SpanDAC"
         case "slice.listRev":
             return "This SpanDAC build can't read a list's revision — update SpanDAC"
+        case "slice.libraryArtwork":
+            return "This SpanDAC build can't send library covers — update SpanDAC"
         default:
             return "SpanDAC doesn't serve that yet — update SpanDAC"
         }

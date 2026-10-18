@@ -35,6 +35,18 @@ final class BridgeListFeed<Row> {
         /// `total`. nil until a page has landed, when SpanDAC sent none, and
         /// once two pages of one attempt disagree (they describe different lists).
         var listRev: String?
+        /// The generation of the attempt whose rows this drain carries (the
+        /// `generation` of its latest page), level state like `listRev`: set once
+        /// a page has landed, cleared by a restart until the restarted attempt's
+        /// first page lands, and a re-ask replacement carries its rewalk's. nil
+        /// until a page has landed, and when the provider states no generation.
+        var generation: Int?
+        /// The `library_instance` the list's pages came from, level state kept
+        /// exactly like `listRev`: the first page of an attempt sets it, a later
+        /// page that disagrees (including nil against a value) leaves it nil for
+        /// the attempt, and a restart clears it. nil means "no artwork may be
+        /// asked for these rows".
+        var libraryInstance: String?
         /// `replace` came from a stale-snapshot re-ask (`LibraryReask`) rather
         /// than from a walk's first page: the same list, read again, so the
         /// scene keeps its selection by row id instead of by index. One-shot,
@@ -92,6 +104,8 @@ final class BridgeListFeed<Row> {
     private var pendingDone = false
     private var pendingSkippedVideos: Int? = nil
     private var pendingListRev: String? = nil
+    private var pendingGeneration: Int? = nil
+    private var pendingLibraryInstance: String? = nil
     private var pendingReasked = false
 
     init(fetch: @escaping (String?, Int) throws -> MusicPage,
@@ -155,6 +169,9 @@ final class BridgeListFeed<Row> {
                 self.pendingSkippedVideos = page.skippedVideos
                 if firstPage { self.pendingListRev = page.listRev }
                 else if page.listRev != self.pendingListRev { self.pendingListRev = nil }
+                self.pendingGeneration = page.generation
+                if firstPage { self.pendingLibraryInstance = page.libraryInstance }
+                else if page.libraryInstance != self.pendingLibraryInstance { self.pendingLibraryInstance = nil }
                 self.pendingWarming = false
                 return true
             }, onRestart: { [weak self] in
@@ -172,6 +189,8 @@ final class BridgeListFeed<Row> {
                 self.pendingTotal = nil
                 self.pendingSkippedVideos = nil
                 self.pendingListRev = nil
+                self.pendingGeneration = nil
+                self.pendingLibraryInstance = nil
             }, onWarming: { [weak self] _ in
                 guard let self else { return }
                 self.lock.lock()
@@ -264,6 +283,8 @@ final class BridgeListFeed<Row> {
         var total: Int? = nil
         var skipped: Int? = nil
         var listRev: String? = nil
+        var generation: Int? = nil
+        var libraryInstance: String? = nil
         var firstPage = true
         var flagged = false
         var superseded = false
@@ -274,10 +295,14 @@ final class BridgeListFeed<Row> {
             if let t = page.total { total = t }
             skipped = page.skippedVideos
             if firstPage { listRev = page.listRev } else if page.listRev != listRev { listRev = nil }
+            generation = page.generation
+            if firstPage { libraryInstance = page.libraryInstance }
+            else if page.libraryInstance != libraryInstance { libraryInstance = nil }
             firstPage = false
             return true
         }, onRestart: {
-            rows = []; total = nil; skipped = nil; listRev = nil; firstPage = true; flagged = false
+            rows = []; total = nil; skipped = nil; listRev = nil; generation = nil; libraryInstance = nil
+            firstPage = true; flagged = false
         }, sleep: sleep)
         // A failed re-read leaves the list as it was, and ends the re-ask.
         guard !superseded, let feed = owner() else { return .dropped }
@@ -290,6 +315,8 @@ final class BridgeListFeed<Row> {
         feed.pendingTotal = total
         feed.pendingSkippedVideos = skipped
         feed.pendingListRev = listRev
+        feed.pendingGeneration = generation
+        feed.pendingLibraryInstance = libraryInstance
         feed.pendingReasked = true
         return .posted(flagged: flagged)   // still flagged: keep asking, within the same bound
     }
@@ -501,6 +528,8 @@ final class BridgeListFeed<Row> {
         pendingDone = false
         pendingSkippedVideos = nil
         pendingListRev = nil
+        pendingGeneration = nil
+        pendingLibraryInstance = nil
         pendingReasked = false
         lock.unlock()
     }
@@ -525,6 +554,7 @@ final class BridgeListFeed<Row> {
         let out = Drained(replace: pendingReplace, append: pendingAppend, total: pendingTotal,
                           failure: pendingFailure, warming: pendingWarming, done: pendingDone,
                           skippedVideos: pendingSkippedVideos, listRev: pendingListRev,
+                          generation: pendingGeneration, libraryInstance: pendingLibraryInstance,
                           reasked: pendingReasked)
         pendingReasked = false
         pendingReplace = nil

@@ -8,9 +8,10 @@ final class BridgeListFeedTests: XCTestCase {
 
     private struct Row: Equatable { let id: String }
 
-    private func page(_ ids: [String], generation: Int?, next: String?, total: Int? = nil) -> MusicPage {
+    private func page(_ ids: [String], generation: Int?, next: String?, total: Int? = nil,
+                      instance: String? = nil) -> MusicPage {
         MusicPage(rows: ids.map { MusicRow(id: $0, title: $0, artist: "a", album: nil, kind: .album) },
-                  nextCursor: next, total: total ?? ids.count, generation: generation)
+                  nextCursor: next, total: total ?? ids.count, generation: generation, libraryInstance: instance)
     }
 
     /// A scripted fetch, one page per call, with an optional gate per index so
@@ -598,6 +599,119 @@ final class BridgeListFeedTests: XCTestCase {
         XCTAssertEqual(script.callCount, 3)
     }
 
+
+    // MARK: - The generation and instance a drain carries
+    //
+    // A cover is asked for under the generation and `library_instance` of the list
+    // page its row came from, so the drain says which ones the rows it hands over
+    // were read under.
+
+    func testDrainedCarriesThePagesGeneration() {
+        let script = ScriptedFetch([page(["a"], generation: 4, next: "c1"),
+                                    page(["b"], generation: 4, next: nil)])
+        let f = feed(script.fetch)
+        XCTAssertNil(f.drain().generation, "nothing has landed yet")
+        f.start()
+        XCTAssertTrue(settleUntil { f.drain().done == true })
+        let after = f.drain()
+        XCTAssertEqual(after.generation, 4, "level state: still there once the rows were consumed")
+
+        let single = ScriptedFetch([page(["a"], generation: 9, next: nil)])
+        let g = feed(single.fetch)
+        g.start()
+        XCTAssertTrue(g.waitForWorkersForTest(timeout: 5))
+        let d = g.drain()
+        XCTAssertEqual(d.replace, [Row(id: "a")])
+        XCTAssertEqual(d.generation, 9)
+    }
+
+    func testARestartClearsTheGenerationUntilTheNewFirstPage() {
+        let script = ScriptedFetch([page(["a"], generation: 1, next: "c1"),
+                                    page(["b"], generation: 2, next: "c2"),
+                                    page(["z"], generation: 3, next: nil)])
+        script.gate(at: 2)   // the restarted attempt's first page
+        let f = feed(script.fetch)
+        f.start()
+        XCTAssertTrue(settleUntil { script.callCount >= 3 }, "the walk never restarted")
+        let between = f.drain()
+        XCTAssertNil(between.replace)
+        XCTAssertNil(between.generation, "generation 1 described rows the restart discarded")
+        script.release(at: 2)
+        var generation: Int?
+        XCTAssertTrue(settleUntil { let d = f.drain(); generation = d.generation; return d.done })
+        XCTAssertEqual(generation, 3)
+    }
+
+    func testAReaskReplacementCarriesItsGeneration() {
+        func stalePage(_ ids: [String], generation: Int, stale: Bool) -> MusicPage {
+            MusicPage(rows: ids.map { MusicRow(id: $0, title: $0, artist: "a", album: nil, kind: .album) },
+                      nextCursor: nil, total: ids.count, generation: generation, stale: stale)
+        }
+        let script = ScriptedFetch([stalePage(["old"], generation: 5, stale: true),    // initial walk
+                                    stalePage(["new"], generation: 6, stale: false),   // probe
+                                    stalePage(["new"], generation: 6, stale: false)])  // the re-walk
+        let f = reaskFeed(script.fetch, SleepRecorder())
+        f.start()
+        XCTAssertTrue(f.waitForWorkersForTest(timeout: 5))
+        let d = f.drain()
+        XCTAssertTrue(d.reasked)
+        XCTAssertEqual(d.replace, [Row(id: "new")])
+        XCTAssertEqual(d.generation, 6, "the replacement's own generation, not the walk's")
+    }
+
+    func testDrainedCarriesThePagesLibraryInstance() {
+        let script = ScriptedFetch([page(["a"], generation: 1, next: "c1", instance: "inst-A"),
+                                    page(["b"], generation: 1, next: nil, instance: "inst-A")])
+        let f = feed(script.fetch)
+        XCTAssertNil(f.drain().libraryInstance)
+        f.start()
+        XCTAssertTrue(settleUntil { f.drain().done == true })
+        XCTAssertEqual(f.drain().libraryInstance, "inst-A", "level state, like listRev")
+
+        let none = ScriptedFetch([page(["a"], generation: 1, next: nil)])
+        let g = feed(none.fetch)
+        g.start()
+        XCTAssertTrue(g.waitForWorkersForTest(timeout: 5))
+        XCTAssertNil(g.drain().libraryInstance, "a SpanDAC that sends none leaves it nil")
+    }
+
+    func testPagesThatDisagreeOnTheInstanceLeaveItNil() {
+        for (first, second) in [("inst-A", "inst-B"), ("inst-A", nil), (nil, "inst-A")] as [(String?, String?)] {
+            let script = ScriptedFetch([page(["a"], generation: 1, next: "c1", instance: first),
+                                        page(["b"], generation: 1, next: nil, instance: second)])
+            let f = feed(script.fetch)
+            f.start()
+            XCTAssertTrue(f.waitForWorkersForTest(timeout: 5))
+            let d = f.drain()
+            XCTAssertEqual(d.replace, [Row(id: "a")], "the rows still land")
+            XCTAssertEqual(d.append, [Row(id: "b")])
+            XCTAssertNil(d.libraryInstance, "\(String(describing: first)) then \(String(describing: second))")
+        }
+        // A third page that agrees with the first does not undo the disagreement.
+        let script = ScriptedFetch([page(["a"], generation: 1, next: "c1", instance: "inst-A"),
+                                    page(["b"], generation: 1, next: "c2", instance: "inst-B"),
+                                    page(["c"], generation: 1, next: nil, instance: "inst-A")])
+        let f = feed(script.fetch)
+        f.start()
+        XCTAssertTrue(f.waitForWorkersForTest(timeout: 5))
+        XCTAssertNil(f.drain().libraryInstance)
+    }
+
+    func testAReaskUnderANewInstanceCarriesTheNewInstance() {
+        func instancePage(_ ids: [String], instance: String, stale: Bool) -> MusicPage {
+            MusicPage(rows: ids.map { MusicRow(id: $0, title: $0, artist: "a", album: nil, kind: .album) },
+                      nextCursor: nil, total: ids.count, generation: 1, stale: stale, libraryInstance: instance)
+        }
+        let script = ScriptedFetch([instancePage(["old"], instance: "inst-A", stale: true),   // initial walk
+                                    instancePage(["new"], instance: "inst-B", stale: false),  // probe
+                                    instancePage(["new"], instance: "inst-B", stale: false)]) // the re-walk
+        let f = reaskFeed(script.fetch, SleepRecorder())
+        f.start()
+        XCTAssertTrue(f.waitForWorkersForTest(timeout: 5))
+        let d = f.drain()
+        XCTAssertTrue(d.reasked)
+        XCTAssertEqual(d.libraryInstance, "inst-B", "SpanDAC restarted between the walk and the re-walk")
+    }
 }
 
 private extension BridgeListFeedTests.ScriptedFetch {

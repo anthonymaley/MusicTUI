@@ -861,6 +861,14 @@ protocol SourceControlling {
     /// `slice.status`'s rebuild facts: the SpanDAC process answering
     /// (`library_instance`) and how the latest rebuild ended (`library_refresh`).
     func libraryRefreshStatus() throws -> SpanDACLibraryRefreshStatus
+    /// `slice.status` read once for covers: supported only when `capabilities`
+    /// contains `slice.libraryArtwork` AND `library_instance` is a non-blank string.
+    func libraryArtworkReadiness() throws -> LibraryArtworkReadiness
+    /// `slice.libraryArtwork`, first chunk, over the library transport.
+    func libraryArtwork(kind: LibraryArtworkKind, id: String, generation: Int, libraryInstance: String,
+                        px: Int) throws -> LibraryArtworkReply
+    /// `slice.libraryArtwork`, a later chunk by the opaque cursor, over the library transport.
+    func libraryArtworkChunk(cursor: String) throws -> LibraryArtworkReply
     // NOTE: `SourceAppControl`'s own declaration below defaults `startRequired`
     // to `false`; a protocol requirement's default only applies to callers
     // holding a `SourceControlling`-typed value, so `BridgeMusicProviderTests`'
@@ -961,6 +969,16 @@ extension SourceControlling {
         throw SourceAppError.unsupported(sourceLibraryRefreshOp)
     }
     func libraryRefreshStatus() throws -> SpanDACLibraryRefreshStatus { .none }
+    func libraryArtworkReadiness() throws -> LibraryArtworkReadiness {
+        throw SourceAppError.unsupported(sourceLibraryArtworkOp)
+    }
+    func libraryArtwork(kind: LibraryArtworkKind, id: String, generation: Int, libraryInstance: String,
+                        px: Int) throws -> LibraryArtworkReply {
+        throw SourceAppError.unsupported(sourceLibraryArtworkOp)
+    }
+    func libraryArtworkChunk(cursor: String) throws -> LibraryArtworkReply {
+        throw SourceAppError.unsupported(sourceLibraryArtworkOp)
+    }
     func recommendations(limit: Int) throws -> [DiscoverRail] {
         throw SourceAppError.unsupported("slice.recommendations")
     }
@@ -1153,7 +1171,7 @@ struct SourceAppControl: SourceControlling {
     /// see the boundary decision in the slice-2 score.
     func libraryAlbums(cursor: String?, limit: Int = 100) throws -> MusicPage {
         try libraryPage(op: "slice.libraryAlbums", opName: "album", limit: limit, cursor: cursor,
-                        rows: .exactly(.album))
+                        rows: .exactly(.album), readsLibraryInstance: true)
     }
 
     /// D1.
@@ -1190,7 +1208,7 @@ struct SourceAppControl: SourceControlling {
     /// order, not Music.app's).
     func libraryPlaylists(cursor: String?, limit: Int = 100) throws -> MusicPage {
         try libraryPage(op: "slice.libraryPlaylists", opName: "playlist", limit: limit, cursor: cursor,
-                        rows: .exactly(.playlist))
+                        rows: .exactly(.playlist), readsLibraryInstance: true)
     }
 
     /// D4: paged and STATELESS — Bridge re-reads and re-validates the whole
@@ -1268,7 +1286,8 @@ struct SourceAppControl: SourceControlling {
     /// so. It matters more the moment these frames cross a network to an iPad.
     private func libraryPage(op: String, opName: String, limit: Int, cursor: String?,
                              id: String? = nil, rows policy: LibraryRowPolicy,
-                             readsSkippedVideos: Bool = false, forQueue: Bool = false) throws -> MusicPage {
+                             readsSkippedVideos: Bool = false, forQueue: Bool = false,
+                             readsLibraryInstance: Bool = false) throws -> MusicPage {
         var body: [String: Any] = ["op": op, "limit": limit]
         if let cursor { body["cursor"] = cursor }
         if let id { body["id"] = id }
@@ -1330,6 +1349,19 @@ struct SourceAppControl: SourceControlling {
             skippedVideos = skipped
         }
 
+        // Additive, and only on the two lists whose rows can ask for a cover:
+        // absent is nil (an older SpanDAC), a value that is not text or is blank
+        // is a malformed reply, because a cover requested under a guessed
+        // instance would be answered for the wrong process.
+        var libraryInstance: String? = nil
+        if readsLibraryInstance, let raw = reply["library_instance"] {
+            guard let text = raw as? String, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                throw SourceAppError.malformedReply(
+                    "SpanDAC's \(opName) page has a library_instance that is not readable")
+            }
+            libraryInstance = text
+        }
+
         // `clamped` is deliberately not read: a page carries the rows it
         // carries, and the walk follows `next_cursor`, never the limit it sent,
         // so a clamped page needs no special case. `stale` and `refreshing`
@@ -1345,7 +1377,8 @@ struct SourceAppControl: SourceControlling {
                          stale: reply["stale"] as? Bool ?? false,
                          refreshing: reply["refreshing"] as? Bool ?? false,
                          skippedVideos: skippedVideos,
-                         listRev: Self.listRev(reply["list_rev"]))
+                         listRev: Self.listRev(reply["list_rev"]),
+                         libraryInstance: libraryInstance)
     }
 
     /// Shared by the three container reads. Complete or refused — `generation`
