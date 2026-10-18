@@ -71,6 +71,17 @@ final class ArtworkStore {
         self.render = render ?? { path, w, h in artworkToAscii(path: path, width: w, height: h) }
     }
 
+    /// Negative-cache `key` for the session, EXCEPT an `sd_` key (a local file
+    /// `LibraryCoverFetcher` installed and may evict on its own) whose file is
+    /// missing right now: that failure is the eviction racing this read, not a
+    /// bad cover, and a later reinstall of the same key must still render. A
+    /// present-but-undecodable `sd_` file, and every other key, is negative-cached
+    /// as always so nothing loops.
+    private func noteFailure(_ key: String) {
+        if key.hasPrefix("sd_"), !FileManager.default.fileExists(atPath: "\(cacheDir)/\(key)") { return }
+        lock.lock(); failed.insert(key); lock.unlock()
+    }
+
     /// Ensure `key`'s raw artwork bytes are cached to disk (fetching once,
     /// never twice, on a miss) and return the local path. nil on a failed
     /// fetch — negative-cached in `failed` so neither caller loops retries for
@@ -82,7 +93,7 @@ final class ArtworkStore {
         if FileManager.default.fileExists(atPath: path) { return path }
         try? FileManager.default.createDirectory(atPath: cacheDir, withIntermediateDirectories: true)
         guard let data = fetch(url), !data.isEmpty else {
-            lock.lock(); failed.insert(key); lock.unlock()
+            noteFailure(key)
             return nil
         }
         try? data.write(to: URL(fileURLWithPath: path))
@@ -109,8 +120,9 @@ final class ArtworkStore {
                 return
             }
             let lines = self.render(path, width, height)
+            if lines.isEmpty { self.noteFailure(key) }
             self.lock.lock()
-            if lines.isEmpty { self.failed.insert(key) } else { self.rendered[memoKey] = lines }
+            if !lines.isEmpty { self.rendered[memoKey] = lines }
             self.inFlight.remove(memoKey)
             self.lock.unlock()
             if !lines.isEmpty { onReady() }
@@ -148,10 +160,16 @@ final class ArtworkStore {
 
         queue.async { [weak self] in
             guard let self else { return }
-            guard let path = self.ensureBytesOnDisk(key: key, url: url),
-                  let data = FileManager.default.contents(atPath: path),
+            // ensureBytesOnDisk has already decided whether a failed fetch is
+            // negative-cached; only the read and the PNG conversion are decided here.
+            guard let path = self.ensureBytesOnDisk(key: key, url: url) else {
+                self.lock.lock(); self.inFlight.remove(inFlightKey); self.lock.unlock()
+                return
+            }
+            guard let data = FileManager.default.contents(atPath: path),
                   let png = imageDataToPNG(data) else {
-                self.lock.lock(); self.failed.insert(key); self.inFlight.remove(inFlightKey); self.lock.unlock()
+                self.noteFailure(key)
+                self.lock.lock(); self.inFlight.remove(inFlightKey); self.lock.unlock()
                 return
             }
             let escape = kittyTransmitEscape(id: id, png: png)
