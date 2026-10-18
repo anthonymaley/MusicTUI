@@ -338,7 +338,7 @@ final class LibraryCoverFetcher {
 
     private func read(epoch: Int, dataEpoch data: Int, restSerial: Int?) {
         lock.lock()
-        guard cancelEpoch == epoch, focused != nil else {
+        guard cancelEpoch == epoch, dataEpoch() == data, focused != nil else {
             readInFlight = false
             if restSerial == focusSerial, restPhase == .reading { restPhase = .readDue }
             lock.unlock()
