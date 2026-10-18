@@ -69,7 +69,7 @@ final class BridgeLibraryCoversSceneTests: XCTestCase {
             let clock = self.clock, lanes = self.lanes, spandac = self.spandac
             fetcher = LibraryCoverFetcher(provider: { spandac }, dataEpoch: { routing.dataEpoch },
                                           cacheDir: dir, now: { clock.date },
-                                          queue: { lane, job in lanes.submit(lane, job) }, px: 300)
+                                          queue: { lane, job in lanes.submit(lane, job) }, px: 512)
             fetcher.observeShell(active: .library, dataEpoch: routing.dataEpoch)
             let status = StatusStore()
             let flag = self.flag
@@ -99,7 +99,7 @@ final class BridgeLibraryCoversSceneTests: XCTestCase {
 
         /// Plants the file the fetcher would have installed for `target`.
         func install(_ target: Target) {
-            let key = LibraryCoverFetcher.cacheKey(for: target, px: 300)
+            let key = LibraryCoverFetcher.cacheKey(for: target, px: 512)
             FileManager.default.createFile(atPath: "\(dir)/\(key)", contents: LibraryCoverFetcherTests.payload(2_000))
         }
 

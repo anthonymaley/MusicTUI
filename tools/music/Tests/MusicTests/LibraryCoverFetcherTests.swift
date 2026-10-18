@@ -151,7 +151,7 @@ final class LibraryCoverFetcherTests: XCTestCase {
                                           cacheDir: self.dir,
                                           now: { [clock] in clock.date },
                                           queue: { [lanes] lane, job in lanes.submit(lane, job) },
-                                          px: 300, eviction: eviction)
+                                          px: 512, eviction: eviction)
             fetcher.observeShell(active: .library, dataEpoch: 0)
         }
 
@@ -177,7 +177,7 @@ final class LibraryCoverFetcherTests: XCTestCase {
             tick(t, target)
         }
 
-        func key(_ target: Target) -> String { LibraryCoverFetcher.cacheKey(for: target, px: 300) }
+        func key(_ target: Target) -> String { LibraryCoverFetcher.cacheKey(for: target, px: 512) }
 
         func files() -> [String] {
             ((try? FileManager.default.contentsOfDirectory(atPath: dir)) ?? []).sorted()
@@ -234,7 +234,7 @@ final class LibraryCoverFetcherTests: XCTestCase {
         XCTAssertEqual(h.spandac.statusReadTimes, [0.25])
         XCTAssertEqual(h.spandac.firstRequests,
                        [LibraryArtworkRequest(kind: .album, id: Self.albumID, generation: 2,
-                                              libraryInstance: Self.instanceA, px: 300)])
+                                              libraryInstance: Self.instanceA, px: 512)])
         XCTAssertEqual(h.spandac.chunkRequests.count, 1)
         XCTAssertEqual(h.contents(a), Self.payload(40_000))
         XCTAssertEqual(h.fetcher.cover(for: a),
@@ -789,13 +789,13 @@ final class LibraryCoverFetcherTests: XCTestCase {
 
     func testTheKeySurvivesArtworkStoreCacheKey() {
         let target = album()
-        let key = LibraryCoverFetcher.cacheKey(for: target, px: 300)
-        let text = "v1|\(Self.instanceA)|2|album|\(Self.albumID)|300"
+        let key = LibraryCoverFetcher.cacheKey(for: target, px: 512)
+        let text = "v1|\(Self.instanceA)|2|album|\(Self.albumID)|512"
         let hex = SHA256.hash(data: Data(text.utf8)).map { String(format: "%02x", $0) }.joined()
         XCTAssertEqual(key, "sd_" + hex.prefix(32))
         XCTAssertEqual(ArtworkStore.cacheKey(key), key)
-        XCTAssertNotEqual(key, LibraryCoverFetcher.cacheKey(for: target, px: 512))
-        XCTAssertNotEqual(key, LibraryCoverFetcher.cacheKey(for: playlist(Self.albumID), px: 300))
+        XCTAssertNotEqual(key, LibraryCoverFetcher.cacheKey(for: target, px: 300))
+        XCTAssertNotEqual(key, LibraryCoverFetcher.cacheKey(for: playlist(Self.albumID), px: 512))
     }
 
     func testInstalledFileNamesCarryNoID() {

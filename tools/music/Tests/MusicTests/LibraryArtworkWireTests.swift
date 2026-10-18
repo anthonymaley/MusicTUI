@@ -26,7 +26,7 @@ final class LibraryArtworkWireTests: XCTestCase {
 
     private var request: LibraryArtworkRequest {
         LibraryArtworkRequest(kind: .album, id: "1945713005063419934", generation: 7,
-                              libraryInstance: Self.instance, px: 300)
+                              libraryInstance: Self.instance, px: 512)
     }
 
     /// One reply line in the contract's shape. Chunk 0 carries the manifest; `next`
@@ -35,7 +35,7 @@ final class LibraryArtworkWireTests: XCTestCase {
                       transfer: String = LibraryArtworkWireTests.transfer, generation: Int = 7,
                       instance: String = LibraryArtworkWireTests.instance, kind: String = "album",
                       id: String = "1945713005063419934", v: Int = 1, source: String = "rendered",
-                      bytes: Int = LibraryArtworkWireTests.payload.count, px: Int = 300,
+                      bytes: Int = LibraryArtworkWireTests.payload.count, px: Int = 512,
                       mediaType: String = "image/jpeg", digest: String? = nil) -> String {
         let cursor: String
         switch next {
@@ -90,7 +90,7 @@ final class LibraryArtworkWireTests: XCTestCase {
     func testTheFirstRequestSendsExactlyTheFiveFields() throws {
         let wire = Wire(line(chunk: 0))
         _ = try control(wire).libraryArtwork(kind: .album, id: "1945713005063419934", generation: 7,
-                                             libraryInstance: Self.instance, px: 300)
+                                             libraryInstance: Self.instance, px: 512)
         XCTAssertEqual(wire.library.count, 1)
         let sent = try sentObject(wire.library[0])
         XCTAssertEqual(Set(sent.keys), ["op", "kind", "id", "generation", "library_instance", "px"])
@@ -99,7 +99,7 @@ final class LibraryArtworkWireTests: XCTestCase {
         XCTAssertEqual(sent["id"] as? String, "1945713005063419934")
         XCTAssertEqual(sent["generation"] as? Int, 7)
         XCTAssertEqual(sent["library_instance"] as? String, Self.instance)
-        XCTAssertEqual(sent["px"] as? Int, 300)
+        XCTAssertEqual(sent["px"] as? Int, 512)
 
         let playlist = Wire(line(chunk: 0, kind: "playlist"))
         _ = try control(playlist).libraryArtwork(kind: .playlist, id: "p1", generation: 7,
@@ -125,7 +125,7 @@ final class LibraryArtworkWireTests: XCTestCase {
             path: "/nonexistent",
             transport: { _, _ in ordinaryCalls += 1; XCTFail("a cover request used the ordinary transport"); return "{}" },
             libraryTransport: { _, line in libraryLines.append(line); return self.line(chunk: 0) })
-        _ = try control.libraryArtwork(kind: .album, id: "1", generation: 7, libraryInstance: Self.instance, px: 300)
+        _ = try control.libraryArtwork(kind: .album, id: "1", generation: 7, libraryInstance: Self.instance, px: 512)
         _ = try control.libraryArtworkChunk(cursor: "c1")
         XCTAssertEqual(libraryLines.count, 2)
         XCTAssertEqual(ordinaryCalls, 0)
@@ -145,7 +145,7 @@ final class LibraryArtworkWireTests: XCTestCase {
         XCTAssertEqual(zero.chunks, 2)
         XCTAssertEqual(zero.nextCursor, "c1")
         XCTAssertEqual(zero.dataBase64, slice(0).base64EncodedString())
-        XCTAssertEqual(zero.manifest, LibraryArtworkManifest(mediaType: "image/jpeg", px: 300,
+        XCTAssertEqual(zero.manifest, LibraryArtworkManifest(mediaType: "image/jpeg", px: 512,
                                                              bytes: 40_000, sha256: sha(Self.payload)))
 
         let one = try chunk(line(chunk: 1))
@@ -174,7 +174,7 @@ final class LibraryArtworkWireTests: XCTestCase {
         for (kind, detail, expected) in cases {
             let wire = Wire(refusal(kind, detail: detail))
             XCTAssertEqual(try control(wire).libraryArtwork(kind: .album, id: "1", generation: 7,
-                                                            libraryInstance: Self.instance, px: 300),
+                                                            libraryInstance: Self.instance, px: 512),
                            .refused(expected), kind)
             XCTAssertEqual(try control(Wire(refusal(kind, detail: detail))).libraryArtworkChunk(cursor: "c"),
                            .refused(expected), "\(kind) on a cursor request")
@@ -310,7 +310,7 @@ final class LibraryArtworkWireTests: XCTestCase {
         XCTAssertNil(LibraryArtworkAssembly(first: try chunk(line(chunk: 0, instance: otherInstance)), request: request))
         XCTAssertNil(LibraryArtworkAssembly(first: try chunk(line(chunk: 0, kind: "playlist")), request: request))
         XCTAssertNil(LibraryArtworkAssembly(first: try chunk(line(chunk: 0, id: "another")), request: request))
-        XCTAssertNil(LibraryArtworkAssembly(first: try chunk(line(chunk: 0, px: 512)), request: request))
+        XCTAssertNil(LibraryArtworkAssembly(first: try chunk(line(chunk: 0, px: 300)), request: request))
         XCTAssertNil(LibraryArtworkAssembly(first: try chunk(line(chunk: 0, mediaType: "image/png")), request: request))
 
         let (zero, _) = try goodPair()

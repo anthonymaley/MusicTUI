@@ -164,7 +164,7 @@ final class LibraryCoverFetcher {
     init(provider: @escaping () -> MusicDataProvider?, dataEpoch: @escaping () -> Int,
          cacheDir: String = ArtworkStore.defaultCacheDir, now: @escaping () -> Date = Date.init,
          queue: @escaping (Lane, @escaping () -> Void) -> Void = LibraryCoverFetcher.dispatchLanes(),
-         px: Int = 300, eviction: LibraryCoverEviction = .standard) {
+         px: Int = 512, eviction: LibraryCoverEviction = .standard) {
         self.provider = provider
         self.dataEpoch = dataEpoch
         self.cacheDir = cacheDir
