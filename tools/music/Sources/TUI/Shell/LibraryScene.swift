@@ -373,6 +373,13 @@ final class LibraryScene: Scene {
 
     /// Which of artists / albums / songs is showing, for tests.
     var subViewForTest: LibrarySubView { nav.subView }
+    /// The id of the row under the cursor, for tests.
+    var selectionIDForTest: String? { selectionUnderCursor()?.id }
+    /// Stand-ins for an automatic re-read landing under a drill: they assign the
+    /// parent list exactly as the tick's drain does, with no cursor repair.
+    func replaceAlbumsForTest(_ rows: [LibraryAlbum]) { albums = rows }
+    func replaceArtistsForTest(_ rows: [LibraryArtist]) { artists = rows }
+    func replaceArtistAlbumsForTest(_ rows: [LibraryAlbum]) { artistAlbums = rows; artistAlbumsLoaded = true }
     private var trackScroll = 0
     /// One entry per drilled level, parallel to `nav.returnCursors`: what Back
     /// puts on screen again (the scroll, and the id when the cursor index was
@@ -2185,10 +2192,16 @@ final class LibraryScene: Scene {
         // artist's ALBUMS wrongly and keep painting a stale /query line.
         if subViewChanged || levelChanged { filter = ""; railScroll = 0; trackScroll = 0 }
         if let returned {
-            if returned.filtered {
-                if let id = returned.id, let pos = rowPosition(ofID: id) { nav.cursor = pos }
+            // The parent list can be replaced under a drill (automatic re-read),
+            // filtered or not, so the saved index is never trusted: follow the
+            // opened row by id, and if it is gone keep the cursor on a real row.
+            let last = max(0, currentRowCount() - 1)
+            if let id = returned.id, let pos = rowPosition(ofID: id) {
+                nav.cursor = pos
+                railScroll = (!returned.filtered && pos == newNav.cursor) ? min(returned.scroll, last) : 0
             } else {
-                railScroll = returned.scroll
+                nav.cursor = min(max(0, nav.cursor), last)
+                railScroll = returned.filtered ? 0 : min(returned.scroll, last)
             }
         }
 
