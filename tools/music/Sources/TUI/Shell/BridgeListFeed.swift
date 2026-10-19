@@ -354,6 +354,10 @@ final class BridgeListFeed<Row> {
         case alreadyRefreshing
         /// The list's own walk is still running; nothing was started.
         case busy
+        /// `joinReask` was set and the list's own stale-snapshot re-ask is running, or
+        /// has posted a replacement the scene has not drained yet; nothing was
+        /// started, and that re-ask's rows are the ones that land.
+        case joined
     }
 
     /// How a `refresh` ended, for the caller to tell the person. Never delivered
@@ -400,6 +404,17 @@ final class BridgeListFeed<Row> {
     /// It holds `reasking` for its whole life, so `start()` stays off exactly as
     /// it does during a re-ask, and `reset()` revokes it like any other worker.
     ///
+    /// **`joinReask`** is for a caller that is not a person: the scene noticing by
+    /// itself that SpanDAC left the list behind (a stale generation, a restart).
+    /// A plain re-ask already running will read the list again once SpanDAC has
+    /// finished, and a second walk beside it only adds load while SpanDAC is
+    /// draining, which is when it is slowest. So the ask JOINS it (`joined`, nothing
+    /// started, the epoch untouched), and likewise when that re-ask has posted its
+    /// replacement and the scene has not drained it yet: the rows about to land are
+    /// newer than the list the caller found behind. A caller that is told `joined`
+    /// asks again on a later tick; if the re-ask ends without a fresh list, that ask
+    /// finds the feed idle and reads it. A person's `r` never sets it.
+    ///
     /// `end` and `alreadyRefreshing` both run under the feed's lock, so the status
     /// line follows the claim: a refresh's ending lands before the claim is
     /// released, so neither a second `r`'s "already refreshing" nor the next
@@ -408,10 +423,15 @@ final class BridgeListFeed<Row> {
     @discardableResult
     func refresh(begin: @escaping () -> (() -> RefreshProgress)? = { nil },
                  end: @escaping (RefreshEnd) -> Void = { _ in },
-                 alreadyRefreshing: () -> Void = {}) -> RefreshClaim {
+                 alreadyRefreshing: () -> Void = {},
+                 joinReask: Bool = false) -> RefreshClaim {
         lock.lock()
         guard !walking else { lock.unlock(); return .busy }
         var claim = RefreshClaim.started
+        if joinReask, !refreshing, reasking || (pendingReasked && pendingReplace != nil) {
+            lock.unlock()
+            return .joined
+        }
         if reasking {
             guard !refreshing else {
                 alreadyRefreshing()

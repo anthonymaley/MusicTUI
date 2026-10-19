@@ -2956,7 +2956,10 @@ final class LibraryScene: Scene {
     /// the drain applies like any re-ask: by row id at the root list (the cursor
     /// stays on its album), silently underneath when a tracks view is open. A failed
     /// or superseded read leaves the list and the gradient as they were, and the
-    /// list is not asked again unless it changes.
+    /// list is not asked again unless it changes. A re-ask of the list's own (it was
+    /// read while SpanDAC was still draining) that is running, or has posted and not
+    /// been drained, is JOINED rather than taken over: one walk at a time, and the
+    /// re-ask's read after the drain is the one that lands.
     private func rereadAlbumsIfStale(_ covers: LibraryCoverFetcher) {
         guard albumsSource == .bridge, let generation = bridgeAlbumsGeneration,
               let instance = bridgeAlbumsInstance else { return }
@@ -2965,11 +2968,13 @@ final class LibraryScene: Scene {
         let due = albumsReread.due(applied: applied, staleRefusal: covers.staleList(for: .libraryAlbums),
                                    readyInstance: ready)
         guard due.any else { return }
-        switch albumsFeed.refresh() {
+        switch albumsFeed.refresh(joinReask: true) {
         case .started, .tookOver: albumsReread.started(due, applied: applied, readyInstance: ready)
-        // A walk or a person's refresh is running and will land its own rows; ask
-        // again on a later tick if the list is still the one left behind.
-        case .busy, .alreadyRefreshing: break
+        // A walk or a person's refresh is running, or the list's own re-ask is (or has
+        // just posted): it lands its own rows, and a second walk beside it would only
+        // add load while SpanDAC drains. Ask again on a later tick if the list is
+        // still the one left behind.
+        case .busy, .alreadyRefreshing, .joined: break
         }
     }
 
@@ -2994,7 +2999,13 @@ final class LibraryScene: Scene {
         inboxLock.lock()
         let epoch = artistsSourceEpoch
         let token = artistAlbumsReaskToken
+        // The artist's own re-ask (it was read while SpanDAC drained) is running, or
+        // has posted its list and the drain has not applied it: that read is newer
+        // than the rows on screen and lands by itself. Join it, one read at a time;
+        // nothing is recorded, so a later tick asks again if the list is still behind.
+        let joined = artistAlbumsReaskRunning == token || artistAlbumsInbox?.artistID == artistID
         inboxLock.unlock()
+        if joined { return }
         if stale { artistAlbumsRereadFor = applied }
         if restarted, let ready { artistAlbumsRereadForInstance = (instance, ready) }
         let ref = WeakScene(self)

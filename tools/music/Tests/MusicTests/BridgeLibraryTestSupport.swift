@@ -52,6 +52,15 @@ final class BridgeLibraryReadsWire {
     /// scripted ONE status for the read after its queue would otherwise have it
     /// eaten by the read before. Off by default: the CLI tests count status reads.
     var stickyStatus = false
+    /// A server with state of its own: asked first, and a non-nil answer is the
+    /// reply (the request is still counted and recorded). For a test whose reply
+    /// depends on WHEN a request arrives rather than on its place in a queue, such
+    /// as a SpanDAC that is draining and then is not.
+    var handler: ((_ op: String, _ body: [String: Any]) -> String?)? {
+        get { lock.lock(); defer { lock.unlock() }; return handlerStorage }
+        set { lock.lock(); handlerStorage = newValue; lock.unlock() }
+    }
+    private var handlerStorage: ((String, [String: Any]) -> String?)?
 
     init(_ repliesByOp: [String: [String]] = [:]) {
         self.repliesByOp = repliesByOp
@@ -97,6 +106,10 @@ final class BridgeLibraryReadsWire {
         requests.append(body)
         let n = countByOp[op, default: 0]
         countByOp[op] = n + 1
+        if let handlerStorage, let reply = handlerStorage(op, body) {
+            lock.unlock()
+            return reply
+        }
         let replies = repliesByOp[op] ?? []
         let reply = n < replies.count ? replies[n]
             : (op == "slice.status" && stickyStatus ? (replies.last ?? Self.unscripted(op)) : Self.unscripted(op))

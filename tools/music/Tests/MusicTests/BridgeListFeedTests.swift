@@ -484,6 +484,57 @@ final class BridgeListFeedTests: XCTestCase {
         XCTAssertTrue(f.waitForWorkersForTest(timeout: 5))
     }
 
+    /// A scene reading the list again by itself (`joinReask`) finds the plain re-ask
+    /// waiting on the drain: it starts nothing, and the re-ask's own read after the
+    /// drain is the only one.
+    func testAnAutomaticRereadJoinsAPlainReAskAndStartsNoWalk() {
+        let script = ScriptedFetch([flagged(["old"]),                        // the walk: stale, so a re-ask begins
+                                    flagged(["mid"], stale: false),          // its probe: the drain is over
+                                    flagged(["new"], stale: false)])         // its re-walk
+        let sleeper = SleepRecorder(gateFirst: true)
+        let f = reaskFeed(script.fetch, sleeper)
+        f.start()
+        XCTAssertTrue(settleUntil { !sleeper.calls.isEmpty }, "the plain re-ask never began waiting")
+        XCTAssertEqual(f.refresh(joinReask: true), .joined)
+        XCTAssertEqual(f.refresh(joinReask: true), .joined, "asked again on the next tick")
+        XCTAssertEqual(script.callCount, 1, "the join read the list")
+        sleeper.firstGate.signal()
+        XCTAssertTrue(settleUntil { f.drain().replace == [Row(id: "new")] }, "the re-ask's own rows never landed")
+        XCTAssertEqual(script.callCount, 3, "one walk for the first read, a probe and ONE walk after the drain")
+    }
+
+    /// The re-ask has posted and ended, but the scene has not drained its rows: they
+    /// are newer than the list the caller found behind, so the ask joins them. Once
+    /// drained, the feed is idle and the same ask reads the list.
+    func testAnAutomaticRereadJoinsAReAskThatPostedAndIsNotDrainedYet() {
+        let script = ScriptedFetch([flagged(["old"]),
+                                    flagged(["mid"], stale: false),
+                                    flagged(["new"], stale: false),
+                                    flagged(["newer"], stale: false)])
+        let f = reaskFeed(script.fetch, SleepRecorder())
+        f.start()
+        XCTAssertTrue(settleUntil { script.callCount == 3 && script.threadEnded(at: 2) }, "the re-ask never finished")
+        XCTAssertEqual(f.refresh(joinReask: true), .joined, "the posted rows are not drained yet")
+        XCTAssertEqual(script.callCount, 3)
+        XCTAssertEqual(f.drain().replace, [Row(id: "new")])
+        XCTAssertEqual(f.refresh(joinReask: true), .started, "nothing left to join")
+        XCTAssertTrue(f.waitForWorkersForTest(timeout: 5))
+        XCTAssertEqual(f.drain().replace, [Row(id: "newer")])
+    }
+
+    /// With no re-ask to join, the scene's own re-read reads the list as it always did
+    /// (a person's `r` never joins at all: `testARefreshTakesOverAPlainReAsk...`).
+    func testAnAutomaticRereadStartsAWalkWhenThereIsNoReAsk() {
+        let script = ScriptedFetch([page(["a"], generation: 1, next: nil), page(["a", "b"], generation: 1, next: nil)])
+        let f = reaskFeed(script.fetch, SleepRecorder())
+        f.start()
+        XCTAssertTrue(settleUntil { script.callCount == 1 && script.threadEnded(at: 0) })
+        _ = f.drain()
+        XCTAssertEqual(f.refresh(joinReask: true), .started)
+        XCTAssertTrue(f.waitForWorkersForTest(timeout: 5))
+        XCTAssertEqual(f.drain().replace, [Row(id: "a"), Row(id: "b")])
+    }
+
     func testAResetBeforeTheRefreshWorkerStartsRunsNothing() {
         let script = ScriptedFetch([page(["a"], generation: 1, next: nil), page(["a", "b"], generation: 1, next: nil)])
         let f = reaskFeed(script.fetch, SleepRecorder())

@@ -50,7 +50,8 @@ final class BridgeLibraryCoversSceneTests: XCTestCase {
         let fetcher: LibraryCoverFetcher
         let scene: LibraryScene
 
-        init(wire: BridgeLibraryReadsWire, bridge: Bool = true) {
+        init(wire: BridgeLibraryReadsWire, bridge: Bool = true,
+             warmUpSleep: @escaping (TimeInterval) -> Void = { _ in }) {
             self.wire = wire
             flag = BridgeSelectedFlag(bridge)
             spandac = FakeSpanDAC(clock: clock, instance: BridgeLibraryCoversSceneTests.instanceA)
@@ -81,7 +82,7 @@ final class BridgeLibraryCoversSceneTests: XCTestCase {
                             path: "/nonexistent", transport: wire.transport, libraryTransport: wire.transport))
                         : nil
                 },
-                warmUpSleep: { _ in },
+                warmUpSleep: warmUpSleep,
                 resultCache: temporaryResultCache().cache)
         }
 
@@ -690,5 +691,150 @@ final class BridgeLibraryCoversSceneTests: XCTestCase {
         XCTAssertEqual(rig.spandac.firstRequests.map(\.id), ["al1"])
         XCTAssertTrue(heroShowsMarker(rig))
         XCTAssertEqual(rig.scene.subViewForTest, .albums)
+    }
+
+    // MARK: - one walk at a time on a cold start
+
+    /// A SpanDAC with state of its own for `slice.libraryAlbums`: it serves two pages
+    /// of the albums it holds, under its core's generation, flagged `refreshing`
+    /// while it drains and not once it has. The first page names a second, so a read
+    /// that was a WALK (it asked for page 2) is told from a probe (page 1 alone).
+    private final class DrainingAlbums {
+        private let lock = NSLock()
+        private var generation = 1
+        private var draining = true
+        private var ids = ["al1", "al2", "al3"]
+        /// How an artist's albums are written, from the scene's own helper.
+        var artistReply: ((_ generation: Int, _ draining: Bool, _ ids: [String]) -> String)?
+        /// Reads of the artist's albums so far.
+        private(set) var artistReads = 0
+
+        /// The library refresh finished: a newer generation, still draining.
+        func moveOn() { lock.lock(); generation = 2; lock.unlock() }
+        /// The drain is over: the albums it holds now include one the first read lacked.
+        func finishDraining() { lock.lock(); draining = false; ids.append("al9"); lock.unlock() }
+
+        private func artistAlbums() -> String? {
+            lock.lock(); defer { lock.unlock() }
+            artistReads += 1
+            return artistReply?(generation, draining, Array(ids.prefix(2)) + (draining ? [] : ["al9"]))
+        }
+
+        func handle(_ op: String, _ body: [String: Any]) -> String? {
+            if op == "slice.libraryArtistAlbums" { return artistAlbums() }
+            guard op == "slice.libraryAlbums" else { return nil }
+            lock.lock(); defer { lock.unlock() }
+            let second = (body["cursor"] as? String) != nil
+            let page = second ? Array(ids.dropFirst(2)) : Array(ids.prefix(2))
+            let items = page.map { "{\"id\":\"\($0)\",\"title\":\"In Rainbows \($0)\",\"artist\":\"Artist\",\"track_count\":9,\"kind\":\"album\"}" }
+                .joined(separator: ",")
+            return """
+            {"ok":true,"op":"slice.libraryAlbums","generation":\(generation),"library_instance":"\(BridgeLibraryCoversSceneTests.instanceA)",
+             "total":\(ids.count),"items":[\(items)],"stale":false,"refreshing":\(draining),
+             "next_cursor":\(second ? "null" : "\"c2\"")}
+            """
+        }
+    }
+
+    /// An artist's albums, whole in one reply, flagged while SpanDAC drains.
+    private func artistAlbumsReply(generation: Int, draining: Bool, ids: [String]) -> String {
+        let items = ids.map { "{\"id\":\"\($0)\",\"title\":\"In Rainbows \($0)\",\"artist\":\"Radiohead\",\"track_count\":9,\"kind\":\"album\"}" }
+            .joined(separator: ",")
+        return """
+        {"ok":true,"op":"slice.libraryArtistAlbums","generation":\(generation),"library_instance":"\(Self.instanceA)",
+         "items":[\(items)],"stale":false,"refreshing":\(draining)}
+        """
+    }
+
+    /// The wait between a re-ask's probes, held until the test lets it go: the clock
+    /// of a re-ask that has no wall time in it. `entered` counts the waits begun.
+    private final class HeldSleep {
+        private let lock = NSLock()
+        private let gate = DispatchSemaphore(value: 0)
+        private var open = false
+        private var count = 0
+        var entered: Int { lock.lock(); defer { lock.unlock() }; return count }
+
+        func sleep(_ seconds: TimeInterval) {
+            lock.lock(); count += 1; let passes = open; lock.unlock()
+            if !passes { _ = gate.wait(timeout: .now() + 10) }   // a safety net, never the clock
+        }
+        /// Every wait, now and from here on, returns at once.
+        func openAll() {
+            lock.lock(); open = true; lock.unlock()
+            for _ in 0..<8 { gate.signal() }
+        }
+    }
+
+    /// Whole-list reads of Albums so far (they asked for page 2), and every read of
+    /// page 1 (a walk's first page or a probe).
+    private func albumWalks(_ wire: BridgeLibraryReadsWire) -> (walks: Int, firstPages: Int) {
+        let sent = wire.sent("slice.libraryAlbums")
+        return (sent.filter { $0["cursor"] != nil }.count, sent.filter { $0["cursor"] == nil }.count)
+    }
+
+    func testAColdStartWalksTheAlbumsListOnceMoreAfterTheDrainNotTwice() {
+        let server = DrainingAlbums()
+        let wire = BridgeLibraryReadsWire()
+        wire.handler = server.handle
+        let held = HeldSleep()
+        defer { held.openAll() }
+        let rig = Rig(wire: wire, warmUpSleep: held.sleep)
+        goToSubView(rig.scene, .albums)
+        XCTAssertTrue(settleScene(rig.scene) { rig.scene.render(frame: self.frame, snapshot: self.idle).contains("In Rainbows") })
+        // The first read came back refreshing: the feed's own re-ask probes and waits.
+        XCTAssertTrue(settleScene(rig.scene) { held.entered == 1 }, "the walk's own re-ask never began")
+        XCTAssertEqual(albumWalks(wire).walks, 1)
+
+        // The library refresh finishes while SpanDAC is still draining: the row on
+        // screen is asked for under generation 1 and refused as stale.
+        server.moveOn()
+        rig.spandac.serverGeneration = 2
+        rig.spandac.covers["album|al1"] = LibraryCoverFetcherTests.payload(40_000)
+        _ = rig.tick(at: 0, snapshot: idle)
+        _ = rig.tick(at: 0.3, snapshot: idle)
+        XCTAssertEqual(rig.spandac.firstRequests.map(\.generation), [1])
+        for step in 1...5 { _ = rig.tick(at: 0.3 + 0.1 * Double(step), snapshot: idle) }
+
+        // Then the drain ends and the re-ask's wait is over.
+        server.finishDraining()
+        held.openAll()
+        XCTAssertTrue(settle(rig, at: 1) { rig.scene.render(frame: self.frame, snapshot: self.idle).contains("In Rainbows al9") },
+                      "the list never came back whole after the drain")
+        for step in 0..<20 { _ = rig.tick(at: 2 + Double(step), snapshot: idle) }
+        let counts = albumWalks(wire)
+        XCTAssertEqual(counts.walks, 2, "the first walk and ONE read after the drain, not a third")
+        XCTAssertEqual(counts.firstPages, 3, "two walks' first pages and the one probe that found the drain over")
+    }
+
+    func testAnArtistsAlbumsStaleRereadJoinsTheirOwnReAskAndReadsOnceAfterTheDrain() {
+        let server = DrainingAlbums()
+        server.artistReply = artistAlbumsReply
+        let wire = BridgeLibraryReadsWire(["slice.libraryArtists": [artistPage]])
+        wire.handler = server.handle
+        let held = HeldSleep()
+        defer { held.openAll() }
+        let rig = Rig(wire: wire, warmUpSleep: held.sleep)
+        goToSubView(rig.scene, .artists)
+        XCTAssertTrue(settleScene(rig.scene) { rig.scene.render(frame: self.frame, snapshot: self.idle).contains("Radiohead") })
+        openArtist(rig)
+        // The read came back refreshing: the artist's own re-ask waits for the drain.
+        XCTAssertTrue(settleScene(rig.scene) { held.entered == 1 }, "the artist's re-ask never began")
+
+        server.moveOn()
+        rig.spandac.serverGeneration = 2
+        rig.spandac.covers["album|al1"] = LibraryCoverFetcherTests.payload(40_000)
+        _ = rig.tick(at: 0, snapshot: idle)
+        _ = rig.tick(at: 0.3, snapshot: idle)
+        XCTAssertEqual(rig.spandac.firstRequests.map(\.generation), [1], "asked under 1, refused as stale")
+        for step in 1...5 { _ = rig.tick(at: 0.3 + 0.1 * Double(step), snapshot: idle) }
+        XCTAssertEqual(server.artistReads, 1, "the stale refusal read the artist's albums beside the re-ask")
+
+        server.finishDraining()
+        held.openAll()
+        XCTAssertTrue(settle(rig, at: 1) { rig.scene.render(frame: self.frame, snapshot: self.idle).contains("In Rainbows al9") },
+                      "the artist's albums never came back whole after the drain")
+        for step in 0..<20 { _ = rig.tick(at: 2 + Double(step), snapshot: idle) }
+        XCTAssertEqual(server.artistReads, 3, "the first read, the probe, and ONE read after the drain")
     }
 }

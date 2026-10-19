@@ -1159,11 +1159,11 @@ final class PlaylistsScene: Scene {
         let due = playlistsReread.due(applied: applied, staleRefusal: covers.staleList(for: .playlists),
                                       readyInstance: ready)
         guard due.any else { return }
-        switch playlistsFeed.refresh() {
+        switch playlistsFeed.refresh(joinReask: true) {
         case .started, .tookOver: playlistsReread.started(due, applied: applied, readyInstance: ready)
         // The list's own walk, or a refresh the person asked for, is running and
         // lands its own rows; look again on a later tick.
-        case .busy, .alreadyRefreshing: break
+        case .busy, .alreadyRefreshing, .joined: break
         }
     }
 
