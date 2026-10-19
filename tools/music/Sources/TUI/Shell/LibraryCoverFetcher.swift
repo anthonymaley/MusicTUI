@@ -131,43 +131,126 @@ final class LibraryCoverFetcher {
 
     /// The list a `stale_generation` refusal named: the generation and instance a
     /// target carried when SpanDAC said its snapshot had moved on.
-    struct StaleList: Equatable {
+    struct StaleList: Hashable {
         let generation: Int
         let libraryInstance: String
     }
 
-    /// The once-per-list bookkeeping of a scene that reads its list again in place
-    /// when SpanDAC left it behind: a `stale_generation` refusal naming the applied
-    /// list (once per list), or a restart, a readiness instance other than the
-    /// applied one (once per pair of instances, whatever generation the re-read
-    /// comes back under). Albums and Playlists share it; each scene supplies its
-    /// own feed and guards.
-    struct ListReread {
-        private var staleDone: StaleList?
-        private var restartDone: (applied: String, ready: String)?
+    /// The bookkeeping of a scene that reads its list again in place when SpanDAC
+    /// left it behind: a `stale_generation` refusal naming the applied list, or a
+    /// restart, a readiness instance other than the applied one. Albums, Playlists
+    /// and an artist's albums share it; each scene supplies its own read and guards.
+    ///
+    /// Each reason (a stale list; a pair of instances) is read for ONCE when the
+    /// read SUCCEEDS, whatever it comes back carrying: a read that lands the same
+    /// identity is not asked again. A read that FAILS (the provider timed out, the
+    /// reply was discarded) is retried, but never on a tick: after `retryDelays`
+    /// seconds, one delay per retry, so at most `1 + retryDelays.count` attempts
+    /// and then it is spent until the list changes. An attempt in flight is not
+    /// asked again; one whose outcome never arrives (its worker was superseded)
+    /// counts as a failure after `inFlightBound`. `reset()` forgets everything and
+    /// makes any outcome still to arrive from before it a no-op.
+    ///
+    /// A class: the outcome arrives on the read's own thread, the asking on the tick.
+    final class ListReread {
+        static let retryDelays: [TimeInterval] = [5, 15, 45]
+        static let inFlightBound: TimeInterval = 700
 
-        /// What, if anything, calls for a re-read of the `applied` list.
-        func due(applied: StaleList, staleRefusal: StaleList?, readyInstance: String?) -> Due {
-            let stale = staleRefusal == applied && staleDone != applied
-            let restarted = readyInstance.map {
-                $0 != applied.libraryInstance && (restartDone?.applied != applied.libraryInstance
-                                                  || restartDone?.ready != $0)
-            } ?? false
-            return Due(stale: stale, restarted: restarted)
+        enum Reason: Hashable {
+            case stale(StaleList)
+            case restart(applied: String, ready: String)
         }
 
-        /// The feed took the re-read: record what it answers, so it is not asked again.
-        mutating func started(_ due: Due, applied: StaleList, readyInstance: String?) {
-            if due.stale { staleDone = applied }
-            if due.restarted, let readyInstance { restartDone = (applied.libraryInstance, readyInstance) }
+        private struct Attempt {
+            var inFlightSince: Date?
+            var failures = 0
+            /// A failure the tick has not yet stamped with its retry time (the
+            /// outcome's thread does not read the clock).
+            var failedUnstamped = false
+            var notBefore: Date?
+            var done = false
         }
 
-        mutating func reset() { self = ListReread() }
+        private let lock = NSLock()
+        private var attempts: [Reason: Attempt] = [:]
+        private var generation = 0
+
+        /// A claim on the reasons one read answers; hand it back with the outcome.
+        struct Ticket {
+            fileprivate let generation: Int
+            let reasons: [Reason]
+        }
 
         struct Due {
-            let stale: Bool
-            let restarted: Bool
-            var any: Bool { stale || restarted }
+            let reasons: [Reason]
+            var any: Bool { !reasons.isEmpty }
+        }
+
+        /// What, if anything, calls for a re-read of the `applied` list now.
+        func due(applied: StaleList, staleRefusal: StaleList?, readyInstance: String?, now: Date) -> Due {
+            lock.lock(); defer { lock.unlock() }
+            var out: [Reason] = []
+            if staleRefusal == applied, eligible(.stale(applied), now: now) { out.append(.stale(applied)) }
+            if let ready = readyInstance, ready != applied.libraryInstance {
+                let r = Reason.restart(applied: applied.libraryInstance, ready: ready)
+                if eligible(r, now: now) { out.append(r) }
+            }
+            return Due(reasons: out)
+        }
+
+        private func eligible(_ reason: Reason, now: Date) -> Bool {
+            guard var a = attempts[reason] else { return true }
+            defer { attempts[reason] = a }
+            if a.done { return false }
+            if let since = a.inFlightSince {
+                guard now.timeIntervalSince(since) >= Self.inFlightBound else { return false }
+                a.inFlightSince = nil; a.failures += 1; a.failedUnstamped = true
+            }
+            if a.failedUnstamped {
+                a.failedUnstamped = false
+                a.notBefore = a.failures <= Self.retryDelays.count
+                    ? now.addingTimeInterval(Self.retryDelays[a.failures - 1]) : .distantFuture
+            }
+            if let nb = a.notBefore { return now >= nb }
+            return true
+        }
+
+        /// Claim `due` before the read is asked for: its outcome may arrive before
+        /// the asking returns. A read that is not taken is handed back with `release`.
+        func began(_ due: Due, now: Date) -> Ticket {
+            lock.lock(); defer { lock.unlock() }
+            for r in due.reasons {
+                var a = attempts[r] ?? Attempt()
+                a.inFlightSince = now
+                attempts[r] = a
+            }
+            return Ticket(generation: generation, reasons: due.reasons)
+        }
+
+        /// The read was not taken: nothing was attempted.
+        func release(_ ticket: Ticket) {
+            lock.lock(); defer { lock.unlock() }
+            guard ticket.generation == generation else { return }
+            for r in ticket.reasons { attempts[r]?.inFlightSince = nil }
+        }
+
+        /// The read ended: `succeeded` is that it read and posted the list (whatever
+        /// identity it carried), not that the list changed.
+        func finished(_ ticket: Ticket, succeeded: Bool) {
+            lock.lock(); defer { lock.unlock() }
+            guard ticket.generation == generation else { return }
+            for r in ticket.reasons {
+                guard var a = attempts[r] else { continue }
+                a.inFlightSince = nil
+                if succeeded { a.done = true } else { a.failures += 1; a.failedUnstamped = true }
+                attempts[r] = a
+            }
+        }
+
+        func reset() {
+            lock.lock(); defer { lock.unlock() }
+            generation += 1
+            attempts = [:]
         }
     }
 

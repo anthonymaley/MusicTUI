@@ -83,7 +83,9 @@ final class BridgeLibraryCoversSceneTests: XCTestCase {
                         : nil
                 },
                 warmUpSleep: warmUpSleep,
-                resultCache: temporaryResultCache().cache)
+                resultCache: temporaryResultCache().cache,
+                // The scene's own clock is the fake one, so a retry's delay is read off it.
+                now: { clock.date })
         }
 
         deinit { try? FileManager.default.removeItem(atPath: dir) }
@@ -530,18 +532,199 @@ final class BridgeLibraryCoversSceneTests: XCTestCase {
     }
 
     func testAFailedRereadDoesNotLoopOrSpeak() {
-        // Only the first read is scripted: the re-read is answered `bad_request`.
+        // Only the first read is scripted: every re-read is answered `bad_request`.
         let rig = loadedAlbumsRig([albumsPage(["al1", "al2"], generation: 1)])
         rig.spandac.serverGeneration = 2
         _ = rig.tick(at: 0, snapshot: idle)
         _ = rig.tick(at: 0.3, snapshot: idle)
-        XCTAssertTrue(settle(rig, at: 0.3) { rig.wire.sent("slice.libraryAlbums").count >= 2 })
-        for step in 0..<40 { _ = rig.tick(at: 1 + Double(step), snapshot: idle); usleep(5_000) }
+        XCTAssertTrue(attempt(rig, at: 0.3, expecting: 2))
+        // Ticks, however many, inside the delay ask nothing.
+        for step in 0..<40 { _ = rig.tick(at: 0.4 + Double(step) * 0.1, snapshot: idle); usleep(2_000) }
         usleep(100_000)
-        XCTAssertEqual(rig.wire.sent("slice.libraryAlbums").count, 2, "a failed re-read is not retried")
+        XCTAssertEqual(rig.wire.sent("slice.libraryAlbums").count, 2, "a retry waits out its delay, never a tick")
         let out = rig.scene.render(frame: frame, snapshot: idle)
         XCTAssertTrue(out.contains("In Rainbows al1"), "the list on screen is untouched")
         XCTAssertFalse(out.contains("SpanDAC couldn't"), "no error message to the person")
+    }
+
+    /// Ticks at fake time `t` until request number `n` of `op` has been served and its
+    /// worker has ENDED (its outcome is recorded), then once more so the tick stamps a
+    /// failure's retry time at `t`. No wall-time wait.
+    private func attempt(_ rig: Rig, at t: TimeInterval, expecting n: Int,
+                         op: String = "slice.libraryAlbums") -> Bool {
+        rig.clock.t = t
+        let ok = settleScene(rig.scene) { rig.wire.sent(op).count >= n && rig.wire.threadEnded(op: op, at: n - 1) }
+        _ = rig.tick(at: t, snapshot: idle)
+        return ok
+    }
+
+    private static func badReply(_ op: String) -> String {
+        "{\"ok\":false,\"op\":\"\(op)\",\"error\":{\"kind\":\"bad_request\",\"detail\":\"scripted failure\"}}"
+    }
+
+    /// Asks nothing on any tick between `from` and `to` (fake seconds), then reports the request count.
+    private func quietCount(_ rig: Rig, op: String, from: TimeInterval, to: TimeInterval) -> Int {
+        var t = from
+        while t < to { _ = rig.tick(at: t, snapshot: idle); t += (to - from) / 20 }
+        usleep(100_000)
+        return rig.wire.sent(op).count
+    }
+
+    func testAFailedRestartRereadIsRetriedAfterADelayAndTheCoverFollows() {
+        let op = "slice.libraryAlbums"
+        let rig = loadedAlbumsRig([albumsPage(["al1", "al2"], generation: 1, instance: Self.instanceA),
+                                   Self.badReply(op),
+                                   albumsPage(["al0", "al1", "al2"], generation: 2, instance: Self.instanceB)])
+        rig.spandac.covers["album|al1"] = LibraryCoverFetcherTests.payload(40_000)
+        restartSpanDAC(rig)
+        _ = rig.tick(at: 0, snapshot: idle)
+        _ = rig.tick(at: 0.3, snapshot: idle)
+        XCTAssertTrue(attempt(rig, at: 0.3, expecting: 2), "the restart never made the scene read again")
+        XCTAssertEqual(quietCount(rig, op: op, from: 0.4, to: 5.2), 2, "the retry waits out its delay")
+        XCTAssertTrue(attempt(rig, at: 5.4, expecting: 3), "a failed read was never retried")
+        XCTAssertTrue(settle(rig, at: 5.4) { rig.scene.render(frame: self.frame, snapshot: self.idle).contains("In Rainbows al0") },
+                      "the retry's replacement never landed")
+        _ = rig.tick(at: 10, snapshot: idle)
+        _ = rig.tick(at: 10.3, snapshot: idle)
+        XCTAssertEqual(rig.spandac.firstRequests.map(\.libraryInstance), [Self.instanceB], "a rest asks under the new instance")
+        XCTAssertTrue(heroShowsMarker(rig))
+        XCTAssertEqual(quietCount(rig, op: op, from: 20, to: 400), 3, "a read that succeeded is not asked again")
+    }
+
+    func testAFailedRestartRereadIsRetriedAtMostABoundedFewTimes() {
+        let op = "slice.libraryAlbums"
+        let bad = Self.badReply(op)
+        let rig = loadedAlbumsRig([albumsPage(["al1", "al2"], generation: 1, instance: Self.instanceA),
+                                   bad, bad, bad, bad,
+                                   albumsPage(["al0", "al1", "al2"], generation: 2, instance: Self.instanceB)])
+        restartSpanDAC(rig)
+        _ = rig.tick(at: 0, snapshot: idle)
+        _ = rig.tick(at: 0.3, snapshot: idle)
+        // The first attempt, then retries 5, 15 and 45 seconds after each failure.
+        XCTAssertTrue(attempt(rig, at: 0.3, expecting: 2))
+        XCTAssertEqual(quietCount(rig, op: op, from: 0.4, to: 5.2), 2)
+        XCTAssertTrue(attempt(rig, at: 5.4, expecting: 3))
+        XCTAssertEqual(quietCount(rig, op: op, from: 5.5, to: 20.3), 3)
+        XCTAssertTrue(attempt(rig, at: 20.5, expecting: 4))
+        XCTAssertEqual(quietCount(rig, op: op, from: 20.6, to: 65.4), 4)
+        XCTAssertTrue(attempt(rig, at: 65.6, expecting: 5))
+        XCTAssertEqual(quietCount(rig, op: op, from: 66, to: 6_000), 5, "spent: no fifth retry however long it waits")
+        XCTAssertFalse(rig.scene.render(frame: frame, snapshot: idle).contains("In Rainbows al0"))
+    }
+
+    func testAProvenanceResetDuringARetryForgetsItsDelayAndItsFailures() {
+        let op = "slice.libraryAlbums"
+        let rig = loadedAlbumsRig([albumsPage(["al1", "al2"], generation: 1, instance: Self.instanceA),
+                                   Self.badReply(op),
+                                   albumsPage(["al1", "al2"], generation: 1, instance: Self.instanceA),
+                                   albumsPage(["al0", "al1", "al2"], generation: 2, instance: Self.instanceB)])
+        restartSpanDAC(rig)
+        _ = rig.tick(at: 0, snapshot: idle)
+        _ = rig.tick(at: 0.3, snapshot: idle)
+        XCTAssertTrue(attempt(rig, at: 0.3, expecting: 2))   // failed: the retry waits until 5.3
+
+        rig.flag.selected = false
+        XCTAssertTrue(settleScene(rig.scene) { rig.scene.render(frame: self.frame, snapshot: self.idle).contains("(no albums)") })
+        rig.flag.selected = true
+        XCTAssertTrue(settleScene(rig.scene) { rig.scene.render(frame: self.frame, snapshot: self.idle).contains("In Rainbows") })
+        _ = rig.tick(at: 1.0, snapshot: idle)
+        _ = rig.tick(at: 1.3, snapshot: idle)
+        // Still long before 5.3, and the old list is read again at once.
+        XCTAssertTrue(attempt(rig, at: 1.4, expecting: 4), "the reset left the old retry delay in force")
+        XCTAssertTrue(settle(rig, at: 1.4) { rig.scene.render(frame: self.frame, snapshot: self.idle).contains("In Rainbows al0") })
+    }
+
+    // MARK: - a failed re-read of the open artist's albums
+
+    func testAFailedArtistAlbumsRereadIsRetriedAfterADelayAndTheCoverFollows() {
+        let op = "slice.libraryArtistAlbums"
+        let rig = artistsRig([artistAlbumsPage(["al1"], generation: 1, instance: Self.instanceA),
+                              Self.badReply(op),
+                              artistAlbumsPage(["al0", "al1"], generation: 2, instance: Self.instanceB)])
+        rig.spandac.covers["album|al1"] = LibraryCoverFetcherTests.payload(40_000)
+        restartSpanDAC(rig)
+        openArtist(rig)
+        _ = rig.tick(at: 0, snapshot: idle)
+        _ = rig.tick(at: 0.3, snapshot: idle)
+        XCTAssertTrue(attempt(rig, at: 0.3, expecting: 2, op: op), "the restart never made the scene read again")
+        XCTAssertEqual(quietCount(rig, op: op, from: 0.4, to: 5.2), 2, "the retry waits out its delay")
+        XCTAssertTrue(attempt(rig, at: 5.4, expecting: 3, op: op), "a failed read was never retried")
+        XCTAssertTrue(settle(rig, at: 5.4) { rig.scene.render(frame: self.frame, snapshot: self.idle).contains("In Rainbows al0") },
+                      "the retry's replacement never landed")
+        _ = rig.tick(at: 10, snapshot: idle)
+        _ = rig.tick(at: 10.3, snapshot: idle)
+        XCTAssertTrue(settleResting(rig, from: 10.3) { rig.spandac.firstRequests.map(\.libraryInstance) == [Self.instanceB] })
+        XCTAssertEqual(quietCount(rig, op: op, from: 20, to: 400), 3, "a read that succeeded is not asked again")
+    }
+
+    func testAFailedArtistAlbumsRereadIsRetriedAtMostABoundedFewTimes() {
+        let op = "slice.libraryArtistAlbums"
+        let bad = Self.badReply(op)
+        let rig = artistsRig([artistAlbumsPage(["al1"], generation: 1, instance: Self.instanceA),
+                              bad, bad, bad, bad,
+                              artistAlbumsPage(["al0", "al1"], generation: 2, instance: Self.instanceB)])
+        restartSpanDAC(rig)
+        openArtist(rig)
+        _ = rig.tick(at: 0, snapshot: idle)
+        _ = rig.tick(at: 0.3, snapshot: idle)
+        XCTAssertTrue(attempt(rig, at: 0.3, expecting: 2, op: op))
+        XCTAssertEqual(quietCount(rig, op: op, from: 0.4, to: 5.2), 2)
+        XCTAssertTrue(attempt(rig, at: 5.4, expecting: 3, op: op))
+        XCTAssertEqual(quietCount(rig, op: op, from: 5.5, to: 20.3), 3)
+        XCTAssertTrue(attempt(rig, at: 20.5, expecting: 4, op: op))
+        XCTAssertEqual(quietCount(rig, op: op, from: 20.6, to: 65.4), 4)
+        XCTAssertTrue(attempt(rig, at: 65.6, expecting: 5, op: op))
+        XCTAssertEqual(quietCount(rig, op: op, from: 66, to: 6_000), 5, "spent: no fifth retry however long it waits")
+        XCTAssertFalse(rig.scene.render(frame: frame, snapshot: idle).contains("In Rainbows al0"))
+    }
+
+    func testOpeningTheArtistAgainDuringARetryForgetsItsDelayAndItsFailures() {
+        let op = "slice.libraryArtistAlbums"
+        let rig = artistsRig([artistAlbumsPage(["al1"], generation: 1, instance: Self.instanceA),
+                              Self.badReply(op),
+                              artistAlbumsPage(["al1"], generation: 1, instance: Self.instanceA),
+                              artistAlbumsPage(["al0", "al1"], generation: 2, instance: Self.instanceB)])
+        restartSpanDAC(rig)
+        openArtist(rig)
+        _ = rig.tick(at: 0, snapshot: idle)
+        _ = rig.tick(at: 0.3, snapshot: idle)
+        XCTAssertTrue(attempt(rig, at: 0.3, expecting: 2, op: op))   // failed: the retry waits until 5.3
+
+        _ = rig.scene.handle(.escape)
+        _ = rig.tick(at: 0.5, snapshot: idle)
+        openArtist(rig)   // read again: the open's own read, which is under the old instance
+        _ = rig.tick(at: 1.0, snapshot: idle)
+        _ = rig.tick(at: 1.3, snapshot: idle)
+        XCTAssertTrue(attempt(rig, at: 1.4, expecting: 4, op: op), "the reset left the old retry delay in force")
+        XCTAssertTrue(settle(rig, at: 1.4) { rig.scene.render(frame: self.frame, snapshot: self.idle).contains("In Rainbows al0") })
+    }
+
+    func testAReplyDiscardedBecauseTheTabStoppedTickingIsRetried() {
+        let op = "slice.libraryArtistAlbums"
+        let rig = artistsRig([artistAlbumsPage(["al1"], generation: 1, instance: Self.instanceA),
+                              artistAlbumsPage(["al0", "al1"], generation: 2, instance: Self.instanceB),
+                              artistAlbumsPage(["al0", "al1"], generation: 2, instance: Self.instanceB)])
+        rig.wire.gate(op: op, at: 1)   // hold the re-read's request until the tab has gone quiet
+        restartSpanDAC(rig)
+        openArtist(rig)
+        _ = rig.tick(at: 0, snapshot: idle)
+        _ = rig.tick(at: 0.3, snapshot: idle)
+        XCTAssertTrue(settleScene(rig.scene) { rig.wire.reached(op: op, at: 1) }, "the re-read never began")
+        // The tab stops ticking for longer than its heartbeat, then the reply arrives.
+        rig.clock.t = 200
+        rig.wire.release(op: op, at: 1)
+        XCTAssertTrue(waitUntil { rig.wire.threadEnded(op: op, at: 1) })
+        _ = rig.tick(at: 200, snapshot: idle)   // the tab is back: stamps the failure at 200
+        XCTAssertFalse(rig.scene.render(frame: frame, snapshot: idle).contains("In Rainbows al0"), "the reply was applied after all")
+        XCTAssertEqual(quietCount(rig, op: op, from: 200.1, to: 204.9), 2, "the retry waits out its delay")
+        XCTAssertTrue(attempt(rig, at: 205.5, expecting: 3, op: op), "a discarded reply was never read again")
+        XCTAssertTrue(settle(rig, at: 205.5) { rig.scene.render(frame: self.frame, snapshot: self.idle).contains("In Rainbows al0") })
+    }
+
+    private func waitUntil(seconds: Double = 5, _ done: () -> Bool) -> Bool {
+        let deadline = Date().addingTimeInterval(seconds)
+        while Date() < deadline { if done() { return true }; usleep(2_000) }
+        return done()
     }
 
     func testTheCursorStaysOnTheSameAlbumAcrossTheRereadAndNewAlbumsAppear() {
@@ -648,10 +831,8 @@ final class BridgeLibraryCoversSceneTests: XCTestCase {
         restartSpanDAC(rig)
         _ = rig.tick(at: 0, snapshot: idle)
         _ = rig.tick(at: 0.3, snapshot: idle)
-        XCTAssertTrue(settle(rig, at: 0.3) { rig.wire.sent("slice.libraryAlbums").count >= 2 })
-        for step in 0..<40 { _ = rig.tick(at: 1 + Double(step), snapshot: idle); usleep(5_000) }
-        usleep(100_000)
-        XCTAssertEqual(rig.wire.sent("slice.libraryAlbums").count, 2, "a failed re-read is not retried")
+        XCTAssertTrue(attempt(rig, at: 0.3, expecting: 2))
+        XCTAssertEqual(quietCount(rig, op: "slice.libraryAlbums", from: 0.4, to: 5.2), 2, "a retry waits out its delay, never a tick")
         let out = rig.scene.render(frame: frame, snapshot: idle)
         XCTAssertTrue(out.contains("In Rainbows al1"), "the list on screen is untouched")
         XCTAssertFalse(out.contains("SpanDAC couldn't"), "no error message to the person")

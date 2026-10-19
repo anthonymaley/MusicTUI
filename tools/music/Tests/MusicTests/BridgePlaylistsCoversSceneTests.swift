@@ -79,6 +79,8 @@ final class BridgePlaylistsCoversSceneTests: XCTestCase {
                         : nil
                 },
                 warmUpSleep: { _ in },
+                // The scene's own clock is the fake one, so a retry's delay is read off it.
+                now: { [clock] in clock.date },
                 screenWidth: { 110 })
         }
 
@@ -290,18 +292,97 @@ final class BridgePlaylistsCoversSceneTests: XCTestCase {
         XCTAssertEqual(rig.wire.sent("slice.libraryPlaylists").count, 2)
     }
 
+    /// Ticks at fake time `t` until request number `n` of the Playlists read has been served
+    /// and its worker has ENDED (its outcome is recorded), then once more so the tick stamps
+    /// a failure's retry time at `t`. No wall-time wait.
+    private func attempt(_ rig: Rig, at t: TimeInterval, expecting n: Int) -> Bool {
+        let op = "slice.libraryPlaylists"
+        rig.clock.t = t
+        let ok = settleScene(rig.scene) { rig.wire.sent(op).count >= n && rig.wire.threadEnded(op: op, at: n - 1) }
+        tick(rig, at: t)
+        return ok
+    }
+
+    private static let badReply =
+        "{\"ok\":false,\"op\":\"slice.libraryPlaylists\",\"error\":{\"kind\":\"bad_request\",\"detail\":\"scripted failure\"}}"
+
+    /// Ticks every fake second-ish between `from` and `to`: whatever it asks is in the count.
+    private func quietCount(_ rig: Rig, from: Double, to: Double) -> Int {
+        var t = from
+        while t < to { tick(rig, at: t); t += (to - from) / 20 }
+        usleep(100_000)
+        return rig.wire.sent("slice.libraryPlaylists").count
+    }
+
     func testAFailedPlaylistsRereadDoesNotLoopOrSpeak() {
         let rig = Rig(pages: [page(generation: 3, instance: Self.instanceA)])   // the re-read is answered bad_request
         restartSpanDAC(rig)
         settleRows(rig)
         let before = rig.statusStore.current()?.text
         tick(rig, at: 0.25)
-        XCTAssertTrue(settleScene(rig.scene) { rig.wire.sent("slice.libraryPlaylists").count >= 2 })
-        for step in 0..<40 { tick(rig, at: 1 + Double(step)); usleep(5_000) }
-        usleep(100_000)
-        XCTAssertEqual(rig.wire.sent("slice.libraryPlaylists").count, 2, "a failed re-read is not retried")
+        XCTAssertTrue(attempt(rig, at: 0.25, expecting: 2))
+        XCTAssertEqual(quietCount(rig, from: 0.3, to: 5.2), 2, "a retry waits out its delay, never a tick")
         XCTAssertTrue(rig.scene.render(frame: frame, snapshot: idle).contains("Road Trip"), "the list on screen is untouched")
         XCTAssertEqual(rig.statusStore.current()?.text, before)
+    }
+
+    func testAFailedPlaylistsRereadIsRetriedAfterADelayAndTheCoverFollows() {
+        let rig = Rig(pages: [page(generation: 3, instance: Self.instanceA), Self.badReply,
+                              page(generation: 4, instance: Self.instanceB, leading: "Aardvark Mix")])
+        restartSpanDAC(rig)
+        settleRows(rig)
+        let before = rig.statusStore.current()?.text
+        tick(rig, at: 0.25)
+        XCTAssertTrue(attempt(rig, at: 0.25, expecting: 2), "the restart never made the scene read again")
+        XCTAssertEqual(quietCount(rig, from: 0.3, to: 5.2), 2, "the retry waits out its delay")
+        XCTAssertTrue(attempt(rig, at: 5.4, expecting: 3), "a failed read was never retried")
+        XCTAssertTrue(settleScene(rig.scene) { rig.scene.render(frame: frame, snapshot: idle).contains("Aardvark Mix") },
+                      "the retry's replacement never landed")
+        XCTAssertTrue(tickUntil(rig, from: 10) { !rig.spandac.firstRequests.isEmpty })
+        XCTAssertEqual(rig.spandac.firstRequests.map(\.libraryInstance), [Self.instanceB])
+        XCTAssertTrue(settleScene(rig.scene) { rig.scene.render(frame: frame, snapshot: idle).contains(Self.marker) },
+                      "the cover never reached the hero")
+        XCTAssertEqual(quietCount(rig, from: 30, to: 400), 3, "a read that succeeded is not asked again")
+        XCTAssertEqual(rig.statusStore.current()?.text, before, "no status line at any point")
+    }
+
+    func testAFailedPlaylistsRereadIsRetriedAtMostABoundedFewTimes() {
+        let bad = Self.badReply
+        let rig = Rig(pages: [page(generation: 3, instance: Self.instanceA), bad, bad, bad, bad,
+                              page(generation: 4, instance: Self.instanceB, leading: "Aardvark Mix")])
+        restartSpanDAC(rig)
+        settleRows(rig)
+        tick(rig, at: 0.25)
+        // The first attempt, then retries 5, 15 and 45 seconds after each failure.
+        XCTAssertTrue(attempt(rig, at: 0.25, expecting: 2))
+        XCTAssertEqual(quietCount(rig, from: 0.3, to: 5.2), 2)
+        XCTAssertTrue(attempt(rig, at: 5.4, expecting: 3))
+        XCTAssertEqual(quietCount(rig, from: 5.5, to: 20.3), 3)
+        XCTAssertTrue(attempt(rig, at: 20.5, expecting: 4))
+        XCTAssertEqual(quietCount(rig, from: 20.6, to: 65.4), 4)
+        XCTAssertTrue(attempt(rig, at: 65.6, expecting: 5))
+        XCTAssertEqual(quietCount(rig, from: 66, to: 6_000), 5, "spent: no fifth retry however long it waits")
+        XCTAssertFalse(rig.scene.render(frame: frame, snapshot: idle).contains("Aardvark Mix"))
+    }
+
+    func testAProvenanceResetDuringAPlaylistsRetryForgetsItsDelayAndItsFailures() {
+        let rig = Rig(pages: [page(generation: 3, instance: Self.instanceA), Self.badReply,
+                              page(generation: 3, instance: Self.instanceA),
+                              page(generation: 4, instance: Self.instanceB, leading: "Aardvark Mix")])
+        restartSpanDAC(rig)
+        settleRows(rig)
+        tick(rig, at: 0.25)
+        XCTAssertTrue(attempt(rig, at: 0.25, expecting: 2))   // failed: the retry waits until 5.25
+
+        rig.flag.selected = false
+        XCTAssertTrue(settleScene(rig.scene) { !rig.scene.render(frame: frame, snapshot: idle).contains("Road Trip") })
+        rig.flag.selected = true
+        settleRows(rig)
+        tick(rig, at: 1.0)
+        tick(rig, at: 1.3)
+        // Still long before 5.25, and the old list is read again at once.
+        XCTAssertTrue(attempt(rig, at: 1.4, expecting: 4), "the reset left the old retry delay in force")
+        XCTAssertTrue(settleScene(rig.scene) { rig.scene.render(frame: frame, snapshot: idle).contains("Aardvark Mix") })
     }
 
     func testTheCursorStaysOnTheSamePlaylistAcrossTheRestartReread() {
@@ -353,17 +434,17 @@ final class BridgePlaylistsCoversSceneTests: XCTestCase {
         XCTAssertEqual(rig.wire.sent("slice.libraryPlaylists").count, 2, "no loop on an unchanged generation")
     }
 
-    func testAFailedStalePlaylistsRereadDoesNotLoopOrSpeak() {
-        let rig = Rig(pages: [page(generation: 1)])   // the re-read is answered bad_request
+    func testAFailedStalePlaylistsRereadIsRetriedAfterADelayAndSpeaksNothing() {
+        let rig = Rig(pages: [page(generation: 1), Self.badReply, page(generation: 2, leading: "Aardvark Mix")])
         rig.spandac.serverGeneration = 2
         settleRows(rig)
         let before = rig.statusStore.current()?.text
         tick(rig, at: 0.25)
-        XCTAssertTrue(settleScene(rig.scene) { rig.wire.sent("slice.libraryPlaylists").count >= 2 })
-        for step in 0..<40 { tick(rig, at: 1 + Double(step)); usleep(5_000) }
-        usleep(100_000)
-        XCTAssertEqual(rig.wire.sent("slice.libraryPlaylists").count, 2, "a failed re-read is not retried")
+        XCTAssertTrue(attempt(rig, at: 0.25, expecting: 2))
+        XCTAssertEqual(quietCount(rig, from: 0.3, to: 5.2), 2, "a retry waits out its delay, never a tick")
         XCTAssertTrue(rig.scene.render(frame: frame, snapshot: idle).contains("Road Trip"))
+        XCTAssertTrue(attempt(rig, at: 5.4, expecting: 3), "a failed read was never retried")
+        XCTAssertTrue(settleScene(rig.scene) { rig.scene.render(frame: frame, snapshot: idle).contains("Aardvark Mix") })
         XCTAssertEqual(rig.statusStore.current()?.text, before)
     }
 

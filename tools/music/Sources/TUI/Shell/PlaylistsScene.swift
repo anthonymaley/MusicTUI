@@ -1149,21 +1149,25 @@ final class PlaylistsScene: Scene {
     /// no status line at any point. It posts ONE `reasked` replacement, which the
     /// drain applies by row id (the cursor and an open tracks pane follow their
     /// playlist). A failed or superseded read leaves the list and the gradient as
-    /// they were.
+    /// they were; a read that FAILS is asked again after a delay, a bounded few
+    /// times (`ListReread`), never on a tick.
     private func rereadPlaylistsIfLeftBehind(_ covers: LibraryCoverFetcher) {
         guard railSource == .bridge, bridgeFailure == nil,
               let generation = bridgePlaylistsGeneration, let instance = bridgePlaylistsInstance
         else { return }
         let applied = LibraryCoverFetcher.StaleList(generation: generation, libraryInstance: instance)
         let ready = covers.readinessInstance()
+        let at = now()
         let due = playlistsReread.due(applied: applied, staleRefusal: covers.staleList(for: .playlists),
-                                      readyInstance: ready)
+                                      readyInstance: ready, now: at)
         guard due.any else { return }
-        switch playlistsFeed.refresh(joinReask: true) {
-        case .started, .tookOver: playlistsReread.started(due, applied: applied, readyInstance: ready)
+        let ticket = playlistsReread.began(due, now: at)
+        let reread = playlistsReread
+        switch playlistsFeed.refresh(end: { reread.finished(ticket, succeeded: $0 != .readFailed) }, joinReask: true) {
+        case .started, .tookOver: break
         // The list's own walk, or a refresh the person asked for, is running and
         // lands its own rows; look again on a later tick.
-        case .busy, .alreadyRefreshing, .joined: break
+        case .busy, .alreadyRefreshing, .joined: reread.release(ticket)
         }
     }
 

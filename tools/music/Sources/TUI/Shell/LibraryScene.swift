@@ -511,14 +511,12 @@ final class LibraryScene: Scene {
     // reset; nil means no artwork may be asked for those rows.
     private var bridgeArtistAlbumsGeneration: Int?
     private var bridgeArtistAlbumsInstance: String?
-    /// The open artist's list (generation and instance) already read again because
-    /// SpanDAC refused its covers as `stale_generation`, and the instance pair of a
-    /// restart's re-read: at most one each, as for the Albums list.
-    private var artistAlbumsRereadFor: LibraryCoverFetcher.StaleList?
-    private var artistAlbumsRereadForInstance: (applied: String, ready: String)?
+    /// What the open artist's list has already been read again for, as for Albums.
+    private var artistAlbumsReread = LibraryCoverFetcher.ListReread()
     private var lastCoverLanded = 0
     /// What the Albums list has already been read again for: a stale-generation
-    /// refusal (once per list) or a SpanDAC restart (once per pair of instances).
+    /// refusal or a SpanDAC restart (once per read that succeeds, and a bounded,
+    /// delayed retry for one that fails; see `ListReread`).
     private var albumsReread = LibraryCoverFetcher.ListReread()
     private let kittyEnabled: Bool
     // Placement-dedup (render-thread-only, per design doc Feature 2 §3): the
@@ -1036,8 +1034,7 @@ final class LibraryScene: Scene {
         artistAlbumsFailure = nil
         bridgeArtistAlbumsGeneration = nil
         bridgeArtistAlbumsInstance = nil
-        artistAlbumsRereadFor = nil
-        artistAlbumsRereadForInstance = nil
+        artistAlbumsReread.reset()
         // Captured at kick time: whichever result lands, it is only accepted
         // if `artistsSourceEpoch` is STILL this value when it lands — a
         // provenance switch (or a manual Bridge retry) bumps it, and either
@@ -1563,8 +1560,7 @@ final class LibraryScene: Scene {
         artistAlbumsFailure = nil
         bridgeArtistAlbumsGeneration = nil
         bridgeArtistAlbumsInstance = nil
-        artistAlbumsRereadFor = nil
-        artistAlbumsRereadForInstance = nil
+        artistAlbumsReread.reset()
         if nav.subView == .artists { returnToRoot(.artists) }
     }
 
@@ -2976,8 +2972,9 @@ final class LibraryScene: Scene {
     /// to ask SpanDAC and nothing to say. It posts ONE `reasked` replacement, which
     /// the drain applies like any re-ask: by row id at the root list (the cursor
     /// stays on its album), silently underneath when a tracks view is open. A failed
-    /// or superseded read leaves the list and the gradient as they were, and the
-    /// list is not asked again unless it changes. A re-ask of the list's own (it was
+    /// or superseded read leaves the list and the gradient as they were; a read
+    /// that FAILS is asked again after a delay, a bounded few times (`ListReread`),
+    /// and one that succeeds is not asked again unless the list changes. A re-ask of the list's own (it was
     /// read while SpanDAC was still draining) that is running, or has posted and not
     /// been drained, is JOINED rather than taken over: one walk at a time, and the
     /// re-ask's read after the drain is the one that lands.
@@ -2986,16 +2983,19 @@ final class LibraryScene: Scene {
               let instance = bridgeAlbumsInstance else { return }
         let applied = LibraryCoverFetcher.StaleList(generation: generation, libraryInstance: instance)
         let ready = covers.readinessInstance()
+        let at = now()
         let due = albumsReread.due(applied: applied, staleRefusal: covers.staleList(for: .libraryAlbums),
-                                   readyInstance: ready)
+                                   readyInstance: ready, now: at)
         guard due.any else { return }
-        switch albumsFeed.refresh(joinReask: true) {
-        case .started, .tookOver: albumsReread.started(due, applied: applied, readyInstance: ready)
+        let ticket = albumsReread.began(due, now: at)
+        let reread = albumsReread
+        switch albumsFeed.refresh(end: { reread.finished(ticket, succeeded: $0 != .readFailed) }, joinReask: true) {
+        case .started, .tookOver: break
         // A walk or a person's refresh is running, or the list's own re-ask is (or has
         // just posted): it lands its own rows, and a second walk beside it would only
         // add load while SpanDAC drains. Ask again on a later tick if the list is
         // still the one left behind.
-        case .busy, .alreadyRefreshing, .joined: break
+        case .busy, .alreadyRefreshing, .joined: reread.release(ticket)
         }
     }
 
@@ -3005,37 +3005,43 @@ final class LibraryScene: Scene {
     /// leaves them under an instance no readiness names. When the fetcher says
     /// either, read the list once more in place: one read on a worker, posted to the
     /// same inbox a first read uses, so the drain keeps the cursor on its album by
-    /// id and sets the new pair. Once per (generation, instance) and once per pair of
-    /// instances; a failed or superseded read leaves the rows and the gradient alone.
+    /// id and sets the new pair. Once per successful read, and a bounded, delayed retry after a
+    /// failed one or a discarded reply (`ListReread`); the rows and the gradient stay
+    /// as they were meanwhile.
     private func rereadArtistAlbumsIfStale(_ covers: LibraryCoverFetcher) {
         guard artistsSource == .bridge, nav.subView == .artists, let artistID = currentArtistID(),
               let generation = bridgeArtistAlbumsGeneration, let instance = bridgeArtistAlbumsInstance
         else { return }
         let applied = LibraryCoverFetcher.StaleList(generation: generation, libraryInstance: instance)
         let ready = covers.readinessInstance()
-        let stale = covers.staleList(for: .libraryArtistAlbums) == applied && artistAlbumsRereadFor != applied
-        let restarted = ready.map { $0 != instance && (artistAlbumsRereadForInstance?.applied != instance
-                                                       || artistAlbumsRereadForInstance?.ready != $0) } ?? false
-        guard stale || restarted, let provider = makeProvider() else { return }
+        let at = now()
+        let due = artistAlbumsReread.due(applied: applied, staleRefusal: covers.staleList(for: .libraryArtistAlbums),
+                                         readyInstance: ready, now: at)
+        guard due.any, let provider = makeProvider() else { return }
         inboxLock.lock()
         let epoch = artistsSourceEpoch
         let token = artistAlbumsReaskToken
         // The artist's own re-ask (it was read while SpanDAC drained) is running, or
         // has posted its list and the drain has not applied it: that read is newer
         // than the rows on screen and lands by itself. Join it, one read at a time;
-        // nothing is recorded, so a later tick asks again if the list is still behind.
+        // nothing is claimed, so a later tick asks again if the list is still behind.
         let joined = artistAlbumsReaskRunning == token || artistAlbumsInbox?.artistID == artistID
         inboxLock.unlock()
         if joined { return }
-        if stale { artistAlbumsRereadFor = applied }
-        if restarted, let ready { artistAlbumsRereadForInstance = (instance, ready) }
+        let ticket = artistAlbumsReread.began(due, now: at)
+        let reread = artistAlbumsReread
         let ref = WeakScene(self)
         Thread.detachNewThread {
+            // A read that fails, or whose reply is discarded (the focus moved, the
+            // tab stopped ticking), is a failed attempt: retried after a delay.
+            var posted = false
+            defer { reread.finished(ticket, succeeded: posted) }
             guard let list = try? provider.artistAlbums(artistID: artistID), let scene = ref.scene else { return }
             scene.inboxLock.lock()
             if scene.artistsSourceEpoch == epoch, scene.artistAlbumsReaskToken == token, scene.tabIsLiveLocked() {
                 scene.artistAlbumsInbox = (artistID, epoch, Self.libraryAlbums(from: list),
                                            LibraryReask.flagged(list), list.generation, list.libraryInstance)
+                posted = true
             }
             scene.inboxLock.unlock()
         }
