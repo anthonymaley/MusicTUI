@@ -536,14 +536,16 @@ final class BridgeListFeedTests: XCTestCase {
         f.start()
         XCTAssertTrue(settleUntil { script.callCount == 1 && script.threadEnded(at: 0) })
         _ = f.drain()
-        var autoEnds: [BridgeListFeed<Row>.RefreshEnd] = [], displaced = 0
-        XCTAssertEqual(f.refresh(end: { autoEnds.append($0) }, displaced: { displaced += 1 }, joinReask: true), .started)
+        let autoEnds = LockedList<BridgeListFeed<Row>.RefreshEnd>(), displacedBox = LockedList<Void>()
+        var displaced: Int { displacedBox.count }
+        XCTAssertEqual(f.refresh(end: { autoEnds.append($0) }, displaced: { displacedBox.append(()) },
+                                 joinReask: true), .started)
         XCTAssertTrue(settleUntil { !sleeper.calls.isEmpty }, "the automatic re-read never began waiting")
         XCTAssertEqual(f.refresh(joinReask: true), .alreadyRefreshing, "an automatic ask never takes over, and says nothing")
         XCTAssertEqual(displaced, 0)
 
         var asked = 0, said = 0
-        var ends: [BridgeListFeed<Row>.RefreshEnd] = []
+        let ends = LockedList<BridgeListFeed<Row>.RefreshEnd>()
         let claim = f.refresh(begin: { asked += 1; return nil }, end: { ends.append($0) },
                               alreadyRefreshing: { said += 1 })
         XCTAssertEqual(claim, .tookOver)
@@ -552,15 +554,15 @@ final class BridgeListFeedTests: XCTestCase {
         var replaces: [[Row]] = []
         XCTAssertTrue(settleUntil {
             if let r = f.drain().replace { replaces.append(r) }
-            return replaces.last == [Row(id: "new")] && !ends.isEmpty
+            return replaces.last == [Row(id: "new")] && !ends.values.isEmpty
         }, "the person's refresh never landed: \(replaces)")
         XCTAssertEqual(asked, 1, "the person's begin never ran")
         sleeper.firstGate.signal()   // the automatic worker wakes up and finds it was taken over
         XCTAssertTrue(f.waitForWorkersForTest(timeout: 5), "a worker never ended")
         XCTAssertEqual(script.callCount, 3, "the displaced worker read after it was taken over")
         XCTAssertNil(f.drain().replace, "the displaced worker posted rows after the takeover")
-        XCTAssertTrue(autoEnds.isEmpty, "the displaced worker's ending was delivered")
-        XCTAssertEqual(ends, [.listOnly])
+        XCTAssertTrue(autoEnds.values.isEmpty, "the displaced worker's ending was delivered")
+        XCTAssertEqual(ends.values, [.listOnly])
         XCTAssertEqual(displaced, 1)
     }
 
@@ -840,4 +842,14 @@ private extension BridgeListFeedTests.ScriptedFetch {
     // have been reached without re-deriving the index from context each time.
     func reachedGateAt1() -> Bool { callCount > 1 }
     func reachedGateAt0() -> Bool { callCount > 0 }
+}
+
+/// Endings are delivered on the feed's worker thread and read on the test's, so
+/// they go through a lock rather than a captured array.
+private final class LockedList<T>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: [T] = []
+    func append(_ value: T) { lock.lock(); stored.append(value); lock.unlock() }
+    var values: [T] { lock.lock(); defer { lock.unlock() }; return stored }
+    var count: Int { values.count }
 }
