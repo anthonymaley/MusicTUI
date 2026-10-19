@@ -906,6 +906,85 @@ final class BridgeLibraryCoversSceneTests: XCTestCase {
         XCTAssertEqual(rig.scene.subViewForTest, .albums)
     }
 
+    // MARK: - a person's refresh takes over the automatic re-read of Albums
+
+    /// A `sleep` that holds its FIRST call until the test lets it go and says when it is
+    /// held; every later call returns at once: the automatic re-read's wait on a flagged list.
+    private final class FirstSleepGate {
+        private let release = DispatchSemaphore(value: 0)
+        private let lock = NSLock()
+        private var calls = 0
+        private var held = false
+        var isHeld: Bool { lock.lock(); defer { lock.unlock() }; return held }
+        func sleep(_ seconds: TimeInterval) {
+            lock.lock(); calls += 1; let first = calls == 1; if first { held = true }; lock.unlock()
+            guard first else { return }
+            _ = release.wait(timeout: .now() + 10)
+        }
+        func open() { release.signal() }
+    }
+
+    /// `albumsPage`, but still draining: SpanDAC says the snapshot is stale and refreshing.
+    private func flaggedAlbumsPage(_ ids: [String], generation: Int, instance: String) -> String {
+        albumsPage(ids, generation: generation, instance: instance)
+            .replacingOccurrences(of: "\"next_cursor\":null", with: "\"stale\":true,\"refreshing\":true,\"next_cursor\":null")
+    }
+
+    /// The scene noticed a SpanDAC restart and read Albums again by itself; the list it got
+    /// back still says it is refreshing, so that read is waiting out the rest of the bound.
+    /// A person's refresh of the list (`BridgeListFeed.refresh` without `joinReask`, which
+    /// is what Playlists' `r` calls; Albums has no key of its own for it, so the test makes
+    /// the call) takes the wait over, and the scene's `displaced:` hands the automatic
+    /// read's claim back AT ONCE rather than after the in-flight bound. The displaced
+    /// worker's late post and ending change nothing: the person's rows are the ones on screen.
+    func testAPersonsRefreshTakesOverTheAutomaticAlbumsRereadAndItsClaimIsReleasedAtOnce() {
+        let op = "slice.libraryAlbums"
+        let gate = FirstSleepGate()
+        let wire = BridgeLibraryReadsWire([op: [
+            albumsPage(["al1", "al2"], generation: 1, instance: Self.instanceA),
+            flaggedAlbumsPage(["alAUTO", "al1"], generation: 2, instance: Self.instanceB),   // the automatic read: still draining
+            albumsPage(["alMINE", "al1", "al2"], generation: 3, instance: Self.instanceB),   // the person's
+            albumsPage(["alLATE", "al1"], generation: 3, instance: Self.instanceB)]])       // the old worker, if it read again
+        let rig = Rig(wire: wire, warmUpSleep: gate.sleep)
+        goToSubView(rig.scene, .albums)
+        XCTAssertTrue(settleScene(rig.scene) { rig.scene.render(frame: self.frame, snapshot: self.idle).contains("In Rainbows al1") },
+                      "the albums never loaded")
+        restartSpanDAC(rig)
+        _ = rig.tick(at: 0, snapshot: idle)
+        _ = rig.tick(at: 0.3, snapshot: idle)   // readiness names B, the list is under A: the scene reads again
+        XCTAssertTrue(settleScene(rig.scene) { gate.isHeld }, "the automatic re-read never began waiting")
+        XCTAssertEqual(wire.sent(op).count, 2)
+
+        let applied = LibraryCoverFetcher.StaleList(generation: 1, libraryInstance: Self.instanceA)
+        func due() -> Bool {
+            rig.scene.albumsRereadForTest.due(applied: applied, staleRefusal: nil, readyInstance: Self.instanceB,
+                                              now: rig.clock.date).any
+        }
+        XCTAssertFalse(due(), "the automatic read is in flight, so its reason is claimed")
+
+        // A refresh a PERSON asked for, as `r` makes it: not joining the scene's own read.
+        final class Ending { var seen: [BridgeListFeed<LibraryAlbum>.RefreshEnd] = []; let lock = NSLock()
+            func add(_ e: BridgeListFeed<LibraryAlbum>.RefreshEnd) { lock.lock(); seen.append(e); lock.unlock() }
+            var count: Int { lock.lock(); defer { lock.unlock() }; return seen.count } }
+        let ending = Ending()
+        let claim = rig.scene.albumsFeedForTest.refresh(end: { ending.add($0) })
+        XCTAssertEqual(claim, .tookOver, "the person's refresh was refused instead of taking the automatic read over")
+        XCTAssertTrue(due(), "the displaced read's claim was not released until its bound")
+
+        XCTAssertTrue(settleScene(rig.scene) { ending.count == 1 && rig.scene.render(frame: self.frame, snapshot: self.idle).contains("In Rainbows alMINE") },
+                      "the person's refresh never landed its rows")
+        gate.open()   // the old worker wakes up and finds it was taken over
+        XCTAssertTrue(rig.scene.albumsFeedForTest.waitForWorkersForTest(timeout: 5), "a worker never ended")
+        for step in 0..<5 { _ = rig.tick(at: 1 + Double(step), snapshot: idle) }
+        XCTAssertEqual(wire.sent(op).count, 3, "the displaced worker read the list after it was taken over")
+        XCTAssertEqual(ending.count, 1, "the displaced worker's ending was heard")
+        let out = rig.scene.render(frame: frame, snapshot: idle)
+        XCTAssertTrue(out.contains("In Rainbows alMINE"))
+        XCTAssertFalse(out.contains("alAUTO") || out.contains("alLATE"), "the displaced worker's rows landed")
+        // The list is now under B, which readiness names: nothing is left to read.
+        XCTAssertEqual(quietCount(rig, op: op, from: 2, to: 700), 3, "the takeover left a re-read to do")
+    }
+
     // MARK: - one walk at a time on a cold start
 
     /// A SpanDAC with state of its own for `slice.libraryAlbums`: it serves two pages

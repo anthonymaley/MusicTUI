@@ -374,6 +374,11 @@ final class LibraryScene: Scene {
 
     /// Which of artists / albums / songs is showing, for tests.
     var subViewForTest: LibrarySubView { nav.subView }
+    /// The Albums list's own feed and its automatic re-read's retry record, for tests:
+    /// no key in this scene asks for a person's refresh of Albums, so a test stands in
+    /// for one by calling `albumsFeed.refresh` the way `PlaylistsScene`'s `r` does.
+    var albumsFeedForTest: BridgeListFeed<LibraryAlbum> { albumsFeed }
+    var albumsRereadForTest: LibraryCoverFetcher.ListReread { albumsReread }
     /// The id of the row under the cursor, for tests.
     var selectionIDForTest: String? { selectionUnderCursor()?.id }
     /// Stand-ins for an automatic re-read landing under a drill: they assign the

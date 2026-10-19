@@ -44,7 +44,8 @@ final class BridgePlaylistsCoversSceneTests: XCTestCase {
         let fetcher: LibraryCoverFetcher
         let scene: PlaylistsScene
 
-        init(pages: [String], withFetcher: Bool = true, warmUpSleep: @escaping (TimeInterval) -> Void = { _ in }) {
+        init(pages: [String], withFetcher: Bool = true, warmUpSleep: @escaping (TimeInterval) -> Void = { _ in },
+             width: Int = 110) {
             dir = FileManager.default.temporaryDirectory
                 .appendingPathComponent("playlist-covers-\(UUID().uuidString)").path
             try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
@@ -81,7 +82,7 @@ final class BridgePlaylistsCoversSceneTests: XCTestCase {
                 warmUpSleep: warmUpSleep,
                 // The scene's own clock is the fake one, so a retry's delay is read off it.
                 now: { [clock] in clock.date },
-                screenWidth: { 110 })
+                screenWidth: { width })
         }
 
         deinit { try? FileManager.default.removeItem(atPath: dir) }
@@ -535,5 +536,135 @@ final class BridgePlaylistsCoversSceneTests: XCTestCase {
         XCTAssertTrue(tickUntil(rig, from: 10) { rig.spandac.firstRequests.count >= 2 })
         XCTAssertEqual(rig.spandac.firstRequests.map(\.id), ["pl2", "pl2"], "the cursor moved off the playlist")
         XCTAssertEqual(rig.spandac.firstRequests.map(\.generation), [1, 2])
+    }
+
+    // MARK: - a re-read that lands while the person is inside a playlist's tracks
+
+    /// Wide enough for the tracks pane, which only the three-zone layout draws.
+    private let wide = shellLayout(width: 138, height: 30)
+
+    /// One playlist's tracks, `count` of them, ids `t01...`, titles `Song 01...`.
+    private func trackPage(count: Int) -> String {
+        let rows = (1...count).map {
+            "{\"id\":\"t\(String(format: "%02d", $0))\",\"title\":\"Song \(String(format: "%02d", $0))\",\"artist\":\"Art\",\"kind\":\"song\"}"
+        }.joined(separator: ",")
+        return """
+        {"ok":true,"op":"slice.libraryPlaylistTracks","generation":3,"total":\(count),
+         "items":[\(rows)],"next_cursor":null,"skipped_videos":0}
+        """
+    }
+
+    /// A key, then a paint, as the app does (scroll follows the cursor at render time).
+    private func press(_ rig: Rig, _ key: KeyPress, _ n: Int = 1) {
+        for _ in 0..<n { _ = rig.scene.handle(key); _ = rig.scene.render(frame: wide, snapshot: idle) }
+    }
+
+    /// Drills into Road Trip (`pl2`), the second row, and moves down its tracks until the
+    /// pane has scrolled. Returns what the person is looking at.
+    private func drillIntoRoadTripAndScroll(_ rig: Rig) -> (titles: [String], cursor: Int, scroll: Int, reads: Int) {
+        let tracksOp = "slice.libraryPlaylistTracks"
+        press(rig, .down)                                   // Road Trip
+        press(rig, .enter)
+        XCTAssertTrue(settleScene(rig.scene) { rig.scene.drilledTrackTitlesForTest.count == 40 }, "the tracks never opened")
+        XCTAssertEqual(rig.scene.drilledPlaylistIDForTest, "pl2")
+        press(rig, .down, 30)
+        XCTAssertEqual(rig.scene.trackCursorForTest, 30)
+        XCTAssertGreaterThan(rig.scene.trackScrollForTest, 0, "the tracks pane never scrolled, so a reset would go unseen")
+        return (rig.scene.drilledTrackTitlesForTest, rig.scene.trackCursorForTest, rig.scene.trackScrollForTest,
+                rig.wire.sent(tracksOp).count)
+    }
+
+    private func assertTracksPaneUntouched(_ rig: Rig, _ was: (titles: [String], cursor: Int, scroll: Int, reads: Int),
+                                           file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertEqual(rig.scene.drilledPlaylistIDForTest, "pl2", "the tracks pane was yanked", file: file, line: line)
+        XCTAssertEqual(rig.scene.drilledTrackTitlesForTest, was.titles, "the open tracks were replaced", file: file, line: line)
+        XCTAssertEqual(rig.scene.trackCursorForTest, was.cursor, "the track selection moved", file: file, line: line)
+        XCTAssertEqual(rig.scene.trackScrollForTest, was.scroll, "the tracks pane scrolled", file: file, line: line)
+        XCTAssertEqual(rig.wire.sent("slice.libraryPlaylistTracks").count, was.reads,
+                       "the re-read of the list read the playlist's tracks again", file: file, line: line)
+        // Still in the tracks pane: a render draws the selected track, and Down moves the track cursor.
+        XCTAssertTrue(rig.scene.render(frame: wide, snapshot: idle).contains("Song \(String(format: "%02d", was.cursor + 1))"),
+                      "the selected track is off screen", file: file, line: line)
+    }
+
+    /// SpanDAC restarted while the person was reading the list; the scene's own re-read is in
+    /// flight (held) when they open Road Trip and scroll down its tracks. The re-read's rows
+    /// land under the open pane: the pane, its rows, its selection and its scroll are
+    /// untouched; the rail cursor has followed Road Trip to its new row; and the list the
+    /// person returns to is the new one, on the same playlist.
+    func testARestartRereadLandingInsideAPlaylistLeavesTheTracksPaneAndUpdatesTheListOnReturn() {
+        let rig = Rig(pages: [page(generation: 3, instance: Self.instanceA),
+                              page(generation: 4, instance: Self.instanceB, leading: "Aardvark Mix")], width: 138)
+        rig.wire.script("slice.libraryPlaylistTracks", Array(repeating: trackPage(count: 40), count: 6))   // previews and the drill-in read it
+        let listOp = "slice.libraryPlaylists"
+        rig.wire.gate(op: listOp, at: 1)
+        restartSpanDAC(rig)
+        settleRows(rig)
+        let before = rig.statusStore.current()?.text
+        tick(rig, at: 0.25)
+        XCTAssertTrue(settleScene(rig.scene) { rig.wire.reached(op: listOp, at: 1) }, "the re-read never began")
+
+        let was = drillIntoRoadTripAndScroll(rig)
+        XCTAssertEqual(rig.scene.railNamesForTest, ["Top 25 Most Played", "Road Trip"], "the re-read landed before it was released")
+
+        rig.wire.release(op: listOp, at: 1)
+        XCTAssertTrue(settleScene(rig.scene) { rig.scene.railNamesForTest == ["Aardvark Mix", "Top 25 Most Played", "Road Trip"] },
+                      "the re-read's rows never landed: \(rig.scene.railNamesForTest)")
+        assertTracksPaneUntouched(rig, was)
+        XCTAssertEqual(rig.scene.railCursorForTest, 2, "the rail cursor did not follow Road Trip to its new row")
+
+        // Back: the new list, on the same playlist, with the pane closed.
+        press(rig, .escape)
+        XCTAssertEqual(rig.scene.railCursorForTest, 2)
+        let out = rig.scene.render(frame: wide, snapshot: idle)
+        XCTAssertTrue(out.contains("Aardvark Mix") && out.contains("Road Trip"), "the list on return is not the new one")
+        press(rig, .down)
+        XCTAssertEqual(rig.scene.railCursorForTest, 2, "Back left the focus in the tracks pane (Down moved no rail row)")
+        press(rig, .up)
+        XCTAssertEqual(rig.scene.railCursorForTest, 1)
+        XCTAssertEqual(rig.statusStore.current()?.text, before, "the re-read spoke")
+        XCTAssertEqual(rig.wire.sent(listOp).count, 2, "exactly one re-read")
+    }
+
+    /// The bounded retry: a stale-generation re-read failed, and its delayed retry (5 s)
+    /// comes due while the person is inside Road Trip's tracks. Same promise as above, and
+    /// the new list is what the next rest draws a cover from once they are back.
+    func testAStaleRereadsRetryLandingInsideAPlaylistLeavesTheTracksPane() {
+        let rig = Rig(pages: [page(generation: 1), Self.badReply, page(generation: 2, leading: "Aardvark Mix")], width: 138)
+        rig.wire.script("slice.libraryPlaylistTracks", Array(repeating: trackPage(count: 40), count: 6))   // previews and the drill-in read it
+        rig.spandac.serverGeneration = 2
+        rig.spandac.covers["playlist|pl2"] = LibraryCoverFetcherTests.payload(40_000)
+        settleRows(rig)
+        let before = rig.statusStore.current()?.text
+        press(rig, .down)                                   // Road Trip is the focused row when the refusal comes
+        tick(rig, at: 0.25)
+        tick(rig, at: 0.6)
+        XCTAssertEqual(rig.spandac.firstRequests.map(\.id), ["pl2"])
+        XCTAssertTrue(attempt(rig, at: 0.25, expecting: 2), "the stale refusal never made the scene read again")
+        XCTAssertEqual(rig.scene.railNamesForTest, ["Top 25 Most Played", "Road Trip"], "a failed read changed the list")
+
+        // Inside the playlist while the retry waits out its delay.
+        press(rig, .enter)
+        XCTAssertTrue(settleScene(rig.scene) { rig.scene.drilledTrackTitlesForTest.count == 40 }, "the tracks never opened")
+        press(rig, .down, 30)
+        XCTAssertGreaterThan(rig.scene.trackScrollForTest, 0)
+        let was = (titles: rig.scene.drilledTrackTitlesForTest, cursor: rig.scene.trackCursorForTest,
+                   scroll: rig.scene.trackScrollForTest, reads: rig.wire.sent("slice.libraryPlaylistTracks").count)
+        XCTAssertEqual(quietCount(rig, from: 0.3, to: 5.2), 2, "a retry waits out its delay, never a tick")
+
+        XCTAssertTrue(attempt(rig, at: 5.4, expecting: 3), "the retry was never made while the person was in the tracks")
+        XCTAssertTrue(settleScene(rig.scene) { rig.scene.railNamesForTest == ["Aardvark Mix", "Top 25 Most Played", "Road Trip"] },
+                      "the retry's rows never landed: \(rig.scene.railNamesForTest)")
+        assertTracksPaneUntouched(rig, was)
+        XCTAssertEqual(rig.scene.railCursorForTest, 2)
+
+        press(rig, .escape)
+        XCTAssertEqual(rig.scene.railCursorForTest, 2)
+        XCTAssertTrue(rig.scene.render(frame: wide, snapshot: idle).contains("Aardvark Mix"))
+        XCTAssertTrue(tickUntil(rig, from: 10) { rig.spandac.firstRequests.count >= 2 }, "the new list's row was never asked for")
+        XCTAssertEqual(rig.spandac.firstRequests.map(\.id), ["pl2", "pl2"], "the cursor is not on the playlist it left")
+        XCTAssertEqual(rig.spandac.firstRequests.map(\.generation), [1, 2])
+        XCTAssertEqual(rig.statusStore.current()?.text, before, "the retry spoke")
+        XCTAssertEqual(rig.wire.sent("slice.libraryPlaylists").count, 3)
     }
 }
