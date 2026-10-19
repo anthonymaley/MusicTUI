@@ -313,6 +313,48 @@ final class BridgeLibraryReadsTests: XCTestCase {
         }
     }
 
+    // MARK: - An artist's albums carry the instance their covers are asked under
+
+    private func artistAlbumsReply(instance: String?) -> String {
+        let inst = instance.map { "\"library_instance\":\"\($0)\"," } ?? ""
+        return """
+        {"ok":true,"op":"slice.libraryArtistAlbums","generation":3,\(inst)
+         "items":[{"id":"al1","title":"In Rainbows","artist":"Radiohead","track_count":10,"kind":"album"}],
+         "stale":false,"refreshing":false}
+        """
+    }
+
+    func testArtistAlbumsReadTheLibraryInstance() throws {
+        let list = try control(Wire([artistAlbumsReply(instance: "inst-A")])).libraryArtistAlbums(artistID: "r1")
+        XCTAssertEqual(list.libraryInstance, "inst-A")
+        XCTAssertEqual(list.generation, 3)
+        XCTAssertEqual(list.rows.map(\.id), ["al1"])
+    }
+
+    func testArtistAlbumsFromASpanDACWithoutAnInstanceHaveNone() throws {
+        // SpanDAC 0.3.6 sends none: no cover may be asked for, and the read is fine.
+        let list = try control(Wire([artistAlbumsReply(instance: nil)])).libraryArtistAlbums(artistID: "r1")
+        XCTAssertNil(list.libraryInstance)
+        XCTAssertEqual(list.rows.map(\.id), ["al1"])
+    }
+
+    func testArtistAlbumsRefuseAnInstanceThatIsNotReadable() {
+        for bad in [#""library_instance":"  ","#, #""library_instance":7,"#, #""library_instance":null,"#] {
+            let reply = """
+            {"ok":true,"op":"slice.libraryArtistAlbums","generation":3,\(bad)"items":[],"stale":false,"refreshing":false}
+            """
+            XCTAssertThrowsError(try control(Wire([reply])).libraryArtistAlbums(artistID: "r1"), bad)
+        }
+    }
+
+    func testTheOtherContainerReadsDoNotReadAnInstance() throws {
+        let tracks = """
+        {"ok":true,"op":"slice.libraryAlbumTracks","generation":3,"library_instance":"inst-A",
+         "items":[],"stale":false,"refreshing":false}
+        """
+        XCTAssertNil(try control(Wire([tracks])).libraryAlbumTracks(albumID: "a1").libraryInstance)
+    }
+
     // MARK: - SourceReadiness
 
     func testSourceReadinessFromUnsupportedGivesTheStatedSentence() {

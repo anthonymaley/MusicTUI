@@ -50,6 +50,11 @@ struct MusicList: Equatable {
     /// SpanDAC can refuse a list that changed since. Nil from a SpanDAC that
     /// predates it, which keeps today's id-list play.
     var listRev: String? = nil
+    /// `library_instance`, on an artist's albums only: the SpanDAC process the
+    /// rows (and the `generation`, their core's) came from, which a cover asked for
+    /// one of them sends back. Nil from a SpanDAC that predates it, and for
+    /// every other read, and then no cover may be asked for.
+    var libraryInstance: String? = nil
 }
 
 /// One page of rows, with the provider's own place-marker.

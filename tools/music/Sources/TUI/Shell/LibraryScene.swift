@@ -420,7 +420,8 @@ final class LibraryScene: Scene {
     // tell "the same artist, still on this output" apart from "the same
     // artist id, now on the other library", and Bridge's and Music.app's id
     // spaces are not guaranteed disjoint by anything checked here).
-    private var artistAlbumsInbox: (artistID: String, epoch: Int, albums: [LibraryAlbum], flagged: Bool)? = nil
+    private var artistAlbumsInbox: (artistID: String, epoch: Int, albums: [LibraryAlbum], flagged: Bool,
+                                    generation: Int?, instance: String?)? = nil
     /// C3 item 4: a failed Bridge artist-albums read, tagged like
     /// `artistAlbumsInbox` so a stale failure for an abandoned artist OR an
     /// abandoned output is dropped rather than overwriting the current
@@ -442,6 +443,18 @@ final class LibraryScene: Scene {
     // fetcher's `landed` last seen, so a landing repaints.
     private var bridgeAlbumsGeneration: Int?
     private var bridgeAlbumsInstance: String?
+    // The same pair for the open artist's albums: the generation and instance of
+    // the read whose rows are APPLIED to `artistAlbums`. SpanDAC answers the rows'
+    // core generation, the one `slice.libraryArtwork` is keyed to. Cleared when an
+    // artist is opened (the list is read again on every open) and on a provenance
+    // reset; nil means no artwork may be asked for those rows.
+    private var bridgeArtistAlbumsGeneration: Int?
+    private var bridgeArtistAlbumsInstance: String?
+    /// The open artist's list (generation and instance) already read again because
+    /// SpanDAC refused its covers as `stale_generation`, and the instance pair of a
+    /// restart's re-read: at most one each, as for the Albums list.
+    private var artistAlbumsRereadFor: LibraryCoverFetcher.StaleList?
+    private var artistAlbumsRereadForInstance: (applied: String, ready: String)?
     private var lastCoverLanded = 0
     /// What the Albums list has already been read again for: a stale-generation
     /// refusal (once per list) or a SpanDAC restart (once per pair of instances).
@@ -955,6 +968,10 @@ final class LibraryScene: Scene {
         artistAlbums = []
         artistAlbumsLoaded = false
         artistAlbumsFailure = nil
+        bridgeArtistAlbumsGeneration = nil
+        bridgeArtistAlbumsInstance = nil
+        artistAlbumsRereadFor = nil
+        artistAlbumsRereadForInstance = nil
         // Captured at kick time: whichever result lands, it is only accepted
         // if `artistsSourceEpoch` is STILL this value when it lands — a
         // provenance switch (or a manual Bridge retry) bumps it, and either
@@ -988,7 +1005,7 @@ final class LibraryScene: Scene {
                     self.inboxLock.lock()
                     if self.artistsSourceEpoch == epoch, self.artistAlbumsReaskToken == token {
                         self.artistAlbumsInbox = (artistID, epoch, Self.libraryAlbums(from: list),
-                                                  LibraryReask.flagged(list))
+                                                  LibraryReask.flagged(list), list.generation, list.libraryInstance)
                     }
                     self.inboxLock.unlock()
                     self.artistAlbumsReadFinishedForTest?()
@@ -1012,7 +1029,7 @@ final class LibraryScene: Scene {
             guard let self else { return }
             self.inboxLock.lock()
             if self.artistsSourceEpoch == epoch, self.artistAlbumsReaskToken == token {
-                self.artistAlbumsInbox = (artistID, epoch, fetched, false)
+                self.artistAlbumsInbox = (artistID, epoch, fetched, false, nil, nil)
             }
             self.inboxLock.unlock()
         }
@@ -1065,7 +1082,8 @@ final class LibraryScene: Scene {
                 let post = scene.artistsSourceEpoch == epoch && scene.artistAlbumsReaskToken == token
                     && scene.tabIsLiveLocked()
                 if post {
-                    scene.artistAlbumsInbox = (artistID, epoch, Self.libraryAlbums(from: list), flagged)
+                    scene.artistAlbumsInbox = (artistID, epoch, Self.libraryAlbums(from: list), flagged,
+                                               list.generation, list.libraryInstance)
                 }
                 scene.inboxLock.unlock()
                 if post && !flagged { fresh = true }
@@ -1406,6 +1424,10 @@ final class LibraryScene: Scene {
         artistAlbums = []
         artistAlbumsLoaded = false
         artistAlbumsFailure = nil
+        bridgeArtistAlbumsGeneration = nil
+        bridgeArtistAlbumsInstance = nil
+        artistAlbumsRereadFor = nil
+        artistAlbumsRereadForInstance = nil
         if nav.subView == .artists { returnToRoot(.artists) }
     }
 
@@ -1675,6 +1697,9 @@ final class LibraryScene: Scene {
             var albumAnchor: String? = nil
             if artistAlbumsLoaded, case .artistAlbums = nav.current { albumAnchor = selectionUnderCursor()?.id }
             artistAlbums = freshArtistAlbums.albums
+            // The pair describes the rows now on screen, as `bridgeAlbumsGeneration` does.
+            bridgeArtistAlbumsGeneration = freshArtistAlbums.generation
+            bridgeArtistAlbumsInstance = freshArtistAlbums.instance
             inboxLock.lock()
             if freshArtistAlbums.flagged {
                 artistAlbumsStaleFor = freshArtistAlbums.artistID
@@ -1785,11 +1810,8 @@ final class LibraryScene: Scene {
         // .three gate here.
         //
         // NEVER for a Bridge-sourced album: SpanDAC's covers come from the shell's
-        // `LibraryCoverFetcher`, for the top-level Albums list and the tracks view
-        // drilled from it only (below). An artist's albums rail, and any album
-        // opened from it, keep the gradient: `slice.libraryArtistAlbums` answers
-        // the full snapshot's generation, not the one the artwork op binds to.
-        // Follow-up: cover those rows once that op answers the bound generation.
+        // `LibraryCoverFetcher`, for the Albums list, an artist's albums rail and
+        // the tracks view drilled from either (`coverTarget`, below).
         if (isAlbumRail || isTracksLevel), currentAlbumSource != .bridge, let a = focusedAlbum() {
             kickCoverFetch(albumID: a.id)
         }
@@ -1797,6 +1819,7 @@ final class LibraryScene: Scene {
         if let libraryCovers {
             libraryCovers.focus(focusedAlbum().flatMap(coverTarget(for:)))
             rereadAlbumsIfStale(libraryCovers)
+            rereadArtistAlbumsIfStale(libraryCovers)
             let landed = libraryCovers.landed
             if landed != lastCoverLanded { lastCoverLanded = landed; changed = true }
         }
@@ -2746,17 +2769,32 @@ final class LibraryScene: Scene {
     }
 
     /// The cover target for `a`, only where SpanDAC's covers are in scope: the
-    /// top-level Albums list, or the tracks view of an album opened from it, with
-    /// Bridge as the list's source and an applied generation and instance. The
-    /// Artists sub-view, an artist's albums rail and Songs are never in scope.
+    /// top-level Albums list, or the tracks view of an album opened from it; and,
+    /// in the Artists sub-view, the open artist's albums rail or the tracks view of
+    /// an album opened from it. Bridge must be the list's source and a generation
+    /// and instance applied. The Artists list and Songs are never in scope.
     private func coverTarget(for a: LibraryAlbum) -> LibraryCoverFetcher.Target? {
-        guard nav.subView == .albums, currentAlbumSource == .bridge,
-              isAlbumList || (isTracksLevel && nav.stack.count == 2),
-              let generation = bridgeAlbumsGeneration, let instance = bridgeAlbumsInstance
-        else { return nil }
-        return LibraryCoverFetcher.Target(owner: .libraryAlbums, kind: .album, id: a.id,
-                                          generation: generation, libraryInstance: instance,
-                                          dataEpoch: routing.dataEpoch)
+        guard currentAlbumSource == .bridge else { return nil }
+        switch nav.subView {
+        case .albums:
+            guard isAlbumList || (isTracksLevel && nav.stack.count == 2),
+                  let generation = bridgeAlbumsGeneration, let instance = bridgeAlbumsInstance
+            else { return nil }
+            return LibraryCoverFetcher.Target(owner: .libraryAlbums, kind: .album, id: a.id,
+                                              generation: generation, libraryInstance: instance,
+                                              dataEpoch: routing.dataEpoch)
+        case .artists:
+            let inRail: Bool
+            if case .artistAlbums = nav.current { inRail = true } else { inRail = false }
+            guard inRail || (isTracksLevel && nav.stack.count == 3),
+                  let generation = bridgeArtistAlbumsGeneration, let instance = bridgeArtistAlbumsInstance
+            else { return nil }
+            return LibraryCoverFetcher.Target(owner: .libraryArtistAlbums, kind: .album, id: a.id,
+                                              generation: generation, libraryInstance: instance,
+                                              dataEpoch: routing.dataEpoch)
+        case .songs:
+            return nil
+        }
     }
 
     /// A SpanDAC library refresh moves its snapshot's generation, and this list is
@@ -2786,6 +2824,42 @@ final class LibraryScene: Scene {
         // A walk or a person's refresh is running and will land its own rows; ask
         // again on a later tick if the list is still the one left behind.
         case .busy, .alreadyRefreshing: break
+        }
+    }
+
+    /// `rereadAlbumsIfStale` for the open artist's albums, which are read again on
+    /// every open but not while open: a SpanDAC refresh moves the snapshot under the
+    /// rows on screen (every cover is refused as `stale_generation`), and a restart
+    /// leaves them under an instance no readiness names. When the fetcher says
+    /// either, read the list once more in place: one read on a worker, posted to the
+    /// same inbox a first read uses, so the drain keeps the cursor on its album by
+    /// id and sets the new pair. Once per (generation, instance) and once per pair of
+    /// instances; a failed or superseded read leaves the rows and the gradient alone.
+    private func rereadArtistAlbumsIfStale(_ covers: LibraryCoverFetcher) {
+        guard artistsSource == .bridge, nav.subView == .artists, let artistID = currentArtistID(),
+              let generation = bridgeArtistAlbumsGeneration, let instance = bridgeArtistAlbumsInstance
+        else { return }
+        let applied = LibraryCoverFetcher.StaleList(generation: generation, libraryInstance: instance)
+        let ready = covers.readinessInstance()
+        let stale = covers.staleList(for: .libraryArtistAlbums) == applied && artistAlbumsRereadFor != applied
+        let restarted = ready.map { $0 != instance && (artistAlbumsRereadForInstance?.applied != instance
+                                                       || artistAlbumsRereadForInstance?.ready != $0) } ?? false
+        guard stale || restarted, let provider = makeProvider() else { return }
+        inboxLock.lock()
+        let epoch = artistsSourceEpoch
+        let token = artistAlbumsReaskToken
+        inboxLock.unlock()
+        if stale { artistAlbumsRereadFor = applied }
+        if restarted, let ready { artistAlbumsRereadForInstance = (instance, ready) }
+        let ref = WeakScene(self)
+        Thread.detachNewThread {
+            guard let list = try? provider.artistAlbums(artistID: artistID), let scene = ref.scene else { return }
+            scene.inboxLock.lock()
+            if scene.artistsSourceEpoch == epoch, scene.artistAlbumsReaskToken == token, scene.tabIsLiveLocked() {
+                scene.artistAlbumsInbox = (artistID, epoch, Self.libraryAlbums(from: list),
+                                           LibraryReask.flagged(list), list.generation, list.libraryInstance)
+            }
+            scene.inboxLock.unlock()
         }
     }
 

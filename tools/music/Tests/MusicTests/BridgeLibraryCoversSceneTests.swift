@@ -37,11 +37,6 @@ final class BridgeLibraryCoversSceneTests: XCTestCase {
     {"ok":true,"op":"slice.libraryArtists","generation":3,"total":1,
      "items":[{"id":"ar1","title":"Radiohead","kind":"artist"}],"next_cursor":null}
     """
-    private let artistAlbumsPage = """
-    {"ok":true,"op":"slice.libraryArtistAlbums","generation":3,"total":1,
-     "items":[{"id":"al1","title":"In Rainbows","artist":"Radiohead","track_count":10,"kind":"album"}],
-     "next_cursor":null}
-    """
 
     /// One scene, one fetcher, one scripted SpanDAC, a temp art cache.
     private final class Rig {
@@ -94,6 +89,11 @@ final class BridgeLibraryCoversSceneTests: XCTestCase {
 
         func target(_ id: String = "al1", generation: Int = 3, instance: String = BridgeLibraryCoversSceneTests.instanceA) -> Target {
             Target(owner: .libraryAlbums, kind: .album, id: id, generation: generation,
+                   libraryInstance: instance, dataEpoch: 0)
+        }
+
+        func artistTarget(_ id: String = "al1", generation: Int = 3, instance: String = BridgeLibraryCoversSceneTests.instanceA) -> Target {
+            Target(owner: .libraryArtistAlbums, kind: .album, id: id, generation: generation,
                    libraryInstance: instance, dataEpoch: 0)
         }
 
@@ -207,32 +207,214 @@ final class BridgeLibraryCoversSceneTests: XCTestCase {
         XCTAssertEqual(rig.spandac.statusReadTimes.count, 0, "no target, so not even a readiness read")
     }
 
-    func testAnArtistsAlbumsRailNeverAsks() {
-        // The Albums list is loaded first, so its generation and instance ARE
-        // applied: only the scope, not a missing pair, keeps the rail gradient.
-        let wire = BridgeLibraryReadsWire(["slice.libraryAlbums": [albumPage(instance: Self.instanceA)],
-                                           "slice.libraryArtists": [artistPage],
-                                           "slice.libraryArtistAlbums": [artistAlbumsPage]])
-        let rig = Rig(wire: wire)
-        rig.spandac.covers["album|al1"] = LibraryCoverFetcherTests.payload(40_000)
-        goToSubView(rig.scene, .albums)
-        XCTAssertTrue(settleScene(rig.scene) { rig.scene.render(frame: self.frame, snapshot: self.idle).contains("In Rainbows") })
-        goToSubView(rig.scene, .artists)
-        XCTAssertTrue(settleScene(rig.scene) { rig.scene.render(frame: self.frame, snapshot: self.idle).contains("Radiohead") })
+    func testASongsListNeverAsks() {
+        let rig = Rig(wire: BridgeLibraryReadsWire(["slice.libraryAlbums": [albumPage(instance: Self.instanceA)]]))
+        goToSubView(rig.scene, .songs)
         _ = rig.tick(at: 0, snapshot: idle)
         _ = rig.tick(at: 0.3, snapshot: idle)
+        _ = rig.tick(at: 5, snapshot: idle)
+        XCTAssertTrue(rig.spandac.firstRequests.isEmpty)
+        XCTAssertEqual(rig.spandac.statusReadTimes.count, 0)
+    }
 
-        _ = rig.scene.handle(.enter)   // the artist's albums rail
-        XCTAssertTrue(settleScene(rig.scene) { rig.scene.render(frame: self.frame, snapshot: self.idle).contains("In Rainbows") })
-        _ = rig.tick(at: 1, snapshot: idle)
-        _ = rig.tick(at: 1.3, snapshot: idle)
+    // MARK: - an artist's albums
 
-        _ = rig.scene.handle(.enter)   // an album opened from it
+    /// An artist's albums reply: `ids` in order, under the rows' core `generation`.
+    private func artistAlbumsPage(_ ids: [String] = ["al1"], generation: Int = 3,
+                                  instance: String? = instanceA) -> String {
+        let inst = instance.map { "\"library_instance\":\"\($0)\"," } ?? ""
+        let items = ids.map { "{\"id\":\"\($0)\",\"title\":\"In Rainbows \($0)\",\"artist\":\"Radiohead\",\"track_count\":9,\"kind\":\"album\"}" }
+            .joined(separator: ",")
+        return """
+        {"ok":true,"op":"slice.libraryArtistAlbums","generation":\(generation),\(inst)
+         "items":[\(items)],"stale":false,"refreshing":false}
+        """
+    }
+
+    /// The Artists sub-view on a scripted SpanDAC, one artist listed.
+    private func artistsRig(_ artistAlbums: [String]) -> Rig {
+        let rig = Rig(wire: BridgeLibraryReadsWire(["slice.libraryArtists": [artistPage],
+                                                    "slice.libraryArtistAlbums": artistAlbums]))
+        goToSubView(rig.scene, .artists)
+        XCTAssertTrue(settleScene(rig.scene) { rig.scene.render(frame: self.frame, snapshot: self.idle).contains("Radiohead") },
+                      "the artists never loaded")
+        return rig
+    }
+
+    /// Enter on the artist: its albums rail, once the first album is on screen.
+    private func openArtist(_ rig: Rig) {
+        _ = rig.scene.handle(.enter)
+        XCTAssertTrue(settleScene(rig.scene) { rig.scene.render(frame: self.frame, snapshot: self.idle).contains("In Rainbows al1") },
+                      "the artist's albums never loaded")
+    }
+
+    func testAnArtistsAlbumsRailAsksUnderTheRepliesGenerationAndInstance() {
+        let rig = artistsRig([artistAlbumsPage(["al1", "al2"], generation: 7)])
+        rig.spandac.covers["album|al1"] = LibraryCoverFetcherTests.payload(40_000)
+        // The Artists list itself has no covers: no target, no readiness read.
+        _ = rig.tick(at: 0, snapshot: idle)
+        _ = rig.tick(at: 0.3, snapshot: idle)
+        XCTAssertEqual(rig.spandac.statusReadTimes.count, 0)
+
+        rig.clock.t = 1      // the rows' rest starts when the rail opens, not before
+        openArtist(rig)
+        _ = rig.tick(at: 1.1, snapshot: idle)
+        XCTAssertTrue(rig.spandac.firstRequests.isEmpty, "nothing is asked before the rest")
+        _ = rig.tick(at: 1.4, snapshot: idle)
+        XCTAssertEqual(rig.spandac.firstRequests.count, 1)
+        let request = rig.spandac.firstRequests.first
+        XCTAssertEqual(request?.kind, .album)
+        XCTAssertEqual(request?.id, "al1")
+        XCTAssertEqual(request?.generation, 7)
+        XCTAssertEqual(request?.libraryInstance, Self.instanceA)
+        XCTAssertNotNil(rig.fetcher.cover(for: rig.artistTarget(generation: 7)), "the cover arrives")
+        XCTAssertTrue(heroShowsMarker(rig))
+    }
+
+    func testAnAlbumOpenedFromAnArtistIsAskedForUnderTheSameGenerationAndInstance() {
+        let rig = artistsRig([artistAlbumsPage(["al1", "al2"], generation: 7)])
+        rig.spandac.covers["album|al2"] = LibraryCoverFetcherTests.payload(40_000)
+        openArtist(rig)
+        _ = rig.scene.handle(.down)    // al2
+        _ = rig.scene.handle(.enter)   // its tracks
+        _ = rig.tick(at: 0, snapshot: idle)
+        _ = rig.tick(at: 0.3, snapshot: idle)
+        XCTAssertEqual(rig.spandac.firstRequests.map(\.id), ["al2"])
+        XCTAssertEqual(rig.spandac.firstRequests.map(\.generation), [7])
+        XCTAssertEqual(rig.spandac.firstRequests.map(\.libraryInstance), [Self.instanceA])
+        XCTAssertTrue(heroShowsMarker(rig))
+    }
+
+    func testMovingOffAnArtistsAlbumBeforeTheRestAsksForTheNewOneOnly() {
+        let rig = artistsRig([artistAlbumsPage(["al1", "al2"])])
+        rig.spandac.covers["album|al2"] = LibraryCoverFetcherTests.payload(40_000)
+        openArtist(rig)
+        _ = rig.tick(at: 0, snapshot: idle)
+        _ = rig.scene.handle(.down)
+        _ = rig.tick(at: 0.2, snapshot: idle)
+        _ = rig.tick(at: 0.4, snapshot: idle)   // 0.2 s on al2: still resting
+        XCTAssertTrue(rig.spandac.firstRequests.isEmpty)
+        _ = rig.tick(at: 0.5, snapshot: idle)
+        XCTAssertEqual(rig.spandac.firstRequests.map(\.id), ["al2"])
+    }
+
+    func testAnArtistsAlbumsFromASpanDACWithoutAnInstanceStayGradient() {
+        // SpanDAC 0.3.6: no `library_instance` on the reply, and its generation is
+        // the full snapshot's. Nothing is asked and readiness is not even read.
+        let rig = artistsRig([artistAlbumsPage(instance: nil)])
+        rig.spandac.covers["album|al1"] = LibraryCoverFetcherTests.payload(40_000)
+        openArtist(rig)
+        _ = rig.tick(at: 0, snapshot: idle)
+        _ = rig.tick(at: 0.3, snapshot: idle)
+        _ = rig.scene.handle(.enter)
         _ = rig.tick(at: 2, snapshot: idle)
         _ = rig.tick(at: 2.3, snapshot: idle)
         _ = rig.tick(at: 9, snapshot: idle)
-        XCTAssertTrue(rig.spandac.firstRequests.isEmpty, "an artist's albums keep the gradient")
-        XCTAssertEqual(rig.spandac.statusReadTimes.count, 0, "an artist's albums never even read readiness")
+        XCTAssertTrue(rig.spandac.firstRequests.isEmpty)
+        XCTAssertEqual(rig.spandac.statusReadTimes.count, 0)
+        XCTAssertFalse(rig.scene.render(frame: frame, snapshot: idle).contains(Self.marker))
+    }
+
+    func testBackingOutOfTheArtistDropsItsTargetAndAnotherOpenIsReadAgain() {
+        let rig = artistsRig([artistAlbumsPage(generation: 7), artistAlbumsPage(generation: 8)])
+        rig.spandac.covers["album|al1"] = LibraryCoverFetcherTests.payload(40_000)
+        openArtist(rig)
+        _ = rig.tick(at: 0, snapshot: idle)
+        _ = rig.tick(at: 0.3, snapshot: idle)
+        XCTAssertEqual(rig.spandac.firstRequests.map(\.generation), [7])
+
+        _ = rig.scene.handle(.escape)
+        _ = rig.tick(at: 5, snapshot: idle)
+        _ = rig.tick(at: 5.3, snapshot: idle)
+        XCTAssertEqual(rig.spandac.firstRequests.count, 1, "the Artists list asks for nothing")
+
+        // Opened again: read again, and the rows are asked for under the NEW read's generation.
+        openArtist(rig)
+        _ = rig.tick(at: 10, snapshot: idle)
+        _ = rig.tick(at: 10.3, snapshot: idle)
+        XCTAssertEqual(rig.wire.sent("slice.libraryArtistAlbums").count, 2)
+        XCTAssertEqual(rig.spandac.firstRequests.map(\.generation), [7, 8])
+    }
+
+    func testTheMusicAppArtistPathIsUnchanged() {
+        let rig = Rig(wire: BridgeLibraryReadsWire(), bridge: false)
+        rig.spy.artists = [LibraryArtist(id: "ma1", name: "Radiohead")]
+        goToSubView(rig.scene, .artists)
+        XCTAssertTrue(settleScene(rig.scene) { rig.scene.render(frame: self.frame, snapshot: self.idle).contains("Radiohead") })
+        _ = rig.scene.handle(.enter)
+        _ = rig.tick(at: 0, snapshot: idle)
+        _ = rig.tick(at: 0.5, snapshot: idle)
+        _ = rig.tick(at: 1.0, snapshot: idle)
+        XCTAssertEqual(rig.spandac.statusReadTimes.count, 0, "Music.app rows must never read SpanDAC's status")
+        XCTAssertTrue(rig.spandac.firstRequests.isEmpty)
+        XCTAssertTrue(rig.wire.opsInOrder().isEmpty, "the Music.app path must not touch SpanDAC")
+    }
+
+    func testAStaleGenerationRefusalReadsTheArtistsAlbumsAgainOnce() {
+        let rig = artistsRig([artistAlbumsPage(["al1", "al2"], generation: 1),
+                              artistAlbumsPage(["al1", "al2"], generation: 2)])
+        rig.spandac.serverGeneration = 2
+        rig.spandac.covers["album|al1"] = LibraryCoverFetcherTests.payload(40_000)
+        openArtist(rig)
+        _ = rig.tick(at: 0, snapshot: idle)
+        _ = rig.tick(at: 0.3, snapshot: idle)   // asked under 1, refused as stale
+        XCTAssertEqual(rig.spandac.firstRequests.map(\.generation), [1])
+        XCTAssertTrue(settle(rig, at: 0.3) { rig.wire.sent("slice.libraryArtistAlbums").count == 2 },
+                      "the stale refusal never made the scene read the artist's albums again")
+        _ = rig.tick(at: 5, snapshot: idle)
+        _ = rig.tick(at: 5.3, snapshot: idle)
+        XCTAssertTrue(settle(rig, at: 5.3) { rig.spandac.firstRequests.map(\.generation) == [1, 2] },
+                      "a rest asks under the new generation")
+        XCTAssertTrue(heroShowsMarker(rig))
+        XCTAssertEqual(rig.wire.sent("slice.libraryArtistAlbums").count, 2, "exactly one re-read")
+        XCTAssertEqual(rig.wire.sent("slice.libraryAlbums").count, 0, "the Albums list is not this list")
+    }
+
+    func testAnArtistsReadThatStillCarriesTheOldGenerationDoesNotLoop() {
+        let rig = artistsRig([artistAlbumsPage(generation: 1), artistAlbumsPage(generation: 1),
+                              artistAlbumsPage(generation: 1)])
+        rig.spandac.serverGeneration = 2
+        openArtist(rig)
+        _ = rig.tick(at: 0, snapshot: idle)
+        _ = rig.tick(at: 0.3, snapshot: idle)
+        XCTAssertTrue(settle(rig, at: 0.3) { rig.wire.sent("slice.libraryArtistAlbums").count == 2 })
+        for step in 0..<40 { _ = rig.tick(at: 1 + Double(step), snapshot: idle); usleep(5_000) }
+        usleep(100_000)
+        XCTAssertEqual(rig.wire.sent("slice.libraryArtistAlbums").count, 2, "no loop on an unchanged generation")
+        XCTAssertFalse(rig.scene.render(frame: frame, snapshot: idle).contains(Self.marker))
+    }
+
+    func testARestartedSpanDACReadsTheArtistsAlbumsAgainOnce() {
+        let rig = artistsRig([artistAlbumsPage(generation: 1, instance: Self.instanceA),
+                              artistAlbumsPage(generation: 2, instance: Self.instanceB)])
+        rig.spandac.covers["album|al1"] = LibraryCoverFetcherTests.payload(40_000)
+        restartSpanDAC(rig)
+        openArtist(rig)
+        _ = rig.tick(at: 0, snapshot: idle)
+        _ = rig.tick(at: 0.3, snapshot: idle)
+        XCTAssertTrue(rig.spandac.firstRequests.isEmpty, "nothing is asked under the old instance")
+        XCTAssertTrue(settle(rig, at: 0.3) { rig.wire.sent("slice.libraryArtistAlbums").count == 2 },
+                      "the restart never made the scene read the artist's albums again")
+        _ = rig.tick(at: 5, snapshot: idle)
+        _ = rig.tick(at: 5.3, snapshot: idle)
+        XCTAssertTrue(settle(rig, at: 5.3) { rig.spandac.firstRequests.map(\.libraryInstance) == [Self.instanceB] })
+        XCTAssertEqual(rig.spandac.firstRequests.map(\.generation), [2])
+        XCTAssertTrue(heroShowsMarker(rig))
+        XCTAssertEqual(rig.wire.sent("slice.libraryArtistAlbums").count, 2, "exactly one re-read")
+    }
+
+    func testAnArtistsReadThatStillCarriesTheOldInstanceDoesNotLoop() {
+        let rig = artistsRig([artistAlbumsPage(generation: 1), artistAlbumsPage(generation: 2),
+                              artistAlbumsPage(generation: 3), artistAlbumsPage(generation: 4)])
+        restartSpanDAC(rig)
+        openArtist(rig)
+        _ = rig.tick(at: 0, snapshot: idle)
+        _ = rig.tick(at: 0.3, snapshot: idle)
+        XCTAssertTrue(settle(rig, at: 0.3) { rig.wire.sent("slice.libraryArtistAlbums").count == 2 })
+        for step in 0..<40 { _ = rig.tick(at: 1 + Double(step), snapshot: idle); usleep(5_000) }
+        usleep(100_000)
+        XCTAssertEqual(rig.wire.sent("slice.libraryArtistAlbums").count, 2, "no loop under the same old instance")
+        XCTAssertTrue(rig.spandac.firstRequests.isEmpty)
     }
 
     func testTheTracksViewOpenedFromTheAlbumsListIsStillAskedFor() {

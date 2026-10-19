@@ -1193,7 +1193,7 @@ struct SourceAppControl: SourceControlling {
     /// D2.
     func libraryArtistAlbums(artistID: String) throws -> MusicList {
         try libraryContainer(op: "slice.libraryArtistAlbums", opName: "artist albums",
-                             id: artistID, rows: .exactly(.album))
+                             id: artistID, rows: .exactly(.album), readsLibraryInstance: true)
     }
 
     /// D2: every song of the artist; Bridge refuses over its queue bound
@@ -1353,14 +1353,7 @@ struct SourceAppControl: SourceControlling {
         // absent is nil (an older SpanDAC), a value that is not text or is blank
         // is a malformed reply, because a cover requested under a guessed
         // instance would be answered for the wrong process.
-        var libraryInstance: String? = nil
-        if readsLibraryInstance, let raw = reply["library_instance"] {
-            guard let text = raw as? String, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                throw SourceAppError.malformedReply(
-                    "SpanDAC's \(opName) page has a library_instance that is not readable")
-            }
-            libraryInstance = text
-        }
+        let libraryInstance = readsLibraryInstance ? try Self.libraryInstance(reply, opName: opName, noun: "page") : nil
 
         // `clamped` is deliberately not read: a page carries the rows it
         // carries, and the walk follows `next_cursor`, never the limit it sent,
@@ -1384,8 +1377,21 @@ struct SourceAppControl: SourceControlling {
     /// Shared by the three container reads. Complete or refused — `generation`
     /// and `items` are required, and there is no `total` or `next_cursor` to
     /// read (section 2: container replies carry neither).
+    /// `library_instance` of a reply: absent is nil (an older SpanDAC), a value
+    /// that is not text or is blank is a malformed reply, because a cover requested
+    /// under a guessed instance would be answered for the wrong process.
+    private static func libraryInstance(_ reply: [String: Any], opName: String, noun: String) throws -> String? {
+        guard let raw = reply["library_instance"] else { return nil }
+        guard let text = raw as? String, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw SourceAppError.malformedReply(
+                "SpanDAC's \(opName) \(noun) has a library_instance that is not readable")
+        }
+        return text
+    }
+
     private func libraryContainer(op: String, opName: String, id: String,
-                                  rows policy: LibraryRowPolicy) throws -> MusicList {
+                                  rows policy: LibraryRowPolicy,
+                                  readsLibraryInstance: Bool = false) throws -> MusicList {
         let reply = try send(["op": op, "id": id], over: libraryTransport)
 
         guard let generation = reply["generation"] as? Int else {
@@ -1399,10 +1405,13 @@ struct SourceAppControl: SourceControlling {
             if let row = try libraryRow(item, opName: opName, policy: policy) { rows.append(row) }
         }
         LibraryAliasSelfCheck.shared.observe(rows)
+        // Only an artist's albums can ask for a cover (see `libraryPage`).
+        let libraryInstance = readsLibraryInstance ? try Self.libraryInstance(reply, opName: opName, noun: "reply") : nil
         return MusicList(rows: rows, generation: generation,
                          stale: reply["stale"] as? Bool ?? false,
                          refreshing: reply["refreshing"] as? Bool ?? false,
-                         listRev: Self.listRev(reply["list_rev"]))
+                         listRev: Self.listRev(reply["list_rev"]),
+                         libraryInstance: libraryInstance)
     }
 
     /// Contract 3. **The point of the whole seam:** a row Bridge served is

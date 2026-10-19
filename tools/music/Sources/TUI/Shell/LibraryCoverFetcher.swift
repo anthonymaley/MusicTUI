@@ -2,7 +2,7 @@
 import CryptoKit
 import Foundation
 
-// SpanDAC's covers for the top-level Albums and Playlists lists: ONE fetcher for
+// SpanDAC's covers for the Albums and Playlists lists and an artist's albums: ONE fetcher for
 // the shell, shared by both scenes. A scene names the row it has focused every
 // tick (`focus`); after 250 ms of rest the fetcher reads `slice.status`, and when
 // SpanDAC serves `slice.libraryArtwork` under the very instance the row's list
@@ -44,12 +44,12 @@ final class LibraryCoverFetcher {
     /// Which scene a target belongs to, so a focus from a scene that is not the
     /// active tab is ignored.
     enum Owner: Hashable {
-        case libraryAlbums, playlists
+        case libraryAlbums, libraryArtistAlbums, playlists
 
         var scene: SceneID {
             switch self {
-            case .libraryAlbums: return .library
-            case .playlists:     return .playlists
+            case .libraryAlbums, .libraryArtistAlbums: return .library
+            case .playlists:                           return .playlists
             }
         }
     }
