@@ -504,9 +504,10 @@ final class BridgePlaylistsCoversSceneTests: XCTestCase {
         XCTAssertTrue(settleScene(rig.scene) { wire.threadEnded(op: op, at: 2) }, "the held read never ended")
         XCTAssertFalse(rig.scene.render(frame: frame, snapshot: idle).contains("Old Mix"), "the superseded read's rows landed")
 
-        var t = 1.0
+        // Fake time is held fixed at one second, far inside the 700 s bound: only an immediate
+        // revocation of the claim lets the re-read through, never the bound running out.
         let landed = settleScene(rig.scene, seconds: 5) {
-            self.tick(rig, at: t); t += 1
+            self.tick(rig, at: 1)
             return wire.sent(op).count >= 5 && rig.scene.render(frame: self.frame, snapshot: self.idle).contains("Aardvark Mix")
         }
         XCTAssertTrue(landed, "the re-read never came: the superseded read's claim was left standing (\(wire.sent(op).count) requests)")

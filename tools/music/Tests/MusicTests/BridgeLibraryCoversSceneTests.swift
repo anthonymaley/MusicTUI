@@ -1026,9 +1026,10 @@ final class BridgeLibraryCoversSceneTests: XCTestCase {
 
         // The claim was handed back with the reset: the next ticks read again. Left standing it
         // would hold for the 700 s bound, which these fake seconds never reach.
-        var t = 1.0
+        // Fake time is held fixed at one second, far inside the 700 s bound: only an immediate
+        // revocation of the claim lets the re-read through, never the bound running out.
         let landed = settleScene(rig.scene, seconds: 5) {
-            _ = rig.tick(at: t, snapshot: self.idle); t += 1
+            _ = rig.tick(at: 1, snapshot: self.idle)
             return wire.sent(op).count >= 5 && rig.scene.render(frame: self.frame, snapshot: self.idle).contains("In Rainbows alNEW")
         }
         XCTAssertTrue(landed, "the re-read never came: the superseded read's claim was left standing (\(wire.sent(op).count) requests)")
