@@ -2989,7 +2989,9 @@ final class LibraryScene: Scene {
         guard due.any else { return }
         let ticket = albumsReread.began(due, now: at)
         let reread = albumsReread
-        switch albumsFeed.refresh(end: { reread.finished(ticket, succeeded: $0 != .readFailed) }, joinReask: true) {
+        switch albumsFeed.refresh(end: { reread.finished(ticket, succeeded: $0 != .readFailed) },
+                                 // A person's `r` takes this read over and its `end` never comes.
+                                 displaced: { reread.release(ticket) }, joinReask: true) {
         case .started, .tookOver: break
         // A walk or a person's refresh is running, or the list's own re-ask is (or has
         // just posted): it lands its own rows, and a second walk beside it would only
@@ -3038,7 +3040,10 @@ final class LibraryScene: Scene {
             defer { reread.finished(ticket, succeeded: posted) }
             guard let list = try? provider.artistAlbums(artistID: artistID), let scene = ref.scene else { return }
             scene.inboxLock.lock()
-            if scene.artistsSourceEpoch == epoch, scene.artistAlbumsReaskToken == token, scene.tabIsLiveLocked() {
+            // The claim too: a read the retry bound has expired is no longer this
+            // list's attempt, and its rows must not land over its replacement's.
+            if scene.artistsSourceEpoch == epoch, scene.artistAlbumsReaskToken == token, scene.tabIsLiveLocked(),
+               reread.isActive(ticket) {
                 scene.artistAlbumsInbox = (artistID, epoch, Self.libraryAlbums(from: list),
                                            LibraryReask.flagged(list), list.generation, list.libraryInstance)
                 posted = true

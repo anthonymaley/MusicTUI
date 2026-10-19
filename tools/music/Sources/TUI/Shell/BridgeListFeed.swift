@@ -91,6 +91,11 @@ final class BridgeListFeed<Row> {
     /// stale-snapshot re-ask. A refresh is single-flight; a plain re-ask is taken
     /// over by one (see `refresh`). Meaningful only while `reasking`.
     private var refreshing = false
+    /// The running `refresh` is the scene's own re-read (`joinReask`), not a
+    /// person's: a person's refresh takes it over and it is told (`displaced`).
+    /// Meaningful only while `refreshing`.
+    private var automaticRefresh = false
+    private var automaticDisplaced: (() -> Void)?
     /// Bumped by `reset()`. Every post the walk thread makes is checked
     /// against the epoch it started under; a mismatch means `reset()` ran
     /// since, and the post — including the walk's own ending — is dropped.
@@ -415,6 +420,18 @@ final class BridgeListFeed<Row> {
     /// asks again on a later tick; if the re-ask ends without a fresh list, that ask
     /// finds the feed idle and reads it. A person's `r` never sets it.
     ///
+    /// **A `joinReask` refresh is automatic, and a person's refresh takes it over**
+    /// (`tookOver`), exactly as it takes over a plain re-ask: the automatic one may be
+    /// waiting out a flagged list for the rest of `LibraryReask`'s bound, and `r`
+    /// must not be told "already refreshing" behind a refresh nobody asked for, with
+    /// no ask sent to SpanDAC. The takeover bumps the epoch, so the old worker's
+    /// posts and its `end` are dropped, and runs its `displaced` at once, under the
+    /// lock (post or release a claim only: take no lock of this feed's and call
+    /// nothing back into it), so whoever was waiting on `end` is not left waiting
+    /// for a bound. A second person's refresh during a person's refresh is
+    /// single-flight (`alreadyRefreshing`); an automatic ask during any refresh
+    /// is too, and says nothing.
+    ///
     /// `end` and `alreadyRefreshing` both run under the feed's lock, so the status
     /// line follows the claim: a refresh's ending lands before the claim is
     /// released, so neither a second `r`'s "already refreshing" nor the next
@@ -424,6 +441,7 @@ final class BridgeListFeed<Row> {
     func refresh(begin: @escaping () -> (() -> RefreshProgress)? = { nil },
                  end: @escaping (RefreshEnd) -> Void = { _ in },
                  alreadyRefreshing: () -> Void = {},
+                 displaced: @escaping () -> Void = {},
                  joinReask: Bool = false) -> RefreshClaim {
         lock.lock()
         guard !walking else { lock.unlock(); return .busy }
@@ -433,7 +451,7 @@ final class BridgeListFeed<Row> {
             return .joined
         }
         if reasking {
-            guard !refreshing else {
+            guard !refreshing || (automaticRefresh && !joinReask) else {
                 alreadyRefreshing()
                 lock.unlock()
                 afterAlreadyRefreshingForTest?()
@@ -441,9 +459,12 @@ final class BridgeListFeed<Row> {
             }
             epoch += 1   // the old re-ask's every post and its ending are now dropped
             claim = .tookOver
+            if refreshing, let told = automaticDisplaced { told() }
         }
         reasking = true
         refreshing = true
+        automaticRefresh = joinReask
+        automaticDisplaced = joinReask ? displaced : nil
         let myEpoch = epoch
         lock.unlock()
 
@@ -506,6 +527,7 @@ final class BridgeListFeed<Row> {
             if still {
                 if let ended { end(ended) }
                 self.reasking = false; self.refreshing = false
+                self.automaticRefresh = false; self.automaticDisplaced = nil
             }
             self.lock.unlock()
             self.afterRefreshReleasedForTest?()
@@ -540,6 +562,8 @@ final class BridgeListFeed<Row> {
         walking = false
         reasking = false
         refreshing = false
+        automaticRefresh = false
+        automaticDisplaced = nil
         pendingReplace = nil
         pendingAppend = []
         pendingTotal = nil

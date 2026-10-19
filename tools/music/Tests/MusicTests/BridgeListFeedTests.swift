@@ -522,6 +522,76 @@ final class BridgeListFeedTests: XCTestCase {
         XCTAssertEqual(f.drain().replace, [Row(id: "newer")])
     }
 
+    /// The scene's own re-read (`joinReask`) read a list that still said it was
+    /// refreshing and is waiting out the rest of the bound. A person's refresh is not
+    /// told "already refreshing" behind it: it takes the wait over, the automatic
+    /// worker is told at once (`displaced`, not after its bound), and nothing it
+    /// does later posts or ends.
+    func testAPersonsRefreshTakesOverAnAutomaticRereadWaitingOnAFlaggedList() {
+        let script = ScriptedFetch([page(["a"], generation: 1, next: nil),     // the walk: fresh, idle
+                                    flagged(["mid"]),                          // the automatic read: still stale
+                                    page(["new"], generation: 1, next: nil)])  // the person's read
+        let sleeper = SleepRecorder(gateFirst: true)
+        let f = reaskFeed(script.fetch, sleeper)
+        f.start()
+        XCTAssertTrue(settleUntil { script.callCount == 1 && script.threadEnded(at: 0) })
+        _ = f.drain()
+        var autoEnds: [BridgeListFeed<Row>.RefreshEnd] = [], displaced = 0
+        XCTAssertEqual(f.refresh(end: { autoEnds.append($0) }, displaced: { displaced += 1 }, joinReask: true), .started)
+        XCTAssertTrue(settleUntil { !sleeper.calls.isEmpty }, "the automatic re-read never began waiting")
+        XCTAssertEqual(f.refresh(joinReask: true), .alreadyRefreshing, "an automatic ask never takes over, and says nothing")
+        XCTAssertEqual(displaced, 0)
+
+        var asked = 0, said = 0
+        var ends: [BridgeListFeed<Row>.RefreshEnd] = []
+        let claim = f.refresh(begin: { asked += 1; return nil }, end: { ends.append($0) },
+                              alreadyRefreshing: { said += 1 })
+        XCTAssertEqual(claim, .tookOver)
+        XCTAssertEqual(displaced, 1, "the displaced read was not told at once")
+        XCTAssertEqual(said, 0)
+        var replaces: [[Row]] = []
+        XCTAssertTrue(settleUntil {
+            if let r = f.drain().replace { replaces.append(r) }
+            return replaces.last == [Row(id: "new")] && !ends.isEmpty
+        }, "the person's refresh never landed: \(replaces)")
+        XCTAssertEqual(asked, 1, "the person's begin never ran")
+        sleeper.firstGate.signal()   // the automatic worker wakes up and finds it was taken over
+        XCTAssertTrue(f.waitForWorkersForTest(timeout: 5), "a worker never ended")
+        XCTAssertEqual(script.callCount, 3, "the displaced worker read after it was taken over")
+        XCTAssertNil(f.drain().replace, "the displaced worker posted rows after the takeover")
+        XCTAssertTrue(autoEnds.isEmpty, "the displaced worker's ending was delivered")
+        XCTAssertEqual(ends, [.listOnly])
+        XCTAssertEqual(displaced, 1)
+    }
+
+    /// Once a person's refresh has taken it over, a second one is single-flight
+    /// again, and an automatic ask is turned away as before.
+    func testASecondPersonsRefreshDuringTheirTakeoverIsSingleFlight() {
+        let script = ScriptedFetch([page(["a"], generation: 1, next: nil),
+                                    flagged(["mid"]),
+                                    page(["new"], generation: 1, next: nil)])   // the person's read, held
+        script.gate(at: 2)
+        let sleeper = SleepRecorder(gateFirst: true)
+        let f = reaskFeed(script.fetch, sleeper)
+        f.start()
+        XCTAssertTrue(settleUntil { script.callCount == 1 && script.threadEnded(at: 0) })
+        _ = f.drain()
+        XCTAssertEqual(f.refresh(joinReask: true), .started)
+        XCTAssertTrue(settleUntil { !sleeper.calls.isEmpty })
+        XCTAssertEqual(f.refresh(), .tookOver)
+        XCTAssertTrue(settleUntil { script.callCount == 3 }, "the person's read never went out")
+        var said = 0, began = 0
+        XCTAssertEqual(f.refresh(begin: { began += 1; return nil }, alreadyRefreshing: { said += 1 }), .alreadyRefreshing)
+        XCTAssertEqual(f.refresh(joinReask: true), .alreadyRefreshing)
+        XCTAssertEqual(said, 1)
+        XCTAssertEqual(began, 0)
+        script.release(at: 2)
+        sleeper.firstGate.signal()
+        XCTAssertTrue(f.waitForWorkersForTest(timeout: 5))
+        XCTAssertEqual(f.drain().replace, [Row(id: "new")])
+        XCTAssertEqual(script.callCount, 3)
+    }
+
     /// With no re-ask to join, the scene's own re-read reads the list as it always did
     /// (a person's `r` never joins at all: `testARefreshTakesOverAPlainReAsk...`).
     func testAnAutomaticRereadStartsAWalkWhenThereIsNoReAsk() {

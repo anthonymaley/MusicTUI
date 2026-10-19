@@ -721,6 +721,38 @@ final class BridgeLibraryCoversSceneTests: XCTestCase {
         XCTAssertTrue(settle(rig, at: 205.5) { rig.scene.render(frame: self.frame, snapshot: self.idle).contains("In Rainbows al0") })
     }
 
+    /// An artist's albums read the retry bound has expired (its worker is only slow, the
+    /// bound counts request time it never saw) is no longer the list's attempt: when its
+    /// reply finally arrives it posts nothing over the rows its replacement landed.
+    func testAnExpiredArtistAlbumsReadCannotOverwriteItsReplacementsRows() {
+        let op = "slice.libraryArtistAlbums"
+        let rig = artistsRig([artistAlbumsPage(["al1"], generation: 1, instance: Self.instanceA),
+                              artistAlbumsPage(["alOLD", "al1"], generation: 2, instance: Self.instanceB),   // the held read
+                              artistAlbumsPage(["al0", "al1"], generation: 2, instance: Self.instanceB)])    // its replacement
+        rig.wire.gate(op: op, at: 1)
+        restartSpanDAC(rig)
+        openArtist(rig)
+        _ = rig.tick(at: 0, snapshot: idle)
+        _ = rig.tick(at: 0.3, snapshot: idle)
+        XCTAssertTrue(settleScene(rig.scene) { rig.wire.reached(op: op, at: 1) }, "the re-read never began")
+        // Past the bound the attempt is a failure; once its delay has passed the list is read again.
+        rig.clock.t = LibraryCoverFetcher.ListReread.inFlightBound + 1
+        _ = rig.tick(at: LibraryCoverFetcher.ListReread.inFlightBound + 1, snapshot: idle)
+        XCTAssertEqual(rig.wire.sent(op).count, 2, "the expired attempt was replaced before its delay")
+        let later = LibraryCoverFetcher.ListReread.inFlightBound + 1 + LibraryCoverFetcher.ListReread.retryDelays[0]
+        XCTAssertTrue(settle(rig, at: later) { rig.wire.sent(op).count >= 3 && rig.wire.threadEnded(op: op, at: 2) },
+                      "the replacement never read")
+        XCTAssertTrue(settle(rig, at: later) { rig.scene.render(frame: self.frame, snapshot: self.idle).contains("In Rainbows al0") },
+                      "the replacement's rows never landed")
+
+        rig.wire.release(op: op, at: 1)   // the expired read's reply finally arrives
+        XCTAssertTrue(waitUntil { rig.wire.threadEnded(op: op, at: 1) }, "the held read never ended")
+        for step in 0..<5 { _ = rig.tick(at: later + 1 + Double(step), snapshot: idle) }
+        let out = rig.scene.render(frame: frame, snapshot: idle)
+        XCTAssertTrue(out.contains("In Rainbows al0"), "the replacement's rows were overwritten")
+        XCTAssertFalse(out.contains("alOLD"), "the expired read's rows landed over its replacement's")
+    }
+
     private func waitUntil(seconds: Double = 5, _ done: () -> Bool) -> Bool {
         let deadline = Date().addingTimeInterval(seconds)
         while Date() < deadline { if done() { return true }; usleep(2_000) }

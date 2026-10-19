@@ -69,4 +69,69 @@ final class ListRereadTests: XCTestCase {
         r.finished(r.began(d, now: t0), succeeded: true)
         XCTAssertFalse(r.due(applied: applied, staleRefusal: applied, readyInstance: "B", now: t0).any)
     }
+
+    // MARK: - an expired attempt cannot touch its replacement
+
+    /// Attempt A begins at 0 and expires at the bound; the replacement B begins once the
+    /// first retry delay has passed. Returns both tickets, B's reason in flight.
+    private func expiredThenReplaced(_ r: Reread) -> (a: Reread.Ticket, b: Reread.Ticket, at: TimeInterval) {
+        let a = r.began(due(r, 0), now: t0)
+        XCTAssertFalse(due(r, Reread.inFlightBound).any, "expiry stamps A's failure and its delay")
+        let replacedAt = Reread.inFlightBound + Reread.retryDelays[0]
+        let d = due(r, replacedAt)
+        XCTAssertTrue(d.any, "the delay never ended")
+        return (a, r.began(d, now: t0.addingTimeInterval(replacedAt)), replacedAt)
+    }
+
+    func testALateFailureFromAnExpiredAttemptDoesNotClearOrCountAgainstItsReplacement() {
+        let r = Reread()
+        let (a, b, at) = expiredThenReplaced(r)
+        r.finished(a, succeeded: false)
+        XCTAssertFalse(due(r, at + 1).any, "A's late failure cleared B's in-flight state")
+        XCTAssertFalse(due(r, at + Reread.retryDelays[1] + 1).any, "A's late failure made another attempt eligible beside B")
+        // B's own failure is the SECOND failure, not the third: A's was counted once, at expiry.
+        r.finished(b, succeeded: false)
+        let second = Reread.retryDelays[1]
+        XCTAssertFalse(due(r, at + 1).any, "stamped at \(at + 1)")
+        XCTAssertFalse(due(r, at + 1 + second - 0.01).any)
+        XCTAssertTrue(due(r, at + 1 + second).any, "the retry after the second failure waits \(second) s")
+    }
+
+    func testALateSuccessFromAnExpiredAttemptDoesNotMarkItsReplacementDone() {
+        let r = Reread()
+        let (a, b, at) = expiredThenReplaced(r)
+        r.finished(a, succeeded: true)
+        XCTAssertFalse(due(r, at + 1).any, "B is still in flight")
+        r.finished(b, succeeded: false)
+        XCTAssertFalse(due(r, at + 1).any, "stamped at \(at + 1)")
+        XCTAssertTrue(due(r, at + 1 + Reread.retryDelays[1]).any, "A's late success marked the reason done")
+    }
+
+    func testALateReleaseFromAnExpiredAttemptDoesNotFreeItsReplacement() {
+        let r = Reread()
+        let (a, b, at) = expiredThenReplaced(r)
+        r.release(a)
+        XCTAssertFalse(due(r, at + 1).any, "A's late release freed B's claim")
+        r.finished(b, succeeded: true)
+        XCTAssertFalse(due(r, at + 1_000_000).any)
+    }
+
+    func testAnExpiredAttemptIsNotActiveAndItsReplacementIs() {
+        let r = Reread()
+        let (a, b, _) = expiredThenReplaced(r)
+        XCTAssertFalse(r.isActive(a), "an expired attempt may not post rows")
+        XCTAssertTrue(r.isActive(b))
+        r.finished(b, succeeded: true)
+        XCTAssertFalse(r.isActive(b), "a finished attempt is over")
+        let c = r.began(Reread.Due(reasons: []), now: t0)
+        XCTAssertFalse(r.isActive(c), "a claim on nothing is nothing")
+    }
+
+    func testATicketFromBeforeAResetIsNotActive() {
+        let r = Reread()
+        let old = r.began(due(r, 0), now: t0)
+        XCTAssertTrue(r.isActive(old))
+        r.reset()
+        XCTAssertFalse(r.isActive(old))
+    }
 }

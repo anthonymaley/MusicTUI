@@ -148,8 +148,11 @@ final class LibraryCoverFetcher {
     /// seconds, one delay per retry, so at most `1 + retryDelays.count` attempts
     /// and then it is spent until the list changes. An attempt in flight is not
     /// asked again; one whose outcome never arrives (its worker was superseded)
-    /// counts as a failure after `inFlightBound`. `reset()` forgets everything and
-    /// makes any outcome still to arrive from before it a no-op.
+    /// counts as a failure after `inFlightBound`, once: that claim is REVOKED, so
+    /// its late failure, success or release is a no-op and cannot touch the attempt
+    /// that replaced it. Every claim carries a serial and only the reason's active
+    /// serial is heard. `reset()` forgets everything and makes any outcome still to
+    /// arrive from before it a no-op.
     ///
     /// A class: the outcome arrives on the read's own thread, the asking on the tick.
     final class ListReread {
@@ -163,6 +166,8 @@ final class LibraryCoverFetcher {
 
         private struct Attempt {
             var inFlightSince: Date?
+            /// The claim in flight: only its ticket may release or finish it.
+            var serial: Int?
             var failures = 0
             /// A failure the tick has not yet stamped with its retry time (the
             /// outcome's thread does not read the clock).
@@ -174,10 +179,12 @@ final class LibraryCoverFetcher {
         private let lock = NSLock()
         private var attempts: [Reason: Attempt] = [:]
         private var generation = 0
+        private var nextSerial = 0
 
         /// A claim on the reasons one read answers; hand it back with the outcome.
         struct Ticket {
             fileprivate let generation: Int
+            fileprivate let serial: Int
             let reasons: [Reason]
         }
 
@@ -204,7 +211,8 @@ final class LibraryCoverFetcher {
             if a.done { return false }
             if let since = a.inFlightSince {
                 guard now.timeIntervalSince(since) >= Self.inFlightBound else { return false }
-                a.inFlightSince = nil; a.failures += 1; a.failedUnstamped = true
+                a.inFlightSince = nil; a.serial = nil   // revoked: its outcome is no longer heard
+                a.failures += 1; a.failedUnstamped = true
             }
             if a.failedUnstamped {
                 a.failedUnstamped = false
@@ -219,19 +227,32 @@ final class LibraryCoverFetcher {
         /// the asking returns. A read that is not taken is handed back with `release`.
         func began(_ due: Due, now: Date) -> Ticket {
             lock.lock(); defer { lock.unlock() }
+            nextSerial += 1
             for r in due.reasons {
                 var a = attempts[r] ?? Attempt()
                 a.inFlightSince = now
+                a.serial = nextSerial
                 attempts[r] = a
             }
-            return Ticket(generation: generation, reasons: due.reasons)
+            return Ticket(generation: generation, serial: nextSerial, reasons: due.reasons)
         }
 
         /// The read was not taken: nothing was attempted.
         func release(_ ticket: Ticket) {
             lock.lock(); defer { lock.unlock() }
             guard ticket.generation == generation else { return }
-            for r in ticket.reasons { attempts[r]?.inFlightSince = nil }
+            for r in ticket.reasons where attempts[r]?.serial == ticket.serial {
+                attempts[r]?.inFlightSince = nil; attempts[r]?.serial = nil
+            }
+        }
+
+        /// Whether `ticket` is still the claim in flight for every reason it took: not
+        /// expired and replaced, not released, not from before a `reset()`. A worker
+        /// that posts rows asks this where it posts.
+        func isActive(_ ticket: Ticket) -> Bool {
+            lock.lock(); defer { lock.unlock() }
+            guard ticket.generation == generation else { return false }
+            return !ticket.reasons.isEmpty && ticket.reasons.allSatisfy { attempts[$0]?.serial == ticket.serial }
         }
 
         /// The read ended: `succeeded` is that it read and posted the list (whatever
@@ -240,8 +261,8 @@ final class LibraryCoverFetcher {
             lock.lock(); defer { lock.unlock() }
             guard ticket.generation == generation else { return }
             for r in ticket.reasons {
-                guard var a = attempts[r] else { continue }
-                a.inFlightSince = nil
+                guard var a = attempts[r], a.serial == ticket.serial else { continue }
+                a.inFlightSince = nil; a.serial = nil
                 if succeeded { a.done = true } else { a.failures += 1; a.failedUnstamped = true }
                 attempts[r] = a
             }

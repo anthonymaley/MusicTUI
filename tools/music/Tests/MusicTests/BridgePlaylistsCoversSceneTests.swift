@@ -44,7 +44,7 @@ final class BridgePlaylistsCoversSceneTests: XCTestCase {
         let fetcher: LibraryCoverFetcher
         let scene: PlaylistsScene
 
-        init(pages: [String], withFetcher: Bool = true) {
+        init(pages: [String], withFetcher: Bool = true, warmUpSleep: @escaping (TimeInterval) -> Void = { _ in }) {
             dir = FileManager.default.temporaryDirectory
                 .appendingPathComponent("playlist-covers-\(UUID().uuidString)").path
             try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
@@ -78,7 +78,7 @@ final class BridgePlaylistsCoversSceneTests: XCTestCase {
                             path: "/nonexistent", transport: wire.transport, libraryTransport: wire.transport))
                         : nil
                 },
-                warmUpSleep: { _ in },
+                warmUpSleep: warmUpSleep,
                 // The scene's own clock is the fake one, so a retry's delay is read off it.
                 now: { [clock] in clock.date },
                 screenWidth: { 110 })
@@ -383,6 +383,81 @@ final class BridgePlaylistsCoversSceneTests: XCTestCase {
         // Still long before 5.25, and the old list is read again at once.
         XCTAssertTrue(attempt(rig, at: 1.4, expecting: 4), "the reset left the old retry delay in force")
         XCTAssertTrue(settleScene(rig.scene) { rig.scene.render(frame: frame, snapshot: idle).contains("Aardvark Mix") })
+    }
+
+    /// A `sleep` that holds its FIRST call until the test lets it go and says when it is
+    /// held; every later call returns at once: the automatic re-read's wait on a flagged list.
+    private final class FirstSleepGate {
+        private let release = DispatchSemaphore(value: 0)
+        private let lock = NSLock()
+        private var calls = 0
+        private var held = false
+        var isHeld: Bool { lock.lock(); defer { lock.unlock() }; return held }
+        func sleep(_ seconds: TimeInterval) {
+            lock.lock(); calls += 1; let first = calls == 1; if first { held = true }; lock.unlock()
+            guard first else { return }
+            _ = release.wait(timeout: .now() + 10)
+        }
+        func open() { release.signal() }
+    }
+
+    /// The scene noticed a SpanDAC restart and read Playlists again by itself; the list
+    /// it got back still says it is refreshing, so that read is waiting out the rest of
+    /// the bound. A person's `r` then must not be told "already refreshing" with nothing
+    /// sent: it takes the wait over, asks SpanDAC to rebuild, follows it, and lands its
+    /// own rows; the displaced read's claim is released at once, and its late post and
+    /// ending change nothing.
+    func testRDuringAnAutomaticRereadWaitingOnAFlaggedListTakesItOverAndRefreshes() {
+        let gate = FirstSleepGate()
+        let rig = Rig(pages: [page(generation: 3, instance: Self.instanceA),
+                              page(generation: 4, instance: Self.instanceB, flagged: true),   // the automatic read: still draining
+                              page(generation: 5, instance: Self.instanceB, leading: "Aardvark Mix"),
+                              page(generation: 5, instance: Self.instanceB, leading: "Late Mix")],   // the old worker, if it read again
+                      warmUpSleep: gate.sleep)
+        // SpanDAC lists `library.refresh`, starts ticket 7, and has already installed it.
+        rig.wire.handler = { op, _ in
+            switch op {
+            case "slice.status":
+                return "{\"ok\":true,\"op\":\"slice.status\",\"status\":{\"playback\":\"stopped\",\"capabilities\":[\"slice.status\",\"library.refresh\"],\"library_refresh\":{\"instance\":\"inst-1\",\"ticket\":7,\"result\":\"installed\"}}}"
+            case "slice.libraryRefresh":
+                return "{\"ok\":true,\"op\":\"slice.libraryRefresh\",\"outcome\":\"started\",\"ticket\":7,\"instance\":\"inst-1\"}"
+            default: return nil
+            }
+        }
+        let op = "slice.libraryPlaylists"
+        rig.wire.gate(op: op, at: 2)   // the person's read, held while the claim is checked
+        restartSpanDAC(rig)
+        settleRows(rig)
+        tick(rig, at: 0.25)
+        XCTAssertTrue(settleScene(rig.scene) { gate.isHeld }, "the automatic re-read never began waiting")
+        XCTAssertTrue(rig.wire.sent("slice.libraryRefresh").isEmpty, "nothing was asked of SpanDAC yet")
+        let applied = LibraryCoverFetcher.StaleList(generation: 3, libraryInstance: Self.instanceA)
+        func due() -> Bool {
+            rig.scene.playlistsRereadForTest.due(applied: applied, staleRefusal: nil, readyInstance: Self.instanceB,
+                                                 now: rig.clock.date).any
+        }
+        XCTAssertFalse(due(), "the automatic read is in flight")
+
+        _ = rig.scene.handle(.char("r"))
+        XCTAssertTrue(settleScene(rig.scene) { rig.wire.reached(op: op, at: 2) }, "the person's refresh never read the list")
+        XCTAssertEqual(rig.wire.sent("slice.libraryRefresh").count, 1, "`r` sent no refresh request")
+        XCTAssertNotEqual(rig.statusStore.current()?.text, "Already refreshing your playlists\u{2026}")
+        XCTAssertTrue(due(), "the displaced read's claim was not released until its bound")
+
+        rig.wire.release(op: op, at: 2)
+        XCTAssertTrue(settleScene(rig.scene) {
+            rig.statusStore.current()?.text == "Playlists refreshed. New playlists need a song; press r again."
+        }, "the refresh never ended: \(rig.statusStore.current()?.text ?? "nothing")")
+        XCTAssertTrue(settleScene(rig.scene) { rig.scene.render(frame: frame, snapshot: idle).contains("Aardvark Mix") })
+        gate.open()   // the old worker wakes up and finds it was taken over
+        XCTAssertTrue(rig.scene.playlistsFeedForTest.waitForWorkersForTest(timeout: 5), "a worker never ended")
+        tick(rig, at: 1.0)
+        XCTAssertEqual(rig.wire.sent(op).count, 3, "the displaced worker read the list after it was taken over")
+        XCTAssertEqual(rig.statusStore.current()?.text, "Playlists refreshed. New playlists need a song; press r again.",
+                       "the displaced worker spoke after the takeover")
+        let out = rig.scene.render(frame: frame, snapshot: idle)
+        XCTAssertTrue(out.contains("Aardvark Mix") && !out.contains("Late Mix"), "the displaced worker's rows landed")
+        XCTAssertEqual(rig.wire.sent("slice.libraryRefresh").count, 1)
     }
 
     func testTheCursorStaysOnTheSamePlaylistAcrossTheRestartReread() {

@@ -128,6 +128,7 @@ final class PlaylistsScene: Scene {
     private var railEpoch = 0
     var railSourceForTest: ListSource? { railSource }
     var playlistsFeedForTest: BridgeListFeed<MusicRow> { playlistsFeed }
+    var playlistsRereadForTest: LibraryCoverFetcher.ListReread { playlistsReread }
     /// The current rail's names, in rail order — Bridge's (filtered) or
     /// Music.app's, whichever `railSource` says is live.
     var railNamesForTest: [String] {
@@ -806,8 +807,10 @@ final class PlaylistsScene: Scene {
     /// or any failure of the status read or the op, is said plainly as a reload,
     /// then the list is read again all the same. `deferred` is said once, with no
     /// wait. The rows and selection stay on screen throughout. A plain stale
-    /// re-ask already running is taken over (the feed ends it), and a refresh
-    /// already running is told so (`alreadyRefreshing`).
+    /// re-ask already running is taken over (the feed ends it), and so is the
+    /// scene's own automatic re-read (`rereadPlaylistsIfLeftBehind`), which may be
+    /// waiting out a flagged list; only a refresh a person asked for and that is
+    /// still running is told so (`alreadyRefreshing`).
     private func refreshBridgePlaylists() {
         let provider = makeProvider
         let status = self.status
@@ -1163,7 +1166,9 @@ final class PlaylistsScene: Scene {
         guard due.any else { return }
         let ticket = playlistsReread.began(due, now: at)
         let reread = playlistsReread
-        switch playlistsFeed.refresh(end: { reread.finished(ticket, succeeded: $0 != .readFailed) }, joinReask: true) {
+        switch playlistsFeed.refresh(end: { reread.finished(ticket, succeeded: $0 != .readFailed) },
+                                 // A person's `r` takes this read over and its `end` never comes.
+                                 displaced: { reread.release(ticket) }, joinReask: true) {
         case .started, .tookOver: break
         // The list's own walk, or a refresh the person asked for, is running and
         // lands its own rows; look again on a later tick.
