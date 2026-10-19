@@ -306,4 +306,67 @@ final class BridgePlaylistsCoversSceneTests: XCTestCase {
         XCTAssertEqual(rig.spandac.firstRequests.map(\.id), ["pl2"], "the cursor moved off the playlist")
         XCTAssertEqual(rig.spandac.firstRequests.map(\.libraryInstance), [Self.instanceB])
     }
+
+    // MARK: - a refresh moved the snapshot under the Playlists list
+
+    func testAStaleGenerationRefusalRereadsThePlaylistsOnceAndTheNextRestGetsACover() {
+        let rig = Rig(pages: [page(generation: 1), page(generation: 2, leading: "Aardvark Mix")])
+        rig.spandac.serverGeneration = 2
+        settleRows(rig)
+        tick(rig, at: 0.25)   // the rest ends: asked under generation 1, refused as stale
+        XCTAssertEqual(rig.spandac.firstRequests.map(\.generation), [1])
+        XCTAssertTrue(settleScene(rig.scene) { rig.wire.sent("slice.libraryPlaylists").count == 2
+                                                && rig.scene.render(frame: frame, snapshot: idle).contains("Aardvark Mix") },
+                      "the stale refusal never made the scene read its playlists again")
+
+        XCTAssertTrue(tickUntil(rig, from: 10) { rig.spandac.firstRequests.count >= 2 }, "the new list's row was never asked for")
+        XCTAssertEqual(rig.spandac.firstRequests.map(\.generation), [1, 2])
+        XCTAssertEqual(rig.spandac.firstRequests.map(\.id), ["pl1", "pl1"])
+        var out = ""
+        XCTAssertTrue(settleScene(rig.scene) {
+            out = rig.scene.render(frame: frame, snapshot: idle)
+            return out.contains(Self.marker)
+        }, "the cover never reached the hero")
+        XCTAssertEqual(rig.wire.sent("slice.libraryPlaylists").count, 2, "exactly one re-read")
+        XCTAssertEqual(rig.wire.sent("slice.libraryRefresh").count, 0, "the re-read must not ask SpanDAC to rebuild")
+    }
+
+    func testAStalePlaylistsRereadThatStillCarriesTheOldGenerationDoesNotLoop() {
+        let rig = Rig(pages: [page(generation: 1), page(generation: 1), page(generation: 1)])
+        rig.spandac.serverGeneration = 2
+        settleRows(rig)
+        tick(rig, at: 0.25)
+        XCTAssertTrue(settleScene(rig.scene) { rig.wire.sent("slice.libraryPlaylists").count == 2 })
+        for step in 0..<40 { tick(rig, at: 1 + Double(step)); usleep(5_000) }
+        usleep(100_000)
+        XCTAssertEqual(rig.wire.sent("slice.libraryPlaylists").count, 2, "no loop on an unchanged generation")
+    }
+
+    func testAFailedStalePlaylistsRereadDoesNotLoopOrSpeak() {
+        let rig = Rig(pages: [page(generation: 1)])   // the re-read is answered bad_request
+        rig.spandac.serverGeneration = 2
+        settleRows(rig)
+        let before = rig.statusStore.current()?.text
+        tick(rig, at: 0.25)
+        XCTAssertTrue(settleScene(rig.scene) { rig.wire.sent("slice.libraryPlaylists").count >= 2 })
+        for step in 0..<40 { tick(rig, at: 1 + Double(step)); usleep(5_000) }
+        usleep(100_000)
+        XCTAssertEqual(rig.wire.sent("slice.libraryPlaylists").count, 2, "a failed re-read is not retried")
+        XCTAssertTrue(rig.scene.render(frame: frame, snapshot: idle).contains("Road Trip"))
+        XCTAssertEqual(rig.statusStore.current()?.text, before)
+    }
+
+    func testTheCursorStaysOnTheSamePlaylistAcrossTheStaleRereadAndItsCoverIsAsked() {
+        let rig = Rig(pages: [page(generation: 1), page(generation: 2, leading: "Aardvark Mix")])
+        rig.spandac.serverGeneration = 2
+        rig.spandac.covers["playlist|pl2"] = LibraryCoverFetcherTests.payload(40_000)
+        settleRows(rig)
+        _ = rig.scene.handle(.down)   // pl2
+        tick(rig, at: 0.25)
+        tick(rig, at: 0.6)
+        XCTAssertTrue(settleScene(rig.scene) { rig.scene.render(frame: frame, snapshot: idle).contains("Aardvark Mix") })
+        XCTAssertTrue(tickUntil(rig, from: 10) { rig.spandac.firstRequests.count >= 2 })
+        XCTAssertEqual(rig.spandac.firstRequests.map(\.id), ["pl2", "pl2"], "the cursor moved off the playlist")
+        XCTAssertEqual(rig.spandac.firstRequests.map(\.generation), [1, 2])
+    }
 }

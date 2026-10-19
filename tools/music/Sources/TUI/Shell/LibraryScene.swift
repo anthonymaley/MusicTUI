@@ -438,13 +438,9 @@ final class LibraryScene: Scene {
     private var bridgeAlbumsGeneration: Int?
     private var bridgeAlbumsInstance: String?
     private var lastCoverLanded = 0
-    /// The Albums list (generation and instance) already read again because SpanDAC
-    /// refused its covers as `stale_generation`: at most one re-read per list.
-    private var albumsRereadFor: LibraryCoverFetcher.StaleList?
-    /// The applied list instance and the newer one SpanDAC's readiness named when
-    /// the Albums list was read again because SpanDAC restarted: at most one
-    /// re-read per such pair, whatever generation the re-read comes back under.
-    private var albumsRereadForInstance: (applied: String, ready: String)?
+    /// What the Albums list has already been read again for: a stale-generation
+    /// refusal (once per list) or a SpanDAC restart (once per pair of instances).
+    private var albumsReread = LibraryCoverFetcher.ListReread()
     private let kittyEnabled: Bool
     // Placement-dedup (render-thread-only, per design doc Feature 2 §3): the
     // last kitty placement this scene emitted, so an unchanged frame emits
@@ -1358,8 +1354,7 @@ final class LibraryScene: Scene {
         albumsSource = nil
         bridgeAlbumsGeneration = nil
         bridgeAlbumsInstance = nil
-        albumsRereadFor = nil
-        albumsRereadForInstance = nil
+        albumsReread.reset()
         // The epoch and everything a worker keyed on it may have posted move in
         // ONE critical section: the background re-ask predicates read the
         // epochs under `inboxLock`, so an unlocked bump was a data race, and a
@@ -2753,14 +2748,11 @@ final class LibraryScene: Scene {
               let instance = bridgeAlbumsInstance else { return }
         let applied = LibraryCoverFetcher.StaleList(generation: generation, libraryInstance: instance)
         let ready = covers.readinessInstance()
-        let stale = covers.staleList(for: .libraryAlbums) == applied && albumsRereadFor != applied
-        let restarted = ready.map { $0 != instance && (albumsRereadForInstance?.applied != instance
-                                                       || albumsRereadForInstance?.ready != $0) } ?? false
-        guard stale || restarted else { return }
+        let due = albumsReread.due(applied: applied, staleRefusal: covers.staleList(for: .libraryAlbums),
+                                   readyInstance: ready)
+        guard due.any else { return }
         switch albumsFeed.refresh() {
-        case .started, .tookOver:
-            if stale { albumsRereadFor = applied }
-            if restarted, let ready { albumsRereadForInstance = (instance, ready) }
+        case .started, .tookOver: albumsReread.started(due, applied: applied, readyInstance: ready)
         // A walk or a person's refresh is running and will land its own rows; ask
         // again on a later tick if the list is still the one left behind.
         case .busy, .alreadyRefreshing: break

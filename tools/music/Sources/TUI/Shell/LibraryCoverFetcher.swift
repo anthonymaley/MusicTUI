@@ -136,6 +136,41 @@ final class LibraryCoverFetcher {
         let libraryInstance: String
     }
 
+    /// The once-per-list bookkeeping of a scene that reads its list again in place
+    /// when SpanDAC left it behind: a `stale_generation` refusal naming the applied
+    /// list (once per list), or a restart, a readiness instance other than the
+    /// applied one (once per pair of instances, whatever generation the re-read
+    /// comes back under). Albums and Playlists share it; each scene supplies its
+    /// own feed and guards.
+    struct ListReread {
+        private var staleDone: StaleList?
+        private var restartDone: (applied: String, ready: String)?
+
+        /// What, if anything, calls for a re-read of the `applied` list.
+        func due(applied: StaleList, staleRefusal: StaleList?, readyInstance: String?) -> Due {
+            let stale = staleRefusal == applied && staleDone != applied
+            let restarted = readyInstance.map {
+                $0 != applied.libraryInstance && (restartDone?.applied != applied.libraryInstance
+                                                  || restartDone?.ready != $0)
+            } ?? false
+            return Due(stale: stale, restarted: restarted)
+        }
+
+        /// The feed took the re-read: record what it answers, so it is not asked again.
+        mutating func started(_ due: Due, applied: StaleList, readyInstance: String?) {
+            if due.stale { staleDone = applied }
+            if due.restarted, let readyInstance { restartDone = (applied.libraryInstance, readyInstance) }
+        }
+
+        mutating func reset() { self = ListReread() }
+
+        struct Due {
+            let stale: Bool
+            let restarted: Bool
+            var any: Bool { stale || restarted }
+        }
+    }
+
     private let lock = NSLock()
     // The shell's view, from `observeShell`.
     private var active: SceneID?
