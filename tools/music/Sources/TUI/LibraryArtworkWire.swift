@@ -108,7 +108,13 @@ enum LibraryArtworkRefusal: Equatable {
     /// The whole `ok:false` reply of a refused request.
     init(reply: [String: Any]) {
         let error = reply["error"] as? [String: Any]
-        self.init(kind: error?["kind"] as? String, retryAfter: error?["retry_after"] as? Double)
+        // JSON `true` and `false` arrive as NSNumber and would convert to 1.0 and 0.0:
+        // a boolean is no number of seconds, so it counts as no hint.
+        var retryAfter: Double?
+        if let number = error?["retry_after"] as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID() {
+            retryAfter = number.doubleValue
+        }
+        self.init(kind: error?["kind"] as? String, retryAfter: retryAfter)
     }
 }
 

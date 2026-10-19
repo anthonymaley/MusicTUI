@@ -786,6 +786,40 @@ final class LibraryCoverFetcherTests: XCTestCase {
         XCTAssertNotNil(h.fetcher.cover(for: a))
     }
 
+    func testALateRenderTimeoutAfterAnUnobservedDataEpochMoveRecordsNothing() {
+        let h = served()
+        h.spandac.firstReplies = [.refused(.renderTimeout(retryAfter: 600))]
+        // The data epoch moves while the request is out, before the shell has observed it.
+        h.spandac.onFirst = {
+            h.spandac.onFirst = nil
+            h.epoch = 1
+        }
+        h.rest(album())
+        XCTAssertEqual(h.spandac.firstRequests.count, 1)
+        h.fetcher.observeShell(active: .library, dataEpoch: 1)
+        h.rest(album(epoch: 1), at: 1)
+        XCTAssertEqual(h.spandac.firstRequests.count, 2,
+                       "the stale reply left no 600 s cooldown on the new epoch's target")
+        XCTAssertNotNil(h.fetcher.cover(for: album(epoch: 1)))
+    }
+
+    /// The wire-to-schedule chain for `retry_after: true`: the wire yields no hint, and no
+    /// hint is the 30 s backoff, not 1 s.
+    func testABooleanRetryAfterSchedulesThirtySecondsNotOne() throws {
+        let reply = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(
+            #"{"ok":false,"error":{"kind":"render_timeout","detail":"x","retry_after":true}}"#.utf8)) as? [String: Any])
+        let refusal = LibraryArtworkRefusal(reply: reply)
+        XCTAssertEqual(refusal, .renderTimeout(retryAfter: nil))
+        let h = served()
+        h.spandac.firstReplies = [.refused(refusal)]
+        let a = album()
+        h.rest(a)
+        h.ticks(from: 0.1, to: 29.9, a)
+        XCTAssertEqual(h.spandac.firstRequests.count, 1)
+        h.tick(30.0, a)
+        XCTAssertEqual(h.spandac.firstRequests.count, 2)
+    }
+
     func testWarmingRetriesAfterItsHintWithAOneSecondFloor() {
         let h = served()
         h.spandac.firstReplies = [.refused(.warming(retryAfter: 0.2))]

@@ -201,6 +201,11 @@ final class LibraryArtworkWireTests: XCTestCase {
         XCTAssertEqual(try decoded(#","retry_after":null"#), .refused(.renderTimeout(retryAfter: nil)))
         XCTAssertEqual(try decoded(#","retry_after":"soon""#), .refused(.renderTimeout(retryAfter: nil)))
         XCTAssertEqual(try decoded(#","retry_after":[30]"#), .refused(.renderTimeout(retryAfter: nil)))
+        // A JSON boolean is not a number of seconds (it would convert to 1.0 and 0.0).
+        XCTAssertEqual(try decoded(#","retry_after":true"#), .refused(.renderTimeout(retryAfter: nil)))
+        XCTAssertEqual(try decoded(#","retry_after":false"#), .refused(.renderTimeout(retryAfter: nil)))
+        XCTAssertEqual(try decoded(#","retry_after":true"#, chunkRequest: true),
+                       .refused(.renderTimeout(retryAfter: nil)))
         // Out-of-range values are kept as sent; the fetcher is where they are judged.
         XCTAssertEqual(try decoded(#","retry_after":-4"#), .refused(.renderTimeout(retryAfter: -4)))
     }

@@ -680,7 +680,10 @@ final class LibraryCoverFetcher {
     /// Records why a transfer ended. A cancelled job leaves no trace.
     private func settle(_ stop: Stop, target: Target, key: String, epoch: Int) {
         lock.lock(); defer { lock.unlock() }
-        guard cancelEpoch == epoch else { return }
+        // Both must still hold: a cancel, and a data-epoch move the shell has not yet
+        // observed, each make the reply obsolete. The focus is deliberately not compared:
+        // the backoff is per key, and a cooldown must survive focus moving away and back.
+        guard cancelEpoch == epoch, dataEpoch() == target.dataEpoch else { return }
         let t = now()
         switch stop {
         case .stopped:
