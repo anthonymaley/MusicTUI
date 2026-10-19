@@ -79,6 +79,18 @@ final class LibraryCoverFetcher {
     static let readinessRetries: [TimeInterval] = [1, 2, 4, 8]
     static let unsupportedReread: TimeInterval = 30
     static let transientBackoff: TimeInterval = 30
+    /// What a `render_timeout` hint may ask for. SpanDAC's own ladder runs 30 to 600 s;
+    /// the bounds keep a hostile or broken value from either busy-polling or hiding a
+    /// cover for the session.
+    static let renderTimeoutBackoffRange: ClosedRange<TimeInterval> = 1...900
+
+    /// How long a `render_timeout` holds the row back: SpanDAC's hint when it is a finite
+    /// positive number, clamped to `renderTimeoutBackoffRange`; the generic transient
+    /// backoff when there is none (SpanDAC 0.3.7) or it is not usable.
+    static func renderTimeoutBackoff(hint: TimeInterval?) -> TimeInterval {
+        guard let hint, hint.isFinite, hint > 0 else { return transientBackoff }
+        return min(max(hint, renderTimeoutBackoffRange.lowerBound), renderTimeoutBackoffRange.upperBound)
+    }
     static let minimumWarmingRetry: TimeInterval = 1
 
     /// The installed file's name for a target: `sd_` + the first 32 hex of
@@ -577,7 +589,11 @@ final class LibraryCoverFetcher {
 
     // MARK: the transfer (fetch lane)
 
-    private enum Stop { case stopped, backoff, warming(TimeInterval), stale, negative, unsupported }
+    private enum Stop {
+        case stopped, backoff, warming(TimeInterval), stale, negative, unsupported
+        /// SpanDAC's cap was reached: a per-key backoff from its hint, never a negative.
+        case renderTimeout(TimeInterval?)
+    }
 
     private func fetch(_ target: Target, key: String, epoch: Int, token: Int) {
         defer {
@@ -650,7 +666,8 @@ final class LibraryCoverFetcher {
         case .transferExpired:             return .restart
         case .notInLibrary, .noArtwork:    return .stop(.negative)
         case .unsupported:                 return .stop(.unsupported)
-        case .renderTimeout, .renderFailed, .busy, .unlicensed, .unauthorized, .other:
+        case .renderTimeout(let retryAfter): return .stop(.renderTimeout(retryAfter))
+        case .renderFailed, .busy, .unlicensed, .unauthorized, .other:
             return .stop(.backoff)
         }
     }
@@ -670,6 +687,11 @@ final class LibraryCoverFetcher {
             break
         case .backoff:
             backoffUntil[key] = t.addingTimeInterval(Self.transientBackoff)
+        case .renderTimeout(let hint):
+            // Per key, like every backoff here: focus moving away and back keeps it, a new
+            // generation is another key, and `negatives` is never touched, so an interim
+            // cover keeps showing while the row waits.
+            backoffUntil[key] = t.addingTimeInterval(Self.renderTimeoutBackoff(hint: hint))
         case .warming(let retryAfter):
             warmingUntil[key] = t.addingTimeInterval(max(retryAfter, Self.minimumWarmingRetry))
         case .stale:

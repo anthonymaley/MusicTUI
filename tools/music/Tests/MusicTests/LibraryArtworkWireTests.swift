@@ -162,7 +162,7 @@ final class LibraryArtworkWireTests: XCTestCase {
             ("transfer_expired", "the moon", .transferExpired),
             ("not_in_library", "42", .notInLibrary),
             ("no_artwork", "SpanDAC has a cover for that album.", .noArtwork),
-            ("render_timeout", "x", .renderTimeout),
+            ("render_timeout", "x", .renderTimeout(retryAfter: nil)),
             ("render_failed", "x", .renderFailed),
             ("busy", "x", .busy),
             (spanDACLicenceRefusalKind, "x", .unlicensed),
@@ -183,6 +183,26 @@ final class LibraryArtworkWireTests: XCTestCase {
         XCTAssertEqual(try control(warming).libraryArtworkChunk(cursor: "c"), .refused(.warming(retryAfter: 2.5)))
         let hintless = Wire(refusal("warming"))
         XCTAssertEqual(try control(hintless).libraryArtworkChunk(cursor: "c"), .refused(.warming(retryAfter: 1.0)))
+    }
+
+    func testARenderTimeoutRetainsItsRetryHintAsReceived() throws {
+        func decoded(_ extra: String, chunkRequest: Bool = false) throws -> LibraryArtworkReply {
+            let wire = Wire(refusal("render_timeout", extra: extra))
+            return chunkRequest ? try control(wire).libraryArtworkChunk(cursor: "c")
+                : try control(wire).libraryArtwork(kind: .album, id: "1", generation: 7,
+                                                   libraryInstance: Self.instance, px: 512)
+        }
+        XCTAssertEqual(try decoded(#","retry_after":30"#), .refused(.renderTimeout(retryAfter: 30)))
+        XCTAssertEqual(try decoded(#","retry_after":12.5"#), .refused(.renderTimeout(retryAfter: 12.5)))
+        XCTAssertEqual(try decoded(#","retry_after":600"#, chunkRequest: true),
+                       .refused(.renderTimeout(retryAfter: 600)))
+        // Absent (an older SpanDAC), null, or not a number: no hint. Never an error.
+        XCTAssertEqual(try decoded(""), .refused(.renderTimeout(retryAfter: nil)))
+        XCTAssertEqual(try decoded(#","retry_after":null"#), .refused(.renderTimeout(retryAfter: nil)))
+        XCTAssertEqual(try decoded(#","retry_after":"soon""#), .refused(.renderTimeout(retryAfter: nil)))
+        XCTAssertEqual(try decoded(#","retry_after":[30]"#), .refused(.renderTimeout(retryAfter: nil)))
+        // Out-of-range values are kept as sent; the fetcher is where they are judged.
+        XCTAssertEqual(try decoded(#","retry_after":-4"#), .refused(.renderTimeout(retryAfter: -4)))
     }
 
     func testATransportFailureIsRethrownNotRefused() {

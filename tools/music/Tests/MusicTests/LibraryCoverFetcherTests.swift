@@ -56,6 +56,9 @@ final class LibraryCoverFetcherTests: XCTestCase {
         var covers: [String: Data] = [:]
         /// Consumed first, one per first request, before any cover is served.
         var firstReplies: [LibraryArtworkReply] = []
+        /// Called inside every first request, before it is answered: a test cancels or
+        /// moves the focus here, so the reply arrives late.
+        var onFirst: (() -> Void)?
         /// Called with the chunk index before a later chunk is answered.
         var onChunk: ((Int) -> Void)?
         /// Replaces the answer for a chunk index when it returns non-nil.
@@ -84,6 +87,7 @@ final class LibraryCoverFetcherTests: XCTestCase {
             let request = LibraryArtworkRequest(kind: kind, id: id, generation: generation,
                                                 libraryInstance: libraryInstance, px: px)
             firstRequests.append(request)
+            onFirst?()
             if !firstReplies.isEmpty { return firstReplies.removeFirst() }
             if let serverGeneration, generation != serverGeneration { return .refused(.staleGeneration) }
             guard let data = covers["\(kind.rawValue)|\(id)|\(generation)"] ?? covers["\(kind.rawValue)|\(id)"] else {
@@ -621,7 +625,7 @@ final class LibraryCoverFetcherTests: XCTestCase {
 
     func testTimeoutBacksOffThenRetries() {
         let h = served()
-        h.spandac.firstReplies = [.refused(.renderTimeout)]
+        h.spandac.firstReplies = [.refused(.renderTimeout(retryAfter: nil))]
         let a = album()
         h.rest(a)
         XCTAssertNil(h.fetcher.cover(for: a))
@@ -629,6 +633,156 @@ final class LibraryCoverFetcherTests: XCTestCase {
         XCTAssertEqual(h.spandac.firstRequests.count, 1)
         h.tick(30.0, a)
         XCTAssertEqual(h.spandac.firstRequests.count, 2)
+        XCTAssertNotNil(h.fetcher.cover(for: a))
+    }
+
+    // MARK: render_timeout
+
+    func testARenderTimeoutHintSchedulesTheRetryAndNothingIsAskedBeforeIt() {
+        let h = served()
+        h.spandac.firstReplies = [.refused(.renderTimeout(retryAfter: 120))]
+        let a = album()
+        h.rest(a)
+        XCTAssertNil(h.fetcher.cover(for: a))
+        h.ticks(from: 0.1, to: 119.9, a)
+        XCTAssertEqual(h.spandac.firstRequests.count, 1, "the generic 30 s backoff does not apply")
+        h.tick(120.0, a)
+        XCTAssertEqual(h.spandac.firstRequests.count, 2)
+        XCTAssertNotNil(h.fetcher.cover(for: a))
+    }
+
+    func testARenderTimeoutWithoutAHintKeepsTheThirtySecondBackoff() {
+        let h = served()
+        h.spandac.firstReplies = [.refused(.renderTimeout(retryAfter: nil))]
+        let a = album()
+        h.rest(a)
+        h.ticks(from: 0.1, to: 29.9, a)
+        XCTAssertEqual(h.spandac.firstRequests.count, 1)
+        h.tick(30.0, a)
+        XCTAssertEqual(h.spandac.firstRequests.count, 2)
+    }
+
+    func testAnUnusableOrExtremeHintIsDefaultedOrClamped() {
+        let ceiling = LibraryCoverFetcher.renderTimeoutBackoffRange.upperBound
+        let floor = LibraryCoverFetcher.renderTimeoutBackoffRange.lowerBound
+        XCTAssertEqual(floor, 1)
+        XCTAssertEqual(ceiling, 900)
+        let thirty = LibraryCoverFetcher.transientBackoff
+        for bad in [0, -5, Double.nan, .infinity, -.infinity] as [Double] {
+            XCTAssertEqual(LibraryCoverFetcher.renderTimeoutBackoff(hint: bad), thirty, "\(bad)")
+        }
+        XCTAssertEqual(LibraryCoverFetcher.renderTimeoutBackoff(hint: nil), thirty)
+        XCTAssertEqual(LibraryCoverFetcher.renderTimeoutBackoff(hint: 0.2), floor)
+        XCTAssertEqual(LibraryCoverFetcher.renderTimeoutBackoff(hint: 600), 600)
+        XCTAssertEqual(LibraryCoverFetcher.renderTimeoutBackoff(hint: 1_000_000), ceiling)
+    }
+
+    func testAMalformedHintOnTheFetcherFallsBackToThirtySeconds() {
+        let h = served()
+        h.spandac.firstReplies = [.refused(.renderTimeout(retryAfter: -1))]
+        let a = album()
+        h.rest(a)
+        h.ticks(from: 0.1, to: 29.9, a)
+        XCTAssertEqual(h.spandac.firstRequests.count, 1)
+        h.tick(30.0, a)
+        XCTAssertEqual(h.spandac.firstRequests.count, 2)
+    }
+
+    func testAnOversizeHintIsClampedAtFifteenMinutes() {
+        let h = served()
+        h.spandac.firstReplies = [.refused(.renderTimeout(retryAfter: 86_400))]
+        let a = album()
+        h.rest(a)
+        h.ticks(from: 1, to: 899, a, each: nil)
+        XCTAssertEqual(h.spandac.firstRequests.count, 1)
+        h.tick(900, a)
+        XCTAssertEqual(h.spandac.firstRequests.count, 2)
+    }
+
+    func testFocusAwayAndBackKeepsTheRenderTimeoutCooldown() {
+        let h = served()
+        h.spandac.covers["album|other"] = Self.payload(500)
+        h.spandac.firstReplies = [.refused(.renderTimeout(retryAfter: 60))]
+        let a = album()
+        let b = album("other")
+        h.rest(a)
+        XCTAssertEqual(h.spandac.firstRequests.map(\.id), [Self.albumID])
+        h.rest(b, at: 10)
+        XCTAssertEqual(h.spandac.firstRequests.map(\.id), [Self.albumID, "other"])
+        h.rest(a, at: 20)
+        XCTAssertEqual(h.spandac.firstRequests.count, 2, "returning to the row does not ask again early")
+        h.rest(b, at: 30)
+        h.rest(a, at: 59.9)
+        XCTAssertEqual(h.spandac.firstRequests.count, 2)
+        h.rest(a, at: 60)
+        XCTAssertEqual(h.spandac.firstRequests.map(\.id), [Self.albumID, "other", Self.albumID])
+        XCTAssertNotNil(h.fetcher.cover(for: a))
+    }
+
+    func testARenderTimeoutIsOnlyForThatGeneration() {
+        let h = served()
+        h.spandac.firstReplies = [.refused(.renderTimeout(retryAfter: 600))]
+        let gen2 = album(generation: 2)
+        h.rest(gen2)
+        XCTAssertEqual(h.spandac.firstRequests.map(\.generation), [2])
+        let gen3 = album(generation: 3)
+        h.rest(gen3, at: 1)
+        XCTAssertEqual(h.spandac.firstRequests.map(\.generation), [2, 3], "a new generation is another key")
+        XCTAssertNotNil(h.fetcher.cover(for: gen3))
+    }
+
+    func testARenderTimeoutIsNeverANegativeAndKeepsTheInterimCover() {
+        let h = served()
+        h.spandac.covers["album|\(Self.albumID)|1"] = Self.payload(800, seed: 1)
+        let gen1 = album(generation: 1)
+        h.rest(gen1)
+        XCTAssertNotNil(h.fetcher.cover(for: gen1))
+
+        h.spandac.firstReplies = [.refused(.renderTimeout(retryAfter: 600))]
+        let gen2 = album(generation: 2)
+        h.rest(gen2, at: 1)
+        XCTAssertEqual(h.spandac.firstRequests.map(\.generation), [1, 2])
+        XCTAssertEqual(h.fetcher.cover(for: gen2)?.key, h.key(gen1),
+                       "unlike a negative, a render timeout leaves the earlier generation's cover showing")
+    }
+
+    func testARenderTimeoutNeverPoisonsArtworkStore() {
+        let h = served()
+        h.spandac.firstReplies = [.refused(.renderTimeout(retryAfter: 5))]
+        let store = ArtworkStore(cacheDir: h.dir,
+                                 fetch: { _ in XCTFail("an installed cover is never fetched"); return nil },
+                                 render: { _, _, _ in ["ART"] })
+        let a = album()
+        h.rest(a)
+        XCTAssertNil(h.fetcher.cover(for: a))
+        h.ticks(from: 0.1, to: 5, a)
+        guard let cover = h.fetcher.cover(for: a) else { return XCTFail("installed after the hinted wait") }
+        let ready = expectation(description: "rendered")
+        XCTAssertNil(store.lines(key: cover.key, url: cover.url, width: 8, height: 4) { ready.fulfill() })
+        wait(for: [ready], timeout: 2)
+        XCTAssertEqual(store.lines(key: cover.key, url: cover.url, width: 8, height: 4) { }, ["ART"])
+    }
+
+    func testACancelledLateRenderTimeoutAffectsNeitherTheNewTargetNorItsBackoff() {
+        let h = served()
+        h.spandac.covers["album|other"] = Self.payload(500)
+        let a = album()
+        let b = album("other")
+        h.spandac.firstReplies = [.refused(.renderTimeout(retryAfter: 600))]
+        // The tab changes while the request is out: its reply arrives after the cancel.
+        h.spandac.onFirst = {
+            h.spandac.onFirst = nil
+            h.fetcher.observeShell(active: .playlists, dataEpoch: 0)
+        }
+        h.rest(a)
+        XCTAssertEqual(h.spandac.firstRequests.map(\.id), [Self.albumID])
+        h.fetcher.observeShell(active: .library, dataEpoch: 0)
+
+        h.rest(b, at: 1)
+        XCTAssertNotNil(h.fetcher.cover(for: b), "the new target is unaffected")
+        h.rest(a, at: 2)
+        XCTAssertEqual(h.spandac.firstRequests.map(\.id), [Self.albumID, "other", Self.albumID],
+                       "the discarded reply left no 600 s backoff on its own key")
         XCTAssertNotNil(h.fetcher.cover(for: a))
     }
 
