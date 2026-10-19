@@ -374,6 +374,8 @@ final class LibraryScene: Scene {
 
     /// Which of artists / albums / songs is showing, for tests.
     var subViewForTest: LibrarySubView { nav.subView }
+    /// The drill level the scene is at, for tests.
+    var levelForTest: LibraryLevel { nav.current }
     /// The Albums list's own feed and its automatic re-read's retry record, for tests:
     /// no key in this scene asks for a person's refresh of Albums, so a test stands in
     /// for one by calling `albumsFeed.refresh` the way `PlaylistsScene`'s `r` does.
@@ -2118,7 +2120,11 @@ final class LibraryScene: Scene {
             // restarts only that list's own feed — never the shared budget
             // `loads` owns, which is Music.app's alone.
             if albumsSource == .bridge, isAlbumList, bridgeAlbumsFailure != nil {
+                // The feed's reset drops an outstanding automatic re-read's ending, so its
+                // claim goes with it (as `resetAlbumsList` pairs them), or recovery would
+                // wait out the lost-outcome bound.
                 albumsFeed.reset()
+                albumsReread.reset()
                 albumsFetchStarted = false
                 albumsDone = false
                 bridgeAlbumsFailure = nil

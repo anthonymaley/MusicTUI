@@ -985,6 +985,55 @@ final class BridgeLibraryCoversSceneTests: XCTestCase {
         XCTAssertEqual(quietCount(rig, op: op, from: 2, to: 700), 3, "the takeover left a re-read to do")
     }
 
+    // MARK: - a person's r after a failed Albums walk, with an automatic re-read outstanding
+
+    /// A person's `r` on a failed Albums list resets the feed, and the reset drops the
+    /// outstanding automatic re-read's ending (its `end` never comes), so the scene must hand
+    /// that re-read's claim back in the same step. Page 1 of the walk lands under A, page 2
+    /// fails (the rows and A stay, the failure is level state); readiness names B, so the
+    /// scene starts a re-read, held before it posts; the real `r` key resets and starts a
+    /// fresh load; the fresh load fails before any rows; the old read is let go and its result
+    /// and ending are dropped. The claim must not be left standing until the lost-outcome
+    /// bound: the next tick reads the list again and the B rows land.
+    func testAPersonsRAfterAFailedWalkReleasesTheOutstandingAutomaticRereadsClaim() {
+        let op = "slice.libraryAlbums"
+        let pageOne = albumsPage(["al1", "al2"], generation: 1, instance: Self.instanceA)
+            .replacingOccurrences(of: "\"next_cursor\":null", with: "\"next_cursor\":\"c1\"")
+        let wire = BridgeLibraryReadsWire([op: [
+            pageOne,                                                                      // 0: the walk's page 1, under A
+            Self.badReply(op),                                                            // 1: page 2 fails
+            albumsPage(["alOLD", "al1"], generation: 2, instance: Self.instanceB),        // 2: the automatic re-read (held)
+            Self.badReply(op),                                                            // 3: the fresh load after r fails before rows
+            albumsPage(["alNEW", "al1", "al2"], generation: 2, instance: Self.instanceB)]])   // 4: the re-read that must follow
+        wire.gate(op: op, at: 2)
+        let rig = Rig(wire: wire)
+        goToSubView(rig.scene, .albums)
+        XCTAssertTrue(settleScene(rig.scene) { wire.sent(op).count >= 2 && wire.threadEnded(op: op, at: 1) },
+                      "the walk never failed on its second page")
+        _ = rig.tick(at: 0, snapshot: idle)
+        XCTAssertTrue(rig.scene.render(frame: frame, snapshot: idle).contains("In Rainbows al1"),
+                      "the first page's rows did not stay on screen")
+        restartSpanDAC(rig)
+        _ = rig.tick(at: 0.3, snapshot: idle)   // readiness names B, the list is under A: the scene reads again
+        XCTAssertTrue(settleScene(rig.scene) { wire.reached(op: op, at: 2) }, "the automatic re-read never began")
+
+        _ = rig.scene.handle(.char("r"))        // the real key; the fresh load asks for page 1 again
+        XCTAssertTrue(settleScene(rig.scene) { wire.sent(op).count >= 4 && wire.threadEnded(op: op, at: 3) },
+                      "r did not start a fresh load")
+        wire.release(op: op, at: 2)             // the old read wakes up: its post and ending are dropped
+        XCTAssertTrue(settleScene(rig.scene) { wire.threadEnded(op: op, at: 2) }, "the held read never ended")
+        XCTAssertFalse(rig.scene.render(frame: frame, snapshot: idle).contains("alOLD"), "the superseded read's rows landed")
+
+        // The claim was handed back with the reset: the next ticks read again. Left standing it
+        // would hold for the 700 s bound, which these fake seconds never reach.
+        var t = 1.0
+        let landed = settleScene(rig.scene, seconds: 5) {
+            _ = rig.tick(at: t, snapshot: self.idle); t += 1
+            return wire.sent(op).count >= 5 && rig.scene.render(frame: self.frame, snapshot: self.idle).contains("In Rainbows alNEW")
+        }
+        XCTAssertTrue(landed, "the re-read never came: the superseded read's claim was left standing (\(wire.sent(op).count) requests)")
+    }
+
     // MARK: - one walk at a time on a cold start
 
     /// A SpanDAC with state of its own for `slice.libraryAlbums`: it serves two pages

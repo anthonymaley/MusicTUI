@@ -461,6 +461,57 @@ final class BridgePlaylistsCoversSceneTests: XCTestCase {
         XCTAssertEqual(rig.wire.sent("slice.libraryRefresh").count, 1)
     }
 
+    /// A person's `r` on a failed Playlists list resets the feed, and the reset drops the
+    /// outstanding automatic re-read's ending, so the scene must hand that re-read's claim
+    /// back in the same step. The window is narrow but real: the walk's last page fails
+    /// between the tick's drain and its re-read check, so the re-read starts on a list whose
+    /// failure the scene has not seen yet (the readiness answer, read inline between the two,
+    /// is where the test lets the walk fail). The re-read is held before it posts; the real
+    /// `r` key resets and starts a fresh load, which lands the list again under the OLD
+    /// instance; the old read is let go and its result and ending are dropped. The claim must
+    /// not stand until the lost-outcome bound: the next tick reads again and the B rows land.
+    func testRAfterAFailedWalkReleasesTheOutstandingAutomaticRereadsClaim() {
+        let op = "slice.libraryPlaylists"
+        let rig = Rig(pages: [
+            page(generation: 3, instance: Self.instanceA)
+                .replacingOccurrences(of: "\"next_cursor\":null", with: "\"next_cursor\":\"c1\""),   // 0: page 1, under A
+            Self.badReply,                                                                          // 1: page 2 fails (held)
+            page(generation: 4, instance: Self.instanceB, leading: "Old Mix"),                      // 2: the automatic re-read (held)
+            page(generation: 3, instance: Self.instanceA),                                          // 3: the fresh load, still under A
+            page(generation: 4, instance: Self.instanceB, leading: "Aardvark Mix")])                // 4: the re-read that must follow
+        let wire = rig.wire
+        wire.gate(op: op, at: 1)
+        wire.gate(op: op, at: 2)
+        var failedInsideTick = false
+        rig.spandac.readiness = {
+            if !failedInsideTick {
+                failedInsideTick = true
+                wire.release(op: op, at: 1)                  // page 2 fails now: after the tick's drain, before its re-read check
+                let deadline = Date().addingTimeInterval(5)
+                while !wire.threadEnded(op: op, at: 1) && Date() < deadline { usleep(1_000) }
+            }
+            return LibraryArtworkReadiness(supported: true, instance: Self.instanceB)
+        }
+        settleRows(rig)
+        tick(rig, at: 0.25)   // the rest ends, readiness is read, the walk fails, the scene re-reads
+        XCTAssertTrue(wire.threadEnded(op: op, at: 1), "page 2 never failed")
+        XCTAssertTrue(settleScene(rig.scene) { wire.reached(op: op, at: 2) }, "the automatic re-read never began")
+
+        _ = rig.scene.handle(.char("r"))   // the failure is showing by now: the person retries
+        XCTAssertTrue(settleScene(rig.scene) { wire.sent(op).count >= 4 && wire.threadEnded(op: op, at: 3) },
+                      "r did not start a fresh load")
+        wire.release(op: op, at: 2)        // the old read wakes up: its post and ending are dropped
+        XCTAssertTrue(settleScene(rig.scene) { wire.threadEnded(op: op, at: 2) }, "the held read never ended")
+        XCTAssertFalse(rig.scene.render(frame: frame, snapshot: idle).contains("Old Mix"), "the superseded read's rows landed")
+
+        var t = 1.0
+        let landed = settleScene(rig.scene, seconds: 5) {
+            self.tick(rig, at: t); t += 1
+            return wire.sent(op).count >= 5 && rig.scene.render(frame: self.frame, snapshot: self.idle).contains("Aardvark Mix")
+        }
+        XCTAssertTrue(landed, "the re-read never came: the superseded read's claim was left standing (\(wire.sent(op).count) requests)")
+    }
+
     func testTheCursorStaysOnTheSamePlaylistAcrossTheRestartReread() {
         let rig = Rig(pages: [page(generation: 3, instance: Self.instanceA),
                               page(generation: 4, instance: Self.instanceB, leading: "Aardvark Mix")])

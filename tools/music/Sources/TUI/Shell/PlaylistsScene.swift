@@ -1435,7 +1435,11 @@ final class PlaylistsScene: Scene {
         // background refresh (which has no such key at all). Otherwise `r`
         // does nothing, as today (falls to `default`).
         case .char("r") where railSource == .bridge && focus == .playlists && bridgeFailure != nil:
+            // The feed's reset drops an outstanding automatic re-read's ending, so its claim
+            // goes with it (as the provenance reset pairs them), or a re-read the fresh load
+            // leaves due would wait out the lost-outcome bound.
             playlistsFeed.reset()
+            playlistsReread.reset()
             bridgeFailure = nil
             bridgeDone = false
             playlistsFeed.start()
