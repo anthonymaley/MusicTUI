@@ -58,6 +58,39 @@ final class LibraryNavTests: XCTestCase {
         XCTAssertEqual(s.current, .albumList)
     }
 
+    func testBackRestoresTheCursorOfTheRowThatWasOpened() {
+        var s = albumsNav
+        s.cursor = 3
+        (s, _) = libraryReduce(s, .enter, itemCount: 5, selection: albumSel)
+        XCTAssertEqual(s.cursor, 0, "the track list starts on its first row")
+        (s, _) = libraryReduce(s, .down, itemCount: 10, selection: nil)
+        (s, _) = libraryReduce(s, .back, itemCount: 5, selection: nil)
+        XCTAssertEqual(s.current, .albumList)
+        XCTAssertEqual(s.cursor, 3)
+    }
+
+    func testBackRestoresEachLevelOfArtistToAlbumToTracks() {
+        var s = LibraryNav.initial
+        s.cursor = 4
+        (s, _) = libraryReduce(s, .enter, itemCount: 9, selection: LibrarySelection(id: "ar", primary: "Radiohead", secondary: ""))
+        s.cursor = 2
+        (s, _) = libraryReduce(s, .enter, itemCount: 5, selection: albumSel)
+        (s, _) = libraryReduce(s, .back, itemCount: 5, selection: nil)
+        XCTAssertEqual(s.cursor, 2, "the artist's album list returns to the album that was opened")
+        (s, _) = libraryReduce(s, .back, itemCount: 9, selection: nil)
+        XCTAssertEqual(s.current, .artistList)
+        XCTAssertEqual(s.cursor, 4)
+    }
+
+    func testSwitchingSubViewForgetsTheRememberedRows() {
+        var s = albumsNav
+        s.cursor = 3
+        (s, _) = libraryReduce(s, .enter, itemCount: 5, selection: albumSel)
+        (s, _) = libraryReduce(s, .switchNext, itemCount: 0, selection: nil)
+        XCTAssertEqual(s.stack.count, 1)
+        XCTAssertTrue(s.returnCursors.isEmpty)
+    }
+
     func testPlayOnAlbumListEmitsAlbumPlay() {
         let (_, action) = libraryReduce(albumsNav, .play, itemCount: 2, selection: albumSel)
         XCTAssertEqual(action, .play(.album(id: "l.aaa", title: "Kid A", artist: "Radiohead")))

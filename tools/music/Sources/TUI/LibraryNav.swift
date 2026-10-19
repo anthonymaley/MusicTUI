@@ -42,6 +42,10 @@ struct LibraryNav: Equatable {
     var subView: LibrarySubView
     var stack: [LibraryLevel]   // stack.last == current level
     var cursor: Int
+    /// The cursor each level above `stack.last` had when it was drilled into, so
+    /// Back lands on the row that was opened rather than row 0. Parallel to
+    /// `stack.dropLast()`.
+    var returnCursors: [Int] = []
 
     static let initial = LibraryNav(subView: .artists, stack: [.artistList], cursor: 0)
     var current: LibraryLevel { stack.last! }
@@ -68,11 +72,15 @@ func libraryReduce(_ state: LibraryNav, _ key: LibraryKey,
         let next = key == .switchNext ? (idx + 1) % all.count : (idx - 1 + all.count) % all.count
         s.subView = all[next]
         s.stack = [LibraryNav.root(for: s.subView)]
+        s.returnCursors = []
         s.cursor = 0
         return (s, .none)
 
     case .back:
-        if s.stack.count > 1 { s.stack.removeLast(); s.cursor = 0 }
+        if s.stack.count > 1 {
+            s.stack.removeLast()
+            s.cursor = s.returnCursors.popLast() ?? 0
+        }
         return (s, .none)
 
     case .enter:
@@ -80,10 +88,12 @@ func libraryReduce(_ state: LibraryNav, _ key: LibraryKey,
         switch s.current {
         case .albumList, .artistAlbums:
             s.stack.append(.tracks(albumID: sel.id, albumTitle: sel.primary, artist: sel.secondary))
+            s.returnCursors.append(s.cursor)
             s.cursor = 0
             return (s, .fetchAlbumTracks(albumID: sel.id, albumTitle: sel.primary, artist: sel.secondary))
         case .artistList:
             s.stack.append(.artistAlbums(artistID: sel.id, artistName: sel.primary))
+            s.returnCursors.append(s.cursor)
             s.cursor = 0
             return (s, .fetchArtistAlbums(artistID: sel.id, artistName: sel.primary))
         case .songList:

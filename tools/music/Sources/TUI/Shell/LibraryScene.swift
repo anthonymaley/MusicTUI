@@ -321,6 +321,11 @@ final class LibraryScene: Scene {
     /// Which of artists / albums / songs is showing, for tests.
     var subViewForTest: LibrarySubView { nav.subView }
     private var trackScroll = 0
+    /// One entry per drilled level, parallel to `nav.returnCursors`: what Back
+    /// puts on screen again (the scroll, and the id when the cursor index was
+    /// into a filtered list).
+    private struct DrillReturn { let id: String?; let scroll: Int; let filtered: Bool }
+    private var drillReturns: [DrillReturn] = []
 
     // One track cache keyed by album id, shared by the right-pane preview (album
     // level) and the drilled-in tracks level. Because render always reads the
@@ -1436,6 +1441,7 @@ final class LibraryScene: Scene {
     /// to mean.
     private func returnToRoot(_ sub: LibrarySubView) {
         nav = LibraryNav(subView: sub, stack: [LibraryNav.root(for: sub)], cursor: 0)
+        drillReturns = []
         railScroll = 0
         trackScroll = 0
         filter = ""
@@ -1996,11 +2002,26 @@ final class LibraryScene: Scene {
         let (newNav, action) = libraryReduce(nav, libKey, itemCount: count, selection: sel)
         let subViewChanged = newNav.subView != nav.subView
         let levelChanged = newNav.stack != nav.stack
+        let drilled = newNav.stack.count > nav.stack.count
+        let backed = !subViewChanged && newNav.stack.count < nav.stack.count
+        // What Back restores: the opened row's id and scroll. The reducer's
+        // saved cursor indexes the rows as filtered at drill time, and the
+        // filter is cleared below, so a filtered drill is restored by id.
+        if drilled { drillReturns.append(DrillReturn(id: sel?.id, scroll: railScroll, filtered: !filter.isEmpty)) }
+        let returned = backed ? drillReturns.popLast() : nil
+        if subViewChanged { drillReturns = [] }
         nav = newNav
         // Clear the filter on a level change too (drill/back), not just a sub-view
         // switch: a leftover artist-name query would otherwise narrow the drilled
         // artist's ALBUMS wrongly and keep painting a stale /query line.
         if subViewChanged || levelChanged { filter = ""; railScroll = 0; trackScroll = 0 }
+        if let returned {
+            if returned.filtered {
+                if let id = returned.id, let pos = rowPosition(ofID: id) { nav.cursor = pos }
+            } else {
+                railScroll = returned.scroll
+            }
+        }
 
         execute(action)
         switch action {
@@ -2677,6 +2698,15 @@ final class LibraryScene: Scene {
             // ignores the selection's contents at this level, but its Enter path
             // still guards on selection != nil — so hand back the album identity.
             return LibrarySelection(id: albumID, primary: albumTitle, secondary: artist)
+        }
+    }
+
+    /// Where the album or artist `id` sits in the rows now showing, nil when it is gone.
+    private func rowPosition(ofID id: String) -> Int? {
+        switch nav.current {
+        case .albumList, .artistAlbums: return visibleAlbumIndices().firstIndex { currentAlbums[$0].id == id }
+        case .artistList: return visibleArtistIndices().firstIndex { artists[$0].id == id }
+        default: return nil
         }
     }
 
