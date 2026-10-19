@@ -42,6 +42,10 @@ final class BridgeLibraryReadsWire {
     /// The thread that served each request, so a test can tell when the walk or
     /// fetch behind it has ENDED rather than guessing with a sleep.
     private var threads: [String: [Int: Thread]] = [:]
+    /// Requests of an op being served at this moment, and the most there ever
+    /// were at once: the measure of how many reads a scene had in flight.
+    private var inFlight: [String: Int] = [:]
+    private var peaks: [String: Int] = [:]
     /// When true, `slice.status` is a poll rather than a one-shot: once scripted,
     /// its last reply keeps answering. A scene play now reads the status for
     /// SpanDAC's capabilities before it sends anything, so a scene test that
@@ -98,8 +102,11 @@ final class BridgeLibraryReadsWire {
             : (op == "slice.status" && stickyStatus ? (replies.last ?? Self.unscripted(op)) : Self.unscripted(op))
         let gate = gates[op]?[n]
         threads[op, default: [:]][n] = Thread.current
+        inFlight[op, default: 0] += 1
+        peaks[op] = max(peaks[op] ?? 0, inFlight[op] ?? 0)
         lock.unlock()
         _ = gate?.wait(timeout: .now() + 5)
+        lock.lock(); inFlight[op, default: 1] -= 1; lock.unlock()
         return reply
     }
 
@@ -108,6 +115,9 @@ final class BridgeLibraryReadsWire {
         {"ok":false,"op":"\(op)","error":{"kind":"bad_request","detail":"unscripted \(op)"}}
         """
     }
+
+    /// The most requests of `op` that were ever being served at the same time.
+    func peakConcurrent(_ op: String) -> Int { lock.lock(); defer { lock.unlock() }; return peaks[op] ?? 0 }
 
     func sent(_ op: String) -> [[String: Any]] {
         lock.lock(); defer { lock.unlock() }
@@ -184,7 +194,8 @@ func libraryTestScene(flag: BridgeSelectedFlag, wire: BridgeLibraryReadsWire,
                       spy: LibraryAppleScriptSpy, status: StatusStore = StatusStore(),
                       warmUpSleep: @escaping (TimeInterval) -> Void = { _ in },
                       routing given: RoutingCoordinator? = nil,
-                      now: @escaping () -> Date = { Date() }) -> LibraryScene {
+                      now: @escaping () -> Date = { Date() },
+                      screenWidth: @escaping () -> Int = { ScreenFrame.current().width }) -> LibraryScene {
     let store = PlaybackModeStore(path: NSTemporaryDirectory() + "mode-\(UUID().uuidString).json")
     store.set(.source)
     let routing = given ?? RoutingCoordinator(store: store, surface: .tui,
@@ -201,7 +212,8 @@ func libraryTestScene(flag: BridgeSelectedFlag, wire: BridgeLibraryReadsWire,
                         warmUpSleep: warmUpSleep,
                         // Never the real ~/.config/music/artist-tiers.json (C2 isolation).
                         resultCache: temporaryResultCache().cache,
-                        now: now)
+                        now: now,
+                        screenWidth: screenWidth)
 }
 
 /// `[` / `]` cycles Artists → Albums → Songs; lands on `sub` from wherever

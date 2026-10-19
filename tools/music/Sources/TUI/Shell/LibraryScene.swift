@@ -257,6 +257,59 @@ final class LibraryScene: Scene {
     private enum AlbumRailEpochSource { case albums, artists }
     private var bridgeTracksInbox:
         [(albumID: String, epochSource: AlbumRailEpochSource, epoch: Int, result: BridgeTracksOutcome)] = []
+
+    // Bridge tracks preview: one read in flight, latest wins, Enter first.
+    //
+    // SpanDAC serves MusicKit album-membership reads one at a time (4 at once
+    // took 5.8 s each against 1.5 s for one; measured 2026-10-19), so a read per
+    // focused album made scrolling past N albums queue N reads and an Enter
+    // wait behind all of them. Now the preview only reads an album the cursor
+    // has RESTED on (`bridgePreviewRest`), through ONE serial queue, and a
+    // queued read whose album is no longer the wanted one is dropped when it
+    // reaches the front. An Enter (`kickTrackFetch(explicit: true)`) reuses the
+    // read in flight for its album or takes a queued one over and sends it on
+    // its own thread, so it is never behind a stale preview read the client
+    // can still stop (one already out cannot be cancelled in SpanDAC).
+    static let bridgePreviewRest: TimeInterval = 0.25
+    /// Main thread only: the album the cursor is on and since when.
+    private var bridgePreviewRestOn: (id: String, since: Date)? = nil
+    private let bridgePreviewQueue = DispatchQueue(label: "music.library.bridge-preview")
+    private struct BridgePreviewWant: Equatable {
+        let albumID: String
+        let source: AlbumRailEpochSource
+        let epoch: Int
+    }
+    /// What the preview wants read right now (nil: nothing), under `inboxLock`.
+    private var bridgePreviewWanted: BridgePreviewWant? = nil
+    /// Albums whose queued preview read was dropped unsent (under `inboxLock`),
+    /// drained in tick so `previewInFlight` is cleared and the album can be
+    /// previewed again if the cursor comes back.
+    private var bridgeTracksDropped: [(albumID: String, job: BridgeTrackJob)] = []
+    /// One per kicked Bridge album read, main thread only; its state decides
+    /// who sends the read (the preview queue or an Enter).
+    private var bridgeTrackJobs: [String: BridgeTrackJob] = [:]
+
+    private final class BridgeTrackJob {
+        enum State { case queued, running, dropped }
+        private let lock = NSLock()
+        private var state: State = .queued
+        var current: State { lock.lock(); defer { lock.unlock() }; return state }
+        /// The preview queue reached it: send it, unless it is no longer wanted.
+        func startFromQueue(wanted: Bool) -> Bool {
+            lock.lock(); defer { lock.unlock() }
+            guard state == .queued else { return false }
+            state = wanted ? .running : .dropped
+            return wanted
+        }
+        /// An Enter wants it now: true when the caller must send it (it was
+        /// still queued, or dropped), false when a read for it is already out.
+        func takeOver() -> Bool {
+            lock.lock(); defer { lock.unlock() }
+            guard state != .running else { return false }
+            state = .running
+            return true
+        }
+    }
     /// Albums whose CACHED tracks came back flagged stale/refreshing (main
     /// thread only). One of them is asked for again only while it is the album
     /// the person is looking at (`syncTracksReask`).
@@ -499,6 +552,9 @@ final class LibraryScene: Scene {
     /// The clock the tab-is-live heartbeat reads; a seam so a test can "leave
     /// the tab" without waiting.
     private let now: () -> Date
+    /// The terminal width the three-zone layout test reads in `tick`; a seam so
+    /// a test does not depend on the width of the terminal it happens to run in.
+    private let screenWidth: () -> Int
 
     /// The tier filter's SWR cache (`rememberArtistTiers` / `cachedArtistTiers`),
     /// Music.app's own — never fed from Bridge rows (see the `a` handler and
@@ -525,8 +581,10 @@ final class LibraryScene: Scene {
          handoff: MusicTUIHandoff = RefusingHandoff(),
          warmUpSleep: @escaping (TimeInterval) -> Void = { Thread.sleep(forTimeInterval: $0) },
          resultCache: ResultCache = ResultCache(),
-         now: @escaping () -> Date = { Date() }) {
+         now: @escaping () -> Date = { Date() },
+         screenWidth: @escaping () -> Int = { ScreenFrame.current().width }) {
         self.now = now
+        self.screenWidth = screenWidth
         self.libraryCovers = libraryCovers
         self.artwork = artwork
         self.resolveAlbum = resolveAlbum
@@ -1229,9 +1287,23 @@ final class LibraryScene: Scene {
     /// `.fetchAlbumTracks` (an explicit Enter/drill) clears the failure first,
     /// which is what "fetched again on the next Enter, not on every focus"
     /// means in practice.
-    private func kickTrackFetch(albumID: String, title: String, artist: String) {
-        guard trackCache[albumID] == nil, !previewInFlight.contains(albumID) else { return }
+    private func kickTrackFetch(albumID: String, title: String, artist: String, explicit: Bool = false) {
+        guard trackCache[albumID] == nil else { return }
         if currentAlbumSource == .bridge {
+            if previewInFlight.contains(albumID) {
+                // Already asked for. An Enter reuses a read that is out, and
+                // takes over one still waiting its turn (or dropped, with the
+                // notice not yet drained) rather than wait behind the queue.
+                guard explicit, let job = bridgeTrackJobs[albumID], job.takeOver(),
+                      let provider = makeProvider() else { return }
+                let (epochSource, epoch) = bridgeReadEpoch()
+                let sleep = warmUpSleep
+                Thread.detachNewThread { [weak self] in
+                    self?.runBridgeTrackRead(albumID: albumID, provider: provider, epochSource: epochSource,
+                                             epoch: epoch, sleep: sleep)
+                }
+                return
+            }
             guard bridgeTrackFailures[albumID] == nil else { return }
             guard let provider = makeProvider() else { return }   // output changed under us; do nothing
             previewInFlight.insert(albumID)
@@ -1242,31 +1314,39 @@ final class LibraryScene: Scene {
             // epoch), a result that lands after that rail's provenance has
             // moved on is dropped, even if the same album id is reopened
             // under the new output before it lands.
-            let epochSource: AlbumRailEpochSource = nav.subView == .artists ? .artists : .albums
-            let epoch = epochSource == .artists ? artistsSourceEpoch : albumsSourceEpoch
-            Thread.detachNewThread { [weak self] in
-                do {
-                    let list = try retryingWhileWarming(sleep: sleep) { try provider.albumTracks(albumID: albumID) }
-                    guard let self else { return }
-                    // Posted as it came; if flagged, the tick notes it and asks
-                    // again while this is the album being looked at
-                    // (`syncTracksReask`), since SpanDAC never pushes the
-                    // refreshed list.
-                    self.inboxLock.lock()
-                    self.bridgeTracksInbox.append((albumID, epochSource, epoch,
-                        .success(list.rows, listRev: list.listRev, flagged: LibraryReask.flagged(list))))
-                    self.inboxLock.unlock()
-                } catch {
-                    guard let self else { return }
-                    let sentence = (error as? MusicProviderError)?.errorDescription
-                        ?? "Couldn't read that album's tracks from SpanDAC."
-                    self.inboxLock.lock()
-                    self.bridgeTracksInbox.append((albumID, epochSource, epoch, .failure(sentence)))
-                    self.inboxLock.unlock()
+            let (epochSource, epoch) = bridgeReadEpoch()
+            let job = BridgeTrackJob()
+            bridgeTrackJobs[albumID] = job
+            if explicit {
+                _ = job.takeOver()
+                Thread.detachNewThread { [weak self] in
+                    self?.runBridgeTrackRead(albumID: albumID, provider: provider, epochSource: epochSource,
+                                             epoch: epoch, sleep: sleep)
                 }
+                return
+            }
+            let want = BridgePreviewWant(albumID: albumID, source: epochSource, epoch: epoch)
+            bridgePreviewQueue.async { [weak self] in
+                guard let self else { return }
+                self.inboxLock.lock()
+                let wanted = self.bridgePreviewWanted == want && self.tabIsLiveLocked()
+                self.inboxLock.unlock()
+                guard job.startFromQueue(wanted: wanted) else {
+                    // Dropped unsent (the cursor left it), or an Enter took it
+                    // over and is reading it.
+                    if job.current == .dropped {
+                        self.inboxLock.lock()
+                        self.bridgeTracksDropped.append((albumID, job))
+                        self.inboxLock.unlock()
+                    }
+                    return
+                }
+                self.runBridgeTrackRead(albumID: albumID, provider: provider, epochSource: epochSource,
+                                        epoch: epoch, sleep: sleep)
             }
             return
         }
+        guard !previewInFlight.contains(albumID) else { return }
         previewInFlight.insert(albumID)
         let sources = self.sources
         previewQueue.async { [weak self] in
@@ -1276,6 +1356,55 @@ final class LibraryScene: Scene {
             self.previewInbox.append((albumID, fetched))
             self.inboxLock.unlock()
         }
+    }
+
+    /// Which Bridge rail epoch the album read being kicked belongs to.
+    private func bridgeReadEpoch() -> (AlbumRailEpochSource, Int) {
+        let source: AlbumRailEpochSource = nav.subView == .artists ? .artists : .albums
+        return (source, source == .artists ? artistsSourceEpoch : albumsSourceEpoch)
+    }
+
+    /// The read itself, on whichever thread won the job: posts its outcome to
+    /// `bridgeTracksInbox` for tick to drain.
+    private func runBridgeTrackRead(albumID: String, provider: MusicDataProvider,
+                                    epochSource: AlbumRailEpochSource, epoch: Int,
+                                    sleep: @escaping (TimeInterval) -> Void) {
+        do {
+            let list = try retryingWhileWarming(sleep: sleep) { try provider.albumTracks(albumID: albumID) }
+            // Posted as it came; if flagged, the tick notes it and asks
+            // again while this is the album being looked at
+            // (`syncTracksReask`), since SpanDAC never pushes the
+            // refreshed list.
+            inboxLock.lock()
+            bridgeTracksInbox.append((albumID, epochSource, epoch,
+                .success(list.rows, listRev: list.listRev, flagged: LibraryReask.flagged(list))))
+            inboxLock.unlock()
+        } catch {
+            let sentence = (error as? MusicProviderError)?.errorDescription
+                ?? "Couldn't read that album's tracks from SpanDAC."
+            inboxLock.lock()
+            bridgeTracksInbox.append((albumID, epochSource, epoch, .failure(sentence)))
+            inboxLock.unlock()
+        }
+    }
+
+    /// Tick's Bridge preview kick for the focused album: say what is wanted,
+    /// and send the read only once the cursor has rested on the row.
+    private func syncBridgePreview(_ album: LibraryAlbum?) {
+        guard let a = album else { setBridgePreviewWanted(nil); return }
+        let (source, epoch) = bridgeReadEpoch()
+        setBridgePreviewWanted(BridgePreviewWant(albumID: a.id, source: source, epoch: epoch))
+        guard trackCache[a.id] == nil, !previewInFlight.contains(a.id), bridgeTrackFailures[a.id] == nil else { return }
+        let t = now()
+        if bridgePreviewRestOn?.id != a.id { bridgePreviewRestOn = (a.id, t) }
+        if let rest = bridgePreviewRestOn, t.timeIntervalSince(rest.since) >= Self.bridgePreviewRest {
+            kickTrackFetch(albumID: a.id, title: a.name, artist: a.artist)
+        }
+    }
+
+    private func setBridgePreviewWanted(_ want: BridgePreviewWant?) {
+        inboxLock.lock(); bridgePreviewWanted = want; inboxLock.unlock()
+        if want == nil { bridgePreviewRestOn = nil }
     }
 
     /// Kick a serial background run of the cover ladder for one album, unless
@@ -1441,6 +1570,8 @@ final class LibraryScene: Scene {
         libraryCovers?.cancelAll()
         trackCache = [:]
         previewInFlight = []
+        bridgeTrackJobs = [:]
+        bridgePreviewRestOn = nil
         coverCache = [:]
         coverInFlight = []
         bridgeTracks = [:]
@@ -1509,6 +1640,7 @@ final class LibraryScene: Scene {
         let landedExhausted = pendingExhausted
         let wantsRestart = restartRequested; restartRequested = false
         let landedBridgeTracks = bridgeTracksInbox; bridgeTracksInbox = []
+        let droppedPreviews = bridgeTracksDropped; bridgeTracksDropped = []
         inboxLock.unlock()
 
         // Mirror the shared load state so render and input never touch the
@@ -1752,8 +1884,16 @@ final class LibraryScene: Scene {
         // this album was waiting on is over, one way or the other, so a fresh
         // kick must be allowed), but the cache writes only happen for a
         // result whose provenance hasn't moved on since it was kicked.
+        for dropped in droppedPreviews {
+            // Only if the album's job is still the dropped one: an Enter may
+            // have taken it over, or a reset cleared it.
+            guard bridgeTrackJobs[dropped.albumID] === dropped.job, dropped.job.current == .dropped else { continue }
+            bridgeTrackJobs.removeValue(forKey: dropped.albumID)
+            previewInFlight.remove(dropped.albumID)
+        }
         for item in landedBridgeTracks {
             previewInFlight.remove(item.albumID)
+            bridgeTrackJobs.removeValue(forKey: item.albumID)
             let currentEpoch = item.epochSource == .artists ? artistsSourceEpoch : albumsSourceEpoch
             guard item.epoch == currentEpoch else { continue }   // obsolete output/list -> drop
             // A re-ask overwrites tracks already on screen: follow the selected
@@ -1799,10 +1939,16 @@ final class LibraryScene: Scene {
         // Lazily fetch the focused album's preview when the right pane is visible
         // (three-zone layout) — mirrors PlaylistsScene's preview kick in tick.
         // Covers both the Albums rail and an artist's albums rail (same layout).
-        if isAlbumRail,
-           playlistZones(width: ScreenFrame.current().width).mode == .three,
-           let a = focusedAlbum(), trackCache[a.id] == nil, !previewInFlight.contains(a.id) {
-            kickTrackFetch(albumID: a.id, title: a.name, artist: a.artist)
+        let previewShown = isAlbumRail && playlistZones(width: screenWidth()).mode == .three
+        if previewShown, currentAlbumSource == .bridge {
+            // Bridge: only a row the cursor has rested on, one read at a time
+            // (`bridgePreviewRest`).
+            syncBridgePreview(focusedAlbum())
+        } else {
+            setBridgePreviewWanted(nil)
+            if previewShown, let a = focusedAlbum(), trackCache[a.id] == nil, !previewInFlight.contains(a.id) {
+                kickTrackFetch(albumID: a.id, title: a.name, artist: a.artist)
+            }
         }
         // Cover ladder kick: after the preview kick so the tracklist lands
         // first on the shared serial previewQueue. The hero renders in every
@@ -2070,7 +2216,7 @@ final class LibraryScene: Scene {
             // Reuse the shared cache: if the preview already loaded it, this is a
             // no-op and the tracks level paints instantly; otherwise it kicks the
             // same serial fetch and the pane shows "loading…" until it lands.
-            kickTrackFetch(albumID: albumID, title: title, artist: artist)
+            kickTrackFetch(albumID: albumID, title: title, artist: artist, explicit: true)
         case .play(.album(let id, let title, let artist)):
             // Enter on a row in the album tracklist starts the queue AT that track
             // (nav.cursor is the track index there); elsewhere it's whole-album.
