@@ -71,7 +71,11 @@ enum LibraryArtworkRefusal: Equatable {
     case notInLibrary
     /// Generation-scoped definitive negative: MusicKit holds no cover for it.
     case noArtwork
-    case renderTimeout
+    /// The render reached SpanDAC's settle cap. `retryAfter` is SpanDAC's own estimate,
+    /// in seconds, of when asking again is worth it (its cooldown for this cover); nil
+    /// when the reply carried none, or a value that is not a number (an older SpanDAC
+    /// sends none). Kept as received: the fetcher validates and clamps it.
+    case renderTimeout(retryAfter: TimeInterval?)
     case renderFailed
     case busy
     case unlicensed
@@ -82,8 +86,8 @@ enum LibraryArtworkRefusal: Equatable {
     /// read as `unsupported_representation`, a kind from a newer SpanDAC).
     case other(String)
 
-    /// A missing `retry_after` still means "ask again", so a default stands in, as
-    /// it does for every other `warming`.
+    /// A missing `retry_after` still means "ask again", so a default stands in for
+    /// `warming`; for `render_timeout` it stays nil and the fetcher's own backoff applies.
     init(kind: String?, retryAfter: Double?) {
         switch kind {
         case "warming":          self = .warming(retryAfter: retryAfter ?? 1.0)
@@ -91,7 +95,7 @@ enum LibraryArtworkRefusal: Equatable {
         case "transfer_expired": self = .transferExpired
         case "not_in_library":   self = .notInLibrary
         case "no_artwork":       self = .noArtwork
-        case "render_timeout":   self = .renderTimeout
+        case "render_timeout":   self = .renderTimeout(retryAfter: retryAfter)
         case "render_failed":    self = .renderFailed
         case "busy":             self = .busy
         case spanDACLicenceRefusalKind: self = .unlicensed
@@ -104,7 +108,13 @@ enum LibraryArtworkRefusal: Equatable {
     /// The whole `ok:false` reply of a refused request.
     init(reply: [String: Any]) {
         let error = reply["error"] as? [String: Any]
-        self.init(kind: error?["kind"] as? String, retryAfter: error?["retry_after"] as? Double)
+        // JSON `true` and `false` arrive as NSNumber and would convert to 1.0 and 0.0:
+        // a boolean is no number of seconds, so it counts as no hint.
+        var retryAfter: Double?
+        if let number = error?["retry_after"] as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID() {
+            retryAfter = number.doubleValue
+        }
+        self.init(kind: error?["kind"] as? String, retryAfter: retryAfter)
     }
 }
 
