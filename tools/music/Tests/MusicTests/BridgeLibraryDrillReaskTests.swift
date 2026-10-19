@@ -403,12 +403,22 @@ final class BridgeLibraryDrillReaskScopeTests: XCTestCase {
                                           artistAlbums(["n"], stale: false)]])
         let clock = Clock(), ended = Counter()
         // The first wait outlasts the heartbeat window while the main thread
-        // is not ticking: a stall over 3 s.
-        let stalled = Counter()
+        // is not ticking: a stall over 3 s. The stall phase is tick-free: the
+        // test ticks only until the first wait is entered, then stops, moves
+        // the clock and releases the wait, so no tick can record the new time
+        // (a live heartbeat) before the stalled worker's currentness check, and
+        // no tick can resume the scene before the probe count is read.
+        let waits = Counter(), entered = Counter()
+        let release = DispatchSemaphore(value: 0)
         let s = artistReaskScene(wire, clock: clock, sleep: { _ in
-            if stalled.value == 0 { stalled.bump(); clock.date.addTimeInterval(10) }
+            let call = waits.value        // workers run one after the other
+            waits.bump()
+            if call == 0 { entered.bump(); _ = release.wait(timeout: .now() + 20) }
         }, ended: ended)
-        XCTAssertTrue(settleScene(s) { ended.value >= 1 }, "the stalled re-ask never ended")
+        XCTAssertTrue(settleScene(s) { entered.value >= 1 }, "the first wait was never entered")
+        clock.date.addTimeInterval(10)
+        release.signal()
+        XCTAssertTrue(count(ended, 1), "the stalled re-ask never ended")
         XCTAssertEqual(wire.sent("slice.libraryArtistAlbums").count, 1, "the stalled re-ask probed anyway")
         XCTAssertTrue(settleScene(s) { s.artistAlbumsForTest.map(\.id) == ["n"] }, "the stalled re-ask never resumed")
     }
