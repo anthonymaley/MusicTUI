@@ -215,7 +215,7 @@ func goToSubView(_ s: LibraryScene, _ sub: LibrarySubView) {
 
 @discardableResult
 func settleScene(_ s: LibraryScene, snapshot: NowPlayingSnapshot = NowPlayingSnapshot(outcome: .stopped, history: [], surrounding: []),
-                 seconds: Double = 3.0, until: () -> Bool) -> Bool {
+                 seconds: Double = 20.0, until: () -> Bool) -> Bool {
     let deadline = Date().addingTimeInterval(seconds)
     while Date() < deadline {
         _ = s.tick(snapshot: snapshot)

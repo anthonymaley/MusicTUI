@@ -171,13 +171,24 @@ final class BridgePlaylistsCoversSceneTests: XCTestCase {
         // under B, applied -> B asked. Held between the two so A is what is on screen.
         let rig = Rig(pages: [page(generation: 3, instance: Self.instanceA, flagged: true),
                               page(generation: 4, instance: Self.instanceB),
+                              page(generation: 4, instance: Self.instanceB),
+                              page(generation: 4, instance: Self.instanceB),
                               page(generation: 4, instance: Self.instanceB)])
+        // Four reads follow the first, not one (measured: four reads in all, every
+        // run). Which of them lands the rows is a scheduling race, so every read past
+        // the first answers with B. A script of three left a late read with an
+        // "unscripted" error and the list on A.
         rig.wire.gate(op: "slice.libraryPlaylists", at: 1)
         settleRows(rig)
         tick(rig, at: 0.25)
         XCTAssertEqual(rig.spandac.firstRequests.map(\.libraryInstance), [Self.instanceA])
         XCTAssertEqual(rig.spandac.firstRequests.map(\.generation), [3])
 
+        // The flagged page's replacement read is the gated call: wait for it to be
+        // IN FLIGHT, so readiness never changes before it started (the order is not
+        // otherwise fixed, and which read lands the replacement depends on it).
+        XCTAssertTrue(settleScene(rig.scene) { rig.wire.reached(op: "slice.libraryPlaylists", at: 1) },
+                      "the replacement read was never issued")
         rig.spandac.readiness = { LibraryArtworkReadiness(supported: true, instance: Self.instanceB) }
         rig.wire.release(op: "slice.libraryPlaylists", at: 1)
         // The replacement lands on a later tick; a changed target restarts the rest.

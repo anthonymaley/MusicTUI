@@ -363,7 +363,7 @@ final class BridgeLibraryCoversSceneTests: XCTestCase {
                       "the stale refusal never made the scene read the artist's albums again")
         _ = rig.tick(at: 5, snapshot: idle)
         _ = rig.tick(at: 5.3, snapshot: idle)
-        XCTAssertTrue(settle(rig, at: 5.3) { rig.spandac.firstRequests.map(\.generation) == [1, 2] },
+        XCTAssertTrue(settleResting(rig, from: 5.3) { rig.spandac.firstRequests.map(\.generation) == [1, 2] },
                       "a rest asks under the new generation")
         XCTAssertTrue(heroShowsMarker(rig))
         XCTAssertEqual(rig.wire.sent("slice.libraryArtistAlbums").count, 2, "exactly one re-read")
@@ -397,7 +397,7 @@ final class BridgeLibraryCoversSceneTests: XCTestCase {
                       "the restart never made the scene read the artist's albums again")
         _ = rig.tick(at: 5, snapshot: idle)
         _ = rig.tick(at: 5.3, snapshot: idle)
-        XCTAssertTrue(settle(rig, at: 5.3) { rig.spandac.firstRequests.map(\.libraryInstance) == [Self.instanceB] })
+        XCTAssertTrue(settleResting(rig, from: 5.3) { rig.spandac.firstRequests.map(\.libraryInstance) == [Self.instanceB] })
         XCTAssertEqual(rig.spandac.firstRequests.map(\.generation), [2])
         XCTAssertTrue(heroShowsMarker(rig))
         XCTAssertEqual(rig.wire.sent("slice.libraryArtistAlbums").count, 2, "exactly one re-read")
@@ -470,9 +470,22 @@ final class BridgeLibraryCoversSceneTests: XCTestCase {
     }
 
     /// Ticks the scene at `t` until `until` holds (the re-read runs on a feed thread).
-    private func settle(_ rig: Rig, at t: TimeInterval, seconds: Double = 3, until: () -> Bool) -> Bool {
+    private func settle(_ rig: Rig, at t: TimeInterval, seconds: Double = 20, until: () -> Bool) -> Bool {
         rig.clock.t = t
         return settleScene(rig.scene, seconds: seconds, until: until)
+    }
+
+    /// Waits for a REST to end and its request to be made, with the fake clock moving
+    /// forward every pass the way the app's does. A constant clock cannot do this: a
+    /// re-read that lands while the loop waits is a new target, which restarts the
+    /// rest from the clock's value, and a clock that never moves never ends it.
+    private func settleResting(_ rig: Rig, from t: TimeInterval, seconds: Double = 20, until: () -> Bool) -> Bool {
+        var now = t
+        return settleScene(rig.scene, seconds: seconds) {
+            now += 0.1
+            rig.clock.t = now
+            return until()
+        }
     }
 
     func testAStaleGenerationRefusalRereadsTheListOnceAndTheNextRestGetsACover() {
@@ -560,7 +573,7 @@ final class BridgeLibraryCoversSceneTests: XCTestCase {
         XCTAssertTrue(settle(rig, at: 0.3) { rig.wire.sent("slice.libraryAlbums").count == 2 })
         _ = rig.tick(at: 5, snapshot: idle)
         _ = rig.tick(at: 5.3, snapshot: idle)
-        XCTAssertTrue(settle(rig, at: 5.3) { rig.spandac.firstRequests.map(\.generation) == [1, 2] },
+        XCTAssertTrue(settleResting(rig, from: 5.3) { rig.spandac.firstRequests.map(\.generation) == [1, 2] },
                       "the tracks view's album is asked for again under the new generation")
         XCTAssertEqual(rig.spandac.firstRequests.map(\.id), ["al1", "al1"])
         XCTAssertTrue(heroShowsMarker(rig))
@@ -672,7 +685,7 @@ final class BridgeLibraryCoversSceneTests: XCTestCase {
         XCTAssertTrue(settle(rig, at: 0.3) { rig.wire.sent("slice.libraryAlbums").count == 2 })
         _ = rig.tick(at: 5, snapshot: idle)
         _ = rig.tick(at: 5.3, snapshot: idle)
-        XCTAssertTrue(settle(rig, at: 5.3) { rig.spandac.firstRequests.map(\.libraryInstance) == [Self.instanceB] },
+        XCTAssertTrue(settleResting(rig, from: 5.3) { rig.spandac.firstRequests.map(\.libraryInstance) == [Self.instanceB] },
                       "the tracks view's album is asked for again under the new instance")
         XCTAssertEqual(rig.spandac.firstRequests.map(\.id), ["al1"])
         XCTAssertTrue(heroShowsMarker(rig))

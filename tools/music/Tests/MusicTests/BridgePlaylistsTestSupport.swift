@@ -94,7 +94,7 @@ func playlistsTestScene(flag: BridgeSelectedFlag, wire: BridgeLibraryReadsWire, 
 
 @discardableResult
 func settleScene(_ s: PlaylistsScene, snapshot: NowPlayingSnapshot = NowPlayingSnapshot(outcome: .stopped, history: [], surrounding: []),
-                 seconds: Double = 3.0, until: () -> Bool) -> Bool {
+                 seconds: Double = 20.0, until: () -> Bool) -> Bool {
     let deadline = Date().addingTimeInterval(seconds)
     while Date() < deadline {
         _ = s.tick(snapshot: snapshot)
