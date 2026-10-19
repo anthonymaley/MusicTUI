@@ -167,4 +167,46 @@ final class BridgeLibraryPreviewSerialTests: XCTestCase {
         XCTAssertTrue(settleScene(s) { s.trackCacheForTest["al1"] != nil }, "a dropped album could never be previewed again")
         XCTAssertEqual(readIDs(w), ["al0", "al1"])
     }
+
+    /// Codex review finding 3: a read's completion carried no job identity, so an
+    /// OBSOLETE one (kicked before a provenance flip) retired the CURRENT job
+    /// for the same album id, and Enter then sent a second current read while the
+    /// first was still out. Wire gates hold both reads; the old one is released
+    /// while the current preview is still held.
+    func testAnObsoleteReadLandingAfterAProvenanceFlipDoesNotRetireTheCurrentJobForTheSameAlbum() {
+        let w = BridgeLibraryReadsWire(["slice.libraryAlbums": [albumsPage(3), albumsPage(3)]])
+        w.script(op, [tracksPage("old"), tracksPage("cur"), tracksPage("extra")])
+        w.gate(op: op, at: 0)
+        w.gate(op: op, at: 1)
+        let clock = Clock()
+        let flag = BridgeSelectedFlag(true)
+        let s = libraryTestScene(flag: flag, wire: w, spy: LibraryAppleScriptSpy(),
+                                 now: clock.now, screenWidth: { 160 })
+        goToSubView(s, .albums)
+        XCTAssertTrue(settleScene(s) { s.render(frame: self.frame, snapshot: self.idle).contains("Album 0") })
+        _ = s.handle(.enter)                                    // explicit A read, held (old epoch)
+        XCTAssertTrue(settleScene(s) { w.reached(op: self.op, at: 0) }, "the explicit read never went out")
+
+        flag.selected = false
+        _ = s.tick(snapshot: idle)                              // provenance reset
+        flag.selected = true
+        XCTAssertTrue(settleScene(s) { s.render(frame: self.frame, snapshot: self.idle).contains("Album 0") },
+                      "Albums never reloaded after the flip back")
+        clock.advance(0.5)
+        XCTAssertTrue(settleScene(s) { w.reached(op: self.op, at: 1) }, "the current preview of A never went out")
+        XCTAssertEqual(readIDs(w), ["al0", "al0"])
+
+        w.release(op: op, at: 0)                                // the OLD read lands, current one still held
+        XCTAssertTrue(settleScene(s) { w.threadEnded(op: self.op, at: 0) }, "the old read never ended")
+        clock.advance(0.5)
+        for _ in 0..<10 { _ = s.tick(snapshot: idle); usleep(5_000) }
+        _ = s.handle(.enter)                                    // must reuse the read still out
+        for _ in 0..<10 { _ = s.tick(snapshot: idle); usleep(5_000) }
+        XCTAssertEqual(readIDs(w), ["al0", "al0"], "a second current read for A went out while the first was still held")
+
+        w.release(op: op, at: 1)
+        XCTAssertTrue(settleScene(s) { s.trackCacheForTest["al0"] == ["Track cur"] },
+                      "the current read's tracks never landed (or the obsolete read's did)")
+        XCTAssertEqual(readIDs(w), ["al0", "al0"])
+    }
 }

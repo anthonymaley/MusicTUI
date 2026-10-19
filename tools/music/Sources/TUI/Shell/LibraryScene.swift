@@ -256,7 +256,8 @@ final class LibraryScene: Scene {
     /// if the same album id is reopened afterward under the new output.
     private enum AlbumRailEpochSource { case albums, artists }
     private var bridgeTracksInbox:
-        [(albumID: String, epochSource: AlbumRailEpochSource, epoch: Int, result: BridgeTracksOutcome)] = []
+        [(albumID: String, epochSource: AlbumRailEpochSource, epoch: Int, result: BridgeTracksOutcome,
+          job: BridgeTrackJob?)] = []
 
     // Bridge tracks preview: one read in flight, latest wins, Enter first.
     //
@@ -1234,7 +1235,7 @@ final class LibraryScene: Scene {
                         && (source == .artists ? scene.artistsSourceEpoch : scene.albumsSourceEpoch) == epoch
                     if post {
                         scene.bridgeTracksInbox.append((albumID, source, epoch,
-                            .success(list.rows, listRev: list.listRev, flagged: flagged)))
+                            .success(list.rows, listRev: list.listRev, flagged: flagged), nil))
                     }
                     scene.inboxLock.unlock()
                     if post && !flagged { fresh = true }
@@ -1306,7 +1307,7 @@ final class LibraryScene: Scene {
                 let (epochSource, epoch) = bridgeReadEpoch()
                 let sleep = warmUpSleep
                 Thread.detachNewThread { [weak self] in
-                    self?.runBridgeTrackRead(albumID: albumID, provider: provider, epochSource: epochSource,
+                    self?.runBridgeTrackRead(albumID: albumID, job: job, provider: provider, epochSource: epochSource,
                                              epoch: epoch, sleep: sleep)
                 }
                 return
@@ -1327,7 +1328,7 @@ final class LibraryScene: Scene {
             if explicit {
                 _ = job.takeOver()
                 Thread.detachNewThread { [weak self] in
-                    self?.runBridgeTrackRead(albumID: albumID, provider: provider, epochSource: epochSource,
+                    self?.runBridgeTrackRead(albumID: albumID, job: job, provider: provider, epochSource: epochSource,
                                              epoch: epoch, sleep: sleep)
                 }
                 return
@@ -1348,7 +1349,7 @@ final class LibraryScene: Scene {
                     }
                     return
                 }
-                self.runBridgeTrackRead(albumID: albumID, provider: provider, epochSource: epochSource,
+                self.runBridgeTrackRead(albumID: albumID, job: job, provider: provider, epochSource: epochSource,
                                         epoch: epoch, sleep: sleep)
             }
             return
@@ -1373,7 +1374,7 @@ final class LibraryScene: Scene {
 
     /// The read itself, on whichever thread won the job: posts its outcome to
     /// `bridgeTracksInbox` for tick to drain.
-    private func runBridgeTrackRead(albumID: String, provider: MusicDataProvider,
+    private func runBridgeTrackRead(albumID: String, job: BridgeTrackJob, provider: MusicDataProvider,
                                     epochSource: AlbumRailEpochSource, epoch: Int,
                                     sleep: @escaping (TimeInterval) -> Void) {
         do {
@@ -1384,13 +1385,13 @@ final class LibraryScene: Scene {
             // refreshed list.
             inboxLock.lock()
             bridgeTracksInbox.append((albumID, epochSource, epoch,
-                .success(list.rows, listRev: list.listRev, flagged: LibraryReask.flagged(list))))
+                .success(list.rows, listRev: list.listRev, flagged: LibraryReask.flagged(list)), job))
             inboxLock.unlock()
         } catch {
             let sentence = (error as? MusicProviderError)?.errorDescription
                 ?? "Couldn't read that album's tracks from SpanDAC."
             inboxLock.lock()
-            bridgeTracksInbox.append((albumID, epochSource, epoch, .failure(sentence)))
+            bridgeTracksInbox.append((albumID, epochSource, epoch, .failure(sentence), job))
             inboxLock.unlock()
         }
     }
@@ -1887,7 +1888,7 @@ final class LibraryScene: Scene {
         //
         // Every item's epoch is checked against whichever rail's CURRENT
         // epoch it claims to belong to, same reasoning as the artist-albums
-        // guard above: `previewInFlight` is cleared unconditionally (the fetch
+        // guard above: `previewInFlight` is cleared for the result's own job (the fetch
         // this album was waiting on is over, one way or the other, so a fresh
         // kick must be allowed), but the cache writes only happen for a
         // result whose provenance hasn't moved on since it was kicked.
@@ -1899,8 +1900,15 @@ final class LibraryScene: Scene {
             previewInFlight.remove(dropped.albumID)
         }
         for item in landedBridgeTracks {
-            previewInFlight.remove(item.albumID)
-            bridgeTrackJobs.removeValue(forKey: item.albumID)
+            // Retire the album's bookkeeping only when THIS read's job is the
+            // album's current one. A read kicked before a provenance reset
+            // lands after the reset cleared its job and, for the same album id,
+            // a newer job may already be out: clearing here would let a second
+            // current read go out beside it.
+            if let job = item.job, bridgeTrackJobs[item.albumID] === job {
+                previewInFlight.remove(item.albumID)
+                bridgeTrackJobs.removeValue(forKey: item.albumID)
+            }
             let currentEpoch = item.epochSource == .artists ? artistsSourceEpoch : albumsSourceEpoch
             guard item.epoch == currentEpoch else { continue }   // obsolete output/list -> drop
             // A re-ask overwrites tracks already on screen: follow the selected
