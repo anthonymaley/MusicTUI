@@ -384,4 +384,116 @@ final class BridgeLibraryCoversSceneTests: XCTestCase {
         XCTAssertTrue(heroShowsMarker(rig))
         XCTAssertEqual(rig.scene.subViewForTest, .albums)
     }
+
+    // MARK: - SpanDAC restarted under the Albums list
+
+    /// Readiness now names instance B, as a restarted SpanDAC's status does.
+    private func restartSpanDAC(_ rig: Rig) {
+        rig.spandac.readiness = { LibraryArtworkReadiness(supported: true, instance: Self.instanceB) }
+    }
+
+    func testARestartedSpanDACRereadsTheListOnceAndTheNextRestGetsACover() {
+        let rig = loadedAlbumsRig([albumsPage(["al1", "al2"], generation: 1, instance: Self.instanceA),
+                                   albumsPage(["al0", "al1", "al2"], generation: 2, instance: Self.instanceB)])
+        rig.spandac.covers["album|al1"] = LibraryCoverFetcherTests.payload(40_000)
+        restartSpanDAC(rig)
+
+        _ = rig.tick(at: 0, snapshot: idle)
+        _ = rig.tick(at: 0.3, snapshot: idle)   // the rest ends: readiness names B, the list is under A
+        XCTAssertEqual(rig.spandac.statusReadTimes.count, 1, "a focused row on the old list must still read readiness")
+        XCTAssertTrue(rig.spandac.firstRequests.isEmpty, "nothing is asked under the old instance")
+        XCTAssertTrue(settle(rig, at: 0.3) { rig.wire.sent("slice.libraryAlbums").count == 2 },
+                      "the restart never made the scene read its Albums list again")
+        XCTAssertTrue(settle(rig, at: 0.4) { rig.scene.render(frame: self.frame, snapshot: self.idle).contains("In Rainbows al0") },
+                      "the replacement never landed")
+
+        _ = rig.tick(at: 5, snapshot: idle)
+        _ = rig.tick(at: 5.3, snapshot: idle)
+        XCTAssertEqual(rig.spandac.firstRequests.map(\.libraryInstance), [Self.instanceB], "a rest asks under the new instance")
+        XCTAssertEqual(rig.spandac.firstRequests.map(\.generation), [2])
+        XCTAssertNotNil(rig.fetcher.cover(for: rig.target(generation: 2, instance: Self.instanceB)), "the cover arrives")
+        XCTAssertTrue(heroShowsMarker(rig))
+        XCTAssertEqual(rig.wire.sent("slice.libraryAlbums").count, 2, "exactly one re-read")
+    }
+
+    func testARereadThatStillCarriesTheOldInstanceDoesNotLoop() {
+        let rig = loadedAlbumsRig([albumsPage(["al1", "al2"], generation: 1, instance: Self.instanceA),
+                                   albumsPage(["al1", "al2"], generation: 1, instance: Self.instanceA),
+                                   albumsPage(["al1", "al2"], generation: 1, instance: Self.instanceA)])
+        rig.spandac.covers["album|al1"] = LibraryCoverFetcherTests.payload(40_000)
+        restartSpanDAC(rig)
+        _ = rig.tick(at: 0, snapshot: idle)
+        _ = rig.tick(at: 0.3, snapshot: idle)
+        XCTAssertTrue(settle(rig, at: 0.3) { rig.wire.sent("slice.libraryAlbums").count == 2 })
+        for step in 0..<40 { _ = rig.tick(at: 1 + Double(step), snapshot: idle); usleep(5_000) }
+        usleep(100_000)
+        XCTAssertEqual(rig.wire.sent("slice.libraryAlbums").count, 2, "no loop on an unchanged instance")
+        XCTAssertTrue(rig.spandac.firstRequests.isEmpty)
+        XCTAssertFalse(rig.scene.render(frame: frame, snapshot: idle).contains(Self.marker))
+    }
+
+    func testARereadThatBumpsOnlyTheGenerationUnderTheOldInstanceDoesNotLoop() {
+        // Each read comes back under A with a newer generation; readiness stays B.
+        let rig = loadedAlbumsRig([albumsPage(["al1", "al2"], generation: 1, instance: Self.instanceA),
+                                   albumsPage(["al1", "al2"], generation: 2, instance: Self.instanceA),
+                                   albumsPage(["al1", "al2"], generation: 3, instance: Self.instanceA),
+                                   albumsPage(["al1", "al2"], generation: 4, instance: Self.instanceA)])
+        restartSpanDAC(rig)
+        _ = rig.tick(at: 0, snapshot: idle)
+        _ = rig.tick(at: 0.3, snapshot: idle)
+        XCTAssertTrue(settle(rig, at: 0.3) { rig.wire.sent("slice.libraryAlbums").count == 2 })
+        for step in 0..<40 { _ = rig.tick(at: 1 + Double(step), snapshot: idle); usleep(5_000) }
+        usleep(100_000)
+        XCTAssertEqual(rig.wire.sent("slice.libraryAlbums").count, 2, "a newer generation under the same old instance is no reason to read again")
+    }
+
+    func testAFailedRestartRereadDoesNotLoopOrSpeak() {
+        let rig = loadedAlbumsRig([albumsPage(["al1", "al2"], generation: 1, instance: Self.instanceA)])
+        restartSpanDAC(rig)
+        _ = rig.tick(at: 0, snapshot: idle)
+        _ = rig.tick(at: 0.3, snapshot: idle)
+        XCTAssertTrue(settle(rig, at: 0.3) { rig.wire.sent("slice.libraryAlbums").count >= 2 })
+        for step in 0..<40 { _ = rig.tick(at: 1 + Double(step), snapshot: idle); usleep(5_000) }
+        usleep(100_000)
+        XCTAssertEqual(rig.wire.sent("slice.libraryAlbums").count, 2, "a failed re-read is not retried")
+        let out = rig.scene.render(frame: frame, snapshot: idle)
+        XCTAssertTrue(out.contains("In Rainbows al1"), "the list on screen is untouched")
+        XCTAssertFalse(out.contains("SpanDAC couldn't"), "no error message to the person")
+    }
+
+    func testTheCursorStaysOnTheSameAlbumAcrossARestartRereadAndNewAlbumsAppear() {
+        let rig = loadedAlbumsRig([albumsPage(["al1", "al2", "al3"], generation: 1, instance: Self.instanceA),
+                                   albumsPage(["al0", "al1", "al2", "al3"], generation: 2, instance: Self.instanceB)])
+        rig.spandac.covers["album|al2"] = LibraryCoverFetcherTests.payload(40_000)
+        restartSpanDAC(rig)
+        _ = rig.scene.handle(.down)   // al2
+        _ = rig.tick(at: 0, snapshot: idle)
+        _ = rig.tick(at: 0.3, snapshot: idle)
+        XCTAssertTrue(settle(rig, at: 0.3) { rig.scene.render(frame: self.frame, snapshot: self.idle).contains("In Rainbows al0") },
+                      "the new album never appeared")
+        _ = rig.tick(at: 5, snapshot: idle)
+        _ = rig.tick(at: 5.3, snapshot: idle)
+        XCTAssertEqual(rig.spandac.firstRequests.map(\.id), ["al2"], "the cursor moved off the album")
+        XCTAssertEqual(rig.spandac.firstRequests.map(\.libraryInstance), [Self.instanceB])
+        XCTAssertTrue(heroShowsMarker(rig))
+    }
+
+    func testARestartRereadWhileDrilledIntoAnAlbumAppliesUnderneathWithoutMovingThem() {
+        let rig = loadedAlbumsRig([albumsPage(["al1", "al2"], generation: 1, instance: Self.instanceA),
+                                   albumsPage(["al0", "al1", "al2"], generation: 2, instance: Self.instanceB)])
+        rig.spandac.covers["album|al1"] = LibraryCoverFetcherTests.payload(40_000)
+        restartSpanDAC(rig)
+        _ = rig.scene.handle(.enter)   // the tracks of al1
+        _ = rig.tick(at: 0, snapshot: idle)
+        _ = rig.tick(at: 0.3, snapshot: idle)
+        XCTAssertTrue(rig.spandac.firstRequests.isEmpty)
+        XCTAssertTrue(settle(rig, at: 0.3) { rig.wire.sent("slice.libraryAlbums").count == 2 })
+        _ = rig.tick(at: 5, snapshot: idle)
+        _ = rig.tick(at: 5.3, snapshot: idle)
+        XCTAssertTrue(settle(rig, at: 5.3) { rig.spandac.firstRequests.map(\.libraryInstance) == [Self.instanceB] },
+                      "the tracks view's album is asked for again under the new instance")
+        XCTAssertEqual(rig.spandac.firstRequests.map(\.id), ["al1"])
+        XCTAssertTrue(heroShowsMarker(rig))
+        XCTAssertEqual(rig.scene.subViewForTest, .albums)
+    }
 }

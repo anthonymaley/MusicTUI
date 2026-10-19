@@ -20,11 +20,12 @@ final class BridgePlaylistsCoversSceneTests: XCTestCase {
     private let idle = NowPlayingSnapshot(outcome: .stopped, history: [], surrounding: [])
 
     private func page(generation: Int = 3, instance: String? = BridgePlaylistsCoversSceneTests.instanceA,
-                      flagged: Bool = false) -> String {
+                      flagged: Bool = false, leading: String? = nil) -> String {
         let inst = instance.map { ",\"library_instance\":\"\($0)\"" } ?? ""
+        let first = leading.map { "{\"id\":\"pl0\",\"title\":\"\($0)\",\"kind\":\"playlist\"}," } ?? ""
         return """
-        {"ok":true,"op":"slice.libraryPlaylists","generation":\(generation),"total":2,"stale":\(flagged),"refreshing":\(flagged),
-         "items":[{"id":"pl1","title":"Top 25 Most Played","kind":"playlist"},
+        {"ok":true,"op":"slice.libraryPlaylists","generation":\(generation),"total":\(leading == nil ? 2 : 3),"stale":\(flagged),"refreshing":\(flagged),
+         "items":[\(first){"id":"pl1","title":"Top 25 Most Played","kind":"playlist"},
                   {"id":"pl2","title":"Road Trip","kind":"playlist"}],
          "next_cursor":null\(inst)}
         """
@@ -39,6 +40,7 @@ final class BridgePlaylistsCoversSceneTests: XCTestCase {
         let flag = BridgeSelectedFlag(true)
         let dir: String
         let routing: RoutingCoordinator
+        let statusStore = StatusStore()
         let fetcher: LibraryCoverFetcher
         let scene: PlaylistsScene
 
@@ -65,7 +67,7 @@ final class BridgePlaylistsCoversSceneTests: XCTestCase {
             scene = PlaylistsScene(
                 backend: AppleScriptBackend(executable: "/usr/bin/true"), routing: routing,
                 playlists: [], sources: .empty,
-                appQueue: AppQueueStore(), status: StatusStore(), actions: ActionRunner(status: StatusStore()),
+                appQueue: AppQueueStore(), status: statusStore, actions: ActionRunner(status: StatusStore()),
                 // A temporary metadata cache, never the real one.
                 metaCache: temporaryPlaylistMetaCache().cache,
                 libraryCovers: withFetcher ? fetcher : nil,
@@ -195,5 +197,113 @@ final class BridgePlaylistsCoversSceneTests: XCTestCase {
         tick(bare, at: 6)
         XCTAssertTrue(bare.spandac.statusReadTimes.isEmpty)
         XCTAssertTrue(bare.spandac.firstRequests.isEmpty)
+    }
+
+    // MARK: - SpanDAC restarted under the Playlists list
+
+    private func restartSpanDAC(_ rig: Rig) {
+        rig.spandac.readiness = { LibraryArtworkReadiness(supported: true, instance: Self.instanceB) }
+    }
+
+    /// Ticks at fake times from `from`, every 0.25 s, until `done` (the re-read lands on a feed thread).
+    private func tickUntil(_ rig: Rig, from: Double, _ done: () -> Bool) -> Bool {
+        var t = from
+        return settleScene(rig.scene) {
+            t += 0.25
+            self.tick(rig, at: t)
+            return done()
+        }
+    }
+
+    func testARestartedSpanDACRereadsThePlaylistsOnceAndTheNextRestGetsACover() {
+        let rig = Rig(pages: [page(generation: 3, instance: Self.instanceA),
+                              page(generation: 4, instance: Self.instanceB, leading: "Aardvark Mix")])
+        restartSpanDAC(rig)
+        settleRows(rig)
+        tick(rig, at: 0.25)   // the rest ends: readiness names B, the list is under A
+        XCTAssertEqual(rig.spandac.statusReadTimes.count, 1, "a focused row on the old list must still read readiness")
+        XCTAssertTrue(rig.spandac.firstRequests.isEmpty, "nothing is asked under the old instance")
+        XCTAssertTrue(settleScene(rig.scene) { rig.wire.sent("slice.libraryPlaylists").count == 2
+                                                && rig.scene.render(frame: frame, snapshot: idle).contains("Aardvark Mix") },
+                      "the restart never made the scene read its playlists again")
+
+        XCTAssertTrue(tickUntil(rig, from: 10) { !rig.spandac.firstRequests.isEmpty }, "the new list's row was never asked for")
+        XCTAssertEqual(rig.spandac.firstRequests.map(\.libraryInstance), [Self.instanceB])
+        XCTAssertEqual(rig.spandac.firstRequests.map(\.generation), [4])
+        XCTAssertEqual(rig.spandac.firstRequests.map(\.id), ["pl1"])
+        var out = ""
+        XCTAssertTrue(settleScene(rig.scene) {
+            out = rig.scene.render(frame: frame, snapshot: idle)
+            return out.contains(Self.marker)
+        }, "the cover never reached the hero")
+        XCTAssertEqual(rig.wire.sent("slice.libraryPlaylists").count, 2, "exactly one re-read")
+        XCTAssertEqual(rig.wire.sent("slice.libraryRefresh").count, 0, "the re-read must not ask SpanDAC to rebuild")
+    }
+
+    func testTheRestartRereadSaysNothingOnTheStatusLine() {
+        let rig = Rig(pages: [page(generation: 3, instance: Self.instanceA),
+                              page(generation: 4, instance: Self.instanceB, leading: "Aardvark Mix")])
+        restartSpanDAC(rig)
+        settleRows(rig)
+        let before = rig.statusStore.current()?.text
+        tick(rig, at: 0.25)
+        XCTAssertTrue(settleScene(rig.scene) { rig.scene.render(frame: frame, snapshot: idle).contains("Aardvark Mix") })
+        XCTAssertEqual(rig.statusStore.current()?.text, before, "the re-read posted to the status line")
+    }
+
+    func testAPlaylistsRereadThatStillCarriesTheOldInstanceDoesNotLoop() {
+        let rig = Rig(pages: [page(generation: 3, instance: Self.instanceA),
+                              page(generation: 3, instance: Self.instanceA),
+                              page(generation: 3, instance: Self.instanceA)])
+        restartSpanDAC(rig)
+        settleRows(rig)
+        tick(rig, at: 0.25)
+        XCTAssertTrue(settleScene(rig.scene) { rig.wire.sent("slice.libraryPlaylists").count == 2 })
+        for step in 0..<40 { tick(rig, at: 1 + Double(step)); usleep(5_000) }
+        usleep(100_000)
+        XCTAssertEqual(rig.wire.sent("slice.libraryPlaylists").count, 2, "no loop on an unchanged instance")
+        XCTAssertTrue(rig.spandac.firstRequests.isEmpty)
+    }
+
+    func testAPlaylistsRereadThatOnlyBumpsTheGenerationUnderTheOldInstanceDoesNotLoop() {
+        let rig = Rig(pages: [page(generation: 3, instance: Self.instanceA),
+                              page(generation: 4, instance: Self.instanceA),
+                              page(generation: 5, instance: Self.instanceA),
+                              page(generation: 6, instance: Self.instanceA)])
+        restartSpanDAC(rig)
+        settleRows(rig)
+        tick(rig, at: 0.25)
+        XCTAssertTrue(settleScene(rig.scene) { rig.wire.sent("slice.libraryPlaylists").count == 2 })
+        for step in 0..<40 { tick(rig, at: 1 + Double(step)); usleep(5_000) }
+        usleep(100_000)
+        XCTAssertEqual(rig.wire.sent("slice.libraryPlaylists").count, 2)
+    }
+
+    func testAFailedPlaylistsRereadDoesNotLoopOrSpeak() {
+        let rig = Rig(pages: [page(generation: 3, instance: Self.instanceA)])   // the re-read is answered bad_request
+        restartSpanDAC(rig)
+        settleRows(rig)
+        let before = rig.statusStore.current()?.text
+        tick(rig, at: 0.25)
+        XCTAssertTrue(settleScene(rig.scene) { rig.wire.sent("slice.libraryPlaylists").count >= 2 })
+        for step in 0..<40 { tick(rig, at: 1 + Double(step)); usleep(5_000) }
+        usleep(100_000)
+        XCTAssertEqual(rig.wire.sent("slice.libraryPlaylists").count, 2, "a failed re-read is not retried")
+        XCTAssertTrue(rig.scene.render(frame: frame, snapshot: idle).contains("Road Trip"), "the list on screen is untouched")
+        XCTAssertEqual(rig.statusStore.current()?.text, before)
+    }
+
+    func testTheCursorStaysOnTheSamePlaylistAcrossTheRestartReread() {
+        let rig = Rig(pages: [page(generation: 3, instance: Self.instanceA),
+                              page(generation: 4, instance: Self.instanceB, leading: "Aardvark Mix")])
+        restartSpanDAC(rig)
+        settleRows(rig)
+        _ = rig.scene.handle(.down)   // pl2
+        tick(rig, at: 0.25)
+        tick(rig, at: 0.6)
+        XCTAssertTrue(settleScene(rig.scene) { rig.scene.render(frame: frame, snapshot: idle).contains("Aardvark Mix") })
+        XCTAssertTrue(tickUntil(rig, from: 10) { !rig.spandac.firstRequests.isEmpty })
+        XCTAssertEqual(rig.spandac.firstRequests.map(\.id), ["pl2"], "the cursor moved off the playlist")
+        XCTAssertEqual(rig.spandac.firstRequests.map(\.libraryInstance), [Self.instanceB])
     }
 }

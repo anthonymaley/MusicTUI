@@ -258,6 +258,20 @@ final class LibraryCoverFetcher {
         return staleLists[owner]
     }
 
+    /// The instance the latest readiness read named, while that read said the op is
+    /// supported and is still inside its validity window; nil otherwise. A scene
+    /// whose applied list carries another instance is showing rows from a SpanDAC
+    /// process that has gone, and should read its list again. Readiness is read
+    /// only while a target is focused, and the target carries the list's own
+    /// instance (never this one), so a focused row on that old list is what brings
+    /// the answer.
+    func readinessInstance() -> String? {
+        lock.lock(); defer { lock.unlock() }
+        guard let readiness, readiness.supported, let instance = readiness.instance,
+              now().timeIntervalSince(readiness.validatedAt) < Self.readinessValidity else { return nil }
+        return instance
+    }
+
     // MARK: scheduling (lock held)
 
     private func cancelLocked() {

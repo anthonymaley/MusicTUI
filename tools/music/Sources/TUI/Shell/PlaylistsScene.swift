@@ -414,6 +414,10 @@ final class PlaylistsScene: Scene {
     /// and either being nil means no cover may be asked for.
     private var bridgePlaylistsGeneration: Int? = nil
     private var bridgePlaylistsInstance: String? = nil
+    /// The applied list instance and the newer one SpanDAC's readiness named when
+    /// the list was read again because SpanDAC restarted: at most one re-read per
+    /// such pair, whatever generation the re-read comes back under.
+    private var playlistsRereadForInstance: (applied: String, ready: String)? = nil
     private var lastCoverLanded = 0
 
     init(backend: AppleScriptBackend,
@@ -701,6 +705,7 @@ final class PlaylistsScene: Scene {
         bridgePlaylistRows = []
         bridgePlaylistsGeneration = nil
         bridgePlaylistsInstance = nil
+        playlistsRereadForInstance = nil
         libraryCovers?.cancelAll()
         bridgeDone = false
         bridgeTotal = nil
@@ -1125,10 +1130,35 @@ final class PlaylistsScene: Scene {
         syncPreviewReask(token: previewToken)
         if let covers = libraryCovers {
             covers.focus(bridgeCoverTarget())
+            rereadPlaylistsIfSpanDACRestarted(covers)
             let landed = covers.landed
             if landed != lastCoverLanded { lastCoverLanded = landed; changed = true }
         }
         return changed
+    }
+
+    /// A SpanDAC restart gives it a new library instance. The list on screen still
+    /// carries the old one, so the fetcher (rightly) asks for no cover under it, no
+    /// refusal ever arrives, and the hero would stay a gradient until the person
+    /// pressed `r`. Readiness, read for the focused row whatever its list's
+    /// instance, is the sign: when it names an instance other than the applied
+    /// list's, read the list again in place, once per pair of instances. It is
+    /// `playlistsFeed.refresh()` with nothing to ask SpanDAC to rebuild, which is
+    /// what `r` does minus its `begin` and `end`: no `slice.libraryRefresh`, and no
+    /// status line at any point. It posts ONE `reasked` replacement, which the drain
+    /// applies by row id (the cursor and an open tracks pane follow their playlist).
+    /// A failed or superseded read leaves the list and the gradient as they were.
+    private func rereadPlaylistsIfSpanDACRestarted(_ covers: LibraryCoverFetcher) {
+        guard railSource == .bridge, bridgeFailure == nil, let instance = bridgePlaylistsInstance,
+              let ready = covers.readinessInstance(), ready != instance,
+              playlistsRereadForInstance?.applied != instance || playlistsRereadForInstance?.ready != ready
+        else { return }
+        switch playlistsFeed.refresh() {
+        case .started, .tookOver: playlistsRereadForInstance = (instance, ready)
+        // The list's own walk, or a refresh the person asked for, is running and
+        // lands its own rows; look again on a later tick.
+        case .busy, .alreadyRefreshing: break
+        }
     }
 
     /// The focused top-level Bridge row's cover request, or nil: only while the

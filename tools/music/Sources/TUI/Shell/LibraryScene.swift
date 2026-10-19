@@ -441,6 +441,10 @@ final class LibraryScene: Scene {
     /// The Albums list (generation and instance) already read again because SpanDAC
     /// refused its covers as `stale_generation`: at most one re-read per list.
     private var albumsRereadFor: LibraryCoverFetcher.StaleList?
+    /// The applied list instance and the newer one SpanDAC's readiness named when
+    /// the Albums list was read again because SpanDAC restarted: at most one
+    /// re-read per such pair, whatever generation the re-read comes back under.
+    private var albumsRereadForInstance: (applied: String, ready: String)?
     private let kittyEnabled: Bool
     // Placement-dedup (render-thread-only, per design doc Feature 2 §3): the
     // last kitty placement this scene emitted, so an unchanged frame emits
@@ -1355,6 +1359,7 @@ final class LibraryScene: Scene {
         bridgeAlbumsGeneration = nil
         bridgeAlbumsInstance = nil
         albumsRereadFor = nil
+        albumsRereadForInstance = nil
         // The epoch and everything a worker keyed on it may have posted move in
         // ONE critical section: the background re-ask predicates read the
         // epochs under `inboxLock`, so an unlocked bump was a data race, and a
@@ -2731,25 +2736,33 @@ final class LibraryScene: Scene {
 
     /// A SpanDAC library refresh moves its snapshot's generation, and this list is
     /// load-once, so every cover asked under the rows on screen is refused as
-    /// `stale_generation` from then on. When the fetcher says that is the list on
-    /// screen, read it again in place, once per list: `BridgeListFeed.refresh`, the
-    /// machinery `r` uses in Playlists, with nothing to ask SpanDAC and nothing to
-    /// say. It posts ONE `reasked` replacement, which the drain applies like any
-    /// re-ask: by row id at the root list (the cursor stays on its album), silently
-    /// underneath when a tracks view is open. A failed or superseded read leaves the
-    /// list and the gradient as they were, and the list is not asked again unless it
-    /// changes.
+    /// `stale_generation` from then on. A SpanDAC restart is the other way the list
+    /// is left behind: the new process has a new library instance, the fetcher
+    /// (rightly) asks for nothing under the old one, and no refusal ever arrives, so
+    /// the readiness it reads for the focused row is the only sign. When the
+    /// fetcher says either is the case for the list on screen, read it again in
+    /// place, once per list (stale generation) or per pair of instances (restart):
+    /// `BridgeListFeed.refresh`, the machinery `r` uses in Playlists, with nothing
+    /// to ask SpanDAC and nothing to say. It posts ONE `reasked` replacement, which
+    /// the drain applies like any re-ask: by row id at the root list (the cursor
+    /// stays on its album), silently underneath when a tracks view is open. A failed
+    /// or superseded read leaves the list and the gradient as they were, and the
+    /// list is not asked again unless it changes.
     private func rereadAlbumsIfStale(_ covers: LibraryCoverFetcher) {
         guard albumsSource == .bridge, let generation = bridgeAlbumsGeneration,
-              let instance = bridgeAlbumsInstance,
-              let stale = covers.staleList(for: .libraryAlbums),
-              stale.generation == generation, stale.libraryInstance == instance,
-              albumsRereadFor != stale
-        else { return }
+              let instance = bridgeAlbumsInstance else { return }
+        let applied = LibraryCoverFetcher.StaleList(generation: generation, libraryInstance: instance)
+        let ready = covers.readinessInstance()
+        let stale = covers.staleList(for: .libraryAlbums) == applied && albumsRereadFor != applied
+        let restarted = ready.map { $0 != instance && (albumsRereadForInstance?.applied != instance
+                                                       || albumsRereadForInstance?.ready != $0) } ?? false
+        guard stale || restarted else { return }
         switch albumsFeed.refresh() {
-        case .started, .tookOver: albumsRereadFor = stale
+        case .started, .tookOver:
+            if stale { albumsRereadFor = applied }
+            if restarted, let ready { albumsRereadForInstance = (instance, ready) }
         // A walk or a person's refresh is running and will land its own rows; ask
-        // again on a later tick if the list is still the stale one.
+        // again on a later tick if the list is still the one left behind.
         case .busy, .alreadyRefreshing: break
         }
     }

@@ -707,6 +707,30 @@ final class LibraryCoverFetcherTests: XCTestCase {
         XCTAssertEqual(h.fetcher.staleList(for: .libraryAlbums)?.generation, 2)
     }
 
+    func testReadinessNamesItsInstanceEvenForATargetOnAnotherInstance() {
+        // A list left behind by a SpanDAC restart: its row carries A, status says B.
+        let h = served()
+        h.spandac.readiness = { LibraryArtworkReadiness(supported: true, instance: Self.instanceB) }
+        XCTAssertNil(h.fetcher.readinessInstance(), "nothing is read before a row is focused")
+        let underA = album(instance: Self.instanceA)
+        h.rest(underA)
+        XCTAssertEqual(h.statusReads(), 1, "a focused row on the old list must still bring a readiness read")
+        XCTAssertEqual(h.fetcher.readinessInstance(), Self.instanceB)
+        XCTAssertTrue(h.spandac.firstRequests.isEmpty, "nothing is asked under the old instance")
+        XCTAssertNil(h.fetcher.cover(for: underA))
+        // The answer is only as good as the read: past its 5.0 s validity it names nothing.
+        h.clock.t = 5.5
+        XCTAssertNil(h.fetcher.readinessInstance())
+    }
+
+    func testAnUnsupportedReadinessNamesNoInstance() {
+        let h = served()
+        h.spandac.readiness = { LibraryArtworkReadiness(supported: false, instance: Self.instanceB) }
+        h.rest(album())
+        XCTAssertEqual(h.statusReads(), 1)
+        XCTAssertNil(h.fetcher.readinessInstance())
+    }
+
     func testRestartWithTheSameGenerationIsAnotherKey() {
         let h = served()
         let underA = album(generation: 2, instance: Self.instanceA)
