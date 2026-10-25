@@ -278,6 +278,7 @@ final class NowPlayingScene: Scene {
 
     @discardableResult
     func tick(snapshot: NowPlayingSnapshot) -> Bool {
+        artwork.pump()   // cover retry / stale-slot deadlines, independent of painting
         menuShownLastFrame = menuActive(snapshot)
         lastBridge = snapshot.bridge
         pendingFromStopped = snapshot.queueEnded
@@ -517,6 +518,7 @@ final class NowPlayingScene: Scene {
         // (renderArtHero) that Library/Playlists/Radio already use — this tab
         // used to hand-roll its own copy of it. ArtworkStore.block fetches on
         // its own serial queue and signals via onReady; nothing here blocks.
+        artwork.dropDemand()   // the ask below, if this view has a store cover, re-sets it
         var artBlock: ArtBlock? = nil
         if showArt, artRows > 0 {
             if kittyEnabled, let path = snapshot.artPath, let (id, escape) = kittyIdentity(forPath: path) {

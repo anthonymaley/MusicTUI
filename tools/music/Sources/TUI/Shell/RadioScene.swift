@@ -555,6 +555,7 @@ store: StationStore, catalog: RadioCatalog?,
     @discardableResult
     func tick(snapshot: NowPlayingSnapshot) -> Bool {
         var changed = false
+        artwork.pump()   // cover retry / stale-slot deadlines, independent of painting
 
         // A committed output switch or a change of data source since the
         // lists were fetched: they go, and are fetched again (D3, C-EPOCH).
@@ -787,6 +788,7 @@ store: StationStore, catalog: RadioCatalog?,
         // the actual square placement from whichever of gw/gh binds tighter.
         let gw = z.heroWidth
         let gh = max(0, bodyBottom - y - 2)
+        artwork.dropDemand()   // the ask below, if this view has a store cover, re-sets it
         var artBlock: ArtBlock? = nil
         if let template = s.artworkURL {
             artBlock = artwork.block(key: s.id,
