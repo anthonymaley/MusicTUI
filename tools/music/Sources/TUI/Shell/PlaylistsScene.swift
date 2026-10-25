@@ -881,6 +881,7 @@ final class PlaylistsScene: Scene {
 
     func tick(snapshot: NowPlayingSnapshot) -> Bool {
         var changed = false
+        artwork.pump()   // cover retry / stale-slot deadlines, independent of painting
         previewInboxLock.lock(); previewTickAt = now(); previewInboxLock.unlock()
 
         // D7: before anything else this tick, so a rail reset here also
@@ -1936,6 +1937,7 @@ final class PlaylistsScene: Scene {
         // no longer capped to the Now tab's old 44x22.
         let gw = z.heroWidth
         let gh = max(0, bodyBottom - y - 4)
+        artwork.dropDemand()   // the ask below, if this view has a store cover, re-sets it
         var artBlock: ArtBlock? = nil
         if let entry = artMap[title.lowercased().trimmingCharacters(in: .whitespaces)] {
             artBlock = artwork.block(key: entry.id,
@@ -2182,6 +2184,7 @@ final class PlaylistsScene: Scene {
         // SpanDAC's installed cover when the fetcher has one for this row, else
         // the gradient (the shared ladder draws either at the same square rect
         // Music.app's hero uses). No artMap lookup: that is Music.app's.
+        artwork.dropDemand()   // the ask below, if this view has a store cover, re-sets it
         var artBlock: ArtBlock? = nil
         if let target = bridgeCoverTarget(), let cover = libraryCovers?.cover(for: target) {
             artBlock = artwork.block(key: cover.key, url: cover.url, width: gw, height: gh,

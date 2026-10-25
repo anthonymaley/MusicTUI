@@ -1741,6 +1741,7 @@ final class LibraryScene: Scene {
 
     func tick(snapshot: NowPlayingSnapshot) -> Bool {
         var changed = false
+        artwork.pump()   // cover retry / stale-slot deadlines, independent of painting
         inboxLock.lock(); lastTickAt = now(); inboxLock.unlock()
         if snapToPlayingPending, case .songList = nav.current,
            case .active(let np) = snapshot.outcome, !songs.isEmpty {
@@ -3514,6 +3515,7 @@ final class LibraryScene: Scene {
         // tab's old 44x22.
         let gw = z.heroWidth
         let gh = max(0, bodyBottom - y - 4)
+        artwork.dropDemand()   // the ask below, if this view has a store cover, re-sets it
         var artBlock: ArtBlock? = nil
         let spandacCover = coverTarget(for: a).flatMap { libraryCovers?.cover(for: $0) }
         if let hit = (coverCache[a.id] ?? nil) ?? spandacCover {

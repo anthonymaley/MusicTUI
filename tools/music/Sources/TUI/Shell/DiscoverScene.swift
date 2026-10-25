@@ -1013,6 +1013,7 @@ final class DiscoverScene: Scene {
 
     func tick(snapshot: NowPlayingSnapshot) -> Bool {
         var changed = false
+        art.pump()   // cover retry / stale-slot deadlines, independent of painting
 
         // A change of data source since the rails were fetched: what is on
         // screen came from the source just left, so it goes and is read again
@@ -1337,6 +1338,7 @@ final class DiscoverScene: Scene {
         let (gw, gh) = discoverHeroBox(panelWidth: w, frameWidth: frame.width,
                                        availableRows: max(0, bottom - y + 1),
                                        textRows: textLines.count)
+        art.dropDemand()   // the ask below, if this view has a store cover, re-sets it
         var artBlock: ArtBlock? = nil
         if let artTemplate {
             artBlock = art.block(key: artKey,

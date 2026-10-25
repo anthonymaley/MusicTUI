@@ -16,6 +16,18 @@
 // and cancellation of an in-flight fetch nobody has asked for lately when new
 // art needs its slot. The rendered-line and kitty-escape memos are byte-bounded
 // LRU caches instead of unbounded dictionaries.
+//
+// Liveness and physical capacity (review, 2026-10-25): asks come from render,
+// and `ShellRenderGate` now suppresses idle repaints, so a retry deadline or a
+// stale-slot deadline can pass with no ask to act on it. The store remembers
+// the latest ask as the scene's current demand, and `pump()`, which every art
+// scene calls from `tick` (once per shell-loop pass, painted or not),
+// re-issues that demand when its retry deadline passes and reruns the
+// scheduler so a stale slot is reclaimed on time. Success fires the ask's own
+// `onReady`, so the tick reports the change and the shell paints once. And a
+// cancelled job keeps its slot, and its key, until its body has returned: a
+// render or PNG conversion cannot be cancelled, so the pool bounds the work
+// actually running, not the bookkeeping.
 import Foundation
 
 /// One cover's render result: half-block text lines (the chafa/mono fallback
@@ -135,7 +147,11 @@ final class ArtworkStore {
     /// - `kittyBytes` 24 MB: a kitty transmit escape is the base64 of a PNG,
     ///   roughly 0.3-1.5 MB per 600x600 cover, so a few dozen covers stay warm
     ///   (an evicted one is re-converted from the disk cache, never refetched).
-    ///   Together 32 MB per store at most, against unbounded before.
+    ///   Both are SOFT budgets on payload bytes (UTF-8 length), against
+    ///   unbounded before: the newest entry is kept even when it alone exceeds
+    ///   its budget (see `ByteBoundedLRU`), and dictionary, key and String
+    ///   overhead is not counted. Roughly 32 MB of payload per store, then,
+    ///   not a hard ceiling on memory.
     struct Limits {
         var maxConcurrent = 2
         var maxPending = 4
@@ -240,12 +256,20 @@ final class ArtworkStore {
         let key: String
         var seq: UInt64          // recency of the latest ask; newest runs first
         var wantedAt: TimeInterval
-        var preempted = false
+        var preempted = false    // cancelled, still physically running until its body returns
         let token = ArtworkFetchToken()
         let body: (Job) -> Void
         init(workKey: String, key: String, seq: UInt64, wantedAt: TimeInterval, body: @escaping (Job) -> Void) {
             self.workKey = workKey; self.key = key; self.seq = seq; self.wantedAt = wantedAt; self.body = body
         }
+    }
+
+    /// The scene's current cover: its latest ask, kept so `pump()` can re-issue
+    /// it when its retry deadline passes without anyone asking again.
+    private struct Demand {
+        let workKey: String
+        let key: String
+        let body: (Job) -> Void
     }
 
     private let cacheDir: String
@@ -258,8 +282,9 @@ final class ArtworkStore {
     private let lock = NSLock()
     private let rendered: ByteBoundedLRU<[String]>   // "\(key)|\(w)x\(h)" → lines
     private var pending: [String: Job] = [:]         // asked for, not started
-    private var running: [String: Job] = [:]         // started, not preempted
-    private var activeByKey: [String: Int] = [:]     // running jobs per cache key: one fetch per key at a time
+    private var running: [String: Job] = [:]         // started and not yet returned, preempted or not: its count is the physical slot use
+    private var activeByKey: [String: Int] = [:]     // running jobs per cache key: one per key until it physically returns
+    private var demand: Demand?                      // latest ask not yet satisfied (see `pump`)
     private var askSeq: UInt64 = 0
     private var failed: Set<String> = []             // per-session negative cache (unusable bytes OR PNG conversion)
     private var temporaryFailures: [String: Int] = [:]  // consecutive temporary failures per key
@@ -313,6 +338,38 @@ final class ArtworkStore {
             lines.reduce(0) { $0 + $1.utf8.count }
         }
         self.kittyEscape = ByteBoundedLRU(budget: limits.kittyBytes) { $0.utf8.count }
+    }
+
+    /// Act on deadlines without an ask. Scenes call this from `tick`, which
+    /// the shell runs on every loop pass whether or not it paints. Two
+    /// deadlines: the current cover's retry cooldown (a temporary failure),
+    /// after which its ask is re-issued as if the scene had painted again; and
+    /// the stale window, after which the scheduler may reclaim a slot held by
+    /// art nobody is asking for. A cover that lands fires its ask's `onReady`,
+    /// so the scene's next tick reports the change and the shell paints once.
+    /// Cheap when idle: a lock and two dictionary reads.
+    func pump() {
+        lock.lock()
+        if let d = demand {
+            if failed.contains(d.key) {
+                demand = nil
+            } else if let at = retryAt[d.key], now() >= at,
+                      pending[d.workKey] == nil, running[d.workKey].map({ $0.preempted }) ?? true {
+                askLocked(workKey: d.workKey, key: d.key, body: d.body)
+            }
+        }
+        guard !pending.isEmpty else { lock.unlock(); return }
+        let next = scheduleLocked()
+        lock.unlock()
+        next.cancel.forEach { $0.cancel() }
+        next.start.forEach(launch)
+    }
+
+    /// The scene is showing no store cover now (focus moved to a row with no
+    /// artwork, a source with no cover): stop retrying the last one. Queued
+    /// and running work is left to the scheduler's own rules.
+    func dropDemand() {
+        lock.lock(); demand = nil; lock.unlock()
     }
 
     /// Blocks until every started job has finished. Tests only.
@@ -389,7 +446,10 @@ final class ArtworkStore {
     private func askLocked(workKey: String, key: String, body: @escaping (Job) -> Void) {
         askSeq += 1
         let t = now()
-        if let job = pending[workKey] ?? running[workKey] {
+        // A cancelled job that has not returned yet is not coalesced into: its
+        // result is abandoned, so the ask queues afresh and starts once the old
+        // body has retired (the per-key rule holds it until then).
+        if let job = pending[workKey] ?? running[workKey].flatMap({ $0.preempted ? nil : $0 }) {
             job.seq = askSeq; job.wantedAt = t
             return
         }
@@ -404,14 +464,20 @@ final class ArtworkStore {
     /// cancels the returned tokens and launches the returned jobs after
     /// unlocking. When every slot is busy, a running job asked for less
     /// recently than the waiting one, and not asked for in `staleAfter`, is
-    /// preempted: its slot is freed now and its fetch cancelled.
+    /// preempted: its token is cancelled, but it keeps its slot and its key
+    /// until its body returns (`launch`), because a render or PNG conversion
+    /// runs to completion whatever the token says. A slot already being freed
+    /// that way is promised to the newest waiting job, so one waiting job
+    /// cancels at most one victim.
     private func scheduleLocked() -> (start: [Job], cancel: [ArtworkFetchToken]) {
         var start: [Job] = []
         var cancel: [ArtworkFetchToken] = []
-        while let next = pending.values
-            .filter({ activeByKey[$0.key, default: 0] == 0 })
-            .max(by: { $0.seq < $1.seq }) {
-            if running.count < max(1, limits.maxConcurrent) {
+        let slots = max(1, limits.maxConcurrent)
+        var freeing = running.values.filter { $0.preempted }.count
+        let t = now()
+        for next in pending.values.sorted(by: { $0.seq > $1.seq }) {
+            guard activeByKey[next.key, default: 0] == 0 else { continue }
+            if running.count < slots {
                 pending[next.workKey] = nil
                 running[next.workKey] = next
                 activeByKey[next.key, default: 0] += 1
@@ -419,18 +485,17 @@ final class ArtworkStore {
                 start.append(next)
                 continue
             }
-            let t = now()
+            if freeing > 0 { freeing -= 1; continue }
             guard let victim = running.values
-                .filter({ $0.seq < next.seq && t - $0.wantedAt >= limits.staleAfter })
+                .filter({ !$0.preempted && $0.seq < next.seq && t - $0.wantedAt >= limits.staleAfter })
                 .min(by: { $0.seq < $1.seq }) else { break }
             victim.preempted = true
-            releaseLocked(victim)
             cancel.append(victim.token)
         }
         return (start, cancel)
     }
 
-    /// Caller holds `lock`.
+    /// The job's body has returned: its slot and its key are free. Caller holds `lock`.
     private func releaseLocked(_ job: Job) {
         if running[job.workKey] === job { running[job.workKey] = nil }
         let n = (activeByKey[job.key] ?? 1) - 1
@@ -441,7 +506,7 @@ final class ArtworkStore {
         workers.async {
             job.body(job)
             self.lock.lock()
-            if !job.preempted { self.releaseLocked(job) }
+            self.releaseLocked(job)
             let next = self.scheduleLocked()
             self.lock.unlock()
             next.cancel.forEach { $0.cancel() }
@@ -471,15 +536,21 @@ final class ArtworkStore {
         let key = Self.cacheKey(rawKey)
         let memoKey = "\(key)|\(width)x\(height)"
         lock.lock()
-        if let hit = rendered.get(memoKey) { lock.unlock(); return hit }
-        if isBlockedLocked(key) { lock.unlock(); return nil }
-        askAndUnlock(workKey: memoKey, key: key) { [unowned self] job in
-            guard case .path(let path) = self.ensureBytesOnDisk(key: key, url: url, token: job.token) else { return }
+        if let hit = rendered.get(memoKey) { demand = nil; lock.unlock(); return hit }
+        let body: (Job) -> Void = { [unowned self] job in
+            guard case .path(let path) = self.ensureBytesOnDisk(key: key, url: url, token: job.token),
+                  !job.token.isCancelled else { return }
             let lines = self.render(path, width, height)
             if lines.isEmpty { self.noteFailure(key); return }
-            self.lock.lock(); self.rendered.set(memoKey, lines); self.lock.unlock()
+            self.lock.lock()
+            self.rendered.set(memoKey, lines)
+            if self.demand?.workKey == memoKey { self.demand = nil }
+            self.lock.unlock()
             onReady()
         }
+        demand = Demand(workKey: memoKey, key: key, body: body)
+        if isBlockedLocked(key) { lock.unlock(); return nil }
+        askAndUnlock(workKey: memoKey, key: key, body: body)
         return nil
     }
 
@@ -502,25 +573,33 @@ final class ArtworkStore {
         let key = Self.cacheKey(rawKey)
         let id = kittyImageID(forKey: key)
 
+        let workKey = "kitty|\(key)"
         lock.lock()
         if let escape = kittyEscape.get(key) {
+            demand = nil
             lock.unlock()
             return .kitty(id: id, transmit: escape)
         }
-        if isBlockedLocked(key) { lock.unlock(); return nil }
-        askAndUnlock(workKey: "kitty|\(key)", key: key) { [unowned self] job in
+        let body: (Job) -> Void = { [unowned self] job in
             // ensureBytesOnDisk has already decided whether a failed fetch is
             // negative-cached; only the read and the PNG conversion are decided here.
-            guard case .path(let path) = self.ensureBytesOnDisk(key: key, url: url, token: job.token) else { return }
+            guard case .path(let path) = self.ensureBytesOnDisk(key: key, url: url, token: job.token),
+                  !job.token.isCancelled else { return }
             guard let data = FileManager.default.contents(atPath: path),
                   let png = imageDataToPNG(data) else {
                 self.noteFailure(key)
                 return
             }
             let escape = kittyTransmitEscape(id: id, png: png)
-            self.lock.lock(); self.kittyEscape.set(key, escape); self.lock.unlock()
+            self.lock.lock()
+            self.kittyEscape.set(key, escape)
+            if self.demand?.workKey == workKey { self.demand = nil }
+            self.lock.unlock()
             onReady()
         }
+        demand = Demand(workKey: workKey, key: key, body: body)
+        if isBlockedLocked(key) { lock.unlock(); return nil }
+        askAndUnlock(workKey: workKey, key: key, body: body)
         return nil
     }
 }
