@@ -93,6 +93,10 @@ final class NowPlayingScene: Scene {
     // nil when the user isn't signed in / no dev token configured — the token-
     // less path then falls straight to the gradient, exactly today's behavior.
     private let restArtworkAPI: RESTAPIBackend?
+    /// The library album lookup behind the REST rung: `lookupAlbumArtwork`
+    /// over `restArtworkAPI` in production (nil without one); tests inject a
+    /// fake so nothing reaches the network.
+    private let restLookup: ((String, String, String) -> (id: String, url: String)?)?
     // Publishes the desired art LINES size to PlaybackPoller each render —
     // Shell wires this to poller.setDesiredArtSize so this scene never needs
     // to know PlaybackPoller exists (mirrors how the other scene deps below
@@ -178,7 +182,15 @@ final class NowPlayingScene: Scene {
     // `restInFlight` are tick()-thread-only (drained from the locked inbox,
     // the same discipline as every other background-fetch cache here);
     // `restInbox`/`artDirty` are the cross-thread handoff, guarded by artLock.
-    private let artwork = ArtworkStore()
+    // One store per store rung, because each store remembers ONE demand (its
+    // latest unanswered ask) and render can leave two: when SpanDAC's cover
+    // gives no block yet it falls through to the REST cover in the same paint.
+    // With one shared store the REST ask overwrote the primary's demand, and
+    // tick then revoked it as not the primary's key, so neither retried on an
+    // idle screen (review round 3, 2026-10-25). Both stores share the disk
+    // cache; their keys never collide (`spandac-*` vs the REST album id).
+    private let bridgeArtwork: ArtworkStore   // SpanDAC's own cover (remote URL or extracted library file)
+    private let restArtwork: ArtworkStore     // the REST library-album cover
     // albumKey -> the library album's REST id + {w}x{h} artwork template. The
     // id is what ArtworkStore is keyed on, so a cover the Library tab already
     // fetched is a disk-cache HIT here rather than a second download.
@@ -214,7 +226,21 @@ final class NowPlayingScene: Scene {
          routing: RoutingCoordinator,
          restArtworkAPI: RESTAPIBackend? = nil, kittyEnabled: Bool = false,
          setArtSize: @escaping (Int, Int) -> Void = { _, _ in },
-         bridgeCoverExtractor: ((String, String) -> String?)? = nil) {
+         bridgeCoverExtractor: ((String, String) -> String?)? = nil,
+         makeArtworkStore: (() -> ArtworkStore)? = nil,
+         restLookup: ((_ title: String, _ artist: String, _ album: String) -> (id: String, url: String)?)? = nil) {
+        let makeStore = makeArtworkStore ?? { ArtworkStore() }
+        self.bridgeArtwork = makeStore()
+        self.restArtwork = makeStore()
+        if let restLookup {
+            self.restLookup = restLookup
+        } else if let api = restArtworkAPI {
+            self.restLookup = { title, artist, album in
+                lookupAlbumArtwork(api: api, title: title, artist: artist, album: album)
+            }
+        } else {
+            self.restLookup = nil
+        }
         self.bridgeCoverExtractor = bridgeCoverExtractor ?? { pid, path in
             extractLibraryTrackArtwork(backend: backend, persistentID: pid, to: path)
         }
@@ -283,8 +309,11 @@ final class NowPlayingScene: Scene {
         // The demand belongs to what this snapshot shows, so it is validated
         // before the pump can re-issue a cover the screen no longer shows
         // (another track, the menu, the empty state; review, 2026-10-25).
-        artwork.retainDemand(key: wantedCoverKey(snapshot))
-        artwork.pump()   // cover retry / stale-slot deadlines, independent of painting
+        let wanted = coverCandidates(snapshot)
+        bridgeArtwork.retainDemand(key: wanted.bridge?.key)
+        restArtwork.retainDemand(key: wanted.rest?.key)
+        bridgeArtwork.pump()   // cover retry / stale-slot deadlines, independent of painting
+        restArtwork.pump()
         pendingFromStopped = snapshot.queueEnded
         if snapshot.queueEnded {
             pendingSeedTitle = snapshot.endedTrack
@@ -338,7 +367,7 @@ final class NowPlayingScene: Scene {
         // same inbox+NSLock handoff as Library/Playlists' artMap — and render()
         // turns a hit into pixels via ArtworkStore, which fetches on its own
         // serial queue and signals back through artDirty.
-        if case .active(let np) = snapshot.outcome, let api = restArtworkAPI,
+        if case .active(let np) = snapshot.outcome, let lookup = restLookup,
            snapshot.artLines.isEmpty, snapshot.artPath == nil,
            // Bridge's album line is the sent row's; it must not start a REST
            // lookup for a player whose cover has its own rung.
@@ -349,7 +378,7 @@ final class NowPlayingScene: Scene {
             if restArt[albumKey] == nil, !restAttempted.contains(trackTag), !restInFlight.contains(trackTag) {
                 restInFlight.insert(trackTag)
                 Thread.detachNewThread { [weak self] in
-                    let hit = lookupAlbumArtwork(api: api, title: np.track, artist: np.artist, album: np.album)
+                    let hit = lookup(np.track, np.artist, np.album)
                     guard let self else { return }
                     self.artLock.lock()
                     self.restInbox.append((trackTag, albumKey, hit))
@@ -522,22 +551,33 @@ final class NowPlayingScene: Scene {
         // (renderArtHero) that Library/Playlists/Radio already use — this tab
         // used to hand-roll its own copy of it. ArtworkStore.block fetches on
         // its own serial queue and signals via onReady; nothing here blocks.
-        artwork.dropDemand()   // the ask below, if this view has a store cover, re-sets it
+        // The asks below, if this view has store covers, re-set the demands.
+        bridgeArtwork.dropDemand()
+        restArtwork.dropDemand()
         var artBlock: ArtBlock? = nil
         if showArt, artRows > 0 {
             if kittyEnabled, let path = snapshot.artPath, let (id, escape) = kittyIdentity(forPath: path) {
                 artBlock = .kitty(id: id, transmit: escape)
             } else if !artLines.isEmpty {
                 artBlock = .lines(artLines)
-            } else if let block = bridgeCoverBlock(snapshot.bridge, gw: gw, artRows: artRows) {
-                artBlock = block
-            } else if let hit = restArt[nowAlbumKey(album: np.album, artist: np.artist)] {
-                artBlock = artwork.block(key: hit.id,
-                                         url: ArtworkStore.resolveURL(hit.url, width: 300, height: 300),
-                                         width: gw, height: artRows,
-                                         kitty: kittyEnabled && gw > 0) { [weak self] in
+            } else {
+                // The store rungs, in order, from the same selection tick
+                // retains: the primary first; the fallback only when the
+                // primary gives no block yet. Each rung asks its own store, so
+                // a fallback ask never displaces the primary's demand.
+                let candidates = coverCandidates(snapshot)
+                let onReady: () -> Void = { [weak self] in
                     guard let self else { return }
                     self.artLock.lock(); self.artDirty = true; self.artLock.unlock()
+                }
+                let kitty = kittyEnabled && gw > 0
+                if let c = candidates.bridge {
+                    artBlock = bridgeArtwork.block(key: c.key, url: c.url, width: gw, height: artRows,
+                                                   kitty: kitty, onReady: onReady)
+                }
+                if artBlock == nil, let c = candidates.rest {
+                    artBlock = restArtwork.block(key: c.key, url: c.url, width: gw, height: artRows,
+                                                 kitty: kitty, onReady: onReady)
                 }
             }
         }
@@ -644,59 +684,54 @@ final class NowPlayingScene: Scene {
         return out
     }
 
-    /// The store cover key `render`'s art ladder would ask for with this
-    /// snapshot, or nil when it draws embedded art, the gradient, the menu or
-    /// the empty state. Mirrors the ladder's order; width is not known here,
-    /// and a frame too narrow for art drops the demand in `render` itself.
-    private func wantedCoverKey(_ snapshot: NowPlayingSnapshot) -> String? {
-        guard !menuActive(snapshot), case .active(let np) = snapshot.outcome else { return nil }
-        if kittyEnabled, let path = snapshot.artPath, idCache[path] != nil { return nil }
-        if !snapshot.artLines.isEmpty { return nil }
+    /// One store rung's ask: the cache key and the URL to fetch it from.
+    struct CoverCandidate: Equatable {
+        let key: String
+        let url: String
+    }
+
+    /// The store covers `render`'s art ladder may ask for with this snapshot,
+    /// one per rung, nil for a rung it cannot reach. `render` asks them in
+    /// order (`bridge` first, `rest` only when `bridge` gives no block yet) and
+    /// `tick` retains each rung's demand from the same selection, so the two
+    /// can never disagree about which key a rung is pending on (review round
+    /// 3, 2026-10-25). Both are nil when the ladder stops above the store
+    /// rungs: embedded art, the menu, the empty state. Width is not known
+    /// here, and a frame too narrow for art drops the demands in `render`.
+    ///
+    /// `bridge`: a fetchable remote URL as it is; failing that, the cover
+    /// extracted from the library by persistent ID, once tick's extraction
+    /// has landed. `rest`: the library album cover resolved earlier for this
+    /// album, kept as a fallback for a primary that is pending, cooling down
+    /// or unusable.
+    func coverCandidates(_ snapshot: NowPlayingSnapshot) -> (bridge: CoverCandidate?, rest: CoverCandidate?) {
+        guard !menuActive(snapshot), case .active(let np) = snapshot.outcome else { return (nil, nil) }
+        if kittyEnabled, let path = snapshot.artPath, idCache[path] != nil { return (nil, nil) }
+        if !snapshot.artLines.isEmpty { return (nil, nil) }
+        var primary: CoverCandidate? = nil
         if let bridge = snapshot.bridge {
             switch bridgeCoverSource(artworkURL: bridge.artworkURL, persistentID: bridge.persistentID) {
             case .remote(let url):
-                return bridgeRemoteCoverKey(url)
+                primary = CoverCandidate(key: bridgeRemoteCoverKey(url),
+                                         url: ArtworkStore.resolveURL(url, width: 600, height: 600))
             case .library(let pid):
                 artLock.lock(); let path = bridgeCoverPaths[pid]; artLock.unlock()
-                if path != nil { return "spandac-lib-\(pid)" }
+                if let path {
+                    primary = CoverCandidate(key: "spandac-lib-\(pid)", url: URL(fileURLWithPath: path).absoluteString)
+                }
             case .none:
                 break
             }
         }
-        return restArt[nowAlbumKey(album: np.album, artist: np.artist)]?.id
+        let fallback = restArt[nowAlbumKey(album: np.album, artist: np.artist)].map {
+            CoverCandidate(key: $0.id, url: ArtworkStore.resolveURL($0.url, width: 300, height: 300))
+        }
+        return (primary, fallback)
     }
 
     /// Keyed on a hash of the URL so the on-disk cache name stays short and stable.
     private func bridgeRemoteCoverKey(_ url: String) -> String {
         "spandac-\(String(format: "%08x", kittyImageID(forKey: url)))"
-    }
-
-    /// SpanDAC's cover through the same ArtworkStore and hero ladder as the REST
-    /// fallback. A fetchable http(s) URL goes in as it is; failing that, the
-    /// cover extracted from the library by persistent ID goes in as a file URL
-    /// once tick()'s extraction has landed (nil, so the gradient, until then).
-    private func bridgeCoverBlock(_ bridge: BridgeNow?, gw: Int, artRows: Int) -> ArtBlock? {
-        guard let bridge else { return nil }
-        let onReady: () -> Void = { [weak self] in
-            guard let self else { return }
-            self.artLock.lock(); self.artDirty = true; self.artLock.unlock()
-        }
-        switch bridgeCoverSource(artworkURL: bridge.artworkURL, persistentID: bridge.persistentID) {
-        case .remote(let url):
-            return artwork.block(key: bridgeRemoteCoverKey(url),
-                                 url: ArtworkStore.resolveURL(url, width: 600, height: 600),
-                                 width: gw, height: artRows,
-                                 kitty: kittyEnabled && gw > 0, onReady: onReady)
-        case .library(let pid):
-            artLock.lock(); let path = bridgeCoverPaths[pid]; artLock.unlock()
-            guard let path else { return nil }
-            return artwork.block(key: "spandac-lib-\(pid)",
-                                 url: URL(fileURLWithPath: path).absoluteString,
-                                 width: gw, height: artRows,
-                                 kitty: kittyEnabled && gw > 0, onReady: onReady)
-        case .none:
-            return nil
-        }
     }
 
     /// Bridge's empty state: what Bridge is doing, then the way in.
