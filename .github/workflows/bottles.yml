@@ -59,8 +59,8 @@ jobs:
           REQUESTED: ${{ inputs.tags }}
         run: |
           set -euo pipefail
-          # arm64_sonoma/macos-14 was retired with GitHub's macos-14 runner
-          # (2026-11-02). The tag names the build environment, so a Sequoia
+          # arm64_sonoma/macos-14 was removed here on 2026-10-25, ahead of
+          # GitHub retiring the macos-14 runner on 2026-11-02. The tag names the build environment, so a Sequoia
           # build is arm64_sequoia and is NEVER relabelled arm64_sonoma; the
           # built-tag assertion in the bottle job enforces that. The formula
           # floor stays `depends_on macos: :sonoma`, so Sonoma installs from
