@@ -31,7 +31,7 @@ on:
       tags:
         description: 'Comma-separated bottle tags to build'
         required: false
-        default: 'arm64_sonoma,arm64_tahoe,sequoia'
+        default: 'arm64_sequoia,arm64_tahoe,sequoia'
         type: string
       publish:
         description: 'Upload the bottles to the release'
@@ -59,8 +59,14 @@ jobs:
           REQUESTED: ${{ inputs.tags }}
         run: |
           set -euo pipefail
+          # arm64_sonoma/macos-14 was retired with GitHub's macos-14 runner
+          # (2026-11-02). The tag names the build environment, so a Sequoia
+          # build is arm64_sequoia and is NEVER relabelled arm64_sonoma; the
+          # built-tag assertion in the bottle job enforces that. The formula
+          # floor stays `depends_on macos: :sonoma`, so Sonoma installs from
+          # source. Homebrew pours the nearest older tag where one exists.
           known='[
-            {"bottle_tag":"arm64_sonoma","runner":"macos-14"},
+            {"bottle_tag":"arm64_sequoia","runner":"macos-15"},
             {"bottle_tag":"arm64_tahoe","runner":"macos-26"},
             {"bottle_tag":"sequoia","runner":"macos-15-intel"}
           ]'
