@@ -27,6 +27,26 @@ struct NowPlayingSnapshot {
     var spanDACQueueToken: String? = nil
 }
 
+extension NowPlayingSnapshot: Equatable {
+    /// Field-wise, by hand: `history` is an array of tuples, which cannot be
+    /// synthesised. Two snapshots that compare equal draw identically.
+    static func == (a: NowPlayingSnapshot, b: NowPlayingSnapshot) -> Bool {
+        a.outcome == b.outcome
+            && a.history.elementsEqual(b.history, by: { $0.track == $1.track && $0.artist == $1.artist })
+            && a.surrounding == b.surrounding
+            && a.contextName == b.contextName
+            && a.artLines == b.artLines
+            && a.artPath == b.artPath
+            && a.queueEnded == b.queueEnded
+            && a.endedSource == b.endedSource
+            && a.endedTrack == b.endedTrack
+            && a.endedArtist == b.endedArtist
+            && a.endedArtLines == b.endedArtLines
+            && a.bridge == b.bridge
+            && a.spanDACQueueToken == b.spanDACQueueToken
+    }
+}
+
 /// Thread-safe box around the latest snapshot. The poller calls `write`; the
 /// main loop calls `read` once per frame. One lock, one struct — the entire
 /// shared-mutable-state surface of the shell (see spec: "one poller, one store,
@@ -41,15 +61,19 @@ final class NowPlayingStore {
         return snapshot
     }
 
-    /// Snapshot plus a counter that bumps on every write. The render loop skips
-    /// repainting when the generation hasn't moved (and no key/resize arrived),
-    /// instead of redrawing the whole screen ~10x/s unconditionally.
+    /// Snapshot plus a counter that bumps when a write CHANGES the snapshot. The
+    /// render loop skips repainting when the generation hasn't moved (and no
+    /// key/resize arrived), instead of redrawing the whole screen ~10x/s
+    /// unconditionally. A write equal to the stored snapshot (paused playback
+    /// polled again) is not a change and does not move it.
     func readWithGeneration() -> (snapshot: NowPlayingSnapshot, generation: Int) {
         lock.lock(); defer { lock.unlock() }
         return (snapshot, generation)
     }
 
     func write(_ next: NowPlayingSnapshot) {
-        lock.lock(); snapshot = next; generation += 1; lock.unlock()
+        lock.lock(); defer { lock.unlock() }
+        if next == snapshot { return }
+        snapshot = next; generation += 1
     }
 }

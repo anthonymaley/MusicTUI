@@ -20,7 +20,7 @@ final class NowPlayingStoreTests: XCTestCase {
         if case .unavailable = store.read().outcome { } else { XCTFail("expected unavailable default") }
     }
 
-    func testGenerationBumpsOnEveryWriteAndIsStableAcrossReads() {
+    func testGenerationBumpsOnEveryChangeAndIsStableAcrossReads() {
         let store = NowPlayingStore()
         let g0 = store.readWithGeneration().generation
         XCTAssertEqual(store.readWithGeneration().generation, g0, "reads must not advance the generation")
@@ -28,7 +28,15 @@ final class NowPlayingStoreTests: XCTestCase {
         let g1 = store.readWithGeneration().generation
         XCTAssertNotEqual(g1, g0)
         store.write(NowPlayingSnapshot(outcome: .stopped, history: [], surrounding: []))
-        XCTAssertNotEqual(store.readWithGeneration().generation, g1, "identical payloads still bump (a write is a change signal)")
+        XCTAssertEqual(store.readWithGeneration().generation, g1,
+                       "an identical payload is not a change: the loop must not be told to repaint")
+        var np = NowPlayingState(); np.track = "Nude"
+        store.write(NowPlayingSnapshot(outcome: .active(np), history: [], surrounding: []))
+        let g2 = store.readWithGeneration().generation
+        XCTAssertNotEqual(g2, g1)
+        np.position = 1
+        store.write(NowPlayingSnapshot(outcome: .active(np), history: [], surrounding: []))
+        XCTAssertNotEqual(store.readWithGeneration().generation, g2, "an elapsed tick is still a change")
     }
 
     func testReadWithGenerationReturnsLastWrite() {
