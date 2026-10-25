@@ -490,8 +490,7 @@ func runShell() {
     // store generation moved), scene-local state (tick reports it), a handled
     // key, or a resize. The loop still spins at the input-poll cadence (~10/s),
     // but idle iterations skip the full-screen truecolor repaint.
-    var lastGeneration = -1
-    var lastToast: StatusToast? = nil
+    var renderGate = ShellRenderGate()
     var needsRender = true
     // What SpanDAC last said about serving, as this loop saw it, so a flip
     // into not serving is told once (`licenceNotice`).
@@ -518,16 +517,14 @@ func runShell() {
         }
 
         let (snap, generation) = store.readWithGeneration()
-        if generation != lastGeneration {
-            lastGeneration = generation
+        if renderGate.snapshotNeedsRender(snapshot: snap, generation: generation, active: router.active) {
             needsRender = true
         }
         // The next track playback reports clears a won't-play message.
         status.observe(track: statusTrackKey(snap))
         // Toast appearing, changing, or expiring all repaint the footer.
         let toast = status.current()
-        if toast != lastToast {
-            lastToast = toast
+        if renderGate.toastNeedsRender(toast) {
             needsRender = true
         }
         let screen = dims()

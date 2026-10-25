@@ -5,7 +5,7 @@ import ImageIO
 import Darwin
 #endif
 
-struct NowPlayingState {
+struct NowPlayingState: Equatable {
     var track: String = ""
     var artist: String = ""
     var album: String = ""
@@ -34,7 +34,7 @@ struct TrackListEntry: Codable, Equatable {
 /// something unparseable). Collapsing both to `nil` previously caused two
 /// bugs: a single hiccup mid-track blanked the UI, and in context mode it
 /// skipped to the next track.
-enum PollOutcome {
+enum PollOutcome: Equatable {
     case active(NowPlayingState)
     case stopped
     case unavailable
