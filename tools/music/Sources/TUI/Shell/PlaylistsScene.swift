@@ -881,7 +881,6 @@ final class PlaylistsScene: Scene {
 
     func tick(snapshot: NowPlayingSnapshot) -> Bool {
         var changed = false
-        artwork.pump()   // cover retry / stale-slot deadlines, independent of painting
         previewInboxLock.lock(); previewTickAt = now(); previewInboxLock.unlock()
 
         // D7: before anything else this tick, so a rail reset here also
@@ -908,6 +907,11 @@ final class PlaylistsScene: Scene {
                 changed = true
             }
         }
+        // The demand belongs to the view as it stands now (provenance, rail
+        // source and the arrival snap all settled above), so it is validated
+        // before the pump can re-issue a cover this view no longer shows.
+        artwork.retainDemand(key: wantedHeroCoverKey())
+        artwork.pump()   // cover retry / stale-slot deadlines, independent of painting
         if !artMapStarted, let load = sources.onArtworkMap {
             artMapStarted = true
             Thread.detachNewThread { [weak self] in
@@ -1916,6 +1920,26 @@ final class PlaylistsScene: Scene {
         }
     }
 
+    /// The store cover key the CURRENT view's hero draws, or nil, mirroring
+    /// `render`'s branches: the Bridge hero's installed SpanDAC cover, else the
+    /// Music.app hero's artMap entry, never while an empty, failed or loading
+    /// rail is shown instead.
+    private func wantedHeroCoverKey() -> String? {
+        switch railSource {
+        case .bridge?:
+            return bridgeCoverTarget().flatMap { libraryCovers?.cover(for: $0) }?.key
+        case .musicApp?:
+            guard !playlists.isEmpty, plCursor >= 0, plCursor < meta.count else { return nil }
+            return musicAppArtEntry(title: meta[plCursor].name)?.id
+        case nil:
+            return nil
+        }
+    }
+
+    private func musicAppArtEntry(title: String) -> (id: String, url: String)? {
+        artMap[title.lowercased().trimmingCharacters(in: .whitespaces)]
+    }
+
     private func renderHero(_ z: PlaylistZones, into out: inout String, bodyTop: Int, bodyBottom: Int,
                             cellW: Double, cellH: Double) {
         var y = bodyTop
@@ -1939,7 +1963,7 @@ final class PlaylistsScene: Scene {
         let gh = max(0, bodyBottom - y - 4)
         artwork.dropDemand()   // the ask below, if this view has a store cover, re-sets it
         var artBlock: ArtBlock? = nil
-        if let entry = artMap[title.lowercased().trimmingCharacters(in: .whitespaces)] {
+        if let entry = musicAppArtEntry(title: title) {
             artBlock = artwork.block(key: entry.id,
                                      url: ArtworkStore.resolveURL(entry.url, width: 300, height: 300),
                                      // Degenerate geometry (very short/narrow terminal) skips the

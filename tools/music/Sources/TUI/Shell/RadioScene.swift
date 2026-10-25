@@ -555,7 +555,6 @@ store: StationStore, catalog: RadioCatalog?,
     @discardableResult
     func tick(snapshot: NowPlayingSnapshot) -> Bool {
         var changed = false
-        artwork.pump()   // cover retry / stale-slot deadlines, independent of painting
 
         // A committed output switch or a change of data source since the
         // lists were fetched: they go, and are fetched again (D3, C-EPOCH).
@@ -569,6 +568,11 @@ store: StationStore, catalog: RadioCatalog?,
             liveFetchStarted = false; personalFetchStarted = false
             changed = true
         }
+        // The demand belongs to the view as it stands now (after the epoch
+        // reset above), so it is validated before the pump can re-issue a cover
+        // this view no longer shows (review, 2026-10-25).
+        artwork.retainDemand(key: selection.flatMap { $0.artworkURL == nil ? nil : $0.id })
+        artwork.pump()   // cover retry / stale-slot deadlines, independent of painting
 
         // Live/Personal are fetched once per epoch, off-thread, kicked on the
         // first tick after the tab is entered — same one-shot pattern as

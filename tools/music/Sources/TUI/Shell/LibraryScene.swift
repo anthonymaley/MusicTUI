@@ -1741,7 +1741,6 @@ final class LibraryScene: Scene {
 
     func tick(snapshot: NowPlayingSnapshot) -> Bool {
         var changed = false
-        artwork.pump()   // cover retry / stale-slot deadlines, independent of painting
         inboxLock.lock(); lastTickAt = now(); inboxLock.unlock()
         if snapToPlayingPending, case .songList = nav.current,
            case .active(let np) = snapshot.outcome, !songs.isEmpty {
@@ -1757,6 +1756,11 @@ final class LibraryScene: Scene {
         // D7: before anything else this tick, so a list reset here also
         // reloads from the right source this same tick.
         if applyProvenance() { changed = true }
+        // The demand belongs to the view as it stands now (focus, sub-view and
+        // provenance all settled above), so it is validated before the pump can
+        // re-issue a cover this view no longer shows (review, 2026-10-25).
+        artwork.retainDemand(key: wantedHeroCover()?.key)
+        artwork.pump()   // cover retry / stale-slot deadlines, independent of painting
 
         inboxLock.lock()
         let newAlbums = albumsPending; albumsPending = []
@@ -3497,6 +3501,25 @@ final class LibraryScene: Scene {
         }
     }
 
+    /// The store cover the hero draws for `a`: the Music.app ladder's, else
+    /// SpanDAC's installed one. One definition for the render and the tick.
+    private func heroCover(for a: LibraryAlbum) -> LibraryCover? {
+        (coverCache[a.id] ?? nil) ?? coverTarget(for: a).flatMap { libraryCovers?.cover(for: $0) }
+    }
+
+    /// The store cover the CURRENT view shows, or nil: only the album views
+    /// (Albums, an artist's albums, the tracks drilled from either) draw a hero;
+    /// Songs and the root Artists list do not, and an empty or filtered-out
+    /// rail has no focused album.
+    private func wantedHeroCover() -> LibraryCover? {
+        switch nav.subView {
+        case .songs: return nil
+        case .artists: if case .artistList = nav.current { return nil }
+        case .albums: break
+        }
+        return focusedAlbum().flatMap(heroCover(for:))
+    }
+
     private func renderHero(_ z: PlaylistZones, into out: inout String, contentTop: Int, bodyBottom: Int,
                             cellW: Double, cellH: Double) {
         guard let a = focusedAlbum() else { return }
@@ -3517,8 +3540,7 @@ final class LibraryScene: Scene {
         let gh = max(0, bodyBottom - y - 4)
         artwork.dropDemand()   // the ask below, if this view has a store cover, re-sets it
         var artBlock: ArtBlock? = nil
-        let spandacCover = coverTarget(for: a).flatMap { libraryCovers?.cover(for: $0) }
-        if let hit = (coverCache[a.id] ?? nil) ?? spandacCover {
+        if let hit = heroCover(for: a) {
             artBlock = artwork.block(key: hit.key,
                                      url: hit.url,
                                      // Degenerate geometry (very short/narrow terminal) skips the

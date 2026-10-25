@@ -1013,7 +1013,6 @@ final class DiscoverScene: Scene {
 
     func tick(snapshot: NowPlayingSnapshot) -> Bool {
         var changed = false
-        art.pump()   // cover retry / stale-slot deadlines, independent of painting
 
         // A change of data source since the rails were fetched: what is on
         // screen came from the source just left, so it goes and is read again
@@ -1022,6 +1021,13 @@ final class DiscoverScene: Scene {
             reloadForANewDataSource()
             changed = true
         }
+        // The demand belongs to the view as it stands now (after the data-epoch
+        // reload above), so it is validated before the pump can re-issue a
+        // cover this view no longer shows (review, 2026-10-25).
+        art.retainDemand(key: selection.flatMap { s in
+            let a = panelArt(for: s); return a.template == nil ? nil : a.key
+        })
+        art.pump()   // cover retry / stale-slot deadlines, independent of painting
 
         if !fetchStarted {
             fetchStarted = true
@@ -1188,7 +1194,10 @@ final class DiscoverScene: Scene {
         out += renderLeft(frame: frame, width: leftW)
         if twoPane, let selection {
             out += renderPanel(frame: frame, x: leftW + 4, selection: selection)
-        } else if let last = lastPlaced {
+        } else {
+            art.dropDemand()   // no panel this frame, so no store cover is shown
+        }
+        if !(twoPane && selection != nil), let last = lastPlaced {
             // The panel isn't drawing this frame — a narrow resize dropped to
             // one pane, or `selection` is nil while a refresh is in flight
             // (reliably reachable: `r` on an art-bearing row is a routine
@@ -1302,6 +1311,16 @@ final class DiscoverScene: Scene {
         return "  \(marker) \(nameStr)\(sub)"
     }
 
+    /// The panel cover for `selection`: its store key and artwork template (nil:
+    /// the gradient). One definition for the panel and the tick's demand check.
+    private func panelArt(for selection: DiscoverSelection) -> (key: String, template: String?) {
+        switch selection {
+        case .item(let item):    return (item.id, item.artworkURL)
+        case .viewAll(let rail): return (rail.id, rail.items.first?.artworkURL)
+        case .genre(let g), .genreChoice(let g): return ("genre:\(g?.id ?? "all")", nil)
+        }
+    }
+
     private func renderPanel(frame: ShellFrame, x: Int, selection: DiscoverSelection) -> String {
         var out = ""
         var y = frame.bodyY + 2
@@ -1321,14 +1340,7 @@ final class DiscoverScene: Scene {
         // placement floating over this item's text — the same class of bug
         // as render()'s twoPane/selection branch above. The `.none` case
         // inside renderArtHero is what deletes that stale placement.
-        let artKey: String
-        let artTemplate: String?
-        switch selection {
-        case .item(let item):    artKey = item.id; artTemplate = item.artworkURL
-        case .viewAll(let rail): artKey = rail.id; artTemplate = rail.items.first?.artworkURL
-        case .genre(let g), .genreChoice(let g):
-            artKey = "genre:\(g?.id ?? "all")"; artTemplate = nil
-        }
+        let (artKey, artTemplate) = panelArt(for: selection)
         // Compose the text BEFORE sizing the cover, so the hero is measured
         // against the rows genuinely left rather than a guessed reserve, and so
         // the array measured here is the one drawn below. Was `min(24, w)` by

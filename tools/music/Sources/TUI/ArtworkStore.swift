@@ -24,7 +24,10 @@
 // scene calls from `tick` (once per shell-loop pass, painted or not),
 // re-issues that demand when its retry deadline passes and reruns the
 // scheduler so a stale slot is reclaimed on time. Success fires the ask's own
-// `onReady`, so the tick reports the change and the shell paints once. And a
+// `onReady`, so the tick reports the change and the shell paints once. The
+// demand belongs to the scene's current view: each scene calls
+// `retainDemand(key:)` with the cover that view shows (or nil) before it pumps,
+// so a cover the view has left is never re-issued (review round 2). And a
 // cancelled job keeps its slot, and its key, until its body has returned: a
 // render or PNG conversion cannot be cancelled, so the pool bounds the work
 // actually running, not the bookkeeping.
@@ -370,6 +373,23 @@ final class ArtworkStore {
     /// and running work is left to the scheduler's own rules.
     func dropDemand() {
         lock.lock(); demand = nil; lock.unlock()
+    }
+
+    /// The scene's CURRENT view wants `rawKey`'s cover (nil: no store cover).
+    /// Scenes call this at the top of `tick`, after their own provenance and
+    /// focus decisions and BEFORE `pump()`, so a demand left by a view that is
+    /// gone (another row, sub-view or source, an empty or coverless view, a
+    /// return to a tab that now shows something else) is revoked before the
+    /// pump can re-issue it. An unchanged cover keeps its demand, so an idle
+    /// screen still recovers. A revoked demand's job that has not started is
+    /// dropped unsent; one already running keeps its slot (`launch`).
+    func retainDemand(key rawKey: String?) {
+        lock.lock()
+        if let d = demand, rawKey.map(Self.cacheKey) != d.key {
+            demand = nil
+            pending[d.workKey] = nil
+        }
+        lock.unlock()
     }
 
     /// Blocks until every started job has finished. Tests only.

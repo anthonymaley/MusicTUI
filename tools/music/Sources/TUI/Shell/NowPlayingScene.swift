@@ -278,9 +278,13 @@ final class NowPlayingScene: Scene {
 
     @discardableResult
     func tick(snapshot: NowPlayingSnapshot) -> Bool {
-        artwork.pump()   // cover retry / stale-slot deadlines, independent of painting
         menuShownLastFrame = menuActive(snapshot)
         lastBridge = snapshot.bridge
+        // The demand belongs to what this snapshot shows, so it is validated
+        // before the pump can re-issue a cover the screen no longer shows
+        // (another track, the menu, the empty state; review, 2026-10-25).
+        artwork.retainDemand(key: wantedCoverKey(snapshot))
+        artwork.pump()   // cover retry / stale-slot deadlines, independent of painting
         pendingFromStopped = snapshot.queueEnded
         if snapshot.queueEnded {
             pendingSeedTitle = snapshot.endedTrack
@@ -640,6 +644,33 @@ final class NowPlayingScene: Scene {
         return out
     }
 
+    /// The store cover key `render`'s art ladder would ask for with this
+    /// snapshot, or nil when it draws embedded art, the gradient, the menu or
+    /// the empty state. Mirrors the ladder's order; width is not known here,
+    /// and a frame too narrow for art drops the demand in `render` itself.
+    private func wantedCoverKey(_ snapshot: NowPlayingSnapshot) -> String? {
+        guard !menuActive(snapshot), case .active(let np) = snapshot.outcome else { return nil }
+        if kittyEnabled, let path = snapshot.artPath, idCache[path] != nil { return nil }
+        if !snapshot.artLines.isEmpty { return nil }
+        if let bridge = snapshot.bridge {
+            switch bridgeCoverSource(artworkURL: bridge.artworkURL, persistentID: bridge.persistentID) {
+            case .remote(let url):
+                return bridgeRemoteCoverKey(url)
+            case .library(let pid):
+                artLock.lock(); let path = bridgeCoverPaths[pid]; artLock.unlock()
+                if path != nil { return "spandac-lib-\(pid)" }
+            case .none:
+                break
+            }
+        }
+        return restArt[nowAlbumKey(album: np.album, artist: np.artist)]?.id
+    }
+
+    /// Keyed on a hash of the URL so the on-disk cache name stays short and stable.
+    private func bridgeRemoteCoverKey(_ url: String) -> String {
+        "spandac-\(String(format: "%08x", kittyImageID(forKey: url)))"
+    }
+
     /// SpanDAC's cover through the same ArtworkStore and hero ladder as the REST
     /// fallback. A fetchable http(s) URL goes in as it is; failing that, the
     /// cover extracted from the library by persistent ID goes in as a file URL
@@ -652,8 +683,7 @@ final class NowPlayingScene: Scene {
         }
         switch bridgeCoverSource(artworkURL: bridge.artworkURL, persistentID: bridge.persistentID) {
         case .remote(let url):
-            // Keyed on a hash of the URL so the on-disk cache name stays short and stable.
-            return artwork.block(key: "spandac-\(String(format: "%08x", kittyImageID(forKey: url)))",
+            return artwork.block(key: bridgeRemoteCoverKey(url),
                                  url: ArtworkStore.resolveURL(url, width: 600, height: 600),
                                  width: gw, height: artRows,
                                  kitty: kittyEnabled && gw > 0, onReady: onReady)
