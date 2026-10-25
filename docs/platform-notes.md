@@ -667,7 +667,10 @@ runner images exist, and two of them are on a clock:
 Sonoma can be produced for a limited time only. After that the oldest available
 Apple Silicon runner is `macos-15`, and because the fallback never reaches
 upward, Sonoma machines return to building from source unless the formula's
-floor moves with it.
+floor moves with it. MusicTUI made that swap on 2026-10-25, a week early to
+stay clear of the last brownout windows: it builds `arm64_sequoia` on
+`macos-15` and keeps the formula floor at Sonoma, so Apple Silicon Sonoma
+installs from source.
 
 `macos-15-intel` is the last x86_64 image GitHub will offer, scheduled through
 August 2027 (actions/runner-images#13045), after which x86_64 is unsupported on
