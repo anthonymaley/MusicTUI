@@ -53,13 +53,14 @@ final class PlaylistsMusicAppLoadTests: XCTestCase {
     }
 
     private func scene(_ reader: HeldNamesReader, flag: BridgeSelectedFlag = BridgeSelectedFlag(false),
-                       wire: BridgeLibraryReadsWire? = nil, status: StatusStore = StatusStore()) -> PlaylistsScene {
+                       wire: BridgeLibraryReadsWire? = nil, status: StatusStore = StatusStore(),
+                       width: Int = 138) -> PlaylistsScene {
         let wire = wire ?? BridgeLibraryReadsWire([:])
         return openPlaylistsScene(build: { names, subscription in
             XCTAssertEqual(names, [], "the scene was built with names read on the opening thread")
             XCTAssertEqual(subscription, [])
             return playlistsTestScene(flag: flag, wire: wire, spy: PlaylistAppleScriptSpy(), status: status,
-                                      names: names, loadMusicAppPlaylists: { reader.read() })
+                                      names: names, width: width, loadMusicAppPlaylists: { reader.read() })
         })
     }
 
@@ -190,7 +191,14 @@ final class PlaylistsMusicAppLoadTests: XCTestCase {
 
     func testAResultLandingAfterTheSceneIsGoneIsDropped() {
         let reader = HeldNamesReader()
-        var s: PlaylistsScene? = scene(reader)
+        // One-zone width: the first tick then starts ONLY the names read. At the
+        // default three-zone width it also queues a rail-preview job whose closure
+        // upgrades its weak `self` AFTER its (here instant) read and holds the scene
+        // strongly for microseconds while it posts; if `s = nil` lands in that window
+        // the job's release is the last one, and the scene is still alive when the
+        // assertion runs (~2% of runs, 2026-10-25). That job is bounded and harmless,
+        // and is not what this test is about.
+        var s: PlaylistsScene? = scene(reader, width: 90)
         _ = s?.tick(snapshot: idle)
         XCTAssertTrue(reader.waitStarted())
         weak var gone = s
