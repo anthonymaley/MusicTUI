@@ -373,12 +373,21 @@ func parseRailPlaylistNames(_ raw: String) -> (names: [String], subscription: Se
     return (names, subscription)
 }
 
+/// Outcome of one read of the rail's playlist names on the MusicTUI
+/// (AppleScript) path. A failed read is its own case, never an empty list:
+/// `[]` means one thing, a successful read of a library with no playlists
+/// (the same rule `LibraryReadResult` holds for the Library tab).
+enum MusicAppPlaylistNamesRead: Equatable {
+    case success(names: [String], subscription: Set<String>)
+    case failure
+}
+
 /// Apple-curated playlists added to the library are class `subscription
 /// playlist`, NOT `user playlist` — `every user playlist` silently omits them
 /// (they only ever appeared in the rail via manual duplicates). Enumerate both
 /// classes in one call; downstream code resolves `playlist "name"` generically,
 /// which covers both.
-func fetchUserPlaylistNames(backend: AppleScriptBackend) -> (names: [String], subscription: Set<String>) {
+func fetchUserPlaylistNames(backend: AppleScriptBackend) -> MusicAppPlaylistNamesRead {
     guard let result = try? backend.runMusicBlocking("""
             set fs to (ASCII character 31)
             set output to ""
@@ -391,8 +400,9 @@ func fetchUserPlaylistNames(backend: AppleScriptBackend) -> (names: [String], su
                 set output to output & "S" & fs & name of p
             end repeat
             return output
-        """) else { return ([], []) }
-    return parseRailPlaylistNames(result)
+        """) else { return .failure }
+    let parsed = parseRailPlaylistNames(result)
+    return .success(names: parsed.names, subscription: parsed.subscription)
 }
 
 /// Build the three data-source closures over a fixed `names` list. Each closure

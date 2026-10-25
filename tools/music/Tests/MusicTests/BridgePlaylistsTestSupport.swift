@@ -36,9 +36,9 @@ final class PlaylistAppleScriptSpy {
         return countedSources()
     }
 
-    func loadMusicAppPlaylists() -> (names: [String], subscription: Set<String>) {
+    func loadMusicAppPlaylists() -> MusicAppPlaylistNamesRead {
         bump("loadMusicAppPlaylists")
-        return (names, subscription)
+        return .success(names: names, subscription: subscription)
     }
 
     private func countedSources() -> PlaylistDataSources {
@@ -62,7 +62,8 @@ func playlistsTestScene(flag: BridgeSelectedFlag, wire: BridgeLibraryReadsWire, 
                         width: Int = 138,
                         now: @escaping () -> Date = Date.init,
                         widthProvider: (() -> Int)? = nil,
-                        routing given: RoutingCoordinator? = nil) -> PlaylistsScene {
+                        routing given: RoutingCoordinator? = nil,
+                        loadMusicAppPlaylists loader: (() -> MusicAppPlaylistNamesRead)? = nil) -> PlaylistsScene {
     // `names` (this construction's own `playlists:`) and `spy.names` (what a
     // LATER async reload answers) are different concerns — only set the spy's
     // when the caller is using the direct-construction path and hasn't
@@ -83,7 +84,7 @@ func playlistsTestScene(flag: BridgeSelectedFlag, wire: BridgeLibraryReadsWire, 
                                       path: "/nonexistent", transport: wire.transport, libraryTransport: wire.transport))
                                   : nil
                           },
-                          loadMusicAppPlaylists: { spy.loadMusicAppPlaylists() },
+                          loadMusicAppPlaylists: loader ?? { spy.loadMusicAppPlaylists() },
                           makeSources: { spy.makeSources($0) },
                           warmUpSleep: warmUpSleep,
                           now: now,
