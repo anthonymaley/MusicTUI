@@ -18,7 +18,7 @@ Launch: `music`
 
 ## Setup
 
-Requires macOS 14+ and Music.app. Homebrew pours a prebuilt binary on Apple Silicon (macOS 14+) and Intel (macOS 15+); only Intel on macOS 14 needs Swift 5.9+ for a source build.
+Requires macOS 14+ and Music.app. Homebrew pours a prebuilt binary on macOS 15+ (Apple Silicon and Intel); on macOS 14 it builds from source, which needs Swift 5.9+.
 Playback, AirPlay, local library browsing, and local library search do not require an Apple Developer account. Music.app/MusicKit catalog and personalized API features may require developer-token setup and an Apple Music user token. SpanDAC capabilities and authentication differ; consult the repository documentation.
 
 ## Links
