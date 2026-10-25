@@ -418,7 +418,17 @@ final class LibraryScene: Scene {
     // scroll can't pile persistent-ID scans onto Music.
     private var coverCache: [String: LibraryCover?] = [:]
     private var coverInFlight: Set<String> = []
-    private var coverInbox: [(id: String, cover: LibraryCover?)] = []
+    private var coverInbox: [(id: String, cover: LibraryCover?, generation: Int)] = []
+    /// Music.app preview/cover scheduling state (see `takeNextAppleJob`), all
+    /// under `inboxLock`. `appleGeneration` is bumped by every provenance
+    /// reset, so a job or result from before it is dropped rather than landing
+    /// in the new library's caches.
+    private var appleTrackJobs: [AppleTrackJob] = []
+    private var appleCoverJobs: [(albumID: String, generation: Int)] = []
+    private var appleDropped: [(kind: AppleDroppedKind, albumID: String, generation: Int)] = []
+    private var appleWantedPreview: String? = nil
+    private var appleWantedCover: String? = nil
+    private var appleGeneration = 0
 
     private let inboxLock = NSLock()
     // The three lists come from one bulk read and arrive as a single page each;
@@ -495,7 +505,7 @@ final class LibraryScene: Scene {
     /// abandoned output is dropped rather than overwriting the current
     /// state.
     private var pendingArtistAlbumsFailure: (artistID: String, epoch: Int, sentence: String)? = nil
-    private var previewInbox: [(id: String, tracks: [String])] = []
+    private var previewInbox: [(id: String, tracks: [String], generation: Int)] = []
 
     // Real hero covers: the artwork ladder (embedded, then REST, then the
     // gradient, see coverCache above and kickCoverFetch below) resolves one
@@ -1358,15 +1368,112 @@ final class LibraryScene: Scene {
             }
             return
         }
-        guard !previewInFlight.contains(albumID) else { return }
+        if previewInFlight.contains(albumID) {
+            // Already asked for. An Enter promotes a job still waiting its turn
+            // (or dropped, the notice not yet drained) to explicit, which goes
+            // ahead of every unsent decorative job; a read already running is
+            // reused. Never a second concurrent scan.
+            guard explicit else { return }
+            inboxLock.lock()
+            let generation = appleGeneration
+            var added = false
+            if let i = appleTrackJobs.firstIndex(where: { $0.albumID == albumID && $0.generation == generation }) {
+                appleTrackJobs[i].explicit = true
+                added = true
+            } else if let i = appleDropped.firstIndex(where: {
+                $0.kind == .track && $0.albumID == albumID && $0.generation == generation
+            }) {
+                appleDropped.remove(at: i)
+                appleTrackJobs.append(AppleTrackJob(albumID: albumID, title: title, artist: artist,
+                                                    explicit: true, generation: generation))
+                added = true
+            }
+            inboxLock.unlock()
+            if added { previewQueue.async { [weak self] in self?.runNextAppleJob() } }
+            return
+        }
         previewInFlight.insert(albumID)
-        let sources = self.sources
-        previewQueue.async { [weak self] in
-            let fetched = sources.onAlbumTracks(title, artist)
-            guard let self else { return }
-            self.inboxLock.lock()
-            self.previewInbox.append((albumID, fetched))
-            self.inboxLock.unlock()
+        inboxLock.lock()
+        appleTrackJobs.append(AppleTrackJob(albumID: albumID, title: title, artist: artist,
+                                            explicit: explicit, generation: appleGeneration))
+        inboxLock.unlock()
+        previewQueue.async { [weak self] in self?.runNextAppleJob() }
+    }
+
+    // Music.app (AppleScript) preview and cover reads: one scan at a time,
+    // newest focus wins, an Enter first.
+    //
+    // Each kick adds a pending job and one task to `previewQueue`; the task
+    // runs whichever pending job is best AT THAT MOMENT, not the one that
+    // queued it. Best is: the newest explicit drill-in, else the focused
+    // album's decorative preview, else the focused album's cover. A decorative
+    // job for an album the cursor has left is dropped unsent (the tick clears
+    // its in-flight mark), so scrolling past N albums costs N cheap drops, not
+    // N full-library scans ahead of the album finally opened. The queue stays
+    // serial, so concurrency is still one.
+
+    private struct AppleTrackJob {
+        let albumID: String
+        let title: String
+        let artist: String
+        var explicit: Bool
+        let generation: Int
+    }
+    private enum AppleJob {
+        case tracks(AppleTrackJob)
+        case cover(albumID: String, generation: Int)
+    }
+    private enum AppleDroppedKind { case track, cover }
+
+    /// What the tick says is wanted now, under `inboxLock`: the focused album
+    /// for the decorative preview and for the cover (nil: none).
+    private func setAppleWanted(preview: String?, cover: String?) {
+        inboxLock.lock(); appleWantedPreview = preview; appleWantedCover = cover; inboxLock.unlock()
+    }
+
+    private func takeNextAppleJob() -> AppleJob? {
+        inboxLock.lock(); defer { inboxLock.unlock() }
+        let live = tabIsLiveLocked()
+        let generation = appleGeneration
+        // A job from before a provenance reset belongs to a library that is
+        // gone; the reset already cleared its in-flight mark, so it just goes.
+        appleTrackJobs = appleTrackJobs.filter { job in
+            guard job.generation == generation else { return false }
+            if job.explicit || (live && job.albumID == appleWantedPreview) { return true }
+            appleDropped.append((.track, job.albumID, generation))
+            return false
+        }
+        appleCoverJobs = appleCoverJobs.filter { job in
+            guard job.generation == generation else { return false }
+            if live && job.albumID == appleWantedCover { return true }
+            appleDropped.append((.cover, job.albumID, generation))
+            return false
+        }
+        if let i = appleTrackJobs.lastIndex(where: { $0.explicit }) {
+            return .tracks(appleTrackJobs.remove(at: i))
+        }
+        if !appleTrackJobs.isEmpty { return .tracks(appleTrackJobs.removeFirst()) }
+        if !appleCoverJobs.isEmpty {
+            let job = appleCoverJobs.removeFirst()
+            return .cover(albumID: job.albumID, generation: job.generation)
+        }
+        return nil
+    }
+
+    /// Runs on `previewQueue`: one pending job, if any is still worth running.
+    private func runNextAppleJob() {
+        guard let job = takeNextAppleJob() else { return }
+        switch job {
+        case .tracks(let job):
+            let fetched = sources.onAlbumTracks(job.title, job.artist)
+            inboxLock.lock()
+            previewInbox.append((job.albumID, fetched, job.generation))
+            inboxLock.unlock()
+        case .cover(let albumID, let generation):
+            let hit = sources.onAlbumCover(albumID)
+            inboxLock.lock()
+            coverInbox.append((albumID, hit, generation))
+            inboxLock.unlock()
         }
     }
 
@@ -1427,14 +1534,10 @@ final class LibraryScene: Scene {
     private func kickCoverFetch(albumID: String) {
         guard coverCache[albumID] == nil, !coverInFlight.contains(albumID) else { return }
         coverInFlight.insert(albumID)
-        let sources = self.sources
-        previewQueue.async { [weak self] in
-            let hit = sources.onAlbumCover(albumID)
-            guard let self else { return }
-            self.inboxLock.lock()
-            self.coverInbox.append((albumID, hit))
-            self.inboxLock.unlock()
-        }
+        inboxLock.lock()
+        appleCoverJobs.append((albumID, appleGeneration))
+        inboxLock.unlock()
+        previewQueue.async { [weak self] in self?.runNextAppleJob() }
     }
 
     // MARK: Scene
@@ -1585,6 +1688,10 @@ final class LibraryScene: Scene {
         bridgePreviewRestOn = nil
         coverCache = [:]
         coverInFlight = []
+        inboxLock.lock()
+        appleGeneration += 1
+        appleTrackJobs = []; appleCoverJobs = []; appleDropped = []
+        inboxLock.unlock()
         bridgeTracks = [:]
         bridgeTrackRevs = [:]
         bridgeTrackFailures = [:]
@@ -1646,6 +1753,8 @@ final class LibraryScene: Scene {
         let freshArtistAlbumsFailure = pendingArtistAlbumsFailure; pendingArtistAlbumsFailure = nil
         let landedPreviews = previewInbox; previewInbox = []
         let landedCovers = coverInbox; coverInbox = []
+        let droppedApple = appleDropped; appleDropped = []
+        let appleNow = appleGeneration
         let artLanded = artDirty; artDirty = false
         let landedReadFailed = pendingReadFailed; pendingReadFailed = nil
         let landedExhausted = pendingExhausted
@@ -1875,12 +1984,21 @@ final class LibraryScene: Scene {
         if nav.subView == .albums && !albumsFetchStarted { loadAlbums() }
         if nav.subView == .songs && !songsFetchStarted { loadSongs() }
         if nav.subView == .artists && !artistsFetchStarted { loadArtists() }
-        for item in landedPreviews {
+        // Unsent Music.app jobs the cursor left: free the album to be asked
+        // again if it comes back. A notice from before a provenance reset
+        // belongs to a library that is gone (the reset cleared its marks).
+        for dropped in droppedApple where dropped.generation == appleNow {
+            switch dropped.kind {
+            case .track: previewInFlight.remove(dropped.albumID)
+            case .cover: coverInFlight.remove(dropped.albumID)
+            }
+        }
+        for item in landedPreviews where item.generation == appleNow {
             trackCache[item.id] = item.tracks
             previewInFlight.remove(item.id)
             changed = true
         }
-        for item in landedCovers {
+        for item in landedCovers where item.generation == appleNow {
             coverCache[item.id] = item.cover
             coverInFlight.remove(item.id)
             changed = true
@@ -1958,6 +2076,12 @@ final class LibraryScene: Scene {
         // (three-zone layout) — mirrors PlaylistsScene's preview kick in tick.
         // Covers both the Albums rail and an artist's albums rail (same layout).
         let previewShown = isAlbumRail && playlistZones(width: screenWidth()).mode == .three
+        // Music.app: say which album the decorative preview and the cover are
+        // wanted for, BEFORE either is kicked, so a queued job for an album the
+        // cursor has left is dropped unsent (`takeNextAppleJob`).
+        let appleFocus = currentAlbumSource == .bridge ? nil : focusedAlbum()
+        setAppleWanted(preview: previewShown ? appleFocus?.id : nil,
+                       cover: (isAlbumRail || isTracksLevel) ? appleFocus?.id : nil)
         if previewShown, currentAlbumSource == .bridge {
             // Bridge: only a row the cursor has rested on, one read at a time
             // (`bridgePreviewRest`).
