@@ -3,7 +3,19 @@
 // in 24h (both live-probed 2026-07-14) — so bytes are cached on disk forever,
 // URLs never are. Rendering reuses artworkToAscii (chafa half-blocks, mono
 // fallback). Every failure degrades silently to the caller's gradient
-// placeholder; a per-session negative cache stops retry loops.
+// placeholder. Unusable artwork (a 404, an undecodable file) is negative-cached
+// for the session so nothing loops; a temporary failure (timeout, network
+// error, 5xx) is retried on a later ask after a per-key backoff, so a network
+// blip no longer leaves a gradient until restart.
+//
+// Scheduling (2026-10-25): work used to run on one serial queue with a
+// synchronous `Data(contentsOf:)` and no deadline, so a slow old download held
+// every later cover behind it. Now: a small fixed pool (`Limits.maxConcurrent`),
+// newest ask first, a bounded pending list whose oldest entries are discarded
+// unstarted (art scrolled past), a dedicated URLSession with a hard deadline,
+// and cancellation of an in-flight fetch nobody has asked for lately when new
+// art needs its slot. The rendered-line and kitty-escape memos are byte-bounded
+// LRU caches instead of unbounded dictionaries.
 import Foundation
 
 /// One cover's render result: half-block text lines (the chafa/mono fallback
@@ -15,6 +27,82 @@ import Foundation
 enum ArtBlock {
     case lines([String])
     case kitty(id: UInt32, transmit: String?)
+}
+
+/// What a fetch produced. `.temporary` (timeout, connection trouble, 408, 429,
+/// 5xx) is retried after a backoff; `.permanent` (404 and other 4xx, a bad URL,
+/// an unreadable file, an empty body) is negative-cached for the session.
+enum ArtworkFetchOutcome: Equatable {
+    case data(Data)
+    case temporary
+    case permanent
+}
+
+/// Handed to a fetch so the store can abandon it. A fetch registers what to do
+/// on cancel (the default fetch cancels its URLSession task); a handler added
+/// after cancellation runs at once.
+final class ArtworkFetchToken {
+    private let lock = NSLock()
+    private var cancelled = false
+    private var handlers: [() -> Void] = []
+
+    var isCancelled: Bool { lock.lock(); defer { lock.unlock() }; return cancelled }
+
+    func onCancel(_ handler: @escaping () -> Void) {
+        lock.lock()
+        if cancelled { lock.unlock(); handler(); return }
+        handlers.append(handler)
+        lock.unlock()
+    }
+
+    func cancel() {
+        lock.lock()
+        if cancelled { lock.unlock(); return }
+        cancelled = true
+        let run = handlers
+        handlers = []
+        lock.unlock()
+        run.forEach { $0() }
+    }
+}
+
+/// A string-keyed cache bounded by the summed `cost` of its values, evicting
+/// the least recently used (get or set) entry first. The newest entry is never
+/// evicted, even alone over budget: dropping it would only make the caller
+/// rebuild it on the next frame, forever. Not thread-safe; the owner locks.
+final class ByteBoundedLRU<Value> {
+    private let budget: Int
+    private let cost: (Value) -> Int
+    private var entries: [String: (value: Value, cost: Int, used: UInt64)] = [:]
+    private var clock: UInt64 = 0
+    private(set) var totalBytes = 0
+
+    init(budget: Int, cost: @escaping (Value) -> Int) {
+        self.budget = budget
+        self.cost = cost
+    }
+
+    func get(_ key: String) -> Value? {
+        guard let e = entries[key] else { return nil }
+        clock += 1
+        entries[key] = (e.value, e.cost, clock)
+        return e.value
+    }
+
+    func set(_ key: String, _ value: Value) {
+        if let old = entries[key] { totalBytes -= old.cost }
+        let c = cost(value)
+        clock += 1
+        entries[key] = (value, c, clock)
+        totalBytes += c
+        // Eviction runs only on insert and the entry count stays in the
+        // hundreds at these budgets, so a linear scan for the oldest is fine.
+        while totalBytes > budget, entries.count > 1,
+              let victim = entries.min(by: { $0.value.used < $1.value.used })?.key, victim != key {
+            totalBytes -= entries[victim]!.cost
+            entries[victim] = nil
+        }
+    }
 }
 
 final class ArtworkStore {
@@ -29,14 +117,153 @@ final class ArtworkStore {
         String(raw.map { $0.isLetter || $0.isNumber ? $0 : "_" })
     }
 
+    /// Scheduling, retry and memory bounds. Defaults, and why:
+    /// - `maxConcurrent` 2: every scene shows one hero cover at a time, so two
+    ///   slots let newly focused art start while one older fetch drains, and
+    ///   keep chafa process spawns and PNG conversions light. A stale in-flight
+    ///   fetch is cancelled outright when new art needs its slot.
+    /// - `maxPending` 4: queued asks beyond the four newest are art the person
+    ///   has scrolled past; they are dropped unstarted (a later ask re-queues).
+    /// - `staleAfter` 2 s: a running job not asked for in this long, while the
+    ///   scene is asking for something else, is no longer on screen (scenes
+    ///   re-ask for the displayed cover on every paint), so it may be cancelled.
+    /// - `retryBase` 10 s doubling to `retryCap` 5 min: a blip recovers on the
+    ///   next ask after 10 s; a dead CDN costs about a dozen fetches an hour
+    ///   per cover instead of one per frame.
+    /// - `renderedBytes` 8 MB: a truecolor chafa hero is roughly 20-60 KB of
+    ///   escape text, so well over a hundred renders stay warm.
+    /// - `kittyBytes` 24 MB: a kitty transmit escape is the base64 of a PNG,
+    ///   roughly 0.3-1.5 MB per 600x600 cover, so a few dozen covers stay warm
+    ///   (an evicted one is re-converted from the disk cache, never refetched).
+    ///   Together 32 MB per store at most, against unbounded before.
+    struct Limits {
+        var maxConcurrent = 2
+        var maxPending = 4
+        var staleAfter: TimeInterval = 2
+        var retryBase: TimeInterval = 10
+        var retryCap: TimeInterval = 300
+        var renderedBytes = 8 << 20
+        var kittyBytes = 24 << 20
+
+        static let `default` = Limits()
+
+        /// Cooldown after the `n`th consecutive temporary failure of one key.
+        func backoff(afterFailures n: Int) -> TimeInterval {
+            min(retryCap, retryBase * pow(2, Double(min(max(1, n), 40) - 1)))
+        }
+    }
+
+    // MARK: default network fetch
+
+    /// Per-packet idle bound. CDN covers are tens to a few hundred KB and
+    /// normally arrive in well under a second; 8 s of silence is a stall.
+    static let requestTimeout: TimeInterval = 8
+    /// Hard bound on one whole fetch. `Data(contentsOf:)` ran under the shared
+    /// session's 7-day resource default; 15 s is generous for a slow link and
+    /// still bounded. (This is the network fetch only. It is unrelated to the
+    /// SpanDAC library-cover render opportunity in `LibraryCoverFetcher`.)
+    static let resourceTimeout: TimeInterval = 15
+
+    static let networkSession: URLSession = {
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = requestTimeout
+        config.timeoutIntervalForResource = resourceTimeout
+        config.requestCachePolicy = .reloadIgnoringLocalCacheData   // bytes are cached on disk by the store
+        config.urlCache = nil
+        config.waitsForConnectivity = false
+        return URLSession(configuration: config)
+    }()
+
+    /// Classify one URLSession completion. Pure, so it is tested without a request.
+    static func classify(data: Data?, response: URLResponse?, error: Error?) -> ArtworkFetchOutcome {
+        if let error {
+            if let e = error as? URLError {
+                switch e.code {
+                case .badURL, .unsupportedURL, .fileDoesNotExist, .noPermissionsToReadFile,
+                     .dataLengthExceedsMaximum:
+                    return .permanent
+                default:
+                    return .temporary
+                }
+            }
+            return .temporary
+        }
+        if let http = response as? HTTPURLResponse {
+            switch http.statusCode {
+            case 200..<300: break
+            case 408, 429, 500...599: return .temporary
+            default: return .permanent
+            }
+        }
+        guard let data, !data.isEmpty else { return .permanent }
+        return .data(data)
+    }
+
+    private final class OutcomeBox {
+        private let lock = NSLock()
+        private var outcome: ArtworkFetchOutcome = .temporary
+        func set(_ o: ArtworkFetchOutcome) { lock.lock(); outcome = o; lock.unlock() }
+        var value: ArtworkFetchOutcome { lock.lock(); defer { lock.unlock() }; return outcome }
+    }
+
+    /// The production fetch. A file URL (the library ladder's embedded-artwork
+    /// path, SpanDAC library covers) is read directly and an unreadable file is
+    /// permanent, as before. Anything else goes through `networkSession` with
+    /// its deadline, and the token cancels the task. Runs on a store worker,
+    /// never the main thread.
+    static func defaultFetch(_ urlString: String, _ token: ArtworkFetchToken) -> ArtworkFetchOutcome {
+        guard let url = URL(string: urlString) else { return .permanent }
+        if url.isFileURL {
+            guard let data = try? Data(contentsOf: url), !data.isEmpty else { return .permanent }
+            return .data(data)
+        }
+        let done = DispatchSemaphore(value: 0)
+        let box = OutcomeBox()
+        let task = networkSession.dataTask(with: url) { data, response, error in
+            box.set(classify(data: data, response: response, error: error))
+            done.signal()
+        }
+        token.onCancel { task.cancel() }
+        task.resume()
+        // Belt and braces over the session's own resource deadline.
+        if done.wait(timeout: .now() + resourceTimeout + 5) == .timedOut {
+            task.cancel()
+            return .temporary
+        }
+        return box.value
+    }
+
+    // MARK: state
+
+    private final class Job {
+        let workKey: String      // memoKey (lines) or "kitty|\(key)" (block)
+        let key: String
+        var seq: UInt64          // recency of the latest ask; newest runs first
+        var wantedAt: TimeInterval
+        var preempted = false
+        let token = ArtworkFetchToken()
+        let body: (Job) -> Void
+        init(workKey: String, key: String, seq: UInt64, wantedAt: TimeInterval, body: @escaping (Job) -> Void) {
+            self.workKey = workKey; self.key = key; self.seq = seq; self.wantedAt = wantedAt; self.body = body
+        }
+    }
+
     private let cacheDir: String
-    private let fetch: (String) -> Data?
+    private let fetcher: (String, ArtworkFetchToken) -> ArtworkFetchOutcome
     private let render: (String, Int, Int) -> [String]
-    private let queue = DispatchQueue(label: "music.artwork")
+    private let now: () -> TimeInterval
+    private let limits: Limits
+    private let workers = DispatchQueue(label: "music.artwork", qos: .utility, attributes: .concurrent)
+    private let busy = DispatchGroup()
     private let lock = NSLock()
-    private var rendered: [String: [String]] = [:]   // "\(key)|\(w)x\(h)" → lines
-    private var inFlight: Set<String> = []            // memoKey (lines) or "kitty|\(key)" (block)
-    private var failed: Set<String> = []             // per-session negative cache (bytes OR PNG conversion)
+    private let rendered: ByteBoundedLRU<[String]>   // "\(key)|\(w)x\(h)" → lines
+    private var pending: [String: Job] = [:]         // asked for, not started
+    private var running: [String: Job] = [:]         // started, not preempted
+    private var activeByKey: [String: Int] = [:]     // running jobs per cache key: one fetch per key at a time
+    private var askSeq: UInt64 = 0
+    private var failed: Set<String> = []             // per-session negative cache (unusable bytes OR PNG conversion)
+    private var temporaryFailures: [String: Int] = [:]  // consecutive temporary failures per key
+    private var retryAt: [String: TimeInterval] = [:]   // no fetch for this key before this time
     // Kitty path: the transmit escape is built once per key (PNG conversion is
     // the expensive part) and cached here. It USED to be handed out exactly
     // once per id (a `transmitted: Set<UInt32>` gate returned `.kitty(id:,
@@ -53,23 +280,45 @@ final class ArtworkStore {
     // caller-side placement dedup (see `renderArtHero` / each scene's
     // `lastPlaced`) already prevents re-transmitting on unchanged frames —
     // this only fires again when the displayed cover actually changes.
-    private var kittyEscape: [String: String] = [:]  // key → cached transmit escape
+    // Byte-bounded LRU since 2026-10-25: an evicted escape is rebuilt from the
+    // disk cache on the next ask (a brief gradient), never refetched.
+    private let kittyEscape: ByteBoundedLRU<String>  // key → cached transmit escape
 
     /// The art cache on disk. One definition, because `LibraryCoverFetcher`
     /// installs SpanDAC's library covers into the same directory (under `sd_`
     /// keys) for this store to find without fetching.
     static let defaultCacheDir = NSString(string: "~/.config/music/art-cache").expandingTildeInPath
 
+    /// `fetcher` is the full seam (outcome classes, cancellation). `fetch` is
+    /// the older one, kept for its tests: a nil is a permanent failure, exactly
+    /// what it always meant. With neither, `defaultFetch` runs.
     init(cacheDir: String = ArtworkStore.defaultCacheDir,
          fetch: ((String) -> Data?)? = nil,
-         render: ((String, Int, Int) -> [String])? = nil) {
+         fetcher: ((String, ArtworkFetchToken) -> ArtworkFetchOutcome)? = nil,
+         render: ((String, Int, Int) -> [String])? = nil,
+         now: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
+         limits: Limits = .default) {
         self.cacheDir = cacheDir
-        self.fetch = fetch ?? { urlString in
-            guard let url = URL(string: urlString) else { return nil }
-            return try? Data(contentsOf: url)   // store's serial queue only, never the main thread
+        if let fetcher {
+            self.fetcher = fetcher
+        } else if let fetch {
+            self.fetcher = { url, _ in fetch(url).map { .data($0) } ?? .permanent }
+        } else {
+            self.fetcher = ArtworkStore.defaultFetch
         }
         self.render = render ?? { path, w, h in artworkToAscii(path: path, width: w, height: h) }
+        self.now = now
+        self.limits = limits
+        self.rendered = ByteBoundedLRU(budget: limits.renderedBytes) { lines in
+            lines.reduce(0) { $0 + $1.utf8.count }
+        }
+        self.kittyEscape = ByteBoundedLRU(budget: limits.kittyBytes) { $0.utf8.count }
     }
+
+    /// Blocks until every started job has finished. Tests only.
+    func waitUntilIdleForTesting() { busy.wait() }
+
+    // MARK: failure bookkeeping
 
     /// Negative-cache `key` for the session, EXCEPT an `sd_` key (a local file
     /// `LibraryCoverFetcher` installed and may evict on its own) whose file is
@@ -82,50 +331,154 @@ final class ArtworkStore {
         lock.lock(); failed.insert(key); lock.unlock()
     }
 
-    /// Ensure `key`'s raw artwork bytes are cached to disk (fetching once,
-    /// never twice, on a miss) and return the local path. nil on a failed
-    /// fetch — negative-cached in `failed` so neither caller loops retries for
-    /// the session. Runs on `queue`; both the chafa/mono path (`lines`) and
-    /// the kitty path (`block`) share this instead of duplicating the
-    /// fetch-once/negative-cache flow.
-    private func ensureBytesOnDisk(key: String, url: String) -> String? {
-        let path = "\(cacheDir)/\(key)"
-        if FileManager.default.fileExists(atPath: path) { return path }
-        try? FileManager.default.createDirectory(atPath: cacheDir, withIntermediateDirectories: true)
-        guard let data = fetch(url), !data.isEmpty else {
-            noteFailure(key)
-            return nil
-        }
-        try? data.write(to: URL(fileURLWithPath: path))
-        return path
+    /// A temporary failure: no negative cache, just a cooldown that doubles
+    /// with each consecutive one, so the next ask after it fetches again.
+    private func noteTemporaryFailure(_ key: String) {
+        lock.lock()
+        let n = (temporaryFailures[key] ?? 0) + 1
+        temporaryFailures[key] = n
+        retryAt[key] = now() + limits.backoff(afterFailures: n)
+        lock.unlock()
     }
 
-    /// Rendered cover lines if ready, else nil — and (once per key+size) a
-    /// background fetch+render is kicked; `onReady` fires from the store's queue
-    /// when lines land. Callers repaint on their next tick and get the memory hit.
+    /// Caller holds `lock`.
+    private func isBlockedLocked(_ key: String) -> Bool {
+        if failed.contains(key) { return true }
+        if let at = retryAt[key], now() < at { return true }
+        return false
+    }
+
+    private enum BytesResult { case path(String), failed, abandoned }
+
+    /// Ensure `key`'s raw artwork bytes are cached to disk (fetching on a
+    /// miss) and return the local path. A permanent failure is negative-cached
+    /// in `failed` (subject to the `sd_` rule), a temporary one starts a
+    /// cooldown, and a fetch the store cancelled records nothing (any bytes it
+    /// still produced are kept on disk). Both the chafa/mono path (`lines`)
+    /// and the kitty path (`block`) share this.
+    private func ensureBytesOnDisk(key: String, url: String, token: ArtworkFetchToken) -> BytesResult {
+        let path = "\(cacheDir)/\(key)"
+        if FileManager.default.fileExists(atPath: path) { return .path(path) }
+        try? FileManager.default.createDirectory(atPath: cacheDir, withIntermediateDirectories: true)
+        let outcome = fetcher(url, token)
+        if token.isCancelled {
+            if case .data(let data) = outcome, !data.isEmpty {
+                try? data.write(to: URL(fileURLWithPath: path), options: .atomic)
+            }
+            return .abandoned
+        }
+        switch outcome {
+        case .data(let data) where !data.isEmpty:
+            try? data.write(to: URL(fileURLWithPath: path), options: .atomic)
+            lock.lock(); temporaryFailures[key] = nil; retryAt[key] = nil; lock.unlock()
+            return .path(path)
+        case .temporary:
+            noteTemporaryFailure(key)
+            return .failed
+        case .data, .permanent:
+            noteFailure(key)
+            return .failed
+        }
+    }
+
+    // MARK: scheduling
+
+    /// Record an ask for `workKey`. Caller holds `lock`. A repeat ask refreshes
+    /// the job's recency (pending: runs sooner; running: not stale). A new ask
+    /// beyond `maxPending` queued drops the oldest queued ones unstarted.
+    private func askLocked(workKey: String, key: String, body: @escaping (Job) -> Void) {
+        askSeq += 1
+        let t = now()
+        if let job = pending[workKey] ?? running[workKey] {
+            job.seq = askSeq; job.wantedAt = t
+            return
+        }
+        pending[workKey] = Job(workKey: workKey, key: key, seq: askSeq, wantedAt: t, body: body)
+        while pending.count > max(1, limits.maxPending),
+              let oldest = pending.values.min(by: { $0.seq < $1.seq }) {
+            pending[oldest.workKey] = nil
+        }
+    }
+
+    /// Start what can start, newest ask first. Caller holds `lock`; the caller
+    /// cancels the returned tokens and launches the returned jobs after
+    /// unlocking. When every slot is busy, a running job asked for less
+    /// recently than the waiting one, and not asked for in `staleAfter`, is
+    /// preempted: its slot is freed now and its fetch cancelled.
+    private func scheduleLocked() -> (start: [Job], cancel: [ArtworkFetchToken]) {
+        var start: [Job] = []
+        var cancel: [ArtworkFetchToken] = []
+        while let next = pending.values
+            .filter({ activeByKey[$0.key, default: 0] == 0 })
+            .max(by: { $0.seq < $1.seq }) {
+            if running.count < max(1, limits.maxConcurrent) {
+                pending[next.workKey] = nil
+                running[next.workKey] = next
+                activeByKey[next.key, default: 0] += 1
+                busy.enter()
+                start.append(next)
+                continue
+            }
+            let t = now()
+            guard let victim = running.values
+                .filter({ $0.seq < next.seq && t - $0.wantedAt >= limits.staleAfter })
+                .min(by: { $0.seq < $1.seq }) else { break }
+            victim.preempted = true
+            releaseLocked(victim)
+            cancel.append(victim.token)
+        }
+        return (start, cancel)
+    }
+
+    /// Caller holds `lock`.
+    private func releaseLocked(_ job: Job) {
+        if running[job.workKey] === job { running[job.workKey] = nil }
+        let n = (activeByKey[job.key] ?? 1) - 1
+        activeByKey[job.key] = n > 0 ? n : nil
+    }
+
+    private func launch(_ job: Job) {
+        workers.async {
+            job.body(job)
+            self.lock.lock()
+            if !job.preempted { self.releaseLocked(job) }
+            let next = self.scheduleLocked()
+            self.lock.unlock()
+            next.cancel.forEach { $0.cancel() }
+            next.start.forEach(self.launch)
+            self.busy.leave()   // after any successor entered, so idle means idle
+        }
+    }
+
+    /// Ask, schedule, and launch outside the lock. Caller holds `lock`; this
+    /// releases it.
+    private func askAndUnlock(workKey: String, key: String, body: @escaping (Job) -> Void) {
+        askLocked(workKey: workKey, key: key, body: body)
+        let next = scheduleLocked()
+        lock.unlock()
+        next.cancel.forEach { $0.cancel() }
+        next.start.forEach(launch)
+    }
+
+    // MARK: public API
+
+    /// Rendered cover lines if ready, else nil — and a background fetch+render
+    /// is kicked (once per key+size while it is queued or running); `onReady`
+    /// fires from a store worker when lines land. Callers repaint on their
+    /// next tick and get the memory hit.
     func lines(key rawKey: String, url: String, width: Int, height: Int,
                onReady: @escaping () -> Void) -> [String]? {
         let key = Self.cacheKey(rawKey)
         let memoKey = "\(key)|\(width)x\(height)"
         lock.lock()
-        if let hit = rendered[memoKey] { lock.unlock(); return hit }
-        if failed.contains(key) || inFlight.contains(memoKey) { lock.unlock(); return nil }
-        inFlight.insert(memoKey)
-        lock.unlock()
-
-        queue.async { [weak self] in
-            guard let self else { return }
-            guard let path = self.ensureBytesOnDisk(key: key, url: url) else {
-                self.lock.lock(); self.inFlight.remove(memoKey); self.lock.unlock()
-                return
-            }
+        if let hit = rendered.get(memoKey) { lock.unlock(); return hit }
+        if isBlockedLocked(key) { lock.unlock(); return nil }
+        askAndUnlock(workKey: memoKey, key: key) { [unowned self] job in
+            guard case .path(let path) = self.ensureBytesOnDisk(key: key, url: url, token: job.token) else { return }
             let lines = self.render(path, width, height)
-            if lines.isEmpty { self.noteFailure(key) }
-            self.lock.lock()
-            if !lines.isEmpty { self.rendered[memoKey] = lines }
-            self.inFlight.remove(memoKey)
-            self.lock.unlock()
-            if !lines.isEmpty { onReady() }
+            if lines.isEmpty { self.noteFailure(key); return }
+            self.lock.lock(); self.rendered.set(memoKey, lines); self.lock.unlock()
+            onReady()
         }
         return nil
     }
@@ -138,8 +491,9 @@ final class ArtworkStore {
     /// id + the cached transmit escape on EVERY call once the PNG is ready
     /// (see the `kittyEscape` comment above for why it's no longer gated to
     /// once per id). PNG conversion failure is treated like a render failure:
-    /// negative-cached in `failed`, same as a fetch failure. While bytes/PNG
-    /// aren't ready yet, returns nil and fires `onReady` later, same as `lines()`.
+    /// negative-cached in `failed`, same as a permanent fetch failure. While
+    /// bytes/PNG aren't ready yet, returns nil and fires `onReady` later, same
+    /// as `lines()`.
     func block(key rawKey: String, url: String, width: Int, height: Int,
                kitty: Bool, onReady: @escaping () -> Void) -> ArtBlock? {
         guard kitty else {
@@ -147,41 +501,30 @@ final class ArtworkStore {
         }
         let key = Self.cacheKey(rawKey)
         let id = kittyImageID(forKey: key)
-        let inFlightKey = "kitty|\(key)"
 
         lock.lock()
-        if let escape = kittyEscape[key] {
+        if let escape = kittyEscape.get(key) {
             lock.unlock()
             return .kitty(id: id, transmit: escape)
         }
-        if failed.contains(key) || inFlight.contains(inFlightKey) { lock.unlock(); return nil }
-        inFlight.insert(inFlightKey)
-        lock.unlock()
-
-        queue.async { [weak self] in
-            guard let self else { return }
+        if isBlockedLocked(key) { lock.unlock(); return nil }
+        askAndUnlock(workKey: "kitty|\(key)", key: key) { [unowned self] job in
             // ensureBytesOnDisk has already decided whether a failed fetch is
             // negative-cached; only the read and the PNG conversion are decided here.
-            guard let path = self.ensureBytesOnDisk(key: key, url: url) else {
-                self.lock.lock(); self.inFlight.remove(inFlightKey); self.lock.unlock()
-                return
-            }
+            guard case .path(let path) = self.ensureBytesOnDisk(key: key, url: url, token: job.token) else { return }
             guard let data = FileManager.default.contents(atPath: path),
                   let png = imageDataToPNG(data) else {
                 self.noteFailure(key)
-                self.lock.lock(); self.inFlight.remove(inFlightKey); self.lock.unlock()
                 return
             }
             let escape = kittyTransmitEscape(id: id, png: png)
-            self.lock.lock()
-            self.kittyEscape[key] = escape
-            self.inFlight.remove(inFlightKey)
-            self.lock.unlock()
+            self.lock.lock(); self.kittyEscape.set(key, escape); self.lock.unlock()
             onReady()
         }
         return nil
     }
 }
+
 
 /// One scene's kitty placement-dedup state: the last placement it emitted, so
 /// an unchanged frame emits nothing (the placement persists on screen across
