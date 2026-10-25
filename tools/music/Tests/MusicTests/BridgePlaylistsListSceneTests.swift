@@ -296,7 +296,7 @@ final class BridgePlaylistsListSceneTests: XCTestCase {
                                        ? BridgeMusicProvider(control: SourceAppControl(path: "/nonexistent", transport: wire.transport, libraryTransport: wire.transport))
                                        : nil
                                },
-                               loadMusicAppPlaylists: { (["New Playlist"], []) },
+                               loadMusicAppPlaylists: { .success(names: ["New Playlist"], subscription: []) },
                                makeSources: { _ in .empty },
                                warmUpSleep: { _ in }, screenWidth: { 138 })
 
@@ -355,60 +355,24 @@ final class BridgePlaylistsListSceneTests: XCTestCase {
 
     // MARK: - openPlaylistsScene
 
-    func testOpenPlaylistsSceneInBridgeModeReturnsAndTheLoaderCountIsZero() {
-        var loaderCalls = 0
+    /// Both data paths now open the same way: the scene is built with no
+    /// names and nothing is read on the opening thread (the MusicTUI path's
+    /// own off-thread read is `PlaylistsMusicAppLoadTests`).
+    func testOpenPlaylistsSceneBuildsWithNoNamesInEitherMode() {
         let status = StatusStore()
         var built: (names: [String], subscription: Set<String>)? = nil
-        let scene = openPlaylistsScene(bridgeSelected: true, status: status,
-                                       loadMusicAppPlaylists: { loaderCalls += 1; return (["x"], []) },
-                                       build: { names, subscription in
-                                           built = (names, subscription)
-                                           return PlaylistsScene(backend: AppleScriptBackend(executable: "/usr/bin/true"),
-                                                                 routing: RoutingCoordinator(store: PlaybackModeStore(path: NSTemporaryDirectory() + "mode-\(UUID().uuidString).json"), surface: .tui, makeSource: { SourceAppClient() }),
-                                                                 playlists: names, subscriptionNames: subscription,
-                                                                 sources: .empty, appQueue: AppQueueStore(), status: status,
-                                                                 actions: ActionRunner(status: status),
-                                                                 metaCache: temporaryPlaylistMetaCache().cache)
-                                       })
-        XCTAssertNotNil(scene)
-        XCTAssertEqual(loaderCalls, 0, "SpanDAC mode called loadMusicAppPlaylists")
-        XCTAssertEqual(built?.names, [], "SpanDAC mode built with non-empty names")
-    }
-
-    func testOpenPlaylistsSceneInMusicAppModeWithNoNamesReturnsNilAndPostsNoPlaylistsFound() {
-        let status = StatusStore()
-        let scene = openPlaylistsScene(bridgeSelected: false, status: status,
-                                       loadMusicAppPlaylists: { ([], []) },
-                                       build: { names, subscription in
-                                           XCTFail("build should not be called with no names")
-                                           return PlaylistsScene(backend: AppleScriptBackend(executable: "/usr/bin/true"),
-                                                                 routing: RoutingCoordinator(store: PlaybackModeStore(path: NSTemporaryDirectory() + "mode-\(UUID().uuidString).json"), surface: .tui, makeSource: { SourceAppClient() }),
-                                                                 playlists: names, subscriptionNames: subscription,
-                                                                 sources: .empty, appQueue: AppQueueStore(), status: status,
-                                                                 actions: ActionRunner(status: status),
-                                                                 metaCache: temporaryPlaylistMetaCache().cache)
-                                       })
-        XCTAssertNil(scene)
-        XCTAssertEqual(status.current()?.text, "No playlists found.")
-    }
-
-    func testOpenPlaylistsSceneInMusicAppModeWithNamesBuildsWithThoseNames() {
-        let status = StatusStore()
-        var built: (names: [String], subscription: Set<String>)? = nil
-        let scene = openPlaylistsScene(bridgeSelected: false, status: status,
-                                       loadMusicAppPlaylists: { (["Chill", "Deep House"], ["Deep House"]) },
-                                       build: { names, subscription in
-                                           built = (names, subscription)
-                                           return PlaylistsScene(backend: AppleScriptBackend(executable: "/usr/bin/true"),
-                                                                 routing: RoutingCoordinator(store: PlaybackModeStore(path: NSTemporaryDirectory() + "mode-\(UUID().uuidString).json"), surface: .tui, makeSource: { SourceAppClient() }),
-                                                                 playlists: names, subscriptionNames: subscription,
-                                                                 sources: .empty, appQueue: AppQueueStore(), status: status,
-                                                                 actions: ActionRunner(status: status),
-                                                                 metaCache: temporaryPlaylistMetaCache().cache)
-                                       })
-        XCTAssertNotNil(scene)
-        XCTAssertEqual(built?.names, ["Chill", "Deep House"])
-        XCTAssertEqual(built?.subscription, ["Deep House"])
+        let scene = openPlaylistsScene(build: { names, subscription in
+            built = (names, subscription)
+            return PlaylistsScene(backend: AppleScriptBackend(executable: "/usr/bin/true"),
+                                  routing: RoutingCoordinator(store: PlaybackModeStore(path: NSTemporaryDirectory() + "mode-\(UUID().uuidString).json"), surface: .tui, makeSource: { SourceAppClient() }),
+                                  playlists: names, subscriptionNames: subscription,
+                                  sources: .empty, appQueue: AppQueueStore(), status: status,
+                                  actions: ActionRunner(status: status),
+                                  metaCache: temporaryPlaylistMetaCache().cache)
+        })
+        XCTAssertNil(scene.railSourceForTest, "the scene picked a source before its first tick")
+        XCTAssertEqual(built?.names, [])
+        XCTAssertEqual(built?.subscription, [])
     }
 
     // MARK: - Re-asking a stale snapshot (the Playlists rail)

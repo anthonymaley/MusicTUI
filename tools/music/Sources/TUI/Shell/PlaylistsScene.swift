@@ -77,6 +77,8 @@ final class PlaylistsScene: Scene {
     /// or a name list in Bridge mode (no AppleScript read, and
     /// `playlist-meta.json` is Music.app's own stale, name-keyed data).
     static let bridgeMissingNote = "Some of your playlists aren't in SpanDAC's library."
+    /// The MusicTUI rail's failed names read, on the rail itself.
+    static let musicAppReadFailedText = "Couldn't read your playlists - press r to retry"
 
     // C3: D4's page size (the wire's own maximum) for a drill-in or a fresh
     // play read, and the preview's own much smaller read (decoration, not
@@ -88,9 +90,9 @@ final class PlaylistsScene: Scene {
     private let backend: AppleScriptBackend
     private let routing: RoutingCoordinator
     /// The Music.app rail's names. Empty in Bridge mode, and empty until the
-    /// Shell's synchronous initial fetch (Music.app mode) or a later
-    /// provenance switch's async reload lands (D7 item 5/C2 item 2). A `var`
-    /// since C2: the old `let` only ever held one Shell-supplied list.
+    /// off-thread names read lands (the tab's first load, or a provenance
+    /// switch's reload, D7 item 5/C2 item 2). A `var` since C2. A test may
+    /// still construct with names, which seeds the rail synchronously.
     private var playlists: [String]
     private var subscriptionNames: Set<String>
     private var sources: PlaylistDataSources
@@ -111,7 +113,7 @@ final class PlaylistsScene: Scene {
     private let handoff: MusicTUIHandoff
     /// `routing.dataEpoch` as of the last provenance check.
     private var provenanceDataEpoch: Int
-    private let loadMusicAppPlaylists: () -> (names: [String], subscription: Set<String>)
+    private let loadMusicAppPlaylists: () -> MusicAppPlaylistNamesRead
     private let makeSources: ([String]) -> PlaylistDataSources
     private let warmUpSleep: (TimeInterval) -> Void
     /// The clock the Bridge preview's rest debounce reads (a seam, so a test
@@ -190,16 +192,27 @@ final class PlaylistsScene: Scene {
     // same-indexed but unrelated later list.
     private let inboxLock = NSLock()
     private var inbox: [Int: (epoch: Int, meta: (Int, Int, Bool, String))] = [:]
-    /// C2: the Music.app async reload's landing spot — `nil` until
+    /// The MusicTUI (AppleScript) names read's landing spot — `nil` until
     /// `loadMusicAppPlaylists()` returns on its detached thread. Guarded by
     /// `inboxLock` alongside `inbox`; carries the epoch its load started
-    /// under (rule 10).
-    private var musicAppNamesPending: (epoch: Int, names: [String], subscription: Set<String>)? = nil
-    /// Set once that reload has landed, so `render()` can tell "still loading"
-    /// apart from "loaded, and genuinely empty" — the latter needs its own
-    /// message rather than falling into `renderRail`'s `meta[plCursor]`
+    /// under (rule 10). This is the tab's FIRST load as well as a post-switch
+    /// reload: the Shell no longer reads names before building the scene.
+    private var musicAppNamesPending: (epoch: Int, read: MusicAppPlaylistNamesRead)? = nil
+    /// Set once a read has landed successfully, so `render()` can tell "still
+    /// loading" apart from "loaded, and genuinely empty" — the latter needs its
+    /// own message rather than falling into `renderRail`'s `meta[plCursor]`
     /// (which would be a crash on an empty list).
     private var musicAppReloadDone = false
+    /// The last current read failed. Never shown as an empty library; `r`
+    /// clears it and reads again. Main-thread only.
+    private var musicAppReadFailed = false
+    /// One names read at a time (tick-thread only). Set when a read is kicked,
+    /// cleared when its result is drained — kept or dropped. A rail that wants
+    /// names while one is in flight waits for it instead of starting another;
+    /// if that one lands under an old epoch it is dropped and the next tick
+    /// starts a fresh one. NOT cleared by `resetRail`: the thread still posts.
+    private var musicAppReadInFlight = false
+    var musicAppNamesReadInFlightForTest: Bool { musicAppReadInFlight }
 
     // Preview fetches follow the same inbox pattern (an inline fetch in tick()
     // froze input for one osascript round-trip per uncached rail row). A serial
@@ -428,7 +441,7 @@ final class PlaylistsScene: Scene {
          libraryCovers: LibraryCoverFetcher? = nil,
          artwork: ArtworkStore = ArtworkStore(),
          makeProvider: @escaping () -> MusicDataProvider? = { nil },
-         loadMusicAppPlaylists: @escaping () -> (names: [String], subscription: Set<String>) = { ([], []) },
+         loadMusicAppPlaylists: @escaping () -> MusicAppPlaylistNamesRead = { .success(names: [], subscription: []) },
          makeSources: @escaping ([String]) -> PlaylistDataSources = { _ in .empty },
          handoff: MusicTUIHandoff = RefusingHandoff(),
          warmUpSleep: @escaping (TimeInterval) -> Void = { Thread.sleep(forTimeInterval: $0) },
@@ -464,9 +477,9 @@ final class PlaylistsScene: Scene {
             startBackgroundRefresh()
             railSource = .musicApp
         }
-        // When `playlists` is empty (Bridge mode — the Shell never builds a
-        // Music.app-mode scene with none, see `openPlaylistsScene`),
-        // `railSource` stays nil: the first `tick()` decides and loads it.
+        // When `playlists` is empty (always, from the Shell — see
+        // `openPlaylistsScene`), `railSource` stays nil: the first `tick()`
+        // decides which library and starts its load off this thread.
     }
 
     func artPlacementsInvalidated() { lastPlaced = nil }
@@ -686,9 +699,12 @@ final class PlaylistsScene: Scene {
         previewInFlight = []
         fullInFlight = []
         musicAppReloadDone = false
+        musicAppReadFailed = false
         inboxLock.lock()
         inbox = [:]
-        musicAppNamesPending = nil
+        // `musicAppNamesPending` is left alone: a read in flight still posts
+        // there, and the drain drops it on its old epoch while clearing
+        // `musicAppReadInFlight` — nilling it here could strand that flag.
         inboxLock.unlock()
         previewInboxLock.lock()
         previewInbox = [:]
@@ -751,15 +767,25 @@ final class PlaylistsScene: Scene {
             playlistsFeed.start()
         case .musicApp:
             railSource = .musicApp
-            let epoch = railEpoch
-            let load = loadMusicAppPlaylists
-            Thread.detachNewThread { [weak self] in
-                let result = load()
-                guard let self else { return }
-                self.inboxLock.lock()
-                self.musicAppNamesPending = (epoch, result.names, result.subscription)
-                self.inboxLock.unlock()
-            }
+            kickMusicAppNamesRead()
+        }
+    }
+
+    /// Starts the MusicTUI names read on a detached thread, unless one is
+    /// already in flight (then this rail waits for it: never two AppleScript
+    /// reads of the rail at once). The epoch is captured here, on the tick
+    /// thread, and compared at the drain (rule 10).
+    private func kickMusicAppNamesRead() {
+        guard !musicAppReadInFlight else { return }
+        musicAppReadInFlight = true
+        let epoch = railEpoch
+        let load = loadMusicAppPlaylists
+        Thread.detachNewThread { [weak self] in
+            let result = load()
+            guard let self else { return }
+            self.inboxLock.lock()
+            self.musicAppNamesPending = (epoch, result)
+            self.inboxLock.unlock()
         }
     }
 
@@ -913,10 +939,25 @@ final class PlaylistsScene: Scene {
         // POST-SWITCH path posts here (construction's own seed is
         // synchronous), and only if the epoch and the rail's source still
         // agree with what it was kicked under.
-        if let landed = landedNames, landed.epoch == railEpoch, railSource == .musicApp {
-            applyMusicAppNames(landed.names, landed.subscription)
-            musicAppReloadDone = true
-            changed = true
+        if let landed = landedNames {
+            musicAppReadInFlight = false
+            if landed.epoch == railEpoch, railSource == .musicApp {
+                switch landed.read {
+                case .success(let names, let subscription):
+                    applyMusicAppNames(names, subscription)
+                    musicAppReloadDone = true
+                case .failure:
+                    musicAppReadFailed = true
+                }
+                changed = true
+            }
+        }
+        // A rail still waiting for names with none in flight: its read was
+        // dropped (it started under an older epoch), so start the current one.
+        // A failed rail waits for `r`, not for another automatic read.
+        if railSource == .musicApp, playlists.isEmpty, !musicAppReloadDone,
+           !musicAppReadFailed, !musicAppReadInFlight {
+            kickMusicAppNamesRead()
         }
         // Landed preview and full-track fetches.
         previewInboxLock.lock()
@@ -1300,12 +1341,19 @@ final class PlaylistsScene: Scene {
             out += ANSICode.moveTo(row: bodyTop, col: z.railX) + "\(ANSICode.dim)No playlists found.\(ANSICode.reset)"
             return out
         }
+        // A failed read is never an empty library: say so, and how to retry
+        // (the SpanDAC rail's own "... - press r to retry" shape).
+        if railSource == .musicApp, playlists.isEmpty, musicAppReadFailed {
+            out += ANSICode.moveTo(row: bodyTop, col: z.railX)
+                + "\(ANSICode.dim)\(Self.musicAppReadFailedText)\(ANSICode.reset)"
+            return out
+        }
         // Nothing decided yet (the very first frame after a Bridge-intended
         // construction, before its first `tick()`), or an async reload still
         // in flight: `meta` is empty and the byte-for-byte Music.app path
         // below must not run over it.
         if meta.isEmpty {
-            out += ANSICode.moveTo(row: bodyTop, col: z.railX) + "\(ANSICode.dim)Loading\u{2026}\(ANSICode.reset)"
+            out += ANSICode.moveTo(row: bodyTop, col: z.railX) + "\(ANSICode.dim)Loading playlists\u{2026}\(ANSICode.reset)"
             return out
         }
 
@@ -1386,6 +1434,7 @@ final class PlaylistsScene: Scene {
             if focus == .playlists {
                 if refuseIfProvenanceMismatch() { return .redraw }
                 if railSource == .bridge { drillBridgePlaylist(); return .redraw }
+                guard playlists.indices.contains(plCursor) else { return .none }   // still loading, failed or empty
                 loadFull(); focus = .tracks; trCursor = 0; trScroll = 0
                 return .redraw
             } else {
@@ -1411,6 +1460,7 @@ final class PlaylistsScene: Scene {
             guard focus == .playlists else { return .none }
             if refuseIfProvenanceMismatch() { return .redraw }
             if railSource == .bridge { drillBridgePlaylist(); return .redraw }
+            guard playlists.indices.contains(plCursor) else { return .none }
             loadFull(); focus = .tracks; trCursor = 0; trScroll = 0
             return .redraw
         case .left:
@@ -1445,6 +1495,13 @@ final class PlaylistsScene: Scene {
             playlistsFeed.start()
             status.post("Asking SpanDAC for your playlists again\u{2026}")
             return .none
+        // The MusicTUI rail's failed names read: `r` reads again (one read,
+        // joining any still in flight).
+        case .char("r") where railSource == .musicApp && focus == .playlists && musicAppReadFailed:
+            musicAppReadFailed = false
+            kickMusicAppNamesRead()
+            status.post("Reading your playlists again\u{2026}")
+            return .redraw
         // A healthy SpanDAC rail: `r` refreshes it. See `refreshBridgePlaylists`.
         case .char("r") where railSource == .bridge && focus == .playlists && bridgeFailure == nil:
             refreshBridgePlaylists()
@@ -1467,6 +1524,7 @@ final class PlaylistsScene: Scene {
                                    listRev: cached ? bridgeTracksListRev : nil)
                 return .push(.nowPlaying)
             }
+            guard playlists.indices.contains(plCursor) else { return .none }
             playPlaylist(shuffle: false); return .push(.nowPlaying)
         case .char("s"):
             if refuseIfProvenanceMismatch() { return .redraw }
@@ -1481,6 +1539,7 @@ final class PlaylistsScene: Scene {
                                    listRev: cached ? bridgeTracksListRev : nil)
                 return .push(.nowPlaying)
             }
+            guard playlists.indices.contains(plCursor) else { return .none }
             playPlaylist(shuffle: true); return .push(.nowPlaying)
         case .char("b"):
             return .push(.nowPlaying)

@@ -186,32 +186,20 @@ final class LicenceReprobe {
     }
 }
 
-/// Opens the Playlists tab (C2, D7 item 5): which library it opens FROM
-/// follows the data selection, decided here rather than inside
-/// `PlaylistsScene` so the Bridge branch is provable with no AppleScript
-/// reached — module-internal (not `private`) so a test can call it directly.
+/// Opens the Playlists tab (C2, D7 item 5). Both data paths build the scene
+/// at once with no names, and the scene loads its rail on its first `tick()`
+/// from whichever library the DATA selection names: a SpanDAC walk of
+/// `slice.libraryPlaylists` (D1), or a MusicTUI (AppleScript) names read on a
+/// detached thread. Nothing here reads anything, so opening the tab never
+/// holds the input loop: that read used to run right here, synchronously,
+/// inside `ensureScene`, behind `runMusicBlocking`'s 45 s watchdog, and a
+/// failed read was refused as "No playlists found.". Loading, failed and
+/// genuinely empty are now the scene's own states.
 ///
-/// **Bridge mode never calls `loadMusicAppPlaylists`.** The scene is built
-/// with empty names and no subscription set; it walks `slice.libraryPlaylists`
-/// itself on its first `tick()` (D1).
-///
-/// **Music.app mode is today's behaviour, unchanged.** The names are fetched
-/// synchronously, right here, exactly as `ensureScene`'s `.playlists` case did
-/// before C2; an empty result refuses the tab with "No playlists found."
-/// rather than building a scene with nothing to show.
-func openPlaylistsScene(bridgeSelected: Bool, status: StatusStore,
-                        loadMusicAppPlaylists: () -> (names: [String], subscription: Set<String>),
-                        build: (_ names: [String], _ subscription: Set<String>) -> PlaylistsScene)
-                        -> PlaylistsScene? {
-    if bridgeSelected {
-        return build([], [])
-    }
-    let fetched = loadMusicAppPlaylists()
-    guard !fetched.names.isEmpty else {
-        status.post("No playlists found.", error: true)
-        return nil
-    }
-    return build(fetched.names, fetched.subscription)
+/// Module-internal (not `private`) so a test can call it directly.
+func openPlaylistsScene(build: (_ names: [String], _ subscription: Set<String>) -> PlaylistsScene)
+                        -> PlaylistsScene {
+    build([], [])
 }
 
 func runShell() {
@@ -302,12 +290,9 @@ func runShell() {
         switch id {
         case .playlists:
             // D7/C2: which library the tab opens from follows the DATA
-            // selection (`spanDACDataProvider`), decided by
-            // `openPlaylistsScene` so the SpanDAC branch is provable with no
-            // AppleScript reached — see its own doc comment.
-            guard let scene = openPlaylistsScene(
-                bridgeSelected: routing.data == .spandacMac, status: status,
-                loadMusicAppPlaylists: { fetchUserPlaylistNames(backend: backend) },
+            // selection (`spanDACDataProvider`), decided by the scene on its
+            // first tick, off this thread — see `openPlaylistsScene`.
+            let scene = openPlaylistsScene(
                 build: { names, subscription in
                     PlaylistsScene(backend: backend, routing: routing,
                                    playlists: names, subscriptionNames: subscription,
@@ -324,7 +309,7 @@ func runShell() {
                                    // its owned songs by exact persistent ID.
                                    handoff: liveMusicTUIHandoff(backend: backend, appQueue: appQueue, routing: routing))
                 }
-            ) else { return nil }
+            )
             scenes[id] = scene
             return scene
         case .speakers:
@@ -401,8 +386,9 @@ func runShell() {
 
     // Refusing a tab switch must say why — a dead keypress reads as a broken key.
     func switchOrExplain(_ id: SceneID) {
-        // Each ensureScene refusal owns its toast (Playlists: "No playlists found.";
-        // Discover: "Sign in…"), so there is no generic cross-tab fallback here.
+        // Each ensureScene refusal owns its toast (Discover: "Sign in…"), so
+        // there is no generic cross-tab fallback here. Playlists never refuses:
+        // it opens loading and says on its own rail if the read fails.
         guard ensureScene(id) != nil else { return }
         // A tab the person chose is a state change: a won't-play message goes.
         if id != router.active { status.stateChanged() }
@@ -669,3 +655,4 @@ func runShell() {
         }
     }
 }
+
