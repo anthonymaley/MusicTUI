@@ -367,6 +367,10 @@ final class LibraryScene: Scene {
     var reaskFinishedForTest: (() -> Void)?
     /// The cached track titles per album, for tests.
     var trackCacheForTest: [String: [String]] { trackCache }
+    /// The Music.app cover cache and the in-flight marks of both preview kinds, for tests.
+    var coverCacheForTest: [String: LibraryCover?] { coverCache }
+    var previewInFlightForTest: Set<String> { previewInFlight }
+    var coverInFlightForTest: Set<String> { coverInFlight }
     var artistAlbumsForTest: [LibraryAlbum] { artistAlbums }
     var artistAlbumsFailureForTest: String? { artistAlbumsFailure }
     /// Fired when an artist's FIRST albums read thread ends, posted or dropped.
@@ -429,6 +433,12 @@ final class LibraryScene: Scene {
     private var appleWantedPreview: String? = nil
     private var appleWantedCover: String? = nil
     private var appleGeneration = 0
+    /// Main thread only: the Music.app album the cursor is on and since when.
+    /// The decorative preview and cover start only once it has RESTED there for
+    /// `bridgePreviewRest`, the same interval the SpanDAC preview waits; an
+    /// explicit Enter never waits (`kickTrackFetch(explicit: true)`, and the
+    /// tracks level's cover).
+    private var appleRestOn: (id: String, since: Date)? = nil
 
     private let inboxLock = NSLock()
     // The three lists come from one bulk read and arrive as a single page each;
@@ -1521,6 +1531,16 @@ final class LibraryScene: Scene {
         }
     }
 
+    /// Whether the cursor has stayed on this Music.app album for the rest
+    /// interval (nil: no album, so no rest). Main thread only.
+    private func appleFocusHasRested(_ album: LibraryAlbum?) -> Bool {
+        guard let a = album else { appleRestOn = nil; return false }
+        let t = now()
+        if appleRestOn?.id != a.id { appleRestOn = (a.id, t) }
+        guard let rest = appleRestOn else { return false }
+        return t.timeIntervalSince(rest.since) >= Self.bridgePreviewRest
+    }
+
     private func setBridgePreviewWanted(_ want: BridgePreviewWant?) {
         inboxLock.lock(); bridgePreviewWanted = want; inboxLock.unlock()
         if want == nil { bridgePreviewRestOn = nil }
@@ -1686,6 +1706,7 @@ final class LibraryScene: Scene {
         previewInFlight = []
         bridgeTrackJobs = [:]
         bridgePreviewRestOn = nil
+        appleRestOn = nil
         coverCache = [:]
         coverInFlight = []
         inboxLock.lock()
@@ -2082,13 +2103,14 @@ final class LibraryScene: Scene {
         let appleFocus = currentAlbumSource == .bridge ? nil : focusedAlbum()
         setAppleWanted(preview: previewShown ? appleFocus?.id : nil,
                        cover: (isAlbumRail || isTracksLevel) ? appleFocus?.id : nil)
+        let appleRested = appleFocusHasRested(appleFocus)
         if previewShown, currentAlbumSource == .bridge {
             // Bridge: only a row the cursor has rested on, one read at a time
             // (`bridgePreviewRest`).
             syncBridgePreview(focusedAlbum())
         } else {
             setBridgePreviewWanted(nil)
-            if previewShown, let a = focusedAlbum(), trackCache[a.id] == nil, !previewInFlight.contains(a.id) {
+            if previewShown, appleRested, let a = focusedAlbum(), trackCache[a.id] == nil, !previewInFlight.contains(a.id) {
                 kickTrackFetch(albumID: a.id, title: a.name, artist: a.artist)
             }
         }
@@ -2100,7 +2122,10 @@ final class LibraryScene: Scene {
         // NEVER for a Bridge-sourced album: SpanDAC's covers come from the shell's
         // `LibraryCoverFetcher`, for the Albums list, an artist's albums rail and
         // the tracks view drilled from either (`coverTarget`, below).
-        if (isAlbumRail || isTracksLevel), currentAlbumSource != .bridge, let a = focusedAlbum() {
+        // Decorative on the rail, so it waits for the rest too; on the tracks
+        // level the person has already opened the album, so it does not.
+        if (isAlbumRail || isTracksLevel), currentAlbumSource != .bridge, let a = focusedAlbum(),
+           appleRested || isTracksLevel {
             kickCoverFetch(albumID: a.id)
         }
         syncTracksReask()
