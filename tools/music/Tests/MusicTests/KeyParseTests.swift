@@ -101,4 +101,57 @@ final class KeyParseTests: XCTestCase {
         script([0x20])
         XCTAssertEqual(KeyPress.read(), .space)
     }
+
+    // MARK: UTF-8 decoding
+
+    private func readAll(_ bytes: [UInt8?], count: Int) -> [KeyPress?] {
+        script(bytes)
+        return (0..<count).map { _ in KeyPress.read() }
+    }
+
+    func testUTF8BjorkIsOneCharPerLetter() {
+        let keys = readAll(Array("Björk".utf8).map { Optional($0) }, count: 5)
+        XCTAssertEqual(keys, [.char("B"), .char("j"), .char("ö"), .char("r"), .char("k")])
+    }
+
+    func testUTF8CJKAndEmojiAreSingleChars() {
+        let bytes = Array("坂本😀".utf8).map { Optional($0) }
+        XCTAssertEqual(readAll(bytes, count: 3), [.char("坂"), .char("本"), .char("😀")])
+    }
+
+    func testUTF8CharacterSplitAcrossReadsWithinTimeout() {
+        // 0xC3 arrives, then its continuation byte arrives as a separate read.
+        script([0xC3, 0xB6, UInt8(ascii: "x")])
+        XCTAssertEqual(KeyPress.read(), .char("ö"))
+        XCTAssertEqual(KeyPress.read(), .char("x"))
+    }
+
+    func testLoneContinuationByteIsReplacementAndNextKeyIntact() {
+        script([0x80, UInt8(ascii: "a")])
+        XCTAssertEqual(KeyPress.read(), .char("\u{FFFD}"))
+        XCTAssertEqual(KeyPress.read(), .char("a"))
+    }
+
+    func testTruncatedLeadByteFollowedByASCIIKeepsTheASCII() {
+        script([0xE2, UInt8(ascii: "q")])
+        XCTAssertEqual(KeyPress.read(), .char("\u{FFFD}"))
+        XCTAssertEqual(KeyPress.read(), .char("q"))
+    }
+
+    func testTruncatedLeadByteThenTimeoutIsReplacement() {
+        script([0xE2, 0x82, nil])
+        XCTAssertEqual(KeyPress.read(), .char("\u{FFFD}"))
+    }
+
+    func testTruncatedSequenceFollowedBySpaceKeepsSpace() {
+        script([0xF0, 0x9F, 0x20])
+        XCTAssertEqual(KeyPress.read(), .char("\u{FFFD}"))
+        XCTAssertEqual(KeyPress.read(), .space)
+    }
+
+    func testUTF8DoesNotDisturbArrowKeysAfterward() {
+        script([0xC3, 0xA9, 0x1B, 0x5B, 0x41])
+        XCTAssertEqual(KeyPress.read(), .char("é"))
+        XCTAssertEqual(KeyPress.read(), .up)
+    }
 }

@@ -170,9 +170,42 @@ enum KeyPress: Equatable {
         case 0x03: return .ctrlC
         case 0x0A, 0x0D: return .enter
         case 0x20: return .space
+        case 0x80...0xFF:
+            return decodeUTF8(leadByte: byte)
         default:
             return .char(Character(Unicode.Scalar(byte)))
         }
+    }
+
+    /// Decode one multibyte UTF-8 character whose lead byte is already read.
+    /// Continuation bytes use the same short timeout as escape sequences, so
+    /// a character split across reads still joins. Malformed input (a lone
+    /// continuation byte, an invalid lead, a truncated or overlong sequence)
+    /// becomes ONE U+FFFD, never a dropped key; a byte that interrupts a
+    /// sequence and is not a continuation is requeued so it is still
+    /// delivered as its own key (a following ASCII key is never swallowed).
+    private static func decodeUTF8(leadByte lead: UInt8) -> KeyPress? {
+        let replacement = KeyPress.char("\u{FFFD}")
+        let length: Int
+        switch lead {
+        case 0xC2...0xDF: length = 2
+        case 0xE0...0xEF: length = 3
+        case 0xF0...0xF4: length = 4
+        default: return replacement
+        }
+        var bytes = [lead]
+        while bytes.count < length {
+            guard let next = nextByte(within: escDisambiguationMs) else { return replacement }
+            guard next & 0xC0 == 0x80 else {
+                pushback = next
+                return replacement
+            }
+            bytes.append(next)
+        }
+        guard let text = String(bytes: bytes, encoding: .utf8), let first = text.first else {
+            return replacement
+        }
+        return .char(first)
     }
 
     /// Blocking read — waits indefinitely for a keypress.
