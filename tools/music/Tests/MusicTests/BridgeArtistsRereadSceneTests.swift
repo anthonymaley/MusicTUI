@@ -48,6 +48,12 @@ final class BridgeArtistsRereadSceneTests: XCTestCase {
         private var threads: [String: [Int: Thread]] = [:]
         private var waiting: [String: Int] = [:]
         private var unsupportedAt: Set<Int> = []
+        /// Rows per page; the artists list is served in pages of this many, each
+        /// naming the next by cursor, as SpanDAC pages a library of 725.
+        var pageSize = Int.max
+        /// The artists request (0-based) at which a drain that is running lands:
+        /// the list stops being flagged and the rebuild's ticket ends `installed`.
+        var drainLandsAt: Int? = nil
         private var order: [String] = []
 
         init(_ artists: [(id: String, name: String)]) { self.artists = artists }
@@ -101,11 +107,15 @@ final class BridgeArtistsRereadSceneTests: XCTestCase {
             }
             // The reply is read AFTER a hold, as a server answering then would.
             lock.lock(); defer { lock.unlock() }
+            if op == BridgeArtistsRereadSceneTests.artistsOp, n == drainLandsAt, let c = completion {
+                draining = false
+                completion = (c.instance, c.ticket + 1, "installed")
+            }
             if fails { return Self.bad(op) }
             if unsupported { return #"{"ok":true,"op":"slice.status","status":{"playback":"stopped"}}"# }
             switch op {
             case BridgeArtistsRereadSceneTests.statusOp: return statusReply()
-            case BridgeArtistsRereadSceneTests.artistsOp: return artistsReply()
+            case BridgeArtistsRereadSceneTests.artistsOp: return artistsReply(cursor: body["cursor"] as? String)
             case "slice.libraryArtistAlbums": return artistAlbumsReply()
             default: return Self.bad(op)
             }
@@ -124,9 +134,12 @@ final class BridgeArtistsRereadSceneTests: XCTestCase {
 
         /// The keys SpanDAC's artists reply carries (measured 2026-10-27): generation,
         /// next_cursor, ok, op, refreshing, stale, total and the items. No instance.
-        private func artistsReply() -> String {
-            let items = artists.map { #"{"id":"\#($0.id)","title":"\#($0.name)","kind":"artist"}"# }.joined(separator: ",")
-            return #"{"ok":true,"op":"slice.libraryArtists","generation":\#(generation),"total":\#(artists.count),"items":[\#(items)],"stale":false,"refreshing":\#(draining),"next_cursor":null}"#
+        private func artistsReply(cursor: String?) -> String {
+            let start = cursor.flatMap(Int.init) ?? 0
+            let end = min(artists.count, start + min(pageSize, artists.count - start))
+            let items = artists[start..<end].map { #"{"id":"\#($0.id)","title":"\#($0.name)","kind":"artist"}"# }.joined(separator: ",")
+            let next = end < artists.count ? #""\#(end)""# : "null"
+            return #"{"ok":true,"op":"slice.libraryArtists","generation":\#(generation),"total":\#(artists.count),"items":[\#(items)],"stale":false,"refreshing":\#(draining),"next_cursor":\#(next)}"#
         }
 
         private func artistAlbumsReply() -> String {
@@ -241,6 +254,23 @@ final class BridgeArtistsRereadSceneTests: XCTestCase {
 
     // MARK: - the checkpoint taken before the first walk
 
+    /// The live shape that looped (2026-10-27, Studio): 725 artists in eight pages of
+    /// 100 with no instance, a status whose `library_instance` and `library_refresh`
+    /// name the same process (ticket 9, installed), nothing changing. The list is read
+    /// once and never again, however long the view is watched.
+    func testTheLiveShapeReadsTheListOnceAndNeverLoops() {
+        let server = Server((1...725).map { (id: "ar\($0)", name: "Artist \($0)") })
+        server.pageSize = 100
+        server.setStatus(instance: "9CFA0525-0000-0000-0000-000000000000",
+                         completion: ("9CFA0525-0000-0000-0000-000000000000", 9, "installed"))
+        let rig = loadedRig(server, showing: "Artist 1", baseline: true)
+        XCTAssertTrue(settleScene(rig.scene) { server.count(Self.artistsOp) >= 8 && server.ended(Self.artistsOp, at: 7) })
+        run(rig, from: 0, to: 60)
+        XCTAssertTrue(rig.scene.artistsFeedForTest.waitForWorkersForTest(timeout: 5))
+        XCTAssertEqual(server.count(Self.artistsOp), 8, "the list was read again: \(server.ops().filter { $0 == Self.artistsOp }.count) pages")
+        XCTAssertGreaterThanOrEqual(server.count(Self.statusOp), 12, "the watch did not run")
+    }
+
     /// A healthy status answered before the first page: launch reads Artists once.
     func testALaunchReadsArtistsExactlyOnceWithAHealthyStatus() {
         let server = Server(artists("ar1", "ar2"))
@@ -304,6 +334,29 @@ final class BridgeArtistsRereadSceneTests: XCTestCase {
         XCTAssertTrue(waitUntil { rig.statusEnded.count == 1 })
         run(rig, from: 0, to: 30)
         XCTAssertEqual(server.count(Self.artistsOp), 2, "a late answer was taken as the walk's checkpoint")
+    }
+
+    /// The live sequence of 2026-10-27 16:01:39 (SpanDAC log): the first read after the
+    /// snapshot passed its 600 s refresh age started a drain, so the walk's pages came
+    /// back flagged and the feed's own re-ask (unchanged since 3.23.0) probed page 1 at
+    /// its interval until the drain landed, then walked the list again. The drain's
+    /// ticket ending is a newer checkpoint than the one taken before the walk: ONE
+    /// re-read after the re-ask, then nothing. A bounded sequence, not a loop.
+    func testAColdSnapshotsDrainProbesThenRereadsOnceAndStops() {
+        let server = Server((1...725).map { (id: "ar\($0)", name: "Artist \($0)") })
+        server.pageSize = 100
+        let instance = "9CFA0525-0000-0000-0000-000000000000"
+        server.setStatus(instance: instance, completion: (instance, 8, "installed"))
+        server.setDraining(true)
+        server.drainLandsAt = 11          // the walk (0-7), three flagged probes (8-10), then clean
+        let rig = loadedRig(server, showing: "Artist 1", baseline: true)
+        // The walk, the probes, the clean probe and the re-ask's re-walk (12-19).
+        XCTAssertTrue(settleScene(rig.scene) { self.tick(rig, at: 0); return server.count(Self.artistsOp) >= 20 },
+                      "the re-ask never re-walked after the drain")
+        run(rig, from: 0.5, to: 60)
+        XCTAssertTrue(rig.scene.artistsFeedForTest.waitForWorkersForTest(timeout: 5))
+        run(rig, from: 60.5, to: 120)
+        XCTAssertEqual(server.count(Self.artistsOp), 28, "the drain's ending earned other than exactly one re-read")
     }
 
     // MARK: - the checkpoint and the one re-read it earns
