@@ -385,6 +385,9 @@ final class LibraryScene: Scene {
     /// for one by calling `albumsFeed.refresh` the way `PlaylistsScene`'s `r` does.
     var albumsFeedForTest: BridgeListFeed<LibraryAlbum> { albumsFeed }
     var albumsRereadForTest: LibraryCoverFetcher.ListReread { albumsReread }
+    /// The Artists list's feed and its refresh watch's re-read record, for tests.
+    var artistsFeedForTest: BridgeListFeed<LibraryArtist> { artistsFeed }
+    var artistsRereadForTest: LibraryCoverFetcher.ListReread { artistsReread }
     /// The id of the row under the cursor, for tests.
     var selectionIDForTest: String? { selectionUnderCursor()?.id }
     /// Stand-ins for an automatic re-read landing under a drill: they assign the
@@ -545,6 +548,40 @@ final class LibraryScene: Scene {
     /// refusal or a SpanDAC restart (once per read that succeeds, and a bounded,
     /// delayed retry for one that fails; see `ListReread`).
     private var albumsReread = LibraryCoverFetcher.ListReread()
+    /// What SpanDAC's Artists list has already been read again for: one
+    /// `slice.status` checkpoint per read that succeeds, and a bounded, delayed
+    /// retry for one that fails (`ListReread`). See `watchArtistsRefresh`.
+    private var artistsReread = LibraryCoverFetcher.ListReread()
+    /// The Artists list's refresh watch, main thread only: whether it was on at
+    /// the last tick, the latest checkpoint seen and not yet dropped, when the
+    /// next status read is due (nil: now), the status reads that failed in a row,
+    /// and a SpanDAC whose status names no process (nothing to watch: no-op).
+    private var artistsWatching = false
+    private var artistsCheckpoint: LibraryCoverFetcher.ListReread.Reason? = nil
+    private var artistsStatusDueAt: Date? = nil
+    private var artistsStatusFailures = 0
+    private var artistsStatusUnsupported = false
+    /// The watch's status read, under `inboxLock`: one in flight at a time, its
+    /// reply posted only under the serial (and Artists epoch) it was asked under.
+    /// The serial moves whenever the watch stops, starts or is reset, so a reply
+    /// from before that is dropped, and the in-flight mark is cleared by the read
+    /// itself whatever became of its reply.
+    private var artistsStatusSerial = 0
+    private var artistsStatusInFlight = false
+    private var artistsStatusInbox: ArtistsStatusRead? = nil
+    private enum ArtistsStatusRead {
+        case observed(LibraryCoverFetcher.ListReread.Reason)
+        case unsupported
+        case failed
+    }
+    /// Between status reads while the watch is on, and the most a failing read
+    /// backs off to.
+    private static let artistsStatusInterval: TimeInterval = 5
+    private static let artistsStatusBackoffCap: TimeInterval = 60
+    /// Fired when a watch status read's thread ends, posted or dropped.
+    var artistsStatusReadFinishedForTest: (() -> Void)?
+    /// Whether a watch status read is out, for tests.
+    var artistsStatusReadInFlightForTest: Bool { inboxLock.lock(); defer { inboxLock.unlock() }; return artistsStatusInFlight }
     private let kittyEnabled: Bool
     // Placement-dedup (render-thread-only, per design doc Feature 2 §3): the
     // last kitty placement this scene emitted, so an unchanged frame emits
@@ -1683,8 +1720,18 @@ final class LibraryScene: Scene {
         artistAlbumsReaskRunning = nil
         artistAlbumsSpentFor = nil
         artistAlbumsReaskWanted = nil
+        // The refresh watch's status read in flight, and any reply it posted, belong
+        // to the list this reset discards.
+        artistsStatusSerial += 1
+        artistsStatusInbox = nil
         inboxLock.unlock()
         artistsFeed.reset()
+        artistsReread.reset()
+        artistsWatching = false
+        artistsCheckpoint = nil
+        artistsStatusDueAt = nil
+        artistsStatusFailures = 0
+        artistsStatusUnsupported = false
         artistAlbums = []
         artistAlbumsLoaded = false
         artistAlbumsFailure = nil
@@ -1741,7 +1788,11 @@ final class LibraryScene: Scene {
 
     func tick(snapshot: NowPlayingSnapshot) -> Bool {
         var changed = false
-        inboxLock.lock(); lastTickAt = now(); inboxLock.unlock()
+        inboxLock.lock()
+        // A gap in the heartbeat is the tab having been left and come back to.
+        let returnedToTab = !tabIsLiveLocked()
+        lastTickAt = now()
+        inboxLock.unlock()
         if snapToPlayingPending, case .songList = nav.current,
            case .active(let np) = snapshot.outcome, !songs.isEmpty {
             snapToPlayingPending = false
@@ -2134,6 +2185,7 @@ final class LibraryScene: Scene {
             kickCoverFetch(albumID: a.id)
         }
         syncTracksReask()
+        watchArtistsRefresh(returnedToTab: returnedToTab)
         if let libraryCovers {
             libraryCovers.focus(focusedAlbum().flatMap(coverTarget(for:)))
             rereadAlbumsIfStale(libraryCovers)
@@ -2286,7 +2338,10 @@ final class LibraryScene: Scene {
                 return .none
             }
             if artistsSource == .bridge, isArtistList, bridgeArtistsFailure != nil {
+                // As for Albums: the feed's reset drops an automatic re-read's ending,
+                // so its claim goes with it.
                 artistsFeed.reset()
+                artistsReread.reset()
                 artistsFetchStarted = false
                 artistsDone = false
                 bridgeArtistsFailure = nil
@@ -3214,6 +3269,120 @@ final class LibraryScene: Scene {
                 posted = true
             }
             scene.inboxLock.unlock()
+        }
+    }
+
+    /// The Artists list is load-once and has no covers, and SpanDAC's artist pages
+    /// name no library instance, so nothing the Albums re-read hears ever speaks for
+    /// it. Instead, while SpanDAC's Artists is the sub-view on screen (its list or
+    /// an artist opened from it), the scene reads SpanDAC's own refresh record
+    /// (`slice.status`) on a worker: one read at a time, every
+    /// `artistsStatusInterval` seconds and at once on coming back to the view or the
+    /// tab, never off it, and never on the render.
+    ///
+    /// A checkpoint is the process answering and the ticket of the latest rebuild it
+    /// reports ended. A new process (a restart: its record starts empty and its
+    /// tickets may repeat the old one's numbers) or a newly ended ticket (installed,
+    /// or failed or cancelled, taken conservatively) is a checkpoint the rows have
+    /// not been read for. So is the first one seen over rows read before any was:
+    /// one conservative re-read. Page generations are never compared.
+    ///
+    /// The re-read is the Albums one (`rereadAlbumsIfStale`): `BridgeListFeed.refresh`
+    /// joining the list's own re-ask, posting ONE `reasked` replacement that the
+    /// drain applies by artist id at the root and silently under a drill (Back
+    /// follows the opened artist by id; that artist's albums and tracks are not
+    /// read again). The checkpoint is captured before the read is asked for and only
+    /// it is marked read (`ListReread`, which also bounds a failing read's retries),
+    /// so one seen while that read is held stays due and earns exactly one more. A
+    /// status read that fails backs off, capped; one that names no process (an older
+    /// SpanDAC) is a no-op that turns the watch off until the view is shown again.
+    private func watchArtistsRefresh(returnedToTab: Bool) {
+        let watching = artistsSource == .bridge && nav.subView == .artists && artistsLoaded
+            && bridgeArtistsFailure == nil
+        let restarted = watching != artistsWatching || (watching && returnedToTab)
+        inboxLock.lock()
+        // Stopped or (re)started: whatever was asked or posted before is dropped.
+        if restarted { artistsStatusSerial += 1; artistsStatusInbox = nil }
+        let landed = artistsStatusInbox; artistsStatusInbox = nil
+        let inFlight = artistsStatusInFlight
+        let serial = artistsStatusSerial
+        let epoch = artistsSourceEpoch
+        inboxLock.unlock()
+        if restarted {
+            artistsCheckpoint = nil; artistsStatusDueAt = nil
+            artistsStatusFailures = 0; artistsStatusUnsupported = false
+        }
+        artistsWatching = watching
+        guard watching else { return }
+        let at = now()
+        switch landed {
+        case .observed(let checkpoint)?:
+            artistsCheckpoint = checkpoint
+            artistsStatusFailures = 0
+            artistsStatusDueAt = at.addingTimeInterval(Self.artistsStatusInterval)
+        case .unsupported?:
+            artistsStatusUnsupported = true
+            artistsCheckpoint = nil
+        case .failed?:
+            artistsStatusFailures += 1
+            artistsStatusDueAt = at.addingTimeInterval(
+                min(Self.artistsStatusInterval * pow(3, Double(artistsStatusFailures)), Self.artistsStatusBackoffCap))
+        case nil:
+            break
+        }
+        if !artistsStatusUnsupported, !inFlight, at >= (artistsStatusDueAt ?? .distantPast),
+           let provider = makeProvider() {
+            readArtistsStatus(provider: provider, serial: serial, epoch: epoch)
+        }
+        rereadArtistsIfDue(at: at)
+    }
+
+    /// One `slice.status` read for the Artists watch, on its own thread. Its reply
+    /// is posted only if the watch is still the one it was asked for (serial), on
+    /// the same list (epoch), with the tab still ticking; it clears the in-flight
+    /// mark whatever became of the reply.
+    private func readArtistsStatus(provider: MusicDataProvider, serial: Int, epoch: Int) {
+        inboxLock.lock(); artistsStatusInFlight = true; inboxLock.unlock()
+        let ref = WeakScene(self)
+        Thread.detachNewThread {
+            let read: ArtistsStatusRead
+            do { read = Self.artistsStatusRead(try provider.libraryRefreshStatus()) } catch { read = .failed }
+            guard let scene = ref.scene else { return }
+            scene.inboxLock.lock()
+            scene.artistsStatusInFlight = false
+            if scene.artistsStatusSerial == serial, scene.artistsSourceEpoch == epoch, scene.tabIsLiveLocked() {
+                scene.artistsStatusInbox = read
+            }
+            scene.inboxLock.unlock()
+            scene.artistsStatusReadFinishedForTest?()
+        }
+    }
+
+    /// The checkpoint a status names: `library_instance` (else the rebuild record's
+    /// own process), and that record's ticket when it is that process's. No process
+    /// at all is a SpanDAC that does not report one.
+    private static func artistsStatusRead(_ status: SpanDACLibraryRefreshStatus) -> ArtistsStatusRead {
+        guard let instance = status.libraryInstance ?? status.completion?.instance else { return .unsupported }
+        let ticket = status.completion.flatMap { $0.instance == instance ? $0.ticket : nil }
+        return .observed(.refreshed(instance: instance, ticket: ticket))
+    }
+
+    /// Reads the Artists list again for the latest checkpoint, unless it has been
+    /// read for already, is being read for, or is waiting out a failed read's delay.
+    /// The claim is handed back whenever the feed takes no read (a walk, a refresh
+    /// or the list's own re-ask is running, and lands its own rows), so a later tick
+    /// asks again; `end` and `displaced` run under the feed's lock and touch only
+    /// the claim.
+    private func rereadArtistsIfDue(at: Date) {
+        guard let checkpoint = artistsCheckpoint else { return }
+        let due = artistsReread.due(checkpoint, now: at)
+        guard due.any else { return }
+        let ticket = artistsReread.began(due, now: at)
+        let reread = artistsReread
+        switch artistsFeed.refresh(end: { reread.finished(ticket, succeeded: $0 != .readFailed) },
+                                   displaced: { reread.release(ticket) }, joinReask: true) {
+        case .started, .tookOver: break
+        case .busy, .alreadyRefreshing, .joined: reread.release(ticket)
         }
     }
 

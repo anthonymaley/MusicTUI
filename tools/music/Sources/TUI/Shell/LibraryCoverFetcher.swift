@@ -152,8 +152,11 @@ final class LibraryCoverFetcher {
     /// left it behind: a `stale_generation` refusal naming the applied list, or a
     /// restart, a readiness instance other than the applied one. Albums, Playlists
     /// and an artist's albums share it; each scene supplies its own read and guards.
+    /// The Artists list has no covers, so neither of those is ever named for it: it
+    /// watches SpanDAC's own refresh record instead, and each checkpoint it sees
+    /// there is a reason of its own (`refreshed`, asked with `due(_:now:)`).
     ///
-    /// Each reason (a stale list; a pair of instances) is read for ONCE when the
+    /// Each reason (a stale list; a pair of instances; a checkpoint) is read for ONCE when the
     /// read SUCCEEDS, whatever it comes back carrying: a read that lands the same
     /// identity is not asked again. A read that FAILS (the provider timed out, the
     /// reply was discarded) is retried, but never on a tick: after `retryDelays`
@@ -174,6 +177,9 @@ final class LibraryCoverFetcher {
         enum Reason: Hashable {
             case stale(StaleList)
             case restart(applied: String, ready: String)
+            /// A `slice.status` checkpoint: the SpanDAC process answering and the
+            /// ticket of the latest rebuild it reports ended (nil while none has).
+            case refreshed(instance: String, ticket: Int?)
         }
 
         private struct Attempt {
@@ -215,6 +221,13 @@ final class LibraryCoverFetcher {
                 if eligible(r, now: now) { out.append(r) }
             }
             return Due(reasons: out)
+        }
+
+        /// Whether one reason the caller names itself calls for a re-read now: not
+        /// read for already, not in flight, not waiting out a retry's delay.
+        func due(_ reason: Reason, now: Date) -> Due {
+            lock.lock(); defer { lock.unlock() }
+            return Due(reasons: eligible(reason, now: now) ? [reason] : [])
         }
 
         private func eligible(_ reason: Reason, now: Date) -> Bool {
