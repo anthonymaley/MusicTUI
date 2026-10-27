@@ -556,7 +556,7 @@ final class LibraryScene: Scene {
     /// without `swift test` running AppleScript against the user's Music.app.
     /// Live by default: no call site passes them.
     private let resolveAlbum: (AppleScriptBackend, String, String) -> AlbumResolution
-    private let resolveArtist: (AppleScriptBackend, String) -> AlbumResolution
+    private let resolveArtist: (AppleScriptBackend, String, ClosedRange<Int>?) -> AlbumResolution
 
     /// Where the lists' rows come from, asked FRESH at each load and each play
     /// so a mid-session switch of data source is honoured.
@@ -608,8 +608,8 @@ final class LibraryScene: Scene {
          artwork: ArtworkStore = ArtworkStore(),
          resolveAlbum: @escaping (AppleScriptBackend, String, String) -> AlbumResolution
              = { resolveAlbumPlaybackTracks(backend: $0, title: $1, artist: $2) },
-         resolveArtist: @escaping (AppleScriptBackend, String) -> AlbumResolution
-             = { resolveListedArtistPlaybackTracks(backend: $0, credit: $1) },
+         resolveArtist: @escaping (AppleScriptBackend, String, ClosedRange<Int>?) -> AlbumResolution
+             = { resolveListedArtistPlaybackTracks(backend: $0, credit: $1, trackRange: $2) },
          makeProvider: @escaping () -> MusicDataProvider? = { nil },
          handoff: MusicTUIHandoff = RefusingHandoff(),
          warmUpSleep: @escaping (TimeInterval) -> Void = { Thread.sleep(forTimeInterval: $0) },
@@ -2456,7 +2456,9 @@ final class LibraryScene: Scene {
         } else if makeProvider() != nil {
             actions.run("Play") { throw ActionError(message: LibraryProvenance.bridgeSelectedMusicAppList) }
         } else {
-            playArtist(name: name, shuffle: shuffle)
+            // The tier on screen is part of what the row lists: in the Albums or
+            // 12"/EP view the drill-in shows only that tier's albums, so play does too.
+            playArtist(name: name, shuffle: shuffle, trackRange: artistFilter.trackRange)
         }
     }
 
@@ -2671,7 +2673,7 @@ final class LibraryScene: Scene {
     //
     // C3 item 8: Music.app-sourced artists only, same as `playAlbum`.
     // Bridge-sourced artists play through `playBridgeArtist`.
-    func playArtist(name: String, shuffle: Bool) {
+    func playArtist(name: String, shuffle: Bool, trackRange: ClosedRange<Int>? = nil) {
         let backend = self.backend
         let store = self.appQueue
         let routing = self.routing
@@ -2685,9 +2687,10 @@ final class LibraryScene: Scene {
             //
             // `name` is the library credit (album artist, else artist), and the
             // default resolver plays exactly the rows the drill-in lists under it,
-            // in that order, minus tracks Music silently refuses to play
-            // (`resolveListedArtistPlaybackTracks`; ruling 2026-10-27 15:04).
-            let res = resolve(backend, name)
+            // in that order and within the tier on screen, minus tracks Music
+            // silently refuses to play (`resolveListedArtistPlaybackTracks`;
+            // ruling 2026-10-27 15:04).
+            let res = resolve(backend, name, trackRange)
             try require(!res.tracks.isEmpty, emptyResolutionMessage(res, name: name,
                 unavailable: "'\(name)': no tracks available to play yet.",
                 notFound: "Couldn't load '\(name)'."))

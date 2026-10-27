@@ -65,7 +65,7 @@ final class BridgeCollectionCallSiteTests: XCTestCase {
                             sources: emptySources(), appQueue: AppQueueStore(),
                             status: status, actions: ActionRunner(status: status),
                             resolveAlbum: { _, _, _ in resolved },
-                            resolveArtist: { _, _ in resolved },
+                            resolveArtist: { _, _, _ in resolved },
                             // Never the real ~/.config/music/artist-tiers.json (C2 isolation).
                             resultCache: temporaryResultCache().cache)
     }

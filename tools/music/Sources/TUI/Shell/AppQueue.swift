@@ -613,9 +613,16 @@ func resolveArtistPlaybackTracks(backend: AppleScriptBackend, artist: String) ->
 /// what `groupLibraryArtists` and `groupLibraryArtistAlbums` group by. Exact on
 /// purpose: Music's `is` ignores case, so the fetch for "Groove Armada" also
 /// returns the 36 tracks credited "groove armada", which the list shows as a
-/// separate row (measured 2026-10-27). Pure → unit-tested.
-func selectListedArtistTracks(_ rows: [LibraryAlbumRow], credit: String) -> [LibraryAlbumRow] {
-    rows.filter { !$0.album.isEmpty && ($0.albumArtist.isEmpty ? $0.artist : $0.albumArtist) == credit }
+/// separate row (measured 2026-10-27). `trackRange` is the Artists view's tier
+/// (`ArtistFilterMode.trackRange`): an album is kept only when its row count, every
+/// row and not only the playable ones, is in range, which is the count the drill-in
+/// scopes by. Pure → unit-tested.
+func selectListedArtistTracks(_ rows: [LibraryAlbumRow], credit: String,
+                              trackRange: ClosedRange<Int>? = nil) -> [LibraryAlbumRow] {
+    let listed = rows.filter { !$0.album.isEmpty && ($0.albumArtist.isEmpty ? $0.artist : $0.albumArtist) == credit }
+    guard let trackRange else { return listed }
+    let counts = Dictionary(listed.map { ($0.album, 1) }, uniquingKeysWith: +)
+    return listed.filter { trackRange.contains(counts[$0.album] ?? 0) }
 }
 
 /// One artist's rows in the order the drill-in shows them: albums sorted as
@@ -650,10 +657,11 @@ func listedArtistWhereClause(credit: String) -> String {
 /// the TRACK artist, so 156 of 740 rows played a set other than the one shown
 /// (Four Tet missed his 26-track DJ mix). The CLI's `--artist` keeps that
 /// resolver: there the name is a performer typed by hand, not a list credit.
-func resolveListedArtistPlaybackTracks(backend: AppleScriptBackend, credit: String) -> AlbumResolution {
+func resolveListedArtistPlaybackTracks(backend: AppleScriptBackend, credit: String,
+                                       trackRange: ClosedRange<Int>? = nil) -> AlbumResolution {
     guard let fetched = fetchLibraryAlbumRows(backend: backend, whereClause: listedArtistWhereClause(credit: credit))
     else { return .readFailure }
-    let matched = selectListedArtistTracks(fetched, credit: credit)
+    let matched = selectListedArtistTracks(fetched, credit: credit, trackRange: trackRange)
     let playable = sortRowsByListedAlbumOrder(matched).filter { isPlayableCloudStatus($0.cloudStatus) }
         .map { TrackListEntry(index: $0.index, name: $0.name, artist: $0.artist, isCurrent: false,
                               album: $0.album) }
