@@ -609,7 +609,7 @@ final class LibraryScene: Scene {
          resolveAlbum: @escaping (AppleScriptBackend, String, String) -> AlbumResolution
              = { resolveAlbumPlaybackTracks(backend: $0, title: $1, artist: $2) },
          resolveArtist: @escaping (AppleScriptBackend, String) -> AlbumResolution
-             = { resolveArtistPlaybackTracks(backend: $0, artist: $1) },
+             = { resolveListedArtistPlaybackTracks(backend: $0, credit: $1) },
          makeProvider: @escaping () -> MusicDataProvider? = { nil },
          handoff: MusicTUIHandoff = RefusingHandoff(),
          warmUpSleep: @escaping (TimeInterval) -> Void = { Thread.sleep(forTimeInterval: $0) },
@@ -2683,14 +2683,10 @@ final class LibraryScene: Scene {
             try refuseOpenDataPlayBeforeReading(.libraryPlay, routing: routing, spanDACData: makeProvider() != nil)
             // Rule 9's named exception again: the read runs in both modes.
             //
-            // `name` is the library credit (album artist, else artist), so the
-            // strict `artist is` clause now usually hits. The loose fallback stays
-            // for per-track soloist credits: on the live repro ("Floating Points,
-            // San Francisco Ballet Orchestra") the four movements each credit a
-            // different soloist while the album artist is uniform, so the strict
-            // clause matched nothing there. The resolver keeps that strict clause
-            // as the fast path, then falls back to a loose fetch on the primary
-            // credit narrowed in Swift, and drops tracks Music silently refuses to play.
+            // `name` is the library credit (album artist, else artist), and the
+            // default resolver plays exactly the rows the drill-in lists under it,
+            // in that order, minus tracks Music silently refuses to play
+            // (`resolveListedArtistPlaybackTracks`; ruling 2026-10-27 15:04).
             let res = resolve(backend, name)
             try require(!res.tracks.isEmpty, emptyResolutionMessage(res, name: name,
                 unavailable: "'\(name)': no tracks available to play yet.",

@@ -608,6 +608,58 @@ func resolveArtistPlaybackTracks(backend: AppleScriptBackend, artist: String) ->
     return AlbumResolution(tracks: playable, matched: matched.count)
 }
 
+/// The rows one Artists-list row lists, by the list's own rule: credit (album
+/// artist, else artist) equal to `credit` EXACTLY, and a non-empty album, which is
+/// what `groupLibraryArtists` and `groupLibraryArtistAlbums` group by. Exact on
+/// purpose: Music's `is` ignores case, so the fetch for "Groove Armada" also
+/// returns the 36 tracks credited "groove armada", which the list shows as a
+/// separate row (measured 2026-10-27). Pure → unit-tested.
+func selectListedArtistTracks(_ rows: [LibraryAlbumRow], credit: String) -> [LibraryAlbumRow] {
+    rows.filter { !$0.album.isEmpty && ($0.albumArtist.isEmpty ? $0.artist : $0.albumArtist) == credit }
+}
+
+/// One artist's rows in the order the drill-in shows them: albums sorted as
+/// `groupLibraryAlbums` sorts them (name, case-insensitively; first fetched breaks
+/// ties), each album in disc/track order. Pure → unit-tested.
+func sortRowsByListedAlbumOrder(_ rows: [LibraryAlbumRow]) -> [LibraryAlbumRow] {
+    var order: [String] = []
+    var byAlbum: [String: [LibraryAlbumRow]] = [:]
+    for row in rows {
+        if byAlbum[row.album] == nil { order.append(row.album) }
+        byAlbum[row.album, default: []].append(row)
+    }
+    return order.enumerated()
+        .sorted { lhs, rhs in
+            let byName = lhs.element.localizedCaseInsensitiveCompare(rhs.element)
+            if byName != .orderedSame { return byName == .orderedAscending }
+            return lhs.offset < rhs.offset
+        }
+        .flatMap { sortRowsByAlbumOrder(byAlbum[$0.element] ?? []) }
+}
+
+/// The fetch for one Artists-list row: a superset of its rows (case-insensitive),
+/// narrowed exactly by `selectListedArtistTracks`. Pure → unit-tested.
+func listedArtistWhereClause(credit: String) -> String {
+    let esc = escapeAppleScriptString(credit)
+    return "album artist is \"\(esc)\" or (album artist is \"\" and artist is \"\(esc)\")"
+}
+
+/// Resolve an Artists-list row for `p`/`s`: exactly the tracks of the albums that
+/// row lists, in listed order (ruling 2026-10-27 15:04: playing an artist plays
+/// exactly the albums listed under them). `resolveArtistPlaybackTracks` matched
+/// the TRACK artist, so 156 of 740 rows played a set other than the one shown
+/// (Four Tet missed his 26-track DJ mix). The CLI's `--artist` keeps that
+/// resolver: there the name is a performer typed by hand, not a list credit.
+func resolveListedArtistPlaybackTracks(backend: AppleScriptBackend, credit: String) -> AlbumResolution {
+    guard let fetched = fetchLibraryAlbumRows(backend: backend, whereClause: listedArtistWhereClause(credit: credit))
+    else { return .readFailure }
+    let matched = selectListedArtistTracks(fetched, credit: credit)
+    let playable = sortRowsByListedAlbumOrder(matched).filter { isPlayableCloudStatus($0.cloudStatus) }
+        .map { TrackListEntry(index: $0.index, name: $0.name, artist: $0.artist, isCurrent: false,
+                              album: $0.album) }
+    return AlbumResolution(tracks: playable, matched: matched.count)
+}
+
 /// Resolve a single library song the same way: strict title+artist first, then a
 /// title-only fetch disambiguated in Swift. A failed read at either step is
 /// `.readFailure`, never a fall-through.
