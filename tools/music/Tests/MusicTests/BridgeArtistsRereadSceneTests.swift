@@ -47,6 +47,8 @@ final class BridgeArtistsRereadSceneTests: XCTestCase {
         private var holds: [String: [Int: DispatchSemaphore]] = [:]
         private var threads: [String: [Int: Thread]] = [:]
         private var waiting: [String: Int] = [:]
+        private var unsupportedAt: Set<Int> = []
+        private var order: [String] = []
 
         init(_ artists: [(id: String, name: String)]) { self.artists = artists }
 
@@ -63,6 +65,10 @@ final class BridgeArtistsRereadSceneTests: XCTestCase {
         func failStatus(_ on: Bool) {
             lock.lock(); statusFailsFrom = on ? (counts[BridgeArtistsRereadSceneTests.statusOp] ?? 0) : nil; lock.unlock()
         }
+        /// The Nth (0-based) status read answers as an older SpanDAC: no process named.
+        func unsupportedStatus(at n: Int) { lock.lock(); unsupportedAt.insert(n); lock.unlock() }
+        /// Every request's op, in the order they arrived.
+        func ops() -> [String] { lock.lock(); defer { lock.unlock() }; return order }
         func hold(_ op: String, at n: Int) { lock.lock(); holds[op, default: [:]][n] = DispatchSemaphore(value: 0); lock.unlock() }
         func release(_ op: String, at n: Int) { lock.lock(); let g = holds[op]?[n]; lock.unlock(); g?.signal() }
 
@@ -81,6 +87,8 @@ final class BridgeArtistsRereadSceneTests: XCTestCase {
             lock.lock()
             let n = counts[op, default: 0]
             counts[op] = n + 1
+            order.append(op)
+            let unsupported = op == BridgeArtistsRereadSceneTests.statusOp && unsupportedAt.contains(n)
             threads[op, default: [:]][n] = Thread.current
             let fails = failing[op]?.contains(n) == true
                 || (op == BridgeArtistsRereadSceneTests.statusOp && statusFailsFrom.map { n >= $0 } == true)
@@ -94,6 +102,7 @@ final class BridgeArtistsRereadSceneTests: XCTestCase {
             // The reply is read AFTER a hold, as a server answering then would.
             lock.lock(); defer { lock.unlock() }
             if fails { return Self.bad(op) }
+            if unsupported { return #"{"ok":true,"op":"slice.status","status":{"playback":"stopped"}}"# }
             switch op {
             case BridgeArtistsRereadSceneTests.statusOp: return statusReply()
             case BridgeArtistsRereadSceneTests.artistsOp: return artistsReply()
@@ -180,8 +189,12 @@ final class BridgeArtistsRereadSceneTests: XCTestCase {
     }
 
     /// The Artists list (the default sub-view) after its first walk, at fake time 0.
-    private func loadedRig(_ server: Server, showing first: String,
+    /// Unless `baseline`, the status read before that walk (status read 0) fails, so
+    /// the rows have no checkpoint and the watch's first one earns its conservative
+    /// re-read: the starting point most of these tests want.
+    private func loadedRig(_ server: Server, showing first: String, baseline: Bool = false,
                            warmUpSleep: @escaping (TimeInterval) -> Void = { _ in }) -> Rig {
+        if !baseline { server.fail(Self.statusOp, at: 0) }
         let rig = Rig(server, warmUpSleep: warmUpSleep)
         XCTAssertEqual(rig.scene.subViewForTest, .artists)
         XCTAssertTrue(settleScene(rig.scene) { self.shows(rig, first) }, "the artists never loaded")
@@ -226,6 +239,73 @@ final class BridgeArtistsRereadSceneTests: XCTestCase {
         return ok
     }
 
+    // MARK: - the checkpoint taken before the first walk
+
+    /// A healthy status answered before the first page: launch reads Artists once.
+    func testALaunchReadsArtistsExactlyOnceWithAHealthyStatus() {
+        let server = Server(artists("ar1", "ar2"))
+        server.setStatus(instance: Self.instanceA, completion: (Self.instanceA, 7, "installed"))
+        let rig = loadedRig(server, showing: "Artist ar2", baseline: true)
+        XCTAssertEqual(Array(server.ops().prefix(2)), [Self.statusOp, Self.artistsOp],
+                       "the status was not read before the walk's first page")
+        run(rig, from: 0, to: 30)
+        XCTAssertEqual(server.count(Self.artistsOp), 1, "launch read the Artists list twice")
+        XCTAssertGreaterThanOrEqual(server.count(Self.statusOp), 6, "the watch did not run")
+    }
+
+    /// A refresh that ends while the first walk is out is a newer checkpoint than the
+    /// one taken before it: exactly one re-read.
+    func testACompletionDuringTheFirstWalkEarnsExactlyOneReread() {
+        let server = Server(artists("ar1"))
+        server.setStatus(instance: Self.instanceA, completion: (Self.instanceA, 7, "installed"))
+        server.hold(Self.artistsOp, at: 0)
+        let rig = Rig(server)
+        XCTAssertTrue(settleScene(rig.scene) { server.held(Self.artistsOp) == 1 }, "the first walk never began")
+        server.setStatus(instance: Self.instanceA, completion: (Self.instanceA, 8, "installed"))
+        server.setArtists(artists("ar1", "ar2"))
+        server.release(Self.artistsOp, at: 0)
+        XCTAssertTrue(settleScene(rig.scene) { self.shows(rig, "Artist ar2") }, "the first walk never landed")
+        XCTAssertTrue(artistsRead(rig, at: 0, 1), "the refresh that ended during the walk was taken as read")
+        run(rig, from: 0.5, to: 30)
+        XCTAssertEqual(server.count(Self.artistsOp), 2, "more than one re-read")
+    }
+
+    /// The status read before the walk fails: no baseline is invented, and the watch's
+    /// first checkpoint earns one conservative re-read.
+    func testAFailedPreWalkStatusFallsBackToOneConservativeReread() {
+        let server = Server(artists("ar1"))
+        let rig = loadedRig(server, showing: "Artist ar1")   // status read 0 fails
+        run(rig, from: 0, to: 30)
+        XCTAssertEqual(server.count(Self.artistsOp), 2)
+    }
+
+    /// The status read before the walk names no process, but the watch's later ones do:
+    /// no baseline, one conservative re-read. (A SpanDAC that never names one stays a
+    /// no-op: `testAStatusThatNamesNoProcessIsANoOp`.)
+    func testAnUnsupportedPreWalkStatusFallsBackToOneConservativeReread() {
+        let server = Server(artists("ar1"))
+        server.unsupportedStatus(at: 0)
+        let rig = loadedRig(server, showing: "Artist ar1", baseline: true)
+        run(rig, from: 0, to: 30)
+        XCTAssertEqual(server.count(Self.artistsOp), 2)
+    }
+
+    /// A status read that does not answer in time does not hold the first page; its
+    /// late answer is no baseline, and the list gets its one conservative re-read.
+    func testASlowPreWalkStatusDoesNotHoldTheFirstPage() {
+        let server = Server(artists("ar1"))
+        server.hold(Self.statusOp, at: 0)
+        let rig = Rig(server)
+        XCTAssertTrue(settleScene(rig.scene, seconds: 5) { server.reached(Self.artistsOp, at: 0) },
+                      "the first page waited on a status read that had not answered")
+        XCTAssertEqual(server.held(Self.statusOp), 1, "the status read answered after all")
+        XCTAssertTrue(settleScene(rig.scene) { self.shows(rig, "Artist ar1") })
+        server.release(Self.statusOp, at: 0)
+        XCTAssertTrue(waitUntil { rig.statusEnded.count == 1 })
+        run(rig, from: 0, to: 30)
+        XCTAssertEqual(server.count(Self.artistsOp), 2, "a late answer was taken as the walk's checkpoint")
+    }
+
     // MARK: - the checkpoint and the one re-read it earns
 
     /// No Albums opened, no covers anywhere: the Artists list on its own sees a
@@ -238,12 +318,12 @@ final class BridgeArtistsRereadSceneTests: XCTestCase {
 
         // The first checkpoint over rows read before any: one conservative re-read.
         tick(rig, at: 0)
-        XCTAssertEqual(server.count(Self.statusOp), 1, "the watch did not read SpanDAC's status at once")
+        XCTAssertEqual(server.count(Self.statusOp), 2, "the watch did not read SpanDAC's status at once")
         XCTAssertTrue(artistsRead(rig, at: 0.5, 1), "the first checkpoint never read the list again")
 
         // Nothing changed: status reads every five seconds, and no list read.
         run(rig, from: 1, to: 14)
-        XCTAssertEqual(server.count(Self.statusOp), 3, "the status was not read every five seconds")
+        XCTAssertEqual(server.count(Self.statusOp), 4, "the status was not read every five seconds")
         XCTAssertEqual(server.count(Self.artistsOp), 2, "an unchanged status read the list again")
 
         // SpanDAC finishes a refresh; the person's library has a new artist.
@@ -344,16 +424,16 @@ final class BridgeArtistsRereadSceneTests: XCTestCase {
         let rig = loadedRig(server, showing: "Artist ar1")
         tick(rig, at: 0)                                            // read 1 fails
         run(rig, from: 0.5, to: 14.5)
-        XCTAssertEqual(server.count(Self.statusOp), 1, "a failed status read was asked again inside 15 s")
+        XCTAssertEqual(server.count(Self.statusOp), 2, "a failed status read was asked again inside 15 s")
         run(rig, from: 15, to: 15.5)
-        XCTAssertEqual(server.count(Self.statusOp), 2)
-        run(rig, from: 16, to: 60)
-        XCTAssertEqual(server.count(Self.statusOp), 2, "the second failure did not back off to 45 s")
-        run(rig, from: 60.5, to: 61)
         XCTAssertEqual(server.count(Self.statusOp), 3)
+        run(rig, from: 16, to: 60)
+        XCTAssertEqual(server.count(Self.statusOp), 3, "the second failure did not back off to 45 s")
+        run(rig, from: 60.5, to: 61)
+        XCTAssertEqual(server.count(Self.statusOp), 4)
         // Then every 60 seconds (and a half: the reply is taken on the next tick).
         run(rig, from: 61.5, to: 245)
-        XCTAssertEqual(server.count(Self.statusOp), 6, "the backoff was not capped at 60 s")
+        XCTAssertEqual(server.count(Self.statusOp), 7, "the backoff was not capped at 60 s")
         XCTAssertEqual(server.count(Self.artistsOp), 1, "a failed status read the list again")
 
         server.failStatus(false)
@@ -397,13 +477,13 @@ final class BridgeArtistsRereadSceneTests: XCTestCase {
         let rig = loadedRig(server, showing: "Artist ar1")
         tick(rig, at: 0)
         run(rig, from: 0.5, to: 60)
-        XCTAssertEqual(server.count(Self.statusOp), 1, "an unsupported status was polled again")
+        XCTAssertEqual(server.count(Self.statusOp), 2, "an unsupported status was polled again")
         XCTAssertEqual(server.count(Self.artistsOp), 1, "an unsupported status read the list again")
         goToSubView(rig.scene, .albums)
         run(rig, from: 60.5, to: 61)
         goToSubView(rig.scene, .artists)
         run(rig, from: 61.5, to: 120)
-        XCTAssertEqual(server.count(Self.statusOp), 2)
+        XCTAssertEqual(server.count(Self.statusOp), 3)
         XCTAssertEqual(server.count(Self.artistsOp), 1)
     }
 
@@ -420,25 +500,25 @@ final class BridgeArtistsRereadSceneTests: XCTestCase {
         XCTAssertTrue(artistsRead(rig, at: 0.5, 1))
 
         server.setStatus(instance: Self.instanceA, completion: (Self.instanceA, 8, "installed"))
-        server.hold(Self.statusOp, at: 1)
+        server.hold(Self.statusOp, at: 2)
         run(rig, from: 1, to: 5.5)
         XCTAssertTrue(settleScene(rig.scene) { server.held(Self.statusOp) == 1 })
         goToSubView(rig.scene, .albums)
         tick(rig, at: 6)
-        server.release(Self.statusOp, at: 1)
-        XCTAssertTrue(settleScene(rig.scene) { server.ended(Self.statusOp, at: 1) && rig.statusEnded.count == 2 })
+        server.release(Self.statusOp, at: 2)
+        XCTAssertTrue(settleScene(rig.scene) { server.ended(Self.statusOp, at: 2) && rig.statusEnded.count == 3 })
         run(rig, from: 6.5, to: 40)
-        XCTAssertEqual(server.count(Self.statusOp), 2, "the status was read off the Artists view")
+        XCTAssertEqual(server.count(Self.statusOp), 3, "the status was read off the Artists view")
         XCTAssertEqual(server.count(Self.artistsOp), 2, "a reply that arrived off the view read the list")
 
         // Back on Artists: the first tick asks afresh and reads nothing on the old reply.
-        server.hold(Self.statusOp, at: 2)
+        server.hold(Self.statusOp, at: 3)
         goToSubView(rig.scene, .artists)
         tick(rig, at: 40.5)
-        XCTAssertEqual(server.count(Self.statusOp), 3, "coming back did not read the status at once")
+        XCTAssertEqual(server.count(Self.statusOp), 4, "coming back did not read the status at once")
         run(rig, from: 41, to: 43)
         XCTAssertEqual(server.count(Self.artistsOp), 2, "the dropped reply was acted on")
-        server.release(Self.statusOp, at: 2)
+        server.release(Self.statusOp, at: 3)
         XCTAssertTrue(artistsRead(rig, at: 43.5, 2), "the fresh reply never read the list")
     }
 
@@ -453,22 +533,22 @@ final class BridgeArtistsRereadSceneTests: XCTestCase {
         XCTAssertTrue(artistsRead(rig, at: 0.5, 1))
 
         server.setStatus(instance: Self.instanceA, completion: (Self.instanceA, 8, "installed"))
-        server.hold(Self.statusOp, at: 1)
+        server.hold(Self.statusOp, at: 2)
         run(rig, from: 1, to: 5.5)
         XCTAssertTrue(settleScene(rig.scene) { server.held(Self.statusOp) == 1 })
         goToSubView(rig.scene, .albums)
         tick(rig, at: 6)
         goToSubView(rig.scene, .artists)
         tick(rig, at: 6.5)
-        XCTAssertEqual(server.count(Self.statusOp), 2, "a second status read went out beside the held one")
+        XCTAssertEqual(server.count(Self.statusOp), 3, "a second status read went out beside the held one")
 
-        server.hold(Self.statusOp, at: 2)
-        server.release(Self.statusOp, at: 1)
-        XCTAssertTrue(waitUntil { rig.statusEnded.count == 2 })
-        run(rig, from: 7, to: 9)
-        XCTAssertEqual(server.count(Self.statusOp), 3, "the fresh read did not follow the old one's end")
-        XCTAssertEqual(server.count(Self.artistsOp), 2, "the reply from before leaving was acted on")
+        server.hold(Self.statusOp, at: 3)
         server.release(Self.statusOp, at: 2)
+        XCTAssertTrue(waitUntil { rig.statusEnded.count == 3 })
+        run(rig, from: 7, to: 9)
+        XCTAssertEqual(server.count(Self.statusOp), 4, "the fresh read did not follow the old one's end")
+        XCTAssertEqual(server.count(Self.artistsOp), 2, "the reply from before leaving was acted on")
+        server.release(Self.statusOp, at: 3)
         XCTAssertTrue(artistsRead(rig, at: 9.5, 2), "the fresh reply never read the list")
     }
 
@@ -498,19 +578,19 @@ final class BridgeArtistsRereadSceneTests: XCTestCase {
         XCTAssertTrue(artistsRead(rig, at: 0.5, 1))
 
         server.setStatus(instance: Self.instanceA, completion: (Self.instanceA, 8, "installed"))
-        server.hold(Self.statusOp, at: 1)
+        server.hold(Self.statusOp, at: 2)
         run(rig, from: 1, to: 5.5)
         XCTAssertTrue(settleScene(rig.scene) { server.held(Self.statusOp) == 1 })
         rig.clock.t = 30                                   // the tab is not ticking
-        server.release(Self.statusOp, at: 1)
-        XCTAssertTrue(waitUntil { rig.statusEnded.count == 2 })
+        server.release(Self.statusOp, at: 2)
+        XCTAssertTrue(waitUntil { rig.statusEnded.count == 3 })
         XCTAssertEqual(server.count(Self.artistsOp), 2)
 
-        server.hold(Self.statusOp, at: 2)
+        server.hold(Self.statusOp, at: 3)
         tick(rig, at: 30)                                  // back on the tab
-        XCTAssertEqual(server.count(Self.statusOp), 3, "coming back to the tab did not read the status at once")
+        XCTAssertEqual(server.count(Self.statusOp), 4, "coming back to the tab did not read the status at once")
         XCTAssertEqual(server.count(Self.artistsOp), 2, "the reply that landed off the tab was acted on")
-        server.release(Self.statusOp, at: 2)
+        server.release(Self.statusOp, at: 3)
         XCTAssertTrue(artistsRead(rig, at: 30.5, 2))
     }
 
@@ -523,22 +603,23 @@ final class BridgeArtistsRereadSceneTests: XCTestCase {
         tick(rig, at: 0)
         XCTAssertTrue(artistsRead(rig, at: 0.5, 1))
         server.setStatus(instance: Self.instanceA, completion: (Self.instanceA, 8, "installed"))
-        server.hold(Self.statusOp, at: 1)
+        server.hold(Self.statusOp, at: 2)
         run(rig, from: 1, to: 5.5)
         XCTAssertTrue(settleScene(rig.scene) { server.held(Self.statusOp) == 1 })
 
         rig.flag.selected = false
         tick(rig, at: 6)
-        server.release(Self.statusOp, at: 1)
-        XCTAssertTrue(settleScene(rig.scene, seconds: 5) { rig.statusEnded.count == 2 })
+        server.release(Self.statusOp, at: 2)
+        XCTAssertTrue(settleScene(rig.scene, seconds: 5) { rig.statusEnded.count == 3 })
         run(rig, from: 6.5, to: 40)
-        XCTAssertEqual(server.count(Self.statusOp), 2, "the status was read with Music.app selected")
+        XCTAssertEqual(server.count(Self.statusOp), 3, "the status was read with Music.app selected")
         XCTAssertEqual(server.count(Self.artistsOp), 2, "the dropped reply read SpanDAC's list")
     }
 
     /// Away to Music.app and back: the list is read afresh and its watch starts from
-    /// nothing, so even a checkpoint the old list was read for earns the new list its
-    /// one conservative read.
+    /// nothing. With no checkpoint before the fresh walk (its status read fails), even
+    /// a checkpoint the old list was read for earns the new list its one conservative
+    /// read: the record went with the list.
     func testAProvenanceRoundTripWatchesTheReloadedListFromScratch() {
         let server = Server(artists("ar1"))
         server.setStatus(instance: Self.instanceA, completion: (Self.instanceA, 7, "installed"))
@@ -547,6 +628,7 @@ final class BridgeArtistsRereadSceneTests: XCTestCase {
         XCTAssertTrue(artistsRead(rig, at: 0.5, 1))
         rig.flag.selected = false
         run(rig, from: 1, to: 2)
+        server.fail(Self.statusOp, at: server.count(Self.statusOp))   // the fresh walk's own status read
         rig.flag.selected = true
         server.setArtists(artists("ar1", "ar2"))
         XCTAssertTrue(settleScene(rig.scene) { self.tick(rig, at: 2.5); return self.shows(rig, "Artist ar2") })
@@ -624,15 +706,18 @@ final class BridgeArtistsRereadSceneTests: XCTestCase {
 
     /// A failed Artists walk is not watched (nothing is on screen to keep fresh); the
     /// person's `r` resets the feed AND the re-read record together, and the recovered
-    /// list is watched from scratch: one conservative read, then nothing.
+    /// list is watched from scratch. The failed walk had a checkpoint (its status read
+    /// answered); the fresh walk's status read fails, so only the reset lets the
+    /// recovered list earn its one conservative read, then nothing.
     func testAFailedWalkIsNotWatchedAndRRecoversWithAFreshWatch() {
         let server = Server(artists("ar1"))
         server.fail(Self.artistsOp, at: 0)
+        server.fail(Self.statusOp, at: 1)
         let rig = Rig(server)
         XCTAssertTrue(settleScene(rig.scene) { self.shows(rig, "scripted failure") || self.shows(rig, "SpanDAC") })
         XCTAssertTrue(settleScene(rig.scene) { server.ended(Self.artistsOp, at: 0) })
         run(rig, from: 0, to: 20)
-        XCTAssertEqual(server.count(Self.statusOp), 0, "a failed list was watched")
+        XCTAssertEqual(server.count(Self.statusOp), 1, "a failed list was watched (only the walk's own status read)")
 
         _ = rig.scene.handle(.char("r"))
         XCTAssertTrue(settleScene(rig.scene) { self.tick(rig, at: 20.5); return self.shows(rig, "Artist ar1") })

@@ -569,6 +569,12 @@ final class LibraryScene: Scene {
     private var artistsStatusSerial = 0
     private var artistsStatusInFlight = false
     private var artistsStatusInbox: ArtistsStatusRead? = nil
+    /// Which start of the SpanDAC Artists walk is the current one, under
+    /// `inboxLock`: bumped by each start, a reset and a failure's `r`, so a start
+    /// still waiting on its status read does nothing once it is not the current one.
+    private var artistsWalkToken = 0
+    /// How long a walk's start waits for the status read before it, at most.
+    private static let artistsBaselineWait: TimeInterval = 0.25
     private enum ArtistsStatusRead {
         case observed(LibraryCoverFetcher.ListReread.Reason)
         case unsupported
@@ -1060,9 +1066,9 @@ final class LibraryScene: Scene {
     /// artistsFetchStarted) when the Artists sub-view first becomes active.
     private func loadArtists() {
         artistsFetchStarted = true
-        if makeProvider() != nil {
+        if let provider = makeProvider() {
             artistsSource = .bridge
-            artistsFeed.start()
+            startArtistsWalk(provider: provider)
             return
         }
         artistsSource = .musicApp
@@ -1724,6 +1730,7 @@ final class LibraryScene: Scene {
         // to the list this reset discards.
         artistsStatusSerial += 1
         artistsStatusInbox = nil
+        artistsWalkToken += 1
         inboxLock.unlock()
         artistsFeed.reset()
         artistsReread.reset()
@@ -2339,7 +2346,9 @@ final class LibraryScene: Scene {
             }
             if artistsSource == .bridge, isArtistList, bridgeArtistsFailure != nil {
                 // As for Albums: the feed's reset drops an automatic re-read's ending,
-                // so its claim goes with it.
+                // so its claim goes with it. A walk start still waiting on its status
+                // read is not this one's.
+                inboxLock.lock(); artistsWalkToken += 1; inboxLock.unlock()
                 artistsFeed.reset()
                 artistsReread.reset()
                 artistsFetchStarted = false
@@ -3284,8 +3293,9 @@ final class LibraryScene: Scene {
     /// reports ended. A new process (a restart: its record starts empty and its
     /// tickets may repeat the old one's numbers) or a newly ended ticket (installed,
     /// or failed or cancelled, taken conservatively) is a checkpoint the rows have
-    /// not been read for. So is the first one seen over rows read before any was:
-    /// one conservative re-read. Page generations are never compared.
+    /// not been read for. So is the first one seen over rows whose walk got no
+    /// checkpoint of its own before it (`startArtistsWalk`): one conservative
+    /// re-read. Page generations are never compared.
     ///
     /// The re-read is the Albums one (`rereadAlbumsIfStale`): `BridgeListFeed.refresh`
     /// joining the list's own re-ask, posting ONE `reasked` replacement that the
@@ -3335,6 +3345,66 @@ final class LibraryScene: Scene {
             readArtistsStatus(provider: provider, serial: serial, epoch: epoch)
         }
         rereadArtistsIfDue(at: at)
+    }
+
+    /// Starts the SpanDAC Artists walk, with one `slice.status` read before it so the
+    /// rows it brings have a checkpoint and launch reads the list once, not twice.
+    ///
+    /// The status read is answered BEFORE the walk asks for its first page, so the
+    /// rows are at least as fresh as what it names, and that checkpoint is recorded as
+    /// read for (`ListReread.satisfied`). A refresh that ends during the walk is a
+    /// newer checkpoint the watch sees afterwards: one re-read. The read is bounded
+    /// (`artistsBaselineWait`): one that has not answered by then, fails, or names no
+    /// process gives no baseline and the walk starts anyway, which leaves the watch's
+    /// first checkpoint its one conservative re-read. It is the watch's one read in
+    /// flight; if one is already out, the walk starts at once with no baseline. The
+    /// walk is started on the waiting thread only if this start is still the current
+    /// one (Artists epoch and walk token, checked and acted on under `inboxLock`, which
+    /// a reset takes to move them before it resets the feed or the record).
+    private func startArtistsWalk(provider: MusicDataProvider) {
+        let feed = artistsFeed
+        let reread = artistsReread
+        inboxLock.lock()
+        artistsWalkToken += 1
+        let token = artistsWalkToken
+        let epoch = artistsSourceEpoch
+        let asks = !artistsStatusInFlight
+        if asks { artistsStatusInFlight = true }
+        inboxLock.unlock()
+        guard asks else { feed.start(); return }
+        let ref = WeakScene(self)
+        Thread.detachNewThread {
+            let answer = ArtistsStatusAnswer()
+            Thread.detachNewThread {
+                let read: ArtistsStatusRead
+                do { read = Self.artistsStatusRead(try provider.libraryRefreshStatus()) } catch { read = .failed }
+                let scene = ref.scene
+                scene?.inboxLock.lock(); scene?.artistsStatusInFlight = false; scene?.inboxLock.unlock()
+                answer.give(read)
+                scene?.artistsStatusReadFinishedForTest?()
+            }
+            let read = answer.wait(Self.artistsBaselineWait)
+            guard let scene = ref.scene else { return }
+            scene.inboxLock.lock()
+            if scene.artistsSourceEpoch == epoch, scene.artistsWalkToken == token {
+                if case .observed(let checkpoint)? = read { reread.satisfied(checkpoint) }
+                feed.start()
+            }
+            scene.inboxLock.unlock()
+        }
+    }
+
+    /// A status read's answer, handed from its thread to the one waiting on it.
+    private final class ArtistsStatusAnswer {
+        private let lock = NSLock()
+        private let given = DispatchSemaphore(value: 0)
+        private var read: ArtistsStatusRead?
+        func give(_ r: ArtistsStatusRead) { lock.lock(); read = r; lock.unlock(); given.signal() }
+        /// The answer if it came within `seconds`, else nil.
+        func wait(_ seconds: TimeInterval) -> ArtistsStatusRead? {
+            guard given.wait(timeout: .now() + seconds) == .success else { return nil }
+            lock.lock(); defer { lock.unlock() }; return read
+        }
     }
 
     /// One `slice.status` read for the Artists watch, on its own thread. Its reply

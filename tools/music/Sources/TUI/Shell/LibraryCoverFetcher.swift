@@ -248,6 +248,17 @@ final class LibraryCoverFetcher {
             return true
         }
 
+        /// Records `reason` as read for without a read of its own: the caller's rows
+        /// are known to be at least that fresh (they were read after it was seen).
+        /// Not over an attempt in flight, which ends as it would have.
+        func satisfied(_ reason: Reason) {
+            lock.lock(); defer { lock.unlock() }
+            guard attempts[reason]?.serial == nil else { return }
+            var a = attempts[reason] ?? Attempt()
+            a.done = true
+            attempts[reason] = a
+        }
+
         /// Claim `due` before the read is asked for: its outcome may arrive before
         /// the asking returns. A read that is not taken is handed back with `release`.
         func began(_ due: Due, now: Date) -> Ticket {
