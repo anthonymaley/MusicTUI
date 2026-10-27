@@ -175,8 +175,10 @@ final class ListedArtistPlayTests: XCTestCase {
         return queue.read()
     }
 
-    /// The fetch is case-insensitive, so it returns everything below; the queue
-    /// must hold exactly the owned mix and LP, listed order, unavailable dropped.
+    /// A deliberately overbroad payload (the real predicate would not fetch the
+    /// appearance on "Various Artists"; it would fetch the case variant), so this
+    /// exercises the Swift narrowing, not the predicate. The queue must hold exactly
+    /// the owned mix and LP, listed order, unavailable dropped.
     private var measuredShapes: [LibraryAlbumRow] {
         [
             row(11, artist: "Four Tet", albumArtist: "Various Artists", album: "Comp"),          // appearance
@@ -204,6 +206,7 @@ final class ListedArtistPlayTests: XCTestCase {
             usleep(10_000)
         }
         XCTAssertTrue(log.contains(want), log)
+        XCTAssertEqual(status.current()?.text, "Playing 3 of 4 \u{2014} the rest aren't available yet.")
     }
 
     func testShuffleQueuesTheSameSet() {
