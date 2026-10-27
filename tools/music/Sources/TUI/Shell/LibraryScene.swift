@@ -3286,8 +3286,10 @@ final class LibraryScene: Scene {
     /// it. Instead, while SpanDAC's Artists is the sub-view on screen (its list or
     /// an artist opened from it), the scene reads SpanDAC's own refresh record
     /// (`slice.status`) on a worker: one read at a time, every
-    /// `artistsStatusInterval` seconds and at once on coming back to the view or the
-    /// tab, never off it, and never on the render.
+    /// `artistsStatusInterval` seconds, at once on coming back to the view, and at
+    /// once on coming back to the tab only after an absence longer than the tick
+    /// heartbeat's liveness window (a shorter visit waits for the next regular
+    /// read); never off it, and never on the render.
     ///
     /// A checkpoint is the process answering and the ticket of the latest rebuild it
     /// reports ended. A new process (a restart: its record starts empty and its

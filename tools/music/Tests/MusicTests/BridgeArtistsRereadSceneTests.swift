@@ -393,9 +393,9 @@ final class BridgeArtistsRereadSceneTests: XCTestCase {
     }
 
     /// An unchanged status, however long it is watched, reads nothing more, even when
-    /// another list's pages carry a higher generation (Albums answer the core one,
-    /// Artists the full one): generations are never compared.
-    func testAnUnchangedStatusReadsNothingMoreAndGenerationsAreNeverCompared() {
+    /// the Artists pages themselves come back with a higher generation: only the
+    /// status checkpoint decides, never a page generation.
+    func testAnUnchangedStatusReadsNothingMoreWhateverThePageGeneration() {
         let server = Server(artists("ar1", "ar2"))
         server.setStatus(instance: Self.instanceA, completion: (Self.instanceA, 7, "installed"))
         let rig = loadedRig(server, showing: "Artist ar2")
