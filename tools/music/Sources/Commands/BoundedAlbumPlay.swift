@@ -248,17 +248,19 @@ func albumOutcomeMessage(_ outcome: BoundedAlbumOutcome, title: String) -> Strin
 }
 
 /// `music play --artist "X"` with nothing else named: that artist's SONGS,
-/// bounded, the way the Library tab's `p` plays an artist row.
+/// bounded.
 ///
 /// **It used to resume.** No branch handled `--artist` alone, so the option
 /// fell through to the bare-`play` resume at the end of `Play.run` and the CLI
 /// silently played whatever was already loaded (found 2026-09-22, open since at
 /// least 3.12). Ruling 12.2 is that an artist expands to songs, so it does.
 ///
-/// The track set comes from the SAME resolver the TUI uses
-/// (`resolveArtistPlaybackTracks`), strict `artist is` first and a loose
-/// primary-credit fetch narrowed in Swift after it, so a per-track soloist
-/// credit still plays. The container is an `__album__` one, which is what the
+/// The track set comes from `resolveArtistPlaybackTracks`: the typed name is a
+/// performer, so it matches the track artist, strict `artist is` first and a
+/// loose primary-credit fetch narrowed in Swift after it, so a per-track
+/// soloist credit still plays. The Library tab's `p` on an artist row no longer
+/// shares it (2026-10-27): it plays exactly the albums that row lists
+/// (`resolveListedArtistPlaybackTracks`). The container is an `__album__` one, which is what the
 /// existing sweep and the one-shot watcher already collect.
 func playBoundedArtist(name: String,
                        tracks: [TrackListEntry],
