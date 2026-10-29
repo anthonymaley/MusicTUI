@@ -569,6 +569,43 @@ final class SpanDACWholePlaySceneTests: XCTestCase {
         XCTAssertTrue(wire.sent("slice.queue").isEmpty)
     }
 
+    /// Codex 13: a read held across a source change and then answered with a
+    /// failure, or with `warming`, still reports the source change, and no read
+    /// is retried or started after it.
+    private func assertHeldAlbumReadAnsweredAfterASwitch(_ answer: String, file: StaticString = #filePath,
+                                                         line: UInt = #line) throws {
+        let wire = stickyWire(["slice.libraryArtists": [artistPage], "slice.status": [Self.capable],
+                               "slice.libraryArtistAlbums": twice(artistAlbums([("al1", 1), ("al2", 1)])),
+                               "slice.libraryAlbumTracks": [answer, albumTracks(["t1"]), albumTracks(["t2"])],
+                               "slice.queue": [Self.queued]])
+        wire.gate(op: "slice.libraryAlbumTracks", at: 0)
+        let status = StatusStore()
+        let r = routing(wire)
+        let s = artistScene(wire, status: status, routing: r)
+        _ = s.handle(.char("p"))
+        XCTAssertTrue(settleScene(s) { wire.reached(op: "slice.libraryAlbumTracks", at: 0) }, file: file, line: line)
+        let network = PlaybackMode.networkSource("0E6A3F6C-4B51-4D1B-9E1E-5C2A8D3B7F10")
+        XCTAssertEqual(try r.switchMode(to: network, readiness: { .ready }, pauseOutgoing: { _ in true }, dropQueue: { _ in }),
+                       .switched(to: network), file: file, line: line)
+        wire.release(op: "slice.libraryAlbumTracks", at: 0)
+        XCTAssertTrue(settleScene(s) { status.current()?.text == sourceChangedNothingPlayed },
+                      "got: \(String(describing: status.current()?.text))", file: file, line: line)
+        pause()
+        XCTAssertEqual(wire.sent("slice.libraryAlbumTracks").count, 1, "a read went on after the source changed",
+                       file: file, line: line)
+        XCTAssertTrue(wire.sent("slice.queue").isEmpty, file: file, line: line)
+    }
+
+    func testAHeldAlbumReadThatFailsAfterASourceChangeReportsTheChange() throws {
+        try assertHeldAlbumReadAnsweredAfterASwitch(
+            #"{"ok":false,"op":"slice.libraryAlbumTracks","error":{"kind":"not_in_library","detail":"That album is no longer in your library."}}"#)
+    }
+
+    func testAHeldAlbumReadStillWarmingAfterASourceChangeIsNotRetried() throws {
+        try assertHeldAlbumReadAnsweredAfterASwitch(
+            #"{"ok":false,"op":"slice.libraryAlbumTracks","error":{"kind":"warming","detail":"preparing your library","retry_after":0.01}}"#)
+    }
+
     // MARK: - playlists
 
     private func playlistScene(_ wire: BridgeLibraryReadsWire, status: StatusStore = StatusStore(),

@@ -106,10 +106,13 @@ func filteredAlbumIndices(albums: [LibraryAlbum], trackRange: ClosedRange<Int>?,
 /// tier on screen exactly as the drill-in scopes them, in the order listed, each
 /// album's tracks in album order.
 ///
-/// Every read must be one observation of one SpanDAC process: the album list's
-/// `library_instance` and core generation, each album at that generation, and the
-/// album list read again afterwards unchanged, so a SpanDAC that restarted and
-/// reused the generation number is caught. A SpanDAC that sends no instance
+/// The reads are checked against one SpanDAC process as far as the protocol allows:
+/// the album list's `library_instance` and core generation, each album at that
+/// generation, and the album list read again afterwards unchanged, so a SpanDAC
+/// that restarted and reused the generation number during the reads is caught.
+/// Not caught: a restart after that last read and before the queue is sent, which
+/// `slice.queue` cannot be bound against without a SpanDAC change (Codex 13; a
+/// residual alongside the absent `list_rev`). A SpanDAC that sends no instance
 /// answers a different generation for this list (before 0.3.7) and is asked to
 /// update rather than misread. `stillCurrent` is checked before each read, so a
 /// source change stops the reads. Anything else refuses the whole play rather
@@ -3080,22 +3083,27 @@ final class LibraryScene: Scene {
                 let onWarming: (TimeInterval) -> Void = { _ in
                     status.post("Preparing your library \u{2014} '\(name)' will play when it's ready\u{2026}")
                 }
-                let albums = try retryingWhileWarming(budget: budget, onWarming: onWarming, sleep: sleep) {
-                    try provider.artistAlbums(artistID: artistID)
+                let stillCurrent = { routing.playOutputKind(expecting: stamp) != .stale }
+                // Every read is fenced on both sides, inside the warming retry: a
+                // source change is reported as one, never as a read that failed or
+                // went on warming after it (Codex 13).
+                func fenced<T>(_ read: () throws -> T) throws -> T {
+                    try retryingWhileWarming(budget: budget, onWarming: onWarming, sleep: sleep) {
+                        guard stillCurrent() else { throw ActionError(message: sourceChangedNothingPlayed) }
+                        let answer: T
+                        do { answer = try read() } catch {
+                            guard stillCurrent() else { throw ActionError(message: sourceChangedNothingPlayed) }
+                            throw error
+                        }
+                        guard stillCurrent() else { throw ActionError(message: sourceChangedNothingPlayed) }
+                        return answer
+                    }
                 }
+                let albums = try fenced { try provider.artistAlbums(artistID: artistID) }
                 let listed = try listedArtistAlbumRows(
-                    albums: albums, trackRange: trackRange, name: name,
-                    stillCurrent: { routing.playOutputKind(expecting: stamp) != .stale },
-                    readTracks: { albumID in
-                        try retryingWhileWarming(budget: budget, onWarming: onWarming, sleep: sleep) {
-                            try provider.albumTracks(albumID: albumID)
-                        }
-                    },
-                    rereadAlbums: {
-                        try retryingWhileWarming(budget: budget, onWarming: onWarming, sleep: sleep) {
-                            try provider.artistAlbums(artistID: artistID)
-                        }
-                    })
+                    albums: albums, trackRange: trackRange, name: name, stillCurrent: stillCurrent,
+                    readTracks: { albumID in try fenced { try provider.albumTracks(albumID: albumID) } },
+                    rereadAlbums: { try fenced { try provider.artistAlbums(artistID: artistID) } })
                 // The rows are given, so no revision is read and the plan is the id
                 // list: there is no SpanDAC container that is exactly these albums.
                 let planned = try planLibraryPlay(
