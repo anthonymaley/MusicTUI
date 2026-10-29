@@ -101,6 +101,56 @@ func filteredAlbumIndices(albums: [LibraryAlbum], trackRange: ClosedRange<Int>?,
     }
 }
 
+/// The albums the Artists list's Uploaded header holds, as indices into `albums`,
+/// sorted by artist then title: those whose track count is 0. SpanDAC (MusicKit)
+/// reports 0 for some of a person's own copies (Loveless, Garage Flower), so the
+/// 12"/EP and Albums tiers, which count tracks, hide them and their artists; the
+/// header gives them a home. Pure → unit-tested.
+func uploadedAlbumIndices(albums: [LibraryAlbum]) -> [Int] {
+    filteredAlbumIndices(albums: albums, trackRange: 0...0, filter: "").sorted { a, b in
+        let x = albums[a], y = albums[b]
+        let ax = normalizeArtist(x.artist), ay = normalizeArtist(y.artist)
+        if ax != ay { return ax < ay }
+        let tx = x.name.lowercased(), ty = y.name.lowercased()
+        return tx != ty ? tx < ty : a < b
+    }
+}
+
+/// Whether the Artists list carries the Uploaded header at all: only in a
+/// filtered tier (All already lists every artist), only for SpanDAC's album rows
+/// (Music.app's counts are its own library's), and only once those have loaded.
+func showsUploadedHeader(tier: ArtistFilterMode, albumsFromSpanDAC: Bool, albumsLoaded: Bool) -> Bool {
+    tier != .all && albumsFromSpanDAC && albumsLoaded
+}
+
+/// One row of the Artists list: an artist (index into `artists`), the Uploaded
+/// header, or one of its albums (index into `albums`).
+enum ArtistListRow: Equatable {
+    case artist(Int)
+    case uploadedHeader(count: Int)
+    case uploadedAlbum(Int)
+}
+
+/// The Artists list's rows: the visible artists, then, when `showUploaded`, the
+/// Uploaded header at the bottom with its albums (`uploaded`, already sorted)
+/// under it when `expanded`. The header counts every uploaded album. The `/`
+/// filter matches an album as the album lists do (title + artist substring):
+/// with a filter, the header shows only if one of its albums matches, and the
+/// matches show under it whether or not it is expanded. No uploaded albums, no
+/// header. Pure → unit-tested.
+func artistListRows(artistIndices: [Int], albums: [LibraryAlbum], uploaded: [Int],
+                    showUploaded: Bool, expanded: Bool, filter: String) -> [ArtistListRow] {
+    var rows = artistIndices.map(ArtistListRow.artist)
+    guard showUploaded, !uploaded.isEmpty else { return rows }
+    let q = filter.lowercased()
+    let shown = q.isEmpty ? uploaded
+        : uploaded.filter { "\(albums[$0].name) \(albums[$0].artist)".lowercased().contains(q) }
+    guard !shown.isEmpty else { return rows }
+    rows.append(.uploadedHeader(count: uploaded.count))
+    if expanded || !q.isEmpty { rows += shown.map(ArtistListRow.uploadedAlbum) }
+    return rows
+}
+
 final class LibraryScene: Scene {
     let id: SceneID = .library
     let tabTitle = "Library"
@@ -135,7 +185,15 @@ final class LibraryScene: Scene {
     private var retriesExhausted = false
 
     private var nav = LibraryNav.initial
-    private var albums: [LibraryAlbum] = []
+    private var albums: [LibraryAlbum] = [] {
+        didSet { uploadedOrder = uploadedAlbumIndices(albums: albums) }
+    }
+    /// The Artists list's Uploaded albums (`uploadedAlbumIndices`), kept with
+    /// `albums` so render and input never re-sort them.
+    private var uploadedOrder: [Int] = []
+    /// Whether the Artists list's Uploaded header is open. Kept across a drill
+    /// into one of its albums, so Back lands on the row that was opened.
+    private var uploadedExpanded = false
     private var albumsLoaded = false
     private var albumsFetchStarted = false
     // Songs load lazily the first time the Songs sub-view is shown (unlike albums,
@@ -1260,7 +1318,7 @@ final class LibraryScene: Scene {
         var epoch = 0
         if currentAlbumSource == .bridge, isTracksLevel || isAlbumRail, let a = focusedAlbum() {
             wantedID = a.id
-            source = nav.subView == .artists ? .artists : .albums
+            source = albumRailEpochSource
             epoch = source == .artists ? artistsSourceEpoch : albumsSourceEpoch
         }
         let focus = wantedID.map { "\(source)/\(epoch)/\($0)" }
@@ -1532,8 +1590,14 @@ final class LibraryScene: Scene {
 
     /// Which Bridge rail epoch the album read being kicked belongs to.
     private func bridgeReadEpoch() -> (AlbumRailEpochSource, Int) {
-        let source: AlbumRailEpochSource = nav.subView == .artists ? .artists : .albums
+        let source = albumRailEpochSource
         return (source, source == .artists ? artistsSourceEpoch : albumsSourceEpoch)
+    }
+
+    /// Which list the album being read belongs to: an artist's albums in the
+    /// Artists sub-view, except an Uploaded album, which is an Albums row.
+    private var albumRailEpochSource: AlbumRailEpochSource {
+        nav.subView == .artists && !inUploadedDrill ? .artists : .albums
     }
 
     /// The read itself, on whichever thread won the job: posts its outcome to
@@ -1701,6 +1765,7 @@ final class LibraryScene: Scene {
         epArtists = []
         albumArtists = []
         if nav.subView == .albums { returnToRoot(.albums) }
+        if inUploadedDrill { returnToRoot(.artists) }
     }
 
     private func resetArtistsList() {
@@ -1950,6 +2015,9 @@ final class LibraryScene: Scene {
             albumArtists = albumArtistSet(from: albums, minTracks: 6)
             let visible = visibleAlbumIndices().count
             if isAlbumRail, nav.cursor >= visible { nav.cursor = max(0, visible - 1); railScroll = 0 }
+            // The Artists list's Uploaded rows are album rows too.
+            let artistRows = visibleArtistRows().count
+            if isArtistList, nav.cursor >= artistRows { nav.cursor = max(0, artistRows - 1); railScroll = 0 }
             changed = true
         }
         if let newFailure = albumsDrain.failure, newFailure != bridgeAlbumsFailure {
@@ -1972,10 +2040,10 @@ final class LibraryScene: Scene {
             artists.append(contentsOf: artistsDrain.append)
         }
         if artistsDrain.replace != nil || !artistsDrain.append.isEmpty {
-            if let artistAnchor, let pos = visibleArtistIndices().firstIndex(where: { artists[$0].id == artistAnchor }) {
+            if let artistAnchor, let pos = rowPosition(ofID: artistAnchor) {
                 nav.cursor = pos
             }
-            let visible = visibleArtistIndices().count
+            let visible = visibleArtistRows().count
             if isArtistList, nav.cursor >= visible { nav.cursor = max(0, visible - 1); railScroll = 0 }
             changed = true
         }
@@ -2216,7 +2284,7 @@ final class LibraryScene: Scene {
         // drilled into an artist, a breadcrumb (▸ <artistName>) trails the active
         // Artists tab, reading left-to-right as "Artists ▸ <name>".
         out += ANSICode.moveTo(row: bodyTop, col: z.railX) + subViewHeader()
-        if let artistName = breadcrumbArtistName() {
+        if let artistName = breadcrumbArtistName() ?? (inUploadedDrill ? "Uploaded" : nil) {
             out += "  \(ANSICode.dim)\u{25B8}\(ANSICode.reset) \(ANSICode.brightWhite)\(artistName)\(ANSICode.reset)"
         }
 
@@ -2406,9 +2474,33 @@ final class LibraryScene: Scene {
         // Back at the root level leaves the tab (mirrors PlaylistsScene's left/esc).
         if libKey == .back && nav.stack.count == 1 { return .pop }
 
+        // The Artists list's Uploaded rows. Enter (or →) on the header opens or
+        // closes it in place; `p`/`s` there play nothing and say what to do. Its
+        // albums are album rows: the reducer opens and plays them as such.
+        var albumRow = false
+        if isArtistList {
+            switch artistRowUnderCursor() {
+            case .uploadedHeader?:
+                switch libKey {
+                case .enter:
+                    uploadedExpanded.toggle()
+                    return .redraw
+                case .play, .shuffle:
+                    status.post("Open Uploaded and pick an album")
+                    return .none
+                default:
+                    break
+                }
+            case .uploadedAlbum?:
+                albumRow = true
+            default:
+                break
+            }
+        }
+
         let count = currentRowCount()
         let sel = selectionUnderCursor()
-        let (newNav, action) = libraryReduce(nav, libKey, itemCount: count, selection: sel)
+        let (newNav, action) = libraryReduce(nav, libKey, itemCount: count, selection: sel, albumRow: albumRow)
         let subViewChanged = newNav.subView != nav.subView
         let levelChanged = newNav.stack != nav.stack
         let drilled = newNav.stack.count > nav.stack.count
@@ -3039,7 +3131,7 @@ final class LibraryScene: Scene {
     /// In the Artists sub-view (both .artistAlbums and the .tracks below it) that's
     /// the drilled artist's albums; otherwise the whole-library albums.
     private var currentAlbums: [LibraryAlbum] {
-        nav.subView == .artists ? artistAlbums : albums
+        nav.subView == .artists && !inUploadedDrill ? artistAlbums : albums
     }
 
     /// Which library the album rail/hero/preview at the CURRENT level is
@@ -3056,7 +3148,11 @@ final class LibraryScene: Scene {
         case .artistAlbums:
             return artistsSource
         case .tracks:
-            return nav.subView == .artists ? artistsSource : albumsSource
+            return nav.subView == .artists && !inUploadedDrill ? artistsSource : albumsSource
+        case .artistList:
+            // An Uploaded album row plays as the Albums row it is.
+            if case .uploadedAlbum? = artistRowUnderCursor() { return albumsSource }
+            return nil
         default:
             return nil
         }
@@ -3085,7 +3181,7 @@ final class LibraryScene: Scene {
         switch nav.current {
         case .albumList, .artistAlbums: return visibleAlbumIndices().count
         case .songList: return visibleSongIndices().count
-        case .artistList: return visibleArtistIndices().count
+        case .artistList: return visibleArtistRows().count
         case .tracks(let id, _, _): return trackCache[id]?.count ?? 0
         }
     }
@@ -3098,10 +3194,15 @@ final class LibraryScene: Scene {
             let a = currentAlbums[vis[nav.cursor]]
             return LibrarySelection(id: a.id, primary: a.name, secondary: a.artist)
         case .artistList:
-            let vis = visibleArtistIndices()
-            guard nav.cursor >= 0, nav.cursor < vis.count else { return nil }
-            let ar = artists[vis[nav.cursor]]
-            return LibrarySelection(id: ar.id, primary: ar.name, secondary: "")
+            switch artistRowUnderCursor() {
+            case .artist(let i)?:
+                return LibrarySelection(id: artists[i].id, primary: artists[i].name, secondary: "")
+            case .uploadedAlbum(let i)?:
+                return LibrarySelection(id: albums[i].id, primary: albums[i].name, secondary: albums[i].artist)
+            // The header is no row to open or play; `handle` answers it itself.
+            case .uploadedHeader?, nil:
+                return nil
+            }
         case .songList:
             let vis = visibleSongIndices()
             guard nav.cursor >= 0, nav.cursor < vis.count else { return nil }
@@ -3119,12 +3220,22 @@ final class LibraryScene: Scene {
     private func rowPosition(ofID id: String) -> Int? {
         switch nav.current {
         case .albumList, .artistAlbums: return visibleAlbumIndices().firstIndex { currentAlbums[$0].id == id }
-        case .artistList: return visibleArtistIndices().firstIndex { artists[$0].id == id }
+        case .artistList:
+            return visibleArtistRows().firstIndex {
+                switch $0 {
+                case .artist(let i): return artists[i].id == id
+                case .uploadedAlbum(let i): return albums[i].id == id
+                case .uploadedHeader: return false
+                }
+            }
         default: return nil
         }
     }
 
     private func visibleAlbumIndices() -> [Int] {
+        // An Uploaded album's tracks: the rail beside them is the Uploaded albums,
+        // in the order the header lists them.
+        if inUploadedDrill { return uploadedOrder }
         // Tier-scope the drilled album list to match the tier you came from (Albums
         // view → 6+ albums, 12"/EP → 2–5), so an artist's albums don't mix tiers on
         // drill-in. Only in the Artists sub-view and only when a tier is active; the
@@ -3141,6 +3252,27 @@ final class LibraryScene: Scene {
         case .albums: tierSet = albumArtists
         }
         return filteredArtistIndices(artists: artists, albumArtistNames: tierSet, filter: filter)
+    }
+
+    /// The Artists list as shown: the tier's artists, then the Uploaded header
+    /// (and its albums) where it applies (`artistListRows`).
+    private func visibleArtistRows() -> [ArtistListRow] {
+        artistListRows(artistIndices: visibleArtistIndices(), albums: albums, uploaded: uploadedOrder,
+                       showUploaded: showsUploadedHeader(tier: artistFilter, albumsFromSpanDAC: albumsSource == .bridge,
+                                                         albumsLoaded: albumsLoaded),
+                       expanded: uploadedExpanded, filter: filter)
+    }
+
+    private func artistRowUnderCursor() -> ArtistListRow? {
+        let rows = visibleArtistRows()
+        return nav.cursor >= 0 && nav.cursor < rows.count ? rows[nav.cursor] : nil
+    }
+
+    /// At the tracks of an album opened from the Artists list's Uploaded header:
+    /// the only `.tracks` directly under `.artistList`. That album is an Albums
+    /// row (`albums`, `albumsSource`, the Albums epoch and covers), not an artist's.
+    private var inUploadedDrill: Bool {
+        nav.subView == .artists && nav.stack.count == 2 && isTracksLevel
     }
 
     private func visibleSongIndices() -> [Int] {
@@ -3166,7 +3298,8 @@ final class LibraryScene: Scene {
     /// and instance applied. The Artists list and Songs are never in scope.
     private func coverTarget(for a: LibraryAlbum) -> LibraryCoverFetcher.Target? {
         guard currentAlbumSource == .bridge else { return nil }
-        switch nav.subView {
+        // An Uploaded album's tracks view is the Albums list's, one level down.
+        switch inUploadedDrill ? .albums : nav.subView {
         case .albums:
             guard isAlbumList || (isTracksLevel && nav.stack.count == 2),
                   let generation = bridgeAlbumsGeneration, let instance = bridgeAlbumsInstance
@@ -3555,7 +3688,7 @@ final class LibraryScene: Scene {
         if vis.isEmpty {
             out += ANSICode.moveTo(row: listY, col: z.railX)
             let msg: String
-            if nav.subView == .artists {
+            if nav.subView == .artists && !inUploadedDrill {
                 // The drilled artist's albums (C3 item 4): Bridge's own
                 // sentence replaces "Loading albums…"/"(no albums)". No
                 // separate `r` here — drilling out and back in retries it.
@@ -3680,7 +3813,7 @@ final class LibraryScene: Scene {
     private func renderArtistList(_ z: PlaylistZones, into out: inout String, contentTop: Int, bodyBottom: Int) {
         let listY = contentTop
         let maxVisible = max(1, bodyBottom - listY + 1)
-        let vis = visibleArtistIndices()
+        let vis = visibleArtistRows()
         if vis.isEmpty {
             out += ANSICode.moveTo(row: listY, col: z.railX)
             // With the album-artists toggle on, an empty list can mean "albums still
@@ -3727,11 +3860,18 @@ final class LibraryScene: Scene {
         let end = min(vis.count, railScroll + maxVisible)
         let nameWidth = max(1, z.railWidth - 2)
         for p in railScroll..<end {
-            let i = vis[p]
             let row = listY + (p - railScroll)
             out += ANSICode.moveTo(row: row, col: z.railX)
-            let ar = artists[i]
-            let nm = railName(ar.name, nameWidth: nameWidth)
+            let label: String
+            switch vis[p] {
+            case .artist(let i): label = artists[i].name
+            case .uploadedHeader(let n):
+                // Open while filtering, which shows its matches under it.
+                let open = uploadedExpanded || !filter.isEmpty
+                label = "\(open ? "\u{2304}" : "\u{203A}") Uploaded (\(n))"
+            case .uploadedAlbum(let i): label = "  \(albums[i].name) \u{2014} \(albums[i].artist)"
+            }
+            let nm = railName(label, nameWidth: nameWidth)
             let padName = nm + String(repeating: " ", count: max(0, nameWidth - nm.count))
             if p == cursorPos {
                 out += "\u{258C} \(ANSICode.inverse)\(padName)\(ANSICode.reset)"
