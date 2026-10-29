@@ -397,11 +397,16 @@ final class SpanDACWholePlaySceneTests: XCTestCase {
     // album's tracks in listed order, sent as one id list: never SpanDAC's own
     // artist play (Apple's artist-songs relationship).
 
-    private func artistAlbums(_ albums: [(id: String, tracks: Int)], generation: Int = 3) -> String {
+    /// An artist's albums. A play reads them twice, before and after the tracks,
+    /// so a test scripts the reply twice unless it means the second to differ.
+    private func artistAlbums(_ albums: [(id: String, tracks: Int)], generation: Int = 3,
+                              instance: String? = "inst-A") -> String {
         let items = albums.map { #"{"id":"\#($0.id)","title":"Album \#($0.id)","artist":"Radiohead","track_count":\#($0.tracks),"kind":"album"}"# }
             .joined(separator: ",")
-        return #"{"ok":true,"op":"slice.libraryArtistAlbums","generation":\#(generation),"items":[\#(items)],"stale":false,"refreshing":false}"#
+        let inst = instance.map { #""library_instance":"\#($0)","# } ?? ""
+        return #"{"ok":true,"op":"slice.libraryArtistAlbums","generation":\#(generation),\#(inst)"items":[\#(items)],"stale":false,"refreshing":false}"#
     }
+    private func twice(_ reply: String) -> [String] { [reply, reply] }
     private func albumTracks(_ ids: [String], generation: Int = 3) -> String {
         trackReply(ids, listRev: nil).replacingOccurrences(of: "\"generation\":3", with: "\"generation\":\(generation)")
     }
@@ -422,7 +427,7 @@ final class SpanDACWholePlaySceneTests: XCTestCase {
 
     func testPOnAnArtistQueuesTheListedAlbumsInOrderNotTheArtistsSongs() {
         let wire = stickyWire(["slice.libraryArtists": [artistPage], "slice.status": [Self.capable],
-                               "slice.libraryArtistAlbums": [artistAlbums([("al2", 2), ("al1", 1)])],
+                               "slice.libraryArtistAlbums": twice(artistAlbums([("al2", 2), ("al1", 1)])),
                                "slice.libraryAlbumTracks": [albumTracks(["t3", "t4"]), albumTracks(["t1"])],
                                "slice.queue": [Self.queued]])
         let status = StatusStore()
@@ -448,7 +453,7 @@ final class SpanDACWholePlaySceneTests: XCTestCase {
         // also has a 10-track album, which that tier does not list.
         let wire = stickyWire(["slice.libraryArtists": [artistPage], "slice.status": [Self.capable],
                                "slice.libraryAlbums": [albumPage],
-                               "slice.libraryArtistAlbums": [artistAlbums([("al9", 10), ("al1", 3)])],
+                               "slice.libraryArtistAlbums": twice(artistAlbums([("al9", 10), ("al1", 3)])),
                                "slice.libraryAlbumTracks": [albumTracks(["t1", "t2", "t3"])],
                                "slice.queue": [Self.queued]])
         let s = artistScene(wire)
@@ -466,7 +471,7 @@ final class SpanDACWholePlaySceneTests: XCTestCase {
     func testAnAlbumThatFailsToReadRefusesTheWholeArtist() {
         let failed = #"{"ok":false,"op":"slice.libraryAlbumTracks","error":{"kind":"not_in_library","detail":"That album is no longer in your library."}}"#
         let wire = stickyWire(["slice.libraryArtists": [artistPage], "slice.status": [Self.capable],
-                               "slice.libraryArtistAlbums": [artistAlbums([("al1", 1), ("al2", 1)])],
+                               "slice.libraryArtistAlbums": twice(artistAlbums([("al1", 1), ("al2", 1)])),
                                "slice.libraryAlbumTracks": [albumTracks(["t1"]), failed],
                                "slice.queue": [Self.queued]])
         let status = StatusStore()
@@ -482,7 +487,7 @@ final class SpanDACWholePlaySceneTests: XCTestCase {
 
     func testAnAlbumFromAnotherSnapshotRefusesTheWholeArtist() {
         let wire = stickyWire(["slice.libraryArtists": [artistPage], "slice.status": [Self.capable],
-                               "slice.libraryArtistAlbums": [artistAlbums([("al1", 1), ("al2", 1)])],
+                               "slice.libraryArtistAlbums": twice(artistAlbums([("al1", 1), ("al2", 1)])),
                                "slice.libraryAlbumTracks": [albumTracks(["t1"]), albumTracks(["t2"], generation: 4)],
                                "slice.queue": [Self.queued]])
         let status = StatusStore()
@@ -496,7 +501,7 @@ final class SpanDACWholePlaySceneTests: XCTestCase {
 
     func testSOnAnArtistShufflesExactlyTheListedAlbums() {
         let wire = stickyWire(["slice.libraryArtists": [artistPage], "slice.status": [Self.capable],
-                               "slice.libraryArtistAlbums": [artistAlbums([("al1", 2), ("al2", 1)])],
+                               "slice.libraryArtistAlbums": twice(artistAlbums([("al1", 2), ("al2", 1)])),
                                "slice.libraryAlbumTracks": [albumTracks(["t1", "t2"]), albumTracks(["t3"])],
                                "slice.queue": [Self.queued]])
         let s = artistScene(wire)
@@ -505,6 +510,63 @@ final class SpanDACWholePlaySceneTests: XCTestCase {
         XCTAssertEqual(Set(wire.sent("slice.queue").first?["library_ids"] as? [String] ?? []), ["t1", "t2", "t3"])
         XCTAssertTrue(wire.sent("slice.playLibrary").isEmpty)
         XCTAssertTrue(wire.sent("slice.libraryArtistSongs").isEmpty)
+    }
+
+    func testAnOlderSpanDACIsAskedToUpdateAndNothingIsRead() {
+        // Before 0.3.7 the artist's albums carried no instance and a different
+        // generation from the album tracks, so the reads cannot be compared.
+        let wire = stickyWire(["slice.libraryArtists": [artistPage], "slice.status": [Self.capable],
+                               "slice.libraryArtistAlbums": [artistAlbums([("al1", 1)], generation: 8, instance: nil)],
+                               "slice.libraryAlbumTracks": [albumTracks(["t1"], generation: 7)],
+                               "slice.queue": [Self.queued]])
+        let status = StatusStore()
+        let s = artistScene(wire, status: status)
+        _ = s.handle(.char("p"))
+        XCTAssertTrue(settleScene(s) { status.current()?.text.contains("needs a newer SpanDAC") == true },
+                      "got: \(String(describing: status.current()?.text))")
+        pause()
+        XCTAssertTrue(wire.sent("slice.libraryAlbumTracks").isEmpty)
+        XCTAssertTrue(wire.sent("slice.queue").isEmpty)
+        XCTAssertTrue(wire.sent("slice.playLibrary").isEmpty, "fell back to SpanDAC's own artist play")
+    }
+
+    func testASpanDACThatRestartedWithTheSameGenerationRefusesTheArtist() {
+        let wire = stickyWire(["slice.libraryArtists": [artistPage], "slice.status": [Self.capable],
+                               "slice.libraryArtistAlbums": [artistAlbums([("al1", 1), ("al2", 1)], instance: "inst-A"),
+                                                             artistAlbums([("al1", 1), ("al2", 1)], instance: "inst-B")],
+                               "slice.libraryAlbumTracks": [albumTracks(["t1"]), albumTracks(["t2"])],
+                               "slice.queue": [Self.queued]])
+        let status = StatusStore()
+        let s = artistScene(wire, status: status)
+        _ = s.handle(.char("p"))
+        XCTAssertTrue(settleScene(s) { status.current()?.text.contains("library changed while 'Radiohead'") == true },
+                      "got: \(String(describing: status.current()?.text))")
+        pause()
+        XCTAssertEqual(wire.sent("slice.libraryArtistAlbums").count, 2, "the album list was not read again")
+        XCTAssertTrue(wire.sent("slice.queue").isEmpty, "tracks from two SpanDAC processes played")
+    }
+
+    func testASourceChangeDuringTheAlbumReadsStopsThemAndPlaysNothing() throws {
+        let wire = stickyWire(["slice.libraryArtists": [artistPage], "slice.status": [Self.capable],
+                               "slice.libraryArtistAlbums": twice(artistAlbums([("al1", 1), ("al2", 1)])),
+                               "slice.libraryAlbumTracks": [albumTracks(["t1"]), albumTracks(["t2"])],
+                               "slice.queue": [Self.queued]])
+        wire.gate(op: "slice.libraryAlbumTracks", at: 0)
+        let status = StatusStore()
+        let r = routing(wire)
+        let s = artistScene(wire, status: status, routing: r)
+        _ = s.handle(.char("p"))
+        XCTAssertTrue(settleScene(s) { wire.reached(op: "slice.libraryAlbumTracks", at: 0) })
+        // The output moves while the first album's read is in flight.
+        let network = PlaybackMode.networkSource("0E6A3F6C-4B51-4D1B-9E1E-5C2A8D3B7F10")
+        XCTAssertEqual(try r.switchMode(to: network, readiness: { .ready }, pauseOutgoing: { _ in true }, dropQueue: { _ in }),
+                       .switched(to: network))
+        wire.release(op: "slice.libraryAlbumTracks", at: 0)
+        XCTAssertTrue(settleScene(s) { status.current()?.text == sourceChangedNothingPlayed },
+                      "got: \(String(describing: status.current()?.text))")
+        pause()
+        XCTAssertEqual(wire.sent("slice.libraryAlbumTracks").count, 1, "the reads went on after the source changed")
+        XCTAssertTrue(wire.sent("slice.queue").isEmpty)
     }
 
     // MARK: - playlists

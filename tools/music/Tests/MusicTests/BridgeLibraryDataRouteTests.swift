@@ -342,21 +342,22 @@ final class BridgeLibraryDataRouteTests: XCTestCase {
     func testAPlayWhoseReadCrossedASwitchPlaysNothing() throws {
         let r = rig(output: .source, data: .accepted)
         r.data.script("slice.libraryArtists", [artistPage])
-        r.data.script("slice.libraryArtistSongs", [containerReply("slice.libraryArtistSongs", ["t1", "t2"])])
-        r.data.gate(op: "slice.libraryArtistSongs", at: 0)
+        r.data.script("slice.libraryArtistAlbums", [#"{"ok":true,"op":"slice.libraryArtistAlbums","generation":3,"library_instance":"inst-A","items":[{"id":"al1","title":"In Rainbows","artist":"Radiohead","track_count":4,"kind":"album"}],"stale":false,"refreshing":false}"#])
+        r.data.script("slice.libraryAlbumTracks", [containerReply("slice.libraryAlbumTracks", ["t1", "t2"])])
+        r.data.gate(op: "slice.libraryArtistAlbums", at: 0)
         r.output.script("slice.queue", [queued])
         let s = libraryScene(r)
 
         goToSubView(s, .artists)
         XCTAssertTrue(settleScene(s) { s.render(frame: frame, snapshot: idle).contains("Radiohead") })
         _ = s.handle(.char("p"))
-        XCTAssertTrue(wait { r.data.reached(op: "slice.libraryArtistSongs", at: 0) }, "the play never read the songs")
+        XCTAssertTrue(wait { r.data.reached(op: "slice.libraryArtistAlbums", at: 0) }, "the play never read the albums")
 
         // The output moves while the play's read is in flight.
         let switched = try r.routing.switchMode(to: .networkSource("0E6A3F6C-4B51-4D1B-9E1E-5C2A8D3B7F10"), readiness: { .ready },
                                                 pauseOutgoing: { _ in true }, dropQueue: { _ in })
         XCTAssertEqual(switched, .switched(to: .networkSource("0E6A3F6C-4B51-4D1B-9E1E-5C2A8D3B7F10")))
-        r.data.release(op: "slice.libraryArtistSongs")
+        r.data.release(op: "slice.libraryArtistAlbums")
 
         XCTAssertTrue(wait { r.status.current()?.text == sourceChangedNothingPlayed },
                       "got: \(String(describing: r.status.current()?.text))")
@@ -400,13 +401,6 @@ final class BridgeLibraryDataRouteTests: XCTestCase {
         XCTAssertTrue(r.output.sent("slice.queue").isEmpty)
         XCTAssertTrue(r.output.sent("slice.playLibrary").isEmpty)
         XCTAssertEqual(r.built.outputModes, [], "an output client was built for a play that must not run")
-    }
-
-    func testAnArtistPlayWhoseRevisionReadCrossedASwitchIsRefusedBeforeAnyFallbackRead() throws {
-        try switchWhileTheRevisionIsHeld(
-            kind: "artist", listingOp: "slice.libraryArtistSongs", listingPage: artistPage,
-            listingReply: #"{"ok":false,"op":"slice.libraryArtistSongs","error":{"kind":"too_large","detail":"Too many songs to list."}}"#,
-            scene: { _ in })
     }
 
     func testAnAlbumPlayWhoseRevisionReadCrossedASwitchIsRefusedBeforeAnyFallbackRead() throws {

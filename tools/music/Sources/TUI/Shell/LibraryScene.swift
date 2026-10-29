@@ -104,20 +104,35 @@ func filteredAlbumIndices(albums: [LibraryAlbum], trackRange: ClosedRange<Int>?,
 /// What `p`/`s` on a SpanDAC Artists row plays (ruling 2026-10-27 15:04: an artist
 /// plays exactly the albums listed under them): the artist's albums, scoped to the
 /// tier on screen exactly as the drill-in scopes them, in the order listed, each
-/// album's tracks in album order. Every album is read from the snapshot the album
-/// list came from; an album that fails to read, or answers from another
-/// generation, refuses the whole play rather than playing part of the list.
-/// Pure apart from `readTracks` → unit-tested.
-func listedArtistAlbumRows(albums: [LibraryAlbum], generation: Int, trackRange: ClosedRange<Int>?,
-                           name: String, readTracks: (String) throws -> MusicList) throws -> [MusicRow] {
+/// album's tracks in album order.
+///
+/// Every read must be one observation of one SpanDAC process: the album list's
+/// `library_instance` and core generation, each album at that generation, and the
+/// album list read again afterwards unchanged, so a SpanDAC that restarted and
+/// reused the generation number is caught. A SpanDAC that sends no instance
+/// answers a different generation for this list (before 0.3.7) and is asked to
+/// update rather than misread. `stillCurrent` is checked before each read, so a
+/// source change stops the reads. Anything else refuses the whole play rather
+/// than playing part of the list. Pure apart from the closures → unit-tested.
+func listedArtistAlbumRows(albums: MusicList, trackRange: ClosedRange<Int>?, name: String,
+                           stillCurrent: () -> Bool, readTracks: (String) throws -> MusicList,
+                           rereadAlbums: () throws -> MusicList) throws -> [MusicRow] {
+    guard let instance = albums.libraryInstance else {
+        throw ActionError(message: "Playing an artist needs a newer SpanDAC. Update SpanDAC, then try again.")
+    }
+    let changed = ActionError(message: "SpanDAC's library changed while '\(name)' was being read, so nothing played. Try again.")
+    let listed = albums.rows.map { LibraryAlbum(id: $0.id, name: $0.title, artist: $0.artist, trackCount: $0.trackCount ?? 0) }
     var rows: [MusicRow] = []
-    for i in filteredAlbumIndices(albums: albums, trackRange: trackRange, filter: "") {
-        let list = try readTracks(albums[i].id)
-        guard list.generation == generation else {
-            throw ActionError(message: "SpanDAC's library changed while '\(name)' was being read, so nothing played. Try again.")
-        }
+    for i in filteredAlbumIndices(albums: listed, trackRange: trackRange, filter: "") {
+        guard stillCurrent() else { throw ActionError(message: sourceChangedNothingPlayed) }
+        let list = try readTracks(listed[i].id)
+        guard list.generation == albums.generation else { throw changed }
         rows += list.rows
     }
+    guard stillCurrent() else { throw ActionError(message: sourceChangedNothingPlayed) }
+    let again = try rereadAlbums()
+    guard again.libraryInstance == instance, again.generation == albums.generation,
+          again.rows.map(\.id) == albums.rows.map(\.id) else { throw changed }
     return rows
 }
 
@@ -3069,12 +3084,18 @@ final class LibraryScene: Scene {
                     try provider.artistAlbums(artistID: artistID)
                 }
                 let listed = try listedArtistAlbumRows(
-                    albums: Self.libraryAlbums(from: albums), generation: albums.generation,
-                    trackRange: trackRange, name: name) { albumID in
+                    albums: albums, trackRange: trackRange, name: name,
+                    stillCurrent: { routing.playOutputKind(expecting: stamp) != .stale },
+                    readTracks: { albumID in
                         try retryingWhileWarming(budget: budget, onWarming: onWarming, sleep: sleep) {
                             try provider.albumTracks(albumID: albumID)
                         }
-                    }
+                    },
+                    rereadAlbums: {
+                        try retryingWhileWarming(budget: budget, onWarming: onWarming, sleep: sleep) {
+                            try provider.artistAlbums(artistID: artistID)
+                        }
+                    })
                 // The rows are given, so no revision is read and the plan is the id
                 // list: there is no SpanDAC container that is exactly these albums.
                 let planned = try planLibraryPlay(
