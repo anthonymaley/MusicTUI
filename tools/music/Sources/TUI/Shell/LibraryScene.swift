@@ -101,6 +101,44 @@ func filteredAlbumIndices(albums: [LibraryAlbum], trackRange: ClosedRange<Int>?,
     }
 }
 
+/// What `p`/`s` on a SpanDAC Artists row plays (ruling 2026-10-27 15:04: an artist
+/// plays exactly the albums listed under them): the artist's albums, scoped to the
+/// tier on screen exactly as the drill-in scopes them, in the order listed, each
+/// album's tracks in album order.
+///
+/// The reads are checked against one SpanDAC process as far as the protocol allows:
+/// the album list's `library_instance` and core generation, each album at that
+/// generation, and the album list read again afterwards unchanged, so a SpanDAC
+/// that restarted and reused the generation number during the reads is caught.
+/// Not caught: a restart after that last read and before the queue is sent, which
+/// `slice.queue` cannot be bound against without a SpanDAC change (Codex 13; a
+/// residual alongside the absent `list_rev`). A SpanDAC that sends no instance
+/// answers a different generation for this list (before 0.3.7) and is asked to
+/// update rather than misread. `stillCurrent` is checked before each read, so a
+/// source change stops the reads. Anything else refuses the whole play rather
+/// than playing part of the list. Pure apart from the closures → unit-tested.
+func listedArtistAlbumRows(albums: MusicList, trackRange: ClosedRange<Int>?, name: String,
+                           stillCurrent: () -> Bool, readTracks: (String) throws -> MusicList,
+                           rereadAlbums: () throws -> MusicList) throws -> [MusicRow] {
+    guard let instance = albums.libraryInstance else {
+        throw ActionError(message: "Playing an artist needs a newer SpanDAC. Update SpanDAC, then try again.")
+    }
+    let changed = ActionError(message: "SpanDAC's library changed while '\(name)' was being read, so nothing played. Try again.")
+    let listed = albums.rows.map { LibraryAlbum(id: $0.id, name: $0.title, artist: $0.artist, trackCount: $0.trackCount ?? 0) }
+    var rows: [MusicRow] = []
+    for i in filteredAlbumIndices(albums: listed, trackRange: trackRange, filter: "") {
+        guard stillCurrent() else { throw ActionError(message: sourceChangedNothingPlayed) }
+        let list = try readTracks(listed[i].id)
+        guard list.generation == albums.generation else { throw changed }
+        rows += list.rows
+    }
+    guard stillCurrent() else { throw ActionError(message: sourceChangedNothingPlayed) }
+    let again = try rereadAlbums()
+    guard again.libraryInstance == instance, again.generation == albums.generation,
+          again.rows.map(\.id) == albums.rows.map(\.id) else { throw changed }
+    return rows
+}
+
 /// The albums the Artists list's Uploaded header holds, as indices into `albums`,
 /// sorted by artist then title: those whose track count is 0. SpanDAC (MusicKit)
 /// reports 0 for some of a person's own copies (Loveless, Garage Flower), so the
@@ -2635,13 +2673,13 @@ final class LibraryScene: Scene {
     }
 
     private func dispatchArtistPlay(id: String, name: String, shuffle: Bool) {
+        // The tier on screen is part of what the row lists: in the Albums or
+        // 12"/EP view the drill-in shows only that tier's albums, so play does too.
         if artistsSource == .bridge {
-            playBridgeArtist(artistID: id, name: name, shuffle: shuffle)
+            playBridgeArtist(artistID: id, name: name, shuffle: shuffle, trackRange: artistFilter.trackRange)
         } else if makeProvider() != nil {
             actions.run("Play") { throw ActionError(message: LibraryProvenance.bridgeSelectedMusicAppList) }
         } else {
-            // The tier on screen is part of what the row lists: in the Albums or
-            // 12"/EP view the drill-in shows only that tier's albums, so play does too.
             playArtist(name: name, shuffle: shuffle, trackRange: artistFilter.trackRange)
         }
     }
@@ -3021,12 +3059,15 @@ final class LibraryScene: Scene {
         }
     }
 
-    /// C3 item 7: every library track by one Bridge artist — the same shape
-    /// as `playBridgeAlbum` through `provider.artistSongs(artistID:)`, one
-    /// budget shared by the read and the queue, no start row, and `too_large`
-    /// reaching the footer verbatim with no queue sent.
+    /// C3 item 7, reshaped by the ruling of 2026-10-27 15:04: an artist plays
+    /// exactly the albums listed under them. The artist's albums are read (the
+    /// drill-in need not have been opened), scoped to `trackRange` as the drill-in
+    /// is, and each listed album's tracks are read and queued in listed order as
+    /// one id list. Never SpanDAC's own artist play, which follows Apple's
+    /// artist-songs relationship and so can play appearances on other people's
+    /// albums and every tier. A failed read refuses the whole play.
     // Internal, not private, so it is reachable from a test.
-    func playBridgeArtist(artistID: String, name: String, shuffle: Bool) {
+    func playBridgeArtist(artistID: String, name: String, shuffle: Bool, trackRange: ClosedRange<Int>? = nil) {
         let routing = self.routing
         let status = self.status
         let makeProvider = self.makeProvider
@@ -3042,58 +3083,52 @@ final class LibraryScene: Scene {
                 let onWarming: (TimeInterval) -> Void = { _ in
                     status.post("Preparing your library \u{2014} '\(name)' will play when it's ready\u{2026}")
                 }
-                // An artist play is always whole-collection (there is no
-                // track-level entry for an artist), and nothing about an artist is
-                // on screen to name or prove. A SpanDAC that plays containers whole
-                // is asked for the artist's `list_rev` alone (`slice.listRev`, not
-                // bounded like the listing read, so a 1,001-song artist plays whole
-                // too) and sent the artist's id; no rows are read, so none are kept.
-                // Any other output reads the songs and sends their ids, as before.
+                let stillCurrent = { routing.playOutputKind(expecting: stamp) != .stale }
+                // Every read is fenced on both sides, inside the warming retry: a
+                // source change is reported as one, never as a read that failed or
+                // went on warming after it (Codex 13).
+                func fenced<T>(_ read: () throws -> T) throws -> T {
+                    try retryingWhileWarming(budget: budget, onWarming: onWarming, sleep: sleep) {
+                        guard stillCurrent() else { throw ActionError(message: sourceChangedNothingPlayed) }
+                        let answer: T
+                        do { answer = try read() } catch {
+                            guard stillCurrent() else { throw ActionError(message: sourceChangedNothingPlayed) }
+                            throw error
+                        }
+                        guard stillCurrent() else { throw ActionError(message: sourceChangedNothingPlayed) }
+                        return answer
+                    }
+                }
+                let albums = try fenced { try provider.artistAlbums(artistID: artistID) }
+                let listed = try listedArtistAlbumRows(
+                    albums: albums, trackRange: trackRange, name: name, stillCurrent: stillCurrent,
+                    readTracks: { albumID in try fenced { try provider.albumTracks(albumID: albumID) } },
+                    rereadAlbums: { try fenced { try provider.artistAlbums(artistID: artistID) } })
+                // The rows are given, so no revision is read and the plan is the id
+                // list: there is no SpanDAC container that is exactly these albums.
                 let planned = try planLibraryPlay(
-                    routing: routing, stamp: stamp, provider: provider, rows: nil, listRev: nil,
+                    routing: routing, stamp: stamp, provider: provider, rows: listed, listRev: nil,
                     startAt: 1, startRequired: false, shuffle: shuffle,
                     emptyMessage: "'\(name)' has no songs SpanDAC can play.",
-                    readRevision: {
-                        try retryingWhileWarming(budget: budget, onWarming: onWarming, sleep: sleep) {
-                            try provider.listRev(kind: .artist, id: artistID)
-                        }
-                    },
-                    readRows: {
-                        let list = try retryingWhileWarming(budget: budget, onWarming: onWarming, sleep: sleep) {
-                            try provider.artistSongs(artistID: artistID)
-                        }
-                        return (list.rows, list.listRev)
-                    })
-                let plan = planned.plan
-                let songRows = planned.rows
-                let sent = songRows.map { bridgeQueueRows($0, shuffle: shuffle, startAt: 1) }
-                let ids = sent?.map(\.id)
+                    readRevision: { throw ActionError(message: sourceChangedNothingPlayed) },
+                    readRows: { (listed, nil) })
+                let songRows = planned.rows ?? listed
+                let sent = bridgeQueueRows(songRows, shuffle: shuffle, startAt: 1)
+                let ids = sent.map(\.id)
                 // Addendum U: same as playBridgeAlbum above. An artist play is
                 // always whole-collection — there is no track-level entry for
                 // an artist, so `startRequired` is always false.
                 var skippedUnavailable = 0
                 var handedOff: HandoffPlayReport?
-                var wholeResult: SpanDACPlayResult?
-                var wholeSerial: Int?
                 try retryingWhileWarming(budget: budget, onWarming: onWarming, sleep: sleep) {
                     try routing.perform(.libraryPlay, expecting: stamp, origin: .spandacLibrary,
                         musicApp: { path in
                             guard path == .handoff else { throw ActionError(message: pickASpanDACOutput) }
-                            guard let songRows else { throw ActionError(message: sourceChangedNothingPlayed) }
                             handedOff = try playThroughHandoff(handoff, rows: songRows, startAt: 1,
                                                                startRequired: false,
                                                                shuffle: shuffle, title: name)
                         },
                         source: { client in
-                            if case .whole(let start, let rev) = plan {
-                                let result = try spanDACOutputPlayer(client).playLibrary(
-                                    kind: .artist, id: artistID, start: start, listRev: rev, shuffle: shuffle)
-                                wholeResult = result
-                                wholeSerial = routing.recordSpanDACPlay(songRows ?? [], token: result.queueToken,
-                                                                        listRev: rev, shuffled: shuffle)
-                                return
-                            }
-                            guard let ids, let sent else { throw ActionError(message: sourceChangedNothingPlayed) }
                             let played = try spanDACOutputPlayer(client).playRetainingToken(
                                 ids: ids, startRequired: false)
                             skippedUnavailable = played.skippedUnavailable
@@ -3106,23 +3141,7 @@ final class LibraryScene: Scene {
                                 untilStateChange: handedOff.notice != nil)
                     return
                 }
-                if let wholeResult {
-                    // No rows were read to play, so none were recorded: read them after
-                    // the play, off this action, so Up Next has a list to index.
-                    if songRows == nil, let wholeSerial {
-                        fillUpNextRowsInBackground(routing: routing, serial: wholeSerial, token: wholeResult.queueToken) { stillNeeded in
-                            let list = try retryingWhileWarming(sleep: sleep) {
-                                guard stillNeeded() else { throw UpNextFillStopped() }
-                                return try provider.artistSongs(artistID: artistID)
-                            }
-                            return (list.rows, list.listRev)
-                        }
-                    }
-                    status.post(bridgeWholePlayMessage(name: name, result: wholeResult),
-                                untilStateChange: bridgeWholePlayNeedsAttention(wholeResult))
-                    return
-                }
-                let queuedCount = (ids?.count ?? 0) - skippedUnavailable
+                let queuedCount = ids.count - skippedUnavailable
                 var footer = "Playing '\(name)' on SpanDAC \u{2014} \(queuedCount) tracks."
                 if skippedUnavailable > 0 { footer += " " + bridgeUnavailableSongsNotice(skippedUnavailable) }
                 status.post(footer, untilStateChange: skippedUnavailable > 0)

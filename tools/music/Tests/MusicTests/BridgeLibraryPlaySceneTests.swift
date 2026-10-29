@@ -167,9 +167,10 @@ final class BridgeLibraryPlaySceneTests: XCTestCase {
         {"ok":true,"op":"slice.libraryArtists","generation":3,"total":1,
          "items":[{"id":"ar1","title":"Radiohead","kind":"artist"}],"next_cursor":null}
         """
-        let songs = trackReply(["t1", "t2", "t3", "t4"]).replacingOccurrences(of: "libraryAlbumTracks", with: "libraryArtistSongs")
+        let albums = #"{"ok":true,"op":"slice.libraryArtistAlbums","generation":3,"library_instance":"inst-A","items":[{"id":"al1","title":"In Rainbows","artist":"Radiohead","track_count":4,"kind":"album"}],"stale":false,"refreshing":false}"#
         let wire = BridgeLibraryReadsWire(["slice.libraryArtists": [artistPage],
-                                          "slice.libraryArtistSongs": [songs],
+                                          "slice.libraryArtistAlbums": [albums, albums],
+                                          "slice.libraryAlbumTracks": [trackReply(["t1", "t2", "t3", "t4"])],
                                           "slice.queue": [Self.queuedReply(skippedUnavailable: 2)],
                                           "slice.status": [Self.queued]])
         wire.stickyStatus = true   // a play reads SpanDAC's capabilities before it queues
@@ -271,14 +272,17 @@ final class BridgeLibraryPlaySceneTests: XCTestCase {
         XCTAssertEqual(spy.count("onArtistAlbums"), 0)
     }
 
-    func testPOnABridgeArtistSendsLibraryArtistSongsThenQueue() {
+    /// Ruling 2026-10-27 15:04: an artist plays the albums listed under them, read
+    /// album by album, never SpanDAC's own artist-songs list.
+    func testPOnABridgeArtistReadsItsAlbumsThenQueuesTheirTracks() {
         let artistPage = """
         {"ok":true,"op":"slice.libraryArtists","generation":3,"total":1,
          "items":[{"id":"ar1","title":"Radiohead","kind":"artist"}],"next_cursor":null}
         """
-        let songs = trackReply(["t1", "t2"]).replacingOccurrences(of: "libraryAlbumTracks", with: "libraryArtistSongs")
+        let albums = #"{"ok":true,"op":"slice.libraryArtistAlbums","generation":3,"library_instance":"inst-A","items":[{"id":"al1","title":"In Rainbows","artist":"Radiohead","track_count":4,"kind":"album"}],"stale":false,"refreshing":false}"#
         let wire = BridgeLibraryReadsWire(["slice.libraryArtists": [artistPage],
-                                          "slice.libraryArtistSongs": [songs],
+                                          "slice.libraryArtistAlbums": [albums, albums],
+                                          "slice.libraryAlbumTracks": [trackReply(["t1", "t2"])],
                                           "slice.queue": [Self.queued]])
         let s = libraryTestScene(flag: BridgeSelectedFlag(true), wire: wire, spy: LibraryAppleScriptSpy())
 
@@ -286,9 +290,10 @@ final class BridgeLibraryPlaySceneTests: XCTestCase {
         XCTAssertTrue(settleScene(s) { s.render(frame: frame, snapshot: idle).contains("Radiohead") })
         _ = s.handle(.char("p"))
 
-        XCTAssertTrue(settleScene(s) { !wire.sent("slice.libraryArtistSongs").isEmpty })
         XCTAssertTrue(settleQueued(wire))
         XCTAssertEqual(wire.sent("slice.queue").first?["library_ids"] as? [String], ["t1", "t2"])
+        XCTAssertEqual(wire.sent("slice.libraryAlbumTracks").first?["id"] as? String, "al1")
+        XCTAssertTrue(wire.sent("slice.libraryArtistSongs").isEmpty)
     }
 
     func testTooLargeReachesTheFooterVerbatimAndNoQueueIsSent() {
@@ -296,11 +301,15 @@ final class BridgeLibraryPlaySceneTests: XCTestCase {
         {"ok":true,"op":"slice.libraryArtists","generation":3,"total":1,
          "items":[{"id":"ar1","title":"Radiohead","kind":"artist"}],"next_cursor":null}
         """
+        // An album of the artist's that SpanDAC will not list (over its listing bound).
         let tooLarge = """
-        {"ok":false,"op":"slice.libraryArtistSongs",
-         "error":{"kind":"too_large","detail":"Radiohead has more than 100 songs, which is more than SpanDAC can queue."}}
+        {"ok":false,"op":"slice.libraryAlbumTracks",
+         "error":{"kind":"too_large","detail":"That has more than 1,000 songs, which is more than SpanDAC will list."}}
         """
-        let wire = BridgeLibraryReadsWire(["slice.libraryArtists": [artistPage], "slice.libraryArtistSongs": [tooLarge]])
+        let albums = #"{"ok":true,"op":"slice.libraryArtistAlbums","generation":3,"library_instance":"inst-A","items":[{"id":"al1","title":"In Rainbows","artist":"Radiohead","track_count":4,"kind":"album"}],"stale":false,"refreshing":false}"#
+        let wire = BridgeLibraryReadsWire(["slice.libraryArtists": [artistPage],
+                                          "slice.libraryArtistAlbums": [albums, albums],
+                                          "slice.libraryAlbumTracks": [tooLarge]])
         let status = StatusStore()
         let s = libraryTestScene(flag: BridgeSelectedFlag(true), wire: wire, spy: LibraryAppleScriptSpy(), status: status)
 
@@ -310,7 +319,7 @@ final class BridgeLibraryPlaySceneTests: XCTestCase {
 
         XCTAssertTrue(settleScene(s) { status.current()?.text != nil })
         XCTAssertEqual(status.current()?.text,
-                       "Radiohead has more than 100 songs, which is more than SpanDAC can queue.")
+                       "That has more than 1,000 songs, which is more than SpanDAC will list.")
         XCTAssertTrue(wire.sent("slice.queue").isEmpty, "too_large still sent a queue")
     }
 
