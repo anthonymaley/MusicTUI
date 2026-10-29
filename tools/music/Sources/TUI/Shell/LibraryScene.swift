@@ -1955,7 +1955,12 @@ final class LibraryScene: Scene {
         // genuinely empty library reads as "(no …)" instead of a stuck "Loading …".
         // Album rows move the Artists list too (tier membership, the Uploaded
         // rows): note what the cursor is on before any lands, follow it after.
-        let artistRowAnchor = isArtistList ? artistRowUnderCursor().map(artistRowIdentity) : nil
+        // Bridge's feed is drained here, ahead of Music.app's rows, so the note
+        // is taken only when rows of either library are about to land.
+        let albumsDrain = albumsFeed.drain()
+        let albumRowsComing = !newAlbums.isEmpty || (albumsWalkDone && !albumsLoaded)
+            || albumsDrain.replace != nil || !albumsDrain.append.isEmpty
+        let artistRowAnchor = isArtistList && albumRowsComing ? artistRowUnderCursor().map(artistRowIdentity) : nil
         var albumRowsLanded = false
         if !newAlbums.isEmpty {
             albumRowsLanded = true
@@ -1992,7 +1997,7 @@ final class LibraryScene: Scene {
         // total/failure/warming as level state, and `done` becoming `*Loaded`.
         // A feed drains to nothing when its list isn't Bridge-sourced, so this
         // runs unconditionally rather than gated on `albumsSource == .bridge`.
-        let albumsDrain = albumsFeed.drain()
+        // (`albumsDrain` itself is taken above, before Music.app's rows land.)
         // FIX (live-gate finding, 2026-09-23): `replace` and `append` are NOT
         // mutually exclusive within one drain. `BridgeListFeed` accumulates
         // every page an attempt lands between two `drain()` calls — page 1
@@ -2047,7 +2052,9 @@ final class LibraryScene: Scene {
         let artistsDrain = artistsFeed.drain()
         // Same fix as Albums above, same reason: `replace` and `append` can
         // both be non-empty in one drain, and both must be applied.
-        let artistAnchor = artistsDrain.reasked && artistsDrain.replace != nil && isArtistList
+        // Any page, not only a re-ask: an initial page can land above an Uploaded
+        // row already on screen (Albums can finish before Artists).
+        let artistAnchor = isArtistList && (artistsDrain.replace != nil || !artistsDrain.append.isEmpty)
             ? artistRowUnderCursor().map(artistRowIdentity) : nil
         if let replace = artistsDrain.replace {
             artists = replace

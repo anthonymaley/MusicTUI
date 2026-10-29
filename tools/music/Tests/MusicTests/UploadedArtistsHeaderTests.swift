@@ -370,6 +370,63 @@ final class UploadedArtistsHeaderTests: XCTestCase {
         XCTAssertNil(h.selectionIDForTest)
     }
 
+    /// Albums loaded and the Uploaded header open, while the Artists walk's second
+    /// page (My Bloody Valentine, The Stone Roses) is held: My Bloody Valentine is
+    /// in the Albums tier, so that page puts a row above the header.
+    private func heldArtistsPage() -> (LibraryScene, BridgeLibraryReadsWire) {
+        let first = """
+        {"ok":true,"op":"slice.libraryArtists","generation":3,"total":3,
+         "items":[{"id":"ar1","title":"Slowdive","kind":"artist"}],"next_cursor":"c2"}
+        """
+        let second = """
+        {"ok":true,"op":"slice.libraryArtists","generation":3,"total":3,
+         "items":[{"id":"ar2","title":"My Bloody Valentine","kind":"artist"},
+                  {"id":"ar3","title":"The Stone Roses","kind":"artist"}],"next_cursor":null}
+        """
+        let wire = BridgeLibraryReadsWire(["slice.libraryArtists": [first, second],
+                                           "slice.libraryAlbums": [albumsPage(ownCopies + [("al0", "Isn't Anything",
+                                                                                            "My Bloody Valentine", 10)])]])
+        wire.gate(op: "slice.libraryArtists", at: 1)
+        let s = libraryTestScene(flag: BridgeSelectedFlag(true), wire: wire, spy: LibraryAppleScriptSpy())
+        XCTAssertTrue(settleScene(s) { render(s).contains("Slowdive") }, "the first artists page never landed")
+        _ = s.handle(.char("a")); _ = s.handle(.char("a"))   // Albums tier
+        XCTAssertTrue(settleScene(s) { render(s).contains("Uploaded (2)") }, "no header")
+        XCTAssertTrue(settleScene(s) { wire.reached(op: "slice.libraryArtists", at: 1) }, "the second page was never asked for")
+        XCTAssertFalse(render(s).contains("The Stone Roses"))
+        _ = s.handle(.end); _ = s.handle(.enter)   // Slowdive, header (open), Loveless, Garage Flower
+        return (s, wire)
+    }
+
+    /// Releases the held page and drains it. Not "My Bloody Valentine is on screen":
+    /// Loveless's own row already says that.
+    private func landSecondArtistsPage(_ s: LibraryScene, _ wire: BridgeLibraryReadsWire) {
+        wire.release(op: "slice.libraryArtists", at: 1)
+        XCTAssertTrue(settleScene(s) { wire.threadEnded(op: "slice.libraryArtists", at: 1) }, "the walk never ended")
+        for _ in 0..<5 { _ = s.tick(snapshot: idle) }
+    }
+
+    /// Proof the second page did land: All lists The Stone Roses, which only it carries.
+    private func assertSecondPageLanded(_ s: LibraryScene) {
+        _ = s.handle(.char("a"))   // Albums -> All
+        XCTAssertTrue(render(s).contains("The Stone Roses"), "the second artists page never landed")
+    }
+
+    func testALaterArtistsPageKeepsTheSelectedUploadedAlbumAndHeader() {
+        let (s, wire) = heldArtistsPage()
+        _ = s.handle(.end)
+        XCTAssertEqual(s.selectionIDForTest, "u2")
+        landSecondArtistsPage(s, wire)
+        XCTAssertEqual(s.selectionIDForTest, "u2", "the page moved the album and the cursor kept its index")
+        assertSecondPageLanded(s)
+
+        let (h, hwire) = heldArtistsPage()
+        XCTAssertEqual(h.navCursorForTest, 1)
+        landSecondArtistsPage(h, hwire)
+        XCTAssertEqual(h.navCursorForTest, 2, "the page moved the header and the cursor kept its index")
+        XCTAssertNil(h.selectionIDForTest)
+        assertSecondPageLanded(h)
+    }
+
     // MARK: - Scene, Music.app data
 
     func testTheMusicAppPathNeverShowsTheHeader() {
