@@ -131,6 +131,15 @@ enum ArtistListRow: Equatable {
     case uploadedAlbum(Int)
 }
 
+/// What an Artists-list row IS, whatever index it sits at: the cursor and Back
+/// follow it across a re-read or a drill. Typed, because SpanDAC promises no
+/// disjointness between an artist's id string and an album's.
+enum ArtistRowIdentity: Equatable {
+    case artist(String)
+    case uploadedHeader
+    case uploadedAlbum(String)
+}
+
 /// The Artists list's rows: the visible artists, then, when `showUploaded`, the
 /// Uploaded header at the bottom with its albums (`uploaded`, already sorted)
 /// under it when `expanded`. The header counts every uploaded album. The `/`
@@ -457,7 +466,9 @@ final class LibraryScene: Scene {
     /// One entry per drilled level, parallel to `nav.returnCursors`: what Back
     /// puts on screen again (the scroll, and the id when the cursor index was
     /// into a filtered list).
-    private struct DrillReturn { let id: String?; let scroll: Int; let filtered: Bool }
+    /// `artistRow` is set for a drill from the Artists list, which mixes artist and
+    /// album rows, so the row is found again by kind as well as id.
+    private struct DrillReturn { let id: String?; var artistRow: ArtistRowIdentity? = nil; let scroll: Int; let filtered: Bool }
     private var drillReturns: [DrillReturn] = []
 
     // One track cache keyed by album id, shared by the right-pane preview (album
@@ -1942,7 +1953,12 @@ final class LibraryScene: Scene {
         // out of range (the count only rises) — no clamp needed here, unlike the old
         // whole-list replace. `*Loaded` flips only when the walk reports done, so a
         // genuinely empty library reads as "(no …)" instead of a stuck "Loading …".
+        // Album rows move the Artists list too (tier membership, the Uploaded
+        // rows): note what the cursor is on before any lands, follow it after.
+        let artistRowAnchor = isArtistList ? artistRowUnderCursor().map(artistRowIdentity) : nil
+        var albumRowsLanded = false
         if !newAlbums.isEmpty {
+            albumRowsLanded = true
             albums.append(contentsOf: newAlbums)
             // Feed the tier filter as pages stream in. 1-track stubs (loose playlist
             // songs) fall in neither tier; 2–5 tracks → 12"/EP, 6+ → full album.
@@ -1964,6 +1980,7 @@ final class LibraryScene: Scene {
             // Music.app's SWR cache.
             epArtists = albumArtistSet(from: albums, minTracks: 2, maxTracks: 5)
             albumArtists = albumArtistSet(from: albums, minTracks: 6)
+            albumRowsLanded = true
             let (ep, alb) = (epArtists, albumArtists)
             let cache = resultCache
             Thread.detachNewThread { cache.rememberArtistTiers(ep: ep, albums: alb) }
@@ -2015,11 +2032,10 @@ final class LibraryScene: Scene {
             albumArtists = albumArtistSet(from: albums, minTracks: 6)
             let visible = visibleAlbumIndices().count
             if isAlbumRail, nav.cursor >= visible { nav.cursor = max(0, visible - 1); railScroll = 0 }
-            // The Artists list's Uploaded rows are album rows too.
-            let artistRows = visibleArtistRows().count
-            if isArtistList, nav.cursor >= artistRows { nav.cursor = max(0, artistRows - 1); railScroll = 0 }
+            albumRowsLanded = true
             changed = true
         }
+        if albumRowsLanded, isArtistList { followArtistRow(artistRowAnchor) }
         if let newFailure = albumsDrain.failure, newFailure != bridgeAlbumsFailure {
             status.post(newFailure, error: true)
         }
@@ -2032,7 +2048,7 @@ final class LibraryScene: Scene {
         // Same fix as Albums above, same reason: `replace` and `append` can
         // both be non-empty in one drain, and both must be applied.
         let artistAnchor = artistsDrain.reasked && artistsDrain.replace != nil && isArtistList
-            ? selectionUnderCursor()?.id : nil
+            ? artistRowUnderCursor().map(artistRowIdentity) : nil
         if let replace = artistsDrain.replace {
             artists = replace
         }
@@ -2040,11 +2056,7 @@ final class LibraryScene: Scene {
             artists.append(contentsOf: artistsDrain.append)
         }
         if artistsDrain.replace != nil || !artistsDrain.append.isEmpty {
-            if let artistAnchor, let pos = rowPosition(ofID: artistAnchor) {
-                nav.cursor = pos
-            }
-            let visible = visibleArtistRows().count
-            if isArtistList, nav.cursor >= visible { nav.cursor = max(0, visible - 1); railScroll = 0 }
+            if isArtistList { followArtistRow(artistAnchor) }
             changed = true
         }
         if let newFailure = artistsDrain.failure, newFailure != bridgeArtistsFailure {
@@ -2508,7 +2520,11 @@ final class LibraryScene: Scene {
         // What Back restores: the opened row's id and scroll. The reducer's
         // saved cursor indexes the rows as filtered at drill time, and the
         // filter is cleared below, so a filtered drill is restored by id.
-        if drilled { drillReturns.append(DrillReturn(id: sel?.id, scroll: railScroll, filtered: !filter.isEmpty)) }
+        if drilled {
+            drillReturns.append(DrillReturn(id: sel?.id,
+                                            artistRow: isArtistList ? artistRowUnderCursor().map(artistRowIdentity) : nil,
+                                            scroll: railScroll, filtered: !filter.isEmpty))
+        }
         let returned = backed ? drillReturns.popLast() : nil
         if subViewChanged { drillReturns = [] }
         nav = newNav
@@ -2520,8 +2536,13 @@ final class LibraryScene: Scene {
             // The parent list can be replaced under a drill (automatic re-read),
             // filtered or not, so the saved index is never trusted: follow the
             // opened row by id, and if it is gone keep the cursor on a real row.
+            //
+            // An Uploaded album opened from a filter shows only while the header
+            // is open once the filter is cleared, so Back opens it.
+            if case .uploadedAlbum? = returned.artistRow { uploadedExpanded = true }
             let last = max(0, currentRowCount() - 1)
-            if let id = returned.id, let pos = rowPosition(ofID: id) {
+            let found = returned.artistRow.map(artistRowPosition) ?? returned.id.flatMap(rowPosition(ofID:))
+            if let pos = found {
                 nav.cursor = pos
                 railScroll = (!returned.filtered && pos == newNav.cursor) ? min(returned.scroll, last) : 0
             } else {
@@ -3220,14 +3241,7 @@ final class LibraryScene: Scene {
     private func rowPosition(ofID id: String) -> Int? {
         switch nav.current {
         case .albumList, .artistAlbums: return visibleAlbumIndices().firstIndex { currentAlbums[$0].id == id }
-        case .artistList:
-            return visibleArtistRows().firstIndex {
-                switch $0 {
-                case .artist(let i): return artists[i].id == id
-                case .uploadedAlbum(let i): return albums[i].id == id
-                case .uploadedHeader: return false
-                }
-            }
+        case .artistList: return artistRowPosition(.artist(id))
         default: return nil
         }
     }
@@ -3266,6 +3280,27 @@ final class LibraryScene: Scene {
     private func artistRowUnderCursor() -> ArtistListRow? {
         let rows = visibleArtistRows()
         return nav.cursor >= 0 && nav.cursor < rows.count ? rows[nav.cursor] : nil
+    }
+
+    private func artistRowIdentity(_ row: ArtistListRow) -> ArtistRowIdentity {
+        switch row {
+        case .artist(let i): return .artist(artists[i].id)
+        case .uploadedHeader: return .uploadedHeader
+        case .uploadedAlbum(let i): return .uploadedAlbum(albums[i].id)
+        }
+    }
+
+    /// Where the row `id` is in the Artists list now showing, nil when it is gone.
+    private func artistRowPosition(_ id: ArtistRowIdentity) -> Int? {
+        visibleArtistRows().firstIndex { artistRowIdentity($0) == id }
+    }
+
+    /// After the Artists list's rows were replaced or moved: back onto the row
+    /// `anchor` names, and if it is gone, onto a real row.
+    private func followArtistRow(_ anchor: ArtistRowIdentity?) {
+        if let anchor, let pos = artistRowPosition(anchor) { nav.cursor = pos; return }
+        let count = visibleArtistRows().count
+        if nav.cursor >= count { nav.cursor = max(0, count - 1); railScroll = 0 }
     }
 
     /// At the tracks of an album opened from the Artists list's Uploaded header:

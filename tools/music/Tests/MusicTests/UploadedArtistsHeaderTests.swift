@@ -91,17 +91,21 @@ final class UploadedArtistsHeaderTests: XCTestCase {
 
     // MARK: - Scene, SpanDAC data
 
-    private func albumsPage(_ albums: [(String, String, String, Int)]) -> String {
+    /// `stale` flags the page as read from a snapshot SpanDAC is rebuilding, so the
+    /// feed asks again and posts ONE re-asked replacement (`LibraryReask`).
+    private func albumsPage(_ albums: [(String, String, String, Int)], stale: Bool = false) -> String {
         let items = albums.map {
             "{\"id\":\"\($0.0)\",\"title\":\"\($0.1)\",\"artist\":\"\($0.2)\",\"track_count\":\($0.3),\"kind\":\"album\"}"
         }.joined(separator: ",")
-        return "{\"ok\":true,\"op\":\"slice.libraryAlbums\",\"generation\":3,\"total\":\(albums.count),\"items\":[\(items)],\"next_cursor\":null}"
+        return "{\"ok\":true,\"op\":\"slice.libraryAlbums\",\"generation\":3,\"total\":\(albums.count),\"stale\":\(stale),\"refreshing\":\(stale),\"items\":[\(items)],\"next_cursor\":null}"
     }
-    private let artistsPage = """
-    {"ok":true,"op":"slice.libraryArtists","generation":3,"total":3,
-     "items":[{"id":"ar1","title":"Slowdive","kind":"artist"},{"id":"ar2","title":"My Bloody Valentine","kind":"artist"},
-              {"id":"ar3","title":"The Stone Roses","kind":"artist"}],"next_cursor":null}
-    """
+    private func artistsPage(_ ids: [String] = ["ar1", "ar2", "ar3"]) -> String {
+        let names = ["Slowdive", "My Bloody Valentine", "The Stone Roses"]
+        let items = zip(ids, names).map { "{\"id\":\"\($0.0)\",\"title\":\"\($0.1)\",\"kind\":\"artist\"}" }
+            .joined(separator: ",")
+        return "{\"ok\":true,\"op\":\"slice.libraryArtists\",\"generation\":3,\"total\":3,\"items\":[\(items)],\"next_cursor\":null}"
+    }
+    private var artistsPage: String { artistsPage() }
     private let ownCopies: [(String, String, String, Int)] = [
         ("al1", "Souvlaki", "Slowdive", 10), ("ep1", "Holding Our Breath", "Slowdive", 4),
         ("u2", "Garage Flower", "The Stone Roses", 0), ("u1", "Loveless", "My Bloody Valentine", 0),
@@ -281,6 +285,89 @@ final class UploadedArtistsHeaderTests: XCTestCase {
         _ = s.handle(.enter)
         XCTAssertFalse(render(s).contains("Uploaded"))
         XCTAssertTrue(render(s).contains("(no matches)"))
+    }
+
+    // MARK: - Back and re-reads keep the selected row by what it is
+
+    func testBackFromAFilteredUploadedAlbumLandsOnThatAlbum() {
+        let wire = BridgeLibraryReadsWire(["slice.libraryArtists": [artistsPage],
+                                           "slice.libraryAlbums": [albumsPage(ownCopies)],
+                                           "slice.libraryAlbumTracks": [tracksReply(["t1"])]])
+        let s = spanDACScene(wire, tier: .albums)
+        XCTAssertTrue(settleScene(s) { render(s).contains("\u{203A} Uploaded (2)") })
+        // Header closed; the filter shows Loveless under it anyway.
+        _ = s.handle(.char("/"))
+        for c in "loveless" { _ = s.handle(.char(c)) }
+        _ = s.handle(.enter)
+        _ = s.handle(.end)
+        XCTAssertEqual(s.selectionIDForTest, "u1")
+        _ = s.handle(.enter)
+        XCTAssertEqual(s.levelForTest, .tracks(albumID: "u1", albumTitle: "Loveless", artist: "My Bloody Valentine"))
+        _ = s.handle(.escape)   // the drill cleared the filter
+        XCTAssertEqual(s.levelForTest, .artistList)
+        XCTAssertEqual(s.selectionIDForTest, "u1", "Back landed on another row")
+        XCTAssertTrue(render(s).contains("Loveless"))
+    }
+
+    func testBackFromAnUploadedAlbumWhoseIdAnArtistAlsoHasLandsOnTheAlbum() {
+        // SpanDAC's id strings are not promised disjoint across kinds.
+        let wire = BridgeLibraryReadsWire(["slice.libraryArtists": [artistsPage(["x1", "ar2", "ar3"])],
+                                           "slice.libraryAlbums": [albumsPage([("al1", "Souvlaki", "Slowdive", 10),
+                                                                               ("x1", "Loveless", "My Bloody Valentine", 0)])],
+                                           "slice.libraryAlbumTracks": [tracksReply(["t1"])]])
+        let s = spanDACScene(wire, tier: .albums)
+        XCTAssertTrue(settleScene(s) { render(s).contains("Uploaded (1)") })
+        _ = s.handle(.end); _ = s.handle(.enter); _ = s.handle(.down)   // Slowdive (x1), header, Loveless (x1)
+        XCTAssertEqual(s.navCursorForTest, 2)
+        _ = s.handle(.enter)
+        XCTAssertEqual(s.levelForTest, .tracks(albumID: "x1", albumTitle: "Loveless", artist: "My Bloody Valentine"))
+        _ = s.handle(.escape)
+        XCTAssertEqual(s.navCursorForTest, 2, "Back landed on the artist with the album's id")
+    }
+
+    /// A SpanDAC scene at `tier` whose first Albums read is flagged stale: its
+    /// re-ask (the second `slice.libraryAlbums`) is held until the test releases it.
+    private func heldReread(first: [(String, String, String, Int)], then: [(String, String, String, Int)],
+                            tier: ArtistFilterMode) -> (LibraryScene, BridgeLibraryReadsWire) {
+        let wire = BridgeLibraryReadsWire(["slice.libraryArtists": [artistsPage],
+                                           "slice.libraryAlbums": [albumsPage(first, stale: true),
+                                                                   albumsPage(then), albumsPage(then)]])
+        wire.gate(op: "slice.libraryAlbums", at: 1)
+        let s = spanDACScene(wire, tier: tier)
+        XCTAssertTrue(settleScene(s) { render(s).contains("Uploaded (") }, "no header")
+        XCTAssertTrue(settleScene(s) { wire.reached(op: "slice.libraryAlbums", at: 1) }, "no re-ask")
+        return (s, wire)
+    }
+
+    func testAnAlbumsReReadKeepsTheSelectedUploadedAlbumWhenOneIsInsertedAbove() {
+        let earlier = ("u0", "Abbey", "Aardvark", 0)
+        let (s, wire) = heldReread(first: ownCopies, then: ownCopies + [earlier], tier: .albums)
+        _ = s.handle(.end); _ = s.handle(.enter); _ = s.handle(.end)   // Slowdive, header, Loveless, Garage Flower
+        XCTAssertEqual(s.selectionIDForTest, "u2")
+        wire.release(op: "slice.libraryAlbums", at: 1)
+        XCTAssertTrue(settleScene(s) { render(s).contains("Uploaded (3)") }, "the re-read never landed")
+        XCTAssertEqual(s.selectionIDForTest, "u2", "the cursor stayed on an index that is now another album")
+    }
+
+    func testAnAlbumsReReadKeepsTheSelectedArtistAndHeaderWhenATierArtistIsInsertedAbove() {
+        let roses = ("sr1", "Second Coming", "The Stone Roses", 12)
+        let mbvLP = ("al0", "Isn't Anything", "My Bloody Valentine", 10)
+        // Albums tier: Slowdive, The Stone Roses, header; the re-read qualifies My Bloody Valentine.
+        let (s, wire) = heldReread(first: ownCopies + [roses], then: ownCopies + [roses, mbvLP], tier: .albums)
+        _ = s.handle(.down)
+        XCTAssertEqual(s.selectionIDForTest, "ar3")
+        wire.release(op: "slice.libraryAlbums", at: 1)
+        XCTAssertTrue(settleScene(s) { render(s).contains("My Bloody Valentine") }, "the re-read never landed")
+        XCTAssertEqual(s.selectionIDForTest, "ar3", "the cursor stayed on an index that is now another artist")
+
+        // The same for the header.
+        let (h, hwire) = heldReread(first: ownCopies, then: ownCopies + [mbvLP], tier: .albums)
+        _ = h.handle(.end)
+        XCTAssertEqual(h.navCursorForTest, 1)
+        hwire.release(op: "slice.libraryAlbums", at: 1)
+        XCTAssertTrue(settleScene(h) { render(h).contains("My Bloody Valentine") }, "the re-read never landed")
+        XCTAssertEqual(h.navCursorForTest, 2, "the header moved down a row and the cursor did not follow")
+        XCTAssertNil(h.selectionIDForTest)
     }
 
     // MARK: - Scene, Music.app data
