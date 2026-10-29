@@ -59,8 +59,13 @@ struct LibraryNav: Equatable {
     }
 }
 
+/// `albumRow` says the selection is an album although the level is `.artistList`:
+/// the Artists list's Uploaded rows (SpanDAC albums with no track count) are
+/// albums, so Enter opens their tracks and `p`/`s` play the album, exactly as an
+/// album row does on the album lists. Ignored at every other level.
 func libraryReduce(_ state: LibraryNav, _ key: LibraryKey,
-                   itemCount: Int, selection: LibrarySelection?) -> (LibraryNav, LibraryAction) {
+                   itemCount: Int, selection: LibrarySelection?,
+                   albumRow: Bool = false) -> (LibraryNav, LibraryAction) {
     var s = state
     switch key {
     case .up:   s.cursor = max(0, s.cursor - 1); return (s, .none)
@@ -86,7 +91,7 @@ func libraryReduce(_ state: LibraryNav, _ key: LibraryKey,
     case .enter:
         guard let sel = selection else { return (s, .none) }
         switch s.current {
-        case .albumList, .artistAlbums:
+        case .albumList, .artistAlbums, .artistList where albumRow:
             s.stack.append(.tracks(albumID: sel.id, albumTitle: sel.primary, artist: sel.secondary))
             s.returnCursors.append(s.cursor)
             s.cursor = 0
@@ -103,16 +108,17 @@ func libraryReduce(_ state: LibraryNav, _ key: LibraryKey,
         }
 
     case .play:
-        return (s, playOrShuffle(s.current, selection, shuffle: false))
+        return (s, playOrShuffle(s.current, selection, shuffle: false, albumRow: albumRow))
     case .shuffle:
-        return (s, playOrShuffle(s.current, selection, shuffle: true))
+        return (s, playOrShuffle(s.current, selection, shuffle: true, albumRow: albumRow))
     }
 }
 
-private func playOrShuffle(_ level: LibraryLevel, _ sel: LibrarySelection?, shuffle: Bool) -> LibraryAction {
+private func playOrShuffle(_ level: LibraryLevel, _ sel: LibrarySelection?, shuffle: Bool,
+                           albumRow: Bool) -> LibraryAction {
     let target: LibraryTarget?
     switch level {
-    case .albumList, .artistAlbums:
+    case .albumList, .artistAlbums, .artistList where albumRow:
         target = sel.map { .album(id: $0.id, title: $0.primary, artist: $0.secondary) }
     case .artistList:
         target = sel.map { .artist(id: $0.id, name: $0.primary) }
