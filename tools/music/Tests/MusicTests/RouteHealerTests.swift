@@ -111,4 +111,39 @@ final class RouteHealerTests: XCTestCase {
         XCTAssertFalse(outcome.healed)
         XCTAssertEqual(outcome.tierUsed, 3)
     }
+
+    // MARK: - unknown observations stop the ladder (Codex 2026-10-31)
+
+    private func scripted(_ reads: [Result<[TCPConnection], Error>]) -> RouteVerifier {
+        let box = LockedBox(reads)
+        return RouteVerifier(resolver: FixedResolver(), connectionSource: {
+            var all = box.get()
+            let next = all.count > 1 ? all.removeFirst() : all[0]
+            box.set(all)
+            return try next.get()
+        }, pollInterval: 0)
+    }
+
+    func testAnUnreadableBaselineMakesNoRouteWrite() {
+        let backend = FakeScripting()
+        let outcome = healer(backend, scripted([.failure(ConnectionTableUnavailable())]))
+            .heal(target: "Kitchen", ip: "192.168.1.112", groupNames: ["Kitchen"],
+                  computerName: "Mac", scriptingClaims: "x")
+        XCTAssertFalse(outcome.healed)
+        XCTAssertTrue(backend.scripts.get().isEmpty, "\(backend.scripts.get())")
+        XCTAssertTrue(outcome.failure?.contains("route not checked") == true)
+    }
+
+    func testAnUnreadableTableAfterTier1NeverReachesTier2() {
+        let backend = FakeScripting()
+        // tier-1 baseline readable, then every read fails after the reroute.
+        let outcome = healer(backend, scripted([.success([standing]), .failure(ConnectionTableUnavailable())]))
+            .heal(target: "Kitchen", ip: "192.168.1.112", groupNames: ["Kitchen"],
+                  computerName: "Mac", scriptingClaims: "x")
+        XCTAssertFalse(outcome.healed)
+        XCTAssertEqual(outcome.tierUsed, 1)
+        XCTAssertFalse(backend.scripts.get().contains { $0.contains("pause") }, "no tier-2 transport cycle")
+        // The away-and-back pair still ran, so the group is restored.
+        XCTAssertEqual(backend.scripts.get().filter { $0.contains("set current AirPlay devices") }.count, 2)
+    }
 }

@@ -40,26 +40,35 @@ struct BonjourSpeakerResolver: SpeakerIPResolving {
     /// producer signals immediately; losers run to completion on their own
     /// background threads and their results are discarded (the same
     /// abandon-the-worker discipline `resolveHostname` uses for getaddrinfo).
-    static func raceToFirstNonNil(_ producers: [() -> String?], timeout: TimeInterval) -> String? {
+    static func raceToFirstNonNil(_ producers: [() -> String?], timeout: TimeInterval,
+                                  grace: TimeInterval = 0.3) -> String? {
         guard !producers.isEmpty else { return nil }
-        let box = LockedBox<String?>(nil)
-        let winner = OneShotFlag()
-        let sema = DispatchSemaphore(value: 0)
+        // Every answer is kept and merged: a fast IPv4-only hostname answer
+        // must not discard a later browse that found the IPv6 address the
+        // AirPlay session actually uses (Codex 2026-10-31). The first answer
+        // starts a short grace for the others; the deadline still bounds it.
+        let found = LockedBox<[String]>([])
+        let firstAnswer = DispatchSemaphore(value: 0)
+        let claimed = OneShotFlag()
         let group = DispatchGroup()
         for produce in producers {
             group.enter()
             DispatchQueue.global(qos: .userInitiated).async {
                 defer { group.leave() }
-                if let ip = produce(), winner.claim() {
-                    box.set(ip)
-                    sema.signal()
+                if let ip = produce() {
+                    found.update { $0 += speakerAddresses(ip) }
+                    if claimed.claim() { firstAnswer.signal() }
                 }
             }
         }
-        // Backstop signal for the all-empty case (no producer ever claims).
-        group.notify(queue: .global()) { sema.signal() }
-        _ = sema.wait(timeout: .now() + timeout)
-        return box.get()
+        // Backstop for the all-empty case (no producer ever answers).
+        group.notify(queue: .global()) { firstAnswer.signal() }
+        let deadline = DispatchTime.now() + timeout
+        _ = firstAnswer.wait(timeout: deadline)
+        if !found.get().isEmpty {
+            _ = group.wait(timeout: min(deadline, .now() + grace))
+        }
+        return joinAddresses(found.get())
     }
 
     /// "Living Room" → ["living-room.local", "livingroom.local"]
@@ -136,20 +145,10 @@ struct BonjourSpeakerResolver: SpeakerIPResolving {
         // The first family to answer bounds the wait; the other gets a short
         // grace, so a family that never connects cannot push the resolve past
         // the caller's race deadline.
-        let addresses = LockedBox<[String]>([])
-        let finished = DispatchSemaphore(value: 0)
-        for version in [NWProtocolIP.Options.Version.v4, .v6] {
-            DispatchQueue.global().async {
-                if let ip = connectAndReadRemoteIP(endpoint, version: version, timeout: timeout) {
-                    addresses.set(addresses.get() + [ip])
-                }
-                finished.signal()
-            }
+        let producers = [NWProtocolIP.Options.Version.v4, .v6].map { version in
+            { connectAndReadRemoteIP(endpoint, version: version, timeout: timeout) }
         }
-        if finished.wait(timeout: .now() + timeout) == .success {
-            _ = finished.wait(timeout: .now() + 0.3)
-        }
-        return joinAddresses(addresses.get())
+        return raceToFirstNonNil(producers, timeout: timeout)
     }
 
     private static func connectAndReadRemoteIP(_ endpoint: NWEndpoint, version: NWProtocolIP.Options.Version,
@@ -235,6 +234,8 @@ final class LockedBox<T>: @unchecked Sendable {
     init(_ value: T) { self.value = value }
     func set(_ new: T) { lock.lock(); value = new; lock.unlock() }
     func get() -> T { lock.lock(); defer { lock.unlock() }; return value }
+    /// Read-modify-write under one lock (a get-then-set pair can lose an update).
+    func update(_ change: (inout T) -> Void) { lock.lock(); change(&value); lock.unlock() }
 }
 
 /// One-shot claim: the first caller wins (true), all subsequent callers lose

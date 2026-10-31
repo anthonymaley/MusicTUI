@@ -214,28 +214,17 @@ func executeSpeakerAction(_ action: SpeakerAction, json: Bool) throws {
         let routed = devices
             .filter { ($0["selected"] as? Bool == true) && ($0["kind"] as? String != "computer") }
             .compactMap { $0["name"] as? String }
-        // No readable connection table → every verdict would be a guess, and
-        // guessing "broken" tore down working routes (2026-10-31). Say so and
-        // leave the routes alone.
-        if !routed.isEmpty && !verifier.connectionTableReadable() {
-            print("Route check unavailable here (\(ConnectionTableUnavailable().errorDescription ?? "connection table unreadable")) — nothing reset.")
-            print("Manual fix if a speaker is silent: click the AirPlay icon in Music, deselect and reselect it.")
-            return
+        // Only a real negative is reset. A speaker whose address won't resolve
+        // or whose connection read fails is unknown and left alone: resetting
+        // on a guess tore down working routes (2026-10-31).
+        let triage = triageWakeTargets(routed, verifier: verifier)
+        for speaker in triage.verified { print("✓ \(speaker) verified — leaving it alone.") }
+        for (speaker, reason) in triage.unknown {
+            print("· \(speaker): route not checked (\(reason)) — left alone. If it is silent: click the AirPlay icon in Music, deselect and reselect it.")
         }
-        var broken: Set<String> = []
-        for speaker in routed {
-            guard let ip = verifier.resolver.resolveIP(forSpeaker: speaker) else {
-                broken.insert(speaker)   // can't verify → treat as suspect
-                continue
-            }
-            if !((try? verifier.steadyState(ip: ip))?.verified ?? false) {
-                broken.insert(speaker)
-            } else {
-                print("✓ \(speaker) verified — leaving it alone.")
-            }
-        }
+        let broken = triage.broken
         if broken.isEmpty && !routed.isEmpty {
-            print("All routed speakers verified. Nothing to reset.")
+            if triage.unknown.isEmpty { print("All routed speakers verified. Nothing to reset.") }
             return
         }
         // Mid-play, heal via the proven ladder — the away-and-back list-write is
@@ -270,6 +259,26 @@ func executeSpeakerAction(_ action: SpeakerAction, json: Bool) throws {
     case .verify(let name):
         try runSpeakerVerify(name: name, backend: backend, json: json)
     }
+}
+
+/// Sort routed speakers for `speaker wake`: verified, broken (a readable
+/// connection table showed no session), or unknown (no address, or the read
+/// failed). Only `broken` may be reset or healed.
+func triageWakeTargets(_ routed: [String], verifier: RouteVerifier)
+    -> (verified: [String], broken: Set<String>, unknown: [(String, String)]) {
+    var verified: [String] = [], broken: Set<String> = [], unknown: [(String, String)] = []
+    for speaker in routed {
+        guard let ip = verifier.resolver.resolveIP(forSpeaker: speaker) else {
+            unknown.append((speaker, "could not resolve its address"))
+            continue
+        }
+        do {
+            if try verifier.steadyState(ip: ip).verified { verified.append(speaker) } else { broken.insert(speaker) }
+        } catch {
+            unknown.append((speaker, error.localizedDescription))
+        }
+    }
+    return (verified, broken, unknown)
 }
 
 /// Cheap shared player-state read for the routing cases.
@@ -347,7 +356,10 @@ func runSpeakerVerify(name: String?, backend: AppleScriptBackend, json: Bool) th
                                    evidence: "verification errored: \(error.localizedDescription)",
                                    advisory: nil)
         }
-        var row: [String: Any] = ["name": target, "verified": verdict.verified, "ip": ip,
+        // `ip` stays ONE address (its documented shape); every address the
+        // check matched goes in `addresses`.
+        var row: [String: Any] = ["name": target, "verified": verdict.verified,
+                                  "ip": speakerAddresses(ip).first ?? "", "addresses": speakerAddresses(ip),
                                   "evidence": verdict.evidence, "claimedSelected": claimed]
         if let advisory = verdict.advisory { row["advisory"] = advisory }
         results.append(row)

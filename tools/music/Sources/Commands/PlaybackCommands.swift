@@ -262,7 +262,9 @@ func playViaMusicApp(args: [String], playlist: String?, album: String?, song: St
                 for speaker in parsed.speakers {
                     if let ip = verifier.resolver.resolveIP(forSpeaker: speaker) {
                         routeIPs[speaker] = ip
-                        routeBaselines[speaker] = (try? verifier.snapshot(ip: ip)) ?? []
+                        // An unreadable table leaves NO baseline (not an empty
+                        // one, which would make existing sockets look new).
+                        routeBaselines[speaker] = try? verifier.snapshot(ip: ip)
                     }
                 }
             }

@@ -40,6 +40,31 @@ final class SpeakerIPResolverTests: XCTestCase {
         XCTAssertLessThan(Date().timeIntervalSince(start), 1.0)
     }
 
+    // Codex 2026-10-31: a fast IPv4-only answer must not discard a slightly
+    // later IPv6 answer — the AirPlay session runs over IPv6 link-local.
+    func testRaceMergesAnswersArrivingWithinTheGrace() {
+        let r = BonjourSpeakerResolver.raceToFirstNonNil([
+            { "192.168.1.208" },
+            { Thread.sleep(forTimeInterval: 0.1); return "fe80::3a42:bff:fed4:da1e%en0" },
+        ], timeout: 5)
+        XCTAssertEqual(r, "192.168.1.208,fe80::3a42:bff:fed4:da1e")
+    }
+
+    // A failure arriving first must not start the grace: the later success counts.
+    func testRaceGraceStartsOnlyAtTheFirstSuccess() {
+        let r = BonjourSpeakerResolver.raceToFirstNonNil([
+            { nil },
+            { Thread.sleep(forTimeInterval: 0.5); return "fe80::1" },
+        ], timeout: 5, grace: 0.1)
+        XCTAssertEqual(r, "fe80::1")
+    }
+
+    func testLockedBoxUpdateLosesNoConcurrentAppend() {
+        let box = LockedBox<[Int]>([])
+        DispatchQueue.concurrentPerform(iterations: 500) { i in box.update { $0.append(i) } }
+        XCTAssertEqual(box.get().count, 500)
+    }
+
     // MARK: - CachingSpeakerResolver
 
     /// Counts inner resolves so cache hits are observable.

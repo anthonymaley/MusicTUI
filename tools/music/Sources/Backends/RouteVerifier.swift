@@ -204,7 +204,10 @@ struct RouteVerifier {
             }
             if pollInterval > 0 { Thread.sleep(forTimeInterval: pollInterval) }
         } while Date() < deadline
-        if !sampled, let err = lastError { throw err }
+        // Any failed read in the window makes a negative unknown, not broken:
+        // the missing sample could have held the new connections (Codex
+        // 2026-10-31). Only a fully observed window is an authoritative "no".
+        if let err = lastError { _ = sampled; throw err }
         return RouteVerdict(
             verified: false,
             evidence: lastNew == 0

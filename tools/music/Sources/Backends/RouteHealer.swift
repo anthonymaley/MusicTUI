@@ -44,12 +44,18 @@ struct RouteHealer {
               scriptingClaims: String) -> Outcome {
         // Tier 1: away-and-back list-write. Routing stays its own osascript
         // call (parameter-error-50 rule).
-        if runTier(away: [computerName], back: groupNames, ip: ip, pauseBracket: false) {
-            return Outcome(healed: true, tierUsed: 1, failure: nil)
+        switch runTier(away: [computerName], back: groupNames, ip: ip, pauseBracket: false) {
+        case .verified: return Outcome(healed: true, tierUsed: 1, failure: nil)
+        case .unknown(let reason): return Self.notChecked(target, tier: 1, reason: reason)
+        case .failed: break
         }
-        // Tier 2: same, bracketed by a transport cycle.
-        if runTier(away: [computerName], back: groupNames, ip: ip, pauseBracket: true) {
-            return Outcome(healed: true, tierUsed: 2, failure: nil)
+        // Tier 2: same, bracketed by a transport cycle. Reached only on a
+        // real negative from tier 1 — an unreadable table never escalates to
+        // a pause/play (Codex 2026-10-31).
+        switch runTier(away: [computerName], back: groupNames, ip: ip, pauseBracket: true) {
+        case .verified: return Outcome(healed: true, tierUsed: 2, failure: nil)
+        case .unknown(let reason): return Self.notChecked(target, tier: 2, reason: reason)
+        case .failed: break
         }
         // The network field carries the actual post-heal fingerprint, not a
         // second copy of the summary line (it used to interpolate `evidence`
@@ -63,7 +69,14 @@ struct RouteHealer {
                            scriptingClaims: scriptingClaims))
     }
 
-    private func runTier(away: [String], back: [String], ip: String, pauseBracket: Bool) -> Bool {
+    enum TierResult { case verified, failed, unknown(String) }
+
+    static func notChecked(_ target: String, tier: Int, reason: String) -> Outcome {
+        Outcome(healed: false, tierUsed: tier,
+                failure: "· \(target): route not checked after heal step \(tier) — \(reason). Stopped there.")
+    }
+
+    private func runTier(away: [String], back: [String], ip: String, pauseBracket: Bool) -> TierResult {
         func listWrite(_ names: [String]) -> Bool {
             let list = names
                 .map { "AirPlay device \"\(escapeAppleScriptString($0))\"" }
@@ -76,24 +89,27 @@ struct RouteHealer {
                 return false
             }
         }
-        guard let baseline = try? verifier.snapshot(ip: ip) else {
-            verbose("heal: baseline snapshot for \(ip) failed — skipping tier")
-            return false
+        // No baseline = nothing to compare against: stop BEFORE any write.
+        let baseline: Set<TCPConnection>
+        do { baseline = try verifier.snapshot(ip: ip) } catch {
+            verbose("heal: baseline snapshot for \(ip) failed — not rerouting")
+            return .unknown(error.localizedDescription)
         }
         if pauseBracket { _ = try? backend.runMusicBlocking("pause", timeout: 45) }
-        guard listWrite(away) else { return false }
+        guard listWrite(away) else { return .failed }
         // HomePods need a beat to tear down; 1.5s matches resetAirPlaySpeakers.
         delay(1.5)
-        guard listWrite(back) else { return false }
+        guard listWrite(back) else { return .failed }
         if pauseBracket {
             do { _ = try backend.runMusicBlocking("play", timeout: 45) }
             catch { verbose("heal: play after tier-2 reroute failed: \(error.localizedDescription)") }
         }
         do {
             return try verifier.verifyEstablishment(ip: ip, baseline: baseline, timeout: verifyTimeout).verified
+                ? .verified : .failed
         } catch {
             verbose("heal: post-reroute verify errored: \(error.localizedDescription)")
-            return false
+            return .unknown(error.localizedDescription)
         }
     }
 
@@ -127,8 +143,14 @@ func verifyAndHealRoutes(speakers: [String], backend: AppleScriptBackend,
             lines.append("· \(speaker): local output — nothing to verify.")
             continue
         }
-        guard let ip = ips[speaker], let baseline = baselines[speaker] else {
+        guard let ip = ips[speaker] else {
             lines.append("· \(speaker): could not resolve IP via Bonjour — routed but unverified.")
+            continue
+        }
+        // No pre-route baseline (the table couldn't be read then): sockets
+        // already present could later pass for new ones, so no verdict.
+        guard let baseline = baselines[speaker] else {
+            lines.append("· \(speaker): route not checked — no reading from before the route change.")
             continue
         }
         // Fast path inside check(): the route may already be established (e.g.

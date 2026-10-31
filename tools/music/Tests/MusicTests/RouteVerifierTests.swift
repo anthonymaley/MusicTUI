@@ -264,4 +264,38 @@ final class RouteVerifierTests: XCTestCase {
         XCTAssertNil(joinAddresses([]))
         XCTAssertEqual(speakerAddresses("192.168.1.112"), ["192.168.1.112"])
     }
+
+    // Codex 2026-10-31: one readable empty sample then failed reads is an
+    // incomplete window — unknown, never an authoritative "no".
+    func testANegativeWindowWithAFailedReadIsUnknown() {
+        let calls = LockedBox<Int>(0)
+        let v = RouteVerifier(resolver: FixedResolver(), connectionSource: {
+            calls.update { $0 += 1 }
+            if calls.get() > 1 { throw ConnectionTableUnavailable() }
+            return [self.standing]
+        }, pollInterval: 0)
+        XCTAssertThrowsError(try v.verifyEstablishment(ip: "192.168.1.112", baseline: [standing], timeout: 0.05))
+    }
+
+    // MARK: - speaker wake triage
+
+    private struct NoAddress: SpeakerIPResolving { func resolveIP(forSpeaker name: String) -> String? { nil } }
+
+    func testWakeTriageNeverCallsUnknownBroken() {
+        let unreadable = RouteVerifier(resolver: FixedResolver(), connectionSource: { throw ConnectionTableUnavailable() }, pollInterval: 0)
+        var t = triageWakeTargets(["Kitchen"], verifier: unreadable)
+        XCTAssertTrue(t.broken.isEmpty); XCTAssertEqual(t.unknown.map { $0.0 }, ["Kitchen"])
+
+        let unresolved = RouteVerifier(resolver: NoAddress(), connectionSource: { [] }, pollInterval: 0)
+        t = triageWakeTargets(["Kitchen"], verifier: unresolved)
+        XCTAssertTrue(t.broken.isEmpty); XCTAssertEqual(t.unknown.map { $0.0 }, ["Kitchen"])
+
+        let lingering = source([[standing]])
+        t = triageWakeTargets(["Kitchen"], verifier: lingering)
+        XCTAssertEqual(t.broken, ["Kitchen"]); XCTAssertTrue(t.unknown.isEmpty)
+
+        let routed = source([[standing, newControl, newData1]])
+        t = triageWakeTargets(["Kitchen"], verifier: routed)
+        XCTAssertEqual(t.verified, ["Kitchen"]); XCTAssertTrue(t.broken.isEmpty)
+    }
 }
