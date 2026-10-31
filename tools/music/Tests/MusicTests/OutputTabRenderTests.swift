@@ -289,6 +289,7 @@ final class OutputTabRenderTests: XCTestCase {
         } while Date() < deadline
         XCTAssertTrue(rendered.contains("speaker list unavailable"), rendered)
         XCTAssertFalse(rendered.contains("no AirPlay speakers found"), rendered)
+        XCTAssertFalse(rendered.contains("showing the last list"), rendered)   // none ever landed
     }
 
     func testSelectedSpeakerRemainsVisibleInShortOutputTab() {
@@ -390,6 +391,7 @@ final class OutputTabRenderTests: XCTestCase {
         _ = s.tick(snapshot: outputTabSnapshot())
         let shown = screen(s, width: 80, height: 14)
         XCTAssertTrue(shown.contains("AirPlay speaker list unavailable"), shown)
+        XCTAssertTrue(shown.contains("showing the last list"), shown)
         XCTAssertTrue(shown.contains("Room 19"), shown)
         XCTAssertEqual(status.current()?.text, "a lasting refusal")
     }

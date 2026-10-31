@@ -1257,8 +1257,9 @@ final class SpeakersScene: Scene {
                                                      output: selected.output, now: now)
             // A stored SpanDAC output waiting on the switch plays nothing
             // (C-REPAIR); the line says so rather than the row's state.
-            let problemNow: String? = blocked ? waitingOnTheSwitchToSpanDAC :
-                (speakerFetchFailed ? "speaker list unavailable; retrying" : problem)
+            // The output's own problem keeps this line; a stale speaker list
+            // is said on the pinned line instead (Codex turn 35).
+            let problemNow = blocked ? waitingOnTheSwitchToSpanDAC : problem
             let pathText = truncText(path, to: room)
             var line = "\(ANSICode.dim)\(label)\(ANSICode.reset)  \(ANSICode.bold)\(ANSICode.brightWhite)\(pathText)\(ANSICode.reset)"
             let left = room - pathText.count - 3
@@ -1583,7 +1584,9 @@ final class SpeakersScene: Scene {
         // long group name can hide, and that never touches the status line
         // (Codex turns 33-34).
         if speakerFetchFailed, frame.bodyHeight > 1 {
-            let warn = truncText("AirPlay speaker list unavailable; retrying \u{00B7} showing the last list", to: max(0, frame.width - 4))
+            let said = everLoaded ? "AirPlay speaker list unavailable; retrying \u{00B7} showing the last list"
+                                  : "AirPlay speaker list unavailable; retrying"
+            let warn = truncText(said, to: max(0, frame.width - 4))
             return clear + ANSICode.moveTo(row: frame.bodyY, col: 3) + "\(ANSICode.yellow)\(warn)\(ANSICode.reset)"
                 + outputViewport(out, bodyY: frame.bodyY, height: frame.bodyHeight, focusY: focusY, inset: 1)
         }
