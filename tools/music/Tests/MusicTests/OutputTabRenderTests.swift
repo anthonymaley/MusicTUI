@@ -331,6 +331,63 @@ final class OutputTabRenderTests: XCTestCase {
         XCTAssertEqual(s.speakerRowsForTest.map(\.name), ["New"])
     }
 
+    // Codex turn 33: a kickoff declared dead after 30 s must still land when
+    // nothing newer has; requiring the current serial starved the list.
+    func testAnExpiredFetchStillLandsWhenNothingNewerHas() {
+        let releaseOld = DispatchSemaphore(value: 0), releaseNew = DispatchSemaphore(value: 0)
+        let startedOld = DispatchSemaphore(value: 0), startedNew = DispatchSemaphore(value: 0)
+        let oldFinished = DispatchSemaphore(value: 0), newFinished = DispatchSemaphore(value: 0)
+        let lock = NSLock()
+        var calls = 0
+        var now = Date(timeIntervalSince1970: 1000)
+        let s = makeOutputTabScene(dir: dir, mode: .musicApp, spandac: nil, fetchSpeakers: {
+            lock.lock(); calls += 1; let call = calls; lock.unlock()
+            if call == 1 { startedOld.signal(); _ = releaseOld.wait(timeout: .now() + 3) }
+            if call == 2 { startedNew.signal(); _ = releaseNew.wait(timeout: .now() + 3) }
+            return [["name": call == 1 ? "Old" : "New", "selected": false, "volume": 20, "kind": "speaker"]]
+        }, fetchNow: { now })
+        s.fetchFinishedForTest = { serial in (serial == 1 ? oldFinished : newFinished).signal() }
+        defer { releaseOld.signal(); releaseNew.signal() }
+        _ = s.tick(snapshot: outputTabSnapshot())
+        XCTAssertEqual(startedOld.wait(timeout: .now() + 2), .success)
+        now.addTimeInterval(31)
+        _ = s.tick(snapshot: outputTabSnapshot())
+        XCTAssertEqual(startedNew.wait(timeout: .now() + 2), .success)
+        releaseOld.signal()
+        XCTAssertEqual(oldFinished.wait(timeout: .now() + 2), .success)
+        _ = s.tick(snapshot: outputTabSnapshot())
+        XCTAssertEqual(s.speakerRowsForTest.map(\.name), ["Old"])
+        releaseNew.signal()
+        XCTAssertEqual(newFinished.wait(timeout: .now() + 2), .success)
+        _ = s.tick(snapshot: outputTabSnapshot())
+        XCTAssertEqual(s.speakerRowsForTest.map(\.name), ["New"])
+    }
+
+    func testAFailedSpeakerReadAlsoShowsOnTheStatusLine() {
+        enum ReadFailure: Error { case failed }
+        let status = StatusStore()
+        let lock = NSLock(); var calls = 0
+        var now = Date(timeIntervalSince1970: 1000)
+        let finished = DispatchSemaphore(value: 0)
+        let s = makeOutputTabScene(dir: dir, mode: .musicApp, spandac: nil, status: status, fetchSpeakers: {
+            lock.lock(); calls += 1; let call = calls; lock.unlock()
+            if call > 1 { throw ReadFailure.failed }
+            return [["name": "Kitchen", "selected": false, "volume": 20, "kind": "speaker"]]
+        }, fetchNow: { now })
+        s.fetchFinishedForTest = { _ in finished.signal() }
+        _ = s.tick(snapshot: outputTabSnapshot())
+        XCTAssertEqual(finished.wait(timeout: .now() + 2), .success)
+        _ = s.tick(snapshot: outputTabSnapshot())
+        XCTAssertNil(status.current())
+        now.addTimeInterval(6)
+        _ = s.tick(snapshot: outputTabSnapshot())
+        XCTAssertEqual(finished.wait(timeout: .now() + 2), .success)
+        _ = s.tick(snapshot: outputTabSnapshot())
+        XCTAssertEqual(s.speakerRowsForTest.map(\.name), ["Kitchen"])
+        XCTAssertEqual(status.current()?.text, "AirPlay speaker list unavailable; retrying")
+        XCTAssertEqual(status.current()?.isError, true)
+    }
+
     func testAReadFailureKeepsLastSpeakersAndARecoveryClearsTheWarning() {
         enum ReadFailure: Error { case failed }
         let finished = DispatchSemaphore(value: 0), lock = NSLock()
@@ -419,7 +476,7 @@ final class OutputTabRenderTests: XCTestCase {
         actions.run("test") { nextAction.signal() }
         XCTAssertEqual(nextAction.wait(timeout: .now() + 2), .success)
         let shown = status.current()
-        XCTAssertTrue(shown?.text.contains("route not checked") == true, "\(String(describing: shown?.text))")
+        XCTAssertTrue(shown?.text.contains("selection requested; route not checked") == true, "\(String(describing: shown?.text))")
         XCTAssertEqual(shown?.isError, false)
     }
 
@@ -450,6 +507,37 @@ final class OutputTabRenderTests: XCTestCase {
         actions.waitUntilIdle()
         release.signal()
         XCTAssertEqual(finished.wait(timeout: .now() + 6), .success)
+        XCTAssertNil(status.current())
+    }
+
+    // Codex turn 33: pausing while a check is held must not end in a
+    // "route NOT verified" warning about a route the user tore down.
+    func testAHeldVerdictAfterAPauseDoesNotWarn() {
+        struct Resolver: SpeakerIPResolving { func resolveIP(forSpeaker name: String) -> String? { "192.0.2.1" } }
+        let entered = DispatchSemaphore(value: 0), release = DispatchSemaphore(value: 0), finished = DispatchSemaphore(value: 0)
+        let lock = NSLock(); var samples = 0; var playing = true
+        let status = StatusStore(), actions = ActionRunner(status: status)
+        let speaker: [[String: Any]] = [["name": "Kitchen", "selected": false, "volume": 20, "kind": "speaker"]]
+        let s = makeOutputTabScene(dir: dir, mode: .musicApp, spandac: nil, speakers: speaker,
+                                   status: status, actions: actions, routePlaying: { _ in
+            lock.lock(); defer { lock.unlock() }; return playing
+        }, makeRouteVerifier: {
+            RouteVerifier(resolver: Resolver(), connectionSource: {
+                lock.lock(); samples += 1; let sample = samples; lock.unlock()
+                if sample == 2 { entered.signal(); _ = release.wait(timeout: .now() + 5) }
+                return []
+            }, pollInterval: 0.05)
+        })
+        s.routeCheckFinishedForTest = { finished.signal() }
+        settleOutputTab(s, speakers: 1)
+        guard let row = s.displayRowsForTest.firstIndex(of: .speaker(0)) else { XCTFail("speaker missing"); return }
+        for _ in 0..<row { _ = s.handle(.down) }
+        _ = s.handle(.enter)
+        XCTAssertEqual(entered.wait(timeout: .now() + 3), .success)
+        lock.lock(); playing = false; lock.unlock()
+        release.signal()
+        XCTAssertEqual(finished.wait(timeout: .now() + 6), .success)
+        actions.waitUntilIdle()
         XCTAssertNil(status.current())
     }
 

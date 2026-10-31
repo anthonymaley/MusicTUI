@@ -552,6 +552,7 @@ final class SpeakersScene: Scene {
     private var inbox: FetchResult? = nil
     var fetchFinishedForTest: ((Int) -> Void)?
     private var fetchSerial = 0                       // tick()-thread only
+    private var appliedFetchSerial = 0                // tick()-thread only
     private var speakerFetchFailed = false
     private var fetchInFlight = false                 // tick()-thread only
     private var fetchStartedAt = Date.distantPast     // tick()-thread only
@@ -1012,10 +1013,18 @@ final class SpeakersScene: Scene {
         inboxLock.lock()
         let fresh = inbox; inbox = nil
         inboxLock.unlock()
-        if let fresh, fresh.serial == fetchSerial {
-            fetchInFlight = false
+        // Any answer newer than the last one shown lands, even if its kickoff
+        // was declared dead and a successor started: requiring the CURRENT
+        // serial let a consistently slow EQ/visualizer read starve the list
+        // forever (Codex turn 33). An older answer than the one shown never lands.
+        if let fresh, fresh.serial > appliedFetchSerial {
+            appliedFetchSerial = fresh.serial
+            if fresh.serial == fetchSerial { fetchInFlight = false }
             if fresh.startedAt > lastMutation {
                 speakerFetchFailed = fresh.speakers == nil
+                // The in-body warning can be scrolled away or squeezed out by a
+                // long group name; the status line is always on screen.
+                if speakerFetchFailed { status.post("AirPlay speaker list unavailable; retrying", error: true, ttl: 6) }
                 if let fetchedRows = fresh.speakers {
                     // Keep the cursor on the same speaker, by name, if it was on one.
                     let before = displayRows
@@ -1846,8 +1855,11 @@ final class SpeakersScene: Scene {
                         message = "Couldn't verify '\(name)' route (network read failed)."
                     }
                     let sameOutput = self.routing.epoch == outputEpoch
+                    // Paused or stopped meanwhile: the route was torn down on
+                    // purpose, so a "NOT verified" now would be about the pause.
+                    let stillPlaying = message == nil || self.routePlaying(self.backend)
                     self.routeCheckLock.lock()
-                    if self.routeCheckSerial == serial, sameOutput, let message {
+                    if self.routeCheckSerial == serial, sameOutput, stillPlaying, let message {
                         self.status.post(message, error: true)
                     }
                     self.routeCheckLock.unlock()
@@ -1859,9 +1871,9 @@ final class SpeakersScene: Scene {
                 if current, preparation == nil {
                     // The head start ran out (cold Bonjour + player read, ~0.37 s
                     // measured for a Sonos) or another check holds the slot: the
-                    // speaker WAS added, nothing was measured. A plain note, not
+                    // selection was sent, nothing was measured. A plain note, not
                     // an error that would call a working speaker broken.
-                    self.status.post("'\(name)' added; route not checked")
+                    self.status.post("'\(name)' selection requested; route not checked")
                 } else if current, preparation?.playing == true {
                     throw ActionError(message: "'\(name)' selected, but its route couldn't be verified.")
                 }
