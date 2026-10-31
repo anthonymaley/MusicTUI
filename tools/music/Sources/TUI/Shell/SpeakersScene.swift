@@ -26,9 +26,11 @@ func speakerRows(from devices: [[String: Any]]) -> [SpeakerRow] {
 /// Clip the Output tab's positioned lines to a viewport and translate their
 /// terminal coordinates. Output's selectable rows can each occupy several
 /// lines, so scrolling by a count of model rows would lose the cursor.
-func outputViewport(_ drawing: String, bodyY: Int, height: Int, focusY: Int) -> String {
-    guard height > 0 else { return "" }
-    let shift = max(0, focusY - (bodyY + height - 1))
+func outputViewport(_ drawing: String, bodyY: Int, height: Int, focusY: Int, inset: Int = 0) -> String {
+    // `inset` lines at the top are pinned (drawn by the caller); the logical
+    // drawing scrolls in the lines below them.
+    guard height - inset > 0 else { return "" }
+    let shift = max(0, focusY + inset - (bodyY + height - 1))
     let regex = try! NSRegularExpression(pattern: "\u{1B}\\[([0-9]+);([0-9]+)H")
     let ns = drawing as NSString
     let matches = regex.matches(in: drawing, range: NSRange(location: 0, length: ns.length))
@@ -38,8 +40,8 @@ func outputViewport(_ drawing: String, bodyY: Int, height: Int, focusY: Int) -> 
               let col = Int(ns.substring(with: match.range(at: 2))) else { continue }
         let end = index + 1 < matches.count ? matches[index + 1].range.location : ns.length
         let from = match.range.location + match.range.length
-        let translated = row - shift
-        guard translated >= bodyY, translated < bodyY + height else { continue }
+        let translated = row - shift + inset
+        guard translated >= bodyY + inset, translated < bodyY + height else { continue }
         result += ANSICode.moveTo(row: translated, col: col)
         result += ns.substring(with: NSRange(location: from, length: end - from))
     }
@@ -1022,9 +1024,6 @@ final class SpeakersScene: Scene {
             if fresh.serial == fetchSerial { fetchInFlight = false }
             if fresh.startedAt > lastMutation {
                 speakerFetchFailed = fresh.speakers == nil
-                // The in-body warning can be scrolled away or squeezed out by a
-                // long group name; the status line is always on screen.
-                if speakerFetchFailed { status.post("AirPlay speaker list unavailable; retrying", error: true, ttl: 6) }
                 if let fetchedRows = fresh.speakers {
                     // Keep the cursor on the same speaker, by name, if it was on one.
                     let before = displayRows
@@ -1580,6 +1579,14 @@ final class SpeakersScene: Scene {
         }
 
         // No in-body key hints — the scene-aware footer already shows them.
+        // A stale list is said on a pinned top line that no scroll position or
+        // long group name can hide, and that never touches the status line
+        // (Codex turns 33-34).
+        if speakerFetchFailed, frame.bodyHeight > 1 {
+            let warn = truncText("AirPlay speaker list unavailable; retrying \u{00B7} showing the last list", to: max(0, frame.width - 4))
+            return clear + ANSICode.moveTo(row: frame.bodyY, col: 3) + "\(ANSICode.yellow)\(warn)\(ANSICode.reset)"
+                + outputViewport(out, bodyY: frame.bodyY, height: frame.bodyHeight, focusY: focusY, inset: 1)
+        }
         return clear + outputViewport(out, bodyY: frame.bodyY, height: frame.bodyHeight, focusY: focusY)
     }
 
@@ -1854,10 +1861,11 @@ final class SpeakersScene: Scene {
                     } catch {
                         message = "Couldn't verify '\(name)' route (network read failed)."
                     }
-                    let sameOutput = self.routing.epoch == outputEpoch
                     // Paused or stopped meanwhile: the route was torn down on
                     // purpose, so a "NOT verified" now would be about the pause.
+                    // The output is read AFTER that (possibly slow) player read.
                     let stillPlaying = message == nil || self.routePlaying(self.backend)
+                    let sameOutput = self.routing.epoch == outputEpoch
                     self.routeCheckLock.lock()
                     if self.routeCheckSerial == serial, sameOutput, stillPlaying, let message {
                         self.status.post(message, error: true)

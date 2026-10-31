@@ -363,29 +363,35 @@ final class OutputTabRenderTests: XCTestCase {
         XCTAssertEqual(s.speakerRowsForTest.map(\.name), ["New"])
     }
 
-    func testAFailedSpeakerReadAlsoShowsOnTheStatusLine() {
+    // Codex turns 33-34: with a selected speaker low in a short tab, the stale
+    // warning is pinned on screen and never posted over the status line.
+    func testAStaleListStaysSaidWithTheCursorLowAndNoStatusToast() {
         enum ReadFailure: Error { case failed }
         let status = StatusStore()
         let lock = NSLock(); var calls = 0
         var now = Date(timeIntervalSince1970: 1000)
         let finished = DispatchSemaphore(value: 0)
+        let speakers: [[String: Any]] = (0..<20).map { ["name": "Room \($0)", "selected": false, "volume": 35, "kind": "speaker"] }
         let s = makeOutputTabScene(dir: dir, mode: .musicApp, spandac: nil, status: status, fetchSpeakers: {
             lock.lock(); calls += 1; let call = calls; lock.unlock()
             if call > 1 { throw ReadFailure.failed }
-            return [["name": "Kitchen", "selected": false, "volume": 20, "kind": "speaker"]]
+            return speakers
         }, fetchNow: { now })
         s.fetchFinishedForTest = { _ in finished.signal() }
         _ = s.tick(snapshot: outputTabSnapshot())
         XCTAssertEqual(finished.wait(timeout: .now() + 2), .success)
         _ = s.tick(snapshot: outputTabSnapshot())
-        XCTAssertNil(status.current())
+        guard let last = s.displayRowsForTest.firstIndex(of: .speaker(19)) else { XCTFail("last speaker missing"); return }
+        for _ in 0..<last { _ = s.handle(.down) }
+        status.post("a lasting refusal", error: true, untilStateChange: true)
         now.addTimeInterval(6)
         _ = s.tick(snapshot: outputTabSnapshot())
         XCTAssertEqual(finished.wait(timeout: .now() + 2), .success)
         _ = s.tick(snapshot: outputTabSnapshot())
-        XCTAssertEqual(s.speakerRowsForTest.map(\.name), ["Kitchen"])
-        XCTAssertEqual(status.current()?.text, "AirPlay speaker list unavailable; retrying")
-        XCTAssertEqual(status.current()?.isError, true)
+        let shown = screen(s, width: 80, height: 14)
+        XCTAssertTrue(shown.contains("AirPlay speaker list unavailable"), shown)
+        XCTAssertTrue(shown.contains("Room 19"), shown)
+        XCTAssertEqual(status.current()?.text, "a lasting refusal")
     }
 
     func testAReadFailureKeepsLastSpeakersAndARecoveryClearsTheWarning() {
