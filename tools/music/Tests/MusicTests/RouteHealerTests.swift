@@ -184,18 +184,19 @@ final class RouteHealerTests: XCTestCase {
             verifier: verifier([[standing]]), claims: { _ in "x" },
             healer: RouteHealer(backend: backend, verifier: verifier([[standing]]), delay: { _ in }, verifyTimeout: 0.05))
         XCTAssertFalse(backend.scripts.get().contains { $0.contains("set current AirPlay devices") }, "\(backend.scripts.get())")
-        XCTAssertTrue(lines.contains { $0.contains("Kitchen NOT verified") && $0.contains("not healed automatically") }, "\(lines)")
+        XCTAssertTrue(lines.contains { $0.contains("Kitchen NOT verified") }, "\(lines)")
     }
 
-    func testAKnownGroupWithARealNegativeIsStillHealed() {
+    // Automatic healing is off (3.24.2): even a real negative on a fully
+    // known group is reported with the manual fix and nothing is rerouted.
+    func testARealNegativeIsReportedAndNeverRerouted() {
         let backend = FakeScripting()
-        let v = verifier([[standing]])
-        _ = verifyAndHealRoutes(
+        let lines = verifyAndHealRoutes(
             speakers: ["Kitchen"], scripting: backend, computerName: "Mac",
             baselines: ["Kitchen": [standing]], ips: ["Kitchen": "192.168.1.112"],
-            verifier: v, claims: { _ in "x" },
-            healer: RouteHealer(backend: backend, verifier: v, delay: { _ in }, verifyTimeout: 0.05))
-        XCTAssertTrue(backend.scripts.get().contains { $0.contains("set current AirPlay devices") })
+            verifier: verifier([[standing]]), claims: { _ in "x" })
+        XCTAssertTrue(backend.scripts.get().isEmpty, "\(backend.scripts.get())")
+        XCTAssertTrue(lines.contains { $0.contains("Kitchen NOT verified") && $0.contains("deselect and reselect Kitchen") }, "\(lines)")
     }
 
     // Readable table, but every row is to another address of the device (the

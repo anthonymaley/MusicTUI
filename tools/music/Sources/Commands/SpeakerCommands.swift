@@ -236,42 +236,12 @@ func executeSpeakerAction(_ action: SpeakerAction, json: Bool) throws {
             if triage.unknown.isEmpty { print("All routed speakers verified. Nothing to reset.") }
             return
         }
-        // Healing or resetting moves routes; with any member unknown that
-        // could tear down a speaker nobody checked. Report, don't act.
-        if !triage.unknown.isEmpty {
-            for speaker in broken.sorted() {
-                print("✗ \(speaker) NOT verified — not reset automatically while \(triage.unknown.map { $0.0 }.joined(separator: ", ")) couldn't be checked. Manual fix: click the AirPlay icon in Music, deselect and reselect \(speaker).")
-            }
-            return
+        // Automatic healing/resetting is OFF (Anthony 2026-10-31, 3.24.2):
+        // it moves every routed speaker and can tear down working ones. Report
+        // the broken ones with the manual fix instead.
+        for speaker in broken.sorted() {
+            print("✗ \(speaker) NOT verified. Manual fix: click the AirPlay icon in Music, deselect and reselect \(speaker).")
         }
-        // Mid-play, heal via the proven ladder — the away-and-back list-write is
-        // the only write shown to move a live session, whereas wake's old
-        // deselect/reselect is the weaker `set selected` re-issue the heal spec
-        // dropped. Paused, the ladder can't run (it's mid-play only), so fall
-        // back to the reset. Speakers the ladder can't target also fall back.
-        if playerIsPlaying(backend: backend) && !broken.isEmpty {
-            let computerName = ((try? fetchSpeakerDevices()) ?? [])
-                .first { ($0["kind"] as? String) == "computer" }?["name"] as? String
-            let healer = RouteHealer(backend: backend, verifier: verifier)
-            var fallback: Set<String> = []
-            for speaker in broken {
-                guard let computerName, let ip = verifier.resolver.resolveIP(forSpeaker: speaker) else {
-                    fallback.insert(speaker); continue
-                }
-                let outcome = withStatus("Healing \(speaker) route...") {
-                    healer.heal(target: speaker, ip: ip, groupNames: routed,
-                                computerName: computerName,
-                                scriptingClaims: readScriptingClaims(for: speaker, backend: backend))
-                }
-                print(outcome.healed
-                    ? "✓ \(speaker) verified after heal (tier \(outcome.tierUsed))."
-                    : (outcome.failure ?? "✗ \(speaker) NOT verified."))
-            }
-            guard !fallback.isEmpty else { return }
-            resetBroken(fallback, backend: backend)
-            return
-        }
-        resetBroken(broken, backend: backend)
 
     case .verify(let name):
         try runSpeakerVerify(name: name, backend: backend, json: json)

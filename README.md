@@ -169,7 +169,7 @@ When a song is not in your library, playing it still adds it from the catalog fi
 
 Album playback creates a temporary playlist visible in Music's sidebar and removes it when playback leaves. The album stops at its end only if Autoplay is off (see Autoplay callout below). If the name matches more than one distinct album, nothing plays; the CLI lists what it found and asks you to narrow the query or add `--artist`.
 
-Naming speakers in `music play` routes playback to **exactly those speakers**: it selects the ones you name and deselects the rest, then verifies each route is actually carrying a session (network-truth, not the AppleScript `selected` claim, which can lie) and prints `✓ <speaker> verified (…)`. If a route doesn't establish, an automatic heal runs (an away-and-back reroute, then a transport-cycle reset) before an honest failure message names the manual fix. Routing to the Mac's own output is never "verified": local output has no AirPlay session to check.
+Naming speakers in `music play` routes playback to **exactly those speakers**: it selects the ones you name and deselects the rest, then verifies each route is actually carrying a session (network-truth, not the AppleScript `selected` claim, which can lie) and prints `✓ <speaker> verified (…)`. If a route doesn't establish, it says so and names the manual fix (deselect and reselect the speaker in Music's AirPlay menu); nothing is rerouted automatically. On macOS 27 MusicTUI can't read the Mac's connection list, so routes show `route not checked` instead of `✓ verified`. Routing to the Mac's own output is never "verified": local output has no AirPlay session to check.
 
 ### Speakers & Volume
 
@@ -180,7 +180,7 @@ Naming speakers in `music play` routes playback to **exactly those speakers**: i
 | `music speaker kitchen 40` | Add kitchen at volume 40 |
 | `music speaker kitchen stop` | Remove kitchen from group |
 | `music speaker airpods only` | Switch to AirPods only |
-| `music speaker wake [kitchen]` | Verify active speakers first, then reset only the ones that didn't establish |
+| `music speaker wake [kitchen]` | Verify active speakers (selecting the named one first) and report which didn't establish, with the manual fix |
 | `music speaker verify [kitchen]` | Network-truth verdict: is the route actually carrying a session? No name = verify all selected speakers (`--json` supported) |
 | `music speaker 1 2 5` | Add speakers by number from last list |
 | `music volume` | Interactive per-speaker volume mixer |
@@ -188,7 +188,7 @@ Naming speakers in `music play` routes playback to **exactly those speakers**: i
 | `music volume up` / `down` | Volume ±10 |
 | `music volume kitchen 80` | Set a specific speaker to 80 |
 
-Adding a speaker, `music speaker set`, or `music speaker only` verify the route automatically while playing and heal it if needed; while paused they print `Route set; will verify on next play.` Paused routes can't be verified over the network, so the next play re-checks them.
+Adding a speaker, `music speaker set`, or `music speaker only` verify the route automatically while playing and report it; while paused they print `Route set; will verify on next play.` Paused routes can't be verified over the network, so the next play re-checks them.
 
 ### Equalizer
 
@@ -457,7 +457,7 @@ Under the track progress is a **control grid** (Shuffle / Order / Repeat / Geniu
 
 ![Playlist Browser](media/playlist.jpg)
 
-**Output tab.** `↑↓` select, `Enter` toggles AirPlay outputs on/off, `←→` adjusts per-speaker volume. Active speakers show volume bars. Toggling a speaker on while playing verifies the route; if it couldn't be verified, it toasts (e.g. `'X' selected but route NOT verified`) and names the fix: `music speaker wake`. Below the outputs: an **EQ block** (power row + preset picker; `Enter` toggles/expands, `e` toggles from anywhere) and a **Visualizer** row (`Enter` or `v` toggles Music's on-screen visuals). (The `music speaker`, `music eq`, and `music visualizer` CLIs drive these non-interactively.)
+**Output tab.** `↑↓` select, `Enter` toggles AirPlay outputs on/off, `←→` adjusts per-speaker volume. Active speakers show volume bars. Toggling a speaker on while playing verifies the route; if it couldn't be verified, it toasts (e.g. `'X' selected but route NOT verified`) and names the fix: deselect and reselect it. Below the outputs: an **EQ block** (power row + preset picker; `Enter` toggles/expands, `e` toggles from anywhere) and a **Visualizer** row (`Enter` or `v` toggles Music's on-screen visuals). (The `music speaker`, `music eq`, and `music visualizer` CLIs drive these non-interactively.)
 
 ![Speaker Picker](media/speakers.png)
 

@@ -25,7 +25,7 @@ music play kid a in the kitchen and living room at 60
 music play jazz for cooking kitchen 40 shuffle
 ```
 
-Naming speakers routes playback to exactly those speakers (it deselects the rest). Don't pre-chain `music speaker` + `music volume` for simple play requests: `music play` does all three. If the query itself contains a speaker-like word, use the explicit flags (`--song`, `--album`, `--playlist`) instead. Named-speaker plays are verified automatically once playback starts (`✓ <speaker> verified (…)`); an unestablished route triggers an automatic heal before an honest failure message.
+Naming speakers routes playback to exactly those speakers (it deselects the rest). Don't pre-chain `music speaker` + `music volume` for simple play requests: `music play` does all three. If the query itself contains a speaker-like word, use the explicit flags (`--song`, `--album`, `--playlist`) instead. Named-speaker plays are verified automatically once playback starts (`✓ <speaker> verified (…)`); an unestablished route prints `✗ <speaker> NOT verified` with the manual fix (deselect and reselect it in Music's AirPlay menu), and one that can't be checked prints `route not checked`. Nothing is rerouted automatically.
 
 ## Architecture
 
@@ -192,8 +192,8 @@ music speaker kitchen 40                      # add kitchen at volume 40
 music speaker kitchen stop                    # remove kitchen from group
 music speaker airpods only                    # deselect all, select airpods only
 music speaker 1 2 5                           # add speakers by index from last list
-music speaker wake                            # verify all active speakers, reset only the broken ones
-music speaker wake kitchen                    # verify + wake a specific speaker
+music speaker wake                            # verify all active speakers and report; resets nothing
+music speaker wake kitchen                    # select a specific speaker, then verify and report
 music speaker verify                          # network-truth verdict for all selected speakers
 music speaker verify kitchen                  # verify one speaker (--json for structured output)
 music speaker set "Kitchen"                   # hidden alias (skill compat)
@@ -201,7 +201,7 @@ music speaker add "Bedroom"                   # hidden alias
 music speaker remove "Bedroom"                # hidden alias
 ```
 
-`music speaker <name>` (add), `set`, and `only` verify the route automatically while playing: output gains a `✓ <speaker> verified (…)` line, and an unverified route triggers an automatic heal (away-and-back reroute, then a transport-cycle reset) before falling back to an honest failure naming the manual fix. While paused, routing can't be network-verified, so it prints `Route set; will verify on next play.` and re-checks when playback starts. Scripting's own claims (`selected`, `active`) are shown as advisory only, not trusted, because they can lie. Routing to the Mac's own output is never "verified": local output has no AirPlay session.
+`music speaker <name>` (add), `set`, and `only` verify the route automatically while playing: output gains a `✓ <speaker> verified (…)` line, and an unverified route prints `✗ <speaker> NOT verified` naming the manual fix; nothing is rerouted automatically (since 3.24.2). On macOS 27 MusicTUI can't read the Mac's connection list, so expect `route not checked` rather than `✓ verified`. While paused, routing can't be network-verified, so it prints `Route set; will verify on next play.` and re-checks when playback starts. Scripting's own claims (`selected`, `active`) are shown as advisory only, not trusted, because they can lie. Routing to the Mac's own output is never "verified": local output has no AirPlay session.
 
 ## Volume (no auth)
 

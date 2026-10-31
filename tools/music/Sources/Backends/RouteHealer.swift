@@ -187,34 +187,15 @@ func verifyAndHealRoutes(speakers: [String], scripting: MusicScripting, computer
             failed.append((speaker, ip, verdict))
         }
     }
-    let manual = "Manual fix: click the AirPlay icon in Music, deselect and reselect"
+    // Automatic healing is OFF (Anthony 2026-10-31, 3.24.2). A heal moves the
+    // whole group away and back and can pause/play; it is only safe when the
+    // speaker's playback address and its complete connections are known, and
+    // on macOS 27 MusicTUI can know neither (four Codex rounds found false-heal
+    // paths). A failed route is reported with the manual fix; RouteHealer
+    // stays for the day the connection table can be read reliably.
+    _ = unknown
     for f in failed {
-        // A heal reroutes every speaker in the group; never do that while a
-        // member's route is unknown.
-        if !unknown.isEmpty {
-            lines.append("✗ \(f.speaker) NOT verified (\(f.verdict.evidence)) — not healed automatically: \(unknown.joined(separator: ", ")) couldn't be checked, and a heal moves the whole group. \(manual) \(f.speaker).")
-            continue
-        }
-        // No computer device identified (Music scripting degraded) — healing
-        // needs a real away-target; say so instead of attempting a heal
-        // against a bogus device name.
-        guard let computerName else {
-            lines.append("✗ \(f.speaker) NOT verified (\(f.verdict.evidence)) — cannot heal: couldn't identify the computer device. \(manual) \(f.speaker).")
-            continue
-        }
-        let healer = customHealer ?? RouteHealer(backend: scripting, verifier: verifier)
-        // Advisory context for the failure path: what the (lying) scripting
-        // layer claims right now.
-        let scriptingClaims = claims(f.speaker)
-        let outcome = withStatus("Healing \(f.speaker) route...") {
-            healer.heal(target: f.speaker, ip: f.ip, groupNames: speakers,
-                        computerName: computerName, scriptingClaims: scriptingClaims)
-        }
-        if outcome.healed {
-            lines.append("✓ \(f.speaker) verified after heal (tier \(outcome.tierUsed))")
-        } else {
-            lines.append(outcome.failure ?? "✗ \(f.speaker) NOT verified")
-        }
+        lines.append("✗ \(f.speaker) NOT verified (\(f.verdict.evidence)). Manual fix: click the AirPlay icon in Music, deselect and reselect \(f.speaker).")
     }
     return lines
 }

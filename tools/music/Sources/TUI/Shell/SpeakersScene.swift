@@ -1863,7 +1863,7 @@ final class SpeakersScene: Scene {
                     var isError = true
                     do {
                         let verdict = try verifier.verifyEstablishment(ip: ip, baseline: baseline, timeout: 3.0)
-                        message = verdict.verified ? nil : "'\(name)' selected but route NOT verified — try: music speaker wake"
+                        message = verdict.verified ? nil : "'\(name)' selected but route NOT verified — deselect and reselect it"
                     } catch {
                         message = "'\(name)' selection requested; route not checked"
                         isError = false
