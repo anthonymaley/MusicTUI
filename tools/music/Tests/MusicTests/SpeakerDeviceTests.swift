@@ -39,6 +39,13 @@ final class SpeakerDeviceTests: XCTestCase {
         XCTAssertEqual(parseSpeakerDeviceBlocks("").count, 0)
     }
 
+    func testCheckedParserDistinguishesEmptyFromMalformed() {
+        XCTAssertEqual(parseSpeakerDeviceBlocksChecked("\n=====\n\n=====\n\n=====\n")?.count, 0)
+        XCTAssertNil(parseSpeakerDeviceBlocksChecked(""))
+        XCTAssertNil(parseSpeakerDeviceBlocksChecked("A\n=====\ntrue\n=====\nbad\n=====\nHomePod"))
+        XCTAssertNil(parseSpeakerDeviceBlocksChecked("A\n=====\nmaybe\n=====\n40\n=====\nHomePod"))
+    }
+
     // MARK: - Name matching (exact > prefix > contains)
 
     func testMatchPrecedence() {

@@ -161,7 +161,11 @@ func makeOutputTabScene(dir: String, mode: PlaybackMode, spandac: SpanDACOutputs
                         confirmMusicAppPaused: @escaping () throws -> Bool = musicAppPauseTripwire,
                         macSocketExists: @escaping () -> Bool = { false },
                         backend: AppleScriptBackend = AppleScriptBackend(executable: "/usr/bin/true"),
-                        actions: ActionRunner? = nil) -> SpeakersScene {
+                        actions: ActionRunner? = nil,
+                        fetchSpeakers: (() throws -> [[String: Any]])? = nil,
+                        fetchNow: @escaping () -> Date = Date.init,
+                        routePlaying: @escaping (AppleScriptBackend) -> Bool = playerIsPlaying,
+                        makeRouteVerifier: @escaping () -> RouteVerifier = { RouteVerifier() }) -> SpeakersScene {
     let store = PlaybackModeStore(path: dir + "/mode.json")
     store.set(mode)
     let dataStore = DataProviderStore(path: dir + "/data.json")
@@ -185,9 +189,11 @@ func makeOutputTabScene(dir: String, mode: PlaybackMode, spandac: SpanDACOutputs
                          confirmMusicAppPaused: confirmMusicAppPaused,
                          makeSourceClient: local, makeNetworkClient: network, spandac: spandac,
                          macName: macName, clock: clock,
-                         fetchSpeakers: { speakers },
+                         fetchSpeakers: fetchSpeakers ?? { speakers },
+                         fetchNow: fetchNow,
                          fetchEQ: { _ in EQSnapshot(enabled: false, current: nil, presets: []) },
                          fetchVisualizer: { _ in false },
+                         routePlaying: routePlaying, makeRouteVerifier: makeRouteVerifier,
                          macSocketExists: macSocketExists)
 }
 
@@ -268,6 +274,184 @@ final class OutputTabRenderTests: XCTestCase {
     }
 
     // MARK: - Pure pieces
+
+    func testFailedSpeakerReadShowsUnavailableRatherThanNoSpeakers() {
+        enum ReadFailure: Error { case failed }
+        let s = makeOutputTabScene(dir: dir, mode: .musicApp, spandac: nil,
+                                   fetchSpeakers: { throw ReadFailure.failed })
+        let deadline = Date().addingTimeInterval(3)
+        var rendered = ""
+        repeat {
+            _ = s.tick(snapshot: outputTabSnapshot())
+            rendered = screen(s)
+            if rendered.contains("speaker list unavailable") { break }
+            usleep(10_000)
+        } while Date() < deadline
+        XCTAssertTrue(rendered.contains("speaker list unavailable"), rendered)
+        XCTAssertFalse(rendered.contains("no AirPlay speakers found"), rendered)
+    }
+
+    func testSelectedSpeakerRemainsVisibleInShortOutputTab() {
+        let speakers: [[String: Any]] = (0..<20).map {
+            ["name": "Room \($0)", "selected": false, "volume": 35, "kind": "speaker"]
+        }
+        let s = makeOutputTabScene(dir: dir, mode: .musicApp, spandac: nil, speakers: speakers)
+        settleOutputTab(s, speakers: speakers.count)
+        guard let last = s.displayRowsForTest.firstIndex(of: .speaker(19)) else {
+            XCTFail("last speaker was not listed"); return
+        }
+        for _ in 0..<last { _ = s.handle(.down) }
+        XCTAssertTrue(screen(s, width: 80, height: 14).contains("Room 19"))
+        _ = s.handle(.home)
+        XCTAssertTrue(screen(s, width: 80, height: 14).contains("SPANDAC"))
+    }
+
+    func testAnExpiredSpeakerFetchCannotReplaceItsSuccessor() {
+        let started = DispatchSemaphore(value: 0), release = DispatchSemaphore(value: 0)
+        let oldFinished = DispatchSemaphore(value: 0), newFinished = DispatchSemaphore(value: 0)
+        let lock = NSLock()
+        var calls = 0
+        var now = Date(timeIntervalSince1970: 1000)
+        let s = makeOutputTabScene(dir: dir, mode: .musicApp, spandac: nil, fetchSpeakers: {
+            lock.lock(); calls += 1; let call = calls; lock.unlock()
+            if call == 1 { started.signal(); _ = release.wait(timeout: .now() + 3) }
+            return [["name": call == 1 ? "Old" : "New", "selected": false, "volume": 20, "kind": "speaker"]]
+        }, fetchNow: { now })
+        s.fetchFinishedForTest = { serial in (serial == 1 ? oldFinished : newFinished).signal() }
+        _ = s.tick(snapshot: outputTabSnapshot())
+        XCTAssertEqual(started.wait(timeout: .now() + 2), .success)
+        now.addTimeInterval(31)
+        _ = s.tick(snapshot: outputTabSnapshot())
+        XCTAssertEqual(newFinished.wait(timeout: .now() + 2), .success)
+        _ = s.tick(snapshot: outputTabSnapshot())
+        XCTAssertEqual(s.speakerRowsForTest.map(\.name), ["New"])
+        release.signal()
+        XCTAssertEqual(oldFinished.wait(timeout: .now() + 2), .success)
+        _ = s.tick(snapshot: outputTabSnapshot())
+        XCTAssertEqual(s.speakerRowsForTest.map(\.name), ["New"])
+    }
+
+    func testAReadFailureKeepsLastSpeakersAndARecoveryClearsTheWarning() {
+        enum ReadFailure: Error { case failed }
+        let finished = DispatchSemaphore(value: 0), lock = NSLock()
+        var calls = 0
+        var now = Date(timeIntervalSince1970: 1000)
+        let s = makeOutputTabScene(dir: dir, mode: .musicApp, spandac: nil, fetchSpeakers: {
+            lock.lock(); calls += 1; let call = calls; lock.unlock()
+            if call == 2 { throw ReadFailure.failed }
+            return [["name": "Kitchen", "selected": true, "volume": 20, "kind": "speaker"]]
+        }, fetchNow: { now })
+        s.fetchFinishedForTest = { _ in finished.signal() }
+        for step in 1...3 {
+            if step > 1 { now.addTimeInterval(6) }
+            _ = s.tick(snapshot: outputTabSnapshot())
+            XCTAssertEqual(finished.wait(timeout: .now() + 2), .success)
+            _ = s.tick(snapshot: outputTabSnapshot())
+            XCTAssertEqual(s.speakerRowsForTest.map(\.name), ["Kitchen"])
+            XCTAssertEqual(screen(s).contains("speaker list unavailable"), step == 2)
+        }
+    }
+
+    func testRouteVerificationDoesNotHoldTheActionQueue() {
+        struct Resolver: SpeakerIPResolving { func resolveIP(forSpeaker name: String) -> String? { "192.0.2.1" } }
+        let verificationStarted = DispatchSemaphore(value: 0), release = DispatchSemaphore(value: 0)
+        let actionFinished = DispatchSemaphore(value: 0), verificationFinished = DispatchSemaphore(value: 0)
+        let lock = NSLock(); var samples = 0
+        let status = StatusStore(), actions = ActionRunner(status: status)
+        let speaker: [[String: Any]] = [["name": "Kitchen", "selected": false, "volume": 20, "kind": "speaker"]]
+        let s = makeOutputTabScene(dir: dir, mode: .musicApp, spandac: nil, speakers: speaker,
+                                   status: status, actions: actions, routePlaying: { _ in true },
+                                   makeRouteVerifier: {
+            RouteVerifier(resolver: Resolver(), connectionSource: {
+                lock.lock(); samples += 1; let sample = samples; lock.unlock()
+                if sample == 1 { return [] }
+                verificationStarted.signal(); _ = release.wait(timeout: .now() + 5)
+                return [TCPConnection(localPort: 1, remoteIP: "192.0.2.1", remotePort: 7000),
+                        TCPConnection(localPort: 2, remoteIP: "192.0.2.1", remotePort: 7001)]
+            }, pollInterval: 0)
+        })
+        s.routeCheckFinishedForTest = { verificationFinished.signal() }
+        settleOutputTab(s, speakers: 1)
+        guard let row = s.displayRowsForTest.firstIndex(of: .speaker(0)) else { XCTFail("speaker missing"); return }
+        for _ in 0..<row { _ = s.handle(.down) }
+        _ = s.handle(.enter)
+        XCTAssertEqual(verificationStarted.wait(timeout: .now() + 3), .success)
+        actions.run("test") { actionFinished.signal() }
+        XCTAssertEqual(actionFinished.wait(timeout: .now() + 1), .success)
+        release.signal()
+        XCTAssertEqual(verificationFinished.wait(timeout: .now() + 3), .success)
+        XCTAssertNil(status.current())
+    }
+
+    func testASelectedSpeakerWithNoAddressIsReportedUnverified() {
+        struct NoAddress: SpeakerIPResolving { func resolveIP(forSpeaker name: String) -> String? { nil } }
+        let status = StatusStore(), actions = ActionRunner(status: status)
+        let speaker: [[String: Any]] = [["name": "Kitchen", "selected": false, "volume": 20, "kind": "speaker"]]
+        let s = makeOutputTabScene(dir: dir, mode: .musicApp, spandac: nil, speakers: speaker,
+                                   status: status, actions: actions, routePlaying: { _ in true },
+                                   makeRouteVerifier: { RouteVerifier(resolver: NoAddress()) })
+        settleOutputTab(s, speakers: 1)
+        guard let row = s.displayRowsForTest.firstIndex(of: .speaker(0)) else { XCTFail("speaker missing"); return }
+        for _ in 0..<row { _ = s.handle(.down) }
+        _ = s.handle(.enter)
+        actions.waitUntilIdle()
+        XCTAssertTrue(status.current()?.text.contains("couldn't be verified") == true)
+    }
+
+    // A pre-check that misses its head start (cold Bonjour + player read measured
+    // ~0.37 s for a Sonos on the Studio, 2026-10-31) proves nothing either way:
+    // the speaker was added, so the note is plain, never an error.
+    func testSlowPreflightDoesNotBlockTheNextActionAndIsNotReportedAsAFailure() {
+        let started = DispatchSemaphore(value: 0), release = DispatchSemaphore(value: 0)
+        let nextAction = DispatchSemaphore(value: 0)
+        let status = StatusStore(), actions = ActionRunner(status: status)
+        let speaker: [[String: Any]] = [["name": "Kitchen", "selected": false, "volume": 20, "kind": "speaker"]]
+        let s = makeOutputTabScene(dir: dir, mode: .musicApp, spandac: nil, speakers: speaker,
+                                   status: status, actions: actions, routePlaying: { _ in
+            started.signal(); _ = release.wait(timeout: .now() + 5); return false
+        })
+        defer { release.signal() }
+        settleOutputTab(s, speakers: 1)
+        guard let row = s.displayRowsForTest.firstIndex(of: .speaker(0)) else { XCTFail("speaker missing"); return }
+        for _ in 0..<row { _ = s.handle(.down) }
+        _ = s.handle(.enter)
+        XCTAssertEqual(started.wait(timeout: .now() + 2), .success)
+        actions.run("test") { nextAction.signal() }
+        XCTAssertEqual(nextAction.wait(timeout: .now() + 2), .success)
+        let shown = status.current()
+        XCTAssertTrue(shown?.text.contains("route not checked") == true, "\(String(describing: shown?.text))")
+        XCTAssertEqual(shown?.isError, false)
+    }
+
+    func testOldRouteVerificationCannotReportAfterTheNextToggle() {
+        struct Resolver: SpeakerIPResolving { func resolveIP(forSpeaker name: String) -> String? { "192.0.2.1" } }
+        struct Broken: Error {}
+        let entered = DispatchSemaphore(value: 0), release = DispatchSemaphore(value: 0), finished = DispatchSemaphore(value: 0)
+        let lock = NSLock(); var samples = 0
+        let status = StatusStore(), actions = ActionRunner(status: status)
+        let speaker: [[String: Any]] = [["name": "Kitchen", "selected": false, "volume": 20, "kind": "speaker"]]
+        let s = makeOutputTabScene(dir: dir, mode: .musicApp, spandac: nil, speakers: speaker,
+                                   status: status, actions: actions, routePlaying: { _ in true },
+                                   makeRouteVerifier: {
+            RouteVerifier(resolver: Resolver(), connectionSource: {
+                lock.lock(); samples += 1; let sample = samples; lock.unlock()
+                if sample == 1 { return [] }
+                if sample == 2 { entered.signal(); _ = release.wait(timeout: .now() + 5) }
+                throw Broken()
+            }, pollInterval: 0.05)
+        })
+        s.routeCheckFinishedForTest = { finished.signal() }
+        settleOutputTab(s, speakers: 1)
+        guard let row = s.displayRowsForTest.firstIndex(of: .speaker(0)) else { XCTFail("speaker missing"); return }
+        for _ in 0..<row { _ = s.handle(.down) }
+        _ = s.handle(.enter)
+        XCTAssertEqual(entered.wait(timeout: .now() + 3), .success)
+        _ = s.handle(.enter)
+        actions.waitUntilIdle()
+        release.signal()
+        XCTAssertEqual(finished.wait(timeout: .now() + 6), .success)
+        XCTAssertNil(status.current())
+    }
 
     func testTheDACDetailLeavesOutWhatIsUnknown() {
         XCTAssertEqual(spandacOutputDetail(ssl), "SSL 2+ \u{00B7} 192 kHz")

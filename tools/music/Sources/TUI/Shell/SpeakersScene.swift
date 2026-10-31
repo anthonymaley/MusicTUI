@@ -23,6 +23,29 @@ func speakerRows(from devices: [[String: Any]]) -> [SpeakerRow] {
     }
 }
 
+/// Clip the Output tab's positioned lines to a viewport and translate their
+/// terminal coordinates. Output's selectable rows can each occupy several
+/// lines, so scrolling by a count of model rows would lose the cursor.
+func outputViewport(_ drawing: String, bodyY: Int, height: Int, focusY: Int) -> String {
+    guard height > 0 else { return "" }
+    let shift = max(0, focusY - (bodyY + height - 1))
+    let regex = try! NSRegularExpression(pattern: "\u{1B}\\[([0-9]+);([0-9]+)H")
+    let ns = drawing as NSString
+    let matches = regex.matches(in: drawing, range: NSRange(location: 0, length: ns.length))
+    var result = ""
+    for (index, match) in matches.enumerated() {
+        guard let row = Int(ns.substring(with: match.range(at: 1))),
+              let col = Int(ns.substring(with: match.range(at: 2))) else { continue }
+        let end = index + 1 < matches.count ? matches[index + 1].range.location : ns.length
+        let from = match.range.location + match.range.length
+        let translated = row - shift
+        guard translated >= bodyY, translated < bodyY + height else { continue }
+        result += ANSICode.moveTo(row: translated, col: col)
+        result += ns.substring(with: NSRange(location: from, length: end - from))
+    }
+    return result
+}
+
 // MARK: - The Output tab's rows
 
 /// What the Output tab lists, in order: the SPANDAC section (this Mac first,
@@ -400,9 +423,12 @@ final class SpeakersScene: Scene {
     /// The three external refreshes `tick()` fires on entry and every 5s.
     /// Injectable so a test can prove it never reaches AppleScript or the real
     /// speaker cache; production uses the real global functions, unchanged.
+    private let fetchNow: () -> Date
     private let fetchSpeakers: () throws -> [[String: Any]]
     private let fetchEQ: (AppleScriptBackend) throws -> EQSnapshot
     private let fetchVisualizer: (AppleScriptBackend) throws -> Bool
+    private let routePlaying: (AppleScriptBackend) -> Bool
+    private let makeRouteVerifier: () -> RouteVerifier
 
     /// How often the Mac's row asks again while the tab is shown. CHOSEN
     /// (composer default, not a measurement): 5 s, the same as the network
@@ -498,6 +524,12 @@ final class SpeakersScene: Scene {
     private var pendingPair: (sourceID: String, epoch: Int)? = nil   // guarded by pairLock
 
     private let speakerTargets = TargetAccumulator()
+    private let routeCheckLock = NSLock()
+    private var routeCheckSerial = 0
+    // A slow Music.app or Bonjour read must neither hold the action queue nor
+    // spawn an unbounded number of abandoned background reads.
+    private let routePreparationSlot = DispatchSemaphore(value: 1)
+    var routeCheckFinishedForTest: (() -> Void)?
     private let eqTargetLock = NSLock()
     private var eqTarget: String? = nil
     private var rows: [SpeakerRow] = []
@@ -510,9 +542,17 @@ final class SpeakersScene: Scene {
     // The scene used to load once and never again — devices appearing/vanishing
     // never showed, and a failed optimistic toggle stayed wrong forever.
     private let inboxLock = NSLock()
-    private var inbox: [SpeakerRow]? = nil
-    private var inboxEQ: EQSnapshot? = nil   // guarded by inboxLock
-    private var inboxVis: Bool? = nil        // guarded by inboxLock
+    private struct FetchResult {
+        let serial: Int
+        let startedAt: Date
+        let speakers: [SpeakerRow]?
+        let eq: EQSnapshot?
+        let visualizer: Bool?
+    }
+    private var inbox: FetchResult? = nil
+    var fetchFinishedForTest: ((Int) -> Void)?
+    private var fetchSerial = 0                       // tick()-thread only
+    private var speakerFetchFailed = false
     private var fetchInFlight = false                 // tick()-thread only
     private var fetchStartedAt = Date.distantPast     // tick()-thread only
     private var lastFetchKickoff = Date.distantPast   // tick()-thread only
@@ -529,8 +569,11 @@ final class SpeakersScene: Scene {
          macName: String = SpeakersScene.computerName(),
          clock: @escaping () -> Date = Date.init,
          fetchSpeakers: @escaping () throws -> [[String: Any]] = fetchSpeakerDevices,
+         fetchNow: @escaping () -> Date = Date.init,
          fetchEQ: @escaping (AppleScriptBackend) throws -> EQSnapshot = { try fetchEQSnapshot($0, openWindow: false) },
          fetchVisualizer: @escaping (AppleScriptBackend) throws -> Bool = visualizerStatus,
+         routePlaying: @escaping (AppleScriptBackend) -> Bool = playerIsPlaying,
+         makeRouteVerifier: @escaping () -> RouteVerifier = { RouteVerifier() },
          macSocketExists: @escaping () -> Bool = {
              FileManager.default.fileExists(atPath: SourceAppStationSearch.socketPath)
          }) {
@@ -547,8 +590,11 @@ final class SpeakersScene: Scene {
         self.macName = macName
         self.clock = clock
         self.fetchSpeakers = fetchSpeakers
+        self.fetchNow = fetchNow
         self.fetchEQ = fetchEQ
         self.fetchVisualizer = fetchVisualizer
+        self.routePlaying = routePlaying
+        self.makeRouteVerifier = makeRouteVerifier
         self.macSocketExists = macSocketExists
         spandac?.onPairedAndReady = { [weak self] id, name in self?.pairedAndReady(id, name: name) }
     }
@@ -965,41 +1011,36 @@ final class SpeakersScene: Scene {
         // in which case it's stale and would briefly revert the optimistic UI.
         inboxLock.lock()
         let fresh = inbox; inbox = nil
-        let freshEQ = inboxEQ; inboxEQ = nil
-        let freshVis = inboxVis; inboxVis = nil
         inboxLock.unlock()
-        if let fresh {
+        if let fresh, fresh.serial == fetchSerial {
             fetchInFlight = false
-            if fetchStartedAt > lastMutation {
-                // Keep the cursor on the same speaker, by name, if it was on one.
-                let before = displayRows
-                var cursorName: String? = nil
-                if before.indices.contains(cursor), case .speaker(let i) = before[cursor], rows.indices.contains(i) {
-                    cursorName = rows[i].name
+            if fresh.startedAt > lastMutation {
+                speakerFetchFailed = fresh.speakers == nil
+                if let fetchedRows = fresh.speakers {
+                    // Keep the cursor on the same speaker, by name, if it was on one.
+                    let before = displayRows
+                    var cursorName: String? = nil
+                    if before.indices.contains(cursor), case .speaker(let i) = before[cursor], rows.indices.contains(i) {
+                        cursorName = rows[i].name
+                    }
+                    rows = fetchedRows
+                    everLoaded = true
+                    let after = displayRows
+                    if let cursorName, let i = rows.firstIndex(where: { $0.name == cursorName }),
+                       let at = after.firstIndex(of: .speaker(i)) {
+                        cursor = at
+                    }
+                    if cursor >= after.count { cursor = max(0, after.count - 1) }
                 }
-                rows = fresh
-                everLoaded = true
-                let after = displayRows
-                if let cursorName, let i = rows.firstIndex(where: { $0.name == cursorName }),
-                   let at = after.firstIndex(of: .speaker(i)) {
-                    cursor = at
-                }
-                if cursor >= after.count { cursor = max(0, after.count - 1) }
+                if let eq = fresh.eq { eqState = eq }
+                if let vis = fresh.visualizer { visualizerOn = vis }
                 changed = true
             }
-        }
-        if let freshEQ, fetchStartedAt > lastMutation {
-            eqState = freshEQ
-            changed = true
-        }
-        if let freshVis, fetchStartedAt > lastMutation {
-            visualizerOn = freshVis
-            changed = true
         }
         // Refresh on (re)entry — tick only runs while this scene is active, so a
         // gap since the last tick means the user just switched back — and every
         // few seconds while shown. AirPlay enumeration runs off-thread.
-        let now = Date()
+        let now = fetchNow()
         let reentered = now.timeIntervalSince(lastTickAt) > 0.5
         lastTickAt = now
         // The Mac's row: on entry, until it has an answer, and then every
@@ -1024,12 +1065,14 @@ final class SpeakersScene: Scene {
         if !fetchInFlight, reentered || now.timeIntervalSince(lastFetchKickoff) > 5 {
             fetchInFlight = true
             fetchStartedAt = now
+            fetchSerial += 1
+            let serial = fetchSerial
             lastFetchKickoff = now
             let fetchSpeakers = self.fetchSpeakers
             let fetchEQ = self.fetchEQ
             let fetchVisualizer = self.fetchVisualizer
             DispatchQueue.global().async { [weak self] in
-                let result = speakerRows(from: (try? fetchSpeakers()) ?? [])
+                let result = (try? fetchSpeakers()).map(speakerRows(from:))
                 let backend = self?.backend ?? AppleScriptBackend()
                 // openWindow: false — the poll must never pop the Equalizer
                 // window (it steals focus, e.g. from the visualizer).
@@ -1037,10 +1080,11 @@ final class SpeakersScene: Scene {
                 let vis = try? fetchVisualizer(backend)
                 guard let self else { return }
                 self.inboxLock.lock()
-                self.inbox = result
-                self.inboxEQ = eq
-                self.inboxVis = vis
+                if self.inbox == nil || self.inbox!.serial < serial {
+                    self.inbox = FetchResult(serial: serial, startedAt: now, speakers: result, eq: eq, visualizer: vis)
+                }
                 self.inboxLock.unlock()
+                self.fetchFinishedForTest?(serial)
             }
         }
         return changed
@@ -1170,12 +1214,16 @@ final class SpeakersScene: Scene {
     }
 
     func render(frame: ShellFrame, snapshot: NowPlayingSnapshot) -> String {
-        var out = ""
+        var clear = ""
         for r in frame.bodyY..<(frame.bodyY + frame.bodyHeight) {
-            out += ANSICode.moveTo(row: r, col: 1) + ANSICode.clearLine
+            clear += ANSICode.moveTo(row: r, col: 1) + ANSICode.clearLine
         }
-        let bottom = frame.bodyY + frame.bodyHeight - 1
-        if showingSwitchScreen { return out + renderSwitchScreen(frame: frame) }
+        if showingSwitchScreen { return clear + renderSwitchScreen(frame: frame) }
+        var out = ""
+        // Render a logical full-height list, then show the slice containing the
+        // selected row. The terminal itself is only written within bodyHeight.
+        let bottom = frame.bodyY + max(1000, displayRows.count * 8 + spandacRows.count * 4)
+        var focusY = frame.bodyY
         let now = clock()
         var y = frame.bodyY
         // Codex review 102: a SpanDAC is PLAYING only when the effective
@@ -1201,7 +1249,8 @@ final class SpeakersScene: Scene {
                                                      output: selected.output, now: now)
             // A stored SpanDAC output waiting on the switch plays nothing
             // (C-REPAIR); the line says so rather than the row's state.
-            let problemNow = blocked ? waitingOnTheSwitchToSpanDAC : problem
+            let problemNow: String? = blocked ? waitingOnTheSwitchToSpanDAC :
+                (speakerFetchFailed ? "speaker list unavailable; retrying" : problem)
             let pathText = truncText(path, to: room)
             var line = "\(ANSICode.dim)\(label)\(ANSICode.reset)  \(ANSICode.bold)\(ANSICode.brightWhite)\(pathText)\(ANSICode.reset)"
             let left = room - pathText.count - 3
@@ -1219,6 +1268,7 @@ final class SpeakersScene: Scene {
         // "Stop using SpanDAC for music data" leads the tab, amber, when it
         // is the way out of trouble.
         if placement == .top, y <= bottom {
+            if cursor == 0 { focusY = y }
             let isCursor = display.first == .stopUsingSpanDAC && cursor == 0
             for line in stopUsingLines(isCursor: isCursor, prominent: true, width: max(0, frame.width - 4)) {
                 guard y <= bottom else { break }
@@ -1229,7 +1279,9 @@ final class SpeakersScene: Scene {
         }
 
         let nameW = 18
-        let barW = 16
+        let speakerRoom = max(0, frame.width - 11)
+        let barW = min(16, max(0, speakerRoom - 8))
+        let speakerNameW = min(nameW, max(0, speakerRoom - barW))
 
         // The SPANDAC section: boxed from 60 columns, a plain heading below.
         let boxed = frame.width >= 60
@@ -1351,6 +1403,7 @@ final class SpeakersScene: Scene {
         for (dispIdx, dispRow) in display.enumerated() {
             guard y <= bottom else { break }
             let isCursor = dispIdx == cursor
+            if isCursor, !(placement == .top && dispRow == .stopUsingSpanDAC) { focusY = y }
             switch dispRow {
             case .spandacMac:
                 var detail: SpanDACRowDetail
@@ -1393,6 +1446,7 @@ final class SpeakersScene: Scene {
 
             case .musicApp:
                 closeSpanDACSection()
+                if isCursor { focusY = y }
                 guard y <= bottom else { break }
                 let selected = routing.mode == .musicApp
                 let title = musicTUIOutputName
@@ -1400,19 +1454,20 @@ final class SpeakersScene: Scene {
                 let titleStr = isCursor ? "\(ANSICode.inverse)\(padTitle)\(ANSICode.reset)"
                                         : (selected ? "\(ANSICode.brightWhite)\(padTitle)\(ANSICode.reset)"
                                                     : "\(ANSICode.dim)\(padTitle)\(ANSICode.reset)")
-                let note = "this Mac  \u{00B7}  " + (everLoaded ? "no AirPlay speakers found" : "loading speakers\u{2026}")
+                let note = "this Mac  \u{00B7}  " + (speakerFetchFailed ? "speaker list unavailable; retrying" : (everLoaded ? "no AirPlay speakers found" : "loading speakers\u{2026}"))
                 out += ANSICode.moveTo(row: y, col: 3)
                 out += "  \(dot(selected)) \(titleStr) \(ANSICode.dim)\(truncText(note, to: max(0, frame.width - 4 - 4 - nameW - 1)))\(ANSICode.reset)"
                 y += 1
 
             case .speaker(let i):
                 closeSpanDACSection()
+                if isCursor { focusY = y }
                 guard y <= bottom else { break }
                 let row = rows[i]
                 out += ANSICode.moveTo(row: y, col: 3)
                 let marker = " "
-                let name = truncText(row.name, to: nameW)
-                let padName = name + String(repeating: " ", count: max(0, nameW - name.count))
+                let name = speakerNameW <= 1 ? String(row.name.prefix(speakerNameW)) : truncText(row.name, to: speakerNameW)
+                let padName = name + String(repeating: " ", count: max(0, speakerNameW - name.count))
                 // Same selection language as the other tabs: inverse-video cursor.
                 // While a SpanDAC plays, the whole section is dimmed.
                 let nameStr: String
@@ -1441,6 +1496,7 @@ final class SpeakersScene: Scene {
                 if y + 1 <= bottom {
                     y += 1
                 }
+                if isCursor { focusY = y }
                 guard y <= bottom else { break }
                 out += ANSICode.moveTo(row: y, col: 3)
                 let on = eqState?.enabled == true
@@ -1495,6 +1551,7 @@ final class SpeakersScene: Scene {
                 if y + 1 <= bottom {
                     y += 1
                 }
+                if isCursor { focusY = y }
                 guard y <= bottom else { break }
                 out += ANSICode.moveTo(row: y, col: 3)
                 let on = visualizerOn == true
@@ -1514,7 +1571,7 @@ final class SpeakersScene: Scene {
         }
 
         // No in-body key hints — the scene-aware footer already shows them.
-        return out
+        return clear + outputViewport(out, bodyY: frame.bodyY, height: frame.bodyHeight, focusY: focusY)
     }
 
     func handle(_ key: KeyPress) -> SceneAction {
@@ -1671,7 +1728,7 @@ final class SpeakersScene: Scene {
                     return .redraw
                 }
                 rows[i].active.toggle()
-                lastMutation = Date()
+                lastMutation = fetchNow()
                 setSelected(rows[i])
                 return .redraw
             case .eqPower:
@@ -1700,7 +1757,7 @@ final class SpeakersScene: Scene {
             case .speaker(let i):
                 guard speakerVolumeAllowed() else { return .redraw }
                 rows[i].volume = max(0, rows[i].volume - 5)
-                lastMutation = Date()
+                lastMutation = fetchNow()
                 setVolume(rows[i])
                 return .redraw
             case .eq:
@@ -1719,7 +1776,7 @@ final class SpeakersScene: Scene {
             case .speaker(let i):
                 guard speakerVolumeAllowed() else { return .redraw }
                 rows[i].volume = min(100, rows[i].volume + 5)
-                lastMutation = Date()
+                lastMutation = fetchNow()
                 setVolume(rows[i])
                 return .redraw
             case .eq:
@@ -1745,35 +1802,69 @@ final class SpeakersScene: Scene {
         let esc = escapeAppleScriptString(row.name)
         let name = row.name
         let active = row.active
+        routeCheckLock.lock()
+        routeCheckSerial += 1
+        let serial = routeCheckSerial
+        routeCheckLock.unlock()
+        let outputEpoch = routing.epoch
         actions.run("Speaker") {
-            // Verify additions only while playing — and pay the Bonjour
-            // resolver cost only then (paused toggles defer to the play
-            // path, same ordering as the speaker commands). Baseline BEFORE
-            // the write so establishment shows as churn. The computer row is
-            // local output — no AirPlay session exists to verify.
-            let playing = active && row.kind != "computer" && playerIsPlaying(backend: self.backend)
-            let verifier = RouteVerifier()
-            let ip = playing ? verifier.resolver.resolveIP(forSpeaker: name) : nil
-            let baseline = ip.flatMap { try? verifier.snapshot(ip: $0) }
-            try require((try? self.backend.runMusicBlocking("set selected of AirPlay device \"\(esc)\" to \(active)")) != nil,
+            let verifier = self.makeRouteVerifier()
+            let needsCheck = active && row.kind != "computer"
+            // Give the baseline a short head start without holding all later
+            // actions behind a sleeping speaker. If it doesn't finish before
+            // the write, discard it: a post-write baseline proves nothing.
+            typealias Preparation = (playing: Bool, ip: String?, baseline: Set<TCPConnection>?)
+            let prepared = LockedBox<Preparation?>(nil)
+            let ready = DispatchSemaphore(value: 0)
+            var preparation: Preparation?
+            if needsCheck, self.routePreparationSlot.wait(timeout: .now()) == .success {
+                DispatchQueue.global().async {
+                    defer { self.routePreparationSlot.signal(); ready.signal() }
+                    let playing = self.routePlaying(self.backend)
+                    let ip = playing ? verifier.resolver.resolveIP(forSpeaker: name) : nil
+                    let baseline = ip.flatMap { try? verifier.snapshot(ip: $0) }
+                    prepared.set((playing, ip, baseline))
+                }
+                if ready.wait(timeout: .now() + 0.35) == .success { preparation = prepared.get() }
+            }
+            try require((try? self.backend.runMusicBlocking("set selected of AirPlay device \"\(esc)\" to \(active)", timeout: 8)) != nil,
                         "Couldn't \(active ? "add" : "remove") '\(name)'.")
-            // Short timeout — this runs on the serial action queue and must
-            // not stall the shell. No heal here: the toast points at the
-            // existing recovery paths instead (a 2×1.5s heal dance would
-            // freeze the action queue).
-            if playing, let ip = ip, let baseline = baseline {
+            // Verify off the action queue; a later toggle or output switch
+            // makes this verdict stale. Recovery stays a separate action.
+            if let preparation, preparation.playing, let ip = preparation.ip, let baseline = preparation.baseline {
                 // A netstat read error is NOT evidence the route is fine — the
                 // old `?? true` silently passed on it, while the CLI path treats
                 // the same error as not-verified. Post an honest "couldn't check"
                 // instead of a false all-clear.
-                let verdict: RouteVerdict
-                do {
-                    verdict = try verifier.verifyEstablishment(ip: ip, baseline: baseline, timeout: 3.0)
-                } catch {
-                    throw ActionError(message: "Couldn't verify '\(name)' route (network read failed).")
+                DispatchQueue.global().async {
+                    defer { self.routeCheckFinishedForTest?() }
+                    let message: String?
+                    do {
+                        let verdict = try verifier.verifyEstablishment(ip: ip, baseline: baseline, timeout: 3.0)
+                        message = verdict.verified ? nil : "'\(name)' selected but route NOT verified — try: music speaker wake"
+                    } catch {
+                        message = "Couldn't verify '\(name)' route (network read failed)."
+                    }
+                    let sameOutput = self.routing.epoch == outputEpoch
+                    self.routeCheckLock.lock()
+                    if self.routeCheckSerial == serial, sameOutput, let message {
+                        self.status.post(message, error: true)
+                    }
+                    self.routeCheckLock.unlock()
                 }
-                try require(verdict.verified,
-                            "'\(name)' selected but route NOT verified — try: music speaker wake")
+            } else if needsCheck {
+                self.routeCheckLock.lock()
+                let current = self.routeCheckSerial == serial
+                self.routeCheckLock.unlock()
+                if current, preparation == nil {
+                    // The head start ran out (cold Bonjour + player read, ~0.37 s
+                    // measured for a Sonos) or another check holds the slot: the
+                    // speaker WAS added, nothing was measured. A plain note, not
+                    // an error that would call a working speaker broken.
+                    self.status.post("'\(name)' added; route not checked")
+                } else if current, preparation?.playing == true {
+                    throw ActionError(message: "'\(name)' selected, but its route couldn't be verified.")
+                }
             }
         }
     }
@@ -1815,7 +1906,7 @@ final class SpeakersScene: Scene {
         let on = !(eqState?.enabled ?? false)
         if eqState == nil { eqState = EQSnapshot(enabled: on, current: nil, presets: []) }
         else { eqState?.enabled = on }
-        lastMutation = Date()
+        lastMutation = fetchNow()
         actions.run("EQ") {
             try require((try? eqSetEnabled(self.backend, on)) != nil,
                         "Couldn't turn EQ \(on ? "on" : "off").")
@@ -1828,7 +1919,7 @@ final class SpeakersScene: Scene {
     private func toggleVisualizer() {
         let on = !(visualizerOn ?? false)
         visualizerOn = on
-        lastMutation = Date()
+        lastMutation = fetchNow()
         actions.run("Visualizer") {
             try require((try? visualizerSetEnabled(self.backend, on)) != nil,
                         "Couldn't turn visualizer \(on ? "on" : "off").")
@@ -1839,7 +1930,7 @@ final class SpeakersScene: Scene {
         if eqState == nil { eqState = EQSnapshot(enabled: true, current: name, presets: []) }
         eqState?.current = name
         eqState?.enabled = true
-        lastMutation = Date()
+        lastMutation = fetchNow()
         eqTargetLock.lock(); eqTarget = name; eqTargetLock.unlock()
         actions.run("EQ") {
             self.eqTargetLock.lock()
