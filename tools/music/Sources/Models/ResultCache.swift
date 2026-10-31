@@ -189,10 +189,7 @@ struct ResultCache {
         let resolvedAt: Date
     }
 
-    // v2 (3.24.2): entries hold every address of a speaker, comma-joined.
-    // A v1 entry holds one address, often the IPv4 one the session never uses,
-    // and would keep missing the route until its hour ran out.
-    private var speakerIPsPath: String { "\(directory)/speaker-ips-v2.json" }
+    private var speakerIPsPath: String { "\(directory)/speaker-ips.json" }
 
     /// Cached IP for a speaker name if it was resolved within `ttl`. Keyed
     /// case-insensitively (the AirPlay name is the key and varies only in

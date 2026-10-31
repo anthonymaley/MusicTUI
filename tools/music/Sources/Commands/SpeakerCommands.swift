@@ -356,10 +356,7 @@ func runSpeakerVerify(name: String?, backend: AppleScriptBackend, json: Bool) th
                                    evidence: "verification errored: \(error.localizedDescription)",
                                    advisory: nil)
         }
-        // `ip` stays ONE address (its documented shape); every address the
-        // check matched goes in `addresses`.
-        var row: [String: Any] = ["name": target, "verified": verdict.verified,
-                                  "ip": speakerAddresses(ip).first ?? "", "addresses": speakerAddresses(ip),
+        var row: [String: Any] = ["name": target, "verified": verdict.verified, "ip": ip,
                                   "evidence": verdict.evidence, "claimedSelected": claimed]
         if let advisory = verdict.advisory { row["advisory"] = advisory }
         results.append(row)

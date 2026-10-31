@@ -67,8 +67,9 @@ func remoteIPMatches(_ row: String, resolved: String) -> Bool {
 
 /// A table with no TCP rows at all is WITHHELD, not empty: a Mac always holds
 /// listening and established sockets. Measured 2026-10-31 on macOS 27.0.1:
-/// unprivileged netstat run from processes under the Studio's tmux server
-/// printed zero rows with exit 0, while a launchd job saw 450. Reading that as
+/// netstat launched by a compiled program (Foundation Process; this binary,
+/// 3.24.1, a minimal test program) printed zero rows with exit 0, even in an
+/// iTerm window where netstat typed at the shell listed 426. Reading that as
 /// "no connections to the speaker" called working routes broken and fired the
 /// heal ladder at them, so it throws and callers report "route not checked".
 struct ConnectionTableUnavailable: Error, LocalizedError {
@@ -82,16 +83,6 @@ func parseNetstatTCPChecked(_ raw: String) throws -> [TCPConnection] {
     }
     guard hasTCPRow else { throw ConnectionTableUnavailable() }
     return parseNetstatTCP(raw)
-}
-
-/// A resolved speaker "ip" may carry several addresses joined by commas
-/// (IPv4 and IPv6 of one device): AirPlay sessions on macOS 27 run over the
-/// speaker's IPv6 link-local address even when its IPv4 address resolves
-/// first (probe 2026-10-31, Sonos arc and every other device on the LAN), so
-/// matching one family missed every route. A single address is a one-element
-/// set, so cached single-address entries keep working.
-func speakerAddresses(_ ip: String) -> [String] {
-    ip.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
 }
 
 /// netstat failing must throw — silently returning an empty table would read
@@ -145,10 +136,7 @@ struct RouteVerifier {
     var pollInterval: TimeInterval = 0.5
 
     func snapshot(ip: String) throws -> Set<TCPConnection> {
-        let addresses = speakerAddresses(ip)
-        return Set(try connectionSource().filter { row in
-            addresses.contains { remoteIPMatches(row.remoteIP, resolved: $0) }
-        })
+        Set(try connectionSource().filter { remoteIPMatches($0.remoteIP, resolved: ip) })
     }
 
     /// Whether this session can read the connection table at all. False means
