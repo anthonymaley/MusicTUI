@@ -210,7 +210,12 @@ func executeSpeakerAction(_ action: SpeakerAction, json: Bool) throws {
         // Verify first — only reset what the network says is actually broken.
         // (Blind reset tore down healthy routes too.)
         let verifier = RouteVerifier()
-        let devices = (try? fetchSpeakerDevices()) ?? []
+        // A failed read is not "no speakers": resetting from it reset every
+        // active speaker unobserved (Codex 2026-10-31).
+        guard let devices = try? fetchSpeakerDevices() else {
+            print("Couldn't read the speaker list — nothing reset.")
+            return
+        }
         let routed = devices
             .filter { ($0["selected"] as? Bool == true) && ($0["kind"] as? String != "computer") }
             .compactMap { $0["name"] as? String }
@@ -223,8 +228,20 @@ func executeSpeakerAction(_ action: SpeakerAction, json: Bool) throws {
             print("· \(speaker): route not checked (\(reason)) — left alone. If it is silent: click the AirPlay icon in Music, deselect and reselect it.")
         }
         let broken = triage.broken
-        if broken.isEmpty && !routed.isEmpty {
+        if routed.isEmpty {
+            print("No AirPlay speakers are routed. Nothing to reset.")
+            return
+        }
+        if broken.isEmpty {
             if triage.unknown.isEmpty { print("All routed speakers verified. Nothing to reset.") }
+            return
+        }
+        // Healing or resetting moves routes; with any member unknown that
+        // could tear down a speaker nobody checked. Report, don't act.
+        if !triage.unknown.isEmpty {
+            for speaker in broken.sorted() {
+                print("✗ \(speaker) NOT verified — not reset automatically while \(triage.unknown.map { $0.0 }.joined(separator: ", ")) couldn't be checked. Manual fix: click the AirPlay icon in Music, deselect and reselect \(speaker).")
+            }
             return
         }
         // Mid-play, heal via the proven ladder — the away-and-back list-write is
@@ -254,7 +271,7 @@ func executeSpeakerAction(_ action: SpeakerAction, json: Bool) throws {
             resetBroken(fallback, backend: backend)
             return
         }
-        resetBroken(broken.isEmpty ? nil : broken, backend: backend)
+        resetBroken(broken, backend: backend)
 
     case .verify(let name):
         try runSpeakerVerify(name: name, backend: backend, json: json)

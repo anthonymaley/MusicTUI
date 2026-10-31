@@ -87,6 +87,17 @@ func parseNetstatTCPChecked(_ raw: String) throws -> [TCPConnection] {
 
 /// netstat failing must throw — silently returning an empty table would read
 /// as "no connections to the device", a false broken-route verdict.
+/// A readable table with NO row to the speaker's resolved address says
+/// nothing about the route: the AirPlay session may run over another address
+/// family (the Arc resolved IPv4 while its session was IPv6 link-local,
+/// 2026-10-31). A correctly addressed device that the Mac talks to always
+/// shows at least its control connection, so only a non-empty reading can be
+/// a negative (Codex 2026-10-31).
+struct AddressNotSeen: Error, LocalizedError {
+    let ip: String
+    var errorDescription: String? { "no connections to \(ip) at all; its session may use another address" }
+}
+
 struct NetstatError: Error, LocalizedError {
     let status: Int32
     var errorDescription: String? { "netstat exited with status \(status) — cannot read the connection table" }
@@ -169,12 +180,14 @@ struct RouteVerifier {
                              timeout: TimeInterval = 5.0) throws -> RouteVerdict {
         let deadline = Date().addingTimeInterval(timeout)
         var lastNew = 0
+        var lastSeen = 0
         var sampled = false
         var lastError: Error?
         repeat {
             do {
                 let now = try snapshot(ip: ip)
                 sampled = true
+                lastSeen = now.count
                 let fresh = now.subtracting(baseline)
                 lastNew = fresh.count
                 if fresh.count >= 2 {
@@ -196,6 +209,7 @@ struct RouteVerifier {
         // the missing sample could have held the new connections (Codex
         // 2026-10-31). Only a fully observed window is an authoritative "no".
         if let err = lastError { _ = sampled; throw err }
+        if baseline.isEmpty && lastSeen == 0 { throw AddressNotSeen(ip: ip) }
         return RouteVerdict(
             verified: false,
             evidence: lastNew == 0
@@ -214,6 +228,7 @@ struct RouteVerifier {
     /// questions), so the failure advisory says what pattern was looked for.
     func steadyState(ip: String) throws -> RouteVerdict {
         let conns = try snapshot(ip: ip)
+        if conns.isEmpty { throw AddressNotSeen(ip: ip) }
         let control = conns.filter { $0.remotePort == airplayControlPort }.count
         let data = conns.count - control
         if control >= 2 && data >= 1 {

@@ -146,4 +146,72 @@ final class RouteHealerTests: XCTestCase {
         // The away-and-back pair still ran, so the group is restored.
         XCTAssertEqual(backend.scripts.get().filter { $0.contains("set current AirPlay devices") }.count, 2)
     }
+
+    // MARK: - Codex round 3 (2026-10-31)
+
+    /// Every list-write after the first fails: the away-write lands, the
+    /// back-write (and its retry) do not.
+    private final class BackWriteFails: MusicScripting, @unchecked Sendable {
+        let scripts = LockedBox<[String]>([])
+        func runMusicBlocking(_ script: String, timeout: TimeInterval) throws -> String {
+            scripts.set(scripts.get() + [script])
+            let writes = scripts.get().filter { $0.contains("set current AirPlay devices") }.count
+            if script.contains("set current AirPlay devices"), writes > 1 {
+                throw AppleScriptBackend.ScriptError.executionFailed("fake back-write failure")
+            }
+            return ""
+        }
+    }
+
+    func testAFailedBackWriteIsRetriedOnceThenReportedWithoutTier2() {
+        let backend = BackWriteFails()
+        let outcome = RouteHealer(backend: backend, verifier: verifier([[standing]]), delay: { _ in }, verifyTimeout: 0.05)
+            .heal(target: "Kitchen", ip: "192.168.1.112", groupNames: ["Kitchen", "Deck"],
+                  computerName: "Mac", scriptingClaims: "x")
+        XCTAssertFalse(outcome.healed)
+        XCTAssertEqual(outcome.tierUsed, 1)
+        XCTAssertTrue(outcome.failure?.contains("the Mac may be the only output") == true, "\(String(describing: outcome.failure))")
+        XCTAssertEqual(backend.scripts.get().filter { $0.contains("set current AirPlay devices") }.count, 3, "away + back + one retry")
+        XCTAssertFalse(backend.scripts.get().contains { $0.contains("pause") })
+    }
+
+    // A heal moves the whole group: with one member unknown, nothing is rerouted.
+    func testAMixedGroupWithAnUnknownMemberIsNeverRerouted() {
+        let backend = FakeScripting()
+        let lines = verifyAndHealRoutes(
+            speakers: ["Kitchen", "Deck"], scripting: backend, computerName: "Mac",
+            baselines: ["Kitchen": [standing]], ips: ["Kitchen": "192.168.1.112"],  // Deck: no address
+            verifier: verifier([[standing]]), claims: { _ in "x" },
+            healer: RouteHealer(backend: backend, verifier: verifier([[standing]]), delay: { _ in }, verifyTimeout: 0.05))
+        XCTAssertFalse(backend.scripts.get().contains { $0.contains("set current AirPlay devices") }, "\(backend.scripts.get())")
+        XCTAssertTrue(lines.contains { $0.contains("Kitchen NOT verified") && $0.contains("not healed automatically") }, "\(lines)")
+    }
+
+    func testAKnownGroupWithARealNegativeIsStillHealed() {
+        let backend = FakeScripting()
+        let v = verifier([[standing]])
+        _ = verifyAndHealRoutes(
+            speakers: ["Kitchen"], scripting: backend, computerName: "Mac",
+            baselines: ["Kitchen": [standing]], ips: ["Kitchen": "192.168.1.112"],
+            verifier: v, claims: { _ in "x" },
+            healer: RouteHealer(backend: backend, verifier: v, delay: { _ in }, verifyTimeout: 0.05))
+        XCTAssertTrue(backend.scripts.get().contains { $0.contains("set current AirPlay devices") })
+    }
+
+    // Readable table, but every row is to another address of the device (the
+    // Arc's IPv6 session vs its resolved IPv4): unknown, never healed.
+    func testNoRowsToTheResolvedAddressIsUnknownNotBroken() {
+        let v6Only = [TCPConnection(localPort: 56296, remoteIP: "fe80::3a42:bff:f", remotePort: 7000),
+                      TCPConnection(localPort: 65428, remoteIP: "fe80::3a42:bff:f", remotePort: 7101)]
+        let v = RouteVerifier(resolver: FixedResolver(), connectionSource: { v6Only }, pollInterval: 0)
+        guard case .notChecked = v.check(ip: "192.168.1.208", baseline: [], timeout: 0.05) else {
+            return XCTFail("an address with no rows at all must be unknown")
+        }
+        let t = triageWakeTargets(["Sonos arc"], verifier: RouteVerifier(
+            resolver: ArcV4(), connectionSource: { v6Only }, pollInterval: 0))
+        XCTAssertTrue(t.broken.isEmpty)
+        XCTAssertEqual(t.unknown.map { $0.0 }, ["Sonos arc"])
+    }
+
+    private struct ArcV4: SpeakerIPResolving { func resolveIP(forSpeaker name: String) -> String? { "192.168.1.208" } }
 }

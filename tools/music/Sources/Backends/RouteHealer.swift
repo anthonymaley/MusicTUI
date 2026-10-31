@@ -99,7 +99,14 @@ struct RouteHealer {
         guard listWrite(away) else { return .failed }
         // HomePods need a beat to tear down; 1.5s matches resetAirPlaySpeakers.
         delay(1.5)
-        guard listWrite(back) else { return .failed }
+        // The group is now away on the Mac: restoring it comes first. One
+        // bounded retry, then stop and say so — never escalate from here.
+        if !listWrite(back) {
+            delay(1.5)
+            guard listWrite(back) else {
+                return .unknown("couldn't route back to \(back.joined(separator: ", ")); the Mac may be the only output — run: music speaker only \(back.first ?? "")")
+            }
+        }
         if pauseBracket {
             do { _ = try backend.runMusicBlocking("play", timeout: 45) }
             catch { verbose("heal: play after tier-2 reroute failed: \(error.localizedDescription)") }
@@ -130,11 +137,24 @@ func verifyAndHealRoutes(speakers: [String], backend: AppleScriptBackend,
                          baselines: [String: Set<TCPConnection>],
                          ips: [String: String],
                          verifier: RouteVerifier = RouteVerifier()) -> [String] {
-    var lines: [String] = []
     let devices = (try? fetchSpeakerDevices()) ?? []
     let computerName = devices.first { ($0["kind"] as? String) == "computer" }?["name"] as? String
-    let healer = RouteHealer(backend: backend, verifier: verifier)
+    return verifyAndHealRoutes(speakers: speakers, scripting: backend, computerName: computerName,
+                               baselines: baselines, ips: ips, verifier: verifier,
+                               claims: { readScriptingClaims(for: $0, backend: backend) })
+}
 
+/// The pass itself, with its effects injectable. Phase 1 checks every
+/// speaker; phase 2 heals only when NO speaker's route is unknown, because a
+/// heal moves the whole group away and back and would tear down a speaker
+/// nobody could check (Codex 2026-10-31).
+func verifyAndHealRoutes(speakers: [String], scripting: MusicScripting, computerName: String?,
+                         baselines: [String: Set<TCPConnection>], ips: [String: String],
+                         verifier: RouteVerifier, claims: (String) -> String,
+                         healer customHealer: RouteHealer? = nil) -> [String] {
+    var lines: [String] = []
+    var failed: [(speaker: String, ip: String, verdict: RouteVerdict)] = []
+    var unknown: [String] = []
     for speaker in speakers {
         // The Mac's own output is local — there is no AirPlay session to
         // verify or heal (live probe: verifying it burns both heal tiers and
@@ -145,49 +165,55 @@ func verifyAndHealRoutes(speakers: [String], backend: AppleScriptBackend,
         }
         guard let ip = ips[speaker] else {
             lines.append("· \(speaker): could not resolve IP via Bonjour — routed but unverified.")
+            unknown.append(speaker)
             continue
         }
         // No pre-route baseline (the table couldn't be read then): sockets
         // already present could later pass for new ones, so no verdict.
         guard let baseline = baselines[speaker] else {
             lines.append("· \(speaker): route not checked — no reading from before the route change.")
+            unknown.append(speaker)
             continue
         }
-        // Fast path inside check(): the route may already be established (e.g.
-        // resuming on the already-routed speaker — pause does not tear down an
-        // AirPlay session, so the delta poll would see no churn and time out
-        // into an unnecessary heal). Only a real negative heals: an unreadable
-        // connection table or an errored read says nothing about the route,
-        // and healing on it rerouted working speakers (2026-10-31).
-        let verdict: RouteVerdict
+        // check(): fast path for an already-established route, then the delta
+        // poll. Only `.failed` is evidence of a broken route.
         switch verifier.check(ip: ip, baseline: baseline) {
         case .verified(let evidence):
             lines.append("✓ \(speaker) verified (\(evidence))")
-            continue
         case .notChecked(let reason):
             lines.append("· \(speaker): route not checked — \(reason).")
+            unknown.append(speaker)
+        case .failed(let verdict):
+            failed.append((speaker, ip, verdict))
+        }
+    }
+    let manual = "Manual fix: click the AirPlay icon in Music, deselect and reselect"
+    for f in failed {
+        // A heal reroutes every speaker in the group; never do that while a
+        // member's route is unknown.
+        if !unknown.isEmpty {
+            lines.append("✗ \(f.speaker) NOT verified (\(f.verdict.evidence)) — not healed automatically: \(unknown.joined(separator: ", ")) couldn't be checked, and a heal moves the whole group. \(manual) \(f.speaker).")
             continue
-        case .failed(let failed):
-            verdict = failed
         }
         // No computer device identified (Music scripting degraded) — healing
         // needs a real away-target; say so instead of attempting a heal
         // against a bogus device name.
         guard let computerName else {
-            lines.append("✗ \(speaker) NOT verified (\(verdict.evidence)) — cannot heal: couldn't identify the computer device. Manual fix: click the AirPlay icon in Music, deselect and reselect \(speaker).")
+            lines.append("✗ \(f.speaker) NOT verified (\(f.verdict.evidence)) — cannot heal: couldn't identify the computer device. \(manual) \(f.speaker).")
             continue
         }
+        let healer = customHealer ?? RouteHealer(backend: scripting, verifier: verifier)
         // Advisory context for the failure path: what the (lying) scripting
         // layer claims right now.
-        let claims = readScriptingClaims(for: speaker, backend: backend)
-        let outcome = withStatus("Healing \(speaker) route...") {
-            healer.heal(target: speaker, ip: ip, groupNames: speakers,
-                        computerName: computerName, scriptingClaims: claims)
+        let scriptingClaims = claims(f.speaker)
+        let outcome = withStatus("Healing \(f.speaker) route...") {
+            healer.heal(target: f.speaker, ip: f.ip, groupNames: speakers,
+                        computerName: computerName, scriptingClaims: scriptingClaims)
         }
         if outcome.healed {
-            lines.append("✓ \(speaker) verified after heal (tier \(outcome.tierUsed))")
+            lines.append("✓ \(f.speaker) verified after heal (tier \(outcome.tierUsed))")
         } else {
-            lines.append(outcome.failure ?? "✗ \(speaker) NOT verified")
+            lines.append(outcome.failure ?? "✗ \(f.speaker) NOT verified")
         }
     }
     return lines
