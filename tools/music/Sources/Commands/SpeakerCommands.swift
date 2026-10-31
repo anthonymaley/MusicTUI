@@ -419,25 +419,33 @@ let speakerBlockSeparator = "\n=====\n"
 
 /// Pure parse of the 4-block bulk fetch (names / selected / volumes / kinds).
 func parseSpeakerDeviceBlocks(_ raw: String) -> [[String: Any]] {
+    parseSpeakerDeviceBlocksChecked(raw) ?? []
+}
+
+/// nil means the response was torn or malformed; [] is a successful empty list.
+func parseSpeakerDeviceBlocksChecked(_ raw: String) -> [[String: Any]]? {
     let blocks = raw
-        .trimmingCharacters(in: .whitespacesAndNewlines)
-        .components(separatedBy: speakerBlockSeparator.trimmingCharacters(in: .whitespaces))
+        .components(separatedBy: speakerBlockSeparator)
         .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-    guard blocks.count >= 4 else { return [] }
+    guard blocks.count == 4 else { return nil }
+    if blocks.allSatisfy(\.isEmpty) { return [] }
     let names = blocks[0].components(separatedBy: "\n")
     let sels = blocks[1].components(separatedBy: "\n")
     let vols = blocks[2].components(separatedBy: "\n")
     let kinds = blocks[3].components(separatedBy: "\n")
-    guard names.count == sels.count, names.count == vols.count, names.count == kinds.count else { return [] }
-    return (0..<names.count).compactMap { i in
-        guard !names[i].isEmpty else { return nil }
-        return [
+    guard names.count == sels.count, names.count == vols.count, names.count == kinds.count else { return nil }
+    var result: [[String: Any]] = []
+    for i in 0..<names.count {
+        guard !names[i].isEmpty, ["true", "false"].contains(sels[i]),
+              let volume = Int(vols[i]), (0...100).contains(volume), !kinds[i].isEmpty else { return nil }
+        result.append([
             "name": names[i],
             "selected": sels[i] == "true",
-            "volume": Int(vols[i]) ?? 0,
+            "volume": volume,
             "kind": kinds[i]
-        ]
+        ])
     }
+    return result
 }
 
 /// All AirPlay devices in one osascript with 4 bulk Apple Events — measured 6x
@@ -457,7 +465,9 @@ func fetchSpeakerDevices() throws -> [[String: Any]] {
             set sep to linefeed & "=====" & linefeed
             return ns & sep & sels & sep & vols & sep & ks
         """, timeout: 20)
-    let devices = parseSpeakerDeviceBlocks(result)
+    guard let devices = parseSpeakerDeviceBlocksChecked(result) else {
+        throw ActionError(message: "Couldn't read the AirPlay speaker list.")
+    }
     if !devices.isEmpty {
         let speakerResults = devices.enumerated().map { (i, d) in
             SpeakerResult(index: i + 1, name: d["name"] as! String,
