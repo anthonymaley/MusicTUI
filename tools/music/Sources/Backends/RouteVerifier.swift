@@ -65,16 +65,48 @@ func remoteIPMatches(_ row: String, resolved: String) -> Bool {
 
 // MARK: - Live reader
 
+/// A table with no TCP rows at all is WITHHELD, not empty: a Mac always holds
+/// listening and established sockets. Measured 2026-10-31 on macOS 27.0.1:
+/// netstat launched by a compiled program (Foundation Process; this binary,
+/// 3.24.1, a minimal test program) printed zero rows with exit 0, even in an
+/// iTerm window where netstat typed at the shell listed 426. Reading that as
+/// "no connections to the speaker" called working routes broken and fired the
+/// heal ladder at them, so it throws and callers report "route not checked".
+struct ConnectionTableUnavailable: Error, LocalizedError {
+    var errorDescription: String? { "this session can't read the connection table (no TCP rows returned)" }
+}
+
+/// Parse, refusing a table with no TCP rows (see ConnectionTableUnavailable).
+func parseNetstatTCPChecked(_ raw: String) throws -> [TCPConnection] {
+    let hasTCPRow = raw.components(separatedBy: "\n").contains {
+        $0.trimmingCharacters(in: .whitespaces).hasPrefix("tcp")
+    }
+    guard hasTCPRow else { throw ConnectionTableUnavailable() }
+    return parseNetstatTCP(raw)
+}
+
 /// netstat failing must throw — silently returning an empty table would read
 /// as "no connections to the device", a false broken-route verdict.
+/// A readable table with NO row to the speaker's resolved address says
+/// nothing about the route: the AirPlay session may run over another address
+/// family (the Arc resolved IPv4 while its session was IPv6 link-local,
+/// 2026-10-31). A correctly addressed device that the Mac talks to always
+/// shows at least its control connection, so only a non-empty reading can be
+/// a negative (Codex 2026-10-31).
+struct AddressNotSeen: Error, LocalizedError {
+    let ip: String
+    var errorDescription: String? { "no connections to \(ip) at all; its session may use another address" }
+}
+
 struct NetstatError: Error, LocalizedError {
     let status: Int32
     var errorDescription: String? { "netstat exited with status \(status) — cannot read the connection table" }
 }
 
-/// All ESTABLISHED TCP connections, system-wide. netstat shows every
+/// All ESTABLISHED TCP connections, system-wide. netstat usually shows every
 /// socket without root — the AirPlay session is held by a system daemon,
-/// not the Music process (spike: Music holds zero TCP sockets).
+/// not the Music process (spike: Music holds zero TCP sockets) — but some
+/// launch contexts get no rows at all (ConnectionTableUnavailable).
 func readEstablishedTCPConnections() throws -> [TCPConnection] {
     let process = Process()
     process.executableURL = URL(fileURLWithPath: "/usr/sbin/netstat")
@@ -88,10 +120,16 @@ func readEstablishedTCPConnections() throws -> [TCPConnection] {
     if process.terminationStatus != 0 {
         throw NetstatError(status: process.terminationStatus)
     }
-    return parseNetstatTCP(String(data: data, encoding: .utf8) ?? "")
+    return try parseNetstatTCPChecked(String(data: data, encoding: .utf8) ?? "")
 }
 
 // MARK: - Verdicts
+
+enum RouteCheck {
+    case verified(String)
+    case notChecked(String)
+    case failed(RouteVerdict)
+}
 
 struct RouteVerdict {
     let verified: Bool
@@ -112,6 +150,28 @@ struct RouteVerifier {
         Set(try connectionSource().filter { remoteIPMatches($0.remoteIP, resolved: ip) })
     }
 
+    /// Whether this session can read the connection table at all. False means
+    /// any verdict would be a guess: report "not checked", never heal.
+    func connectionTableReadable() -> Bool {
+        (try? connectionSource()) != nil
+    }
+
+    /// One route check with the three honest outcomes. Only `.failed` is
+    /// evidence of a broken route; `.notChecked` (table unreadable, every
+    /// sample errored) must never trigger a heal or an error.
+    func check(ip: String, baseline: Set<TCPConnection>, timeout: TimeInterval = 5.0) -> RouteCheck {
+        guard connectionTableReadable() else {
+            return .notChecked(ConnectionTableUnavailable().errorDescription ?? "connection table unreadable")
+        }
+        if let steady = try? steadyState(ip: ip), steady.verified { return .verified(steady.evidence) }
+        do {
+            let verdict = try verifyEstablishment(ip: ip, baseline: baseline, timeout: timeout)
+            return verdict.verified ? .verified(verdict.evidence) : .failed(verdict)
+        } catch {
+            return .notChecked(error.localizedDescription)
+        }
+    }
+
     /// Delta mode: after a route operation, poll until fresh connections
     /// appear beyond the baseline. Spike-observed establishment ≤1s on every
     /// real route; ≥2 new connections is the verified fingerprint (new :7000
@@ -120,12 +180,14 @@ struct RouteVerifier {
                              timeout: TimeInterval = 5.0) throws -> RouteVerdict {
         let deadline = Date().addingTimeInterval(timeout)
         var lastNew = 0
+        var lastSeen = 0
         var sampled = false
         var lastError: Error?
         repeat {
             do {
                 let now = try snapshot(ip: ip)
                 sampled = true
+                lastSeen = now.count
                 let fresh = now.subtracting(baseline)
                 lastNew = fresh.count
                 if fresh.count >= 2 {
@@ -143,7 +205,11 @@ struct RouteVerifier {
             }
             if pollInterval > 0 { Thread.sleep(forTimeInterval: pollInterval) }
         } while Date() < deadline
-        if !sampled, let err = lastError { throw err }
+        // Any failed read in the window makes a negative unknown, not broken:
+        // the missing sample could have held the new connections (Codex
+        // 2026-10-31). Only a fully observed window is an authoritative "no".
+        if let err = lastError { _ = sampled; throw err }
+        if baseline.isEmpty && lastSeen == 0 { throw AddressNotSeen(ip: ip) }
         return RouteVerdict(
             verified: false,
             evidence: lastNew == 0
@@ -162,6 +228,7 @@ struct RouteVerifier {
     /// questions), so the failure advisory says what pattern was looked for.
     func steadyState(ip: String) throws -> RouteVerdict {
         let conns = try snapshot(ip: ip)
+        if conns.isEmpty { throw AddressNotSeen(ip: ip) }
         let control = conns.filter { $0.remotePort == airplayControlPort }.count
         let data = conns.count - control
         if control >= 2 && data >= 1 {

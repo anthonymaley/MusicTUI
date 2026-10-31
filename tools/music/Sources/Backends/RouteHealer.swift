@@ -44,12 +44,18 @@ struct RouteHealer {
               scriptingClaims: String) -> Outcome {
         // Tier 1: away-and-back list-write. Routing stays its own osascript
         // call (parameter-error-50 rule).
-        if runTier(away: [computerName], back: groupNames, ip: ip, pauseBracket: false) {
-            return Outcome(healed: true, tierUsed: 1, failure: nil)
+        switch runTier(away: [computerName], back: groupNames, ip: ip, pauseBracket: false) {
+        case .verified: return Outcome(healed: true, tierUsed: 1, failure: nil)
+        case .unknown(let reason): return Self.notChecked(target, tier: 1, reason: reason)
+        case .failed: break
         }
-        // Tier 2: same, bracketed by a transport cycle.
-        if runTier(away: [computerName], back: groupNames, ip: ip, pauseBracket: true) {
-            return Outcome(healed: true, tierUsed: 2, failure: nil)
+        // Tier 2: same, bracketed by a transport cycle. Reached only on a
+        // real negative from tier 1 — an unreadable table never escalates to
+        // a pause/play (Codex 2026-10-31).
+        switch runTier(away: [computerName], back: groupNames, ip: ip, pauseBracket: true) {
+        case .verified: return Outcome(healed: true, tierUsed: 2, failure: nil)
+        case .unknown(let reason): return Self.notChecked(target, tier: 2, reason: reason)
+        case .failed: break
         }
         // The network field carries the actual post-heal fingerprint, not a
         // second copy of the summary line (it used to interpolate `evidence`
@@ -63,7 +69,14 @@ struct RouteHealer {
                            scriptingClaims: scriptingClaims))
     }
 
-    private func runTier(away: [String], back: [String], ip: String, pauseBracket: Bool) -> Bool {
+    enum TierResult { case verified, failed, unknown(String) }
+
+    static func notChecked(_ target: String, tier: Int, reason: String) -> Outcome {
+        Outcome(healed: false, tierUsed: tier,
+                failure: "· \(target): route not checked after heal step \(tier) — \(reason). Stopped there.")
+    }
+
+    private func runTier(away: [String], back: [String], ip: String, pauseBracket: Bool) -> TierResult {
         func listWrite(_ names: [String]) -> Bool {
             let list = names
                 .map { "AirPlay device \"\(escapeAppleScriptString($0))\"" }
@@ -76,24 +89,34 @@ struct RouteHealer {
                 return false
             }
         }
-        guard let baseline = try? verifier.snapshot(ip: ip) else {
-            verbose("heal: baseline snapshot for \(ip) failed — skipping tier")
-            return false
+        // No baseline = nothing to compare against: stop BEFORE any write.
+        let baseline: Set<TCPConnection>
+        do { baseline = try verifier.snapshot(ip: ip) } catch {
+            verbose("heal: baseline snapshot for \(ip) failed — not rerouting")
+            return .unknown(error.localizedDescription)
         }
         if pauseBracket { _ = try? backend.runMusicBlocking("pause", timeout: 45) }
-        guard listWrite(away) else { return false }
+        guard listWrite(away) else { return .failed }
         // HomePods need a beat to tear down; 1.5s matches resetAirPlaySpeakers.
         delay(1.5)
-        guard listWrite(back) else { return false }
+        // The group is now away on the Mac: restoring it comes first. One
+        // bounded retry, then stop and say so — never escalate from here.
+        if !listWrite(back) {
+            delay(1.5)
+            guard listWrite(back) else {
+                return .unknown("couldn't route back to \(back.joined(separator: ", ")); the Mac may be the only output — run: music speaker only \(back.first ?? "")")
+            }
+        }
         if pauseBracket {
             do { _ = try backend.runMusicBlocking("play", timeout: 45) }
             catch { verbose("heal: play after tier-2 reroute failed: \(error.localizedDescription)") }
         }
         do {
             return try verifier.verifyEstablishment(ip: ip, baseline: baseline, timeout: verifyTimeout).verified
+                ? .verified : .failed
         } catch {
             verbose("heal: post-reroute verify errored: \(error.localizedDescription)")
-            return false
+            return .unknown(error.localizedDescription)
         }
     }
 
@@ -114,11 +137,24 @@ func verifyAndHealRoutes(speakers: [String], backend: AppleScriptBackend,
                          baselines: [String: Set<TCPConnection>],
                          ips: [String: String],
                          verifier: RouteVerifier = RouteVerifier()) -> [String] {
-    var lines: [String] = []
     let devices = (try? fetchSpeakerDevices()) ?? []
     let computerName = devices.first { ($0["kind"] as? String) == "computer" }?["name"] as? String
-    let healer = RouteHealer(backend: backend, verifier: verifier)
+    return verifyAndHealRoutes(speakers: speakers, scripting: backend, computerName: computerName,
+                               baselines: baselines, ips: ips, verifier: verifier,
+                               claims: { readScriptingClaims(for: $0, backend: backend) })
+}
 
+/// The pass itself, with its effects injectable. Phase 1 checks every
+/// speaker; phase 2 heals only when NO speaker's route is unknown, because a
+/// heal moves the whole group away and back and would tear down a speaker
+/// nobody could check (Codex 2026-10-31).
+func verifyAndHealRoutes(speakers: [String], scripting: MusicScripting, computerName: String?,
+                         baselines: [String: Set<TCPConnection>], ips: [String: String],
+                         verifier: RouteVerifier, claims: (String) -> String,
+                         healer customHealer: RouteHealer? = nil) -> [String] {
+    var lines: [String] = []
+    var failed: [(speaker: String, ip: String, verdict: RouteVerdict)] = []
+    var unknown: [String] = []
     for speaker in speakers {
         // The Mac's own output is local — there is no AirPlay session to
         // verify or heal (live probe: verifying it burns both heal tiers and
@@ -127,45 +163,39 @@ func verifyAndHealRoutes(speakers: [String], backend: AppleScriptBackend,
             lines.append("· \(speaker): local output — nothing to verify.")
             continue
         }
-        guard let ip = ips[speaker], let baseline = baselines[speaker] else {
+        guard let ip = ips[speaker] else {
             lines.append("· \(speaker): could not resolve IP via Bonjour — routed but unverified.")
+            unknown.append(speaker)
             continue
         }
-        // Fast path: the route may already be established (e.g. resuming on
-        // the already-routed speaker — pause does not tear down an AirPlay
-        // session, so the delta poll would see no churn and time out into an
-        // unnecessary heal). The steady-state fingerprint costs one netstat
-        // read and cannot pass for a just-torn-down route (teardown removes
-        // the session's second :7000 connection — spike evidence).
-        if let steady = try? verifier.steadyState(ip: ip), steady.verified {
-            lines.append("✓ \(speaker) verified (\(steady.evidence))")
+        // No pre-route baseline (the table couldn't be read then): sockets
+        // already present could later pass for new ones, so no verdict.
+        guard let baseline = baselines[speaker] else {
+            lines.append("· \(speaker): route not checked — no reading from before the route change.")
+            unknown.append(speaker)
             continue
         }
-        let verdict = (try? verifier.verifyEstablishment(ip: ip, baseline: baseline))
-            ?? RouteVerdict(verified: false, evidence: "verification errored", advisory: nil)
-        if verdict.verified {
-            lines.append("✓ \(speaker) verified (\(verdict.evidence))")
-            continue
+        // check(): fast path for an already-established route, then the delta
+        // poll. Only `.failed` is evidence of a broken route.
+        switch verifier.check(ip: ip, baseline: baseline) {
+        case .verified(let evidence):
+            lines.append("✓ \(speaker) verified (\(evidence))")
+        case .notChecked(let reason):
+            lines.append("· \(speaker): route not checked — \(reason).")
+            unknown.append(speaker)
+        case .failed(let verdict):
+            failed.append((speaker, ip, verdict))
         }
-        // No computer device identified (Music scripting degraded) — healing
-        // needs a real away-target; say so instead of attempting a heal
-        // against a bogus device name.
-        guard let computerName else {
-            lines.append("✗ \(speaker) NOT verified (\(verdict.evidence)) — cannot heal: couldn't identify the computer device. Manual fix: click the AirPlay icon in Music, deselect and reselect \(speaker).")
-            continue
-        }
-        // Advisory context for the failure path: what the (lying) scripting
-        // layer claims right now.
-        let claims = readScriptingClaims(for: speaker, backend: backend)
-        let outcome = withStatus("Healing \(speaker) route...") {
-            healer.heal(target: speaker, ip: ip, groupNames: speakers,
-                        computerName: computerName, scriptingClaims: claims)
-        }
-        if outcome.healed {
-            lines.append("✓ \(speaker) verified after heal (tier \(outcome.tierUsed))")
-        } else {
-            lines.append(outcome.failure ?? "✗ \(speaker) NOT verified")
-        }
+    }
+    // Automatic healing is OFF (Anthony 2026-10-31, 3.24.2). A heal moves the
+    // whole group away and back and can pause/play; it is only safe when the
+    // speaker's playback address and its complete connections are known, and
+    // on macOS 27 MusicTUI can know neither (four Codex rounds found false-heal
+    // paths). A failed route is reported with the manual fix; RouteHealer
+    // stays for the day the connection table can be read reliably.
+    _ = unknown
+    for f in failed {
+        lines.append("✗ \(f.speaker) NOT verified (\(f.verdict.evidence)). Manual fix: click the AirPlay icon in Music, deselect and reselect \(f.speaker).")
     }
     return lines
 }

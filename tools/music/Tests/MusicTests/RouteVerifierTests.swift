@@ -193,4 +193,78 @@ final class RouteVerifierTests: XCTestCase {
                               pollInterval: 0)
         XCTAssertThrowsError(try v.verifyEstablishment(ip: "192.168.1.112", baseline: [], timeout: 0.05))
     }
+
+    // MARK: - 2026-10-31: withheld table, IPv6 sessions, honest check()
+
+    // Exactly what unprivileged netstat printed under the Studio's tmux server
+    // on macOS 27.0.1 (`netstat -an`; `-p tcp` printed nothing at all).
+    static let withheldFixture = """
+    Active Multipath Internet connections
+    Proto/ID  Flags      Local Address          Foreign Address        (state)
+    Active LOCAL (UNIX) domain sockets
+    """
+
+    func testATableWithNoTCPRowsIsUnavailableNotEmpty() {
+        XCTAssertThrowsError(try parseNetstatTCPChecked("")) { XCTAssertTrue($0 is ConnectionTableUnavailable) }
+        XCTAssertThrowsError(try parseNetstatTCPChecked(Self.withheldFixture)) { XCTAssertTrue($0 is ConnectionTableUnavailable) }
+        XCTAssertEqual(try parseNetstatTCPChecked(Self.routedFixture).count, 7)
+    }
+
+    private func source(_ snapshots: [[TCPConnection]], resolver: SpeakerIPResolving = FixedResolver()) -> RouteVerifier {
+        let box = LockedBox<[[TCPConnection]]>(snapshots)
+        return RouteVerifier(resolver: resolver, connectionSource: {
+            var all = box.get()
+            let next = all.count > 1 ? all.removeFirst() : all[0]
+            box.set(all)
+            return next
+        }, pollInterval: 0)
+    }
+
+    func testAnUnreadableTableIsNotCheckedNeverFailed() {
+        let v = RouteVerifier(resolver: FixedResolver(), connectionSource: { throw ConnectionTableUnavailable() }, pollInterval: 0)
+        guard case .notChecked = v.check(ip: "192.168.1.112", baseline: [], timeout: 0.2) else {
+            return XCTFail("an unreadable table must not be a failed route")
+        }
+    }
+
+    func testARealNegativeStillFails() {
+        let v = source([[standing]])
+        guard case .failed = v.check(ip: "192.168.1.112", baseline: [standing], timeout: 0.2) else {
+            return XCTFail("no new connections on a readable table is a real negative")
+        }
+    }
+
+    // Codex 2026-10-31: one readable empty sample then failed reads is an
+    // incomplete window — unknown, never an authoritative "no".
+    func testANegativeWindowWithAFailedReadIsUnknown() {
+        let calls = LockedBox<Int>(0)
+        let v = RouteVerifier(resolver: FixedResolver(), connectionSource: {
+            calls.set(calls.get() + 1)
+            if calls.get() > 1 { throw ConnectionTableUnavailable() }
+            return [self.standing]
+        }, pollInterval: 0)
+        XCTAssertThrowsError(try v.verifyEstablishment(ip: "192.168.1.112", baseline: [standing], timeout: 0.05))
+    }
+
+    // MARK: - speaker wake triage
+
+    private struct NoAddress: SpeakerIPResolving { func resolveIP(forSpeaker name: String) -> String? { nil } }
+
+    func testWakeTriageNeverCallsUnknownBroken() {
+        let unreadable = RouteVerifier(resolver: FixedResolver(), connectionSource: { throw ConnectionTableUnavailable() }, pollInterval: 0)
+        var t = triageWakeTargets(["Kitchen"], verifier: unreadable)
+        XCTAssertTrue(t.broken.isEmpty); XCTAssertEqual(t.unknown.map { $0.0 }, ["Kitchen"])
+
+        let unresolved = RouteVerifier(resolver: NoAddress(), connectionSource: { [] }, pollInterval: 0)
+        t = triageWakeTargets(["Kitchen"], verifier: unresolved)
+        XCTAssertTrue(t.broken.isEmpty); XCTAssertEqual(t.unknown.map { $0.0 }, ["Kitchen"])
+
+        let lingering = source([[standing]])
+        t = triageWakeTargets(["Kitchen"], verifier: lingering)
+        XCTAssertEqual(t.broken, ["Kitchen"]); XCTAssertTrue(t.unknown.isEmpty)
+
+        let routed = source([[standing, newControl, newData1]])
+        t = triageWakeTargets(["Kitchen"], verifier: routed)
+        XCTAssertEqual(t.verified, ["Kitchen"]); XCTAssertTrue(t.broken.isEmpty)
+    }
 }

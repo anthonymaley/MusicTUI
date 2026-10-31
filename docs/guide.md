@@ -71,7 +71,7 @@ Current TUI contract:
 - `Enter` plays the highlighted row.
 - Keys: `1/2/3/4/5/6` jump to a tab, `Tab`/`Shift-Tab` cycle, `[`/`]` switch Library sub-view or Radio Favorites/Live/Personal, `a` cycle Library Artists tier (All / 12″/EP / Albums) or open Radio's add-by-URL field, `↑↓` + `PgUp/PgDn/Home/End` navigate (Radio has no page/home/end jumps), `Space` play/pause, `</>` previous/next, `[ ]` seek (Now) / `←→` per-speaker volume (Speakers), `z` shuffle-play, `l` favorite (Now) / `f` favorite (Radio), `+/-` master volume, `n` next-up options, `/` filter (Playlists/Library) or search (Radio), `Esc` back, `q` or `Ctrl-C` quit (Ctrl-C quits even from inside a search or filter field).
 - The Now tab has a **playback-control grid** (Shuffle / Order / Repeat / Genius) under the track progress, showing each value live with the active one lit. Press `←` to focus the grid and `→` to return to the Up Next list; `↑↓` move between control rows and `Enter` cycles the focused row's value (Shuffle on/off, Order Songs→Albums→Groupings, Repeat Off→All→One, Genius triggers). The `s`/`m`/`r`/`g` keys do the same from anywhere. Shuffle/order/repeat write Music's state directly (no extra permission); Genius rebuilds the queue from the current song and is UI-scripted (needs the same Accessibility permission as the equalizer). Distinct from the global `z` (footer: *Reshuffle*), which shuffle-plays the current context.
-- Named-speaker `music play`, and `music speaker` add/`set`/`only`, verify the route automatically while playing (network-truth: established TCP connections to the speaker, not the AppleScript `selected` claim, which can lie) and print `✓ <speaker> verified (…)`; while paused, routing prints `Route set; will verify on next play.` instead, since a paused route can't be network-verified. An unestablished route triggers an automatic heal (an away-and-back reroute, then a transport-cycle reset) before an honest failure names the manual fix. `music speaker wake` also verifies first now and resets only the routes that are actually broken; the rest print `✓ X verified` and are left alone. Routing to the Mac's own output is never "verified": local output has no AirPlay session.
+- Named-speaker `music play`, and `music speaker` add/`set`/`only`, verify the route automatically while playing (network-truth: established TCP connections to the speaker, not the AppleScript `selected` claim, which can lie) and print `✓ <speaker> verified (…)`; while paused, routing prints `Route set; will verify on next play.` instead, since a paused route can't be network-verified. Since 3.24.2 nothing is rerouted automatically: a route that can't be verified prints `✗ <speaker> NOT verified` with a manual check (click the AirPlay icon in Music, deselect and reselect the speaker); "not verified" doesn't prove the speaker is silent. A route that can't be checked prints `route not checked` or `routed but unverified`. On macOS 27.0.1 MusicTUI was seen unable to read the Mac's connection list, so routes may show `route not checked` or `routed but unverified` instead of `✓ verified`. `music speaker wake` verifies and reports the same way; it no longer resets speakers. The automatic heal was turned off because it moved the whole group and could tear down working speakers. Routing to the Mac's own output is never "verified": local output has no AirPlay session.
 - Toggling a speaker on in the Speakers scene while playing verifies the route the same way and toasts if it couldn't be verified; toggling off, or toggling while paused, skips verification.
 - The Speakers scene has an **EQ block**: an `EQ on/off` power row (`Enter` toggles it; `e` does the same from anywhere in the scene) and a `Preset` row beneath it: `Enter` expands an inline preset picker (venue pack first, then Music's built-in presets), `↑↓` to navigate, `Enter` to select and auto-enable EQ, `Escape` to collapse without changing the preset. With the Preset row highlighted but the picker collapsed, `←`/`→` quick-cycles presets one at a time.
 - Below the EQ block, a **Visualizer** row toggles Music's on-screen visualizer (`Enter`, or `v` from anywhere in the scene). GUI-only: the visuals render in the Music window on the Mac's display, and turning it on brings Music forward.
@@ -176,7 +176,7 @@ User says:  /music play Fouk in the kitchen and living room at 60%
    query "Fouk" · speakers Kitchen, Living Room · volume 60
 4. Routes to exactly those speakers, sets volume, plays
 5. Verifies each route (network-truth) once playback starts;
-   an unestablished route heals automatically before an honest failure
+   a route that can't be verified is reported with a manual check (no automatic heal since 3.24.2)
 ```
 
 ### How a composition request executes
@@ -378,7 +378,7 @@ All three are written owner-only: files `0600` in a `0700` directory (since 3.7.
 
 ## Version
 
-Current version: v3.24.1. All five locations stay in sync:
+Current version: v3.24.2. All five locations stay in sync:
 - `.claude-plugin/plugin.json` → `version`
 - `.claude-plugin/marketplace.json` → `metadata.version`
 - `.claude-plugin/marketplace.json` → `plugins[0].version`

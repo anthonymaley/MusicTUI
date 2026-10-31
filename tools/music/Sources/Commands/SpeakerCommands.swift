@@ -210,58 +210,62 @@ func executeSpeakerAction(_ action: SpeakerAction, json: Bool) throws {
         // Verify first — only reset what the network says is actually broken.
         // (Blind reset tore down healthy routes too.)
         let verifier = RouteVerifier()
-        let devices = (try? fetchSpeakerDevices()) ?? []
+        // A failed read is not "no speakers": resetting from it reset every
+        // active speaker unobserved (Codex 2026-10-31).
+        guard let devices = try? fetchSpeakerDevices() else {
+            print("Couldn't read the speaker list — nothing reset.")
+            return
+        }
         let routed = devices
             .filter { ($0["selected"] as? Bool == true) && ($0["kind"] as? String != "computer") }
             .compactMap { $0["name"] as? String }
-        var broken: Set<String> = []
-        for speaker in routed {
-            guard let ip = verifier.resolver.resolveIP(forSpeaker: speaker) else {
-                broken.insert(speaker)   // can't verify → treat as suspect
-                continue
-            }
-            if !((try? verifier.steadyState(ip: ip))?.verified ?? false) {
-                broken.insert(speaker)
-            } else {
-                print("✓ \(speaker) verified — leaving it alone.")
-            }
+        // Only a real negative is reset. A speaker whose address won't resolve
+        // or whose connection read fails is unknown and left alone: resetting
+        // on a guess tore down working routes (2026-10-31).
+        let triage = triageWakeTargets(routed, verifier: verifier)
+        for speaker in triage.verified { print("✓ \(speaker) verified — leaving it alone.") }
+        for (speaker, reason) in triage.unknown {
+            print("· \(speaker): route not checked (\(reason)) — left alone. If it is silent: click the AirPlay icon in Music, deselect and reselect it.")
         }
-        if broken.isEmpty && !routed.isEmpty {
-            print("All routed speakers verified. Nothing to reset.")
+        let broken = triage.broken
+        if routed.isEmpty {
+            print("No AirPlay speakers are routed. Nothing to reset.")
             return
         }
-        // Mid-play, heal via the proven ladder — the away-and-back list-write is
-        // the only write shown to move a live session, whereas wake's old
-        // deselect/reselect is the weaker `set selected` re-issue the heal spec
-        // dropped. Paused, the ladder can't run (it's mid-play only), so fall
-        // back to the reset. Speakers the ladder can't target also fall back.
-        if playerIsPlaying(backend: backend) && !broken.isEmpty {
-            let computerName = ((try? fetchSpeakerDevices()) ?? [])
-                .first { ($0["kind"] as? String) == "computer" }?["name"] as? String
-            let healer = RouteHealer(backend: backend, verifier: verifier)
-            var fallback: Set<String> = []
-            for speaker in broken {
-                guard let computerName, let ip = verifier.resolver.resolveIP(forSpeaker: speaker) else {
-                    fallback.insert(speaker); continue
-                }
-                let outcome = withStatus("Healing \(speaker) route...") {
-                    healer.heal(target: speaker, ip: ip, groupNames: routed,
-                                computerName: computerName,
-                                scriptingClaims: readScriptingClaims(for: speaker, backend: backend))
-                }
-                print(outcome.healed
-                    ? "✓ \(speaker) verified after heal (tier \(outcome.tierUsed))."
-                    : (outcome.failure ?? "✗ \(speaker) NOT verified."))
-            }
-            guard !fallback.isEmpty else { return }
-            resetBroken(fallback, backend: backend)
+        if broken.isEmpty {
+            if triage.unknown.isEmpty { print("All routed speakers verified. Nothing to reset.") }
             return
         }
-        resetBroken(broken.isEmpty ? nil : broken, backend: backend)
+        // Automatic healing/resetting is OFF (Anthony 2026-10-31, 3.24.2):
+        // it moves every routed speaker and can tear down working ones. Report
+        // the broken ones with the manual fix instead.
+        for speaker in broken.sorted() {
+            print("✗ \(speaker) NOT verified. Manual fix: click the AirPlay icon in Music, deselect and reselect \(speaker).")
+        }
 
     case .verify(let name):
         try runSpeakerVerify(name: name, backend: backend, json: json)
     }
+}
+
+/// Sort routed speakers for `speaker wake`: verified, broken (a readable
+/// connection table showed no session), or unknown (no address, or the read
+/// failed). Only `broken` may be reset or healed.
+func triageWakeTargets(_ routed: [String], verifier: RouteVerifier)
+    -> (verified: [String], broken: Set<String>, unknown: [(String, String)]) {
+    var verified: [String] = [], broken: Set<String> = [], unknown: [(String, String)] = []
+    for speaker in routed {
+        guard let ip = verifier.resolver.resolveIP(forSpeaker: speaker) else {
+            unknown.append((speaker, "could not resolve its address"))
+            continue
+        }
+        do {
+            if try verifier.steadyState(ip: ip).verified { verified.append(speaker) } else { broken.insert(speaker) }
+        } catch {
+            unknown.append((speaker, error.localizedDescription))
+        }
+    }
+    return (verified, broken, unknown)
 }
 
 /// Cheap shared player-state read for the routing cases.
