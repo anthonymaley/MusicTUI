@@ -25,7 +25,7 @@ music play kid a in the kitchen and living room at 60
 music play jazz for cooking kitchen 40 shuffle
 ```
 
-Naming speakers routes playback to exactly those speakers (it deselects the rest). Don't pre-chain `music speaker` + `music volume` for simple play requests: `music play` does all three. If the query itself contains a speaker-like word, use the explicit flags (`--song`, `--album`, `--playlist`) instead. Named-speaker plays are verified automatically once playback starts (`✓ <speaker> verified (…)`); an unestablished route prints `✗ <speaker> NOT verified` with the manual fix (deselect and reselect it in Music's AirPlay menu), and one that can't be checked prints `route not checked`. Nothing is rerouted automatically.
+Naming speakers routes playback to exactly those speakers (it deselects the rest). Don't pre-chain `music speaker` + `music volume` for simple play requests: `music play` does all three. If the query itself contains a speaker-like word, use the explicit flags (`--song`, `--album`, `--playlist`) instead. Named-speaker plays are verified automatically once playback starts (`✓ <speaker> verified (…)`); a route that can't be verified prints `✗ <speaker> NOT verified` with a manual check (deselect and reselect it in Music's AirPlay menu); that doesn't prove it's silent. One that can't be checked prints `route not checked` or `routed but unverified`. Nothing is rerouted automatically.
 
 ## Architecture
 
@@ -201,7 +201,7 @@ music speaker add "Bedroom"                   # hidden alias
 music speaker remove "Bedroom"                # hidden alias
 ```
 
-`music speaker <name>` (add), `set`, and `only` verify the route automatically while playing: output gains a `✓ <speaker> verified (…)` line, and an unverified route prints `✗ <speaker> NOT verified` naming the manual fix; nothing is rerouted automatically (since 3.24.2). On macOS 27 MusicTUI can't read the Mac's connection list, so expect `route not checked` rather than `✓ verified`. While paused, routing can't be network-verified, so it prints `Route set; will verify on next play.` and re-checks when playback starts. Scripting's own claims (`selected`, `active`) are shown as advisory only, not trusted, because they can lie. Routing to the Mac's own output is never "verified": local output has no AirPlay session.
+`music speaker <name>` (add), `set`, and `only` verify the route automatically while playing: output gains a `✓ <speaker> verified (…)` line, and a route that can't be verified prints `✗ <speaker> NOT verified` with a manual check; nothing is rerouted automatically (since 3.24.2). On macOS 27.0.1 MusicTUI was seen unable to read the Mac's connection list, so routes may show `route not checked` or `routed but unverified` instead of `✓ verified`. While paused, routing can't be network-verified, so it prints `Route set; will verify on next play.` and re-checks when playback starts. Scripting's own claims (`selected`, `active`) are shown as advisory only, not trusted, because they can lie. Routing to the Mac's own output is never "verified": local output has no AirPlay session.
 
 ## Volume (no auth)
 

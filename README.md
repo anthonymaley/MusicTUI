@@ -169,7 +169,7 @@ When a song is not in your library, playing it still adds it from the catalog fi
 
 Album playback creates a temporary playlist visible in Music's sidebar and removes it when playback leaves. The album stops at its end only if Autoplay is off (see Autoplay callout below). If the name matches more than one distinct album, nothing plays; the CLI lists what it found and asks you to narrow the query or add `--artist`.
 
-Naming speakers in `music play` routes playback to **exactly those speakers**: it selects the ones you name and deselects the rest, then verifies each route is actually carrying a session (network-truth, not the AppleScript `selected` claim, which can lie) and prints `✓ <speaker> verified (…)`. If a route doesn't establish, it says so and names the manual fix (deselect and reselect the speaker in Music's AirPlay menu); nothing is rerouted automatically. On macOS 27 MusicTUI can't read the Mac's connection list, so routes show `route not checked` instead of `✓ verified`. Routing to the Mac's own output is never "verified": local output has no AirPlay session to check.
+Naming speakers in `music play` routes playback to **exactly those speakers**: it selects the ones you name and deselects the rest, then checks each route for a session (network-truth, not the AppleScript `selected` claim, which can lie) and prints `✓ <speaker> verified (…)`. If a route can't be verified, MusicTUI reports that and suggests a manual check (deselect and reselect the speaker in Music's AirPlay menu); nothing is rerouted automatically. "Not verified" doesn't prove the speaker is silent. On macOS 27.0.1 MusicTUI was seen unable to read the Mac's connection list, so routes may show `route not checked` or `routed but unverified` instead of `✓ verified`. Routing to the Mac's own output is never "verified": local output has no AirPlay session to check.
 
 ### Speakers & Volume
 
@@ -180,7 +180,7 @@ Naming speakers in `music play` routes playback to **exactly those speakers**: i
 | `music speaker kitchen 40` | Add kitchen at volume 40 |
 | `music speaker kitchen stop` | Remove kitchen from group |
 | `music speaker airpods only` | Switch to AirPods only |
-| `music speaker wake [kitchen]` | Verify active speakers (selecting the named one first) and report which didn't establish, with the manual fix |
+| `music speaker wake [kitchen]` | Verify active speakers (selecting the named one first) and report any that couldn't be verified, with a manual check |
 | `music speaker verify [kitchen]` | Network-truth verdict: is the route actually carrying a session? No name = verify all selected speakers (`--json` supported) |
 | `music speaker 1 2 5` | Add speakers by number from last list |
 | `music volume` | Interactive per-speaker volume mixer |
