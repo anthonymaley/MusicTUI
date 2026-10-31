@@ -193,4 +193,75 @@ final class RouteVerifierTests: XCTestCase {
                               pollInterval: 0)
         XCTAssertThrowsError(try v.verifyEstablishment(ip: "192.168.1.112", baseline: [], timeout: 0.05))
     }
+
+    // MARK: - 2026-10-31: withheld table, IPv6 sessions, honest check()
+
+    // Exactly what unprivileged netstat printed under the Studio's tmux server
+    // on macOS 27.0.1 (`netstat -an`; `-p tcp` printed nothing at all).
+    static let withheldFixture = """
+    Active Multipath Internet connections
+    Proto/ID  Flags      Local Address          Foreign Address        (state)
+    Active LOCAL (UNIX) domain sockets
+    """
+
+    func testATableWithNoTCPRowsIsUnavailableNotEmpty() {
+        XCTAssertThrowsError(try parseNetstatTCPChecked("")) { XCTAssertTrue($0 is ConnectionTableUnavailable) }
+        XCTAssertThrowsError(try parseNetstatTCPChecked(Self.withheldFixture)) { XCTAssertTrue($0 is ConnectionTableUnavailable) }
+        XCTAssertEqual(try parseNetstatTCPChecked(Self.routedFixture).count, 7)
+    }
+
+    private let arcV4 = "192.168.1.208"
+    private let arcAll = "192.168.1.208,fe80::3a42:bff:fed4:da1e"
+    // netstat's truncated form of the Arc's link-local address (probe rows).
+    private func arcRow(_ local: Int, _ remote: Int) -> TCPConnection {
+        TCPConnection(localPort: local, remoteIP: "fe80::3a42:bff:f", remotePort: remote)
+    }
+
+    private func source(_ snapshots: [[TCPConnection]], resolver: SpeakerIPResolving = FixedResolver()) -> RouteVerifier {
+        let box = LockedBox<[[TCPConnection]]>(snapshots)
+        return RouteVerifier(resolver: resolver, connectionSource: {
+            var all = box.get()
+            let next = all.count > 1 ? all.removeFirst() : all[0]
+            box.set(all)
+            return next
+        }, pollInterval: 0)
+    }
+
+    func testSnapshotMatchesEveryAddressOfTheSpeaker() throws {
+        let v = source([[arcRow(56296, 7000), TCPConnection(localPort: 1, remoteIP: "192.168.1.208", remotePort: 7000)]])
+        XCTAssertEqual(try v.snapshot(ip: arcAll).count, 2)
+        XCTAssertEqual(try v.snapshot(ip: arcV4).count, 1)
+    }
+
+    // The probe's routed Arc: standing :7000 + :7132, then + :7000 + :7101.
+    func testAnIPv6SessionVerifiesWhenAllAddressesAreKnown() throws {
+        let standing = [arcRow(56296, 7000), arcRow(56297, 7132)]
+        let routed = standing + [arcRow(65426, 7000), arcRow(65428, 7101)]
+        let v = source([standing, routed])
+        let baseline = try v.snapshot(ip: arcAll)
+        guard case .verified = v.check(ip: arcAll, baseline: baseline, timeout: 0.2) else {
+            return XCTFail("routed IPv6 session should verify")
+        }
+    }
+
+    func testAnUnreadableTableIsNotCheckedNeverFailed() {
+        let v = RouteVerifier(resolver: FixedResolver(), connectionSource: { throw ConnectionTableUnavailable() }, pollInterval: 0)
+        guard case .notChecked = v.check(ip: arcAll, baseline: [], timeout: 0.2) else {
+            return XCTFail("an unreadable table must not be a failed route")
+        }
+    }
+
+    func testARealNegativeStillFails() {
+        let v = source([[standing]])
+        guard case .failed = v.check(ip: "192.168.1.112", baseline: [standing], timeout: 0.2) else {
+            return XCTFail("no new connections on a readable table is a real negative")
+        }
+    }
+
+    func testJoinAddressesStripsZonesAndDuplicates() {
+        XCTAssertEqual(joinAddresses(["192.168.1.208", "fe80::3a42:bff:fed4:da1e%en0", "fe80::3a42:bff:fed4:da1e%en1"]),
+                       "192.168.1.208,fe80::3a42:bff:fed4:da1e")
+        XCTAssertNil(joinAddresses([]))
+        XCTAssertEqual(speakerAddresses("192.168.1.112"), ["192.168.1.112"])
+    }
 }

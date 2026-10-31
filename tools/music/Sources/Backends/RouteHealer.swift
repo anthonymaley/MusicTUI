@@ -131,21 +131,22 @@ func verifyAndHealRoutes(speakers: [String], backend: AppleScriptBackend,
             lines.append("· \(speaker): could not resolve IP via Bonjour — routed but unverified.")
             continue
         }
-        // Fast path: the route may already be established (e.g. resuming on
-        // the already-routed speaker — pause does not tear down an AirPlay
-        // session, so the delta poll would see no churn and time out into an
-        // unnecessary heal). The steady-state fingerprint costs one netstat
-        // read and cannot pass for a just-torn-down route (teardown removes
-        // the session's second :7000 connection — spike evidence).
-        if let steady = try? verifier.steadyState(ip: ip), steady.verified {
-            lines.append("✓ \(speaker) verified (\(steady.evidence))")
+        // Fast path inside check(): the route may already be established (e.g.
+        // resuming on the already-routed speaker — pause does not tear down an
+        // AirPlay session, so the delta poll would see no churn and time out
+        // into an unnecessary heal). Only a real negative heals: an unreadable
+        // connection table or an errored read says nothing about the route,
+        // and healing on it rerouted working speakers (2026-10-31).
+        let verdict: RouteVerdict
+        switch verifier.check(ip: ip, baseline: baseline) {
+        case .verified(let evidence):
+            lines.append("✓ \(speaker) verified (\(evidence))")
             continue
-        }
-        let verdict = (try? verifier.verifyEstablishment(ip: ip, baseline: baseline))
-            ?? RouteVerdict(verified: false, evidence: "verification errored", advisory: nil)
-        if verdict.verified {
-            lines.append("✓ \(speaker) verified (\(verdict.evidence))")
+        case .notChecked(let reason):
+            lines.append("· \(speaker): route not checked — \(reason).")
             continue
+        case .failed(let failed):
+            verdict = failed
         }
         // No computer device identified (Music scripting degraded) — healing
         // needs a real away-target; say so instead of attempting a heal

@@ -1858,11 +1858,15 @@ final class SpeakersScene: Scene {
                 DispatchQueue.global().async {
                     defer { self.routeCheckFinishedForTest?() }
                     let message: String?
+                    // A read error is not evidence either way: a plain note,
+                    // never the error toast that calls a working speaker broken.
+                    var isError = true
                     do {
                         let verdict = try verifier.verifyEstablishment(ip: ip, baseline: baseline, timeout: 3.0)
                         message = verdict.verified ? nil : "'\(name)' selected but route NOT verified — try: music speaker wake"
                     } catch {
-                        message = "Couldn't verify '\(name)' route (network read failed)."
+                        message = "'\(name)' selection requested; route not checked"
+                        isError = false
                     }
                     // Paused or stopped meanwhile: the route was torn down on
                     // purpose, so a "NOT verified" now would be about the pause.
@@ -1871,7 +1875,7 @@ final class SpeakersScene: Scene {
                     let sameOutput = self.routing.epoch == outputEpoch
                     self.routeCheckLock.lock()
                     if self.routeCheckSerial == serial, sameOutput, stillPlaying, let message {
-                        self.status.post(message, error: true)
+                        self.status.post(message, error: isError)
                     }
                     self.routeCheckLock.unlock()
                 }
@@ -1886,7 +1890,11 @@ final class SpeakersScene: Scene {
                     // an error that would call a working speaker broken.
                     self.status.post("'\(name)' selection requested; route not checked")
                 } else if current, preparation?.playing == true {
-                    throw ActionError(message: "'\(name)' selected, but its route couldn't be verified.")
+                    // No address, or the connection table can't be read from
+                    // this session (macOS 27 under tmux/SSH, 2026-10-31): the
+                    // selection was sent and nothing was measured. Unknown is
+                    // not broken, so the note is plain.
+                    self.status.post("'\(name)' selection requested; route not checked")
                 }
             }
         }

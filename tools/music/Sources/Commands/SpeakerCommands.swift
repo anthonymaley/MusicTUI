@@ -214,6 +214,14 @@ func executeSpeakerAction(_ action: SpeakerAction, json: Bool) throws {
         let routed = devices
             .filter { ($0["selected"] as? Bool == true) && ($0["kind"] as? String != "computer") }
             .compactMap { $0["name"] as? String }
+        // No readable connection table → every verdict would be a guess, and
+        // guessing "broken" tore down working routes (2026-10-31). Say so and
+        // leave the routes alone.
+        if !routed.isEmpty && !verifier.connectionTableReadable() {
+            print("Route check unavailable here (\(ConnectionTableUnavailable().errorDescription ?? "connection table unreadable")) — nothing reset.")
+            print("Manual fix if a speaker is silent: click the AirPlay icon in Music, deselect and reselect it.")
+            return
+        }
         var broken: Set<String> = []
         for speaker in routed {
             guard let ip = verifier.resolver.resolveIP(forSpeaker: speaker) else {

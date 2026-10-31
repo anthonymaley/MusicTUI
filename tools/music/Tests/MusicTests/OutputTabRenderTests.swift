@@ -460,7 +460,33 @@ final class OutputTabRenderTests: XCTestCase {
         for _ in 0..<row { _ = s.handle(.down) }
         _ = s.handle(.enter)
         actions.waitUntilIdle()
-        XCTAssertTrue(status.current()?.text.contains("couldn't be verified") == true)
+        // Unknown is not broken (2026-10-31): a plain note, never an error.
+        let shown = status.current()
+        XCTAssertTrue(shown?.text.contains("selection requested; route not checked") == true, "\(String(describing: shown?.text))")
+        XCTAssertEqual(shown?.isError, false)
+    }
+
+    // macOS 27 under tmux/SSH: netstat returns no TCP rows (2026-10-31). The
+    // TUI used to call the working speaker's route unverifiable, as an error.
+    func testAnUnreadableConnectionTableIsANoteNotAnError() {
+        struct Fixed: SpeakerIPResolving { func resolveIP(forSpeaker name: String) -> String? { "192.168.1.208" } }
+        let status = StatusStore(), actions = ActionRunner(status: status)
+        let speaker: [[String: Any]] = [["name": "Sonos arc", "selected": false, "volume": 33, "kind": "AirPlay device"]]
+        let s = makeOutputTabScene(dir: dir, mode: .musicApp, spandac: nil, speakers: speaker,
+                                   status: status, actions: actions, routePlaying: { _ in true },
+                                   makeRouteVerifier: {
+                                       RouteVerifier(resolver: Fixed(),
+                                                     connectionSource: { throw ConnectionTableUnavailable() },
+                                                     pollInterval: 0)
+                                   })
+        settleOutputTab(s, speakers: 1)
+        guard let row = s.displayRowsForTest.firstIndex(of: .speaker(0)) else { XCTFail("speaker missing"); return }
+        for _ in 0..<row { _ = s.handle(.down) }
+        _ = s.handle(.enter)
+        actions.waitUntilIdle()
+        let shown = status.current()
+        XCTAssertTrue(shown?.text.contains("selection requested; route not checked") == true, "\(String(describing: shown?.text))")
+        XCTAssertEqual(shown?.isError, false)
     }
 
     // A pre-check that misses its head start (cold Bonjour + player read measured

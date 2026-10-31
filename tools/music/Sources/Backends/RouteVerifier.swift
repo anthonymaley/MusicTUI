@@ -65,6 +65,35 @@ func remoteIPMatches(_ row: String, resolved: String) -> Bool {
 
 // MARK: - Live reader
 
+/// A table with no TCP rows at all is WITHHELD, not empty: a Mac always holds
+/// listening and established sockets. Measured 2026-10-31 on macOS 27.0.1:
+/// unprivileged netstat run from processes under the Studio's tmux server
+/// printed zero rows with exit 0, while a launchd job saw 450. Reading that as
+/// "no connections to the speaker" called working routes broken and fired the
+/// heal ladder at them, so it throws and callers report "route not checked".
+struct ConnectionTableUnavailable: Error, LocalizedError {
+    var errorDescription: String? { "this session can't read the connection table (no TCP rows returned)" }
+}
+
+/// Parse, refusing a table with no TCP rows (see ConnectionTableUnavailable).
+func parseNetstatTCPChecked(_ raw: String) throws -> [TCPConnection] {
+    let hasTCPRow = raw.components(separatedBy: "\n").contains {
+        $0.trimmingCharacters(in: .whitespaces).hasPrefix("tcp")
+    }
+    guard hasTCPRow else { throw ConnectionTableUnavailable() }
+    return parseNetstatTCP(raw)
+}
+
+/// A resolved speaker "ip" may carry several addresses joined by commas
+/// (IPv4 and IPv6 of one device): AirPlay sessions on macOS 27 run over the
+/// speaker's IPv6 link-local address even when its IPv4 address resolves
+/// first (probe 2026-10-31, Sonos arc and every other device on the LAN), so
+/// matching one family missed every route. A single address is a one-element
+/// set, so cached single-address entries keep working.
+func speakerAddresses(_ ip: String) -> [String] {
+    ip.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+}
+
 /// netstat failing must throw — silently returning an empty table would read
 /// as "no connections to the device", a false broken-route verdict.
 struct NetstatError: Error, LocalizedError {
@@ -72,9 +101,10 @@ struct NetstatError: Error, LocalizedError {
     var errorDescription: String? { "netstat exited with status \(status) — cannot read the connection table" }
 }
 
-/// All ESTABLISHED TCP connections, system-wide. netstat shows every
+/// All ESTABLISHED TCP connections, system-wide. netstat usually shows every
 /// socket without root — the AirPlay session is held by a system daemon,
-/// not the Music process (spike: Music holds zero TCP sockets).
+/// not the Music process (spike: Music holds zero TCP sockets) — but some
+/// launch contexts get no rows at all (ConnectionTableUnavailable).
 func readEstablishedTCPConnections() throws -> [TCPConnection] {
     let process = Process()
     process.executableURL = URL(fileURLWithPath: "/usr/sbin/netstat")
@@ -88,10 +118,16 @@ func readEstablishedTCPConnections() throws -> [TCPConnection] {
     if process.terminationStatus != 0 {
         throw NetstatError(status: process.terminationStatus)
     }
-    return parseNetstatTCP(String(data: data, encoding: .utf8) ?? "")
+    return try parseNetstatTCPChecked(String(data: data, encoding: .utf8) ?? "")
 }
 
 // MARK: - Verdicts
+
+enum RouteCheck {
+    case verified(String)
+    case notChecked(String)
+    case failed(RouteVerdict)
+}
 
 struct RouteVerdict {
     let verified: Bool
@@ -109,7 +145,32 @@ struct RouteVerifier {
     var pollInterval: TimeInterval = 0.5
 
     func snapshot(ip: String) throws -> Set<TCPConnection> {
-        Set(try connectionSource().filter { remoteIPMatches($0.remoteIP, resolved: ip) })
+        let addresses = speakerAddresses(ip)
+        return Set(try connectionSource().filter { row in
+            addresses.contains { remoteIPMatches(row.remoteIP, resolved: $0) }
+        })
+    }
+
+    /// Whether this session can read the connection table at all. False means
+    /// any verdict would be a guess: report "not checked", never heal.
+    func connectionTableReadable() -> Bool {
+        (try? connectionSource()) != nil
+    }
+
+    /// One route check with the three honest outcomes. Only `.failed` is
+    /// evidence of a broken route; `.notChecked` (table unreadable, every
+    /// sample errored) must never trigger a heal or an error.
+    func check(ip: String, baseline: Set<TCPConnection>, timeout: TimeInterval = 5.0) -> RouteCheck {
+        guard connectionTableReadable() else {
+            return .notChecked(ConnectionTableUnavailable().errorDescription ?? "connection table unreadable")
+        }
+        if let steady = try? steadyState(ip: ip), steady.verified { return .verified(steady.evidence) }
+        do {
+            let verdict = try verifyEstablishment(ip: ip, baseline: baseline, timeout: timeout)
+            return verdict.verified ? .verified(verdict.evidence) : .failed(verdict)
+        } catch {
+            return .notChecked(error.localizedDescription)
+        }
     }
 
     /// Delta mode: after a route operation, poll until fresh connections

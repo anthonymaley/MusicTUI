@@ -80,17 +80,25 @@ struct BonjourSpeakerResolver: SpeakerIPResolving {
         let box = LockedBox<String?>(nil)
         let sema = DispatchSemaphore(value: 0)
         DispatchQueue.global(qos: .utility).async {
-            // IPv4-only by design: all spike evidence is IPv4; IPv6-only devices fall through to the browse path.
-            var hints = addrinfo(ai_flags: 0, ai_family: AF_INET, ai_socktype: SOCK_STREAM,
+            // Every family: AirPlay on macOS 27 talks to speakers over IPv6
+            // link-local even when IPv4 resolves (probe 2026-10-31), so the
+            // verifier needs all of a device's addresses (joinAddresses).
+            var hints = addrinfo(ai_flags: 0, ai_family: AF_UNSPEC, ai_socktype: SOCK_STREAM,
                                  ai_protocol: 0, ai_addrlen: 0, ai_canonname: nil, ai_addr: nil, ai_next: nil)
             var result: UnsafeMutablePointer<addrinfo>?
-            guard getaddrinfo(host, nil, &hints, &result) == 0, let info = result else { sema.signal(); return }
+            guard getaddrinfo(host, nil, &hints, &result) == 0, result != nil else { sema.signal(); return }
             defer { freeaddrinfo(result) }
-            var buffer = [CChar](repeating: 0, count: Int(NI_MAXHOST))
-            if getnameinfo(info.pointee.ai_addr, info.pointee.ai_addrlen,
-                           &buffer, socklen_t(buffer.count), nil, 0, NI_NUMERICHOST) == 0 {
-                box.set(String(cString: buffer))
+            var found: [String] = []
+            var cursor = result
+            while let info = cursor {
+                var buffer = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+                if getnameinfo(info.pointee.ai_addr, info.pointee.ai_addrlen,
+                               &buffer, socklen_t(buffer.count), nil, 0, NI_NUMERICHOST) == 0 {
+                    found.append(String(cString: buffer))
+                }
+                cursor = info.pointee.ai_next
             }
+            box.set(joinAddresses(found))
             sema.signal()
         }
         _ = sema.wait(timeout: .now() + timeout)
@@ -121,7 +129,36 @@ struct BonjourSpeakerResolver: SpeakerIPResolving {
         browser.cancel()
         guard let endpoint = found.get() else { return nil }
 
-        let conn = NWConnection(to: endpoint, using: .tcp)
+        // One throwaway connection per IP family, concurrently: a single
+        // connection reports whichever family won, and the AirPlay session
+        // may run over the other one (2026-10-31: the Arc resolved IPv4 while
+        // its session was IPv6 link-local).
+        // The first family to answer bounds the wait; the other gets a short
+        // grace, so a family that never connects cannot push the resolve past
+        // the caller's race deadline.
+        let addresses = LockedBox<[String]>([])
+        let finished = DispatchSemaphore(value: 0)
+        for version in [NWProtocolIP.Options.Version.v4, .v6] {
+            DispatchQueue.global().async {
+                if let ip = connectAndReadRemoteIP(endpoint, version: version, timeout: timeout) {
+                    addresses.set(addresses.get() + [ip])
+                }
+                finished.signal()
+            }
+        }
+        if finished.wait(timeout: .now() + timeout) == .success {
+            _ = finished.wait(timeout: .now() + 0.3)
+        }
+        return joinAddresses(addresses.get())
+    }
+
+    private static func connectAndReadRemoteIP(_ endpoint: NWEndpoint, version: NWProtocolIP.Options.Version,
+                                               timeout: TimeInterval) -> String? {
+        let params = NWParameters.tcp
+        if let ipOptions = params.defaultProtocolStack.internetProtocol as? NWProtocolIP.Options {
+            ipOptions.version = version
+        }
+        let conn = NWConnection(to: endpoint, using: params)
         let ip = LockedBox<String?>(nil)
         let rsema = DispatchSemaphore(value: 0)
         conn.stateUpdateHandler = { [weak conn] state in
@@ -135,7 +172,8 @@ struct BonjourSpeakerResolver: SpeakerIPResolving {
                     }
                 }
                 rsema.signal()
-            case .failed, .cancelled:
+            case .failed, .cancelled, .waiting:
+                // .waiting: no path for this family right now; done, not pending.
                 rsema.signal()
             default: break
             }
@@ -143,12 +181,21 @@ struct BonjourSpeakerResolver: SpeakerIPResolving {
         conn.start(queue: .global())
         _ = rsema.wait(timeout: .now() + timeout)
         conn.cancel()
-        // Network.framework may suffix IPv6 with a zone (%en0) — strip it,
-        // netstat prints bare addresses.
-        guard let raw = ip.get() else { return nil }
-        if let zone = raw.firstIndex(of: "%") { return String(raw[..<zone]) }
-        return raw
+        return ip.get()
     }
+}
+
+/// Distinct addresses, zone suffix stripped (netstat prints bare addresses;
+/// Network.framework and getnameinfo add `%en0`), joined by commas for the
+/// verifier (speakerAddresses). nil when there are none.
+func joinAddresses(_ raw: [String]) -> String? {
+    var seen: [String] = []
+    for address in raw {
+        var bare = address.trimmingCharacters(in: .whitespaces)
+        if let zone = bare.firstIndex(of: "%") { bare = String(bare[..<zone]) }
+        if !bare.isEmpty, !seen.contains(bare) { seen.append(bare) }
+    }
+    return seen.isEmpty ? nil : seen.joined(separator: ",")
 }
 
 /// Read-through cache over any resolver. name→IP is memoized in ResultCache —
