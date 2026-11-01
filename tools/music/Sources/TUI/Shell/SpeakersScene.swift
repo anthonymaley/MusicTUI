@@ -93,6 +93,12 @@ enum StopUsingPlacement: Equatable {
     case top
 }
 
+extension OutputTabRow {
+    /// Speaker rows are keyed by position, so the same case can name a
+    /// different speaker after the list changes; callers match those by name.
+    var isSpeaker: Bool { if case .speaker = self { return true }; return false }
+}
+
 func outputTabRows(speakerCount: Int, expanded: Bool, presetNames: [String],
                    spandacIDs: [String] = [], macRow: Bool = true,
                    stopUsing: StopUsingPlacement = .none) -> [OutputTabRow] {
@@ -358,6 +364,11 @@ final class SpeakersScene: Scene {
 
     /// Test-only: the rows the cursor can reach, in order.
     var displayRowsForTest: [OutputTabRow] { displayRows }
+    /// Test-only: the row the cursor is on.
+    var cursorRowForTest: OutputTabRow? {
+        let d = displayRows
+        return d.indices.contains(cursor) ? d[cursor] : nil
+    }
 
     /// Test-only: the coordinator this tab switches through.
     var routingForTest: RoutingCoordinator { routing }
@@ -1040,10 +1051,13 @@ final class SpeakersScene: Scene {
             if fresh.startedAt > lastMutation {
                 speakerFetchFailed = fresh.speakers == nil
                 if let fetchedRows = fresh.speakers {
-                    // Keep the cursor on the same speaker, by name, if it was on one.
+                    // Keep the cursor on the same speaker, by name, if it was
+                    // on one, and on the same row otherwise: a list that grows
+                    // or shrinks shifts every row below it.
                     let before = displayRows
+                    let beforeRow = before.indices.contains(cursor) ? before[cursor] : nil
                     var cursorName: String? = nil
-                    if before.indices.contains(cursor), case .speaker(let i) = before[cursor], rows.indices.contains(i) {
+                    if case .speaker(let i)? = beforeRow, rows.indices.contains(i) {
                         cursorName = rows[i].name
                     }
                     rows = fetchedRows
@@ -1051,6 +1065,8 @@ final class SpeakersScene: Scene {
                     let after = displayRows
                     if let cursorName, let i = rows.firstIndex(where: { $0.name == cursorName }),
                        let at = after.firstIndex(of: .speaker(i)) {
+                        cursor = at
+                    } else if let beforeRow, !beforeRow.isSpeaker, let at = after.firstIndex(of: beforeRow) {
                         cursor = at
                     }
                     if cursor >= after.count { cursor = max(0, after.count - 1) }
@@ -1064,8 +1080,20 @@ final class SpeakersScene: Scene {
             appliedExtrasSerial = fresh.serial
             if fresh.serial == fetchSerial { fetchInFlight = false }
             if fresh.startedAt > lastMutation {
+                // Installed presets arriving or leaving change the picker's
+                // rows; keep the cursor on the row it was on (Codex round 2:
+                // a preset inserted above Visualizer left Enter on the preset).
+                let before = displayRows
+                let beforeRow = before.indices.contains(cursor) ? before[cursor] : nil
                 if let eq = fresh.eq { eqState = eq }
                 if let vis = fresh.visualizer { visualizerOn = vis }
+                let after = displayRows
+                if let beforeRow, let at = after.firstIndex(of: beforeRow) {
+                    cursor = at
+                } else if case .preset? = beforeRow, let at = after.firstIndex(of: .eq) {
+                    cursor = at                 // its preset went away: back to the picker
+                }
+                if cursor >= after.count { cursor = max(0, after.count - 1) }
                 changed = true
             }
         }

@@ -161,4 +161,84 @@ final class SpeakersListFirstTests: XCTestCase {
         for _ in 0..<5 { _ = s.tick(snapshot: outputTabSnapshot()) }
         XCTAssertEqual(s.eqStateForTest?.current, "New")
     }
+
+    // Codex round 2 (77f2e2b8): with the list landing early, the person can
+    // move around before EQ lands; rows inserted or removed by that late
+    // answer must not move the highlight onto a different action.
+
+    private func moveCursor(_ s: SpeakersScene, to row: OutputTabRow) -> Bool {
+        for _ in 0..<60 {
+            if s.cursorRowForTest == row { return true }
+            _ = s.handle(.down)
+        }
+        return s.cursorRowForTest == row
+    }
+
+    func testALateEQAnswerInsertingPresetsKeepsTheCursorOnVisualizer() {
+        let eqStarted = DispatchSemaphore(value: 0), releaseEQ = DispatchSemaphore(value: 0)
+        let finished = DispatchSemaphore(value: 0)
+        let s = makeOutputTabScene(dir: dir, mode: .musicApp, spandac: nil, fetchSpeakers: { self.kitchen() },
+                                   fetchEQ: { _ in
+                                       eqStarted.signal(); _ = releaseEQ.wait(timeout: .now() + 3)
+                                       return EQSnapshot(enabled: true, current: "My Custom",
+                                                         presets: ["My Custom", "Another Custom"])
+                                   })
+        s.fetchFinishedForTest = { _ in finished.signal() }
+        defer { releaseEQ.signal() }
+        _ = s.tick(snapshot: outputTabSnapshot())
+        XCTAssertEqual(eqStarted.wait(timeout: .now() + 2), .success)
+        XCTAssertTrue(tickUntil(s) { s.speakerRowsForTest.count == 1 })
+        XCTAssertTrue(moveCursor(s, to: .eq))
+        _ = s.handle(.enter)                         // expand the picker
+        XCTAssertTrue(moveCursor(s, to: .visualizer))
+        releaseEQ.signal()
+        XCTAssertEqual(finished.wait(timeout: .now() + 2), .success)
+        XCTAssertTrue(tickUntil(s) { s.eqStateForTest != nil })
+        XCTAssertTrue(s.displayRowsForTest.contains(.preset("My Custom")), "the custom presets were not inserted")
+        XCTAssertEqual(s.cursorRowForTest, .visualizer)
+    }
+
+    func testAPresetThatDisappearsMovesTheCursorToTheEQRow() {
+        let lock = NSLock(); var eqCalls = 0
+        let finished = DispatchSemaphore(value: 0)
+        let eqStarted = DispatchSemaphore(value: 0), releaseEQ = DispatchSemaphore(value: 0)
+        var now = Date(timeIntervalSince1970: 1000)
+        let s = makeOutputTabScene(dir: dir, mode: .musicApp, spandac: nil, fetchSpeakers: { self.kitchen() },
+                                   fetchNow: { now }, fetchEQ: { _ in
+                                       lock.lock(); eqCalls += 1; let call = eqCalls; lock.unlock()
+                                       if call == 1 { return EQSnapshot(enabled: true, current: nil, presets: ["Gone", "Stays"]) }
+                                       eqStarted.signal(); _ = releaseEQ.wait(timeout: .now() + 3)
+                                       return EQSnapshot(enabled: true, current: nil, presets: ["Stays"])
+                                   })
+        s.fetchFinishedForTest = { _ in finished.signal() }
+        defer { releaseEQ.signal() }
+        _ = s.tick(snapshot: outputTabSnapshot())
+        XCTAssertEqual(finished.wait(timeout: .now() + 2), .success)
+        XCTAssertTrue(tickUntil(s) { s.eqStateForTest != nil })
+        XCTAssertTrue(moveCursor(s, to: .eq))
+        _ = s.handle(.enter)
+        XCTAssertTrue(moveCursor(s, to: .preset("Gone")))
+        now.addTimeInterval(6)
+        _ = s.tick(snapshot: outputTabSnapshot())
+        XCTAssertEqual(eqStarted.wait(timeout: .now() + 2), .success)
+        releaseEQ.signal()
+        XCTAssertEqual(finished.wait(timeout: .now() + 2), .success)
+        XCTAssertTrue(tickUntil(s) { !s.displayRowsForTest.contains(.preset("Gone")) })
+        XCTAssertEqual(s.cursorRowForTest, .eq)
+    }
+
+    func testTheListLandingKeepsTheCursorOnARowBelowIt() {
+        let started = DispatchSemaphore(value: 0), release = DispatchSemaphore(value: 0)
+        let s = makeOutputTabScene(dir: dir, mode: .musicApp, spandac: nil, fetchSpeakers: {
+            started.signal(); _ = release.wait(timeout: .now() + 3)
+            return (0..<3).map { ["name": "Room \($0)", "selected": false, "volume": 20, "kind": "speaker"] }
+        })
+        defer { release.signal() }
+        _ = s.tick(snapshot: outputTabSnapshot())
+        XCTAssertEqual(started.wait(timeout: .now() + 2), .success)
+        XCTAssertTrue(moveCursor(s, to: .visualizer))
+        release.signal()
+        XCTAssertTrue(tickUntil(s) { s.speakerRowsForTest.count == 3 })
+        XCTAssertEqual(s.cursorRowForTest, .visualizer)
+    }
 }
