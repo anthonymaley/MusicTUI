@@ -203,7 +203,9 @@ final class SpanDACSwitchOutputTabTests: XCTestCase {
                                           spandacRow(ipad, "Studio iPad", .notPaired(pairable: true), paired: false)])
         let s = scene(data: .none, answer: MacAnswer(notRunning), starter: starter, outputs: outputs,
                       speakers: [["name": "Kitchen", "selected": true, "volume": 50]])
-        XCTAssertTrue(tick(s) { s.displayRowsForTest.first == .speaker(0) }, "\(s.displayRowsForTest)")
+        // The stand-in under the starting highlight is held when the list lands
+        // (SpeakersHeldRowTests); the speakers are what this test waits for.
+        XCTAssertTrue(tick(s) { s.displayRowsForTest.contains(.speaker(0)) }, "\(s.displayRowsForTest)")
 
         let wide = lines(s)
         let text = wide.joined(separator: "\n")

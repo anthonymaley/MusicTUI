@@ -76,6 +76,13 @@ enum OutputTabRow: Equatable {
     /// SpanDAC output waits on the switch).
     case stopUsingSpanDAC
     case speaker(Int)        // index into the SpeakerRow array
+    /// The row the highlight was on when a list update took it away: a
+    /// speaker that left the AirPlay list, or the stand-in the first list
+    /// replaced. It carries the name it had, never an index into the speaker
+    /// array, acts on no key, and goes the moment the person moves (Codex
+    /// round 3, 5c2219a8: a kept row number landed on a row they never picked,
+    /// and every row acts on Enter).
+    case held(String)
     case eqPower
     case eq
     case preset(String)
@@ -97,19 +104,27 @@ extension OutputTabRow {
     /// Speaker rows are keyed by position, so the same case can name a
     /// different speaker after the list changes; callers match those by name.
     var isSpeaker: Bool { if case .speaker = self { return true }; return false }
+    var isHeld: Bool { if case .held = self { return true }; return false }
 }
 
 func outputTabRows(speakerCount: Int, expanded: Bool, presetNames: [String],
                    spandacIDs: [String] = [], macRow: Bool = true,
-                   stopUsing: StopUsingPlacement = .none) -> [OutputTabRow] {
+                   stopUsing: StopUsingPlacement = .none,
+                   held: (name: String, slot: Int)? = nil) -> [OutputTabRow] {
     var rows: [OutputTabRow] = stopUsing == .top ? [.stopUsingSpanDAC] : []
     if macRow { rows.append(.spandacMac) }
     rows += spandacIDs.map { .spandac($0) }
     if stopUsing == .endOfSection { rows.append(.stopUsingSpanDAC) }
+    let speakersStart = rows.count
     if speakerCount == 0 {
         rows.append(.musicApp)
     } else {
         rows += (0..<speakerCount).map { .speaker($0) }
+    }
+    // In the speaker section, where the row it stands for was, as far as the
+    // shorter list allows.
+    if let held {
+        rows.insert(.held(held.name), at: speakersStart + min(max(0, held.slot), speakerCount))
     }
     rows.append(.eqPower)
     rows.append(.eq)
@@ -342,6 +357,8 @@ final class SpeakersScene: Scene {
             return "\(move)   \(enter)\(volume)   \(always)"
         case .musicApp?:
             return "\(move)   Enter Use \(musicTUIOutputName)   \(always)"
+        case .held?:
+            return "\(move)   \(always)"
         case .eq?, .preset?:
             return "\(move)   Enter Select   \u{2190}\u{2192} Preset   \(always)"
         case .eqPower?, .visualizer?, nil:
@@ -359,7 +376,16 @@ final class SpeakersScene: Scene {
         return outputTabRows(speakerCount: rows.count, expanded: eqExpanded,
                              presetNames: pickerPresetNames, spandacIDs: switched ? spandacIDs : [],
                              macRow: switched || macDataState != .notInstalled,
-                             stopUsing: stopUsingPlacement)
+                             stopUsing: stopUsingPlacement,
+                             held: held.map { ($0.name, $0.slot) })
+    }
+
+    /// The held row owns the highlight: rows coming or going above it (a
+    /// SpanDAC appearing, the Mac row, a data switch) must not move the
+    /// highlight off it onto a row the person never picked.
+    private func anchorHeld() {
+        guard held != nil else { return }
+        if let i = displayRows.firstIndex(where: \.isHeld) { cursor = i } else { held = nil }
     }
 
     /// Test-only: the rows the cursor can reach, in order.
@@ -549,6 +575,18 @@ final class SpeakersScene: Scene {
     private var eqTarget: String? = nil
     private var rows: [SpeakerRow] = []
     private var cursor = 0
+    /// The held row, while the highlight is on it (see `OutputTabRow.held`).
+    /// `slot` is where its row was in the speaker section. Only an accepted
+    /// speaker list creates or clears it; a failed or fenced read does neither.
+    private struct HeldRow {
+        let name: String
+        let standIn: Bool
+        let slot: Int
+        /// Its name was shared, so no later list can say which speaker it was:
+        /// it never turns live by name, only by the person moving.
+        var ambiguous = false
+    }
+    private var held: HeldRow? = nil
     private var eqState: EQSnapshot? = nil
     private var eqExpanded = false
     private var visualizerOn: Bool? = nil
@@ -987,6 +1025,7 @@ final class SpeakersScene: Scene {
                     let display = displayRows
                     if let cursorID, let i = display.firstIndex(of: .spandac(cursorID)) { cursor = i }
                     if cursor >= display.count { cursor = max(0, display.count - 1) }
+                    anchorHeld()
                 }
             }
         }
@@ -1053,20 +1092,69 @@ final class SpeakersScene: Scene {
                 if let fetchedRows = fresh.speakers {
                     // Keep the cursor on the same speaker, by name, if it was
                     // on one, and on the same row otherwise: a list that grows
-                    // or shrinks shifts every row below it.
+                    // or shrinks shifts every row below it. When the row under
+                    // it is gone (the speaker left the list, or the first list
+                    // replaced the stand-in) it stays on a held row until the
+                    // person moves: a kept row number would land on a row they
+                    // never picked, and every row acts on Enter.
                     let before = displayRows
                     let beforeRow = before.indices.contains(cursor) ? before[cursor] : nil
-                    var cursorName: String? = nil
-                    if case .speaker(let i)? = beforeRow, rows.indices.contains(i) {
-                        cursorName = rows[i].name
+                    var target: OutputTabRow? = nil
+                    switch beforeRow {
+                    case .speaker(let i)? where rows.indices.contains(i):
+                        // By name only while the name says which speaker it is:
+                        // unique in both lists. A shared name cannot (Codex round
+                        // 2, 503eddd2), except across an unchanged list, or
+                        // speakers sharing a name would be held every refresh.
+                        let name = rows[i].name
+                        let oldNames = rows.map(\.name)
+                        let newMatches = fetchedRows.indices.filter { fetchedRows[$0].name == name }
+                        let sharedBefore = oldNames.filter { $0 == name }.count > 1
+                        if oldNames == fetchedRows.map(\.name) {
+                            target = .speaker(i)
+                        } else if newMatches.count == 1, !sharedBefore {
+                            target = .speaker(newMatches[0])
+                        } else {
+                            held = HeldRow(name: name, standIn: false, slot: i,
+                                           ambiguous: sharedBefore || newMatches.count > 1)
+                        }
+                    case .held?:
+                        if let h = held {
+                            if h.standIn {
+                                if fetchedRows.isEmpty { held = nil; target = .musicApp }
+                            } else {
+                                // Back under its name: live again. Two by that
+                                // name cannot say which one it was (the Music
+                                // write is by name too), so it stays held.
+                                // Once a list has shown two by that name, no later
+                                // list can say which one it was (Codex round 3).
+                                let same = fetchedRows.indices.filter { fetchedRows[$0].name == h.name }
+                                if same.count > 1 {
+                                    held?.ambiguous = true
+                                } else if same.count == 1, !h.ambiguous {
+                                    held = nil; target = .speaker(same[0])
+                                }
+                            }
+                        }
+                    case .musicApp?:
+                        // Also where the tab starts with no SpanDAC on this Mac:
+                        // still a visible highlight (Codex round 2, 503eddd2).
+                        if fetchedRows.isEmpty {
+                            target = .musicApp
+                        } else {
+                            held = HeldRow(name: musicTUIOutputName, standIn: true, slot: 0)
+                        }
+                    case let row?:
+                        target = row
+                    case nil:
+                        break
                     }
                     rows = fetchedRows
                     everLoaded = true
                     let after = displayRows
-                    if let cursorName, let i = rows.firstIndex(where: { $0.name == cursorName }),
-                       let at = after.firstIndex(of: .speaker(i)) {
-                        cursor = at
-                    } else if let beforeRow, !beforeRow.isSpeaker, let at = after.firstIndex(of: beforeRow) {
+                    if held != nil {
+                        anchorHeld()
+                    } else if let target, let at = after.firstIndex(of: target) {
                         cursor = at
                     }
                     if cursor >= after.count { cursor = max(0, after.count - 1) }
@@ -1156,6 +1244,7 @@ final class SpeakersScene: Scene {
                 self.fetchFinishedForTest?(serial)
             }
         }
+        anchorHeld()
         return changed
     }
 
@@ -1560,6 +1649,20 @@ final class SpeakersScene: Scene {
                 out += "\(marker) \(dot(row.active, dimmed: spanDACPlaying)) \(nameStr) \(bar) \(volStr)"
                 y += 1
 
+            case .held(let name):
+                closeSpanDACSection()
+                if isCursor { focusY = y }
+                guard y <= bottom else { break }
+                let shown = speakerNameW <= 1 ? String(name.prefix(speakerNameW)) : truncText(name, to: speakerNameW)
+                let padName = shown + String(repeating: " ", count: max(0, speakerNameW - shown.count))
+                let nameStr = isCursor ? "\(ANSICode.inverse)\(padName)\(ANSICode.reset)"
+                                       : "\(ANSICode.dim)\(padName)\(ANSICode.reset)"
+                let note = held?.standIn == true ? "speakers listed \u{00B7} move to choose"
+                                                 : "gone \u{00B7} move to choose"
+                out += ANSICode.moveTo(row: y, col: 3)
+                out += "  \(dot(false, dimmed: true)) \(nameStr) \(ANSICode.dim)\(truncText(note, to: max(0, frame.width - 10 - speakerNameW)))\(ANSICode.reset)"
+                y += 1
+
             case .eqPower:
                 closeSpanDACSection()
                 // Blank line before the EQ block when space allows.
@@ -1685,6 +1788,7 @@ final class SpeakersScene: Scene {
             }
         }
         // Rows can come and go with the data axis; keep the cursor on one.
+        anchorHeld()
         if cursor >= displayRows.count { cursor = max(0, displayRows.count - 1) }
 
         // Vim aliases: j/k/h/l/g/G/ctrl-d/ctrl-u — this scene has no raw-text
@@ -1719,9 +1823,41 @@ final class SpeakersScene: Scene {
                 // Clamp cursor: it may have been on a preset row that no longer exists.
                 let collapsed = self.displayRows
                 if cursor >= collapsed.count { cursor = max(0, collapsed.count - 1) }
+                anchorHeld()
                 return .redraw
             }
             return .pop
+        }
+
+        // Moving off the held row removes it, and the move resolves in the
+        // list without it, so taking it away is never an extra step: Down
+        // lands on the row that followed it, Up on the row before it. A move
+        // with nowhere to go leaves it where it is.
+        if let saved = held, let h = displayRows.firstIndex(where: \.isHeld) {
+            var target: Int?? = nil   // nil: not a move; .some(nil): nowhere to go
+            held = nil
+            let count = self.displayRows.count
+            switch key {
+            case .up: target = .some(h > 0 ? h - 1 : nil)
+            case .down: target = .some(h < count ? h : nil)
+            case .pageUp: target = .some(h > 0 ? max(0, h - 5) : nil)
+            case .pageDown: target = .some(h < count ? min(count - 1, h + 4) : nil)
+            case .home: target = .some(count > 0 ? 0 : nil)
+            case .end: target = .some(count > 0 ? count - 1 : nil)
+            default: break
+            }
+            switch target {
+            case .some(.some(let to)):
+                cursor = to
+                return .redraw
+            case .some(.none):
+                held = saved
+                anchorHeld()
+                return .none
+            case .none:
+                held = saved
+                anchorHeld()
+            }
         }
 
         switch key {
@@ -1828,7 +1964,7 @@ final class SpeakersScene: Scene {
             case .visualizer:
                 toggleVisualizer()
                 return .redraw
-            case nil:
+            case .held, nil:
                 return .none
             }
         case .left:
