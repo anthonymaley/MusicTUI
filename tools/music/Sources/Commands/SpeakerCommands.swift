@@ -459,25 +459,101 @@ func parseSpeakerDeviceBlocksChecked(_ raw: String) -> [[String: Any]]? {
 func fetchSpeakerDevices() throws -> [[String: Any]] {
     let backend = AppleScriptBackend()
     let result = try backend.runMusicBlocking("""
-            set astid to AppleScript's text item delimiters
-            set AppleScript's text item delimiters to linefeed
-            set ns to (name of every AirPlay device) as text
-            set sels to (selected of every AirPlay device) as text
-            set vols to (sound volume of every AirPlay device) as text
-            set ks to (kind of every AirPlay device) as text
-            set AppleScript's text item delimiters to astid
+            \(speakerDeviceReadLines)
             set sep to linefeed & "=====" & linefeed
             return ns & sep & sels & sep & vols & sep & ks
         """, timeout: 20)
     guard let devices = parseSpeakerDeviceBlocksChecked(result) else {
         throw ActionError(message: "Couldn't read the AirPlay speaker list.")
     }
-    if !devices.isEmpty {
-        let speakerResults = devices.enumerated().map { (i, d) in
-            SpeakerResult(index: i + 1, name: d["name"] as! String,
-                          selected: d["selected"] as! Bool, volume: d["volume"] as! Int)
-        }
-        try? ResultCache().writeSpeakers(speakerResults)
+    writeSpeakersCache(devices, to: ResultCache())
+    return devices
+}
+
+/// The four bulk reads, run inside a Music tell block. Shared by the CLI's
+/// `fetchSpeakerDevices` and the Output tab's `fetchOutputTabSpeakerDevices`.
+private let speakerDeviceReadLines = """
+    set astid to AppleScript's text item delimiters
+    set AppleScript's text item delimiters to linefeed
+    set ns to (name of every AirPlay device) as text
+    set sels to (selected of every AirPlay device) as text
+    set vols to (sound volume of every AirPlay device) as text
+    set ks to (kind of every AirPlay device) as text
+    set AppleScript's text item delimiters to astid
+    """
+
+/// Write-through so name resolution can skip the live round-trip. Music's
+/// own device volume, as before, whatever the Output tab shows.
+private func writeSpeakersCache(_ devices: [[String: Any]], to cache: ResultCache?) {
+    guard let cache, !devices.isEmpty else { return }
+    let speakerResults = devices.enumerated().map { (i, d) in
+        SpeakerResult(index: i + 1, name: d["name"] as! String,
+                      selected: d["selected"] as! Bool, volume: d["volume"] as! Int)
+    }
+    try? cache.writeSpeakers(speakerResults)
+}
+
+/// The Output tab's list read: the four bulk device reads plus the macOS
+/// output volume, in ONE osascript (no second launch per refresh).
+///
+/// On the laptop (macOS 27, built-in speakers, 2026-11-01) Music's own
+/// `sound volume` for the Mac's device moved and read back with no audible
+/// change; the macOS output volume is what you hear. So the row for the Mac's
+/// own output (kind "computer") shows and sets that instead.
+///
+/// `get volume settings` is a Standard Additions command and runs outside the
+/// Music tell block, so it is answered here, not sent to Music. Its `output
+/// volume` is missing value for an output with no software volume (some DACs,
+/// HDMI); that comes back as "missing value". A failing read is caught in the
+/// script and answered "unknown", so it never hides the AirPlay list.
+func fetchOutputTabSpeakerDevices(backend: AppleScriptBackend = AppleScriptBackend(),
+                                  cache: ResultCache? = ResultCache()) throws -> [[String: Any]] {
+    let result = try backend.runBlocking("""
+        tell application "Music"
+            \(speakerDeviceReadLines)
+        end tell
+        try
+            set ov to output volume of (get volume settings)
+            if ov is missing value then
+                set ovText to "missing value"
+            else
+                set ovText to ov as text
+            end if
+        on error
+            set ovText to "unknown"
+        end try
+        set sep to linefeed & "=====" & linefeed
+        return ns & sep & sels & sep & vols & sep & ks & sep & ovText
+        """, timeout: 20)
+    guard let devices = parseOutputTabSpeakerBlocks(result) else {
+        throw ActionError(message: "Couldn't read the AirPlay speaker list.")
+    }
+    writeSpeakersCache(devices, to: cache)
+    return devices
+}
+
+/// The four device blocks, then a fifth: the macOS output volume. It is put on
+/// every "computer" row as `outputVolume`: an Int 0...100, "missing" when the
+/// output has no software volume, or "unknown" for anything else (a failed
+/// read, a malformed or out-of-range answer). Never dropped: an absent value
+/// once let the row fall back to Music's unrelated number. A torn device list
+/// is nil, as before.
+func parseOutputTabSpeakerBlocks(_ raw: String) -> [[String: Any]]? {
+    // An empty fifth block with its trailing newline trimmed still separates.
+    let raw = raw.hasSuffix("\n") ? raw : raw + "\n"
+    guard let cut = raw.range(of: speakerBlockSeparator, options: .backwards),
+          var devices = parseSpeakerDeviceBlocksChecked(String(raw[..<cut.lowerBound])) else { return nil }
+    let tail = raw[cut.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines)
+    let outputVolume: Any
+    if tail == "missing value" {
+        outputVolume = "missing"
+    } else if let v = Int(tail), (0...100).contains(v) {
+        outputVolume = v
+    } else {
+        outputVolume = "unknown"
+    }
+    for i in devices.indices where devices[i]["kind"] as? String == "computer" {
+        devices[i]["outputVolume"] = outputVolume
     }
     return devices
 }
