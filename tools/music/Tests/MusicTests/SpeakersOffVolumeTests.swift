@@ -32,7 +32,7 @@ final class SpeakersOffVolumeTests: XCTestCase {
 
     /// Appends each script (`$2`, after `-e`) to a file, prints `reply`, and
     /// exits with `exit`. Stands in for Music's answer to the write.
-    private func recordingBackend(reply: String = "", exit: Int = 0) throws -> (AppleScriptBackend, scripts: () -> [String]) {
+    private func recordingBackend(reply: String = "set", exit: Int = 0) throws -> (AppleScriptBackend, scripts: () -> [String]) {
         let fake = dir + "/osascript"
         let record = dir + "/scripts.txt"
         let say = reply.isEmpty ? "" : "printf '%s\\n' '\(reply)'\n"
@@ -203,6 +203,22 @@ final class SpeakersOffVolumeTests: XCTestCase {
         let toast = status.current()
         XCTAssertEqual(toast?.text, turnOn)
         XCTAssertEqual(toast?.isError, true)
+    }
+
+    /// Only Music's own "set" counts as done (Codex r3): any other answer,
+    /// blank included, is reported as a failed write, never a silent success.
+    func testAnUnexpectedAnswerToTheWriteIsAnErrorNotASuccess() throws {
+        for reply in ["", "maybe"] {
+            let (backend, _) = try recordingBackend(reply: reply)
+            let status = StatusStore(), actions = ActionRunner(status: status)
+            let s = scene(speakers: [speaker("Kitchen", on: true, volume: 50)], backend: backend,
+                          status: status, actions: actions)
+            moveTo(s, speaker: "Kitchen")
+            _ = s.handle(.right)
+            actions.waitUntilIdle()
+            XCTAssertEqual(status.current()?.text, "Couldn't set 'Kitchen' volume.", "reply \(reply.debugDescription)")
+            XCTAssertEqual(status.current()?.isError, true, "reply \(reply.debugDescription)")
+        }
     }
 
     func testAFailedWriteIsAnErrorNotASuccess() throws {
