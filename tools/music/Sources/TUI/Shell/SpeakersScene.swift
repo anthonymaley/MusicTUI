@@ -350,10 +350,13 @@ final class SpeakersScene: Scene {
         case .spandac?:
             let forget = currentSpanDACRow?.paired == true ? "   f Forget" : ""
             return "\(move)   Enter Play here\(forget)   \(always)"
-        case .speaker?:
+        case .speaker(let i)?:
             let enter = routing.mode.usesSource ? "Enter Use \(musicTUIOutputName)" : "Enter Toggle"
-            // The arrows are offered only where the coordinator would run them.
-            let volume = routing.refusal(for: .volume) == nil ? "   \u{2190}\u{2192} Volume" : ""
+            // The arrows are offered only where the coordinator would run them,
+            // and only on a speaker that is on: Music has no volume of its own
+            // for one that is off (`speakerIsOn`).
+            let on = rows.indices.contains(i) && rows[i].active
+            let volume = routing.refusal(for: .volume) == nil && on ? "   \u{2190}\u{2192} Volume" : ""
             return "\(move)   \(enter)\(volume)   \(always)"
         case .musicApp?:
             return "\(move)   Enter Use \(musicTUIOutputName)   \(always)"
@@ -1637,6 +1640,15 @@ final class SpeakersScene: Scene {
                 } else {
                     nameStr = "\(ANSICode.dim)\(padName)\(ANSICode.reset)"
                 }
+                // A speaker that is off has no volume of its own: Music reports
+                // the Mac's volume for every unselected device and ignores a
+                // write to one (measured 2026-11-01), so no bar and no number.
+                // The off dot already says why; nothing follows the name.
+                guard row.active else {
+                    out += "\(marker) \(dot(false, dimmed: spanDACPlaying)) \(nameStr)"
+                    y += 1
+                    break
+                }
                 let bar: String
                 if spanDACPlaying {
                     let filled = Int(Double(max(0, min(100, row.volume))) / 100.0 * Double(barW))
@@ -1971,7 +1983,7 @@ final class SpeakersScene: Scene {
             let currentRow = displayRows.indices.contains(cursor) ? displayRows[cursor] : nil
             switch currentRow {
             case .speaker(let i):
-                guard speakerVolumeAllowed() else { return .redraw }
+                guard speakerVolumeAllowed(), speakerIsOn(rows[i]) else { return .redraw }
                 rows[i].volume = max(0, rows[i].volume - 5)
                 lastMutation = fetchNow()
                 setVolume(rows[i])
@@ -1990,7 +2002,7 @@ final class SpeakersScene: Scene {
             let currentRow = displayRows.indices.contains(cursor) ? displayRows[cursor] : nil
             switch currentRow {
             case .speaker(let i):
-                guard speakerVolumeAllowed() else { return .redraw }
+                guard speakerVolumeAllowed(), speakerIsOn(rows[i]) else { return .redraw }
                 rows[i].volume = min(100, rows[i].volume + 5)
                 lastMutation = fetchNow()
                 setVolume(rows[i])
@@ -2110,6 +2122,22 @@ final class SpeakersScene: Scene {
         return false
     }
 
+    /// Asked at the keypress, after the routing check: a speaker that is off
+    /// has no volume to set. Music ignores `set sound volume` on an AirPlay
+    /// device that is not selected and reports the Mac's own volume for it
+    /// (measured 2026-11-01), so a write would change nothing and the bar
+    /// would lie. Nothing changes; the person is told how to get a volume.
+    /// Decided on Music's `selected` (the row's `active`), never on the
+    /// device kind: the Mac's own output, when on, stays adjustable.
+    private func speakerIsOn(_ row: SpeakerRow) -> Bool {
+        guard !row.active else { return true }
+        let message = Self.turnOnToSetVolume(row.name)
+        actions.run("Volume") { throw ActionError(message: message) }
+        return false
+    }
+
+    static func turnOnToSetVolume(_ name: String) -> String { "Turn '\(name)' on to set its volume." }
+
     private func setVolume(_ row: SpeakerRow) {
         // Coalesced per speaker: holding an arrow applies only the final target.
         let esc = escapeAppleScriptString(row.name)
@@ -2121,8 +2149,21 @@ final class SpeakersScene: Scene {
             // the write runs only where the contract lets volume run.
             try self.routing.perform(.volume,
                 musicApp: {
-                    try require((try? self.backend.runMusicBlocking("set sound volume of AirPlay device \"\(esc)\" to \(v)")) != nil,
-                                "Couldn't set '\(name)' volume.")
+                    // The selection can change while this waits on the queue
+                    // (turned off elsewhere), and a write to an unselected
+                    // device is silently ignored: so the check and the write
+                    // are one script, and "off" is reported, not claimed.
+                    let script = """
+                    if selected of AirPlay device "\(esc)" then
+                        set sound volume of AirPlay device "\(esc)" to \(v)
+                        return "set"
+                    end if
+                    return "off"
+                    """
+                    let reply = try? self.backend.runMusicBlocking(script)
+                    try require(reply != nil, "Couldn't set '\(name)' volume.")
+                    try require(reply?.trimmingCharacters(in: .whitespacesAndNewlines) != "off",
+                                Self.turnOnToSetVolume(name))
                 },
                 source: { _ in },
                 unaffected: {})
