@@ -1126,8 +1126,14 @@ final class SpeakersScene: Scene {
                                 // Back under its name: live again. Two by that
                                 // name cannot say which one it was (the Music
                                 // write is by name too), so it stays held.
+                                // Once a list has shown two by that name, no later
+                                // list can say which one it was (Codex round 3).
                                 let same = fetchedRows.indices.filter { fetchedRows[$0].name == h.name }
-                                if same.count == 1, !h.ambiguous { held = nil; target = .speaker(same[0]) }
+                                if same.count > 1 {
+                                    held?.ambiguous = true
+                                } else if same.count == 1, !h.ambiguous {
+                                    held = nil; target = .speaker(same[0])
+                                }
                             }
                         }
                     case .musicApp?:

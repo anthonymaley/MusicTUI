@@ -23,6 +23,7 @@ final class SpeakersHeldRowTests: XCTestCase {
         private var _fail = false
         private var _now = Date(timeIntervalSince1970: 1000)
         private var calls = 0
+        private var finished = 0
         let holdFirst: Bool
         let started = DispatchSemaphore(value: 0)
         let release = DispatchSemaphore(value: 0)
@@ -38,6 +39,8 @@ final class SpeakersHeldRowTests: XCTestCase {
         }
 
         var now: Date { lock.lock(); defer { lock.unlock() }; return _now }
+        var finishedReads: Int { lock.lock(); defer { lock.unlock() }; return finished }
+        func noteFinished() { lock.lock(); finished += 1; lock.unlock() }
 
         func read() throws -> [[String: Any]] {
             lock.lock(); calls += 1; let call = calls; let fail = _fail; let list = _list; lock.unlock()
@@ -59,6 +62,7 @@ final class SpeakersHeldRowTests: XCTestCase {
     private func make(_ h: Harness, spandac: SpanDACOutputsDriving? = nil) -> SpeakersScene {
         let s = makeOutputTabScene(dir: dir, mode: .musicApp, spandac: spandac,
                                    fetchSpeakers: { try h.read() }, fetchNow: { h.now })
+        s.fetchFinishedForTest = { _ in h.noteFinished() }
         h.scene = s
         return s
     }
@@ -110,6 +114,16 @@ final class SpeakersHeldRowTests: XCTestCase {
         _ = s.handle(.left)
         _ = s.handle(.right)
         XCTAssertEqual(actionable(s), before, "a key changed a speaker or the EQ", file: file, line: line)
+    }
+
+    /// Re-reads a list whose names do not change, and waits for that read to
+    /// finish and be drained, not for a fixed number of ticks.
+    private func reread(_ s: SpeakersScene, _ h: Harness, _ names: [String],
+                        file: StaticString = #filePath, line: UInt = #line) {
+        let before = h.finishedReads
+        h.next(names)
+        XCTAssertTrue(tickUntil(s) { h.finishedReads > before }, "the re-read never finished", file: file, line: line)
+        for _ in 0..<3 { _ = s.tick(snapshot: outputTabSnapshot()) }
     }
 
     private func settle(_ s: SpeakersScene, _ expected: [String], file: StaticString = #filePath, line: UInt = #line) {
@@ -303,13 +317,35 @@ final class SpeakersHeldRowTests: XCTestCase {
         settle(s, ["Sonos Arc", "Studio"])
         XCTAssertNil(cursorSpeaker(s), "the highlight moved onto a speaker that may be the other one")
         assertKeysActOnNothing(s)
-        h.next(["Sonos Arc", "Studio"])                            // still one, still not provably ours
-        XCTAssertTrue(tickUntil(s) { h.now.timeIntervalSince1970 > 0 })
-        for _ in 0..<40 { _ = s.tick(snapshot: outputTabSnapshot()); usleep(2_000) }
+        reread(s, h, ["Sonos Arc", "Studio"])                     // still one, still not provably ours
         XCTAssertNil(cursorSpeaker(s), "a once-shared name re-armed the highlight by name alone")
         assertKeysActOnNothing(s)
     }
 
+    /// Codex round 3 (902eb0d7): held while absent, then two by that name,
+    /// then one: the one left may be the other device, so it stays held.
+    func testANameThatBecomesSharedWhileHeldStaysHeldWhenOneRemains() {
+        let h = Harness(["Basement", "Kitchen", "Studio"])
+        let s = make(h)
+        _ = s.tick(snapshot: outputTabSnapshot())
+        settle(s, ["Basement", "Kitchen", "Studio"])
+        XCTAssertTrue(moveToSpeaker(s, "Kitchen"))
+        h.next(["Basement", "Studio"])
+        settle(s, ["Basement", "Studio"])
+        XCTAssertEqual(s.cursorRowForTest, .held("Kitchen"))
+        h.next(["Basement", "Kitchen", "Kitchen", "Studio"])
+        settle(s, ["Basement", "Kitchen", "Kitchen", "Studio"])
+        XCTAssertEqual(s.cursorRowForTest, .held("Kitchen"))
+        assertKeysActOnNothing(s)
+        h.next(["Basement", "Kitchen", "Studio"])
+        settle(s, ["Basement", "Kitchen", "Studio"])
+        XCTAssertEqual(s.cursorRowForTest, .held("Kitchen"), "one of two Kitchens re-armed the highlight by name")
+        assertKeysActOnNothing(s)
+    }
+
+    /// Proves the ROW is kept across an unchanged list, not the device: Music
+    /// addresses speakers by name, so two sharing a name cannot be told apart
+    /// by MusicTUI at all (a residual put to Anthony, Codex round 3 902eb0d7).
     func testAnUnchangedListKeepsTheHighlightOnTheSameOfTwoSpeakersSharingAName() {
         let h = Harness(["HomePod", "HomePod", "Studio"])
         let s = make(h)
@@ -318,9 +354,7 @@ final class SpeakersHeldRowTests: XCTestCase {
         XCTAssertTrue(moveToSpeaker(s, "HomePod"))
         _ = s.handle(.down)
         XCTAssertEqual(s.cursorRowForTest, .speaker(1))
-        h.next(["HomePod", "HomePod", "Studio"])                   // an ordinary refresh, nothing moved
-        XCTAssertTrue(tickUntil(s) { h.now.timeIntervalSince1970 > 0 })
-        for _ in 0..<40 { _ = s.tick(snapshot: outputTabSnapshot()); usleep(2_000) }
+        reread(s, h, ["HomePod", "HomePod", "Studio"])            // an ordinary refresh, nothing moved
         XCTAssertEqual(s.cursorRowForTest, .speaker(1), "a refresh moved or held the highlight")
         XCTAssertEqual(s.handle(.enter), .redraw)
         XCTAssertEqual(s.speakerRowsForTest.map(\.active), [false, true, false], "Enter acted on the other HomePod")
