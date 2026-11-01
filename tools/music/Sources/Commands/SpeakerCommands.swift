@@ -482,6 +482,15 @@ func fetchSpeakerDevices() throws -> [[String: Any]] {
     return devices
 }
 
+/// STUB (red commit): the Output tab's list read with the macOS output volume.
+func parseOutputTabSpeakerBlocks(_ raw: String) -> [[String: Any]]? { nil }
+
+/// STUB (red commit).
+func fetchOutputTabSpeakerDevices(backend: AppleScriptBackend = AppleScriptBackend(),
+                                  cache: ResultCache? = ResultCache()) throws -> [[String: Any]] {
+    throw ActionError(message: "not implemented")
+}
+
 // MARK: - AirPlay speaker reset
 
 struct SpeakerSnapshot {

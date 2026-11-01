@@ -167,7 +167,9 @@ final class SpeakersOffVolumeTests: XCTestCase {
         actions.waitUntilIdle()
         XCTAssertEqual(volume(s, "Anthony's MacBook Pro"), 25)
         XCTAssertEqual(scripts().count, 1)
-        XCTAssertTrue(scripts().first?.contains("to 25") == true, "\(scripts())")
+        // The Mac's own row sets the macOS output volume (2026-11-01 17:43;
+        // SpeakersMacOutputVolumeTests), not Music's volume for the device.
+        XCTAssertTrue(scripts().first?.contains("set volume output volume 25") == true, "\(scripts())")
         XCTAssertNil(status.current())
     }
 
@@ -251,7 +253,8 @@ final class SpeakersOffVolumeTests: XCTestCase {
         let sent = scripts()
         XCTAssertEqual(sent.count, 2, "\(sent)")
         XCTAssertTrue(sent.first?.contains("set selected of AirPlay device \"Kitchen\" to true") == true, "\(sent)")
-        XCTAssertTrue(sent.last?.contains("set sound volume of AirPlay device \"Kitchen\" to 38") == true, "\(sent)")
+        // A "computer" row: its write is the macOS output volume.
+        XCTAssertTrue(sent.last?.contains("set volume output volume 38") == true, "\(sent)")
     }
 
     // MARK: - Unchanged: SpanDAC refusal, held rows
