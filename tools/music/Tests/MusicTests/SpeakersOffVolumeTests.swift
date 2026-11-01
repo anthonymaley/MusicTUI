@@ -159,8 +159,11 @@ final class SpeakersOffVolumeTests: XCTestCase {
     func testTheSelectedLocalMacStaysAdjustable() throws {
         let (backend, scripts) = try recordingBackend()
         let status = StatusStore(), actions = ActionRunner(status: status)
-        let s = scene(speakers: [speaker("Anthony's MacBook Pro", on: true, volume: 30, kind: "computer")],
-                      backend: backend, status: status, actions: actions)
+        // The list read carries the macOS volume for the Mac's row; without it
+        // the row's volume is unknown and not settable (SpeakersMacOutputVolumeTests).
+        var mac = speaker("Anthony's MacBook Pro", on: true, volume: 30, kind: "computer")
+        mac["outputVolume"] = 30
+        let s = scene(speakers: [mac], backend: backend, status: status, actions: actions)
         moveTo(s, speaker: "Anthony's MacBook Pro")
         XCTAssertTrue(s.footerHint.contains("Volume"), s.footerHint)
         _ = s.handle(.left)
@@ -242,8 +245,9 @@ final class SpeakersOffVolumeTests: XCTestCase {
         let status = StatusStore(), actions = ActionRunner(status: status)
         // The Mac's own output: a select with no route check, so the only
         // scripts are the select and the volume write.
-        let s = scene(speakers: [speaker("Kitchen", on: false, volume: 33, kind: "computer")], backend: backend,
-                      status: status, actions: actions)
+        var kitchen = speaker("Kitchen", on: false, volume: 33, kind: "computer")
+        kitchen["outputVolume"] = 33
+        let s = scene(speakers: [kitchen], backend: backend, status: status, actions: actions)
         moveTo(s, speaker: "Kitchen")
         let release = hold(actions)
         _ = s.handle(.enter)

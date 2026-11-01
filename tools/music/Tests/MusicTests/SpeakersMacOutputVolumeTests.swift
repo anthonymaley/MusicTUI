@@ -13,9 +13,12 @@
 // it on, an off row has no bar and no write, and the SpanDAC refusal speaks
 // first.
 //
-// When the Mac's output has no software volume (`output volume` is missing
-// value: some DACs, HDMI), the row shows Music's number and its arrows say so
-// instead of writing.
+// When the Mac's volume is not known, the row shows no level at all, never
+// Music's unrelated number, and its arrows write nothing (Codex review of
+// 0bb000d): either the output has no software volume (`output volume` is
+// missing value: some DACs, HDMI), or the read failed or answered something
+// that is not 0...100. Each has its own notice. A failed macOS read never
+// hides the AirPlay list.
 //
 // The AppleScript backend is a recording stand-in for osascript. Nothing here
 // reaches the real osascript, Music, the system volume, a player, a socket,
@@ -38,9 +41,9 @@ final class SpeakersMacOutputVolumeTests: XCTestCase {
 
     /// Appends each script (`$2`, after `-e`) to a file, prints `reply`, and
     /// exits with `exit`. Stands in for osascript's answer.
-    private func recordingBackend(reply: String = "set", exit: Int = 0) throws -> (AppleScriptBackend, scripts: () -> [String]) {
-        let fake = dir + "/osascript"
-        let record = dir + "/scripts.txt"
+    private func recordingBackend(reply: String = "set", exit: Int = 0, label: String = "write") throws -> (AppleScriptBackend, scripts: () -> [String]) {
+        let fake = dir + "/osascript-\(label)"
+        let record = dir + "/scripts-\(label).txt"
         let say = reply.isEmpty ? "" : "printf '%s\\n' '\(reply)'\n"
         try "#!/bin/sh\nprintf '%s\\n--END--\\n' \"$2\" >> '\(record)'\n\(say)exit \(exit)\n"
             .write(toFile: fake, atomically: true, encoding: .utf8)
@@ -53,10 +56,12 @@ final class SpeakersMacOutputVolumeTests: XCTestCase {
 
     private let mac = "Anthony's MacBook Pro"
     private let noVolume = "This Mac's output has no volume control; use the device's own."
+    private let unreadable = "Couldn't read this Mac's volume; try again in a moment."
 
     /// The Mac's own output as the list read reports it: Music's volume for
     /// the device, and the macOS output volume beside it (`outputVolume`, an
-    /// Int, or "missing" when the output has no software volume).
+    /// Int, "missing" when the output has no software volume, or "unknown"
+    /// when it could not be read).
     private func macRow(on: Bool = true, music: Int = 52, output: Any? = 40) -> [String: Any] {
         var d: [String: Any] = ["name": mac, "selected": on, "volume": music, "kind": "computer"]
         if let output { d["outputVolume"] = output }
@@ -172,21 +177,96 @@ final class SpeakersMacOutputVolumeTests: XCTestCase {
 
     // MARK: - No software volume on the Mac's output
 
-    func testAMacOutputWithNoVolumeShowsMusicsNumberAndItsArrowsSaySoAndWriteNothing() throws {
-        let (backend, scripts) = try recordingBackend()
-        let status = StatusStore(), actions = ActionRunner(status: status)
-        let s = scene(speakers: [macRow(music: 52, output: "missing")], backend: backend,
-                      status: status, actions: actions)
+    /// A Mac volume that is not known shows no level: no bar and no number,
+    /// least of all Music's unrelated one, and a plain note in their place.
+    /// The arrows write nothing (an absolute target computed from Music's
+    /// number would jump the real volume: Music 80, Mac 10, one left press
+    /// would set 75) and each case has its own notice.
+    private func assertUnknownMacVolume(_ s: SpeakersScene, note: String, notice: String,
+                                        scripts: () -> [String], status: StatusStore, actions: ActionRunner,
+                                        file: StaticString = #filePath, line: UInt = #line) {
+        _ = s.handle(.home)
+        for width in [100, 60] {
+            guard let row = screenRow(s, "MacBook", width: width) else {
+                return XCTFail("the Mac row is not drawn at \(width)", file: file, line: line)
+            }
+            XCTAssertFalse(row.contains("80"), "Music's number is not the Mac's volume at \(width): \(row)", file: file, line: line)
+            XCTAssertFalse(row.contains("\u{2588}") || row.contains("\u{2591}"), "no bar at \(width): \(row)", file: file, line: line)
+            XCTAssertTrue(row.contains(note), "the row says why there is no level at \(width): \(row)", file: file, line: line)
+        }
         moveTo(s, speaker: mac)
-        XCTAssertEqual(volume(s, mac), 52, "falls back to Music's number for display")
-        XCTAssertFalse(s.footerHint.contains("Volume"), "no volume keys offered where none work: \(s.footerHint)")
+        XCTAssertFalse(s.footerHint.contains("Volume"), "no volume keys offered where none work: \(s.footerHint)",
+                       file: file, line: line)
         for key in [KeyPress.right, .left] {
             _ = s.handle(key)
             actions.waitUntilIdle()
-            XCTAssertEqual(scripts(), [], "\(key)")
-            XCTAssertEqual(volume(s, mac), 52, "no optimistic bar change (\(key))")
-            XCTAssertEqual(status.current()?.text, noVolume, "\(key)")
+            XCTAssertEqual(scripts(), [], "nothing is written (\(key))", file: file, line: line)
+            XCTAssertEqual(status.current()?.text, notice, "\(key)", file: file, line: line)
         }
+    }
+
+    func testAMacOutputWithNoVolumeShowsNoLevelAndItsArrowsSaySoAndWriteNothing() throws {
+        let (backend, scripts) = try recordingBackend()
+        let status = StatusStore(), actions = ActionRunner(status: status)
+        let s = scene(speakers: [macRow(music: 80, output: "missing")], backend: backend,
+                      status: status, actions: actions)
+        assertUnknownMacVolume(s, note: "no volume control", notice: noVolume,
+                               scripts: scripts, status: status, actions: actions)
+    }
+
+    func testAnUnreadableMacVolumeShowsNoLevelAndItsArrowsSaySoAndWriteNothing() throws {
+        for output: Any? in ["unknown", nil] {
+            let (backend, scripts) = try recordingBackend(label: "write-\(output == nil ? "absent" : "unknown")")
+            let status = StatusStore(), actions = ActionRunner(status: status)
+            let s = scene(speakers: [macRow(music: 80, output: output)], backend: backend,
+                          status: status, actions: actions)
+            assertUnknownMacVolume(s, note: "volume unknown", notice: unreadable,
+                                   scripts: scripts, status: status, actions: actions)
+        }
+    }
+
+    /// End to end from the real list-read parser: a malformed fifth block
+    /// reaches the screen as "volume unknown", and the arrows write nothing.
+    func testAMalformedMacVolumeReadIsUnknownFromParseToArrows() throws {
+        for bad in ["abc", "140", "-5", "", "unknown"] {
+            let canned = "Anthony's MacBook Pro\n=====\ntrue\n=====\n80\n=====\ncomputer\n=====\n\(bad)"
+                .replacingOccurrences(of: "'", with: "'\\''")
+            let (listBackend, _) = try recordingBackend(reply: canned, label: "list-\(bad)")
+            let (backend, scripts) = try recordingBackend(label: "write-\(bad)")
+            let status = StatusStore(), actions = ActionRunner(status: status)
+            let cache = ResultCache(directory: dir)
+            let s = makeOutputTabScene(dir: dir, mode: .musicApp, spandac: FakeSpanDACOutputs(),
+                                       status: status, backend: backend, actions: actions,
+                                       fetchSpeakers: { try fetchOutputTabSpeakerDevices(backend: listBackend, cache: cache) })
+            settleOutputTab(s, speakers: 1)
+            XCTAssertEqual(s.speakerRowsForTest.count, 1, "the list loads with a bad Mac volume \(bad.debugDescription)")
+            assertUnknownMacVolume(s, note: "volume unknown", notice: unreadable,
+                                   scripts: scripts, status: status, actions: actions)
+        }
+    }
+
+    /// The macOS read failing (the script's `on error`, answered "unknown")
+    /// leaves the AirPlay rows loaded and their arrows working.
+    func testAFailedMacVolumeReadKeepsTheAirPlayListUsable() throws {
+        let canned = "Anthony's MacBook Pro\nKitchen\n=====\ntrue\ntrue\n=====\n80\n50\n=====\ncomputer\nHomePod\n=====\nunknown"
+            .replacingOccurrences(of: "'", with: "'\\''")
+        let (listBackend, _) = try recordingBackend(reply: canned, label: "list")
+        let (backend, scripts) = try recordingBackend()
+        let status = StatusStore(), actions = ActionRunner(status: status)
+        let cache = ResultCache(directory: dir)
+        let s = makeOutputTabScene(dir: dir, mode: .musicApp, spandac: FakeSpanDACOutputs(),
+                                   status: status, backend: backend, actions: actions,
+                                   fetchSpeakers: { try fetchOutputTabSpeakerDevices(backend: listBackend, cache: cache) })
+        settleOutputTab(s, speakers: 2)
+        XCTAssertEqual(s.speakerRowsForTest.map(\.name), [mac, "Kitchen"])
+        moveTo(s, speaker: "Kitchen")
+        XCTAssertTrue(s.footerHint.contains("\u{2190}\u{2192} Volume"), s.footerHint)
+        _ = s.handle(.right)
+        actions.waitUntilIdle()
+        XCTAssertEqual(volume(s, "Kitchen"), 55)
+        XCTAssertEqual(scripts().count, 1, "\(scripts())")
+        XCTAssertTrue(scripts().first?.contains(#"set sound volume of AirPlay device "Kitchen" to 55"#) == true, "\(scripts())")
+        XCTAssertNil(status.current())
     }
 
     // MARK: - Replies, unchanged from 3.24.4
@@ -263,7 +343,18 @@ final class SpeakersMacOutputVolumeTests: XCTestCase {
         let raw = "Studio Mac\n=====\ntrue\n=====\n52\n=====\ncomputer\n=====\nmissing value"
         guard let devices = parseOutputTabSpeakerBlocks(raw) else { return XCTFail("parsed nothing") }
         XCTAssertEqual(devices.first?["outputVolume"] as? String, "missing")
-        XCTAssertEqual(speakerRows(from: devices).first?.volume, 52)
+    }
+
+    /// Anything that is not 0...100 or `missing value` is unknown, never
+    /// dropped (a dropped key once fell back to Music's number).
+    func testTheListReadMarksAnUnreadableMacOutputVolumeUnknown() {
+        for bad in ["abc", "140", "-5", "", "unknown", "50.5"] {
+            let raw = "Studio Mac\nKitchen\n=====\ntrue\ntrue\n=====\n52\n33\n=====\ncomputer\nHomePod\n=====\n\(bad)"
+            guard let devices = parseOutputTabSpeakerBlocks(raw) else { return XCTFail("parsed nothing for \(bad.debugDescription)") }
+            XCTAssertEqual(devices.count, 2, "the AirPlay list survives \(bad.debugDescription)")
+            XCTAssertEqual(devices[0]["outputVolume"] as? String, "unknown", bad.debugDescription)
+            XCTAssertNil(devices[1]["outputVolume"], bad.debugDescription)
+        }
     }
 
     func testTheListReadIsStillOneScriptWithTheMacVolumeReadOutsideMusic() throws {
@@ -284,5 +375,13 @@ final class SpeakersMacOutputVolumeTests: XCTestCase {
         }
         XCTAssertTrue(endTell.lowerBound < settings.lowerBound,
                       "the macOS volume is read outside the Music tell block: \(script)")
+        // A failing macOS read must not abort the list: it is caught in the
+        // script and answered as the explicit unknown marker.
+        guard let tryAt = script.range(of: "try", options: .backwards, range: endTell.upperBound..<settings.lowerBound),
+              let onError = script.range(of: "on error", range: settings.upperBound..<script.endIndex) else {
+            return XCTFail("the macOS read is wrapped in try ... on error: \(script)")
+        }
+        XCTAssertTrue(tryAt.lowerBound < settings.lowerBound && settings.upperBound < onError.lowerBound, script)
+        XCTAssertTrue(script[onError.upperBound...].contains(#""unknown""#), "on error answers unknown: \(script)")
     }
 }
