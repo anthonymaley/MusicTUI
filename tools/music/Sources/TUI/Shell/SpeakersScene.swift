@@ -93,6 +93,12 @@ enum StopUsingPlacement: Equatable {
     case top
 }
 
+extension OutputTabRow {
+    /// Speaker rows are keyed by position, so the same case can name a
+    /// different speaker after the list changes; callers match those by name.
+    var isSpeaker: Bool { if case .speaker = self { return true }; return false }
+}
+
 func outputTabRows(speakerCount: Int, expanded: Bool, presetNames: [String],
                    spandacIDs: [String] = [], macRow: Bool = true,
                    stopUsing: StopUsingPlacement = .none) -> [OutputTabRow] {
@@ -358,6 +364,11 @@ final class SpeakersScene: Scene {
 
     /// Test-only: the rows the cursor can reach, in order.
     var displayRowsForTest: [OutputTabRow] { displayRows }
+    /// Test-only: the row the cursor is on.
+    var cursorRowForTest: OutputTabRow? {
+        let d = displayRows
+        return d.indices.contains(cursor) ? d[cursor] : nil
+    }
 
     /// Test-only: the coordinator this tab switches through.
     var routingForTest: RoutingCoordinator { routing }
@@ -513,6 +524,8 @@ final class SpeakersScene: Scene {
 
     /// Test-only: the speakers as last loaded or toggled.
     var speakerRowsForTest: [SpeakerRow] { rows }
+    var eqStateForTest: EQSnapshot? { eqState }
+    var visualizerOnForTest: Bool? { visualizerOn }
 
     /// Test-only: lands a Mac status in the inbox exactly as a probe would,
     /// so a test can set the DAC the Mac reports without a socket.
@@ -544,17 +557,30 @@ final class SpeakersScene: Scene {
     // The scene used to load once and never again — devices appearing/vanishing
     // never showed, and a failed optimistic toggle stayed wrong forever.
     private let inboxLock = NSLock()
-    private struct FetchResult {
+    // One job per kickoff, still one in flight at a time, but it posts in two
+    // parts: the speaker list the moment its own read lands, then the EQ and
+    // visualizer state. Measured 2026-10-31: the list alone ~0.9 s, the whole
+    // job ~2.5 s, and first open said "loading speakers..." for all of it.
+    // Each part has its own applied serial, so an older job's part never
+    // replaces a newer one's, and each keeps the job's start time for the
+    // mutation fence.
+    private struct SpeakerPart {
         let serial: Int
         let startedAt: Date
         let speakers: [SpeakerRow]?
+    }
+    private struct ExtrasPart {
+        let serial: Int
+        let startedAt: Date
         let eq: EQSnapshot?
         let visualizer: Bool?
     }
-    private var inbox: FetchResult? = nil
+    private var speakerInbox: SpeakerPart? = nil       // guarded by inboxLock
+    private var extrasInbox: ExtrasPart? = nil         // guarded by inboxLock
     var fetchFinishedForTest: ((Int) -> Void)?
     private var fetchSerial = 0                       // tick()-thread only
-    private var appliedFetchSerial = 0                // tick()-thread only
+    private var appliedSpeakerSerial = 0              // tick()-thread only
+    private var appliedExtrasSerial = 0               // tick()-thread only
     private var speakerFetchFailed = false
     private var fetchInFlight = false                 // tick()-thread only
     private var fetchStartedAt = Date.distantPast     // tick()-thread only
@@ -1013,22 +1039,25 @@ final class SpeakersScene: Scene {
         // Apply a landed fetch — unless the user mutated state after it started,
         // in which case it's stale and would briefly revert the optimistic UI.
         inboxLock.lock()
-        let fresh = inbox; inbox = nil
+        let freshSpeakers = speakerInbox; speakerInbox = nil
+        let freshExtras = extrasInbox; extrasInbox = nil
         inboxLock.unlock()
-        // Any answer newer than the last one shown lands, even if its kickoff
+        // Any part newer than the last one shown lands, even if its kickoff
         // was declared dead and a successor started: requiring the CURRENT
         // serial let a consistently slow EQ/visualizer read starve the list
-        // forever (Codex turn 33). An older answer than the one shown never lands.
-        if let fresh, fresh.serial > appliedFetchSerial {
-            appliedFetchSerial = fresh.serial
-            if fresh.serial == fetchSerial { fetchInFlight = false }
+        // forever (Codex turn 33). An older part than the one shown never lands.
+        if let fresh = freshSpeakers, fresh.serial > appliedSpeakerSerial {
+            appliedSpeakerSerial = fresh.serial
             if fresh.startedAt > lastMutation {
                 speakerFetchFailed = fresh.speakers == nil
                 if let fetchedRows = fresh.speakers {
-                    // Keep the cursor on the same speaker, by name, if it was on one.
+                    // Keep the cursor on the same speaker, by name, if it was
+                    // on one, and on the same row otherwise: a list that grows
+                    // or shrinks shifts every row below it.
                     let before = displayRows
+                    let beforeRow = before.indices.contains(cursor) ? before[cursor] : nil
                     var cursorName: String? = nil
-                    if before.indices.contains(cursor), case .speaker(let i) = before[cursor], rows.indices.contains(i) {
+                    if case .speaker(let i)? = beforeRow, rows.indices.contains(i) {
                         cursorName = rows[i].name
                     }
                     rows = fetchedRows
@@ -1037,11 +1066,34 @@ final class SpeakersScene: Scene {
                     if let cursorName, let i = rows.firstIndex(where: { $0.name == cursorName }),
                        let at = after.firstIndex(of: .speaker(i)) {
                         cursor = at
+                    } else if let beforeRow, !beforeRow.isSpeaker, let at = after.firstIndex(of: beforeRow) {
+                        cursor = at
                     }
                     if cursor >= after.count { cursor = max(0, after.count - 1) }
                 }
+                changed = true
+            }
+        }
+        // The extras part ends the job: only then may the next kickoff start,
+        // so one job still owns the reads at a time.
+        if let fresh = freshExtras, fresh.serial > appliedExtrasSerial {
+            appliedExtrasSerial = fresh.serial
+            if fresh.serial == fetchSerial { fetchInFlight = false }
+            if fresh.startedAt > lastMutation {
+                // Installed presets arriving or leaving change the picker's
+                // rows; keep the cursor on the row it was on (Codex round 2:
+                // a preset inserted above Visualizer left Enter on the preset).
+                let before = displayRows
+                let beforeRow = before.indices.contains(cursor) ? before[cursor] : nil
                 if let eq = fresh.eq { eqState = eq }
                 if let vis = fresh.visualizer { visualizerOn = vis }
+                let after = displayRows
+                if let beforeRow, let at = after.firstIndex(of: beforeRow) {
+                    cursor = at
+                } else if case .preset? = beforeRow, let at = after.firstIndex(of: .eq) {
+                    cursor = at                 // its preset went away: back to the picker
+                }
+                if cursor >= after.count { cursor = max(0, after.count - 1) }
                 changed = true
             }
         }
@@ -1081,6 +1133,15 @@ final class SpeakersScene: Scene {
             let fetchVisualizer = self.fetchVisualizer
             DispatchQueue.global().async { [weak self] in
                 let result = (try? fetchSpeakers()).map(speakerRows(from:))
+                // Post the list before the EQ and visualizer reads, which can
+                // take longer than the list itself.
+                if let self {
+                    self.inboxLock.lock()
+                    if self.speakerInbox == nil || self.speakerInbox!.serial < serial {
+                        self.speakerInbox = SpeakerPart(serial: serial, startedAt: now, speakers: result)
+                    }
+                    self.inboxLock.unlock()
+                }
                 let backend = self?.backend ?? AppleScriptBackend()
                 // openWindow: false — the poll must never pop the Equalizer
                 // window (it steals focus, e.g. from the visualizer).
@@ -1088,8 +1149,8 @@ final class SpeakersScene: Scene {
                 let vis = try? fetchVisualizer(backend)
                 guard let self else { return }
                 self.inboxLock.lock()
-                if self.inbox == nil || self.inbox!.serial < serial {
-                    self.inbox = FetchResult(serial: serial, startedAt: now, speakers: result, eq: eq, visualizer: vis)
+                if self.extrasInbox == nil || self.extrasInbox!.serial < serial {
+                    self.extrasInbox = ExtrasPart(serial: serial, startedAt: now, eq: eq, visualizer: vis)
                 }
                 self.inboxLock.unlock()
                 self.fetchFinishedForTest?(serial)
