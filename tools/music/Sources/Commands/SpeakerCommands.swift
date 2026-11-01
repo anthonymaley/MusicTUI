@@ -504,19 +504,24 @@ private func writeSpeakersCache(_ devices: [[String: Any]], to cache: ResultCach
 /// `get volume settings` is a Standard Additions command and runs outside the
 /// Music tell block, so it is answered here, not sent to Music. Its `output
 /// volume` is missing value for an output with no software volume (some DACs,
-/// HDMI); that comes back as "missing value".
+/// HDMI); that comes back as "missing value". A failing read is caught in the
+/// script and answered "unknown", so it never hides the AirPlay list.
 func fetchOutputTabSpeakerDevices(backend: AppleScriptBackend = AppleScriptBackend(),
                                   cache: ResultCache? = ResultCache()) throws -> [[String: Any]] {
     let result = try backend.runBlocking("""
         tell application "Music"
             \(speakerDeviceReadLines)
         end tell
-        set ov to output volume of (get volume settings)
-        if ov is missing value then
-            set ovText to "missing value"
-        else
-            set ovText to ov as text
-        end if
+        try
+            set ov to output volume of (get volume settings)
+            if ov is missing value then
+                set ovText to "missing value"
+            else
+                set ovText to ov as text
+            end if
+        on error
+            set ovText to "unknown"
+        end try
         set sep to linefeed & "=====" & linefeed
         return ns & sep & sels & sep & vols & sep & ks & sep & ovText
         """, timeout: 20)
@@ -528,25 +533,27 @@ func fetchOutputTabSpeakerDevices(backend: AppleScriptBackend = AppleScriptBacke
 }
 
 /// The four device blocks, then a fifth: the macOS output volume. It is put on
-/// every "computer" row as `outputVolume`: an Int 0...100, or "missing" when
-/// the output has no software volume. An unreadable fifth block leaves the key
-/// off (the row shows Music's number); a torn device list is nil, as before.
+/// every "computer" row as `outputVolume`: an Int 0...100, "missing" when the
+/// output has no software volume, or "unknown" for anything else (a failed
+/// read, a malformed or out-of-range answer). Never dropped: an absent value
+/// once let the row fall back to Music's unrelated number. A torn device list
+/// is nil, as before.
 func parseOutputTabSpeakerBlocks(_ raw: String) -> [[String: Any]]? {
+    // An empty fifth block with its trailing newline trimmed still separates.
+    let raw = raw.hasSuffix("\n") ? raw : raw + "\n"
     guard let cut = raw.range(of: speakerBlockSeparator, options: .backwards),
           var devices = parseSpeakerDeviceBlocksChecked(String(raw[..<cut.lowerBound])) else { return nil }
     let tail = raw[cut.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines)
-    let outputVolume: Any?
+    let outputVolume: Any
     if tail == "missing value" {
         outputVolume = "missing"
     } else if let v = Int(tail), (0...100).contains(v) {
         outputVolume = v
     } else {
-        outputVolume = nil
+        outputVolume = "unknown"
     }
-    if let outputVolume {
-        for i in devices.indices where devices[i]["kind"] as? String == "computer" {
-            devices[i]["outputVolume"] = outputVolume
-        }
+    for i in devices.indices where devices[i]["kind"] as? String == "computer" {
+        devices[i]["outputVolume"] = outputVolume
     }
     return devices
 }
