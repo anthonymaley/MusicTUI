@@ -9,17 +9,35 @@ struct SpeakerRow {
     var volume: Int
     /// Device kind from AppleScript; "computer" is the Mac's own output.
     var kind: String = ""
+    /// The Mac's own output reported no software volume (`output volume` is
+    /// missing value: some DACs, HDMI). Its volume is then Music's number,
+    /// shown but not settable here.
+    var outputVolumeUnavailable: Bool = false
+
+    /// The Mac's own output: its volume is the macOS output volume, which is
+    /// what you hear (Music's `sound volume` for it was inaudible on the
+    /// laptop, 2026-11-01).
+    var isMacOutput: Bool { kind == "computer" }
 }
 
-/// Pure mapping from `fetchSpeakerDevices()`'s `[[String:Any]]` to typed rows.
-/// Entries missing name/selected/volume are skipped.
+/// Pure mapping from the speaker list read's `[[String:Any]]` to typed rows.
+/// Entries missing name/selected/volume are skipped. The Mac's own row takes
+/// the macOS output volume (`outputVolume`) when the read carried one.
 func speakerRows(from devices: [[String: Any]]) -> [SpeakerRow] {
     devices.compactMap { d in
         guard let name = d["name"] as? String,
               let active = d["selected"] as? Bool,
               let volume = d["volume"] as? Int else { return nil }
-        return SpeakerRow(name: name, active: active, volume: volume,
-                          kind: d["kind"] as? String ?? "")
+        var row = SpeakerRow(name: name, active: active, volume: volume,
+                             kind: d["kind"] as? String ?? "")
+        if row.isMacOutput {
+            if let system = d["outputVolume"] as? Int {
+                row.volume = system
+            } else if d["outputVolume"] as? String == "missing" {
+                row.outputVolumeUnavailable = true
+            }
+        }
+        return row
     }
 }
 
@@ -354,8 +372,9 @@ final class SpeakersScene: Scene {
             let enter = routing.mode.usesSource ? "Enter Use \(musicTUIOutputName)" : "Enter Toggle"
             // The arrows are offered only where the coordinator would run them,
             // and only on a speaker that is on: Music has no volume of its own
-            // for one that is off (`speakerIsOn`).
-            let on = rows.indices.contains(i) && rows[i].active
+            // for one that is off (`speakerIsOn`), nor on a Mac output with no
+            // software volume (`speakerVolumeSettable`).
+            let on = rows.indices.contains(i) && rows[i].active && !rows[i].outputVolumeUnavailable
             let volume = routing.refusal(for: .volume) == nil && on ? "   \u{2190}\u{2192} Volume" : ""
             return "\(move)   \(enter)\(volume)   \(always)"
         case .musicApp?:
@@ -638,7 +657,7 @@ final class SpeakersScene: Scene {
          spandac: SpanDACOutputsDriving? = nil,
          macName: String = SpeakersScene.computerName(),
          clock: @escaping () -> Date = Date.init,
-         fetchSpeakers: @escaping () throws -> [[String: Any]] = fetchSpeakerDevices,
+         fetchSpeakers: @escaping () throws -> [[String: Any]] = { try fetchOutputTabSpeakerDevices() },
          fetchNow: @escaping () -> Date = Date.init,
          fetchEQ: @escaping (AppleScriptBackend) throws -> EQSnapshot = { try fetchEQSnapshot($0, openWindow: false) },
          fetchVisualizer: @escaping (AppleScriptBackend) throws -> Bool = visualizerStatus,
@@ -1983,7 +2002,7 @@ final class SpeakersScene: Scene {
             let currentRow = displayRows.indices.contains(cursor) ? displayRows[cursor] : nil
             switch currentRow {
             case .speaker(let i):
-                guard speakerVolumeAllowed(), speakerIsOn(rows[i]) else { return .redraw }
+                guard speakerVolumeAllowed(), speakerIsOn(rows[i]), speakerVolumeSettable(rows[i]) else { return .redraw }
                 rows[i].volume = max(0, rows[i].volume - 5)
                 lastMutation = fetchNow()
                 setVolume(rows[i])
@@ -2002,7 +2021,7 @@ final class SpeakersScene: Scene {
             let currentRow = displayRows.indices.contains(cursor) ? displayRows[cursor] : nil
             switch currentRow {
             case .speaker(let i):
-                guard speakerVolumeAllowed(), speakerIsOn(rows[i]) else { return .redraw }
+                guard speakerVolumeAllowed(), speakerIsOn(rows[i]), speakerVolumeSettable(rows[i]) else { return .redraw }
                 rows[i].volume = min(100, rows[i].volume + 5)
                 lastMutation = fetchNow()
                 setVolume(rows[i])
@@ -2138,10 +2157,22 @@ final class SpeakersScene: Scene {
 
     static func turnOnToSetVolume(_ name: String) -> String { "Turn '\(name)' on to set its volume." }
 
+    /// Asked at the keypress, after `speakerIsOn`: the Mac's own output has no
+    /// software volume (an output such as some DACs or HDMI; `output volume`
+    /// read as missing value). Nothing is written and the bar does not move.
+    private func speakerVolumeSettable(_ row: SpeakerRow) -> Bool {
+        guard row.outputVolumeUnavailable else { return true }
+        actions.run("Volume") { throw ActionError(message: Self.macOutputHasNoVolume) }
+        return false
+    }
+
+    static let macOutputHasNoVolume = "This Mac's output has no volume control; use the device's own."
+
     private func setVolume(_ row: SpeakerRow) {
         // Coalesced per speaker: holding an arrow applies only the final target.
         let esc = escapeAppleScriptString(row.name)
         let name = row.name
+        let macOutput = row.isMacOutput
         speakerTargets.set(name, row.volume)
         actions.run("Volume") {
             guard let v = self.speakerTargets.take(name) else { return }
@@ -2153,15 +2184,33 @@ final class SpeakersScene: Scene {
                     // (turned off elsewhere), and a write to an unselected
                     // device is silently ignored: so the check and the write
                     // are one script, and "off" is reported, not claimed.
-                    let script = """
-                    if selected of AirPlay device "\(esc)" then
-                        set sound volume of AirPlay device "\(esc)" to \(v)
-                        return "set"
-                    end if
-                    return "off"
-                    """
-                    let reply = (try? self.backend.runMusicBlocking(script))?
-                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    let reply: String?
+                    if macOutput {
+                        // The Mac's own output: the macOS output volume, which
+                        // is what you hear. `set volume` is a Standard
+                        // Additions command, so it runs here, outside any
+                        // Music tell block; only the selection check asks Music.
+                        let script = """
+                        tell application "Music" to set isOn to selected of AirPlay device "\(esc)"
+                        if isOn then
+                            set volume output volume \(v)
+                            return "set"
+                        end if
+                        return "off"
+                        """
+                        reply = (try? self.backend.runBlocking(script))?
+                            .trimmingCharacters(in: .whitespacesAndNewlines)
+                    } else {
+                        let script = """
+                        if selected of AirPlay device "\(esc)" then
+                            set sound volume of AirPlay device "\(esc)" to \(v)
+                            return "set"
+                        end if
+                        return "off"
+                        """
+                        reply = (try? self.backend.runMusicBlocking(script))?
+                            .trimmingCharacters(in: .whitespacesAndNewlines)
+                    }
                     try require(reply != "off", Self.turnOnToSetVolume(name))
                     // Only the script's own "set" is a done write; anything
                     // else (a failure, a blank or odd answer) is reported.
