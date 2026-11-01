@@ -2160,10 +2160,12 @@ final class SpeakersScene: Scene {
                     end if
                     return "off"
                     """
-                    let reply = try? self.backend.runMusicBlocking(script)
-                    try require(reply != nil, "Couldn't set '\(name)' volume.")
-                    try require(reply?.trimmingCharacters(in: .whitespacesAndNewlines) != "off",
-                                Self.turnOnToSetVolume(name))
+                    let reply = (try? self.backend.runMusicBlocking(script))?
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    try require(reply != "off", Self.turnOnToSetVolume(name))
+                    // Only the script's own "set" is a done write; anything
+                    // else (a failure, a blank or odd answer) is reported.
+                    try require(reply == "set", "Couldn't set '\(name)' volume.")
                 },
                 source: { _ in },
                 unaffected: {})

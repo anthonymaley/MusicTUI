@@ -1113,7 +1113,8 @@ final class SpanDACOutputTabTests: XCTestCase {
     private func recordingBackend() throws -> (AppleScriptBackend, scripts: () -> [String]) {
         let fake = dir + "/osascript"
         let record = dir + "/scripts.txt"
-        try "#!/bin/sh\nprintf '%s\\n--END--\\n' \"$2\" >> '\(record)'\n".write(toFile: fake, atomically: true, encoding: .utf8)
+        // Answers "set" as Music does to the Output tab's checked volume write.
+        try "#!/bin/sh\nprintf '%s\\n--END--\\n' \"$2\" >> '\(record)'\necho set\n".write(toFile: fake, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: fake)
         return (AppleScriptBackend(executable: fake), {
             ((try? String(contentsOfFile: record, encoding: .utf8)) ?? "")
