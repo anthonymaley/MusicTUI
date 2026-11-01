@@ -233,9 +233,10 @@ final class SpeakersHeldRowTests: XCTestCase {
     }
 
     /// With no SpanDAC on this Mac the stand-in is row 1, where the highlight
-    /// starts: that is not a row the person picked, so first open lands on the
-    /// first speaker as it always has (no held row on every first open).
-    func testFirstOpenWithTheHighlightWhereTheTabStartsLandsOnTheFirstSpeaker() {
+    /// starts. It is still a visible highlight, and Enter there inside the load
+    /// window used to toggle the first speaker (Codex round 2, 503eddd2): it is
+    /// held like any other, and the first Down lands on the first speaker.
+    func testFirstOpenWithTheHighlightWhereTheTabStartsHoldsTheStandIn() {
         let h = Harness(["Basement", "Sonos Arc"], holdFirst: true)
         let s = makeOutputTabScene(dir: dir, mode: .musicApp, spandac: nil,
                                    macReply: { throw SourceAppError.notRunning }, data: .none,
@@ -247,7 +248,10 @@ final class SpeakersHeldRowTests: XCTestCase {
         XCTAssertTrue(tickUntil(s) { s.cursorRowForTest == .musicApp }, "\(s.displayRowsForTest)")
         h.release.signal()
         settle(s, ["Basement", "Sonos Arc"])
-        XCTAssertFalse(s.displayRowsForTest.contains { $0.isHeld }, "\(s.displayRowsForTest)")
+        XCTAssertEqual(s.cursorRowForTest, .held(musicTUIOutputName), "\(s.displayRowsForTest)")
+        assertKeysActOnNothing(s)
+        XCTAssertTrue(screen(s).contains("speakers listed"), screen(s))
+        XCTAssertEqual(s.handle(.down), .redraw)
         XCTAssertEqual(cursorSpeaker(s), "Basement")
     }
 
@@ -263,6 +267,82 @@ final class SpeakersHeldRowTests: XCTestCase {
         h.next([])
         settle(s, [])
         XCTAssertEqual(s.cursorRowForTest, .musicApp)
+    }
+
+    // MARK: - Names more than one speaker shares (Codex round 2, 503eddd2)
+
+    private func moveUpToSpeaker(_ s: SpeakersScene, _ name: String) -> Bool {
+        for _ in 0..<60 {
+            if cursorSpeaker(s) == name { return true }
+            _ = s.handle(.up)
+        }
+        return cursorSpeaker(s) == name
+    }
+
+    func testANameThatBecomesSharedHoldsTheHighlight() {
+        let h = Harness(["Basement", "Sonos Arc", "Studio"])
+        let s = make(h)
+        _ = s.tick(snapshot: outputTabSnapshot())
+        settle(s, ["Basement", "Sonos Arc", "Studio"])
+        XCTAssertTrue(moveToSpeaker(s, "Sonos Arc"))
+        h.next(["Sonos Arc", "Basement", "Sonos Arc", "Studio"])   // which one is it now?
+        settle(s, ["Sonos Arc", "Basement", "Sonos Arc", "Studio"])
+        XCTAssertNil(cursorSpeaker(s), "the highlight picked one of two speakers by name")
+        assertKeysActOnNothing(s)
+    }
+
+    func testASharedNameThatBecomesOneHoldsTheHighlightAndStaysHeld() {
+        let h = Harness(["Sonos Arc", "Sonos Arc", "Studio"])
+        let s = make(h)
+        _ = s.tick(snapshot: outputTabSnapshot())
+        settle(s, ["Sonos Arc", "Sonos Arc", "Studio"])
+        XCTAssertTrue(moveToSpeaker(s, "Sonos Arc"))
+        _ = s.handle(.down)                                        // the second Sonos Arc
+        XCTAssertEqual(s.cursorRowForTest, .speaker(1))
+        h.next(["Sonos Arc", "Studio"])                            // one left: not provably ours
+        settle(s, ["Sonos Arc", "Studio"])
+        XCTAssertNil(cursorSpeaker(s), "the highlight moved onto a speaker that may be the other one")
+        assertKeysActOnNothing(s)
+        h.next(["Sonos Arc", "Studio"])                            // still one, still not provably ours
+        XCTAssertTrue(tickUntil(s) { h.now.timeIntervalSince1970 > 0 })
+        for _ in 0..<40 { _ = s.tick(snapshot: outputTabSnapshot()); usleep(2_000) }
+        XCTAssertNil(cursorSpeaker(s), "a once-shared name re-armed the highlight by name alone")
+        assertKeysActOnNothing(s)
+    }
+
+    func testAnUnchangedListKeepsTheHighlightOnTheSameOfTwoSpeakersSharingAName() {
+        let h = Harness(["HomePod", "HomePod", "Studio"])
+        let s = make(h)
+        _ = s.tick(snapshot: outputTabSnapshot())
+        settle(s, ["HomePod", "HomePod", "Studio"])
+        XCTAssertTrue(moveToSpeaker(s, "HomePod"))
+        _ = s.handle(.down)
+        XCTAssertEqual(s.cursorRowForTest, .speaker(1))
+        h.next(["HomePod", "HomePod", "Studio"])                   // an ordinary refresh, nothing moved
+        XCTAssertTrue(tickUntil(s) { h.now.timeIntervalSince1970 > 0 })
+        for _ in 0..<40 { _ = s.tick(snapshot: outputTabSnapshot()); usleep(2_000) }
+        XCTAssertEqual(s.cursorRowForTest, .speaker(1), "a refresh moved or held the highlight")
+        XCTAssertEqual(s.handle(.enter), .redraw)
+        XCTAssertEqual(s.speakerRowsForTest.map(\.active), [false, true, false], "Enter acted on the other HomePod")
+    }
+
+    // MARK: - The EQ picker
+
+    func testClosingTheEQPickerWithEscapeKeepsTheHeldRow() {
+        let h = Harness(["Basement", "Sonos Arc", "Studio"])
+        let s = make(h)
+        _ = s.tick(snapshot: outputTabSnapshot())
+        settle(s, ["Basement", "Sonos Arc", "Studio"])
+        XCTAssertTrue(moveTo(s, .eq))
+        _ = s.handle(.enter)                                       // open the picker
+        XCTAssertTrue(s.displayRowsForTest.contains { if case .preset = $0 { return true }; return false })
+        XCTAssertTrue(moveUpToSpeaker(s, "Sonos Arc"))
+        h.next(["Basement", "Studio"])
+        settle(s, ["Basement", "Studio"])
+        XCTAssertNil(cursorSpeaker(s))
+        XCTAssertEqual(s.handle(.escape), .redraw)                 // closes the picker, stays on the tab
+        XCTAssertEqual(s.cursorRowForTest, .held("Sonos Arc"))
+        assertKeysActOnNothing(s)
     }
 
     // MARK: - What the person sees

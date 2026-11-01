@@ -582,13 +582,11 @@ final class SpeakersScene: Scene {
         let name: String
         let standIn: Bool
         let slot: Int
+        /// Its name was shared, so no later list can say which speaker it was:
+        /// it never turns live by name, only by the person moving.
+        var ambiguous = false
     }
     private var held: HeldRow? = nil
-    /// Whether the person has moved the highlight since the tab was built.
-    /// Before that, a highlight on the stand-in is only where the tab starts
-    /// (row 1 with no SpanDAC on this Mac), not a row they picked, so the first
-    /// list replacing it lands on the first speaker as it always has.
-    private var cursorMoved = false
     private var eqState: EQSnapshot? = nil
     private var eqExpanded = false
     private var visualizerOn: Bool? = nil
@@ -1104,11 +1102,21 @@ final class SpeakersScene: Scene {
                     var target: OutputTabRow? = nil
                     switch beforeRow {
                     case .speaker(let i)? where rows.indices.contains(i):
+                        // By name only while the name says which speaker it is:
+                        // unique in both lists. A shared name cannot (Codex round
+                        // 2, 503eddd2), except across an unchanged list, or
+                        // speakers sharing a name would be held every refresh.
                         let name = rows[i].name
-                        if let j = fetchedRows.firstIndex(where: { $0.name == name }) {
-                            target = .speaker(j)
+                        let oldNames = rows.map(\.name)
+                        let newMatches = fetchedRows.indices.filter { fetchedRows[$0].name == name }
+                        let sharedBefore = oldNames.filter { $0 == name }.count > 1
+                        if oldNames == fetchedRows.map(\.name) {
+                            target = .speaker(i)
+                        } else if newMatches.count == 1, !sharedBefore {
+                            target = .speaker(newMatches[0])
                         } else {
-                            held = HeldRow(name: name, standIn: false, slot: i)
+                            held = HeldRow(name: name, standIn: false, slot: i,
+                                           ambiguous: sharedBefore || newMatches.count > 1)
                         }
                     case .held?:
                         if let h = held {
@@ -1119,13 +1127,15 @@ final class SpeakersScene: Scene {
                                 // name cannot say which one it was (the Music
                                 // write is by name too), so it stays held.
                                 let same = fetchedRows.indices.filter { fetchedRows[$0].name == h.name }
-                                if same.count == 1 { held = nil; target = .speaker(same[0]) }
+                                if same.count == 1, !h.ambiguous { held = nil; target = .speaker(same[0]) }
                             }
                         }
                     case .musicApp?:
+                        // Also where the tab starts with no SpanDAC on this Mac:
+                        // still a visible highlight (Codex round 2, 503eddd2).
                         if fetchedRows.isEmpty {
                             target = .musicApp
-                        } else if cursorMoved {
+                        } else {
                             held = HeldRow(name: musicTUIOutputName, standIn: true, slot: 0)
                         }
                     case let row?:
@@ -1807,6 +1817,7 @@ final class SpeakersScene: Scene {
                 // Clamp cursor: it may have been on a preset row that no longer exists.
                 let collapsed = self.displayRows
                 if cursor >= collapsed.count { cursor = max(0, collapsed.count - 1) }
+                anchorHeld()
                 return .redraw
             }
             return .pop
@@ -1832,7 +1843,6 @@ final class SpeakersScene: Scene {
             switch target {
             case .some(.some(let to)):
                 cursor = to
-                cursorMoved = true
                 return .redraw
             case .some(.none):
                 held = saved
@@ -1852,22 +1862,16 @@ final class SpeakersScene: Scene {
             toggleVisualizer()
             return .redraw
         case .up:
-            cursorMoved = true
             cursor = max(0, cursor - 1); return .redraw
         case .down:
-            cursorMoved = true
             cursor = min(rowCount - 1, cursor + 1); return .redraw
         case .pageUp:
-            cursorMoved = true
             cursor = max(0, cursor - 5); return .redraw
         case .pageDown:
-            cursorMoved = true
             cursor = min(rowCount - 1, cursor + 5); return .redraw
         case .home:
-            cursorMoved = true
             cursor = 0; return .redraw
         case .end:
-            cursorMoved = true
             cursor = rowCount - 1; return .redraw
         case .enter:
             let currentRow = displayRows.indices.contains(cursor) ? displayRows[cursor] : nil
