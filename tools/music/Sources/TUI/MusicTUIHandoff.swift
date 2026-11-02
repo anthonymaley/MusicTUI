@@ -309,9 +309,11 @@ private func exactlyOneTrack(_ hits: [HandoffTrackHit], id: String) -> HandoffTr
     return deciding[0]
 }
 
-/// Plays one verified queue: the one sound mutation of a hand-off.
+/// Plays one verified queue: the one sound mutation of a hand-off. `report`
+/// is what the hand-off left out, so a play that must say more than
+/// "Playing" (an unconfirmed start) keeps saying it.
 protocol HandoffQueuePlaying {
-    func play(_ queue: AppQueue) throws
+    func play(_ queue: AppQueue, report: HandoffPlayReport) throws
 }
 
 /// The TUI's player: the app-owned queue (`AppQueueStore`), whose entries are
@@ -320,11 +322,11 @@ protocol HandoffQueuePlaying {
 struct AppQueueHandoffPlayer: HandoffQueuePlaying {
     let store: AppQueueStore
     /// Plays the queue's current entry; false on failure.
-    let playFirst: (AppQueue) -> Bool
+    let playFirst: (AppQueue, HandoffPlayReport) -> Bool
 
-    func play(_ queue: AppQueue) throws {
+    func play(_ queue: AppQueue, report: HandoffPlayReport) throws {
         store.set(queue)
-        guard playFirst(queue) else {
+        guard playFirst(queue, report) else {
             // A queue that never started is not left for the poller to drive.
             store.clear()
             throw ActionError(message: "Couldn't play '\(queue.contextLabel)'.")
@@ -368,7 +370,7 @@ struct PersistentIDHandoff: MusicTUIHandoff {
         // C-EPOCH: re-read after the reads, before the one sound mutation.
         guard currentStamp() == entry else { throw ActionError(message: sourceChangedNothingPlayed) }
         try player.play(AppQueue(playlistName: persistentIDQueueSource, tracks: ordered, currentIndex: current,
-                                 displayName: title))
+                                 displayName: title), report: available.report)
         return available.report
     }
 }

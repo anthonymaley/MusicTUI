@@ -540,7 +540,7 @@ final class HonestPlayingTests: XCTestCase {
         let player = AppQueueHandoffPlayer(store: store,
                                            playFirst: requestedHandoffPlayFirst(backend: FakeMusicInterpreter().backend,
                                                                                 appQueue: store))
-        XCTAssertNoThrow(try player.play(handoffQueue()), "unconfirmed is not a failed play")
+        XCTAssertNoThrow(try player.play(handoffQueue(), report: HandoffPlayReport()), "unconfirmed is not a failed play")
         // The scene posts its line once the hand-off returns, as today.
         status.post(LibraryProvenance.playingOnMusicTUI("Moon Safari"))
         rig.runJobs()
@@ -557,7 +557,7 @@ final class HonestPlayingTests: XCTestCase {
         let player = AppQueueHandoffPlayer(store: store,
                                            playFirst: requestedHandoffPlayFirst(backend: FakeMusicInterpreter().backend,
                                                                                 appQueue: store))
-        try player.play(handoffQueue())
+        try player.play(handoffQueue(), report: HandoffPlayReport())
         status.post(LibraryProvenance.playingOnMusicTUI("Moon Safari"))
         rig.runJobs()
         XCTAssertEqual(status.current()?.text, "Playing 'Moon Safari' on MusicTUI.")
@@ -572,12 +572,66 @@ final class HonestPlayingTests: XCTestCase {
         store.confirmer = rig.confirmer
         let player = AppQueueHandoffPlayer(store: store,
                                            playFirst: requestedHandoffPlayFirst(backend: fake.backend, appQueue: store))
-        XCTAssertThrowsError(try player.play(handoffQueue())) { error in
+        XCTAssertThrowsError(try player.play(handoffQueue(), report: HandoffPlayReport())) { error in
             XCTAssertEqual((error as? ActionError)?.message, "Couldn't play 'Moon Safari'.")
         }
         XCTAssertNil(store.read())
         rig.runJobs()
         XCTAssertEqual(rig.posts, [])
+    }
+
+    /// A hand-off that skipped a song as unavailable, through the real
+    /// `PersistentIDHandoff` and the shell's player: the first song (alias
+    /// 178, the requested `new`) plays, the second has no identity.
+    private func skippingHandoff(_ store: AppQueueStore) -> PersistentIDHandoff {
+        XCTAssertEqual(persistentIDHex(fromAlias: "178"), new)
+        let library = FakePersistentIDLibrary([new: [HandoffTrackHit(persistentID: new, inLibrary: true,
+                                                                     databaseID: "501", libraryIndex: 7,
+                                                                     name: "La Femme d'Argent")]])
+        let player = AppQueueHandoffPlayer(store: store,
+                                           playFirst: requestedHandoffPlayFirst(backend: FakeMusicInterpreter().backend,
+                                                                                appQueue: store))
+        return PersistentIDHandoff(library: library, player: player, selfCheck: LibraryAliasSelfCheck(),
+                                   currentStamp: { MusicTUIHandoffStamp(epoch: 1, dataEpoch: 1) })
+    }
+
+    private let skippedRows = [
+        MusicRow(id: "l.1", title: "La Femme d'Argent", artist: "Air", album: "Moon Safari", kind: .song, alias: "178"),
+        MusicRow(id: "l.2", title: "Sexy Boy", artist: "Air", album: "Moon Safari", kind: .song, alias: nil),
+    ]
+
+    func testAnUnconfirmedHandoffWarningKeepsTheSkippedSongsNotice() throws {
+        let status = StatusStore()
+        let rig = ConfirmRig([reading("paused", old)], status: status)
+        let store = AppQueueStore()
+        store.confirmer = rig.confirmer
+        let report = try skippingHandoff(store).playLibrary(rows: skippedRows, startAt: 1, shuffle: false,
+                                                            title: "Moon Safari")
+        let notice = try XCTUnwrap(report.notice, "the hand-off skipped one song")
+        status.post(LibraryProvenance.playingOnMusicTUI("Moon Safari", report: report), untilStateChange: true)
+        rig.runJobs()
+        XCTAssertEqual(rig.posts, [playNotStartedWarning("Moon Safari") + " " + notice],
+                       "the warning replaced the skipped-songs notice")
+    }
+
+    func testALateConfirmedHandoffRestoresThePlayingLineWithItsNotice() throws {
+        let status = StatusStore()
+        let rig = ConfirmRig([reading("paused", old)], status: status)
+        let store = AppQueueStore()
+        store.confirmer = rig.confirmer
+        // Music starts the song late, after the warning showed.
+        rig.onRead = { n in
+            if n == 9 { rig.setReadings([self.reading("playing", self.new)]) }
+        }
+        let report = try skippingHandoff(store).playLibrary(rows: skippedRows, startAt: 1, shuffle: false,
+                                                            title: "Moon Safari")
+        let line = LibraryProvenance.playingOnMusicTUI("Moon Safari", report: report)
+        status.post(line, untilStateChange: true)
+        rig.runJobs()
+        XCTAssertEqual(rig.posts.count, 1, "the warning showed first")
+        XCTAssertNil(rig.confirmer.currentTicket(), "the late playing read confirmed it")
+        XCTAssertEqual(status.current()?.text, "Playing 'Moon Safari' on MusicTUI. 1 song isn't available to SpanDAC.")
+        XCTAssertEqual(status.current()?.text, line, "the late confirmation took the skipped-songs notice away")
     }
 
     // MARK: - A Library album play (scene)

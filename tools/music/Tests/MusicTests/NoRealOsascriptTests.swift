@@ -42,6 +42,47 @@ final class NoRealOsascriptTests: XCTestCase {
         } catch {}
     }
 
+    /// True when `text` names the real interpreter: the literal, a
+    /// spelled-out split of it, or a launch through `env` (a command line
+    /// "env osascript", an argument array ["env", "osascript", ...], or an
+    /// executable "/usr/bin/env" in a file that also passes "osascript").
+    static func namesRealInterpreter(_ text: String) -> Bool {
+        let squashed = text.replacingOccurrences(of: "\" + \"", with: "")
+            .replacingOccurrences(of: "\"+\"", with: "")
+        let throughEnv = [#"\benv\s+osascript\b"#, #""env"\s*,\s*"osascript""#].contains {
+            squashed.range(of: $0, options: .regularExpression) != nil
+        }
+        return squashed.contains(interpreter)
+            || (squashed.contains("\"/usr/bin\"") && squashed.contains("\"osascript\""))
+            || throughEnv
+            || (squashed.contains("\"/usr/bin/env\"") && squashed.contains("\"osascript\""))
+    }
+
+    func testTheAuditMatcherCatchesEveryLaunchForm() {
+        let flagged = [
+            "let p = \"/usr/bin/\" + \"osascript\"",
+            "Process(path: \"/usr/bin\", name: \"osascript\")",
+            "run(\"/usr/bin/env osascript -e 'return 1'\")",
+            "run(\"/usr/bin/env  osascript\")",
+            "p.arguments = [\"env\", \"osascript\", \"-e\", s]",
+            "p.arguments = [\"env\",\"osascript\"]",
+            "p.executableURL = URL(fileURLWithPath: \"/usr/bin/env\")\np.arguments = [\"osascript\", \"-e\", s]",
+            "#!/usr/bin/env osascript",
+        ]
+        for text in flagged {
+            XCTAssertTrue(Self.namesRealInterpreter(text), "missed: \(text)")
+        }
+        let clean = [
+            "AppleScriptBackend(executable: fakePath)",
+            "#!/usr/bin/env bash\necho hi",
+            "// osascript is denied under XCTest",
+            "let name = \"osascript\"",
+        ]
+        for text in clean {
+            XCTAssertFalse(Self.namesRealInterpreter(text), "false positive: \(text)")
+        }
+    }
+
     func testOnlyReviewedFilesNameTheRealInterpreter() throws {
         let root = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
@@ -63,13 +104,7 @@ final class NoRealOsascriptTests: XCTestCase {
                 let text = try String(contentsOf: url, encoding: .utf8)
                 let rel = dir + "/" + url.path.replacingOccurrences(of: base.path + "/", with: "")
                 guard !allowed.contains(rel) else { continue }
-                // The literal, or a spelled-out split of it.
-                let squashed = text.replacingOccurrences(of: "\" + \"", with: "")
-                    .replacingOccurrences(of: "\"+\"", with: "")
-                if squashed.contains(Self.interpreter)
-                    || (squashed.contains("\"/usr/bin\"") && squashed.contains("\"osascript\"")) {
-                    offenders.append(rel)
-                }
+                if Self.namesRealInterpreter(text) { offenders.append(rel) }
             }
         }
         XCTAssertGreaterThan(scanned, 100, "audit scanned too few files")

@@ -151,11 +151,18 @@ func playRequestedQueueTrack(backend: AppleScriptBackend, appQueue: AppQueueStor
 
 /// The SpanDAC library hand-off's first play (`AppQueueHandoffPlayer`): the
 /// queue's current entry, confirmed under the queue's own title, the one its
-/// "Playing '...' on MusicTUI." line names.
-func requestedHandoffPlayFirst(backend: AppleScriptBackend, appQueue: AppQueueStore) -> (AppQueue) -> Bool {
-    { queue in
-        playRequestedQueueTrack(backend: backend, appQueue: appQueue, playlist: queue.playlistName,
-                                position: queue.currentSourcePosition, title: queue.contextLabel)
+/// "Playing '...' on MusicTUI." line names. When the hand-off skipped songs,
+/// the warning carries that notice and a late confirmation restores the full
+/// line the scene posts (`LibraryProvenance.playingOnMusicTUI(_:report:)`).
+func requestedHandoffPlayFirst(backend: AppleScriptBackend,
+                               appQueue: AppQueueStore) -> (AppQueue, HandoffPlayReport) -> Bool {
+    { queue, report in
+        let title = queue.contextLabel
+        return playRequestedQueueTrack(backend: backend, appQueue: appQueue, playlist: queue.playlistName,
+                                       position: queue.currentSourcePosition, title: title, notice: report.notice,
+                                       restore: report.notice.map { _ in
+                                           LibraryProvenance.playingOnMusicTUI(title, report: report)
+                                       })
     }
 }
 
