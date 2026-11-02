@@ -106,6 +106,7 @@ final class HonestPlayingTests: XCTestCase {
         private let pollPath: String
         private let replyPath: String
         private let failPath: String
+        private let killPath: String
         private static let separator = "----8<----"
 
         init() {
@@ -115,12 +116,19 @@ final class HonestPlayingTests: XCTestCase {
             pollPath = dir.appendingPathComponent("honest-playing-poll-\(id).txt").path
             replyPath = dir.appendingPathComponent("honest-playing-reply-\(id).txt").path
             failPath = dir.appendingPathComponent("honest-playing-fail-\(id)").path
+            killPath = dir.appendingPathComponent("honest-playing-kill-\(id)").path
             let scriptPath = dir.appendingPathComponent("honest-playing-fake-\(id).sh").path
             let script = """
                 #!/bin/sh
                 printf '%s\\n%s\\n' "$2" '\(Self.separator)' >> "\(logPath)"
                 case "$2" in
                   *"player position"*) [ -f "\(pollPath)" ] && cat "\(pollPath)" ;;
+                  *"persistent ID of track"*)
+                    # A play whose identity phase the watchdog killed: the play
+                    # ran (it is logged above), then the script ended in error.
+                    if [ -f "\(failPath)" ]; then echo "Music got an error." >&2; exit 1; fi
+                    if [ -f "\(killPath)" ]; then echo "killed by the watchdog" >&2; exit 1; fi
+                    [ -f "\(replyPath)" ] && cat "\(replyPath)" ;;
                   *"play track"*|*"play item"*)
                     if [ -f "\(failPath)" ]; then echo "Music got an error." >&2; exit 1; fi
                     [ -f "\(replyPath)" ] && cat "\(replyPath)" ;;
@@ -134,6 +142,9 @@ final class HonestPlayingTests: XCTestCase {
 
         func poll(_ text: String) { try? text.write(toFile: pollPath, atomically: true, encoding: .utf8) }
         func reply(_ text: String) { try? text.write(toFile: replyPath, atomically: true, encoding: .utf8) }
+        /// Any script carrying an identity read after its play ends in error,
+        /// as when the backend's watchdog kills osascript mid-read.
+        func killIdentityPhase() { FileManager.default.createFile(atPath: killPath, contents: Data()) }
         func failPlays(_ fail: Bool) {
             if fail { FileManager.default.createFile(atPath: failPath, contents: Data()) }
             else { try? FileManager.default.removeItem(atPath: failPath) }
@@ -669,4 +680,68 @@ final class HonestPlayingTests: XCTestCase {
         XCTAssertTrue(text.contains("the rest aren't available yet"), "the warning erased the partial-availability notice: \(text)")
     }
 
+
+    // MARK: - Codex r4: the play's success is the play command alone
+
+    func testThePlayScriptIsMainsAndTheOnlyScriptOnTheCallersThread() {
+        let shipped = FakeMusicInterpreter()
+        XCTAssertTrue(playQueueTrack(backend: shipped.backend, playlist: "Mix", position: 3))
+        let fake = FakeMusicInterpreter()
+        let rig = ConfirmRig([reading("playing", new)])
+        let store = AppQueueStore()
+        store.confirmer = rig.confirmer
+        store.set(queue(5, at: 3))
+        XCTAssertTrue(playRequestedQueueTrack(backend: fake.backend, appQueue: store, playlist: "Mix",
+                                              position: 3, title: "T3"))
+        XCTAssertEqual(fake.scripts, shipped.scripts,
+                       "the caller's thread ran something other than main's play script")
+    }
+
+    func testAKilledIdentityPhaseNeverRollsBackANextMusicAccepted() {
+        let fake = FakeMusicInterpreter()
+        fake.killIdentityPhase()
+        let rig = ConfirmRig([reading("paused", old)])
+        let store = AppQueueStore()
+        store.confirmer = rig.confirmer
+        store.set(queue(3, at: 1))
+        XCTAssertNoThrow(try musicTUISkip(1, backend: fake.backend, appQueue: store),
+                         "a play Music accepted was reported as failed")
+        XCTAssertEqual(store.read()?.currentIndex, 2, "the step was rolled back")
+    }
+
+    func testAKilledIdentityPhaseNeverRefusesALibraryPlayMusicAccepted() {
+        let fake = FakeMusicInterpreter()
+        fake.killIdentityPhase()
+        let status = StatusStore()
+        let rig = ConfirmRig([reading("paused", old)], status: status)
+        let store = AppQueueStore()
+        store.confirmer = rig.confirmer
+        let actions = ActionRunner(status: status)
+        let tracks = (1...3).map { TrackListEntry(index: 40 + $0, name: "T\($0)", artist: "Air", isCurrent: false) }
+        libraryScene(fake, store, status, actions, tracks: tracks, matched: 3)
+            .playAlbum(title: "Moon Safari", artist: "Air", shuffle: false)
+        actions.waitUntilIdle()
+        XCTAssertNotEqual(status.current()?.text, "Couldn't play 'Moon Safari'.",
+                          "a play Music accepted was refused")
+        XCTAssertEqual(store.read()?.currentIndex, 1)
+    }
+
+    func testAWithdrawnWarningLeavesThePartialAvailabilityNotice() {
+        let fake = FakeMusicInterpreter()
+        fake.reply(new + "\n")
+        let status = StatusStore()
+        let rig = ConfirmRig([reading("paused", old)], status: status)
+        let store = AppQueueStore()
+        store.confirmer = rig.confirmer
+        let actions = ActionRunner(status: status)
+        // Music starts the album late, after the warning showed.
+        rig.onRead = { n in if n == 9 { rig.setReadings([PlayerIdentityReading(state: "playing", persistentID: self.new)]) } }
+        let tracks = (1...3).map { TrackListEntry(index: 40 + $0, name: "T\($0)", artist: "Air", isCurrent: false) }
+        libraryScene(fake, store, status, actions, tracks: tracks, matched: 5)
+            .playAlbum(title: "Moon Safari", artist: "Air", shuffle: false)
+        actions.waitUntilIdle()
+        rig.runJobs()
+        XCTAssertEqual(status.current()?.text, "Playing 3 of 5 \u{2014} the rest aren't available yet.",
+                       "the late confirmation took the availability notice away with the warning")
+    }
 }
