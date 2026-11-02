@@ -66,7 +66,10 @@ struct EQWindowRefusal: LocalizedError, Equatable {
 ///   restores Music's main window, which breaks the ruling by construction,
 ///   and closing windows afterwards could close the person's own. A
 ///   launched-but-never-activated Music with no windows has been seen to
-///   ignore the click; then this raises `eqNotOpenedMessage` instead.
+///   ignore the click; then this raises `eqNotOpenedMessage` instead. A
+///   failed click is ignored for the same reason, except an Accessibility
+///   denial, which is raised again so the person gets the permission hint
+///   (Codex r2, 2026-11-02).
 /// * Park: always, whether this script opened the window or found it open, so
 ///   a window an older MusicTUI left on screen goes off-screen at the next EQ
 ///   action. A failed park raises `eqNotParkedMessage`, keeping the original
@@ -83,6 +86,10 @@ private func eqUIScript(_ body: String) -> String {
             if not (exists window "Equalizer") then
                 try
                     click menu item "Equalizer" of menu "Window" of menu bar 1
+                on error clickErrorText number clickErrorNumber
+                    if \(appleScriptAssistiveDenialCondition(textVariable: "clickErrorText", numberVariable: "clickErrorNumber")) then
+                        error clickErrorText number clickErrorNumber
+                    end if
                 end try
                 repeat 15 times
                     if exists window "Equalizer" then exit repeat

@@ -23,7 +23,23 @@ System Settings → Privacy & Security → Accessibility → enable your termina
 /// every failure into "grant Accessibility" would send the user to a settings
 /// pane unrelated to their actual problem.
 func isAssistiveAccessDenial(_ message: String) -> Bool {
-    message.contains("assistive") || message.contains("-1719") || message.contains("-25211")
+    assistiveDenialSignals.contains { message.contains($0) }
+}
+
+/// The signals `isAssistiveAccessDenial` looks for. One list, so the
+/// AppleScript form below can never learn a signal the Swift form misses.
+let assistiveDenialSignals = ["assistive", "-1719", "-25211"]
+
+/// The same classification as an AppleScript condition, for a script that
+/// must re-raise a denial it would otherwise swallow (the Equalizer's menu
+/// click). `textVariable` and `numberVariable` name the `on error` variables;
+/// a numeric signal matches the number or the text, a word the text.
+func appleScriptAssistiveDenialCondition(textVariable: String, numberVariable: String) -> String {
+    assistiveDenialSignals.map { signal in
+        Int(signal) != nil
+            ? "\(numberVariable) is \(signal) or \(textVariable) contains \"\(signal)\""
+            : "\(textVariable) contains \"\(signal)\""
+    }.joined(separator: " or ")
 }
 
 func runMusicUIScript(_ backend: AppleScriptBackend, _ script: String,
