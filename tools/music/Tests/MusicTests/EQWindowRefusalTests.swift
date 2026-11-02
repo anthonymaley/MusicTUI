@@ -71,4 +71,67 @@ final class EQWindowRefusalTests: XCTestCase {
         while Date() < deadline && status.current() == nil { usleep(20_000) }
         XCTAssertEqual(status.current()?.text, Self.notOpened)
     }
+    // MARK: - Codex r3 (2026-11-02): the Output tab keeps the Accessibility hint
+
+    /// A fake whose System Events scripts (the Equalizer window) are denied
+    /// Accessibility, while Music-dictionary scripts (creating a venue preset)
+    /// succeed, so the denial lands on the UI step under test.
+    private func denyingUIInterpreter() -> AppleScriptBackend {
+        let dir = FileManager.default.temporaryDirectory
+        let scriptPath = dir.appendingPathComponent("eq-denial-fake-\(UUID().uuidString).sh").path
+        let script = """
+            #!/bin/sh
+            case "$2" in
+              *"System Events"*)
+                printf '%s\\n' "0:301: execution error: System Events got an error: osascript is not allowed assistive access. (-1719)" >&2
+                exit 1 ;;
+            esac
+            exit 0
+            """
+        try? script.write(toFile: scriptPath, atomically: true, encoding: .utf8)
+        try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: scriptPath)
+        return AppleScriptBackend(executable: scriptPath)
+    }
+
+    private func deniedScene(status: StatusStore) throws -> (SpeakersScene, String) {
+        let dir = NSTemporaryDirectory() + "eq-denial-\(UUID().uuidString)"
+        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        let s = makeOutputTabScene(dir: dir, mode: .musicApp, spandac: nil, status: status,
+                                   backend: denyingUIInterpreter())
+        return (s, dir)
+    }
+
+    private func waitForToast(_ status: StatusStore) -> String? {
+        let deadline = Date().addingTimeInterval(5)
+        while Date() < deadline && status.current() == nil { usleep(20_000) }
+        return status.current()?.text
+    }
+
+    private func moveCursor(_ s: SpeakersScene, to row: OutputTabRow) -> Bool {
+        for _ in 0..<60 {
+            if s.cursorRowForTest == row { return true }
+            _ = s.handle(.down)
+        }
+        return s.cursorRowForTest == row
+    }
+
+    func testTheOutputTabEQToggleShowsTheAccessibilityHint() throws {
+        let status = StatusStore()
+        let (s, dir) = try deniedScene(status: status)
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        _ = s.handle(.char("e"))
+        XCTAssertEqual(waitForToast(status), eqAccessibilityHint)
+    }
+
+    func testTheOutputTabPresetPickShowsTheAccessibilityHint() throws {
+        let status = StatusStore()
+        let (s, dir) = try deniedScene(status: status)
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        let preset = try XCTUnwrap(VenuePack.names.first)
+        XCTAssertTrue(moveCursor(s, to: .eq))
+        _ = s.handle(.enter)                         // expand the picker
+        XCTAssertTrue(moveCursor(s, to: .preset(preset)))
+        _ = s.handle(.enter)
+        XCTAssertEqual(waitForToast(status), eqAccessibilityHint)
+    }
 }
