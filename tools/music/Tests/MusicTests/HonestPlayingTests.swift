@@ -29,6 +29,9 @@ final class HonestPlayingTests: XCTestCase {
         private var readingsValue: [PlayerIdentityReading?]
         private var readCount = 0
         var fenceValue = PlayConfirmFence.still
+        /// Called on every fence read, before the value is returned: a test's
+        /// hook for "exactly when a request takes its stamp".
+        var onFence: (() -> Void)?
         /// Called with the 1-based read number, before the reading is returned.
         var onRead: ((Int) -> Void)?
         private(set) var confirmer: PlayConfirmer!
@@ -43,7 +46,7 @@ final class HonestPlayingTests: XCTestCase {
                     self.lock.lock(); self.postsValue.append(text); self.lock.unlock()
                     status?.post(text, error: true, untilStateChange: true)
                 },
-                fence: { [unowned self] in self.fenceValue },
+                fence: { [unowned self] in self.onFence?(); return self.fenceValue },
                 timing: PlayConfirmer.Timing(interval: 0.25, window: 1.5),
                 now: { [unowned self] in self.lock.lock(); defer { self.lock.unlock() }; return self.clockValue },
                 sleep: { [unowned self] d in self.lock.lock(); self.clockValue += d; self.lock.unlock() },
@@ -64,6 +67,15 @@ final class HonestPlayingTests: XCTestCase {
             lock.unlock()
             onRead?(n)
             return r
+        }
+
+        /// Runs the oldest scheduled job only.
+        func runNextJob() {
+            lock.lock()
+            guard !jobs.isEmpty else { lock.unlock(); return }
+            let job = jobs.removeFirst()
+            lock.unlock()
+            job()
         }
 
         /// Runs every scheduled job, including ones scheduled while running.
@@ -139,8 +151,9 @@ final class HonestPlayingTests: XCTestCase {
     // MARK: - The wording and the read
 
     func testTheWarningWordingIsTheAgreedSentence() {
+        // Codex r1, UX: the evidence supports "could not confirm", not "hasn't started".
         XCTAssertEqual(playNotStartedWarning("Moon Safari"),
-                       "Play was requested, but Music hasn't started 'Moon Safari' yet. If nothing plays, quitting and reopening Music fixed this before.")
+                       "Play was requested, but Music didn't confirm 'Moon Safari' started. If nothing plays, quitting and reopening Music fixed this before.")
     }
 
     func testTheConfirmationReadParsesStateAndIdentity() {
@@ -639,5 +652,230 @@ final class HonestPlayingTests: XCTestCase {
         p.tick()
         p.tick()
         XCTAssertEqual(rig.reads, 0, "no confirmation read without a request")
+    }
+
+    // MARK: - Codex r1
+
+    /// A fire-once hook, so a hook that itself reads the fence cannot recurse.
+    private func once(_ body: @escaping () -> Void) -> () -> Void {
+        var fired = false
+        return { if !fired { fired = true; body() } }
+    }
+
+    private func libraryScene(_ fake: FakeMusicInterpreter, _ store: AppQueueStore, _ status: StatusStore,
+                              _ actions: ActionRunner, tracks: [TrackListEntry], matched: Int) -> LibraryScene {
+        let modeStore = PlaybackModeStore(path: NSTemporaryDirectory() + "mode-\(UUID().uuidString).json")
+        modeStore.set(.musicApp)
+        let routing = RoutingCoordinator(store: modeStore, surface: .tui,
+                                         makeSource: { SourceAppClient(path: "/nonexistent", transport: { _, _ in "" }) })
+        let sources = LibraryDataSources(onAlbums: { _ in true }, onSongs: { _ in true }, onArtists: { _ in true },
+                                         onAlbumTracks: { _, _ in [] }, onArtistAlbums: { _ in [] },
+                                         onAlbumCover: { _ in nil })
+        return LibraryScene(backend: fake.backend, routing: routing, sources: sources, appQueue: store,
+                            status: status, actions: actions,
+                            resolveAlbum: { _, _, _ in AlbumResolution(tracks: tracks, matched: matched) },
+                            resultCache: temporaryResultCache().cache)
+    }
+
+    // Finding 1: the queue must never be visible to the poller without its hold.
+
+    func testALibraryPlaysQueueIsNeverVisibleToThePollerBeforeItsHold() {
+        let fake = FakeMusicInterpreter()
+        fake.reply(new + "\n")
+        let status = StatusStore()
+        let rig = ConfirmRig([reading("paused", old)], status: status)
+        let store = AppQueueStore()
+        store.confirmer = rig.confirmer
+        let p = poller(fake, store)
+        fake.poll(pollLine("Old", duration: 200, position: 198, state: "playing"))
+        p.tick()
+        fake.poll("STOPPED\n")
+        // A poller tick lands exactly when the play takes its request stamp.
+        rig.onFence = once { p.tick() }
+        let actions = ActionRunner(status: status)
+        let tracks = (1...3).map { TrackListEntry(index: 40 + $0, name: "T\($0)", artist: "Air", isCurrent: false) }
+        libraryScene(fake, store, status, actions, tracks: tracks, matched: 3)
+            .playAlbum(title: "Moon Safari", artist: "Air", shuffle: false)
+        actions.waitUntilIdle()
+        XCTAssertEqual(store.read()?.currentIndex, 1, "the poller advanced the new queue off the old track's end")
+        XCTAssertEqual(fake.playScripts.count, 1, "only the person's play ran")
+    }
+
+    func testAHandoffQueueIsNeverVisibleToThePollerBeforeItsHold() {
+        let fake = FakeMusicInterpreter()
+        let rig = ConfirmRig([reading("paused", old)])
+        let store = AppQueueStore()
+        store.confirmer = rig.confirmer
+        let p = poller(fake, store)
+        fake.poll(pollLine("Old", duration: 200, position: 198, state: "playing"))
+        p.tick()
+        fake.poll("STOPPED\n")
+        rig.onFence = once { p.tick() }
+        let a = persistentIDQueueEntry(persistentID: new, name: "One", artist: "Air", album: "Moon Safari")!
+        let b = persistentIDQueueEntry(persistentID: "00000000000000C3", name: "Two", artist: "Air", album: "Moon Safari")!
+        let player = AppQueueHandoffPlayer(store: store,
+                                           playFirst: requestedHandoffPlayFirst(backend: fake.backend, appQueue: store))
+        XCTAssertNoThrow(try player.play(AppQueue(playlistName: persistentIDQueueSource, tracks: [a, b],
+                                                  currentIndex: 1, displayName: "Moon Safari")))
+        XCTAssertEqual(store.read()?.currentIndex, 1, "the poller advanced the hand-off queue off the old track's end")
+        XCTAssertEqual(fake.playScripts.count, 1)
+    }
+
+    // Finding 2: an old read must not release a newer request's hold.
+
+    func testAWindowReadBegunBeforeANewerRequestForTheSameTrackReleasesNothing() {
+        let rig = ConfirmRig([reading("playing", new)])
+        let first = rig.confirmer.request()
+        rig.onRead = { n in
+            if n == 1 {
+                let second = rig.confirmer.request()
+                rig.confirmer.confirm(second, expected: self.new, title: "Again")
+            }
+        }
+        rig.confirmer.confirm(first, expected: new, title: "Once")
+        rig.runNextJob()   // the first window only; its one read began before the second request
+        XCTAssertTrue(rig.confirmer.holdsAutoAdvance, "the first request's old read released the second's hold")
+        rig.onRead = nil
+        rig.runJobs()      // the second window reads for itself
+        XCTAssertFalse(rig.confirmer.holdsAutoAdvance)
+        XCTAssertEqual(rig.posts, [])
+    }
+
+    func testAPollerReadBegunBeforeANewerRequestForTheSameTrackReleasesNothing() {
+        let rig = ConfirmRig([reading("paused", old)])
+        let first = rig.confirmer.request()
+        rig.confirmer.confirm(first, expected: new, title: "Once")
+        rig.runJobs()   // unconfirmed: held
+        rig.setReadings([reading("playing", new)])
+        rig.onRead = { _ in
+            rig.onRead = nil
+            let second = rig.confirmer.request()
+            rig.confirmer.confirm(second, expected: self.new, title: "Again")
+        }
+        rig.confirmer.observeCurrentTrack()   // the poller's look, held while the second request lands
+        XCTAssertTrue(rig.confirmer.holdsAutoAdvance, "the poller's old read released the newer request's hold")
+    }
+
+    func testThePausedRequestedTrackDoesNotReleaseTheHold() {
+        let rig = ConfirmRig([reading("paused", new)])
+        let t = rig.confirmer.request()
+        rig.confirmer.confirm(t, expected: new, title: "Song")
+        rig.runJobs()
+        XCTAssertTrue(rig.confirmer.holdsAutoAdvance, "only a confirmed `playing` of the requested track releases it")
+    }
+
+    // Finding 3: a play whose own identity read failed.
+
+    func testAPlayWhoseIdentityReadFailedAdvancesOnceANewTrackPlays() {
+        let fake = FakeMusicInterpreter()
+        let fs = String(asFieldSep)
+        fake.reply(old + fs + "\n")   // the track before the play, then an empty identity
+        let rig = ConfirmRig([reading("paused", old)])
+        let store = AppQueueStore()
+        store.confirmer = rig.confirmer
+        let p = poller(fake, store)
+        fake.poll(pollLine("Old", duration: 200, position: 50, state: "paused"))
+        p.tick()
+        store.set(queue(3, at: 1))
+        XCTAssertTrue(playRequestedQueueTrack(backend: fake.backend, appQueue: store, playlist: "Mix",
+                                              position: 1, title: "T1"))
+        rig.runJobs()
+        XCTAssertTrue(rig.confirmer.holdsAutoAdvance)
+        // Music then really starts a different track, which plays out.
+        rig.setReadings([reading("playing", "00000000000000D4")])
+        fake.poll(pollLine("T1", duration: 200, position: 2, state: "playing"))
+        p.tick()
+        XCTAssertFalse(rig.confirmer.holdsAutoAdvance, "a new playing track is a safe baseline")
+        fake.poll(pollLine("T1", duration: 200, position: 198, state: "playing"))
+        p.tick()
+        fake.poll("STOPPED\n")
+        p.tick()
+        XCTAssertEqual(store.read()?.currentIndex, 2, "the queue stopped for good after an identity-read failure")
+    }
+
+    func testAPlayWhoseIdentityReadFailedStillHoldsOnAStuckPreviousTrack() {
+        let fake = FakeMusicInterpreter()
+        let fs = String(asFieldSep)
+        fake.reply(old + fs + "\n")
+        let rig = ConfirmRig([reading("playing", old)])
+        let store = AppQueueStore()
+        store.confirmer = rig.confirmer
+        let p = poller(fake, store)
+        fake.poll(pollLine("Old", duration: 200, position: 196, state: "playing"))
+        p.tick()
+        store.set(queue(3, at: 1))
+        XCTAssertTrue(playRequestedQueueTrack(backend: fake.backend, appQueue: store, playlist: "Mix",
+                                              position: 1, title: "T1"))
+        rig.runJobs()
+        fake.poll(pollLine("Old", duration: 200, position: 198, state: "playing"))
+        p.tick()
+        fake.poll("STOPPED\n")
+        p.tick()
+        XCTAssertEqual(store.read()?.currentIndex, 1, "the previous track's end advanced the new queue")
+        XCTAssertEqual(fake.playScripts.count, 1)
+    }
+
+    // Finding 4: the final post binds to the still-pending request.
+
+    func testAConfirmationThatLandsDuringTheLastReadPostsNoWarning() {
+        let rig = ConfirmRig([reading("paused", old)])
+        let t = rig.confirmer.request()
+        rig.onRead = { _ in
+            guard rig.elapsed >= 1.5 - 1e-9 else { return }
+            rig.onRead = nil
+            // The poller sees Music start the track while the window's last read is in flight.
+            rig.setReadings([self.reading("playing", self.new)])
+            rig.confirmer.observeCurrentTrack()
+        }
+        rig.confirmer.confirm(t, expected: new, title: "Song")
+        rig.runJobs()
+        XCTAssertFalse(rig.confirmer.holdsAutoAdvance)
+        XCTAssertEqual(rig.posts, [], "a play the poller confirmed still got the warning")
+    }
+
+    // UX: a late confirmation withdraws that request's warning, and only it.
+
+    func testALateConfirmationWithdrawsThatRequestsWarning() {
+        let status = StatusStore()
+        let rig = ConfirmRig([reading("paused", old)], status: status)
+        let t = rig.confirmer.request()
+        rig.confirmer.confirm(t, expected: new, title: "Song")
+        rig.runJobs()
+        XCTAssertEqual(status.current()?.text, playNotStartedWarning("Song"))
+        rig.setReadings([reading("playing", new)])
+        rig.confirmer.observeCurrentTrack()
+        XCTAssertNil(status.current(), "the warning for a play now confirmed stayed up")
+    }
+
+    func testALateConfirmationNeverWithdrawsAnotherMessage() {
+        let status = StatusStore()
+        let rig = ConfirmRig([reading("paused", old)], status: status)
+        let t = rig.confirmer.request()
+        rig.confirmer.confirm(t, expected: new, title: "Song")
+        rig.runJobs()
+        status.post("Volume 50%")
+        rig.setReadings([reading("playing", new)])
+        rig.confirmer.observeCurrentTrack()
+        XCTAssertEqual(status.current()?.text, "Volume 50%")
+    }
+
+    // UX: the Library's partial-availability notice survives the warning.
+
+    func testALibraryAlbumWarningKeepsThePartialAvailabilityNotice() {
+        let fake = FakeMusicInterpreter()
+        fake.reply(new + "\n")
+        let status = StatusStore()
+        let rig = ConfirmRig([reading("paused", old)], status: status)
+        let store = AppQueueStore()
+        store.confirmer = rig.confirmer
+        let actions = ActionRunner(status: status)
+        let tracks = (1...3).map { TrackListEntry(index: 40 + $0, name: "T\($0)", artist: "Air", isCurrent: false) }
+        libraryScene(fake, store, status, actions, tracks: tracks, matched: 5)
+            .playAlbum(title: "Moon Safari", artist: "Air", shuffle: false)
+        actions.waitUntilIdle()
+        rig.runJobs()
+        let text = status.current()?.text ?? ""
+        XCTAssertTrue(text.contains(playNotStartedWarning("Moon Safari")), text)
+        XCTAssertTrue(text.contains("the rest aren't available yet"), "the warning erased the partial-availability notice: \(text)")
     }
 }
