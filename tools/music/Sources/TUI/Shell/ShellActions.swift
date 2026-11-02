@@ -50,6 +50,9 @@ final class StatusStore {
 
     private let lock = NSLock()
     private var toast: StatusToast?
+    /// Which post `toast` is, for `withdraw`.
+    private var toastID = 0
+    private var lastID = 0
     private var lasting: Lasting?
     private var lastTrack: String?
     private let switchStamp: () -> StatusSwitchStamp
@@ -63,16 +66,42 @@ final class StatusStore {
     /// `untilStateChange`: a won't-play message, which ignores `ttl` and stays
     /// until `stateChanged()`, the next track change, a committed output or
     /// data-source switch, or the next post (which replaces it).
+    ///
+    /// Returns this post's id, for `withdraw`.
+    @discardableResult
     func post(_ text: String, error: Bool = false, ttl: TimeInterval = 3,
-              untilStateChange: Bool = false, now: Date = Date()) {
+              untilStateChange: Bool = false, now: Date = Date()) -> Int {
         // Read before taking the lock: the coordinator has a lock of its own.
         let stamp = untilStateChange ? switchStamp() : nil
         lock.lock(); defer { lock.unlock() }
+        lastID += 1
+        toastID = lastID
         if let stamp {
             toast = StatusToast(text: text, isError: error, expiresAt: nil)
             lasting = Lasting(postedAt: now, stamp: stamp, track: lastTrack)
         } else {
             toast = StatusToast(text: text, isError: error, expiresAt: now.addingTimeInterval(ttl))
+            lasting = nil
+        }
+        return toastID
+    }
+
+    /// Takes back the post `id` while it is still the one showing; any other
+    /// message, later or earlier, is left alone. `replacingWith` shows in its
+    /// place, as a message that stays until the next state change (what the
+    /// play said before the warning replaced it).
+    func withdraw(_ id: Int, replacingWith text: String? = nil, now: Date = Date()) {
+        // Read before taking the lock: the coordinator has a lock of its own.
+        let stamp = text != nil ? switchStamp() : nil
+        lock.lock(); defer { lock.unlock() }
+        guard toast != nil, toastID == id else { return }
+        if let text, let stamp {
+            lastID += 1
+            toastID = lastID
+            toast = StatusToast(text: text, isError: false, expiresAt: nil)
+            lasting = Lasting(postedAt: now, stamp: stamp, track: lastTrack)
+        } else {
+            toast = nil
             lasting = nil
         }
     }
@@ -144,8 +173,16 @@ func require(_ ok: Bool, _ message: String) throws {
 final class ActionRunner {
     private let queue = DispatchQueue(label: "music.shell.actions")
     private let status: StatusStore
+    private let onSuperseding: (() -> Void)?
 
-    init(status: StatusStore) { self.status = status }
+    /// `onSuperseding` runs ON the action queue, just before the body of any
+    /// action in `supersedingLabels`: the shell's play confirmer is told that
+    /// a pause, skip, play or switch came after every request queued before
+    /// it, in press order.
+    init(status: StatusStore, onSuperseding: (() -> Void)? = nil) {
+        self.status = status
+        self.onSuperseding = onSuperseding
+    }
 
     /// Blocks until every action queued so far has run. Tests only.
     func waitUntilIdle() { queue.sync {} }
@@ -160,10 +197,16 @@ final class ActionRunner {
     /// error (volume, seek, favorite, EQ...) is a transient status.
     static let wontPlayLabels: Set<String> = startingLabels.union(["Output", "SpanDAC"])
 
+    /// Actions after which an earlier play's late "hasn't started" result
+    /// must not speak: anything that starts, pauses, skips or switches.
+    static let supersedingLabels: Set<String> = wontPlayLabels.union(["Pause"])
+
     func run(_ label: String, _ body: @escaping () throws -> Void) {
         if Self.startingLabels.contains(label) { status.stateChanged() }
         let lasting = Self.wontPlayLabels.contains(label)
+        let supersede = Self.supersedingLabels.contains(label) ? onSuperseding : nil
         queue.async {
+            supersede?()
             do { try body() } catch let e as ActionError {
                 self.status.post(e.message, error: true, untilStateChange: lasting)
             } catch {

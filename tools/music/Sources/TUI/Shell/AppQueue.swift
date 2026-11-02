@@ -56,6 +56,17 @@ struct AdvanceRetryGate {
 final class AppQueueStore {
     private let lock = NSLock()
     private var queue: AppQueue?
+    private var _confirmer: PlayConfirmer?
+
+    /// The shell's play confirmer (`PlayConfirmation.swift`): person-started
+    /// plays of this queue are confirmed through it, for the footer warning
+    /// only; nothing about how the queue advances depends on it. Nil (tests,
+    /// the CLI): plays are not confirmed, exactly as before. Set once at
+    /// startup.
+    var confirmer: PlayConfirmer? {
+        get { lock.lock(); defer { lock.unlock() }; return _confirmer }
+        set { lock.lock(); _confirmer = newValue; lock.unlock() }
+    }
 
     func set(_ value: AppQueue?) { lock.lock(); queue = value; lock.unlock() }
     func clear() { set(nil) }
@@ -103,6 +114,49 @@ func playQueueTrack(backend: AppleScriptBackend, playlist: String, position: Int
     }
     let esc = escapeAppleScriptString(playlist)
     return (try? backend.runMusicBlocking("play track \(position) of playlist \"\(esc)\"")) != nil
+}
+
+/// `playQueueTrack` for a play the PERSON started (honest "Playing",
+/// 2026-11-01): the same play, main's script byte for byte, so its success is
+/// the play command alone (Codex r4). On a clean exit the requested track is
+/// handed to `appQueue.confirmer`, which reads Music, and the requested
+/// track's identity for a position play, off this thread, and replaces the
+/// footer line with `playNotStartedWarning(title)` if Music does not confirm
+/// it. Nothing beyond the play runs here. True means the script exited cleanly, exactly as before;
+/// an unconfirmed play is still true, so no caller rolls back or clears a
+/// queue Music accepted. False is a script error: nothing is confirmed.
+/// `notice` follows the warning, so what the play already said (tracks left
+/// out) survives it; `restore` takes the warning's place if Music confirms
+/// late while the warning still shows.
+///
+/// With or without a confirmer, the play is `playQueueTrack`.
+@discardableResult
+func playRequestedQueueTrack(backend: AppleScriptBackend, appQueue: AppQueueStore, playlist: String,
+                             position: Int, title: String, notice: String? = nil,
+                             restore: String? = nil) -> Bool {
+    guard let confirmer = appQueue.confirmer else {
+        return playQueueTrack(backend: backend, playlist: playlist, position: position)
+    }
+    let ticket = confirmer.request()
+    guard playQueueTrack(backend: backend, playlist: playlist, position: position) else {
+        confirmer.abandon(ticket)
+        return false
+    }
+    let requested: RequestedTrack = playlist == persistentIDQueueSource
+        ? .persistentID(persistentIDOfQueueEntry(position))
+        : .position(playlist: playlist, index: position)
+    confirmer.confirm(ticket, requested: requested, title: title, notice: notice, restore: restore)
+    return true
+}
+
+/// The SpanDAC library hand-off's first play (`AppQueueHandoffPlayer`): the
+/// queue's current entry, confirmed under the queue's own title, the one its
+/// "Playing '...' on MusicTUI." line names.
+func requestedHandoffPlayFirst(backend: AppleScriptBackend, appQueue: AppQueueStore) -> (AppQueue) -> Bool {
+    { queue in
+        playRequestedQueueTrack(backend: backend, appQueue: appQueue, playlist: queue.playlistName,
+                                position: queue.currentSourcePosition, title: queue.contextLabel)
+    }
 }
 
 // MARK: - Entries addressed by persistent ID (C-HANDOFF)
