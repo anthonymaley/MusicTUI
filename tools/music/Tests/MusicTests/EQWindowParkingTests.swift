@@ -111,35 +111,55 @@ final class EQWindowParkingTests: XCTestCase {
                       "the park must run whether or not this script opened the window")
     }
 
-    // MARK: - The fallback
+    // MARK: - No fallback (Codex r1, 2026-11-02)
 
-    /// `reopen` survives only as the fallback: after the first click, inside a
-    /// second absence check, and followed by a second click.
-    func testReopenIsOnlyTheFallbackAfterTheClickFailed() throws {
-        let script = try toggleScript()
-        let firstClick = try XCTUnwrap(offset(of: menuClick, in: script))
-        let afterFirstClick = script.index(firstClick, offsetBy: menuClick.count)
-        let recheck = try XCTUnwrap(offset(of: openGuard, in: script, after: afterFirstClick),
-                                    "the fallback runs only when the window did not appear")
-        let reopen = try XCTUnwrap(offset(of: #"tell application "Music" to reopen"#, in: script, after: recheck))
-        XCTAssertNotNil(offset(of: menuClick, in: script, after: reopen), "the fallback clicks the menu again after reopen")
+    /// `reopen` restores Music's main window, which breaks the ruling by
+    /// construction, so it is gone entirely, not kept as a fallback.
+    func testNothingEverReopensMusic() throws {
+        XCTAssertFalse(try toggleScript().contains("reopen"))
+        XCTAssertFalse(try presetScript().contains("reopen"))
     }
 
-    /// The fallback notes Music's windows before `reopen` and afterwards closes
-    /// only the ones `reopen` brought back, by their close button, never the
-    /// Equalizer.
-    func testTheFallbackClosesOnlyTheWindowsReopenShowed() throws {
+    /// Closing windows by name could close a person's own Music window.
+    func testNoWindowIsEverClosed() throws {
         let script = try toggleScript()
-        let snapshot = try XCTUnwrap(offset(of: "set windowNamesBeforeReopen to name of every window", in: script))
-        let reopen = try XCTUnwrap(offset(of: #"tell application "Music" to reopen"#, in: script))
-        XCTAssertLessThan(snapshot, reopen, "the windows are noted before reopen shows any")
-        let secondClick = try XCTUnwrap(offset(of: menuClick, in: script, after: reopen))
-        let close = try XCTUnwrap(offset(of: #"whose subrole is "AXCloseButton""#, in: script, after: secondClick),
-                                  "the windows reopen showed are closed again")
-        let closeLoop = script[secondClick..<close]
-        XCTAssertTrue(closeLoop.contains("windowNamesBeforeReopen does not contain"),
-                      "only windows absent before reopen are closed")
-        XCTAssertTrue(closeLoop.contains(#"is not "Equalizer""#), "the Equalizer itself is never closed")
+        XCTAssertFalse(script.contains("AXCloseButton"))
+        XCTAssertFalse(script.contains("windowNamesBeforeReopen"))
+    }
+
+    /// A window that did not appear after the plain click is an error the
+    /// person can act on, raised before any control is touched.
+    func testAWindowThatDidNotOpenIsAnErrorBeforeTheBody() throws {
+        let scriptLines = lines(try toggleScript())
+        let refusal = try XCTUnwrap(scriptLines.firstIndex {
+            $0.hasPrefix(#"if not (exists window "Equalizer") then error"#)
+                && $0.contains("Equalizer didn't open without bringing Music forward")
+        }, "a window that did not open must raise, not fall back")
+        let control = try XCTUnwrap(scriptLines.firstIndex(of: controlBlock))
+        XCTAssertLessThan(refusal, control)
+    }
+
+    /// A park that fails raises instead of being swallowed, so the body never
+    /// toggles a window that may be on screen.
+    func testAFailedParkRaisesInsteadOfRunningTheBody() throws {
+        let scriptLines = lines(try toggleScript())
+        let park = try XCTUnwrap(scriptLines.firstIndex(of: parkLine))
+        let tryEnd = try XCTUnwrap(scriptLines[park...].firstIndex(of: "end try"), "the park sits in a try")
+        let handler = scriptLines[(park + 1)..<tryEnd]
+        XCTAssertTrue(handler.contains { $0.hasPrefix("on error") }, "a failed park is handled")
+        XCTAssertTrue(handler.contains { $0.hasPrefix("error ") }, "and the handler raises")
+        XCTAssertLessThan(tryEnd, try XCTUnwrap(scriptLines.firstIndex(of: controlBlock)))
+    }
+
+    /// The missing-preset path used `key code 53`, an Escape sent to the
+    /// FRONTMOST app, which is the person's terminal now that Music stays
+    /// behind. It must close Music's own popup menu instead.
+    func testAMissingPresetSendsNoKeystroke() throws {
+        let script = try presetScript()
+        XCTAssertFalse(script.contains("key code"))
+        XCTAssertFalse(script.contains("keystroke"))
+        XCTAssertTrue(script.contains(#"perform action "AXCancel" of menu 1"#),
+                      "the popup is closed through Music's own menu")
     }
 
     // MARK: - Every Equalizer-window action shares the path
