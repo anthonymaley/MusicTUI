@@ -162,6 +162,51 @@ final class EQWindowParkingTests: XCTestCase {
                       "the popup is closed through Music's own menu")
     }
 
+    // MARK: - An Accessibility denial at the click (Codex r2, 2026-11-02)
+
+    /// The menu click's `try` swallowed every error, so a denial there became
+    /// "the Equalizer didn't open" and lost the permission hint. The handler
+    /// must re-raise a denial, classified by the same signals
+    /// `isAssistiveAccessDenial` uses, and ignore anything else as before.
+    func testTheClickReRaisesAnAccessibilityDenial() throws {
+        let scriptLines = lines(try toggleScript())
+        let click = try XCTUnwrap(scriptLines.firstIndex(of: menuClick))
+        let tryEnd = try XCTUnwrap(scriptLines[click...].firstIndex(of: "end try"), "the click sits in a try")
+        let handler = scriptLines[(click + 1)..<tryEnd]
+        XCTAssertTrue(handler.contains("on error clickErrorText number clickErrorNumber"),
+                      "the click's failure is caught with its text and number")
+        let reRaise = try XCTUnwrap(handler.firstIndex(of: "error clickErrorText number clickErrorNumber"),
+                                    "a denial is raised again, number kept")
+        let condition = try XCTUnwrap(handler[..<reRaise].last { $0.hasPrefix("if ") && $0.hasSuffix(" then") })
+        for signal in ["-1719", "-25211", "assistive"] {
+            XCTAssertTrue(condition.contains(signal), "the re-raise misses the \(signal) signal: \(condition)")
+        }
+        XCTAssertTrue(isAssistiveAccessDenial("assistive") && isAssistiveAccessDenial("-1719") && isAssistiveAccessDenial("-25211"),
+                      "the script's signals must stay the Swift classifier's")
+    }
+
+    /// End to end through a fake that answers as a denial raised at the click
+    /// would arrive: the person gets the Accessibility hint, not the
+    /// not-opened sentence. (The fake cannot execute AppleScript, so the
+    /// swallowing itself is pinned by the structural test above.)
+    func testADenialAtTheClickSurfacesTheAccessibilityHint() throws {
+        let dir = FileManager.default.temporaryDirectory
+        let id = UUID().uuidString
+        let scriptPath = dir.appendingPathComponent("eq-click-denial-fake-\(id).sh").path
+        let fake = """
+            #!/bin/sh
+            printf '%s\\n' "0:301: execution error: System Events got an error: osascript is not allowed assistive access. (-1719)" >&2
+            exit 1
+            """
+        try fake.write(toFile: scriptPath, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: scriptPath)
+        let backend = AppleScriptBackend(executable: scriptPath)
+        XCTAssertThrowsError(try eqSetEnabled(backend, true)) { error in
+            XCTAssertEqual(error.localizedDescription,
+                           AppleScriptBackend.ScriptError.executionFailed(eqAccessibilityHint).localizedDescription)
+        }
+    }
+
     // MARK: - Every Equalizer-window action shares the path
 
     func testPresetSelectionOpensAndParksTheSameWay() throws {
