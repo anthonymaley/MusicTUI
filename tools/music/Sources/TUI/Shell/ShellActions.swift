@@ -50,6 +50,9 @@ final class StatusStore {
 
     private let lock = NSLock()
     private var toast: StatusToast?
+    /// Which post `toast` is, for `withdraw`.
+    private var toastID = 0
+    private var lastID = 0
     private var lasting: Lasting?
     private var lastTrack: String?
     private let switchStamp: () -> StatusSwitchStamp
@@ -63,11 +66,16 @@ final class StatusStore {
     /// `untilStateChange`: a won't-play message, which ignores `ttl` and stays
     /// until `stateChanged()`, the next track change, a committed output or
     /// data-source switch, or the next post (which replaces it).
+    ///
+    /// Returns this post's id, for `withdraw`.
+    @discardableResult
     func post(_ text: String, error: Bool = false, ttl: TimeInterval = 3,
-              untilStateChange: Bool = false, now: Date = Date()) {
+              untilStateChange: Bool = false, now: Date = Date()) -> Int {
         // Read before taking the lock: the coordinator has a lock of its own.
         let stamp = untilStateChange ? switchStamp() : nil
         lock.lock(); defer { lock.unlock() }
+        lastID += 1
+        toastID = lastID
         if let stamp {
             toast = StatusToast(text: text, isError: error, expiresAt: nil)
             lasting = Lasting(postedAt: now, stamp: stamp, track: lastTrack)
@@ -75,6 +83,16 @@ final class StatusStore {
             toast = StatusToast(text: text, isError: error, expiresAt: now.addingTimeInterval(ttl))
             lasting = nil
         }
+        return toastID
+    }
+
+    /// Takes back the post `id` while it is still the one showing; any other
+    /// message, later or earlier, is left alone.
+    func withdraw(_ id: Int) {
+        lock.lock(); defer { lock.unlock() }
+        guard toast != nil, toastID == id else { return }
+        toast = nil
+        lasting = nil
     }
 
     /// Something the person did changed the state (a play started, a tab

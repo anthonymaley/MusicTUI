@@ -2751,9 +2751,13 @@ final class LibraryScene: Scene {
                         guard path == .shipped else { throw ActionError(message: pickASpanDACOutput) }
                         let ordered = shuffle ? res.tracks.shuffled() : res.tracks
                         let idx = shuffle ? 1 : min(max(1, startAt), ordered.count)
-                        store.set(AppQueue(playlistName: "Library", tracks: ordered, currentIndex: idx, displayName: title))
-                        try require(playRequestedQueueTrack(backend: backend, appQueue: store, playlist: "Library",
-                                                            position: ordered[idx - 1].index, title: title),
+                        let ticket = store.setRequested(AppQueue(playlistName: "Library", tracks: ordered,
+                                                                 currentIndex: idx, displayName: title))
+                        try require(playRequestedQueueTrack(backend: backend, appQueue: store, ticket: ticket,
+                                                            playlist: "Library", position: ordered[idx - 1].index,
+                                                            title: title,
+                                                            notice: partialAvailabilityNotice(queued: ordered.count,
+                                                                                              matched: res.matched)),
                                     "Couldn't play '\(title)'.")
                         // Pre-release albums surface every planned track but only stream some;
                         // say so rather than silently playing a partial album.
@@ -2881,8 +2885,10 @@ final class LibraryScene: Scene {
             try routing.perform(.libraryPlay, expecting: stamp, origin: .openData(resultNumber: nil),
                 musicApp: { path in
                     guard path == .shipped else { throw ActionError(message: pickASpanDACOutput) }
-                    store.set(AppQueue(playlistName: "Library", tracks: one, currentIndex: 1, displayName: title))
-                    try require(playRequestedQueueTrack(backend: backend, appQueue: store, playlist: "Library",
+                    let ticket = store.setRequested(AppQueue(playlistName: "Library", tracks: one, currentIndex: 1,
+                                                             displayName: title))
+                    try require(playRequestedQueueTrack(backend: backend, appQueue: store, ticket: ticket,
+                                                        playlist: "Library",
                                                         position: one[0].index, title: title),
                                 "Couldn't play '\(title)'.")
                 },
@@ -2923,9 +2929,13 @@ final class LibraryScene: Scene {
                     musicApp: { path in
                         guard path == .shipped else { throw ActionError(message: pickASpanDACOutput) }
                         let ordered = shuffle ? res.tracks.shuffled() : res.tracks
-                        store.set(AppQueue(playlistName: "Library", tracks: ordered, currentIndex: 1, displayName: name))
-                        try require(playRequestedQueueTrack(backend: backend, appQueue: store, playlist: "Library",
-                                                            position: ordered[0].index, title: name),
+                        let ticket = store.setRequested(AppQueue(playlistName: "Library", tracks: ordered,
+                                                                 currentIndex: 1, displayName: name))
+                        try require(playRequestedQueueTrack(backend: backend, appQueue: store, ticket: ticket,
+                                                            playlist: "Library", position: ordered[0].index,
+                                                            title: name,
+                                                            notice: partialAvailabilityNotice(queued: ordered.count,
+                                                                                              matched: res.matched)),
                                     "Couldn't play '\(name)'.")
                         if res.matched > ordered.count {
                             status.post("Playing \(ordered.count) of \(res.matched) — the rest aren't available yet.",

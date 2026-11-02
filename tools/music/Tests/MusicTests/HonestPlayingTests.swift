@@ -42,10 +42,11 @@ final class HonestPlayingTests: XCTestCase {
             started = clockValue
             confirmer = PlayConfirmer(
                 read: { [unowned self] in self.nextReading() },
-                post: { [unowned self] text in
+                post: { [unowned self] text -> Int? in
                     self.lock.lock(); self.postsValue.append(text); self.lock.unlock()
-                    status?.post(text, error: true, untilStateChange: true)
+                    return status?.post(text, error: true, untilStateChange: true)
                 },
+                withdraw: { status?.withdraw($0) },
                 fence: { [unowned self] in self.onFence?(); return self.fenceValue },
                 timing: PlayConfirmer.Timing(interval: 0.25, window: 1.5),
                 now: { [unowned self] in self.lock.lock(); defer { self.lock.unlock() }; return self.clockValue },
@@ -295,12 +296,15 @@ final class HonestPlayingTests: XCTestCase {
         rig.confirmer.confirm(t, expected: new, title: "Song")
         rig.runJobs()
         XCTAssertTrue(rig.confirmer.holdsAutoAdvance, "an unconfirmed play keeps holding")
-        rig.confirmer.observe(currentPersistentID: old)
+        rig.setReadings([reading("playing", old)])
+        rig.confirmer.observeCurrentTrack()
         XCTAssertTrue(rig.confirmer.holdsAutoAdvance, "the previous track releases nothing")
-        rig.confirmer.observe(currentPersistentID: nil)
+        rig.setReadings([nil])
+        rig.confirmer.observeCurrentTrack()
         XCTAssertTrue(rig.confirmer.holdsAutoAdvance)
-        rig.confirmer.observe(currentPersistentID: new)
-        XCTAssertFalse(rig.confirmer.holdsAutoAdvance, "seen: the hold goes")
+        rig.setReadings([reading("playing", new)])
+        rig.confirmer.observeCurrentTrack()
+        XCTAssertFalse(rig.confirmer.holdsAutoAdvance, "seen playing: the hold goes")
     }
 
     func testAnAbandonedRequestHoldsNothingAndLeavesANewerOneHeld() {

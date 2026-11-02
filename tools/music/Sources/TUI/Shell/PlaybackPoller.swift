@@ -579,19 +579,19 @@ final class PlaybackPoller {
             stoppedPolls += 1
             // Auto-advance only when the previous track reached its natural end.
             let naturalEnd = lastDuration > 0 && lastPosition >= max(0, lastDuration - 4)
-            // A person-started play Music has not been seen to start: the
-            // natural end is the PREVIOUS track's, so the new queue is neither
-            // advanced nor ended off it. Held until the requested track is seen
-            // or a later request replaces it (honest "Playing", 2026-11-01).
-            let heldForRequest = appQueue.confirmer?.holdsAutoAdvance ?? false
             // App-owned queue: the single track stopped at its end (Autoplay off) —
-            // play the next track ourselves. step() returns nil at the queue's end,
-            // where we clear the queue and let playback stay stopped.
-            if naturalEnd, appQueue.isActive, heldForRequest {
-                // Nothing: keep the queue where the person put it.
-            } else if naturalEnd, appQueue.isActive {
-                if let (pl, pos) = appQueue.step(1) {
-                    // step(1) commits the index BEFORE the play attempt. If the
+            // play the next track ourselves. At the queue's end it is cleared
+            // and playback stays stopped. `autoAdvance` checks a person-started
+            // play's hold and steps the queue in one step under the store's
+            // lock: while a play is unconfirmed, the natural end is the
+            // PREVIOUS track's, so the new queue is neither advanced nor ended
+            // off it (honest "Playing", 2026-11-01; Codex r1, finding 1).
+            if naturalEnd, let advance = appQueue.autoAdvance() {
+                switch advance {
+                case .held:
+                    break // keep the queue where the person put it
+                case .play(let pl, let pos):
+                    // autoAdvance commits the index BEFORE the play attempt. If the
                     // play errors and the result is dropped, naturalEnd stays true
                     // next tick and the loop walks the whole remaining queue
                     // silently. Bounded recovery instead: roll the step back and
@@ -604,19 +604,18 @@ final class PlaybackPoller {
                     }
                     stoppedPolls = 0
                     return // next tick will observe the new track (or retry)
+                case .ended(let ended):
+                    // Reached the end of the app-owned queue — surface the continuation menu.
+                    if !qEnded {
+                        qEnded = true
+                        // Classify by source addressability: a library-sourced album/artist
+                        // queue is bounded to its own tracks and must never be shuffled by name.
+                        endedSource = continuationSource(for: ended)
+                        endedTrack = lastTrack
+                        endedArtist = lastArtist
+                        endedArtLines = artLines
+                    }
                 }
-                // Reached the end of the app-owned queue — surface the continuation menu.
-                if !qEnded {
-                    qEnded = true
-                    // Classify by source addressability: a library-sourced album/artist
-                    // queue is bounded to its own tracks and must never be shuffled by name.
-                    endedSource = appQueue.read().map(continuationSource(for:))
-                        ?? .playlist(contextName)
-                    endedTrack = lastTrack
-                    endedArtist = lastArtist
-                    endedArtLines = artLines
-                }
-                appQueue.clear()
             } else if naturalEnd,
                let cur = surrounding.firstIndex(where: { $0.isCurrent }),
                cur + 1 < surrounding.count {

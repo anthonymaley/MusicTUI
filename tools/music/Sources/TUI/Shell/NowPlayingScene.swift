@@ -1172,8 +1172,8 @@ final class NowPlayingScene: Scene {
                 try routing.perform(.queueJump, expecting: stamp,
                     musicApp: {
                         // Jump within the app-owned queue by the row's play-order position.
-                        if let (pl, pos) = store.jump(to: row.index) {
-                            try require(playRequestedQueueTrack(backend: backend, appQueue: store, playlist: pl,
+                        if let (pl, pos, ticket) = store.jumpRequested(to: row.index) {
+                            try require(playRequestedQueueTrack(backend: backend, appQueue: store, ticket: ticket, playlist: pl,
                                                                 position: pos, title: row.name),
                                         "Couldn't play that track.")
                             return
@@ -1190,8 +1190,10 @@ final class NowPlayingScene: Scene {
                             if row.index >= 1, row.index <= tracks.count,
                                trackKey(title: tracks[row.index - 1].name, artist: tracks[row.index - 1].artist)
                                    == trackKey(title: row.name, artist: row.artist) {
-                                store.set(AppQueue(playlistName: context, tracks: tracks, currentIndex: row.index))
-                                try require(playRequestedQueueTrack(backend: backend, appQueue: store, playlist: context,
+                                let ticket = store.setRequested(AppQueue(playlistName: context, tracks: tracks,
+                                                                         currentIndex: row.index))
+                                try require(playRequestedQueueTrack(backend: backend, appQueue: store, ticket: ticket,
+                                                                    playlist: context,
                                                                     position: row.index, title: row.name),
                                             "Couldn't play that track.")
                                 return

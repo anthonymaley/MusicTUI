@@ -13,12 +13,16 @@
 // - Confirmed: `playing`, and the current track's persistent ID is the
 //   requested one. Nothing changes; whatever the play posted stands.
 // - Not confirmed in the window (paused, stopped, another track, or a read
-//   that failed): `playNotStartedWarning` replaces the footer line. The
-//   queue is kept. A script that ERRORED is not this case at all: it keeps
-//   today's behaviour (rollback, "Couldn't play").
+//   that failed): `playNotStartedWarning` replaces the footer line, followed
+//   by any notice the play carried. The queue is kept. A confirmation that
+//   arrives later for the same, still-current request withdraws exactly that
+//   warning. A script that ERRORED is not this case at all: it keeps today's
+//   behaviour (rollback, "Couldn't play").
 // - While a request is unconfirmed the poller does not auto-advance the new
 //   queue off the previous track's natural end, until the requested track has
-//   been seen or a later request replaces it.
+//   been seen playing (or, with no identity to compare, a safe new baseline)
+//   or a later request replaces it. The hold is taken in the same locked step
+//   that installs or moves the queue (`AppQueueStore.setRequested`).
 // - Only the latest request may speak: every request, pause, skip, play and
 //   committed output or data-source switch since makes a late result drop
 //   silently.
@@ -67,10 +71,11 @@ func readPlayerIdentity(backend: AppleScriptBackend, timeout: TimeInterval = 2) 
     return parsePlayerIdentityReading(raw)
 }
 
-/// The footer line for a play Music accepted but has not started. CHOSEN
-/// wording (Anthony, 2026-11-01).
+/// The footer line for a play Music accepted but did not confirm. The
+/// evidence is a failed confirmation, not a proven stop, so it says so
+/// (Codex r1 wording, 2026-11-01).
 func playNotStartedWarning(_ title: String) -> String {
-    "Play was requested, but Music hasn't started '\(title)' yet. If nothing plays, quitting and reopening Music fixed this before."
+    "Play was requested, but Music didn't confirm '\(title)' started. If nothing plays, quitting and reopening Music fixed this before."
 }
 
 /// What must not have moved between a request and its late result: both
@@ -88,6 +93,20 @@ struct PlayConfirmFence: Equatable {
 /// while one is unconfirmed. Thread-safe: requests come from the action
 /// queue, observation and the hold from the poller thread, and the
 /// confirmation itself runs on whatever `schedule` gives it.
+///
+/// There is at most ONE current request. Every read is bound to the request
+/// (ticket and fence) it was begun for, and is applied only if that request is
+/// still current: a read begun before a newer request, even one for the same
+/// track, changes nothing (Codex r1, finding 2). Only a `playing` reading of
+/// the requested identity confirms; a `paused` one confirms nothing.
+///
+/// A play whose own identity could not be read (finding 3) can never confirm,
+/// so its hold is released on a SAFE NEW BASELINE instead: the first
+/// `playing` reading whose identity is readable and differs from the track
+/// that was current just before the play (read in the same play script). The
+/// previous track, still playing or ending, is never that baseline, so its
+/// natural end still cannot advance the new queue. With no current track
+/// before the play, any readable `playing` track is new.
 final class PlayConfirmer {
     struct Ticket: Equatable { let serial: Int }
 
@@ -98,14 +117,23 @@ final class PlayConfirmer {
         var window: TimeInterval = 1.5
     }
 
-    private struct Pending {
+    private struct Request {
         let serial: Int
         let fence: PlayConfirmFence
+        /// The play script has returned (confirm was called).
+        var scriptDone = false
         var expected: String?
+        /// The current track's identity just before the play; nil: none or unreadable.
+        var prior: String?
+        var held = true
+        var confirmed = false
+        /// The status post of this request's warning, while it shows.
+        var warningID: Int?
     }
 
     private let read: () -> PlayerIdentityReading?
-    private let post: (String) -> Void
+    private let post: (String) -> Int?
+    private let withdraw: (Int) -> Void
     private let fence: () -> PlayConfirmFence
     private let timing: Timing
     private let now: () -> Date
@@ -114,14 +142,16 @@ final class PlayConfirmer {
 
     private let lock = NSLock()
     private var serial = 0
-    /// The latest request until its track has been seen (or it is replaced).
-    private var pending: Pending?
+    private var current: Request?
 
-    /// `read` is one confirmation read; `post` shows the warning. The clock,
-    /// the sleep and the scheduler are injected so a test runs the window
-    /// without waiting it out; production sleeps on a global queue.
+    /// `read` is one confirmation read; `post` shows the warning and returns
+    /// its status id, which `withdraw` takes back when the same request is
+    /// confirmed late. The clock, the sleep and the scheduler are injected so
+    /// a test runs the window without waiting it out; production sleeps on a
+    /// global queue.
     init(read: @escaping () -> PlayerIdentityReading?,
-         post: @escaping (String) -> Void,
+         post: @escaping (String) -> Int?,
+         withdraw: @escaping (Int) -> Void = { _ in },
          fence: @escaping () -> PlayConfirmFence = { .still },
          timing: Timing = Timing(),
          now: @escaping () -> Date = Date.init,
@@ -131,6 +161,7 @@ final class PlayConfirmer {
          }) {
         self.read = read
         self.post = post
+        self.withdraw = withdraw
         self.fence = fence
         self.timing = timing
         self.now = now
@@ -138,14 +169,19 @@ final class PlayConfirmer {
         self.schedule = schedule
     }
 
+    /// The fence as it stands now, for a caller that must take it before
+    /// entering its own lock (`AppQueueStore.setRequested`).
+    func fenceNow() -> PlayConfirmFence { fence() }
+
     /// A person-started play is about to run its script: it replaces every
-    /// earlier request, and holds auto-advance from now (its queue is already
-    /// set). Called inside the play, after the routing admission.
-    func request() -> Ticket {
-        let stamp = fence()
+    /// earlier request, and holds auto-advance from now. `AppQueueStore`
+    /// calls this under its own lock, in the same step that installs or
+    /// moves the queue, so the poller never sees the queue without its hold.
+    func request(fence stamp: PlayConfirmFence? = nil) -> Ticket {
+        let stamp = stamp ?? fence()
         lock.lock(); defer { lock.unlock() }
         serial += 1
-        pending = Pending(serial: serial, fence: stamp, expected: nil)
+        current = Request(serial: serial, fence: stamp)
         return Ticket(serial: serial)
     }
 
@@ -153,20 +189,27 @@ final class PlayConfirmer {
     /// it. Today's error handling follows, unchanged.
     func abandon(_ ticket: Ticket) {
         lock.lock(); defer { lock.unlock() }
-        if pending?.serial == ticket.serial { pending = nil }
+        if current?.serial == ticket.serial { current = nil }
     }
 
     /// The play's script exited cleanly, for the track `expected` (its
-    /// persistent ID; nil when it could not be read, which can never confirm).
-    /// Returns at once; the reads run on `schedule`.
-    func confirm(_ ticket: Ticket, expected: String?, title: String) {
-        let expectedID = expected.flatMap { $0.isEmpty ? nil : $0.uppercased() }
+    /// persistent ID; nil when it could not be read, which can never confirm),
+    /// with `prior` current just before it. `notice` follows the warning
+    /// (what else the play already said, such as tracks left out). Returns at
+    /// once; the reads run on `schedule`.
+    func confirm(_ ticket: Ticket, expected: String?, prior: String? = nil, title: String,
+                 notice: String? = nil) {
+        let expectedID = Self.identity(expected)
         lock.lock()
-        guard ticket.serial == serial, var p = pending, p.serial == ticket.serial else { lock.unlock(); return }
-        p.expected = expectedID
-        pending = p
+        guard ticket.serial == serial, var r = current, r.serial == ticket.serial else { lock.unlock(); return }
+        r.scriptDone = true
+        r.expected = expectedID
+        r.prior = Self.identity(prior)
+        current = r
+        let stamp = r.fence
         lock.unlock()
-        schedule { [self] in self.runWindow(ticket, expected: expectedID, title: title, fence: p.fence) }
+        let text = [playNotStartedWarning(title), notice].compactMap { $0 }.joined(separator: " ")
+        schedule { [self] in self.runWindow(ticket, fence: stamp, text: text) }
     }
 
     /// A pause, skip, play or switch the person made: every earlier request is
@@ -174,56 +217,83 @@ final class PlayConfirmer {
     func invalidate() {
         lock.lock(); defer { lock.unlock() }
         serial += 1
-        pending = nil
+        current = nil
     }
 
-    /// True while the latest request's track has not been seen and nothing
-    /// has replaced it: the poller must not auto-advance its queue.
-    var holdsAutoAdvance: Bool {
+    /// True while the current request holds and nothing has replaced it: the
+    /// poller must not auto-advance its queue.
+    var holdsAutoAdvance: Bool { heldRequest() != nil }
+
+    /// The poller's look while the hold is on: one read, applied only to the
+    /// request it was begun for. Reads nothing when not holding.
+    func observeCurrentTrack() {
+        guard let (ticket, stamp) = heldRequest() else { return }
+        _ = apply(read(), ticket: ticket, fence: stamp)
+    }
+
+    private static func identity(_ raw: String?) -> String? {
+        guard let t = raw?.trimmingCharacters(in: .whitespacesAndNewlines).uppercased(), !t.isEmpty else { return nil }
+        return t
+    }
+
+    /// The current request's ticket and fence while it holds; a fence that
+    /// moved retires it.
+    private func heldRequest() -> (Ticket, PlayConfirmFence)? {
         let stamp = fence()
         lock.lock(); defer { lock.unlock() }
-        guard let p = pending else { return false }
-        guard p.fence == stamp else { pending = nil; return false }
-        return true
+        guard let r = current else { return nil }
+        guard r.fence == stamp else { current = nil; return nil }
+        return r.held ? (Ticket(serial: r.serial), r.fence) : nil
     }
 
-    /// The poller's look while the hold is on: one read, and the hold goes once
-    /// the current track is the requested one. Reads nothing when not holding.
-    func observeCurrentTrack() {
-        guard holdsAutoAdvance else { return }
-        observe(currentPersistentID: read()?.persistentID)
-    }
-
-    /// The requested track has been seen as Music's current track: the hold
-    /// goes. Any other identity, or none, keeps it.
-    func observe(currentPersistentID: String?) {
-        guard let pid = currentPersistentID?.uppercased(), !pid.isEmpty else { return }
+    /// Applies one reading begun for `ticket` under `stamp`. True once that
+    /// request is confirmed.
+    private func apply(_ reading: PlayerIdentityReading?, ticket: Ticket, fence stamp: PlayConfirmFence) -> Bool {
+        let fenceNow = fence()
         lock.lock(); defer { lock.unlock() }
-        if let p = pending, p.expected == pid { pending = nil }
+        guard var r = current, r.serial == ticket.serial, r.fence == stamp, fenceNow == stamp else { return false }
+        if r.confirmed { return true }
+        guard r.scriptDone, let reading, reading.state == "playing",
+              let pid = Self.identity(reading.persistentID) else { return false }
+        if let expected = r.expected {
+            guard pid == expected else { return false }
+            r.confirmed = true
+            r.held = false
+            if let id = r.warningID { withdraw(id); r.warningID = nil }
+            current = r
+            return true
+        }
+        // No identity to confirm against: release only on a safe new baseline.
+        if pid != r.prior { r.held = false; current = r }
+        return false
     }
 
-    private func isLatest(_ ticket: Ticket) -> Bool {
-        lock.lock(); defer { lock.unlock() }
-        return ticket.serial == serial
-    }
-
-    private func runWindow(_ ticket: Ticket, expected: String?, title: String, fence stamp: PlayConfirmFence) {
+    private func runWindow(_ ticket: Ticket, fence stamp: PlayConfirmFence, text: String) {
         let start = now()
         while true {
-            guard isLatest(ticket) else { return }
-            let reading = read()
-            if let expected, let pid = reading?.persistentID?.uppercased(), pid == expected {
-                observe(currentPersistentID: pid)
-                if reading?.state == "playing" { return }
-            }
+            lock.lock(); let latest = ticket.serial == serial; lock.unlock()
+            guard latest else { return }
+            if apply(read(), ticket: ticket, fence: stamp) { return }
             if now().timeIntervalSince(start) + timing.interval > timing.window + 1e-9 { break }
             sleep(timing.interval)
         }
         let fenceNow = fence()
-        // Decided and posted under the lock, so a pause or play that lands now
-        // either comes first (and this drops) or after (and replaces this).
+        // Decided and posted under the lock, bound to the request still being
+        // current and unconfirmed: a confirmation, pause or play that lands
+        // now either comes first (and this drops) or after (and withdraws or
+        // replaces this).
         lock.lock(); defer { lock.unlock() }
-        guard ticket.serial == serial, fenceNow == stamp else { return }
-        post(playNotStartedWarning(title))
+        guard var r = current, r.serial == ticket.serial, r.fence == stamp, fenceNow == stamp,
+              !r.confirmed else { return }
+        r.warningID = post(text)
+        current = r
     }
+}
+
+/// What a Library album or artist play says beside the warning when only
+/// some of its tracks could be queued, so the warning never erases it (Codex
+/// r1, UX), or nil when every matched track was queued. CHOSEN wording: the
+/// shipped "Playing N of M" would contradict the warning.
+func partialAvailabilityNotice(queued: Int, matched: Int) -> String? {
+    matched > queued ? "\(queued) of \(matched) are queued \u{2014} the rest aren't available yet." : nil
 }
