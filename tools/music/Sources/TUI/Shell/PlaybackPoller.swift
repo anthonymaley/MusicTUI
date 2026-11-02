@@ -71,6 +71,9 @@ final class PlaybackPoller {
     private var lastArtist = ""
     private var lastPosition = 0
     private var lastDuration = 0
+    /// The persistent ID sampled with `lastPosition`/`lastDuration`: which
+    /// track a natural end belongs to (nil: unreadable). Codex r2.
+    private var lastPersistentID: String?
     private var stoppedPolls = 0
     private var advanceGate = AdvanceRetryGate()
     private var history: [(track: String, artist: String)] = []
@@ -416,6 +419,19 @@ final class PlaybackPoller {
         }
     }
 
+    /// The auto-advance's own play. Fenced (a ticket): identifying, so the
+    /// next entry's end is fenced by its own track too. Unfenced: the shipped
+    /// play, script for script.
+    private func playAdvance(_ ticket: QueuePlayTicket?, playlist: String, position: Int) -> Bool {
+        guard let ticket else { return playQueueTrack(backend: backend, playlist: playlist, position: position) }
+        guard let learned = playQueueTrackIdentifying(backend: backend, playlist: playlist, position: position) else {
+            appQueue.resolve(ticket, nil)
+            return false
+        }
+        appQueue.resolve(ticket, queueEntryEvidence(wanted: learned.wanted, prior: learned.prior))
+        return true
+    }
+
     /// Runs first on every tick, whichever output is selected. Set before
     /// `start()` and never after, so it needs no lock.
     var onTick: (() -> Void)?
@@ -448,21 +464,27 @@ final class PlaybackPoller {
             }
         }
         defer { syncQueuePersistence() }
+        // Taken BEFORE the read, so what the sample shows is applied only to the
+        // play it was taken after: a play started during the read is not
+        // confirmed or identified by it.
+        let evidenceGeneration = appQueue.evidenceGeneration
+        let confirmTicket = appQueue.confirmer?.currentTicket()
         switch pollNowPlaying(backend: backend) {
         case .active(let np):
             stoppedPolls = 0
-            // A person-started play still unconfirmed: look whether Music's
-            // current track is now the requested one. Reads nothing (no
-            // extra AppleScript) unless a hold is on, and only on a tick that
-            // could show it: a new track, or one that is playing. A player
-            // left paused on the previous track costs no read per tick.
-            if np.track != lastTrack || np.state == "playing" {
-                appQueue.confirmer?.observeCurrentTrack()
-            }
             let priorPos = lastPosition          // last-seen position of the PREVIOUS track
             let priorDur = lastDuration
             lastPosition = np.position
             lastDuration = np.duration
+            lastPersistentID = np.persistentID
+            // The same sample, no extra read: an entry whose play could not
+            // read its track adopts it, and a person-started play Music starts
+            // late withdraws its warning.
+            appQueue.adopt(np, sampledAt: evidenceGeneration)
+            if let confirmTicket {
+                appQueue.confirmer?.observe(PlayerIdentityReading(state: np.state, persistentID: np.persistentID),
+                                            for: confirmTicket)
+            }
             if np.track != lastTrack {
                 // Capture everything about the track we're leaving, before overwrite.
                 let prevArt = artLines           // ended track's art (not yet re-extracted)
@@ -581,23 +603,23 @@ final class PlaybackPoller {
             let naturalEnd = lastDuration > 0 && lastPosition >= max(0, lastDuration - 4)
             // App-owned queue: the single track stopped at its end (Autoplay off) —
             // play the next track ourselves. At the queue's end it is cleared
-            // and playback stays stopped. `autoAdvance` checks a person-started
-            // play's hold and steps the queue in one step under the store's
-            // lock: while a play is unconfirmed, the natural end is the
-            // PREVIOUS track's, so the new queue is neither advanced nor ended
-            // off it (honest "Playing", 2026-11-01; Codex r1, finding 1).
-            if naturalEnd, let advance = appQueue.autoAdvance() {
+            // and playback stays stopped. The end is fenced by identity: an
+            // entry a play identified moves only when the track that ended is
+            // its own, so the end of the track playing before a play Music
+            // ignored never advances or ends the new queue (honest "Playing",
+            // 2026-11-01; Codex r2).
+            if naturalEnd, let advance = appQueue.autoAdvance(ended: lastPersistentID) {
                 switch advance {
                 case .held:
-                    break // keep the queue where the person put it
-                case .play(let pl, let pos):
+                    break // not this entry's own track: keep the queue where it is
+                case .play(let pl, let pos, let ticket):
                     // autoAdvance commits the index BEFORE the play attempt. If the
                     // play errors and the result is dropped, naturalEnd stays true
                     // next tick and the loop walks the whole remaining queue
                     // silently. Bounded recovery instead: roll the step back and
                     // retry this track up to the gate's cap, then keep the step
                     // (skip past it) so a permanent failure can't spin forever.
-                    if playQueueTrack(backend: backend, playlist: pl, position: pos) {
+                    if playAdvance(ticket, playlist: pl, position: pos) {
                         advanceGate.playSucceeded()
                     } else if advanceGate.playFailed() == .retry {
                         _ = appQueue.step(-1)

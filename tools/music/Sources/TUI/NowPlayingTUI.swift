@@ -12,6 +12,10 @@ struct NowPlayingState: Equatable {
     var duration: Int = 0
     var position: Int = 0
     var state: String = "stopped"
+    /// The sampled track's persistent ID, read in the same poll; nil when it
+    /// could not be read (an active sample always has a current track). The
+    /// natural-end evidence an app-owned queue advances on (Codex r2).
+    var persistentID: String? = nil
 }
 
 struct TrackListEntry: Codable, Equatable {
@@ -55,20 +59,36 @@ func pollNowPlaying(backend: AppleScriptBackend = AppleScriptBackend()) -> PollO
                 set al to album of current track
                 set d to duration of current track
                 set p to player position
-                return t & fs & a & fs & al & fs & (round d) & fs & (round p) & fs & state
+                set pid to ""
+                try
+                    set pid to persistent ID of current track
+                end try
+                return t & fs & a & fs & al & fs & (round d) & fs & (round p) & fs & state & fs & pid
             end try
             return "STOPPED"
         """) else { return .unavailable }
 
     let trimmed = result.trimmingCharacters(in: .whitespacesAndNewlines)
     if trimmed == "STOPPED" { return .stopped }
-    let parts = trimmed.split(separator: asFieldSep, maxSplits: 5).map(String.init)
+    // The persistent ID is the last field: empty (unreadable) or sixteen hex
+    // digits. Split it off first so the six fields before it parse exactly as
+    // they always have (an answer without it, from an older shape, has none).
+    var body = Substring(trimmed)
+    var pid = ""
+    if let sep = trimmed.lastIndex(of: asFieldSep) {
+        let tail = trimmed[trimmed.index(after: sep)...]
+        if tail.isEmpty || (tail.count == 16 && tail.allSatisfy(\.isHexDigit)) {
+            pid = String(tail)
+            body = trimmed[..<sep]
+        }
+    }
+    let parts = body.split(separator: asFieldSep, maxSplits: 5).map(String.init)
     guard parts.count >= 6 else { return .unavailable }
 
     return .active(NowPlayingState(
         track: parts[0], artist: parts[1], album: parts[2],
         duration: Int(parts[3]) ?? 0, position: Int(parts[4]) ?? 0,
-        state: parts[5]
+        state: parts[5], persistentID: pid.isEmpty ? nil : pid.uppercased()
     ))
 }
 

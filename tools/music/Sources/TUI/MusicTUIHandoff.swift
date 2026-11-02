@@ -319,11 +319,11 @@ protocol HandoffQueuePlaying {
 /// Now's jump and shuffle all keep playing by identity.
 struct AppQueueHandoffPlayer: HandoffQueuePlaying {
     let store: AppQueueStore
-    /// Plays the queue's current entry under the hold its installation took;
-    /// false on failure.
-    let playFirst: (AppQueue, PlayConfirmer.Ticket?) -> Bool
+    /// Plays the queue's current entry under the evidence slot its
+    /// installation took; false on failure.
+    let playFirst: (AppQueue, QueuePlayTicket?) -> Bool
 
-    init(store: AppQueueStore, playFirst: @escaping (AppQueue, PlayConfirmer.Ticket?) -> Bool) {
+    init(store: AppQueueStore, playFirst: @escaping (AppQueue, QueuePlayTicket?) -> Bool) {
         self.store = store
         self.playFirst = playFirst
     }
@@ -334,10 +334,10 @@ struct AppQueueHandoffPlayer: HandoffQueuePlaying {
     }
 
     func play(_ queue: AppQueue) throws {
-        // Installed with its hold in one step (Codex r1, finding 1).
+        // Installed with its evidence slot in one step (Codex r1, finding 1).
         let ticket = store.setRequested(queue)
         guard playFirst(queue, ticket) else {
-            if let ticket { store.confirmer?.abandon(ticket) }
+            if let c = ticket?.confirmation { store.confirmer?.abandon(c) }
             // A queue that never started is not left for the poller to drive.
             store.clear()
             throw ActionError(message: "Couldn't play '\(queue.contextLabel)'.")
