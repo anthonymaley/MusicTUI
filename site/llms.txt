@@ -12,7 +12,7 @@ Launch: `music`
 - Playback, album art, an Up Next queue, and keyboard controls.
 - Browse the local music library, playlists, and radio favorites.
 - Route playback to AirPlay speakers and set per-speaker volume.
-- Venue EQ presets and Music.app visualizer controls with Accessibility permission.
+- Venue EQ presets with Accessibility permission; MusicTUI moves Music's Equalizer window out of view without bringing Music forward (it may appear briefly or on another display).
 - Scriptable CLI commands, including structured output with `music now --json`.
 - Optional Claude Code plugin for natural-language requests.
 

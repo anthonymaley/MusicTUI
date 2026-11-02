@@ -51,7 +51,7 @@ final class PersistedStateRepairTests: XCTestCase {
     private let soundActions: Set<MusicTUIAction> = Set(MusicTUIAction.allCases.filter(\.touchesPlayback)).union([
         .playPause, .next, .previous, .seek, .stop, .volume, .persistentShuffleMode,
         .persistentRepeatMode, .queueJump, .quiet, .collectionShuffle, .cliPlayResume, .nowStatus,
-        .airplayRoute, .eq, .visualizer, .genius, .loveTrack, .addCurrentTrackToPlaylist,
+        .airplayRoute, .eq, .genius, .loveTrack, .addCurrentTrackToPlaylist,
         .removeCurrentTrackFromPlaylist,
     ])
 

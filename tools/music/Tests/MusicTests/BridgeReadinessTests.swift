@@ -11,24 +11,22 @@ import XCTest
 /// an unfilled field look like a finding.
 final class BridgeReadinessTests: XCTestCase {
 
-    /// Counts calls to the injected speaker/EQ/visualizer refresh closures, so a
+    /// Counts calls to the injected speaker/EQ refresh closures, so a
     /// test can prove `tick()` reaches ONLY these — never the real
-    /// `fetchSpeakerDevices()`/`fetchEQSnapshot`/`visualizerStatus`, which shell
+    /// `fetchSpeakerDevices()`/`fetchEQSnapshot`, which shell
     /// out to real AppleScript and, for speakers, write through to the real
     /// `~/.config/music` cache.
     private final class RefreshCallCounter {
         private let lock = NSLock()
         private(set) var speakerCalls = 0
         private(set) var eqCalls = 0
-        private(set) var visualizerCalls = 0
 
         func bumpSpeakers() { lock.lock(); speakerCalls += 1; lock.unlock() }
         func bumpEQ() { lock.lock(); eqCalls += 1; lock.unlock() }
-        func bumpVisualizer() { lock.lock(); visualizerCalls += 1; lock.unlock() }
     }
 
     /// `refreshCounter` is nil for every existing test — they don't care about
-    /// the speaker/EQ/visualizer refresh, only that it never reaches real
+    /// the speaker/EQ refresh, only that it never reaches real
     /// AppleScript. The inert closures always stand in for the production
     /// defaults; the counter is opt-in instrumentation for the one test that
     /// asserts on it.
@@ -53,10 +51,6 @@ final class BridgeReadinessTests: XCTestCase {
                              fetchEQ: { _ in
                                  refreshCounter?.bumpEQ()
                                  return EQSnapshot(enabled: false, current: nil, presets: [])
-                             },
-                             fetchVisualizer: { _ in
-                                 refreshCounter?.bumpVisualizer()
-                                 return false
                              },
                              macSocketExists: { false })
     }
@@ -145,14 +139,14 @@ final class BridgeReadinessTests: XCTestCase {
         XCTAssertEqual(s.readinessProbeCount, afterEntry + 2)
     }
 
-    /// `tick()`'s speaker/EQ/visualizer refresh must go through the injected
+    /// `tick()`'s speaker/EQ refresh must go through the injected
     /// closures only. Before this seam, `fetchSpeakerDevices()` built its own
     /// real `AppleScriptBackend()` — bypassing the scene's injected (inert)
     /// backend entirely — and wrote through to the real `~/.config/music`
     /// speaker cache on every tick. A count of zero default calls is the
     /// isolation proof; an empty `reply` transport keeps Bridge itself out of
     /// it too.
-    func testTickReachesOnlyTheInjectedSpeakerEQAndVisualizerClosures() {
+    func testTickReachesOnlyTheInjectedSpeakerAndEQClosures() {
         let counter = RefreshCallCounter()
         let s = scene(reply: { _, _ in self.authorized }, refreshCounter: counter)
         for _ in 0..<5 {
@@ -164,7 +158,6 @@ final class BridgeReadinessTests: XCTestCase {
         while Date() < deadline && counter.speakerCalls == 0 { usleep(20_000) }
         XCTAssertGreaterThan(counter.speakerCalls, 0, "tick() never called the injected fetchSpeakers")
         XCTAssertGreaterThan(counter.eqCalls, 0, "tick() never called the injected fetchEQ")
-        XCTAssertGreaterThan(counter.visualizerCalls, 0, "tick() never called the injected fetchVisualizer")
     }
 
     /// Every failure keeps its own words. Collapsing them is what let a client
@@ -296,7 +289,7 @@ final class BridgeReadinessTests: XCTestCase {
         // Inert closures (P6's seam): this test builds its SpeakersScene
         // directly rather than through scene(reply:), and the trailing tick()
         // below would otherwise kick the real fetchSpeakerDevices()/
-        // fetchEQSnapshot()/visualizerStatus() — real AppleScript, and a real
+        // fetchEQSnapshot() — real AppleScript, and a real
         // ~/.config/music write — on every run of this file.
         // After the switch to SpanDAC data (a temp data.json), so the Mac
         // row is an output and the SPANDAC section ends with "Stop using".
@@ -313,7 +306,6 @@ final class BridgeReadinessTests: XCTestCase {
                                   makeSourceClient: client,
                                   fetchSpeakers: { [] },
                                   fetchEQ: { _ in EQSnapshot(enabled: false, current: nil, presets: []) },
-                                  fetchVisualizer: { _ in false },
                                   macSocketExists: { false })
 
         // The cursor starts on row 1 (this Mac); row 2 is "Stop using SpanDAC

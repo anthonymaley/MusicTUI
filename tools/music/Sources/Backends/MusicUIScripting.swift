@@ -1,10 +1,10 @@
 // Shared helper for the features that must drive Music through System Events
 // because their scripting writes are severed in current Music builds (EQ live
-// state, the visualizer, Genius Shuffle). Translates an Accessibility denial
+// state, Genius Shuffle). Translates an Accessibility denial
 // into an actionable message.
 //
-// EQControl and VisualizerControl used to keep their own inline copies of the
-// denial classifier. Folded in here 2026-08-31: three copies of one predicate
+// EQControl and VisualizerControl (removed 2026-11-01) used to keep their own
+// inline copies of the denial classifier. Folded in here 2026-08-31: three copies of one predicate
 // is three chances for one of them to learn a new error code the others never
 // hear about. Each still owns its own script shape and its own hint text,
 // which is the part that genuinely differs.
@@ -23,7 +23,23 @@ System Settings → Privacy & Security → Accessibility → enable your termina
 /// every failure into "grant Accessibility" would send the user to a settings
 /// pane unrelated to their actual problem.
 func isAssistiveAccessDenial(_ message: String) -> Bool {
-    message.contains("assistive") || message.contains("-1719") || message.contains("-25211")
+    assistiveDenialSignals.contains { message.contains($0) }
+}
+
+/// The signals `isAssistiveAccessDenial` looks for. One list, so the
+/// AppleScript form below can never learn a signal the Swift form misses.
+let assistiveDenialSignals = ["assistive", "-1719", "-25211"]
+
+/// The same classification as an AppleScript condition, for a script that
+/// must re-raise a denial it would otherwise swallow (the Equalizer's menu
+/// click). `textVariable` and `numberVariable` name the `on error` variables;
+/// a numeric signal matches the number or the text, a word the text.
+func appleScriptAssistiveDenialCondition(textVariable: String, numberVariable: String) -> String {
+    assistiveDenialSignals.map { signal in
+        Int(signal) != nil
+            ? "\(numberVariable) is \(signal) or \(textVariable) contains \"\(signal)\""
+            : "\(textVariable) contains \"\(signal)\""
+    }.joined(separator: " or ")
 }
 
 func runMusicUIScript(_ backend: AppleScriptBackend, _ script: String,

@@ -72,7 +72,6 @@ final class SpeakerVolumeRoutingTests: XCTestCase {
                               confirmMusicAppPaused: musicAppPauseTripwire, macName: "Studio Mac",
                               fetchSpeakers: { self.kitchen },
                               fetchEQ: { _ in EQSnapshot(enabled: false, current: nil, presets: []) },
-                              fetchVisualizer: { _ in false },
                               macSocketExists: { false })
         let snap = outputTabSnapshot()
         let deadline = Date().addingTimeInterval(3)

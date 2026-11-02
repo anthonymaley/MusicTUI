@@ -155,7 +155,6 @@ final class SpanDACLicenceNoticeTests: XCTestCase {
                       macName: "Studio Mac",
                       fetchSpeakers: { [] },
                       fetchEQ: { _ in EQSnapshot(enabled: false, current: nil, presets: []) },
-                      fetchVisualizer: { _ in false },
                       macSocketExists: { false })
     }
 

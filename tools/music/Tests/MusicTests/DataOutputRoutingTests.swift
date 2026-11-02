@@ -121,7 +121,7 @@ final class DataOutputRoutingTests: XCTestCase {
     private let col4ShippedSound: Set<MusicTUIAction> = [
         .playPause, .next, .previous, .seek, .stop, .volume, .persistentShuffleMode,
         .persistentRepeatMode, .queueJump, .quiet, .collectionShuffle, .cliPlayResume, .nowStatus,
-        .airplayRoute, .eq, .visualizer, .genius, .loveTrack, .addCurrentTrackToPlaylist,
+        .airplayRoute, .eq, .genius, .loveTrack, .addCurrentTrackToPlaylist,
         .removeCurrentTrackFromPlaylist,
     ]
     private let col4LibraryManagement: Set<MusicTUIAction> = [.addToLibrary, .playlistWrite, .playlistShare, .cliMix]

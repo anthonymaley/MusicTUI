@@ -1,8 +1,8 @@
 import XCTest
 @testable import music
 
-/// The speaker list lands as soon as its own read does; EQ and visualizer
-/// state land separately from the same job (measured 2026-10-31: the list
+/// The speaker list lands as soon as its own read does; EQ state lands
+/// separately from the same job (measured 2026-10-31: the list
 /// alone ~0.9 s, the whole job ~2.5 s on first open).
 final class SpeakersListFirstTests: XCTestCase {
     var dir: String!
@@ -40,8 +40,7 @@ final class SpeakersListFirstTests: XCTestCase {
                                    fetchEQ: { _ in
                                        eqStarted.signal(); _ = releaseEQ.wait(timeout: .now() + 3)
                                        return EQSnapshot(enabled: true, current: "Rock", presets: ["Rock"])
-                                   },
-                                   fetchVisualizer: { _ in true })
+                                   })
         s.fetchFinishedForTest = { _ in finished.signal() }
         defer { releaseEQ.signal() }
         _ = s.tick(snapshot: outputTabSnapshot())
@@ -53,7 +52,6 @@ final class SpeakersListFirstTests: XCTestCase {
         releaseEQ.signal()
         XCTAssertEqual(finished.wait(timeout: .now() + 2), .success)
         XCTAssertTrue(tickUntil(s) { s.eqStateForTest?.current == "Rock" })
-        XCTAssertEqual(s.visualizerOnForTest, true)
     }
 
     func testNoSecondReadStartsWhileTheFirstJobsEQIsHeld() {
@@ -174,7 +172,11 @@ final class SpeakersListFirstTests: XCTestCase {
         return s.cursorRowForTest == row
     }
 
-    func testALateEQAnswerInsertingPresetsKeepsTheCursorOnVisualizer() {
+    /// The custom presets are appended after the venue pack, so the cursor
+    /// on the pack's last preset must stay on it, not move with the index.
+    /// (The row below the picker this used to test, Visualizer, was removed
+    /// 2026-11-01; nothing sits below the picker now.)
+    func testALateEQAnswerInsertingPresetsKeepsTheCursorOnItsPreset() throws {
         let eqStarted = DispatchSemaphore(value: 0), releaseEQ = DispatchSemaphore(value: 0)
         let finished = DispatchSemaphore(value: 0)
         let s = makeOutputTabScene(dir: dir, mode: .musicApp, spandac: nil, fetchSpeakers: { self.kitchen() },
@@ -190,12 +192,13 @@ final class SpeakersListFirstTests: XCTestCase {
         XCTAssertTrue(tickUntil(s) { s.speakerRowsForTest.count == 1 })
         XCTAssertTrue(moveCursor(s, to: .eq))
         _ = s.handle(.enter)                         // expand the picker
-        XCTAssertTrue(moveCursor(s, to: .visualizer))
+        let lastVenue = try XCTUnwrap(VenuePack.names.last)
+        XCTAssertTrue(moveCursor(s, to: .preset(lastVenue)))
         releaseEQ.signal()
         XCTAssertEqual(finished.wait(timeout: .now() + 2), .success)
         XCTAssertTrue(tickUntil(s) { s.eqStateForTest != nil })
         XCTAssertTrue(s.displayRowsForTest.contains(.preset("My Custom")), "the custom presets were not inserted")
-        XCTAssertEqual(s.cursorRowForTest, .visualizer)
+        XCTAssertEqual(s.cursorRowForTest, .preset(lastVenue))
     }
 
     func testAPresetThatDisappearsMovesTheCursorToTheEQRow() {
@@ -236,9 +239,9 @@ final class SpeakersListFirstTests: XCTestCase {
         defer { release.signal() }
         _ = s.tick(snapshot: outputTabSnapshot())
         XCTAssertEqual(started.wait(timeout: .now() + 2), .success)
-        XCTAssertTrue(moveCursor(s, to: .visualizer))
+        XCTAssertTrue(moveCursor(s, to: .eq))
         release.signal()
         XCTAssertTrue(tickUntil(s) { s.speakerRowsForTest.count == 3 })
-        XCTAssertEqual(s.cursorRowForTest, .visualizer)
+        XCTAssertEqual(s.cursorRowForTest, .eq)
     }
 }

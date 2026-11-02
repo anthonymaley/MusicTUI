@@ -167,7 +167,6 @@ func makeOutputTabScene(dir: String, mode: PlaybackMode, spandac: SpanDACOutputs
                         fetchEQ: @escaping (AppleScriptBackend) throws -> EQSnapshot = { _ in
                             EQSnapshot(enabled: false, current: nil, presets: [])
                         },
-                        fetchVisualizer: @escaping (AppleScriptBackend) throws -> Bool = { _ in false },
                         routePlaying: @escaping (AppleScriptBackend) -> Bool = playerIsPlaying,
                         makeRouteVerifier: @escaping () -> RouteVerifier = { RouteVerifier() }) -> SpeakersScene {
     let store = PlaybackModeStore(path: dir + "/mode.json")
@@ -196,7 +195,6 @@ func makeOutputTabScene(dir: String, mode: PlaybackMode, spandac: SpanDACOutputs
                          fetchSpeakers: fetchSpeakers ?? { speakers },
                          fetchNow: fetchNow,
                          fetchEQ: fetchEQ,
-                         fetchVisualizer: fetchVisualizer,
                          routePlaying: routePlaying, makeRouteVerifier: makeRouteVerifier,
                          macSocketExists: macSocketExists)
 }

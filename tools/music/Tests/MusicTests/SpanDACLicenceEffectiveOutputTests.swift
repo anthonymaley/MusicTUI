@@ -79,7 +79,6 @@ final class SpanDACLicenceEffectiveOutputTests: XCTestCase {
                       macName: "Studio Mac",
                       fetchSpeakers: { speakers },
                       fetchEQ: { _ in EQSnapshot(enabled: false, current: nil, presets: []) },
-                      fetchVisualizer: { _ in false },
                       macSocketExists: { false })
     }
 

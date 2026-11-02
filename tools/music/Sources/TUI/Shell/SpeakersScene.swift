@@ -98,7 +98,8 @@ func outputViewport(_ drawing: String, bodyY: Int, height: Int, focusY: Int, ins
 
 /// What the Output tab lists, in order: the SPANDAC section (this Mac first,
 /// then SpanDACs on the network), then the MUSICTUI section (speakers, or a
-/// stand-in MusicTUI row when there are none), then EQ and Visualizer.
+/// stand-in MusicTUI row when there are none), then EQ. (The Visualizer row
+/// was removed 2026-11-01: Music draws it only in its own window.)
 ///
 /// **Choosing a SpanDAC row IS choosing SpanDAC.** There is no separate
 /// "output mode" row any more: the Mac's row is `PlaybackMode.source`, a
@@ -132,7 +133,6 @@ enum OutputTabRow: Equatable {
     case eqPower
     case eq
     case preset(String)
-    case visualizer
 }
 
 /// Where "Stop using SpanDAC for music data" sits, if anywhere.
@@ -175,7 +175,6 @@ func outputTabRows(speakerCount: Int, expanded: Bool, presetNames: [String],
     rows.append(.eqPower)
     rows.append(.eq)
     if expanded { rows += presetNames.map { .preset($0) } }
-    rows.append(.visualizer)
     return rows
 }
 
@@ -375,7 +374,7 @@ final class SpeakersScene: Scene {
         if spandac?.awaitingAnswer == true { return "y Yes  n No  Esc Cancel" }
         if spandac?.isPairing == true { return "Esc Cancel pairing" }
         let move = "\u{2191}\u{2193} Move"
-        let always = "e EQ   v Visualizer"
+        let always = "e EQ"
         let display = displayRows
         let row = display.indices.contains(cursor) ? display[cursor] : nil
         switch row {
@@ -411,7 +410,7 @@ final class SpeakersScene: Scene {
             return "\(move)   \(always)"
         case .eq?, .preset?:
             return "\(move)   Enter Select   \u{2190}\u{2192} Preset   \(always)"
-        case .eqPower?, .visualizer?, nil:
+        case .eqPower?, nil:
             return "\(move)   Enter Toggle   \(always)"
         }
     }
@@ -515,7 +514,6 @@ final class SpeakersScene: Scene {
     private let fetchNow: () -> Date
     private let fetchSpeakers: () throws -> [[String: Any]]
     private let fetchEQ: (AppleScriptBackend) throws -> EQSnapshot
-    private let fetchVisualizer: (AppleScriptBackend) throws -> Bool
     private let routePlaying: (AppleScriptBackend) -> Bool
     private let makeRouteVerifier: () -> RouteVerifier
 
@@ -601,7 +599,6 @@ final class SpeakersScene: Scene {
     /// Test-only: the speakers as last loaded or toggled.
     var speakerRowsForTest: [SpeakerRow] { rows }
     var eqStateForTest: EQSnapshot? { eqState }
-    var visualizerOnForTest: Bool? { visualizerOn }
 
     /// Test-only: lands a Mac status in the inbox exactly as a probe would,
     /// so a test can set the DAC the Mac reports without a socket.
@@ -639,15 +636,14 @@ final class SpeakersScene: Scene {
     private var held: HeldRow? = nil
     private var eqState: EQSnapshot? = nil
     private var eqExpanded = false
-    private var visualizerOn: Bool? = nil
 
     // Background refresh, inbox pattern: tick() kicks fetches and drains results.
     // The scene used to load once and never again — devices appearing/vanishing
     // never showed, and a failed optimistic toggle stayed wrong forever.
     private let inboxLock = NSLock()
     // One job per kickoff, still one in flight at a time, but it posts in two
-    // parts: the speaker list the moment its own read lands, then the EQ and
-    // visualizer state. Measured 2026-10-31: the list alone ~0.9 s, the whole
+    // parts: the speaker list the moment its own read lands, then the EQ
+    // state. Measured 2026-10-31: the list alone ~0.9 s, the whole
     // job ~2.5 s, and first open said "loading speakers..." for all of it.
     // Each part has its own applied serial, so an older job's part never
     // replaces a newer one's, and each keeps the job's start time for the
@@ -661,7 +657,6 @@ final class SpeakersScene: Scene {
         let serial: Int
         let startedAt: Date
         let eq: EQSnapshot?
-        let visualizer: Bool?
     }
     private var speakerInbox: SpeakerPart? = nil       // guarded by inboxLock
     private var extrasInbox: ExtrasPart? = nil         // guarded by inboxLock
@@ -688,7 +683,6 @@ final class SpeakersScene: Scene {
          fetchSpeakers: @escaping () throws -> [[String: Any]] = { try fetchOutputTabSpeakerDevices() },
          fetchNow: @escaping () -> Date = Date.init,
          fetchEQ: @escaping (AppleScriptBackend) throws -> EQSnapshot = { try fetchEQSnapshot($0, openWindow: false) },
-         fetchVisualizer: @escaping (AppleScriptBackend) throws -> Bool = visualizerStatus,
          routePlaying: @escaping (AppleScriptBackend) -> Bool = playerIsPlaying,
          makeRouteVerifier: @escaping () -> RouteVerifier = { RouteVerifier() },
          macSocketExists: @escaping () -> Bool = {
@@ -709,7 +703,6 @@ final class SpeakersScene: Scene {
         self.fetchSpeakers = fetchSpeakers
         self.fetchNow = fetchNow
         self.fetchEQ = fetchEQ
-        self.fetchVisualizer = fetchVisualizer
         self.routePlaying = routePlaying
         self.makeRouteVerifier = makeRouteVerifier
         self.macSocketExists = macSocketExists
@@ -1133,7 +1126,7 @@ final class SpeakersScene: Scene {
         inboxLock.unlock()
         // Any part newer than the last one shown lands, even if its kickoff
         // was declared dead and a successor started: requiring the CURRENT
-        // serial let a consistently slow EQ/visualizer read starve the list
+        // serial let a consistently slow EQ read starve the list
         // forever (Codex turn 33). An older part than the one shown never lands.
         if let fresh = freshSpeakers, fresh.serial > appliedSpeakerSerial {
             appliedSpeakerSerial = fresh.serial
@@ -1220,11 +1213,10 @@ final class SpeakersScene: Scene {
             if fresh.startedAt > lastMutation {
                 // Installed presets arriving or leaving change the picker's
                 // rows; keep the cursor on the row it was on (Codex round 2:
-                // a preset inserted above Visualizer left Enter on the preset).
+                // a preset inserted above the cursor's row left Enter on the preset).
                 let before = displayRows
                 let beforeRow = before.indices.contains(cursor) ? before[cursor] : nil
                 if let eq = fresh.eq { eqState = eq }
-                if let vis = fresh.visualizer { visualizerOn = vis }
                 let after = displayRows
                 if let beforeRow, let at = after.firstIndex(of: beforeRow) {
                     cursor = at
@@ -1268,10 +1260,9 @@ final class SpeakersScene: Scene {
             lastFetchKickoff = now
             let fetchSpeakers = self.fetchSpeakers
             let fetchEQ = self.fetchEQ
-            let fetchVisualizer = self.fetchVisualizer
             DispatchQueue.global().async { [weak self] in
                 let result = (try? fetchSpeakers()).map(speakerRows(from:))
-                // Post the list before the EQ and visualizer reads, which can
+                // Post the list before the EQ read, which can
                 // take longer than the list itself.
                 if let self {
                     self.inboxLock.lock()
@@ -1281,14 +1272,13 @@ final class SpeakersScene: Scene {
                     self.inboxLock.unlock()
                 }
                 let backend = self?.backend ?? AppleScriptBackend()
-                // openWindow: false — the poll must never pop the Equalizer
-                // window (it steals focus, e.g. from the visualizer).
+                // openWindow: false — the poll must never open the Equalizer
+                // window, not even off-screen (Anthony's ruling, 2026-11-01).
                 let eq = try? fetchEQ(backend)
-                let vis = try? fetchVisualizer(backend)
                 guard let self else { return }
                 self.inboxLock.lock()
                 if self.extrasInbox == nil || self.extrasInbox!.serial < serial {
-                    self.extrasInbox = ExtrasPart(serial: serial, startedAt: now, eq: eq, visualizer: vis)
+                    self.extrasInbox = ExtrasPart(serial: serial, startedAt: now, eq: eq)
                 }
                 self.inboxLock.unlock()
                 self.fetchFinishedForTest?(serial)
@@ -1787,27 +1777,6 @@ final class SpeakersScene: Scene {
                 out += "\(bullet) \(nameStr)"
                 y += 1
 
-            case .visualizer:
-                // Blank line before the visualizer row when space allows.
-                if y + 1 <= bottom {
-                    y += 1
-                }
-                if isCursor { focusY = y }
-                guard y <= bottom else { break }
-                out += ANSICode.moveTo(row: y, col: 3)
-                let on = visualizerOn == true
-                let label = "Visualizer  \(on ? "on" : "off")"
-                let padLabel = label + String(repeating: " ", count: max(0, nameW + 4 - label.count))
-                let labelStr: String
-                if isCursor {
-                    labelStr = "\(ANSICode.inverse)\(padLabel)\(ANSICode.reset)"
-                } else if on {
-                    labelStr = "\(ANSICode.brightWhite)\(padLabel)\(ANSICode.reset)"
-                } else {
-                    labelStr = padLabel
-                }
-                out += "  \(dot(on)) \(labelStr)"
-                y += 1
             }
         }
 
@@ -1932,9 +1901,6 @@ final class SpeakersScene: Scene {
         case .char("e"), .char("E"):
             toggleEQ()
             return .redraw
-        case .char("v"), .char("V"):
-            toggleVisualizer()
-            return .redraw
         case .up:
             cursor = max(0, cursor - 1); return .redraw
         case .down:
@@ -2028,9 +1994,6 @@ final class SpeakersScene: Scene {
                 return .redraw
             case .preset(let name):
                 selectEQPreset(name)
-                return .redraw
-            case .visualizer:
-                toggleVisualizer()
                 return .redraw
             case .held, nil:
                 return .none
@@ -2264,21 +2227,24 @@ final class SpeakersScene: Scene {
         else { eqState?.enabled = on }
         lastMutation = fetchNow()
         actions.run("EQ") {
-            try require((try? eqSetEnabled(self.backend, on)) != nil,
-                        "Couldn't turn EQ \(on ? "on" : "off").")
+            try Self.eqStep("Couldn't turn EQ \(on ? "on" : "off").") { try eqSetEnabled(self.backend, on) }
         }
     }
 
-    /// Music's on-screen visualizer on/off. visualizerSetEnabled reads then
-    /// clicks only if needed, so repeated toggles stay idempotent. Turning it
-    /// on brings Music to the front (the visuals render in Music's window).
-    private func toggleVisualizer() {
-        let on = !(visualizerOn ?? false)
-        visualizerOn = on
-        lastMutation = fetchNow()
-        actions.run("Visualizer") {
-            try require((try? visualizerSetEnabled(self.backend, on)) != nil,
-                        "Couldn't turn visualizer \(on ? "on" : "off").")
+    /// One Equalizer-window step of an EQ action. An `EQWindowRefusal` is
+    /// toasted as its own sentence (what to do when the Equalizer could not be
+    /// kept off-screen), and an Accessibility denial as the hint
+    /// `runMusicUIScript` translated it into (Codex r3: the toast used to say
+    /// only "Couldn't turn EQ on."). Any other failure keeps the step's short
+    /// message.
+    private static func eqStep(_ fallback: String, _ step: () throws -> Void) throws {
+        do { try step() } catch let refusal as EQWindowRefusal {
+            throw ActionError(message: refusal.message)
+        } catch AppleScriptBackend.ScriptError.executionFailed(let failure)
+                    where failure == eqAccessibilityHint || failure == musicUIAccessibilityHint {
+            throw ActionError(message: failure)
+        } catch {
+            throw ActionError(message: fallback)
         }
     }
 
@@ -2297,10 +2263,8 @@ final class SpeakersScene: Scene {
                 try require((try? eqEnsurePreset(self.backend, preset: venue)) != nil,
                             "Couldn't create preset '\(target)'.")
             }
-            try require((try? eqSetCurrent(self.backend, name: target)) != nil,
-                        "Couldn't select preset '\(target)'.")
-            try require((try? eqSetEnabled(self.backend, true)) != nil,
-                        "Couldn't enable EQ.")
+            try Self.eqStep("Couldn't select preset '\(target)'.") { try eqSetCurrent(self.backend, name: target) }
+            try Self.eqStep("Couldn't enable EQ.") { try eqSetEnabled(self.backend, true) }
         }
     }
 }

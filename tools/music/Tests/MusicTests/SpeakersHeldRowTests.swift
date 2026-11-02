@@ -128,7 +128,7 @@ final class SpeakersHeldRowTests: XCTestCase {
 
     private func settle(_ s: SpeakersScene, _ expected: [String], file: StaticString = #filePath, line: UInt = #line) {
         XCTAssertTrue(tickUntil(s) { names(s) == expected }, "the list never became \(expected)", file: file, line: line)
-        // Let the job's EQ/visualizer part land too, so the next read can start.
+        // Let the job's EQ part land too, so the next read can start.
         for _ in 0..<20 { _ = s.tick(snapshot: outputTabSnapshot()); usleep(2_000) }
     }
 
