@@ -30,12 +30,25 @@
 // Titles are never compared: identity is the persistent ID only.
 import Foundation
 
-/// One read of Apple's Music app for a confirmation: the player state, and
-/// the current track's persistent ID (nil when there is none, or it could not
-/// be read).
+/// One read of Apple's Music app for a confirmation: the player state, the
+/// current track's persistent ID (nil when there is none, or it could not be
+/// read), and, for a position-addressed play, the persistent ID of the track
+/// the play asked for (nil when it could not be read).
 struct PlayerIdentityReading: Equatable {
     let state: String
     let persistentID: String?
+    var requestedID: String? = nil
+}
+
+/// The track a play asked for, as the confirmation reads it (Codex r4). The
+/// play itself is main's script, byte for byte: its success is the play
+/// command alone, and the identity is never read on the caller's thread.
+enum RequestedTrack: Equatable {
+    /// A persistent-ID queue entry: its identity is already known.
+    case persistentID(String)
+    /// `play track N of playlist "P"`: the identity is read in each
+    /// confirmation read, beside the player's state.
+    case position(playlist: String, index: Int)
 }
 
 /// The confirmation read: state and identity in one script. The identity read
@@ -51,20 +64,48 @@ let playerIdentityReadScript = """
     return st & fs & pid
     """
 
-/// `playerIdentityReadScript`'s answer, or nil when it is not one. Pure.
-func parsePlayerIdentityReading(_ raw: String) -> PlayerIdentityReading? {
-    let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-    let parts = trimmed.split(separator: asFieldSep, maxSplits: 1, omittingEmptySubsequences: false)
-        .map(String.init)
-    guard parts.count == 2, !parts[0].isEmpty else { return nil }
-    let pid = parts[1].trimmingCharacters(in: .whitespacesAndNewlines)
-    return PlayerIdentityReading(state: parts[0], persistentID: pid.isEmpty ? nil : pid)
+/// The confirmation read for `requested`: the base read, plus, for a position
+/// play, the requested track's identity, wrapped the same way.
+func playerIdentityReadScript(for requested: RequestedTrack) -> String {
+    guard case .position(let playlist, let index) = requested else { return playerIdentityReadScript }
+    let esc = escapeAppleScriptString(playlist)
+    return """
+    set fs to (ASCII character 31)
+    set st to player state as text
+    set pid to ""
+    try
+        set pid to persistent ID of current track
+    end try
+    set want to ""
+    try
+        set want to persistent ID of track \(index) of playlist "\(esc)"
+    end try
+    return st & fs & pid & fs & want
+    """
 }
 
-/// One live confirmation read. Nil when the script failed or timed out: an
-/// unreadable player is not a confirmed one, and never an error.
-func readPlayerIdentity(backend: AppleScriptBackend, timeout: TimeInterval = 2) -> PlayerIdentityReading? {
-    guard let raw = try? backend.runMusicBlocking(playerIdentityReadScript, timeout: timeout) else { return nil }
+/// A confirmation read's answer, or nil when it is not one. Pure.
+func parsePlayerIdentityReading(_ raw: String) -> PlayerIdentityReading? {
+    let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+    let parts = trimmed.split(separator: asFieldSep, maxSplits: 2, omittingEmptySubsequences: false)
+        .map(String.init)
+    guard parts.count >= 2, !parts[0].isEmpty else { return nil }
+    let clean: (String) -> String? = {
+        let t = $0.trimmingCharacters(in: .whitespacesAndNewlines)
+        return t.isEmpty ? nil : t
+    }
+    return PlayerIdentityReading(state: parts[0], persistentID: clean(parts[1]),
+                                 requestedID: parts.count > 2 ? clean(parts[2]) : nil)
+}
+
+/// One live confirmation read, off the action queue. Nil when the script
+/// failed or its 2 s watchdog fired: an unreadable player is not a confirmed
+/// one, and never an error.
+func readPlayerIdentity(backend: AppleScriptBackend, requested: RequestedTrack,
+                        timeout: TimeInterval = 2) -> PlayerIdentityReading? {
+    guard let raw = try? backend.runMusicBlocking(playerIdentityReadScript(for: requested), timeout: timeout) else {
+        return nil
+    }
     return parsePlayerIdentityReading(raw)
 }
 
@@ -102,10 +143,14 @@ struct PlayConfirmFence: Equatable {
 final class PlayConfirmer {
     struct Ticket: Equatable { let serial: Int }
 
-    /// How often, and for how long, a request is read. CHOSEN: four reads a
-    /// second for up to 1.5 s, the first at once; then, only once a warning
-    /// shows, one read every 2 s for up to 30 s more, for a late start to
-    /// withdraw it (at most 15 extra reads for an unconfirmed play).
+    /// How often, and for how long, a request is read. CHOSEN: a read at once,
+    /// then one every 0.25 s while the window (1.5 s of the injected clock)
+    /// allows another; then, only once a warning shows, one every 2 s while
+    /// 30 s more allows (at most 15 late reads). Each read may itself take up
+    /// to its 2 s watchdog, so the wall-clock window is longer than the
+    /// figures when Music is slow: the warning lands after about 1.5 s plus
+    /// the last read, and the late phase can run past 30 s by one read.
+    /// Supersession is checked between reads, never during one.
     struct Timing: Equatable {
         var interval: TimeInterval = 0.25
         var window: TimeInterval = 1.5
@@ -118,15 +163,17 @@ final class PlayConfirmer {
         let fence: PlayConfirmFence
         /// The play script has returned (confirm was called).
         var scriptDone = false
-        var expected: String?
+        var requested: RequestedTrack?
         var confirmed = false
         /// The status post of this request's warning, while it shows.
         var warningID: Int?
+        /// What to show in its place when a late confirmation withdraws it.
+        var restore: String?
     }
 
-    private let read: () -> PlayerIdentityReading?
+    private let read: (RequestedTrack) -> PlayerIdentityReading?
     private let post: (String) -> Int?
-    private let withdraw: (Int) -> Void
+    private let withdraw: (Int, String?) -> Void
     private let fence: () -> PlayConfirmFence
     private let timing: Timing
     private let now: () -> Date
@@ -137,14 +184,15 @@ final class PlayConfirmer {
     private var serial = 0
     private var current: Request?
 
-    /// `read` is one confirmation read; `post` shows the warning and returns
-    /// its status id, which `withdraw` takes back when the same request is
+    /// `read` is one confirmation read for the requested track; `post` shows
+    /// the warning and returns its status id, which `withdraw` takes back
+    /// (showing the given line in its place, if any) when the same request is
     /// confirmed late. The clock, the sleep and the scheduler are injected so
     /// a test runs the window without waiting it out; production sleeps on a
     /// global queue.
-    init(read: @escaping () -> PlayerIdentityReading?,
+    init(read: @escaping (RequestedTrack) -> PlayerIdentityReading?,
          post: @escaping (String) -> Int?,
-         withdraw: @escaping (Int) -> Void = { _ in },
+         withdraw: @escaping (Int, String?) -> Void = { _, _ in },
          fence: @escaping () -> PlayConfirmFence = { .still },
          timing: Timing = Timing(),
          now: @escaping () -> Date = Date.init,
@@ -183,21 +231,29 @@ final class PlayConfirmer {
         if current?.serial == ticket.serial { current = nil }
     }
 
-    /// The play's script exited cleanly, for the track `expected` (its
-    /// persistent ID; nil when it could not be read, which can never confirm).
-    /// `notice` follows the warning (what else the play already said, such as
-    /// tracks left out). Returns at once; the reads run on `schedule`.
-    func confirm(_ ticket: Ticket, expected: String?, title: String, notice: String? = nil) {
-        let expectedID = Self.identity(expected)
+    /// The play's script exited cleanly, for `requested` (nil: nothing to
+    /// compare, which can never confirm). `notice` follows the warning (what
+    /// else the play already said, such as tracks left out), and `restore`
+    /// takes the warning's place if a late confirmation withdraws it while it
+    /// still shows. Returns at once; the reads run on `schedule`.
+    func confirm(_ ticket: Ticket, requested: RequestedTrack?, title: String, notice: String? = nil,
+                 restore: String? = nil) {
         lock.lock()
         guard ticket.serial == serial, var r = current, r.serial == ticket.serial else { lock.unlock(); return }
         r.scriptDone = true
-        r.expected = expectedID
+        r.requested = requested
+        r.restore = restore
         current = r
         let stamp = r.fence
         lock.unlock()
         let text = [playNotStartedWarning(title), notice].compactMap { $0 }.joined(separator: " ")
-        schedule { [self] in self.runWindow(ticket, fence: stamp, text: text) }
+        schedule { [self] in self.runWindow(ticket, requested: requested, fence: stamp, text: text) }
+    }
+
+    /// `confirm` for a known identity (nil: unknown, which can never confirm).
+    func confirm(_ ticket: Ticket, expected: String?, title: String, notice: String? = nil) {
+        confirm(ticket, requested: Self.identity(expected).map(RequestedTrack.persistentID), title: title,
+                notice: notice)
     }
 
     /// A pause, skip, play or switch the person made: every earlier request is
@@ -228,20 +284,26 @@ final class PlayConfirmer {
         lock.lock(); defer { lock.unlock() }
         guard var r = current, r.serial == ticket.serial, r.fence == stamp, fenceNow == stamp else { return false }
         if r.confirmed { return true }
-        guard r.scriptDone, let expected = r.expected, let reading, reading.state == "playing",
-              Self.identity(reading.persistentID) == expected else { return false }
+        guard r.scriptDone, let requested = r.requested, let reading, reading.state == "playing" else { return false }
+        let expected: String?
+        switch requested {
+        case .persistentID(let pid): expected = Self.identity(pid)
+        case .position: expected = Self.identity(reading.requestedID)
+        }
+        guard let expected, Self.identity(reading.persistentID) == expected else { return false }
         r.confirmed = true
-        if let id = r.warningID { withdraw(id); r.warningID = nil }
+        if let id = r.warningID { withdraw(id, r.restore); r.warningID = nil }
         current = r
         return true
     }
 
-    private func runWindow(_ ticket: Ticket, fence stamp: PlayConfirmFence, text: String) {
+    private func runWindow(_ ticket: Ticket, requested: RequestedTrack?, fence stamp: PlayConfirmFence,
+                           text: String) {
         let start = now()
         while true {
             lock.lock(); let latest = ticket.serial == serial; lock.unlock()
             guard latest else { return }
-            if apply(read(), ticket: ticket, fence: stamp) { return }
+            if apply(requested.flatMap(read), ticket: ticket, fence: stamp) { return }
             if now().timeIntervalSince(start) + timing.interval > timing.window + 1e-9 { break }
             sleep(timing.interval)
         }
@@ -263,7 +325,7 @@ final class PlayConfirmer {
             sleep(timing.lateInterval)
             lock.lock(); let latest = ticket.serial == serial; lock.unlock()
             guard latest else { return }
-            if apply(read(), ticket: ticket, fence: stamp) { return }
+            if apply(requested.flatMap(read), ticket: ticket, fence: stamp) { return }
         }
     }
 }
@@ -274,4 +336,11 @@ final class PlayConfirmer {
 /// shipped "Playing N of M" would contradict the warning.
 func partialAvailabilityNotice(queued: Int, matched: Int) -> String? {
     matched > queued ? "\(queued) of \(matched) are queued \u{2014} the rest aren't available yet." : nil
+}
+
+/// The Library's own line for a partly available album or artist, as the play
+/// posts it; it comes back if a late confirmation withdraws the warning that
+/// replaced it (Codex r4). Nil when every matched track was queued.
+func partialAvailabilityPlayingLine(queued: Int, matched: Int) -> String? {
+    matched > queued ? "Playing \(queued) of \(matched) \u{2014} the rest aren't available yet." : nil
 }

@@ -229,9 +229,9 @@ func runShell() {
     // Fenced by both routing epochs and the routing play serial; the action
     // queue supersedes it on every pause, skip, play or switch.
     let playConfirmer = PlayConfirmer(
-        read: { readPlayerIdentity(backend: backend) },
+        read: { readPlayerIdentity(backend: backend, requested: $0) },
         post: { text -> Int? in status.post(text, error: true, untilStateChange: true) },
-        withdraw: { status.withdraw($0) },
+        withdraw: { status.withdraw($0, replacingWith: $1) },
         fence: {
             let stamp = routing.stamp
             return PlayConfirmFence(epoch: stamp.epoch, dataEpoch: stamp.dataEpoch, playSerial: routing.playSerial)

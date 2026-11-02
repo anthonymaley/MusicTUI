@@ -116,57 +116,36 @@ func playQueueTrack(backend: AppleScriptBackend, playlist: String, position: Int
     return (try? backend.runMusicBlocking("play track \(position) of playlist \"\(esc)\"")) != nil
 }
 
-/// A position-addressed play that also answers the persistent ID of the track
-/// it asked for, in the same script, so the identity a confirmation compares
-/// against is never a second, racy read. The play runs first, and the
-/// identity read after it is wrapped: when that read fails the play still
-/// stands, and answers empty (which cannot confirm: the warning shows).
-func identifyingPositionPlayScript(playlist: String, position: Int) -> String {
-    let esc = escapeAppleScriptString(playlist)
-    return """
-    play track \(position) of playlist "\(esc)"
-    try
-        return persistent ID of track \(position) of playlist "\(esc)"
-    end try
-    return ""
-    """
-}
-
 /// `playQueueTrack` for a play the PERSON started (honest "Playing",
-/// 2026-11-01): the same play, and on a clean exit the requested identity is
-/// handed to `appQueue.confirmer`, which reads Music off this thread and
-/// replaces the footer line with `playNotStartedWarning(title)` if Music has
-/// not started it. True means the script exited cleanly, exactly as before;
+/// 2026-11-01): the same play, main's script byte for byte, so its success is
+/// the play command alone (Codex r4). On a clean exit the requested track is
+/// handed to `appQueue.confirmer`, which reads Music, and the requested
+/// track's identity for a position play, off this thread, and replaces the
+/// footer line with `playNotStartedWarning(title)` if Music does not confirm
+/// it. Nothing beyond the play runs here. True means the script exited cleanly, exactly as before;
 /// an unconfirmed play is still true, so no caller rolls back or clears a
 /// queue Music accepted. False is a script error: nothing is confirmed.
 /// `notice` follows the warning, so what the play already said (tracks left
-/// out) survives it.
+/// out) survives it; `restore` takes the warning's place if Music confirms
+/// late while the warning still shows.
 ///
-/// With no confirmer it IS `playQueueTrack`, script for script.
+/// With or without a confirmer, the play is `playQueueTrack`.
 @discardableResult
 func playRequestedQueueTrack(backend: AppleScriptBackend, appQueue: AppQueueStore, playlist: String,
-                             position: Int, title: String, notice: String? = nil) -> Bool {
+                             position: Int, title: String, notice: String? = nil,
+                             restore: String? = nil) -> Bool {
     guard let confirmer = appQueue.confirmer else {
         return playQueueTrack(backend: backend, playlist: playlist, position: position)
     }
     let ticket = confirmer.request()
-    let expected: String?
-    if playlist == persistentIDQueueSource {
-        let pid = persistentIDOfQueueEntry(position)
-        guard (try? backend.runMusicBlocking(persistentIDPlayScript(pid))) != nil else {
-            confirmer.abandon(ticket)
-            return false
-        }
-        expected = pid
-    } else {
-        guard let out = try? backend.runMusicBlocking(identifyingPositionPlayScript(playlist: playlist,
-                                                                                     position: position)) else {
-            confirmer.abandon(ticket)
-            return false
-        }
-        expected = out.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard playQueueTrack(backend: backend, playlist: playlist, position: position) else {
+        confirmer.abandon(ticket)
+        return false
     }
-    confirmer.confirm(ticket, expected: expected, title: title, notice: notice)
+    let requested: RequestedTrack = playlist == persistentIDQueueSource
+        ? .persistentID(persistentIDOfQueueEntry(position))
+        : .position(playlist: playlist, index: position)
+    confirmer.confirm(ticket, requested: requested, title: title, notice: notice, restore: restore)
     return true
 }
 

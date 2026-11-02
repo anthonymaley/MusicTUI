@@ -40,7 +40,7 @@ final class HonestPlayingTests: XCTestCase {
             readingsValue = readings
             started = clockValue
             confirmer = PlayConfirmer(
-                read: { [unowned self] in self.nextReading() },
+                read: { [unowned self] target in self.nextReading(target) },
                 post: { [unowned self] text -> Int? in
                     self.lock.lock()
                     self.postsValue.append(text)
@@ -48,7 +48,7 @@ final class HonestPlayingTests: XCTestCase {
                     self.lock.unlock()
                     return status?.post(text, error: true, untilStateChange: true)
                 },
-                withdraw: { status?.withdraw($0) },
+                withdraw: { status?.withdraw($0, replacingWith: $1) },
                 fence: { [unowned self] in self.fenceValue },
                 timing: PlayConfirmer.Timing(interval: 0.25, window: 1.5),
                 now: { [unowned self] in self.lock.lock(); defer { self.lock.unlock() }; return self.clockValue },
@@ -62,8 +62,13 @@ final class HonestPlayingTests: XCTestCase {
         var elapsed: TimeInterval { lock.lock(); defer { lock.unlock() }; return clockValue.timeIntervalSince(started) }
         func setReadings(_ r: [PlayerIdentityReading?]) { lock.lock(); readingsValue = r; lock.unlock() }
 
-        private func nextReading() -> PlayerIdentityReading? {
+        /// The track each read was asked for.
+        var targets: [RequestedTrack] { lock.lock(); defer { lock.unlock() }; return targetsValue }
+        private var targetsValue: [RequestedTrack] = []
+
+        private func nextReading(_ target: RequestedTrack) -> PlayerIdentityReading? {
             lock.lock()
+            targetsValue.append(target)
             readCount += 1
             let n = readCount
             let r = readingsValue.isEmpty ? nil : (readingsValue.count > 1 ? readingsValue.removeFirst() : readingsValue[0])
@@ -93,8 +98,10 @@ final class HonestPlayingTests: XCTestCase {
         }
     }
 
-    private func reading(_ state: String, _ pid: String?) -> PlayerIdentityReading {
-        PlayerIdentityReading(state: state, persistentID: pid)
+    /// `requested`: the requested track's identity, as a position play's
+    /// confirmation read reports it.
+    private func reading(_ state: String, _ pid: String?, requested: String? = nil) -> PlayerIdentityReading {
+        PlayerIdentityReading(state: state, persistentID: pid, requestedID: requested)
     }
 
     /// A fake `osascript`: logs every script, answers the poll from a file,
@@ -387,35 +394,53 @@ final class HonestPlayingTests: XCTestCase {
 
     // MARK: - The play itself
 
-    func testAPositionPlayReadsTheRequestedIdentityInTheSamePlayScript() {
+    func testAPositionPlayIsConfirmedByReadingTheRequestedTrackOffTheCallersThread() {
         let fake = FakeMusicInterpreter()
-        fake.reply(new + "\n")
-        let rig = ConfirmRig([reading("playing", new)])
+        let rig = ConfirmRig([reading("playing", new, requested: new)])
         let store = AppQueueStore()
         store.confirmer = rig.confirmer
         store.set(queue(5, at: 3))
         XCTAssertTrue(playRequestedQueueTrack(backend: fake.backend, appQueue: store, playlist: "Mix",
                                               position: 3, title: "T3"))
-        XCTAssertEqual(fake.playScripts.count, 1, "one script plays and identifies")
-        let script = fake.playScripts.first ?? ""
-        XCTAssertTrue(script.contains("play track 3 of playlist \"Mix\""))
-        XCTAssertTrue(script.contains("persistent ID of track 3 of playlist \"Mix\""),
-                      "the expected identity comes from the play script itself")
+        XCTAssertEqual(fake.playScripts.count, 1)
+        XCTAssertFalse(fake.playScripts.first?.contains("persistent ID") ?? true, "the play reads no identity")
+        XCTAssertEqual(rig.reads, 0, "nothing is read on the caller's thread")
         rig.runJobs()
+        XCTAssertEqual(rig.targets, [.position(playlist: "Mix", index: 3)],
+                       "the confirmation read asks for the requested track itself")
         XCTAssertEqual(rig.posts, [])
 
-        // The same play, with Music on another track: the warning.
-        let fake2 = FakeMusicInterpreter()
-        fake2.reply(new + "\n")
-        let stuck = ConfirmRig([reading("playing", old)])
+        // Music on another track: the warning.
+        let stuck = ConfirmRig([reading("playing", old, requested: new)])
         let store2 = AppQueueStore()
         store2.confirmer = stuck.confirmer
         store2.set(queue(5, at: 3))
-        XCTAssertTrue(playRequestedQueueTrack(backend: fake2.backend, appQueue: store2, playlist: "Mix",
-                                              position: 3, title: "T3"))
+        XCTAssertTrue(playRequestedQueueTrack(backend: FakeMusicInterpreter().backend, appQueue: store2,
+                                              playlist: "Mix", position: 3, title: "T3"))
         stuck.runJobs()
         XCTAssertEqual(stuck.posts, [playNotStartedWarning("T3")])
         XCTAssertEqual(store2.read()?.currentIndex, 3, "the queue is kept")
+
+        // The requested track's identity unreadable: not confirmed, never a crash.
+        let blind = ConfirmRig([reading("playing", new, requested: nil)])
+        let store3 = AppQueueStore()
+        store3.confirmer = blind.confirmer
+        store3.set(queue(5, at: 3))
+        XCTAssertTrue(playRequestedQueueTrack(backend: FakeMusicInterpreter().backend, appQueue: store3,
+                                              playlist: "Mix", position: 3, title: "T3"))
+        blind.runJobs()
+        XCTAssertEqual(blind.posts, [playNotStartedWarning("T3")])
+    }
+
+    func testThePositionConfirmationReadAsksForTheRequestedTrackWrapped() {
+        let script = playerIdentityReadScript(for: .position(playlist: "Say \"Hi\"", index: 7))
+        XCTAssertTrue(script.contains("persistent ID of track 7 of playlist \"Say \\\"Hi\\\"\""), script)
+        XCTAssertTrue(script.contains("player state as text"))
+        XCTAssertEqual(playerIdentityReadScript(for: .persistentID(new)), playerIdentityReadScript)
+        let fs = String(asFieldSep)
+        XCTAssertEqual(parsePlayerIdentityReading("playing\(fs)\(old)\(fs)\(new)\n"),
+                       reading("playing", old, requested: new))
+        XCTAssertEqual(parsePlayerIdentityReading("paused\(fs)\(fs)\n"), reading("paused", nil, requested: nil))
     }
 
     func testAPersistentIDPlayExpectsItsOwnEntryIdentity() {
@@ -489,8 +514,7 @@ final class HonestPlayingTests: XCTestCase {
 
     func testAConfirmedNextChangesNothing() throws {
         let fake = FakeMusicInterpreter()
-        fake.reply(new + "\n")
-        let rig = ConfirmRig([reading("playing", new)])
+        let rig = ConfirmRig([reading("playing", new, requested: new)])
         let status = StatusStore()
         let store = AppQueueStore()
         store.confirmer = rig.confirmer
@@ -580,7 +604,8 @@ final class HonestPlayingTests: XCTestCase {
                                  resultCache: temporaryResultCache().cache)
         scene.playAlbum(title: "Moon Safari", artist: "Air", shuffle: false)
         actions.waitUntilIdle()
-        XCTAssertTrue(fake.playScripts.first?.contains("persistent ID of track 41 of playlist \"Library\"") ?? false)
+        rig.runJobs()
+        XCTAssertEqual(rig.targets.first, .position(playlist: "Library", index: 41))
         rig.runJobs()
         XCTAssertEqual(rig.posts, [playNotStartedWarning("Moon Safari")])
         XCTAssertEqual(store.read()?.currentIndex, 1, "the queue is kept")
@@ -735,7 +760,9 @@ final class HonestPlayingTests: XCTestCase {
         store.confirmer = rig.confirmer
         let actions = ActionRunner(status: status)
         // Music starts the album late, after the warning showed.
-        rig.onRead = { n in if n == 9 { rig.setReadings([PlayerIdentityReading(state: "playing", persistentID: self.new)]) } }
+        rig.onRead = { n in
+            if n == 9 { rig.setReadings([PlayerIdentityReading(state: "playing", persistentID: self.new, requestedID: self.new)]) }
+        }
         let tracks = (1...3).map { TrackListEntry(index: 40 + $0, name: "T\($0)", artist: "Air", isCurrent: false) }
         libraryScene(fake, store, status, actions, tracks: tracks, matched: 5)
             .playAlbum(title: "Moon Safari", artist: "Air", shuffle: false)

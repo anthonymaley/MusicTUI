@@ -87,12 +87,23 @@ final class StatusStore {
     }
 
     /// Takes back the post `id` while it is still the one showing; any other
-    /// message, later or earlier, is left alone.
-    func withdraw(_ id: Int) {
+    /// message, later or earlier, is left alone. `replacingWith` shows in its
+    /// place, as a message that stays until the next state change (what the
+    /// play said before the warning replaced it).
+    func withdraw(_ id: Int, replacingWith text: String? = nil, now: Date = Date()) {
+        // Read before taking the lock: the coordinator has a lock of its own.
+        let stamp = text != nil ? switchStamp() : nil
         lock.lock(); defer { lock.unlock() }
         guard toast != nil, toastID == id else { return }
-        toast = nil
-        lasting = nil
+        if let text, let stamp {
+            lastID += 1
+            toastID = lastID
+            toast = StatusToast(text: text, isError: false, expiresAt: nil)
+            lasting = Lasting(postedAt: now, stamp: stamp, track: lastTrack)
+        } else {
+            toast = nil
+            lasting = nil
+        }
     }
 
     /// Something the person did changed the state (a play started, a tab

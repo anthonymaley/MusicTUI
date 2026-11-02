@@ -2755,7 +2755,9 @@ final class LibraryScene: Scene {
                         try require(playRequestedQueueTrack(backend: backend, appQueue: store, playlist: "Library",
                                                             position: ordered[idx - 1].index, title: title,
                                                             notice: partialAvailabilityNotice(queued: ordered.count,
-                                                                                              matched: res.matched)),
+                                                                                              matched: res.matched),
+                                                            restore: partialAvailabilityPlayingLine(queued: ordered.count,
+                                                                                                    matched: res.matched)),
                                     "Couldn't play '\(title)'.")
                         // Pre-release albums surface every planned track but only stream some;
                         // say so rather than silently playing a partial album.
@@ -2929,7 +2931,9 @@ final class LibraryScene: Scene {
                         try require(playRequestedQueueTrack(backend: backend, appQueue: store, playlist: "Library",
                                                             position: ordered[0].index, title: name,
                                                             notice: partialAvailabilityNotice(queued: ordered.count,
-                                                                                              matched: res.matched)),
+                                                                                              matched: res.matched),
+                                                            restore: partialAvailabilityPlayingLine(queued: ordered.count,
+                                                                                                    matched: res.matched)),
                                     "Couldn't play '\(name)'.")
                         if res.matched > ordered.count {
                             status.post("Playing \(ordered.count) of \(res.matched) — the rest aren't available yet.",
