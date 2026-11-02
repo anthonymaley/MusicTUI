@@ -7,7 +7,8 @@
 //
 // EQ and Visualizer are deliberately absent. They are Music.app-specific,
 // contribute nothing to source playback, and Anthony judged them not useful for
-// TUI use. The `music eq` and `music visualizer` CLI verbs remain.
+// TUI use. The `music eq` CLI verb remains; the visualizer was removed
+// entirely on 2026-11-01 (Music draws it only in its own window).
 import Foundation
 
 /// Whether Bridge can serve, and if not, why.

@@ -237,9 +237,9 @@ final class SpanDACOutputTabTests: XCTestCase {
     /// followed by the Music.app section.
     func testWithNoSpanDACsTheTabIsJustTheMusicAppSection() {
         XCTAssertEqual(outputTabRows(speakerCount: 2, expanded: false, presetNames: []),
-                       [.spandacMac, .speaker(0), .speaker(1), .eqPower, .eq, .visualizer])
+                       [.spandacMac, .speaker(0), .speaker(1), .eqPower, .eq])
         XCTAssertEqual(outputTabRows(speakerCount: 1, expanded: false, presetNames: [], spandacIDs: [ipad]),
-                       [.spandacMac, .spandac(ipad), .speaker(0), .eqPower, .eq, .visualizer])
+                       [.spandacMac, .spandac(ipad), .speaker(0), .eqPower, .eq])
     }
 
     // MARK: - Probes
@@ -756,7 +756,7 @@ final class SpanDACOutputTabTests: XCTestCase {
         XCTAssertEqual(outputTabRows(speakerCount: 1, expanded: false, presetNames: [], spandacIDs: [ipad]).first,
                        .spandacMac)
         // The cursor starts on row 1, this Mac.
-        XCTAssertEqual(s.footerHint, "\u{2191}\u{2193} Move   Enter Play here   e EQ   v Visualizer")
+        XCTAssertEqual(s.footerHint, "\u{2191}\u{2193} Move   Enter Play here   e EQ")
     }
 
     func testNetworkRowsAreKeyedBySourceIDNotName() {
@@ -980,7 +980,7 @@ final class SpanDACOutputTabTests: XCTestCase {
     func testMusicAppIsReachableWithNoSpeakers() {
         let s = scene(mode: .source, outputs: FakeSpanDACOutputs())
         XCTAssertEqual(outputTabRows(speakerCount: 0, expanded: false, presetNames: []),
-                       [.spandacMac, .musicApp, .eqPower, .eq, .visualizer])
+                       [.spandacMac, .musicApp, .eqPower, .eq])
         XCTAssertTrue(screen(s).contains { $0.contains("MusicTUI") && $0.contains("this Mac") })
         let finished = watch(s)
         put(s, at: 2)
@@ -1083,7 +1083,7 @@ final class SpanDACOutputTabTests: XCTestCase {
         let fake = FakeSpanDACOutputs([spandacRow(ipad, "Studio iPad", .ready),
                                        spandacRow(other, "Kitchen iPad", .notPaired(pairable: true), paired: false)])
         let s = scene(mode: .source, outputs: fake, speakers: [["name": "Kitchen", "selected": true, "volume": 50]])
-        let move = "\u{2191}\u{2193} Move", always = "e EQ   v Visualizer"
+        let move = "\u{2191}\u{2193} Move", always = "e EQ"
         put(s, at: 0)
         XCTAssertEqual(s.footerHint, "\(move)   Enter Play here   \(always)")
         put(s, at: 1)

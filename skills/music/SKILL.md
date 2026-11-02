@@ -123,8 +123,8 @@ What's different from Music.app mode:
   and `music repeat off|one|all` work on Bridge, as the Now tab's Shuffle and
   Repeat cells do. If SpanDAC does not offer these controls, MusicTUI says
   `Shuffle and repeat aren't available on SpanDAC.` and changes nothing.
-- `music eq` and `music visualizer` are Music.app settings either way; they
-  don't touch what Bridge plays.
+- `music eq` is a Music.app setting either way; it doesn't touch what Bridge
+  plays.
 - `music now --json` on Bridge never carries `album`, `duration`, `position`,
   `speakers`, or `live`; it adds a `queue` object while a play is still
   building. Text output tags the title `[Bridge]`, or says `Bridge is
@@ -219,7 +219,8 @@ Real Music.app EQ control. Venue presets are created on first selection and
 persist as real presets (visible in Music's own EQ window). Live EQ control
 drives the Equalizer window via UI scripting (Music's scripting API for live
 EQ state is broken): it needs Accessibility permission for the terminal and
-opens the Equalizer window. On a permission error, relay the command's hint:
+opens the Equalizer window parked off-screen, so nothing appears and the
+terminal keeps focus. On a permission error, relay the command's hint:
 it names the exact System Settings toggle.
 
 | Request | Command |
@@ -234,13 +235,6 @@ Venue pack: Nightclub, Dungeon, Open Air, Concert Hall, Jazz Club, Stadium,
 Cathedral, Late Night. Any other name forwards verbatim; Music's built-in
 presets (Acoustic, Hip-Hop, Loudness, …) all resolve. Unknown names print
 near-matches.
-
-## Visualizer (no auth)
-
-`music visualizer [on|off]` toggles Music's on-screen visualizer (the Cmd-T
-visuals). Same UI-scripting + Accessibility requirement as the equalizer.
-GUI-only: the visuals render in the Music window on the Mac's display (not on
-AirPlay outputs), and turning it on brings Music to the front.
 
 ## Radio (favorites/URL: no auth · search: developer token)
 

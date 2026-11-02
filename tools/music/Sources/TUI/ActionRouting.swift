@@ -76,7 +76,7 @@ enum MusicTUIAction: CaseIterable, Equatable {
     case radioFavourite, radioAddURL   // MusicTUI's OWN StationStore
 
     // Music.app-specific surfaces
-    case genius, airplayRoute, eq, visualizer, quiet
+    case genius, airplayRoute, eq, quiet
     case libraryArtistTierFilter, playlistsOpenNowPlaying, libraryRetry
 
     // MusicTUI's own configuration
@@ -143,7 +143,7 @@ enum ActionRoute: Equatable {
     /// Served by the existing Music.app path. In Source Mode this appears ONLY
     /// for rows the spec leaves as they are: the listing reads under binding
     /// rule 9's carve-out, and the Music.app settings and reads section 6.4
-    /// marks Unaffected (EQ, visualizer, playlist share). Never for playback.
+    /// marks Unaffected (EQ, playlist share). Never for playback.
     case musicApp
     /// Neither player is involved: MusicTUI's own local state or navigation.
     case unaffected
@@ -198,8 +198,7 @@ extension MusicTUIAction {
              .playlistListing,      // Shell.swift:94 / PlaylistCommands.swift:23
              .discoverFeed,         // DiscoverScene.swift:462 / DiscoverCommands.swift:52
              .airplayRoute,         // SpeakersScene.swift:332 / SpeakerCommands.swift:48
-             .eq,                   // SpeakersScene.swift:311 e / EQCommands.swift:4
-             .visualizer:           // SpeakersScene.swift:314 v / VisualizerCommands.swift:4
+             .eq:                   // SpeakersScene.swift:311 e / EQCommands.swift:4
             return [.tui, .cli]
 
         // TUI only.
@@ -324,7 +323,6 @@ let cliBridgeExceptions: Set<MusicTUIAction> = [
     .auth,
     // E: Music.app settings (spec 6.4, Unaffected).
     .eq,
-    .visualizer,
 ]
 
 /// D7's reason for a CLI action Bridge does not serve. Volume and AirPlay keep
@@ -389,7 +387,6 @@ private func cliBridgeNotServedWhat(_ action: MusicTUIAction) -> String {
     case .playlistShare:            return "music playlist share"
     case .cliMix:                   return "music mix"
     case .eq:                       return "music eq"
-    case .visualizer:               return "music visualizer"
     case .auth:                     return "music auth"
     // TUI-only rows: no CLI verb reaches them, but none is left unnamed.
     case .queueJump:                return "jumping to a queue row"
@@ -500,10 +497,11 @@ func routeAction(_ action: MusicTUIAction,
         return .musicApp
 
     // Section 6.4 marks these Unaffected: they run exactly as in Music.app
-    // mode, which means AppleScript. EQ and the visualizer set Music.app state,
+    // mode, which means AppleScript. EQ sets Music.app state,
     // and share reads the playlist's tracks (PlaylistCommands.swift:1033) before
-    // sending. Codex B4: `933e85d` refused EQ and visualizer against the spec.
-    case .eq, .visualizer, .playlistShare:
+    // sending. Codex B4: `933e85d` refused EQ and the (since removed)
+    // visualizer against the spec.
+    case .eq, .playlistShare:
         return .musicApp
 
     // MusicTUI's own state or navigation. Radio favourites write StationStore,
@@ -661,7 +659,7 @@ extension MusicTUIAction {
              .cliPlayQuery, .cliPlayCatalogSong, .nowStatus,
              .loveTrack, .addToLibrary, .addCurrentTrackToPlaylist, .removeCurrentTrackFromPlaylist,
              .playlistWrite, .playlistTemp, .playlistShare, .cliMix, .radioFavourite, .radioAddURL,
-             .genius, .airplayRoute, .eq, .visualizer, .quiet,
+             .genius, .airplayRoute, .eq, .quiet,
              .libraryArtistTierFilter, .playlistsOpenNowPlaying, .auth:
             return false
         }
@@ -754,7 +752,7 @@ extension MusicTUIAction {
              .similar, .suggest,               // with a title or --from: no picker, a read
              .addToLibrary,
              .playlistWrite, .playlistShare, .cliMix, .radioFavourite, .radioAddURL,
-             .eq, .visualizer, .libraryArtistTierFilter, .playlistsOpenNowPlaying, .libraryRetry, .auth:
+             .eq, .libraryArtistTierFilter, .playlistsOpenNowPlaying, .libraryRetry, .auth:
             return .cannotStartSound
         }
     }
@@ -777,7 +775,7 @@ let macPlayOutRefusal =
 let musicTUIOutputVerbs: Set<MusicTUIAction> = [
     .playPause, .next, .previous, .seek, .stop, .volume, .persistentShuffleMode,
     .persistentRepeatMode, .queueJump, .quiet, .collectionShuffle, .cliPlayResume, .nowStatus,
-    .airplayRoute, .eq, .visualizer, .genius, .loveTrack, .addCurrentTrackToPlaylist,
+    .airplayRoute, .eq, .genius, .loveTrack, .addCurrentTrackToPlaylist,
     .removeCurrentTrackFromPlaylist,
 ]
 
@@ -884,7 +882,7 @@ private func routeOnMusicTUIWithSpanDACData(_ action: MusicTUIAction,
     // Sound on the MusicTUI output, as shipped.
     case .playPause, .next, .previous, .seek, .stop, .volume, .persistentShuffleMode,
          .persistentRepeatMode, .queueJump, .quiet, .collectionShuffle, .cliPlayResume, .nowStatus,
-         .airplayRoute, .eq, .visualizer, .genius, .loveTrack, .addCurrentTrackToPlaylist,
+         .airplayRoute, .eq, .genius, .loveTrack, .addCurrentTrackToPlaylist,
          .removeCurrentTrackFromPlaylist:
         return RoutedAction(data: .none, sound: shipped)
 

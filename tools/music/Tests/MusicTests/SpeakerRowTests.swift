@@ -29,14 +29,14 @@ final class SpeakerRowTests: XCTestCase {
     func testDisplayRowsCollapsed() {
         let rows = outputTabRows(speakerCount: 2, expanded: false,
                                  presetNames: ["Nightclub", "Manual"])
-        XCTAssertEqual(rows, [.spandacMac, .speaker(0), .speaker(1), .eqPower, .eq, .visualizer])
+        XCTAssertEqual(rows, [.spandacMac, .speaker(0), .speaker(1), .eqPower, .eq])
     }
 
     func testDisplayRowsExpanded() {
         let rows = outputTabRows(speakerCount: 1, expanded: true,
                                  presetNames: ["Nightclub", "Manual"])
         XCTAssertEqual(rows, [.spandacMac, .speaker(0), .eqPower, .eq,
-                              .preset("Nightclub"), .preset("Manual"), .visualizer])
+                              .preset("Nightclub"), .preset("Manual")])
     }
 
     /// Where sound goes is chosen first. There is no separate mode row any
@@ -50,7 +50,7 @@ final class SpeakerRowTests: XCTestCase {
         XCTAssertEqual(rows.dropFirst(3).first, .speaker(0))
         XCTAssertFalse(rows.contains(.musicApp), "the stand-in appears only with no speakers")
         XCTAssertEqual(outputTabRows(speakerCount: 0, expanded: false, presetNames: []),
-                       [.spandacMac, .musicApp, .eqPower, .eq, .visualizer])
+                       [.spandacMac, .musicApp, .eqPower, .eq])
     }
 
     /// Before the switch to SpanDAC data, network SpanDACs are drawn but are
@@ -60,12 +60,12 @@ final class SpeakerRowTests: XCTestCase {
     func testRowsBeforeTheSwitchAndTheStopUsingRow() {
         XCTAssertEqual(outputTabRows(speakerCount: 1, expanded: false, presetNames: [], spandacIDs: ["A"],
                                      stopUsing: .endOfSection),
-                       [.spandacMac, .spandac("A"), .stopUsingSpanDAC, .speaker(0), .eqPower, .eq, .visualizer])
+                       [.spandacMac, .spandac("A"), .stopUsingSpanDAC, .speaker(0), .eqPower, .eq])
         XCTAssertEqual(outputTabRows(speakerCount: 1, expanded: false, presetNames: [], spandacIDs: ["A"],
                                      stopUsing: .top),
-                       [.stopUsingSpanDAC, .spandacMac, .spandac("A"), .speaker(0), .eqPower, .eq, .visualizer])
+                       [.stopUsingSpanDAC, .spandacMac, .spandac("A"), .speaker(0), .eqPower, .eq])
         XCTAssertEqual(outputTabRows(speakerCount: 0, expanded: false, presetNames: [], spandacIDs: [],
                                      macRow: false),
-                       [.musicApp, .eqPower, .eq, .visualizer])
+                       [.musicApp, .eqPower, .eq])
     }
 }

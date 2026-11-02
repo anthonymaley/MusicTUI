@@ -20,7 +20,7 @@
 
 ![Apple Music TUI demo](media/demo.gif)
 
-Control Apple Music, AirPlay speakers, and AirPods from the terminal. Multi-room playback with verified routing, library browsing (artists, albums, songs), catalog and library search, playlists, radio stations, a venue equalizer, and the on-screen visualizer. Cover art renders as true pixels on Kitty, WezTerm, Ghostty, and iTerm2.
+Control Apple Music, AirPlay speakers, and AirPods from the terminal. Multi-room playback with verified routing, library browsing (artists, albums, songs), catalog and library search, playlists, radio stations, and a venue equalizer. Cover art renders as true pixels on Kitty, WezTerm, Ghostty, and iTerm2.
 
 ```bash
 music                              # the TUI
@@ -203,16 +203,7 @@ Adding a speaker, `music speaker set`, or `music speaker only` verify the route 
 
 Venue pack (Nightclub, Dungeon, Open Air, Concert Hall, Jazz Club, Stadium, Cathedral, Late Night): each is created as a Music.app preset on first selection and visible in Music's own EQ window. Selecting any preset auto-enables EQ. Unknown names print near-matches.
 
-> **Equalizer requires Accessibility permission.** Music's scripting interface for live EQ state is broken in current macOS builds, so `music eq` drives the real Equalizer window instead (which it opens and leaves open). Grant your terminal app access under System Settings → Privacy & Security → Accessibility. The command tells you if it's missing. Preset creation and deletion need no extra permission.
-
-### Visualizer
-
-| Command | What it does |
-|---------|-------------|
-| `music visualizer` | Show visualizer on/off status |
-| `music visualizer on` / `off` | Toggle Music's on-screen visualizer (the Cmd-T visuals) |
-
-Toggles Music's built-in visualizer: the animated graphics that render **in the Music app window on your Mac's display** (not on AirPlay outputs). Turning it on brings Music to the front. Same Accessibility permission as the equalizer; in the TUI, the Speakers scene has a Visualizer row (`Enter` or `v` toggles).
+> **Equalizer requires Accessibility permission.** Music's scripting interface for live EQ state is broken in current macOS builds, so `music eq` drives the real Equalizer window instead, which it opens parked off-screen and leaves there, so nothing appears and your terminal keeps focus. Grant your terminal app access under System Settings → Privacy & Security → Accessibility. The command tells you if it's missing. Preset creation and deletion need no extra permission.
 
 ### Radio
 
@@ -457,7 +448,7 @@ Under the track progress is a **control grid** (Shuffle / Order / Repeat / Geniu
 
 ![Playlist Browser](media/playlist.jpg)
 
-**Output tab.** `↑↓` select, `Enter` toggles AirPlay outputs on/off, `←→` adjusts per-speaker volume. Active speakers show volume bars. Toggling a speaker on while playing verifies the route; if it couldn't be verified, it toasts (e.g. `'X' selected but route NOT verified`) and names the fix: deselect and reselect it. Below the outputs: an **EQ block** (power row + preset picker; `Enter` toggles/expands, `e` toggles from anywhere) and a **Visualizer** row (`Enter` or `v` toggles Music's on-screen visuals). (The `music speaker`, `music eq`, and `music visualizer` CLIs drive these non-interactively.)
+**Output tab.** `↑↓` select, `Enter` toggles AirPlay outputs on/off, `←→` adjusts per-speaker volume. Active speakers show volume bars. Toggling a speaker on while playing verifies the route; if it couldn't be verified, it toasts (e.g. `'X' selected but route NOT verified`) and names the fix: deselect and reselect it. Below the outputs: an **EQ block** (power row + preset picker; `Enter` toggles/expands, `e` toggles from anywhere). (The `music speaker` and `music eq` CLIs drive these non-interactively.)
 
 ![Speaker Picker](media/speakers.png)
 

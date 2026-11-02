@@ -129,7 +129,6 @@ final class CLIInventoryTests: XCTestCase {
         Row(invocation: "radio add URL", command: "RadioAdd", letter: .exception, enforcement: .route(.radioAddURL), owner: "S8, P7 (the favourite stays local; its lookup is the P7 row)"),
         Row(invocation: "mix", command: "Mix", letter: .exception, enforcement: .route(.cliMix), owner: "—"),
         Row(invocation: "eq", command: "EQ", letter: .exception, enforcement: .route(.eq), owner: "—"),
-        Row(invocation: "visualizer", command: "Visualizer", letter: .exception, enforcement: .route(.visualizer), owner: "—"),
         Row(invocation: "auth setup", command: "AuthSetup", letter: .exception, enforcement: .route(.auth), owner: "—"),
         Row(invocation: "auth status", command: "AuthStatus", letter: .exception, enforcement: .route(.auth), owner: "—"),
         Row(invocation: "auth set-token", command: "AuthSetToken", letter: .exception, enforcement: .route(.auth), owner: "—"),
@@ -313,11 +312,12 @@ final class CLIInventoryTests: XCTestCase {
         // P9: recent and rotation moved M → S (D9 pass). No M row remains.
         // CLI shuffle/repeat: `shuffle` and `repeat` moved R → S (`slice.shuffle`,
         // `slice.repeat`).
+        // 2026-11-01: `visualizer` (an E row) removed with the feature (-1 row).
         XCTAssertEqual(count(.served), 26)
         XCTAssertEqual(count(.refused), 21)
         XCTAssertEqual(count(.migration), 0)
-        XCTAssertEqual(count(.exception), 19)
-        XCTAssertEqual(inventory.count, 66)
+        XCTAssertEqual(count(.exception), 18)
+        XCTAssertEqual(inventory.count, 65)
         XCTAssertEqual(migrationActions, [], "Part B retired every migration exception")
     }
 

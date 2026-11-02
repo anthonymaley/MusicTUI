@@ -1,10 +1,10 @@
 // Shared helper for the features that must drive Music through System Events
 // because their scripting writes are severed in current Music builds (EQ live
-// state, the visualizer, Genius Shuffle). Translates an Accessibility denial
+// state, Genius Shuffle). Translates an Accessibility denial
 // into an actionable message.
 //
-// EQControl and VisualizerControl used to keep their own inline copies of the
-// denial classifier. Folded in here 2026-08-31: three copies of one predicate
+// EQControl and VisualizerControl (removed 2026-11-01) used to keep their own
+// inline copies of the denial classifier. Folded in here 2026-08-31: three copies of one predicate
 // is three chances for one of them to learn a new error code the others never
 // hear about. Each still owns its own script shape and its own hint text,
 // which is the part that genuinely differs.

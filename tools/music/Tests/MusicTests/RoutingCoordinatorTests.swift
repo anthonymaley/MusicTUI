@@ -76,11 +76,11 @@ final class RoutingCoordinatorTests: XCTestCase {
     // MARK: 2
 
     /// The complete set of rows allowed to reach Music.app in Source Mode, named
-    /// rather than derived. Listing reads stay on AppleScript by rule 9; EQ, the
-    /// visualizer and playlist share are rows the spec leaves as they are.
+    /// rather than derived. Listing reads stay on AppleScript by rule 9; EQ and
+    /// playlist share are rows the spec leaves as they are.
     private let musicAppInSourceMode: Set<MusicTUIAction> = [
         .playlistListing, .searchLibrary, .libraryRetry,
-        .eq, .visualizer, .playlistShare,
+        .eq, .playlistShare,
     ]
 
     func testSourceModeReachesMusicAppOnlyForTheNamedRows() {

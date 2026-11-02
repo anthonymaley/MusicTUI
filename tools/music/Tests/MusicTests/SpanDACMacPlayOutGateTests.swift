@@ -287,10 +287,10 @@ final class SpanDACMacPlayOutGateTests: XCTestCase {
     /// branch each action ran. Nothing that acts on the sounding output or on
     /// its current track runs on MusicTUI: Quiet reaches the play-out, the
     /// mode cells, volume and the current-track verbs are refused before any
-    /// branch. `.eq` and `.visualizer` are Apple's Music app's own settings in
-    /// every column of the matrix, and run there.
+    /// branch. `.eq` is Apple's Music app's own setting in every column of the
+    /// matrix, and runs there.
     func testDuringAMacPlayOutNothingActingOnTheSoundingOutputRunsOnMusicTUI() {
-        let settingsOnly: Set<MusicTUIAction> = [.eq, .visualizer]
+        let settingsOnly: Set<MusicTUIAction> = [.eq]
         let forbidden = musicTUIOutputVerbs
             .union(MusicTUIAction.allCases.filter(\.readsMusicAppCurrentTrack))
             .subtracting(settingsOnly)

@@ -24,7 +24,6 @@ struct Music: ParsableCommand {
             Speaker.self,
             Vol.self,
             EQ.self,
-            Visualizer.self,
             // Auth
             Auth.self,
             // Catalog

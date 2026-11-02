@@ -168,9 +168,9 @@ final class ActionRoutingTests: XCTestCase {
         // Outward, but it reads the playlist's tracks over AppleScript
         // (PlaylistCommands.swift:1033).
         .playlistShare: .musicApp,
-        // Unaffected: EQ and the visualizer set Music.app state; auth writes
-        // MusicTUI's own config.
-        .eq: .musicApp, .visualizer: .musicApp, .auth: .unaffected,
+        // Unaffected: EQ sets Music.app state; auth writes MusicTUI's own
+        // config.
+        .eq: .musicApp, .auth: .unaffected,
         // Slice 3 D7: `music now`'s read. CLI-only; its TUI row is the
         // unreachable one, pinned so it is decided rather than defaulted.
         .nowStatus: .source,
@@ -299,7 +299,7 @@ final class ActionRoutingTests: XCTestCase {
     /// They run as shipped with Bridge selected and are not temporary.
     private let s8Named: Set<MusicTUIAction> = [
         .addToLibrary, .playlistWrite, .playlistShare, .cliMix,
-        .radioAddURL, .auth, .eq, .visualizer,
+        .radioAddURL, .auth, .eq,
     ]
 
     /// Section 2's M rows under Anthony's Q2 ruling [B]: the read-only lookups

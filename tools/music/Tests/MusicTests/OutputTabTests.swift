@@ -20,7 +20,8 @@ final class OutputTabTests: XCTestCase {
     }
 
     /// EQ and Visualizer leave the TUI with their polling. Anthony judged them
-    /// Music.app-specific and not useful for TUI use; the CLI verbs remain.
+    /// Music.app-specific and not useful for TUI use; `music eq` remains (the
+    /// visualizer was removed entirely on 2026-11-01).
     func testEQAndVisualizerAreGone() {
         let rows = outputDisplayRows(speakerCount: 1, mode: .musicApp, sourceReady: .ready)
         for row in rows {
@@ -707,7 +708,7 @@ final class SpanDACSwitchOutputTabTests: XCTestCase {
         let switched = Finished()
         s.selectModeFinishedForTest = { switched.bump() }
         put(s, on: .spandac(ipad))
-        XCTAssertEqual(s.footerHint, "\u{2191}\u{2193} Move   Enter Play here   f Forget   e EQ   v Visualizer")
+        XCTAssertEqual(s.footerHint, "\u{2191}\u{2193} Move   Enter Play here   f Forget   e EQ")
         _ = s.handle(.enter)
         XCTAssertTrue(wait { switched.count == 1 })
         XCTAssertEqual(modeOnDisk(), .networkSource(ipad))

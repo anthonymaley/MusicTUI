@@ -117,7 +117,7 @@ private func eqUIRun(_ backend: AppleScriptBackend, _ body: String) throws -> St
 
 // Read the window state ONLY if the Equalizer window is already open — never
 // opens it. Returns "CLOSED" otherwise. Used by the background poll, which must
-// not pop the window (it steals focus, e.g. from the visualizer).
+// not open the window at all, even off-screen.
 private func eqUIReadOnlyScript(_ body: String) -> String {
     """
     tell application "System Events"
@@ -203,21 +203,6 @@ func fetchEQBands(_ backend: AppleScriptBackend, name: String) throws -> [Double
             """)
     return raw.trimmingCharacters(in: .whitespacesAndNewlines)
         .components(separatedBy: ",").compactMap(Double.init)
-}
-
-/// Close the Equalizer window if it's open (its close button — the Window-menu
-/// item only opens/focuses, it doesn't toggle shut). Used before starting the
-/// visualizer so the EQ panel doesn't surface over it and steal focus.
-func closeEqualizerWindowIfOpen(_ backend: AppleScriptBackend) {
-    _ = try? runMusicUIScript(backend, """
-        tell application "System Events"
-            tell process "Music"
-                if exists window "Equalizer" then
-                    click button 1 of window "Equalizer"
-                end if
-            end tell
-        end tell
-        """)
 }
 
 func eqSetEnabled(_ backend: AppleScriptBackend, _ on: Bool) throws {

@@ -3,7 +3,7 @@ import XCTest
 
 /// The Accessibility-denial classifier existed in THREE copies: the shared
 /// `runMusicUIScript`, plus private duplicates in EQControl and
-/// VisualizerControl. Three copies of a predicate is three chances for one to
+/// VisualizerControl (since removed). Three copies of a predicate is three chances for one to
 /// learn a new error code the others never hear about. This pins the one
 /// surviving definition.
 final class AssistiveDenialTests: XCTestCase {
