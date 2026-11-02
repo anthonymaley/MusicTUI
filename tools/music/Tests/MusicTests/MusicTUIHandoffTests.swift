@@ -30,7 +30,11 @@ final class FakePersistentIDLibrary: PersistentIDTrackReading {
 /// Records every queue the hand-off asked to play; plays nothing.
 final class RecordingHandoffQueuePlayer: HandoffQueuePlaying {
     private(set) var queues: [AppQueue] = []
-    func play(_ queue: AppQueue) throws { queues.append(queue) }
+    private(set) var reports: [HandoffPlayReport] = []
+    func play(_ queue: AppQueue, report: HandoffPlayReport) throws {
+        queues.append(queue)
+        reports.append(report)
+    }
 }
 
 final class MusicTUIHandoffTests: XCTestCase {
@@ -136,6 +140,7 @@ final class MusicTUIHandoffTests: XCTestCase {
         XCTAssertEqual(player.queues.first?.currentIndex, 1)
         XCTAssertEqual(report?.skippedUnavailable, 1)
         XCTAssertEqual(report?.notice, "1 song isn't available to SpanDAC.")
+        XCTAssertEqual(player.reports, [report].compactMap { $0 }, "the player is told what was skipped")
 
         // Row 1 unavailable in a whole play: skipped too, the rest from the top.
         library.hits[gardenHex(6)] = [inLibrary(gardenHex(6), "Eleven", db: "706", at: 306)]
@@ -375,7 +380,7 @@ final class MusicTUIHandoffTests: XCTestCase {
             return lines.joined(separator: "\n") + "\n"
         })
         let store = AppQueueStore()
-        let player = AppQueueHandoffPlayer(store: store, playFirst: { queue in
+        let player = AppQueueHandoffPlayer(store: store, playFirst: { queue, _ in
             playQueueTrack(backend: AppleScriptBackend(), playlist: queue.playlistName,
                            position: queue.currentSourcePosition)
         })

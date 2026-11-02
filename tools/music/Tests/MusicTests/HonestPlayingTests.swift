@@ -540,7 +540,7 @@ final class HonestPlayingTests: XCTestCase {
         let player = AppQueueHandoffPlayer(store: store,
                                            playFirst: requestedHandoffPlayFirst(backend: FakeMusicInterpreter().backend,
                                                                                 appQueue: store))
-        XCTAssertNoThrow(try player.play(handoffQueue()), "unconfirmed is not a failed play")
+        XCTAssertNoThrow(try player.play(handoffQueue(), report: HandoffPlayReport()), "unconfirmed is not a failed play")
         // The scene posts its line once the hand-off returns, as today.
         status.post(LibraryProvenance.playingOnMusicTUI("Moon Safari"))
         rig.runJobs()
@@ -557,7 +557,7 @@ final class HonestPlayingTests: XCTestCase {
         let player = AppQueueHandoffPlayer(store: store,
                                            playFirst: requestedHandoffPlayFirst(backend: FakeMusicInterpreter().backend,
                                                                                 appQueue: store))
-        try player.play(handoffQueue())
+        try player.play(handoffQueue(), report: HandoffPlayReport())
         status.post(LibraryProvenance.playingOnMusicTUI("Moon Safari"))
         rig.runJobs()
         XCTAssertEqual(status.current()?.text, "Playing 'Moon Safari' on MusicTUI.")
@@ -572,7 +572,7 @@ final class HonestPlayingTests: XCTestCase {
         store.confirmer = rig.confirmer
         let player = AppQueueHandoffPlayer(store: store,
                                            playFirst: requestedHandoffPlayFirst(backend: fake.backend, appQueue: store))
-        XCTAssertThrowsError(try player.play(handoffQueue())) { error in
+        XCTAssertThrowsError(try player.play(handoffQueue(), report: HandoffPlayReport())) { error in
             XCTAssertEqual((error as? ActionError)?.message, "Couldn't play 'Moon Safari'.")
         }
         XCTAssertNil(store.read())
