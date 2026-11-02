@@ -38,24 +38,40 @@ func parseEQUIStatus(_ raw: String) -> (enabled: Bool, current: String?)? {
 /// laptop 2026-11-01), which Anthony's probe found invisible on screen.
 private let eqParkedPosition = "{-3000, -3000}"
 
+/// Said when the Equalizer did not open from the plain menu click. Opening it
+/// any other way (`reopen`) would bring Music's main window on screen.
+let eqNotOpenedMessage =
+    "Music's Equalizer didn't open without bringing Music forward. Open Music once (any window), then try again."
+
+/// Said when the Equalizer could not be parked off-screen: nothing is changed
+/// in a window that may be showing.
+let eqNotParkedMessage = "Couldn't move Music's Equalizer off-screen, so EQ was not changed."
+
+/// EQ refused because the Equalizer could not be kept off-screen. Its text is
+/// the whole message, for the CLI and the Output tab's toast alike.
+struct EQWindowRefusal: LocalizedError, Equatable {
+    let message: String
+    var errorDescription: String? { message }
+}
+
 /// Wraps a System Events body targeting the Equalizer window. Anthony's ruling
 /// (2026-11-01): EQ stays only if it works inside the terminal, so the window
 /// must never appear on screen or come forward.
 ///
-/// * Open: the Window-menu click alone, with no `reopen`. `launch` (not
-///   `activate`) keeps the terminal frontmost. Proven once on the laptop
-///   (2026-11-01 22:49, `.agents/probes/eq-offscreen.sh`): the window opened,
-///   parked, toggled and read with nothing on screen.
-/// * Fallback, only when the window did not appear: `reopen` (dock-click
-///   semantics, the old first step) then the click again, because a
+/// * Open: the Window-menu click alone. `launch` (not `activate`) keeps the
+///   terminal frontmost. Proven once on the laptop (2026-11-01 22:49,
+///   `.agents/probes/eq-offscreen.sh`): the window opened, parked, toggled and
+///   read with nothing on screen.
+/// * No fallback (Codex r1, 2026-11-02). The old first step, `reopen`,
+///   restores Music's main window, which breaks the ruling by construction,
+///   and closing windows afterwards could close the person's own. A
 ///   launched-but-never-activated Music with no windows has been seen to
-///   ignore menu clicks. `reopen` restores Music's main window, so every window
-///   it brought back, other than the Equalizer, is closed again by its close
-///   button, even when the second click fails too (the `tell window` below then
-///   reports the failure). Windows that were open before are left alone.
+///   ignore the click; then this raises `eqNotOpenedMessage` instead.
 /// * Park: always, whether this script opened the window or found it open, so
 ///   a window an older MusicTUI left on screen goes off-screen at the next EQ
-///   action. Best-effort: a failed move must not refuse the EQ change itself.
+///   action. A failed park raises `eqNotParkedMessage`, keeping the original
+///   error number (an Accessibility denial stays recognisable), and the body
+///   never runs against a window that may be showing.
 ///
 /// Variable names are long on purpose: short ones have collided with Music
 /// and System Events terminology here before (`st`, `active`, `left`).
@@ -72,33 +88,12 @@ private func eqUIScript(_ body: String) -> String {
                     if exists window "Equalizer" then exit repeat
                     delay 0.1
                 end repeat
-                if not (exists window "Equalizer") then
-                    set windowNamesBeforeReopen to name of every window
-                    tell application "Music" to reopen
-                    delay 0.5
-                    try
-                        click menu item "Equalizer" of menu "Window" of menu bar 1
-                    end try
-                    repeat 15 times
-                        if exists window "Equalizer" then exit repeat
-                        delay 0.1
-                    end repeat
-                    try
-                        repeat with reopenedWindowName in (name of every window)
-                            set reopenedWindowNameText to reopenedWindowName as text
-                            if reopenedWindowNameText is not "Equalizer" and windowNamesBeforeReopen does not contain reopenedWindowNameText then
-                                try
-                                    tell window reopenedWindowNameText
-                                        click (first button whose subrole is "AXCloseButton")
-                                    end tell
-                                end try
-                            end if
-                        end repeat
-                    end try
-                end if
+                if not (exists window "Equalizer") then error "\(escapeAppleScriptString(eqNotOpenedMessage))"
             end if
             try
                 set position of window "Equalizer" to \(eqParkedPosition)
+            on error parkErrorText number parkErrorNumber
+                error "\(escapeAppleScriptString(eqNotParkedMessage)) " & parkErrorText number parkErrorNumber
             end try
             tell window "Equalizer"
                 \(body)
@@ -109,10 +104,17 @@ private func eqUIScript(_ body: String) -> String {
 }
 
 /// Runs an Equalizer-window UI script. The denial translation lives in
-/// `runMusicUIScript`; this wrapper exists only to apply the Equalizer window's
-/// own script shape and hint.
+/// `runMusicUIScript` and wins: a denial is the Accessibility hint even when
+/// it arrived through the park's handler. The two refusals the script raises
+/// become `EQWindowRefusal`, so the person reads the sentence, not osascript.
 private func eqUIRun(_ backend: AppleScriptBackend, _ body: String) throws -> String {
-    try runMusicUIScript(backend, eqUIScript(body), hint: eqAccessibilityHint)
+    do {
+        return try runMusicUIScript(backend, eqUIScript(body), hint: eqAccessibilityHint)
+    } catch AppleScriptBackend.ScriptError.executionFailed(let failure) {
+        if failure.contains(eqNotOpenedMessage) { throw EQWindowRefusal(message: eqNotOpenedMessage) }
+        if failure.contains(eqNotParkedMessage) { throw EQWindowRefusal(message: eqNotParkedMessage) }
+        throw AppleScriptBackend.ScriptError.executionFailed(failure)
+    }
 }
 
 // Read the window state ONLY if the Equalizer window is already open — never
@@ -221,7 +223,11 @@ func eqSetCurrent(_ backend: AppleScriptBackend, name: String) throws {
             if exists menu item "\(esc)" of menu 1 then
                 click menu item "\(esc)" of menu 1
             else
-                key code 53
+                -- Close Music's own popup through its menu. Never a key
+                -- code: that goes to the frontmost app, the terminal.
+                try
+                    perform action "AXCancel" of menu 1
+                end try
                 error "preset '\(esc)' is not in the Equalizer menu"
             end if
         end tell

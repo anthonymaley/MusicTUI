@@ -2227,8 +2227,18 @@ final class SpeakersScene: Scene {
         else { eqState?.enabled = on }
         lastMutation = fetchNow()
         actions.run("EQ") {
-            try require((try? eqSetEnabled(self.backend, on)) != nil,
-                        "Couldn't turn EQ \(on ? "on" : "off").")
+            try Self.eqStep("Couldn't turn EQ \(on ? "on" : "off").") { try eqSetEnabled(self.backend, on) }
+        }
+    }
+
+    /// One Equalizer-window step of an EQ action. An `EQWindowRefusal` is
+    /// toasted as its own sentence (what to do when the Equalizer could not be
+    /// kept off-screen); any other failure keeps the step's short message.
+    private static func eqStep(_ fallback: String, _ step: () throws -> Void) throws {
+        do { try step() } catch let refusal as EQWindowRefusal {
+            throw ActionError(message: refusal.message)
+        } catch {
+            throw ActionError(message: fallback)
         }
     }
 
@@ -2247,10 +2257,8 @@ final class SpeakersScene: Scene {
                 try require((try? eqEnsurePreset(self.backend, preset: venue)) != nil,
                             "Couldn't create preset '\(target)'.")
             }
-            try require((try? eqSetCurrent(self.backend, name: target)) != nil,
-                        "Couldn't select preset '\(target)'.")
-            try require((try? eqSetEnabled(self.backend, true)) != nil,
-                        "Couldn't enable EQ.")
+            try Self.eqStep("Couldn't select preset '\(target)'.") { try eqSetCurrent(self.backend, name: target) }
+            try Self.eqStep("Couldn't enable EQ.") { try eqSetEnabled(self.backend, true) }
         }
     }
 }
