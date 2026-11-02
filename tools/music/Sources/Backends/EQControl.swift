@@ -8,8 +8,8 @@
 //    is on — verified live 2026-06-12. The Equalizer window's own
 //    controls are the only working interface, so live state goes through
 //    System Events UI scripting. That requires Accessibility permission
-//    for the host terminal, and opens the Equalizer window (leaving it
-//    open) on first use.
+//    for the host terminal, and opens the Equalizer window on first use,
+//    parked off-screen (see eqUIScript) and left open there.
 //
 // Free-function style mirrors fetchSpeakerDevices() in SpeakerCommands.swift.
 import Foundation
@@ -33,24 +33,73 @@ func parseEQUIStatus(_ raw: String) -> (enabled: Bool, current: String?)? {
     return (fields[0] == "1", fields[1].isEmpty ? nil : fields[1])
 }
 
-/// Wraps a System Events body targeting the Equalizer window, opening the
-/// window via Music's Window menu when it isn't showing. `launch` (not
-/// `activate`) avoids stealing focus from the user's terminal.
+/// Where the Equalizer window is parked so it never shows: far off the top
+/// left. macOS clamps it to a sliver it still allows (measured -400,33 on the
+/// laptop 2026-11-01), which Anthony's probe found invisible on screen.
+private let eqParkedPosition = "{-3000, -3000}"
+
+/// Wraps a System Events body targeting the Equalizer window. Anthony's ruling
+/// (2026-11-01): EQ stays only if it works inside the terminal, so the window
+/// must never appear on screen or come forward.
+///
+/// * Open: the Window-menu click alone, with no `reopen`. `launch` (not
+///   `activate`) keeps the terminal frontmost. Proven once on the laptop
+///   (2026-11-01 22:49, `.agents/probes/eq-offscreen.sh`): the window opened,
+///   parked, toggled and read with nothing on screen.
+/// * Fallback, only when the window did not appear: `reopen` (dock-click
+///   semantics, the old first step) then the click again, because a
+///   launched-but-never-activated Music with no windows has been seen to
+///   ignore menu clicks. `reopen` restores Music's main window, so every window
+///   it brought back, other than the Equalizer, is closed again by its close
+///   button, even when the second click fails too (the `tell window` below then
+///   reports the failure). Windows that were open before are left alone.
+/// * Park: always, whether this script opened the window or found it open, so
+///   a window an older MusicTUI left on screen goes off-screen at the next EQ
+///   action. Best-effort: a failed move must not refuse the EQ change itself.
+///
+/// Variable names are long on purpose: short ones have collided with Music
+/// and System Events terminology here before (`st`, `active`, `left`).
 private func eqUIScript(_ body: String) -> String {
     """
     tell application "Music" to launch
     tell application "System Events"
         tell process "Music"
             if not (exists window "Equalizer") then
-                -- A `launch`ed-but-never-activated Music sits windowless and
-                -- ignores menu clicks; `reopen` (dock-click semantics) restores
-                -- its windows without stealing focus. Only done when we're
-                -- about to open the Equalizer anyway.
-                tell application "Music" to reopen
-                delay 0.5
-                click menu item "Equalizer" of menu "Window" of menu bar 1
-                delay 0.7
+                try
+                    click menu item "Equalizer" of menu "Window" of menu bar 1
+                end try
+                repeat 15 times
+                    if exists window "Equalizer" then exit repeat
+                    delay 0.1
+                end repeat
+                if not (exists window "Equalizer") then
+                    set windowNamesBeforeReopen to name of every window
+                    tell application "Music" to reopen
+                    delay 0.5
+                    try
+                        click menu item "Equalizer" of menu "Window" of menu bar 1
+                    end try
+                    repeat 15 times
+                        if exists window "Equalizer" then exit repeat
+                        delay 0.1
+                    end repeat
+                    try
+                        repeat with reopenedWindowName in (name of every window)
+                            set reopenedWindowNameText to reopenedWindowName as text
+                            if reopenedWindowNameText is not "Equalizer" and windowNamesBeforeReopen does not contain reopenedWindowNameText then
+                                try
+                                    tell window reopenedWindowNameText
+                                        click (first button whose subrole is "AXCloseButton")
+                                    end tell
+                                end try
+                            end if
+                        end repeat
+                    end try
+                end if
             end if
+            try
+                set position of window "Equalizer" to \(eqParkedPosition)
+            end try
             tell window "Equalizer"
                 \(body)
             end tell
