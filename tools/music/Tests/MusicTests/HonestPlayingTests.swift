@@ -771,4 +771,54 @@ final class HonestPlayingTests: XCTestCase {
         XCTAssertEqual(status.current()?.text, "Playing 3 of 5 \u{2014} the rest aren't available yet.",
                        "the late confirmation took the availability notice away with the warning")
     }
+
+    // MARK: - The confirmation reads compile against Music (live, 2026-11-02)
+
+    /// Every variable a confirmation read declares, from its `set X to` lines.
+    private func declaredVariables(_ script: String) -> Set<String> {
+        let pattern = try! NSRegularExpression(pattern: #"(?m)^\s*set\s+([A-Za-z_][A-Za-z0-9_]*)\s+to\b"#)
+        let range = NSRange(script.startIndex..., in: script)
+        return Set(pattern.matches(in: script, range: range).compactMap {
+            Range($0.range(at: 1), in: script).map { String(script[$0]) }
+        })
+    }
+
+    func testTheConfirmationReadsDeclareOnlyTheAllowListedNames() {
+        // `st` is a Music term: the read failed to compile (-2741) on every
+        // play, live, while every fake-backend test passed. So do not test the
+        // script's effect here; pin its names. There is no osacompile or other
+        // compile check in this repo, and tests never run osascript.
+        let scripts = [playerIdentityReadScript,
+                       playerIdentityReadScript(for: .position(playlist: "Mix", index: 3)),
+                       playerIdentityReadScript(for: .persistentID(new))]
+        let allowed = Set(confirmationReadVariables)
+        let knownBad: Set<String> = ["st", "pid", "want", "fs", "active", "left", "state", "name", "index"]
+        for script in scripts {
+            let declared = declaredVariables(script)
+            XCTAssertFalse(declared.isEmpty)
+            XCTAssertTrue(declared.isSubset(of: allowed), "undeclared names: \(declared.subtracting(allowed))")
+            XCTAssertTrue(declared.isDisjoint(with: knownBad), "a known Music/AppleScript term: \(declared.intersection(knownBad))")
+            for name in declared {
+                XCTAssertGreaterThanOrEqual(name.count, 7, "\(name): short names collide with Music's terms")
+            }
+        }
+    }
+
+    func testThePositionConfirmationReadIsTheBodyVerifiedLive() {
+        // The body the controller ran against Music on 2026-11-02, which
+        // answered `paused<US>2034218F875BE907<US>2034218F875BE907`.
+        XCTAssertEqual(playerIdentityReadScript(for: .position(playlist: "P", index: 5)), [
+            "set sepChar to (ASCII character 31)",
+            "set playerStateText to player state as text",
+            "set currentPID to \"\"",
+            "try",
+            "    set currentPID to persistent ID of current track",
+            "end try",
+            "set wantedPID to \"\"",
+            "try",
+            "    set wantedPID to persistent ID of track 5 of playlist \"P\"",
+            "end try",
+            "return playerStateText & sepChar & currentPID & sepChar & wantedPID",
+        ].joined(separator: "\n"))
+    }
 }

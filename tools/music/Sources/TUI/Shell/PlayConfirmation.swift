@@ -54,34 +54,49 @@ enum RequestedTrack: Equatable {
 /// The confirmation read: state and identity in one script. The identity read
 /// is wrapped, so a player with no current track (or the macOS 26 `-1728` on a
 /// streamed track) still answers with its state.
-let playerIdentityReadScript = """
-    set fs to (ASCII character 31)
-    set st to player state as text
-    set pid to ""
-    try
-        set pid to persistent ID of current track
-    end try
-    return st & fs & pid
-    """
+///
+/// **Variable names are long on purpose.** Music resolves an identifier
+/// against its own dictionary before AppleScript's, so a short name can be a
+/// term: `st` made every read fail to compile (`-2741`, found live
+/// 2026-11-02), as `active` and `left` did on 2026-10-03. Fake-backend tests
+/// cannot see this; `confirmationReadVariables` pins the names.
+let playerIdentityReadScript = confirmationReadScript(wanted: nil)
 
 /// The confirmation read for `requested`: the base read, plus, for a position
 /// play, the requested track's identity, wrapped the same way.
 func playerIdentityReadScript(for requested: RequestedTrack) -> String {
     guard case .position(let playlist, let index) = requested else { return playerIdentityReadScript }
-    let esc = escapeAppleScriptString(playlist)
-    return """
-    set fs to (ASCII character 31)
-    set st to player state as text
-    set pid to ""
-    try
-        set pid to persistent ID of current track
-    end try
-    set want to ""
-    try
-        set want to persistent ID of track \(index) of playlist "\(esc)"
-    end try
-    return st & fs & pid & fs & want
-    """
+    return confirmationReadScript(wanted: (playlist, index))
+}
+
+/// The only variables the confirmation reads declare (the guard test checks
+/// every `set X to` against this list).
+let confirmationReadVariables = ["sepChar", "playerStateText", "currentPID", "wantedPID"]
+
+/// Both confirmation reads, one body. Verified live by the controller
+/// (2026-11-02): `paused<US>2034218F875BE907<US>2034218F875BE907`.
+private func confirmationReadScript(wanted: (playlist: String, index: Int)?) -> String {
+    var lines = [
+        "set sepChar to (ASCII character 31)",
+        "set playerStateText to player state as text",
+        "set currentPID to \"\"",
+        "try",
+        "    set currentPID to persistent ID of current track",
+        "end try",
+    ]
+    if let wanted {
+        let esc = escapeAppleScriptString(wanted.playlist)
+        lines += [
+            "set wantedPID to \"\"",
+            "try",
+            "    set wantedPID to persistent ID of track \(wanted.index) of playlist \"\(esc)\"",
+            "end try",
+            "return playerStateText & sepChar & currentPID & sepChar & wantedPID",
+        ]
+    } else {
+        lines.append("return playerStateText & sepChar & currentPID")
+    }
+    return lines.joined(separator: "\n")
 }
 
 /// A confirmation read's answer, or nil when it is not one. Pure.
