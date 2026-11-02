@@ -58,7 +58,11 @@ final class AppQueueStore {
     private var queue: AppQueue?
     private var _confirmer: PlayConfirmer?
 
-    /// RED-PHASE STUB: stored, never consulted yet.
+    /// The shell's play confirmer (`PlayConfirmation.swift`): person-started
+    /// plays of this queue are confirmed through it, and the poller holds its
+    /// auto-advance while one is unconfirmed. Nil (tests, the CLI): plays are
+    /// not confirmed and nothing is held, exactly as before. Set once at
+    /// startup.
     var confirmer: PlayConfirmer? {
         get { lock.lock(); defer { lock.unlock() }; return _confirmer }
         set { lock.lock(); _confirmer = newValue; lock.unlock() }
@@ -112,16 +116,65 @@ func playQueueTrack(backend: AppleScriptBackend, playlist: String, position: Int
     return (try? backend.runMusicBlocking("play track \(position) of playlist \"\(esc)\"")) != nil
 }
 
-/// RED-PHASE STUB: today's play, unconfirmed.
+/// A position-addressed play that also answers the persistent ID of the track
+/// it asked for, in the same script, so the identity a confirmation compares
+/// against is never a second, racy read. The identity read is wrapped: when
+/// it fails the play still stands, and answers empty (which cannot confirm).
+func identifyingPositionPlayScript(playlist: String, position: Int) -> String {
+    let esc = escapeAppleScriptString(playlist)
+    return """
+    play track \(position) of playlist "\(esc)"
+    try
+        return persistent ID of track \(position) of playlist "\(esc)"
+    end try
+    return ""
+    """
+}
+
+/// `playQueueTrack` for a play the PERSON started (honest "Playing",
+/// 2026-11-01): the same play, and on a clean exit the requested identity is
+/// handed to `appQueue.confirmer`, which reads Music off this thread and
+/// replaces the footer line with `playNotStartedWarning(title)` if Music has
+/// not started it. True means the script exited cleanly, exactly as before;
+/// an unconfirmed play is still true, so no caller rolls back or clears a
+/// queue Music accepted. False is a script error, and holds nothing.
+///
+/// With no confirmer it IS `playQueueTrack`, script for script.
 @discardableResult
 func playRequestedQueueTrack(backend: AppleScriptBackend, appQueue: AppQueueStore, playlist: String,
                              position: Int, title: String) -> Bool {
-    playQueueTrack(backend: backend, playlist: playlist, position: position)
+    guard let confirmer = appQueue.confirmer else {
+        return playQueueTrack(backend: backend, playlist: playlist, position: position)
+    }
+    let ticket = confirmer.request()
+    let expected: String?
+    if playlist == persistentIDQueueSource {
+        let pid = persistentIDOfQueueEntry(position)
+        guard (try? backend.runMusicBlocking(persistentIDPlayScript(pid))) != nil else {
+            confirmer.abandon(ticket)
+            return false
+        }
+        expected = pid
+    } else {
+        guard let out = try? backend.runMusicBlocking(identifyingPositionPlayScript(playlist: playlist,
+                                                                                     position: position)) else {
+            confirmer.abandon(ticket)
+            return false
+        }
+        expected = out.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+    confirmer.confirm(ticket, expected: expected, title: title)
+    return true
 }
 
-/// RED-PHASE STUB: today's hand-off first play, unconfirmed.
+/// The SpanDAC library hand-off's first play (`AppQueueHandoffPlayer`): the
+/// queue's current entry, confirmed under the queue's own title, the one its
+/// "Playing '...' on MusicTUI." line names.
 func requestedHandoffPlayFirst(backend: AppleScriptBackend, appQueue: AppQueueStore) -> (AppQueue) -> Bool {
-    { queue in playQueueTrack(backend: backend, playlist: queue.playlistName, position: queue.currentSourcePosition) }
+    { queue in
+        playRequestedQueueTrack(backend: backend, appQueue: appQueue, playlist: queue.playlistName,
+                                position: queue.currentSourcePosition, title: queue.contextLabel)
+    }
 }
 
 // MARK: - Entries addressed by persistent ID (C-HANDOFF)

@@ -2752,7 +2752,8 @@ final class LibraryScene: Scene {
                         let ordered = shuffle ? res.tracks.shuffled() : res.tracks
                         let idx = shuffle ? 1 : min(max(1, startAt), ordered.count)
                         store.set(AppQueue(playlistName: "Library", tracks: ordered, currentIndex: idx, displayName: title))
-                        try require(playQueueTrack(backend: backend, playlist: "Library", position: ordered[idx - 1].index),
+                        try require(playRequestedQueueTrack(backend: backend, appQueue: store, playlist: "Library",
+                                                            position: ordered[idx - 1].index, title: title),
                                     "Couldn't play '\(title)'.")
                         // Pre-release albums surface every planned track but only stream some;
                         // say so rather than silently playing a partial album.
@@ -2881,7 +2882,8 @@ final class LibraryScene: Scene {
                 musicApp: { path in
                     guard path == .shipped else { throw ActionError(message: pickASpanDACOutput) }
                     store.set(AppQueue(playlistName: "Library", tracks: one, currentIndex: 1, displayName: title))
-                    try require(playQueueTrack(backend: backend, playlist: "Library", position: one[0].index),
+                    try require(playRequestedQueueTrack(backend: backend, appQueue: store, playlist: "Library",
+                                                        position: one[0].index, title: title),
                                 "Couldn't play '\(title)'.")
                 },
                 source: { _ in throw ActionError(message: LibraryProvenance.bridgeSelectedMusicAppList) },
@@ -2922,7 +2924,8 @@ final class LibraryScene: Scene {
                         guard path == .shipped else { throw ActionError(message: pickASpanDACOutput) }
                         let ordered = shuffle ? res.tracks.shuffled() : res.tracks
                         store.set(AppQueue(playlistName: "Library", tracks: ordered, currentIndex: 1, displayName: name))
-                        try require(playQueueTrack(backend: backend, playlist: "Library", position: ordered[0].index),
+                        try require(playRequestedQueueTrack(backend: backend, appQueue: store, playlist: "Library",
+                                                            position: ordered[0].index, title: name),
                                     "Couldn't play '\(name)'.")
                         if res.matched > ordered.count {
                             status.post("Playing \(ordered.count) of \(res.matched) — the rest aren't available yet.",

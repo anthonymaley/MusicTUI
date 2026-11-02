@@ -34,9 +34,15 @@ func shellFooterGlobals(mode: PlaybackMode) -> String {
 /// from the wrong baseline. (`playQueueTrack` is false only on an osascript
 /// ERROR, i.e. transient; rolling back keeps the position honest and the next
 /// press retries.)
+///
+/// A step Music accepts but does not start keeps the step and says so
+/// (`playRequestedQueueTrack`, under the stepped-to track's name); only a
+/// script error rolls back.
 func musicTUISkip(_ step: Int, backend: AppleScriptBackend, appQueue: AppQueueStore) throws {
     if let (pl, pos) = appQueue.step(step) {
-        guard playQueueTrack(backend: backend, playlist: pl, position: pos) else {
+        let title = appQueue.read().map { $0.tracks[$0.currentIndex - 1].name } ?? ""
+        guard playRequestedQueueTrack(backend: backend, appQueue: appQueue, playlist: pl, position: pos,
+                                      title: title) else {
             _ = appQueue.step(-step)
             throw ActionError(message: "Couldn't play that track.")
         }
@@ -217,7 +223,20 @@ func runShell() {
         let stamp = routing.stamp
         return StatusSwitchStamp(epoch: stamp.epoch, dataEpoch: stamp.dataEpoch)
     })
-    let actions = ActionRunner(status: status)
+    // Honest "Playing" (2026-11-01): a person-started queue play is confirmed
+    // against Music's state and current identity after its script returns,
+    // off the action queue; one Music accepted but did not start says so.
+    // Fenced by both routing epochs and the routing play serial; the action
+    // queue supersedes it on every pause, skip, play or switch.
+    let playConfirmer = PlayConfirmer(
+        read: { readPlayerIdentity(backend: backend) },
+        post: { status.post($0, error: true, untilStateChange: true) },
+        fence: {
+            let stamp = routing.stamp
+            return PlayConfirmFence(epoch: stamp.epoch, dataEpoch: stamp.dataEpoch, playSerial: routing.playSerial)
+        })
+    appQueue.confirmer = playConfirmer
+    let actions = ActionRunner(status: status, onSuperseding: { playConfirmer.invalidate() })
     let volumeDelta = DeltaAccumulator()
 
     let poller = PlaybackPoller(store: store, backend: backend, appQueue: appQueue, queueStore: queueStore,

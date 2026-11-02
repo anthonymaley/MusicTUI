@@ -1173,7 +1173,9 @@ final class NowPlayingScene: Scene {
                     musicApp: {
                         // Jump within the app-owned queue by the row's play-order position.
                         if let (pl, pos) = store.jump(to: row.index) {
-                            try require(playQueueTrack(backend: backend, playlist: pl, position: pos), "Couldn't play that track.")
+                            try require(playRequestedQueueTrack(backend: backend, appQueue: store, playlist: pl,
+                                                                position: pos, title: row.name),
+                                        "Couldn't play that track.")
                             return
                         }
                         // No app queue: a whole-playlist play (native queue) lands here. Playing
@@ -1189,7 +1191,9 @@ final class NowPlayingScene: Scene {
                                trackKey(title: tracks[row.index - 1].name, artist: tracks[row.index - 1].artist)
                                    == trackKey(title: row.name, artist: row.artist) {
                                 store.set(AppQueue(playlistName: context, tracks: tracks, currentIndex: row.index))
-                                try require(playQueueTrack(backend: backend, playlist: context, position: row.index), "Couldn't play that track.")
+                                try require(playRequestedQueueTrack(backend: backend, appQueue: store, playlist: context,
+                                                                    position: row.index, title: row.name),
+                                            "Couldn't play that track.")
                                 return
                             }
                         }

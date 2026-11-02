@@ -144,9 +144,16 @@ func require(_ ok: Bool, _ message: String) throws {
 final class ActionRunner {
     private let queue = DispatchQueue(label: "music.shell.actions")
     private let status: StatusStore
+    private let onSuperseding: (() -> Void)?
 
-    /// RED-PHASE STUB: accepted, never called yet.
-    init(status: StatusStore, onSuperseding: (() -> Void)? = nil) { self.status = status }
+    /// `onSuperseding` runs ON the action queue, just before the body of any
+    /// action in `supersedingLabels`: the shell's play confirmer is told that
+    /// a pause, skip, play or switch came after every request queued before
+    /// it, in press order.
+    init(status: StatusStore, onSuperseding: (() -> Void)? = nil) {
+        self.status = status
+        self.onSuperseding = onSuperseding
+    }
 
     /// Blocks until every action queued so far has run. Tests only.
     func waitUntilIdle() { queue.sync {} }
@@ -161,10 +168,16 @@ final class ActionRunner {
     /// error (volume, seek, favorite, EQ...) is a transient status.
     static let wontPlayLabels: Set<String> = startingLabels.union(["Output", "SpanDAC"])
 
+    /// Actions after which an earlier play's late "hasn't started" result
+    /// must not speak: anything that starts, pauses, skips or switches.
+    static let supersedingLabels: Set<String> = wontPlayLabels.union(["Pause"])
+
     func run(_ label: String, _ body: @escaping () throws -> Void) {
         if Self.startingLabels.contains(label) { status.stateChanged() }
         let lasting = Self.wontPlayLabels.contains(label)
+        let supersede = Self.supersedingLabels.contains(label) ? onSuperseding : nil
         queue.async {
+            supersede?()
             do { try body() } catch let e as ActionError {
                 self.status.post(e.message, error: true, untilStateChange: lasting)
             } catch {

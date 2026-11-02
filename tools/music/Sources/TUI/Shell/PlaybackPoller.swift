@@ -451,6 +451,14 @@ final class PlaybackPoller {
         switch pollNowPlaying(backend: backend) {
         case .active(let np):
             stoppedPolls = 0
+            // A person-started play still unconfirmed: look whether Music's
+            // current track is now the requested one. Reads nothing (no
+            // extra AppleScript) unless a hold is on, and only on a tick that
+            // could show it: a new track, or one that is playing. A player
+            // left paused on the previous track costs no read per tick.
+            if np.track != lastTrack || np.state == "playing" {
+                appQueue.confirmer?.observeCurrentTrack()
+            }
             let priorPos = lastPosition          // last-seen position of the PREVIOUS track
             let priorDur = lastDuration
             lastPosition = np.position
@@ -571,10 +579,17 @@ final class PlaybackPoller {
             stoppedPolls += 1
             // Auto-advance only when the previous track reached its natural end.
             let naturalEnd = lastDuration > 0 && lastPosition >= max(0, lastDuration - 4)
+            // A person-started play Music has not been seen to start: the
+            // natural end is the PREVIOUS track's, so the new queue is neither
+            // advanced nor ended off it. Held until the requested track is seen
+            // or a later request replaces it (honest "Playing", 2026-11-01).
+            let heldForRequest = appQueue.confirmer?.holdsAutoAdvance ?? false
             // App-owned queue: the single track stopped at its end (Autoplay off) —
             // play the next track ourselves. step() returns nil at the queue's end,
             // where we clear the queue and let playback stay stopped.
-            if naturalEnd, appQueue.isActive {
+            if naturalEnd, appQueue.isActive, heldForRequest {
+                // Nothing: keep the queue where the person put it.
+            } else if naturalEnd, appQueue.isActive {
                 if let (pl, pos) = appQueue.step(1) {
                     // step(1) commits the index BEFORE the play attempt. If the
                     // play errors and the result is dropped, naturalEnd stays true

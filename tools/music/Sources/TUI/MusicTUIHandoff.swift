@@ -383,9 +383,11 @@ func liveMusicTUIHandoff(backend: AppleScriptBackend, appQueue: AppQueueStore,
         library: AppleScriptPersistentIDReader(run: { script in
             try backend.runMusicBlocking(script, timeout: 60)
         }),
-        player: AppQueueHandoffPlayer(store: appQueue, playFirst: { queue in
-            playQueueTrack(backend: backend, playlist: queue.playlistName, position: queue.currentSourcePosition)
-        }),
+        // A person-started play: confirmed after a clean exit, and an
+        // unconfirmed one is still `true` here, so the queue is never cleared
+        // for a play Music accepted (honest "Playing", 2026-11-01).
+        player: AppQueueHandoffPlayer(store: appQueue,
+                                      playFirst: requestedHandoffPlayFirst(backend: backend, appQueue: appQueue)),
         selfCheck: .shared,
         currentStamp: { routing.musicTUISpanDACStamp })
 }

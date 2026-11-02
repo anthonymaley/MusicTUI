@@ -610,6 +610,25 @@ final class HonestPlayingTests: XCTestCase {
         XCTAssertEqual(store.read()?.currentIndex, 2)
     }
 
+    func testAPlayerLeftPausedOnThePreviousTrackCostsNoReadPerTick() {
+        let fake = FakeMusicInterpreter()
+        let rig = ConfirmRig([reading("paused", old)])
+        let store = AppQueueStore()
+        store.confirmer = rig.confirmer
+        let p = poller(fake, store)
+        fake.poll(pollLine("Old", duration: 200, position: 50, state: "paused"))
+        p.tick()
+        store.set(queue(3, at: 1))
+        let t = rig.confirmer.request()
+        rig.confirmer.confirm(t, expected: new, title: "T1")
+        rig.runJobs()
+        let afterWindow = rig.reads
+        p.tick()
+        p.tick()
+        XCTAssertEqual(rig.reads, afterWindow, "the same paused track read again on every tick")
+        XCTAssertTrue(rig.confirmer.holdsAutoAdvance, "still held")
+    }
+
     func testThePollerReadsNothingExtraWhenNothingIsHeld() {
         let fake = FakeMusicInterpreter()
         let rig = ConfirmRig([reading("playing", new)])

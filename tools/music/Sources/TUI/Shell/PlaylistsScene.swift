@@ -1839,7 +1839,9 @@ final class PlaylistsScene: Scene {
                 musicApp: { path in
                     guard path == .shipped else { throw ActionError(message: pickASpanDACOutput) }
                     store.set(AppQueue(playlistName: name, tracks: tracks, currentIndex: pos))
-                    try require(playQueueTrack(backend: backend, playlist: name, position: pos), "Couldn't play '\(name)'.")
+                    try require(playRequestedQueueTrack(backend: backend, appQueue: store, playlist: name,
+                                                        position: pos, title: tracks[pos - 1].name),
+                                "Couldn't play '\(name)'.")
                 },
                 source: { _ in throw ActionError(message: LibraryProvenance.bridgeSelectedMusicAppList) },
                 unaffected: {})
