@@ -219,8 +219,8 @@ Real Music.app EQ control. Venue presets are created on first selection and
 persist as real presets (visible in Music's own EQ window). Live EQ control
 drives the Equalizer window via UI scripting (Music's scripting API for live
 EQ state is broken): it needs Accessibility permission for the terminal and
-opens Music's Equalizer and moves it off-screen, so the terminal keeps
-focus; with a second display attached it may show at that screen's edge. On a permission error, relay the command's hint:
+opens Music's Equalizer and moves it out of view without bringing Music
+forward; the window may appear briefly or on another display. On a permission error, relay the command's hint:
 it names the exact System Settings toggle.
 
 | Request | Command |

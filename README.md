@@ -203,7 +203,7 @@ Adding a speaker, `music speaker set`, or `music speaker only` verify the route 
 
 Venue pack (Nightclub, Dungeon, Open Air, Concert Hall, Jazz Club, Stadium, Cathedral, Late Night): each is created as a Music.app preset on first selection and visible in Music's own EQ window. Selecting any preset auto-enables EQ. Unknown names print near-matches.
 
-> **Equalizer requires Accessibility permission.** Music's scripting interface for live EQ state is broken in current macOS builds, so `music eq` drives the real Equalizer window instead, which it opens and moves off-screen, so your terminal keeps focus; with a second display attached it may show at that screen's edge. Grant your terminal app access under System Settings → Privacy & Security → Accessibility. The command tells you if it's missing. Preset creation and deletion need no extra permission.
+> **Equalizer requires Accessibility permission.** Music's scripting interface for live EQ state is broken in current macOS builds, so `music eq` drives the real Equalizer window instead, which it opens and moves out of view without bringing Music forward; the window may appear briefly or on another display. Grant your terminal app access under System Settings → Privacy & Security → Accessibility. The command tells you if it's missing. Preset creation and deletion need no extra permission.
 
 ### Radio
 
