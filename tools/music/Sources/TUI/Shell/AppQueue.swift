@@ -56,6 +56,13 @@ struct AdvanceRetryGate {
 final class AppQueueStore {
     private let lock = NSLock()
     private var queue: AppQueue?
+    private var _confirmer: PlayConfirmer?
+
+    /// RED-PHASE STUB: stored, never consulted yet.
+    var confirmer: PlayConfirmer? {
+        get { lock.lock(); defer { lock.unlock() }; return _confirmer }
+        set { lock.lock(); _confirmer = newValue; lock.unlock() }
+    }
 
     func set(_ value: AppQueue?) { lock.lock(); queue = value; lock.unlock() }
     func clear() { set(nil) }
@@ -103,6 +110,18 @@ func playQueueTrack(backend: AppleScriptBackend, playlist: String, position: Int
     }
     let esc = escapeAppleScriptString(playlist)
     return (try? backend.runMusicBlocking("play track \(position) of playlist \"\(esc)\"")) != nil
+}
+
+/// RED-PHASE STUB: today's play, unconfirmed.
+@discardableResult
+func playRequestedQueueTrack(backend: AppleScriptBackend, appQueue: AppQueueStore, playlist: String,
+                             position: Int, title: String) -> Bool {
+    playQueueTrack(backend: backend, playlist: playlist, position: position)
+}
+
+/// RED-PHASE STUB: today's hand-off first play, unconfirmed.
+func requestedHandoffPlayFirst(backend: AppleScriptBackend, appQueue: AppQueueStore) -> (AppQueue) -> Bool {
+    { queue in playQueueTrack(backend: backend, playlist: queue.playlistName, position: queue.currentSourcePosition) }
 }
 
 // MARK: - Entries addressed by persistent ID (C-HANDOFF)

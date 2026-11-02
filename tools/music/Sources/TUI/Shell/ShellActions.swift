@@ -145,7 +145,8 @@ final class ActionRunner {
     private let queue = DispatchQueue(label: "music.shell.actions")
     private let status: StatusStore
 
-    init(status: StatusStore) { self.status = status }
+    /// RED-PHASE STUB: accepted, never called yet.
+    init(status: StatusStore, onSuperseding: (() -> Void)? = nil) { self.status = status }
 
     /// Blocks until every action queued so far has run. Tests only.
     func waitUntilIdle() { queue.sync {} }
