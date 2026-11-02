@@ -2233,10 +2233,16 @@ final class SpeakersScene: Scene {
 
     /// One Equalizer-window step of an EQ action. An `EQWindowRefusal` is
     /// toasted as its own sentence (what to do when the Equalizer could not be
-    /// kept off-screen); any other failure keeps the step's short message.
+    /// kept off-screen), and an Accessibility denial as the hint
+    /// `runMusicUIScript` translated it into (Codex r3: the toast used to say
+    /// only "Couldn't turn EQ on."). Any other failure keeps the step's short
+    /// message.
     private static func eqStep(_ fallback: String, _ step: () throws -> Void) throws {
         do { try step() } catch let refusal as EQWindowRefusal {
             throw ActionError(message: refusal.message)
+        } catch AppleScriptBackend.ScriptError.executionFailed(let failure)
+                    where failure == eqAccessibilityHint || failure == musicUIAccessibilityHint {
+            throw ActionError(message: failure)
         } catch {
             throw ActionError(message: fallback)
         }
