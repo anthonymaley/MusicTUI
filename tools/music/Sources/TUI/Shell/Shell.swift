@@ -39,10 +39,10 @@ func shellFooterGlobals(mode: PlaybackMode) -> String {
 /// (`playRequestedQueueTrack`, under the stepped-to track's name); only a
 /// script error rolls back.
 func musicTUISkip(_ step: Int, backend: AppleScriptBackend, appQueue: AppQueueStore) throws {
-    if let (pl, pos, ticket) = appQueue.stepRequested(step) {
+    if let (pl, pos) = appQueue.step(step) {
         let title = appQueue.read().map { $0.tracks[$0.currentIndex - 1].name } ?? ""
-        guard playRequestedQueueTrack(backend: backend, appQueue: appQueue, ticket: ticket, playlist: pl,
-                                      position: pos, title: title) else {
+        guard playRequestedQueueTrack(backend: backend, appQueue: appQueue, playlist: pl, position: pos,
+                                      title: title) else {
             _ = appQueue.step(-step)
             throw ActionError(message: "Couldn't play that track.")
         }

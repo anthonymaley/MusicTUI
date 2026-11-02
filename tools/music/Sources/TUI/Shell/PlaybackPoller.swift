@@ -71,9 +71,6 @@ final class PlaybackPoller {
     private var lastArtist = ""
     private var lastPosition = 0
     private var lastDuration = 0
-    /// The persistent ID sampled with `lastPosition`/`lastDuration`: which
-    /// track a natural end belongs to (nil: unreadable). Codex r2.
-    private var lastPersistentID: String?
     private var stoppedPolls = 0
     private var advanceGate = AdvanceRetryGate()
     private var history: [(track: String, artist: String)] = []
@@ -419,19 +416,6 @@ final class PlaybackPoller {
         }
     }
 
-    /// The auto-advance's own play. Fenced (a ticket): identifying, so the
-    /// next entry's end is fenced by its own track too. Unfenced: the shipped
-    /// play, script for script.
-    private func playAdvance(_ ticket: QueuePlayTicket?, playlist: String, position: Int) -> Bool {
-        guard let ticket else { return playQueueTrack(backend: backend, playlist: playlist, position: position) }
-        guard let learned = playQueueTrackIdentifying(backend: backend, playlist: playlist, position: position) else {
-            appQueue.resolve(ticket, nil)
-            return false
-        }
-        appQueue.resolve(ticket, queueEntryEvidence(wanted: learned.wanted, prior: learned.prior))
-        return true
-    }
-
     /// Runs first on every tick, whichever output is selected. Set before
     /// `start()` and never after, so it needs no lock.
     var onTick: (() -> Void)?
@@ -464,11 +448,6 @@ final class PlaybackPoller {
             }
         }
         defer { syncQueuePersistence() }
-        // Taken BEFORE the read, so what the sample shows is applied only to the
-        // play it was taken after: a play started during the read is not
-        // confirmed or identified by it.
-        let evidenceGeneration = appQueue.evidenceGeneration
-        let confirmTicket = appQueue.confirmer?.currentTicket()
         switch pollNowPlaying(backend: backend) {
         case .active(let np):
             stoppedPolls = 0
@@ -476,15 +455,6 @@ final class PlaybackPoller {
             let priorDur = lastDuration
             lastPosition = np.position
             lastDuration = np.duration
-            lastPersistentID = np.persistentID
-            // The same sample, no extra read: an entry whose play could not
-            // read its track adopts it, and a person-started play Music starts
-            // late withdraws its warning.
-            appQueue.adopt(np, sampledAt: evidenceGeneration)
-            if let confirmTicket {
-                appQueue.confirmer?.observe(PlayerIdentityReading(state: np.state, persistentID: np.persistentID),
-                                            for: confirmTicket)
-            }
             if np.track != lastTrack {
                 // Capture everything about the track we're leaving, before overwrite.
                 let prevArt = artLines           // ended track's art (not yet re-extracted)
@@ -602,42 +572,36 @@ final class PlaybackPoller {
             // Auto-advance only when the previous track reached its natural end.
             let naturalEnd = lastDuration > 0 && lastPosition >= max(0, lastDuration - 4)
             // App-owned queue: the single track stopped at its end (Autoplay off) —
-            // play the next track ourselves. At the queue's end it is cleared
-            // and playback stays stopped. The end is fenced by identity: an
-            // entry a play identified moves only when the track that ended is
-            // its own, so the end of the track playing before a play Music
-            // ignored never advances or ends the new queue (honest "Playing",
-            // 2026-11-01; Codex r2).
-            if naturalEnd, let advance = appQueue.autoAdvance(ended: lastPersistentID) {
-                switch advance {
-                case .held:
-                    break // not this entry's own track: keep the queue where it is
-                case .play(let pl, let pos, let ticket):
-                    // autoAdvance commits the index BEFORE the play attempt. If the
+            // play the next track ourselves. step() returns nil at the queue's end,
+            // where we clear the queue and let playback stay stopped.
+            if naturalEnd, appQueue.isActive {
+                if let (pl, pos) = appQueue.step(1) {
+                    // step(1) commits the index BEFORE the play attempt. If the
                     // play errors and the result is dropped, naturalEnd stays true
                     // next tick and the loop walks the whole remaining queue
                     // silently. Bounded recovery instead: roll the step back and
                     // retry this track up to the gate's cap, then keep the step
                     // (skip past it) so a permanent failure can't spin forever.
-                    if playAdvance(ticket, playlist: pl, position: pos) {
+                    if playQueueTrack(backend: backend, playlist: pl, position: pos) {
                         advanceGate.playSucceeded()
                     } else if advanceGate.playFailed() == .retry {
                         _ = appQueue.step(-1)
                     }
                     stoppedPolls = 0
                     return // next tick will observe the new track (or retry)
-                case .ended(let ended):
-                    // Reached the end of the app-owned queue — surface the continuation menu.
-                    if !qEnded {
-                        qEnded = true
-                        // Classify by source addressability: a library-sourced album/artist
-                        // queue is bounded to its own tracks and must never be shuffled by name.
-                        endedSource = continuationSource(for: ended)
-                        endedTrack = lastTrack
-                        endedArtist = lastArtist
-                        endedArtLines = artLines
-                    }
                 }
+                // Reached the end of the app-owned queue — surface the continuation menu.
+                if !qEnded {
+                    qEnded = true
+                    // Classify by source addressability: a library-sourced album/artist
+                    // queue is bounded to its own tracks and must never be shuffled by name.
+                    endedSource = appQueue.read().map(continuationSource(for:))
+                        ?? .playlist(contextName)
+                    endedTrack = lastTrack
+                    endedArtist = lastArtist
+                    endedArtLines = artLines
+                }
+                appQueue.clear()
             } else if naturalEnd,
                let cur = surrounding.firstIndex(where: { $0.isCurrent }),
                cur + 1 < surrounding.count {

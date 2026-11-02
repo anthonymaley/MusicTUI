@@ -18,10 +18,8 @@
 //   arrives later for the same, still-current request withdraws exactly that
 //   warning. A script that ERRORED is not this case at all: it keeps today's
 //   behaviour (rollback, "Couldn't play").
-// - The poller's auto-advance does not depend on any of this: it is fenced
-//   by the queue entry's own identity (`QueueEntryEvidence` in AppQueue.swift,
-//   Codex r2), so the end of any track but the entry's own never advances or
-//   ends the queue.
+// - This is the footer only. Auto-advance, the poller and the queue behave
+//   exactly as shipped (Anthony, 2026-11-02).
 // - Only the latest request may speak: every request, pause, skip, play and
 //   committed output or data-source switch since makes a late result drop
 //   silently.
@@ -89,11 +87,12 @@ struct PlayConfirmFence: Equatable {
 }
 
 /// Confirms person-started queue plays, for the footer only: the warning when
-/// Music does not confirm the requested track, and its withdrawal when it does
-/// later. It no longer holds the poller's auto-advance: that is fenced by the
-/// queue entry's own identity (`QueueEntryEvidence`, Codex r2). Thread-safe:
-/// requests come from the action queue, the poller's samples from its thread,
-/// and the window runs on whatever `schedule` gives it.
+/// Music does not confirm the requested track within the window, and its
+/// withdrawal when a later read of its own confirms it. Nothing else reads for
+/// it (the poller is untouched), so after posting a warning it keeps reading,
+/// slowly and for a bounded time, while that request is still current.
+/// Thread-safe: requests come from the action queue, and the reads run on
+/// whatever `schedule` gives it.
 ///
 /// There is at most ONE current request. Every reading is bound to the
 /// request (ticket and fence) it was taken for, and is applied only if that
@@ -104,10 +103,14 @@ final class PlayConfirmer {
     struct Ticket: Equatable { let serial: Int }
 
     /// How often, and for how long, a request is read. CHOSEN: four reads a
-    /// second for up to 1.5 s, the first at once.
+    /// second for up to 1.5 s, the first at once; then, only once a warning
+    /// shows, one read every 2 s for up to 30 s more, for a late start to
+    /// withdraw it (at most 15 extra reads for an unconfirmed play).
     struct Timing: Equatable {
         var interval: TimeInterval = 0.25
         var window: TimeInterval = 1.5
+        var lateInterval: TimeInterval = 2
+        var lateWindow: TimeInterval = 30
     }
 
     private struct Request {
@@ -205,21 +208,12 @@ final class PlayConfirmer {
         current = nil
     }
 
-    /// The current request, while it is unconfirmed: the poller takes this
-    /// before its read, so the sample it then hands to `observe` is bound to
-    /// the request it was taken for. Nil when there is nothing to confirm.
+    /// The current request, while it is unconfirmed; nil when there is
+    /// nothing to confirm. Tests read it.
     func currentTicket() -> Ticket? {
         lock.lock(); defer { lock.unlock() }
         guard let r = current, !r.confirmed else { return nil }
         return Ticket(serial: r.serial)
-    }
-
-    /// One reading taken for `ticket` (the poller's sample, after the window
-    /// closed): a late confirmation withdraws that request's warning.
-    func observe(_ reading: PlayerIdentityReading?, for ticket: Ticket) {
-        let stamp: PlayConfirmFence? = { lock.lock(); defer { lock.unlock() }; return current?.fence }()
-        guard let stamp else { return }
-        _ = apply(reading, ticket: ticket, fence: stamp)
     }
 
     private static func identity(_ raw: String?) -> String? {
@@ -256,11 +250,21 @@ final class PlayConfirmer {
         // current and unconfirmed: a confirmation, pause or play that lands
         // now either comes first (and this drops) or after (and withdraws or
         // replaces this).
-        lock.lock(); defer { lock.unlock() }
+        lock.lock()
         guard var r = current, r.serial == ticket.serial, r.fence == stamp, fenceNow == stamp,
-              !r.confirmed else { return }
+              !r.confirmed else { lock.unlock(); return }
         r.warningID = post(text)
         current = r
+        lock.unlock()
+        // Late: a play Music starts after the window withdraws its own warning.
+        // Each read is bound to this request; one superseded stops here.
+        let lateStart = now()
+        while now().timeIntervalSince(lateStart) + timing.lateInterval <= timing.lateWindow + 1e-9 {
+            sleep(timing.lateInterval)
+            lock.lock(); let latest = ticket.serial == serial; lock.unlock()
+            guard latest else { return }
+            if apply(read(), ticket: ticket, fence: stamp) { return }
+        }
     }
 }
 

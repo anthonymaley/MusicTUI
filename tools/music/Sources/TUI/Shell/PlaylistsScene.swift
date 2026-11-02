@@ -1838,8 +1838,8 @@ final class PlaylistsScene: Scene {
             try routing.perform(.playlistPlay, expecting: stamp, origin: .openData(resultNumber: nil),
                 musicApp: { path in
                     guard path == .shipped else { throw ActionError(message: pickASpanDACOutput) }
-                    let ticket = store.setRequested(AppQueue(playlistName: name, tracks: tracks, currentIndex: pos))
-                    try require(playRequestedQueueTrack(backend: backend, appQueue: store, ticket: ticket, playlist: name,
+                    store.set(AppQueue(playlistName: name, tracks: tracks, currentIndex: pos))
+                    try require(playRequestedQueueTrack(backend: backend, appQueue: store, playlist: name,
                                                         position: pos, title: tracks[pos - 1].name),
                                 "Couldn't play '\(name)'.")
                 },

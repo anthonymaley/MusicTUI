@@ -53,80 +53,22 @@ struct AdvanceRetryGate {
 /// Thread-safe holder shared between the main loop (selection, next/prev) and the
 /// poller thread (auto-advance). Nil when no app-owned queue is active — playback
 /// is then album/library/native and the poller falls back to Music's context.
-/// What a play learned about the identity of the queue entry it started:
-/// the evidence the poller's natural-end advance is fenced by (Codex r2).
-/// Only the end of the entry's OWN track may advance or end the queue; the end
-/// of any other track (the one playing before, an unknown, an unreadable one)
-/// never does.
-enum QueueEntryEvidence: Equatable {
-    /// The entry's play script is still running.
-    case pending
-    /// The entry's track has this persistent ID.
-    case known(String)
-    /// The play could not read the wanted track's identity, but did read
-    /// what was current before it (`nil`: proven nothing was). The first
-    /// readable `playing` identity the poller samples after the request that
-    /// is not that prior track becomes the entry's.
-    case adoptAfter(prior: String?)
-    /// Neither identity could be read: the entry is never advanced off a
-    /// natural end; the next play the person starts moves things on.
-    case unprovable
-}
-
-/// What the play script said about the track current just before it.
-enum PriorIdentity: Equatable {
-    case id(String)
-    /// Proven: Music had no current track (stopped, and none to read).
-    case none
-    /// A current track whose identity could not be read.
-    case unreadable
-}
-
-/// The evidence a play's two identity reads give its entry. Pure.
-func queueEntryEvidence(wanted: String?, prior: PriorIdentity) -> QueueEntryEvidence {
-    if let wanted { return .known(wanted) }
-    switch prior {
-    case .id(let p): return .adoptAfter(prior: p)
-    case .none: return .adoptAfter(prior: nil)
-    case .unreadable: return .unprovable
-    }
-}
-
-/// A play that installed or moved the queue: its evidence slot and, for a
-/// person-started play, its confirmation ticket.
-struct QueuePlayTicket: Equatable {
-    let generation: Int
-    let confirmation: PlayConfirmer.Ticket?
-}
-
-/// Thread-safe holder shared between the main loop (selection, next/prev) and the
-/// poller thread (auto-advance). Nil when no app-owned queue is active — playback
-/// is then album/library/native and the poller falls back to Music's context.
-///
-/// With a confirmer set (the shell), plays of this queue record identity
-/// evidence for the entry they started, and the poller's natural-end advance
-/// is fenced by it. With none (tests, the CLI), nothing is fenced, exactly as
-/// before. An entry put in place any other way (`set`, `step`, `jump`: the
-/// startup restore, a reshuffle, a continuation, a rollback) carries no
-/// evidence and advances as it always has.
 final class AppQueueStore {
     private let lock = NSLock()
     private var queue: AppQueue?
     private var _confirmer: PlayConfirmer?
-    private var generation = 0
-    /// The current entry's evidence, by play-order index; ignored for any
-    /// other index.
-    private var evidence: (index: Int, generation: Int, value: QueueEntryEvidence)?
 
     /// The shell's play confirmer (`PlayConfirmation.swift`): person-started
-    /// plays of this queue are confirmed through it, and their entries fenced.
-    /// Set once at startup.
+    /// plays of this queue are confirmed through it, for the footer warning
+    /// only; nothing about how the queue advances depends on it. Nil (tests,
+    /// the CLI): plays are not confirmed, exactly as before. Set once at
+    /// startup.
     var confirmer: PlayConfirmer? {
         get { lock.lock(); defer { lock.unlock() }; return _confirmer }
         set { lock.lock(); _confirmer = newValue; lock.unlock() }
     }
 
-    func set(_ value: AppQueue?) { lock.lock(); queue = value; evidence = nil; lock.unlock() }
+    func set(_ value: AppQueue?) { lock.lock(); queue = value; lock.unlock() }
     func clear() { set(nil) }
     func read() -> AppQueue? { lock.lock(); defer { lock.unlock() }; return queue }
     var isActive: Bool { read() != nil }
@@ -141,7 +83,6 @@ final class AppQueueStore {
         guard next >= 1, next <= q.tracks.count else { return nil }
         q.currentIndex = next
         queue = q
-        evidence = nil
         return (q.playlistName, q.currentSourcePosition)
     }
 
@@ -153,136 +94,7 @@ final class AppQueueStore {
         guard playOrderPosition >= 1, playOrderPosition <= q.tracks.count else { return nil }
         q.currentIndex = playOrderPosition
         queue = q
-        evidence = nil
         return (q.playlistName, q.currentSourcePosition)
-    }
-
-    // MARK: Person-started plays and the poller's advance
-    //
-    // A person-started play installs or moves the queue and marks the entry's
-    // evidence `pending` in ONE step under this store's lock, so the poller
-    // never sees the new position without it, and the poller's advance reads
-    // the evidence and moves the queue in one step under the same lock.
-    // Lock order: this store, then the confirmer (which takes no store lock).
-
-    /// Caller holds `lock`. A new evidence slot for the current entry, and the
-    /// confirmation ticket when `confirm` asks for one.
-    private func beginEntry(at index: Int, confirm: Bool, fence: PlayConfirmFence?) -> QueuePlayTicket? {
-        guard let c = _confirmer else { return nil }
-        generation += 1
-        evidence = (index, generation, .pending)
-        return QueuePlayTicket(generation: generation, confirmation: confirm ? c.request(fence: fence) : nil)
-    }
-
-    /// Installs `value` for a person-started play, with its evidence pending.
-    /// Nil when no confirmer is set.
-    func setRequested(_ value: AppQueue) -> QueuePlayTicket? {
-        let stamp = confirmer?.fenceNow()
-        lock.lock(); defer { lock.unlock() }
-        queue = value
-        evidence = nil
-        return beginEntry(at: value.currentIndex, confirm: true, fence: stamp)
-    }
-
-    /// `step`, for a person-started next/previous.
-    func stepRequested(_ delta: Int) -> (playlist: String, position: Int, ticket: QueuePlayTicket?)? {
-        let stamp = confirmer?.fenceNow()
-        lock.lock(); defer { lock.unlock() }
-        guard var q = queue else { return nil }
-        let next = q.currentIndex + delta
-        guard next >= 1, next <= q.tracks.count else { return nil }
-        q.currentIndex = next
-        queue = q
-        evidence = nil
-        return (q.playlistName, q.currentSourcePosition, beginEntry(at: next, confirm: true, fence: stamp))
-    }
-
-    /// `jump(to:)`, for a person-started jump.
-    func jumpRequested(to playOrderPosition: Int) -> (playlist: String, position: Int, ticket: QueuePlayTicket?)? {
-        let stamp = confirmer?.fenceNow()
-        lock.lock(); defer { lock.unlock() }
-        guard var q = queue else { return nil }
-        guard playOrderPosition >= 1, playOrderPosition <= q.tracks.count else { return nil }
-        q.currentIndex = playOrderPosition
-        queue = q
-        evidence = nil
-        return (q.playlistName, q.currentSourcePosition,
-                beginEntry(at: playOrderPosition, confirm: true, fence: stamp))
-    }
-
-    /// The current entry, played by the caller's own script with no queue
-    /// move (a test's direct play). Nil when no confirmer is set.
-    func requestCurrent() -> QueuePlayTicket? {
-        let stamp = confirmer?.fenceNow()
-        lock.lock(); defer { lock.unlock() }
-        guard let q = queue else { return nil }
-        return beginEntry(at: q.currentIndex, confirm: true, fence: stamp)
-    }
-
-    /// The entry's play has returned: record what it learned. `nil` (a script
-    /// error) leaves the entry unfenced, as every play was before. Applies
-    /// only while `ticket` is still the entry's latest play.
-    func resolve(_ ticket: QueuePlayTicket, _ value: QueueEntryEvidence?) {
-        lock.lock(); defer { lock.unlock() }
-        guard let e = evidence, e.generation == ticket.generation else { return }
-        if let value { evidence = (e.index, e.generation, value) } else { evidence = nil }
-    }
-
-    /// The current entry's evidence (tests).
-    var currentEvidence: QueueEntryEvidence? {
-        lock.lock(); defer { lock.unlock() }
-        guard let e = evidence, let q = queue, e.index == q.currentIndex else { return nil }
-        return e.value
-    }
-
-    /// The evidence slot as it stands, taken by the poller before its read.
-    var evidenceGeneration: Int { lock.lock(); defer { lock.unlock() }; return generation }
-
-    /// One poller sample, read after `generation` was taken: an entry waiting
-    /// to adopt its identity takes the sample's when it is `playing`, readable
-    /// and not the track that was current before the play.
-    func adopt(_ sample: NowPlayingState, sampledAt generation: Int) {
-        lock.lock(); defer { lock.unlock() }
-        guard let e = evidence, e.generation == generation, let q = queue, e.index == q.currentIndex,
-              case .adoptAfter(let prior) = e.value,
-              sample.state == "playing", let pid = sample.persistentID?.uppercased(), !pid.isEmpty,
-              pid != prior?.uppercased() else { return }
-        evidence = (e.index, e.generation, .known(pid))
-    }
-
-    /// What the poller's auto-advance may do at a natural end.
-    enum AutoAdvanceStep: Equatable {
-        /// The track that ended is not the current entry's own (or that is
-        /// not yet known): nothing moves.
-        case held
-        /// Stepped to the next entry: play it. `ticket`, when fencing, is the
-        /// new entry's evidence slot.
-        case play(playlist: String, position: Int, ticket: QueuePlayTicket?)
-        /// The queue ran out and has been cleared; this was it.
-        case ended(AppQueue)
-    }
-
-    /// The poller's step at the natural end of the track whose persistent ID
-    /// it last sampled (`ended`; nil: unreadable). A fenced entry moves only
-    /// on its own track's end. Nil when there is no queue.
-    func autoAdvance(ended: String?) -> AutoAdvanceStep? {
-        lock.lock(); defer { lock.unlock() }
-        guard var q = queue else { return nil }
-        if let e = evidence, e.index == q.currentIndex {
-            guard case .known(let id) = e.value, let ended, ended.uppercased() == id.uppercased() else {
-                return .held
-            }
-        }
-        evidence = nil
-        let next = q.currentIndex + 1
-        guard next <= q.tracks.count else {
-            queue = nil
-            return .ended(q)
-        }
-        q.currentIndex = next
-        queue = q
-        return .play(playlist: q.playlistName, position: q.currentSourcePosition,
-                     ticket: beginEntry(at: next, confirm: false, fence: nil))
     }
 }
 
@@ -304,107 +116,66 @@ func playQueueTrack(backend: AppleScriptBackend, playlist: String, position: Int
     return (try? backend.runMusicBlocking("play track \(position) of playlist \"\(esc)\"")) != nil
 }
 
-/// A position-addressed play that also answers, in the same script, what was
-/// current just before it and the persistent ID of the track it asked for:
-/// `prior<US>wanted`, where prior is `id:<pid>`, `none` (stopped with no
-/// current track) or `?` (a current track whose identity could not be read).
-/// The identity a confirmation compares against is never a second, racy
-/// read. Both reads are wrapped: when one fails the play still stands.
+/// A position-addressed play that also answers the persistent ID of the track
+/// it asked for, in the same script, so the identity a confirmation compares
+/// against is never a second, racy read. The play runs first, and the
+/// identity read after it is wrapped: when that read fails the play still
+/// stands, and answers empty (which cannot confirm: the warning shows).
 func identifyingPositionPlayScript(playlist: String, position: Int) -> String {
     let esc = escapeAppleScriptString(playlist)
     return """
-    set fs to (ASCII character 31)
-    set prior to "?"
-    try
-        set prior to "id:" & (persistent ID of current track)
-    on error
-        if (player state as text) is "stopped" then set prior to "none"
-    end try
     play track \(position) of playlist "\(esc)"
-    set wanted to ""
     try
-        set wanted to persistent ID of track \(position) of playlist "\(esc)"
+        return persistent ID of track \(position) of playlist "\(esc)"
     end try
-    return prior & fs & wanted
+    return ""
     """
 }
 
-/// `identifyingPositionPlayScript`'s answer. An answer with no separator is
-/// the wanted identity alone, with the prior unreadable. Pure.
-func parseIdentifyingPlayReply(_ raw: String) -> (prior: PriorIdentity, wanted: String?) {
-    let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-    let clean: (Substring) -> String? = {
-        let t = $0.trimmingCharacters(in: .whitespacesAndNewlines)
-        return t.isEmpty ? nil : t.uppercased()
-    }
-    guard trimmed.contains(asFieldSep) else { return (.unreadable, clean(Substring(trimmed))) }
-    let parts = trimmed.split(separator: asFieldSep, maxSplits: 1, omittingEmptySubsequences: false)
-    let head = parts[0].trimmingCharacters(in: .whitespacesAndNewlines)
-    let prior: PriorIdentity
-    if head.hasPrefix("id:"), let id = clean(head.dropFirst(3)) { prior = .id(id) }
-    else if head == "none" { prior = .none }
-    else { prior = .unreadable }
-    return (prior, parts.count > 1 ? clean(parts[1]) : nil)
-}
-
-/// Plays a queue entry and returns what it learned about its identity, or
-/// nil on a script error. Persistent-ID entries are their own identity.
-func playQueueTrackIdentifying(backend: AppleScriptBackend, playlist: String,
-                               position: Int) -> (prior: PriorIdentity, wanted: String?)? {
-    if playlist == persistentIDQueueSource {
-        let pid = persistentIDOfQueueEntry(position)
-        guard (try? backend.runMusicBlocking(persistentIDPlayScript(pid))) != nil else { return nil }
-        return (.unreadable, pid)
-    }
-    guard let out = try? backend.runMusicBlocking(identifyingPositionPlayScript(playlist: playlist,
-                                                                                 position: position)) else {
-        return nil
-    }
-    return parseIdentifyingPlayReply(out)
-}
-
 /// `playQueueTrack` for a play the PERSON started (honest "Playing",
-/// 2026-11-01): the same play, identifying, and on a clean exit the entry's
-/// evidence is recorded for the poller and the requested identity handed to
-/// `appQueue.confirmer`, which reads Music off this thread and replaces the
-/// footer line with `playNotStartedWarning(title)` if Music does not confirm
-/// it. True means the script exited cleanly, exactly as before; an
-/// unconfirmed play is still true, so no caller rolls back or clears a queue
-/// Music accepted. False is a script error: the entry is left unfenced and
-/// nothing is confirmed.
-///
-/// `ticket` is the slot the caller took when it installed or moved the queue
-/// (`AppQueueStore.setRequested`, `stepRequested`, `jumpRequested`). Nil takes
-/// one here for the current entry. `notice` follows the warning, so what the
-/// play already said (tracks left out) survives it.
+/// 2026-11-01): the same play, and on a clean exit the requested identity is
+/// handed to `appQueue.confirmer`, which reads Music off this thread and
+/// replaces the footer line with `playNotStartedWarning(title)` if Music has
+/// not started it. True means the script exited cleanly, exactly as before;
+/// an unconfirmed play is still true, so no caller rolls back or clears a
+/// queue Music accepted. False is a script error: nothing is confirmed.
+/// `notice` follows the warning, so what the play already said (tracks left
+/// out) survives it.
 ///
 /// With no confirmer it IS `playQueueTrack`, script for script.
 @discardableResult
-func playRequestedQueueTrack(backend: AppleScriptBackend, appQueue: AppQueueStore,
-                             ticket: QueuePlayTicket? = nil, playlist: String,
+func playRequestedQueueTrack(backend: AppleScriptBackend, appQueue: AppQueueStore, playlist: String,
                              position: Int, title: String, notice: String? = nil) -> Bool {
-    guard let confirmer = appQueue.confirmer, let ticket = ticket ?? appQueue.requestCurrent() else {
+    guard let confirmer = appQueue.confirmer else {
         return playQueueTrack(backend: backend, playlist: playlist, position: position)
     }
-    guard let learned = playQueueTrackIdentifying(backend: backend, playlist: playlist, position: position) else {
-        appQueue.resolve(ticket, nil)
-        if let c = ticket.confirmation { confirmer.abandon(c) }
-        return false
+    let ticket = confirmer.request()
+    let expected: String?
+    if playlist == persistentIDQueueSource {
+        let pid = persistentIDOfQueueEntry(position)
+        guard (try? backend.runMusicBlocking(persistentIDPlayScript(pid))) != nil else {
+            confirmer.abandon(ticket)
+            return false
+        }
+        expected = pid
+    } else {
+        guard let out = try? backend.runMusicBlocking(identifyingPositionPlayScript(playlist: playlist,
+                                                                                     position: position)) else {
+            confirmer.abandon(ticket)
+            return false
+        }
+        expected = out.trimmingCharacters(in: .whitespacesAndNewlines)
     }
-    appQueue.resolve(ticket, queueEntryEvidence(wanted: learned.wanted, prior: learned.prior))
-    if let c = ticket.confirmation {
-        confirmer.confirm(c, expected: learned.wanted, title: title, notice: notice)
-    }
+    confirmer.confirm(ticket, expected: expected, title: title, notice: notice)
     return true
 }
 
 /// The SpanDAC library hand-off's first play (`AppQueueHandoffPlayer`): the
 /// queue's current entry, confirmed under the queue's own title, the one its
 /// "Playing '...' on MusicTUI." line names.
-func requestedHandoffPlayFirst(backend: AppleScriptBackend, appQueue: AppQueueStore)
-    -> (AppQueue, QueuePlayTicket?) -> Bool {
-    { queue, ticket in
-        playRequestedQueueTrack(backend: backend, appQueue: appQueue, ticket: ticket, playlist: queue.playlistName,
+func requestedHandoffPlayFirst(backend: AppleScriptBackend, appQueue: AppQueueStore) -> (AppQueue) -> Bool {
+    { queue in
+        playRequestedQueueTrack(backend: backend, appQueue: appQueue, playlist: queue.playlistName,
                                 position: queue.currentSourcePosition, title: queue.contextLabel)
     }
 }
