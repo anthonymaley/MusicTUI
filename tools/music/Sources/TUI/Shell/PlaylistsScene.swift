@@ -94,6 +94,10 @@ final class PlaylistsScene: Scene {
     /// switch's reload, D7 item 5/C2 item 2). A `var` since C2. A test may
     /// still construct with names, which seeds the rail synchronously.
     private var playlists: [String]
+    /// Each Music.app rail row's playlist persistent ID, parallel to
+    /// `playlists` (`parseRailPlaylistNames`): what `m` records. A row past
+    /// its end, or nil, has no ID read and cannot be marked.
+    private var playlistIDs: [String?]
     private var subscriptionNames: Set<String>
     private var sources: PlaylistDataSources
     private let appQueue: AppQueueStore
@@ -441,7 +445,8 @@ final class PlaylistsScene: Scene {
     private var lastCoverLanded = 0
 
     init(backend: AppleScriptBackend,
-         routing: RoutingCoordinator, playlists: [String], subscriptionNames: Set<String> = [],
+         routing: RoutingCoordinator, playlists: [String], playlistIDs: [String?] = [],
+         subscriptionNames: Set<String> = [],
          sources: PlaylistDataSources,
          appQueue: AppQueueStore, status: StatusStore, actions: ActionRunner,
          kittyEnabled: Bool = false, metaCache: PlaylistMetaCache = PlaylistMetaCache(),
@@ -465,6 +470,7 @@ final class PlaylistsScene: Scene {
         self.provenanceDataEpoch = routing.dataEpoch
         self.backend = backend
         self.playlists = playlists
+        self.playlistIDs = playlistIDs
         self.subscriptionNames = subscriptionNames
         self.sources = sources
         self.appQueue = appQueue
@@ -701,6 +707,7 @@ final class PlaylistsScene: Scene {
         railEpoch += 1
         // Music.app list structures.
         playlists = []
+        playlistIDs = []
         subscriptionNames = []
         sources = .empty
         meta = []
@@ -803,8 +810,9 @@ final class PlaylistsScene: Scene {
     /// Applies a landed Music.app name load (construction's own seed already
     /// took the synchronous path in `init`; this is only ever the async,
     /// post-switch reload — D7 item 5).
-    private func applyMusicAppNames(_ names: [String], _ subscription: Set<String>) {
+    private func applyMusicAppNames(_ names: [String], _ subscription: Set<String>, _ ids: [String?]) {
         playlists = names
+        playlistIDs = ids
         subscriptionNames = subscription
         sources = makeSources(names)
         meta = names.map { PlaylistMeta(name: $0) }
@@ -959,8 +967,8 @@ final class PlaylistsScene: Scene {
             musicAppReadInFlight = false
             if landed.epoch == railEpoch, railSource == .musicApp {
                 switch landed.read {
-                case .success(let names, let subscription):
-                    applyMusicAppNames(names, subscription)
+                case .success(let names, let subscription, let ids):
+                    applyMusicAppNames(names, subscription, ids)
                     musicAppReloadDone = true
                 case .failure:
                     musicAppReadFailed = true
@@ -1583,20 +1591,29 @@ final class PlaylistsScene: Scene {
         }
     }
 
-    /// `m` on the rail: marks or unmarks the highlighted playlist, recorded
-    /// with the source of the rail it is on. In the tracks pane, or on a rail
-    /// with nothing highlighted, `m` does nothing.
+    /// `m` on the rail: marks or unmarks the highlighted playlist by the ID
+    /// the rail read for it (its persistent ID on MusicTUI's data, SpanDAC's
+    /// id on SpanDAC data), recorded with the source of the rail it is on. A
+    /// row with no ID says so and marks nothing. In the tracks pane, or on a
+    /// rail with nothing highlighted, `m` does nothing.
     private func toggleMarkUnderCursor() -> SceneAction {
         guard focus == .playlists, let source = railSource else { return .none }
         let name: String
+        let id: String?
         if source == .bridge {
             guard let row = currentBridgeRow() else { return .none }
             name = row.title
+            id = row.id.isEmpty ? nil : row.id
         } else {
             guard playlists.indices.contains(plCursor), visibleIndices().contains(plCursor) else { return .none }
             name = playlists[plCursor]
+            id = musicAppPlaylistID(at: plCursor)
         }
-        marks.toggle(.playlist(name: name), source: source)
+        guard let id else {
+            status.post(playlistUnmarkableLine(name), error: true)
+            return .redraw
+        }
+        marks.toggle(.playlist(id: id, name: name), source: source)
         status.post(markedCountLine(marks.count))
         return .redraw
     }
@@ -1609,10 +1626,17 @@ final class PlaylistsScene: Scene {
                       readers: markedSetReaders)
     }
 
-    /// Whether the rail row named `name` shows the mark: marked, on a rail
-    /// from the source the marks were made on.
-    private func showsMark(_ name: String, _ marked: (items: [MarkedItem], source: ListSource?)) -> Bool {
-        marked.source != nil && marked.source == railSource && marked.items.contains(.playlist(name: name))
+    /// The Music.app rail row `index`'s playlist persistent ID, or nil when
+    /// none was read for it.
+    private func musicAppPlaylistID(at index: Int) -> String? {
+        playlistIDs.indices.contains(index) ? playlistIDs[index] : nil
+    }
+
+    /// Whether the rail row with playlist ID `id` shows the mark: marked, on a
+    /// rail from the source the marks were made on. A row with no ID never does.
+    private func showsMark(_ id: String?, _ marked: (items: [MarkedItem], source: ListSource?)) -> Bool {
+        guard let id, marked.source != nil, marked.source == railSource else { return false }
+        return marked.items.contains(.playlist(id: id, name: ""))
     }
 
     // MARK: playback (user-initiated; brief inline stall acceptable)
@@ -1957,7 +1981,7 @@ final class PlaylistsScene: Scene {
             let row = listY + (p - plScroll)
             out += ANSICode.moveTo(row: row, col: z.railX)
             let m = meta[i]
-            let display = markedRowLabel(m.name, marked: showsMark(m.name, marked))
+            let display = markedRowLabel(m.name, marked: showsMark(musicAppPlaylistID(at: i), marked))
             let nm = railName(display, nameWidth: max(1, nameWidth))
             let metaCell: String
             if !m.loaded {
@@ -2213,7 +2237,7 @@ final class PlaylistsScene: Scene {
                 let row = listY + (p - plScroll)
                 out += ANSICode.moveTo(row: row, col: z.railX)
                 let r = bridgePlaylistRows[i]
-                let nm = railName(markedRowLabel(r.title, marked: showsMark(r.title, marked)),
+                let nm = railName(markedRowLabel(r.title, marked: showsMark(r.id.isEmpty ? nil : r.id, marked)),
                                   nameWidth: max(1, nameWidth))
                 // No "·" loading dot and no badge (D1: MusicKit gives no
                 // smart flag). C3: the count, once a preview/drill-in/play

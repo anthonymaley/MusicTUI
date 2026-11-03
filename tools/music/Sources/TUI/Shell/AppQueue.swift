@@ -275,12 +275,25 @@ func fetchPlaylistTracks(backend: AppleScriptBackend, playlist: String) -> [Trac
 /// read again at the end, differ from the first read.
 let playlistIDsChangedError = "playlist ids: tracks changed during the read"
 
+/// `playlistTrackIDsScript`'s whole reply when no playlist has the ID any more.
+let playlistMissingReply = "missing"
+
+/// What one read of a playlist by its persistent ID found: its tracks (an
+/// empty playlist is an empty list), or no playlist with that ID at all.
+enum PlaylistTrackIDsRead: Equatable {
+    case tracks([TrackListEntry])
+    case missing
+}
+
 /// Read the tracks of the playlist whose persistent ID is `playlistID`, in
 /// playlist order, as persistent ID + name + artist + album, for a queue
 /// addressed by identity (`persistentIDQueueEntry`). The playlist is addressed
-/// by its own persistent ID, the one `playlistIdentityScript` resolved from its
-/// unique name, so a playlist renamed or duplicated in between is never read
-/// in its place; it is resolved once, and every get goes through that reference.
+/// by its own persistent ID, the one its mark captured from the rail's read
+/// (`MarkedItem.playlist`), never by name, so a playlist renamed, or another
+/// taking its name, is never read in its place; it is resolved once, and every
+/// get goes through that reference. When no playlist has the ID, the reply is
+/// `playlistMissingReply` alone: only Music's "no such object" error (-1728)
+/// on that one resolve means gone, and any other error still fails the read.
 /// One script, four bulk gets (`<prop> of every track of pl`, never
 /// `tracks 1 thru n`: of a ONE-track playlist that answers a bare value, not a
 /// list, probed live 2026-11-03, and the columns then fail the length check),
@@ -293,13 +306,22 @@ let playlistIDsChangedError = "playlist ids: tracks changed during the read"
 /// The count lets the parser tell a torn reply from a short playlist, and the
 /// column-length check makes a library that changed between the gets an error.
 /// The four gets are four Apple Events, so the IDs are read once more at the
-/// end and must equal the first read exactly (`playlistIDsChangedError`): a
-/// reply is never assembled from columns of different sets.
+/// end and must equal the first read exactly (`playlistIDsChangedError`). That
+/// catches a change to the playlist's tracks that persists across the read,
+/// even one that keeps the count. It does not catch every change: tracks
+/// changed and changed back between the gets (A to B to A), or a metadata-only
+/// edit (a track renamed, its IDs unchanged), can still leave a name, artist or
+/// album column from a moment other than the IDs'. That mixes only DISPLAY
+/// metadata: the play itself always addresses each track by its ID.
 func playlistTrackIDsScript(playlistID: String) -> String {
     let pid = escapeAppleScriptString(playlistID)
     return """
         set fs to (ASCII character 31)
-        set pl to (first playlist whose persistent ID is "\(pid)")
+        try
+            set pl to (first playlist whose persistent ID is "\(pid)")
+        on error number -1728
+            return "\(playlistMissingReply)"
+        end try
         set total to count of tracks of pl
         set output to (total as text) & linefeed
         if total > 0 then
@@ -348,16 +370,27 @@ func parsePlaylistTrackIDs(_ raw: String) -> [TrackListEntry]? {
     return out
 }
 
+/// `playlistTrackIDsScript`'s reply as a read: `.missing` for exactly
+/// `playlistMissingReply` (and nothing after it), else the tracks
+/// `parsePlaylistTrackIDs` finds, else nil. Pure.
+func parsePlaylistTrackIDsRead(_ raw: String) -> PlaylistTrackIDsRead? {
+    var lines = raw.components(separatedBy: "\n")
+    while lines.last == "" { lines.removeLast() }
+    if lines == [playlistMissingReply] { return .missing }
+    return parsePlaylistTrackIDs(raw).map { .tracks($0) }
+}
+
 /// The tracks of the playlist whose persistent ID is `playlistID`, as
-/// identity-addressed queue entries, in playlist order, or nil when the ID is
-/// not sixteen hex digits (no script runs), or the read failed, was torn, saw
-/// the tracks change (`playlistIDsChangedError`), or returned any malformed ID.
-/// An empty playlist is an empty list, not nil.
-func fetchPlaylistTrackIDs(backend: AppleScriptBackend, playlistID: String) -> [TrackListEntry]? {
+/// identity-addressed queue entries, in playlist order; `.missing` when no
+/// playlist has that ID any more; or nil when the ID is not sixteen hex digits
+/// (no script runs), or the read failed, was torn, saw the tracks change
+/// (`playlistIDsChangedError`), or returned any malformed ID. An empty
+/// playlist is an empty list, not nil.
+func fetchPlaylistTrackIDs(backend: AppleScriptBackend, playlistID: String) -> PlaylistTrackIDsRead? {
     guard isPersistentIDText(playlistID),
           let raw = try? backend.runMusicBlocking(playlistTrackIDsScript(playlistID: playlistID), timeout: 30)
     else { return nil }
-    return parsePlaylistTrackIDs(raw)
+    return parsePlaylistTrackIDsRead(raw)
 }
 
 /// Parse the FS-separated "index<FS>name<FS>artist" lines from

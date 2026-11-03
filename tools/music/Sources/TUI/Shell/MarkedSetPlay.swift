@@ -10,78 +10,31 @@ import Foundation
 // tracks. It is a temporary queue only: everything here READS. Nothing makes,
 // duplicates, renames or deletes a playlist or a track.
 
-/// The three reads a marked play makes, injected so the queue is built and
+/// The two reads a marked play makes, injected so the queue is built and
 /// tested without Music.
 struct MarkedSetReaders {
     /// An album's playable tracks as identity-addressed entries
     /// (`resolveAlbumPlaybackTrackIDs`).
     let album: (_ title: String, _ artist: String) -> AlbumResolution
-    /// Whether exactly one playlist carries this name and, when it does, that
-    /// playlist's own persistent ID; nil when the read failed.
-    let playlistID: (_ name: String) -> PlaylistIdentity?
-    /// The tracks of the playlist with this persistent ID (the one
-    /// `playlistID` resolved) as identity-addressed entries, in playlist
-    /// order; nil when the read failed (`fetchPlaylistTrackIDs`).
-    let playlist: (_ persistentID: String) -> [TrackListEntry]?
+    /// The tracks of the playlist with this persistent ID (the one its mark
+    /// captured from the rail) as identity-addressed entries, in playlist
+    /// order, or `.missing` when no playlist has the ID any more; nil when the
+    /// read failed (`fetchPlaylistTrackIDs`). Never a name lookup.
+    let playlist: (_ persistentID: String) -> PlaylistTrackIDsRead?
 
     /// The AppleScript readers. Read-only scripts, every one.
     static func live(backend: AppleScriptBackend) -> MarkedSetReaders {
         MarkedSetReaders(
             album: { resolveAlbumPlaybackTrackIDs(backend: backend, title: $0, artist: $1) },
-            playlistID: { name in
-                guard let raw = try? backend.runMusicBlocking(playlistIdentityScript(name)) else { return nil }
-                return parsePlaylistIdentity(raw)
-            },
             playlist: { fetchPlaylistTrackIDs(backend: backend, playlistID: $0) })
     }
 }
 
-/// What the name check found: no playlist by that name, more than one (never
-/// guessed between), or exactly one, with its own persistent ID.
-enum PlaylistIdentity: Equatable {
-    case notFound
-    case duplicated(count: Int)
-    case unique(persistentID: String)
-}
-
-/// Counts the playlists named exactly `name`, of every kind, because a name
-/// resolves against all of them and silently takes the first; when there is
-/// exactly one, answers its persistent ID too, so the track read is addressed
-/// by that identity (`playlistTrackIDsScript`) and a playlist renamed or
-/// duplicated after this check can never be read in its place. A read: it
-/// changes nothing.
-///
-/// The reply is "count<LF>", plus "persistentID<LF>" when the count is 1. The
-/// ID get is coerced to a list, because one match can answer a bare value, and
-/// a second match appearing between the two gets is an error, never a guess.
-func playlistIdentityScript(_ name: String) -> String {
-    let esc = escapeAppleScriptString(name)
-    return """
-        set hitCount to count of (every playlist whose name is "\(esc)")
-        if hitCount is not 1 then return hitCount as text
-        set hitIDs to persistent ID of every playlist whose name is "\(esc)"
-        set hitIDs to hitIDs as list
-        if (count of hitIDs) is not 1 then error "playlist id: the name changed during the read" number 1003
-        return "1" & linefeed & (item 1 of hitIDs)
-        """
-}
-
-/// What `playlistIdentityScript` answered, or nil for anything else: a count
-/// that is not a whole number, a count of one without exactly one sixteen-hex-
-/// digit ID after it, or any other count followed by more lines. Pure.
-func parsePlaylistIdentity(_ raw: String) -> PlaylistIdentity? {
-    var lines = raw.components(separatedBy: "\n").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-    while lines.last == "" { lines.removeLast() }
-    guard let header = lines.first, let count = Int(header), count >= 0 else { return nil }
-    switch count {
-    case 0:
-        return lines.count == 1 ? .notFound : nil
-    case 1:
-        guard lines.count == 2, isPersistentIDText(lines[1]) else { return nil }
-        return .unique(persistentID: lines[1].uppercased())
-    default:
-        return lines.count == 1 ? .duplicated(count: count) : nil
-    }
+/// A marked playlist whose persistent ID no playlist has any more (deleted, or
+/// gone from the library, since it was marked): the play refuses rather than
+/// play another playlist in its place.
+func markedPlaylistGoneLine(_ name: String) -> String {
+    "'\(name)' is no longer in your playlists, so nothing played."
 }
 
 /// What Now Playing calls the marked set: the one item's own name, else
@@ -90,7 +43,7 @@ func markedSetDisplayName(_ items: [MarkedItem]) -> String {
     if items.count == 1 {
         switch items[0] {
         case .album(let title, _): return title
-        case .playlist(let name): return name
+        case .playlist(_, let name): return name
         }
     }
     var albums = 0, playlists = 0
@@ -150,22 +103,13 @@ func markedSetPlan(_ items: [MarkedItem], shuffle: Bool, readers: MarkedSetReade
             }
             entries += res.tracks
             matched += max(res.matched, res.tracks.count)
-        case .playlist(let name):
-            guard let identity = readers.playlistID(name) else {
+        case .playlist(let id, let name):
+            // By the identity the mark captured, never by the name.
+            guard let read = readers.playlist(id) else {
                 throw ActionError(message: "Music didn't answer while reading '\(name)', so nothing played. Try again.")
             }
-            let persistentID: String
-            switch identity {
-            case .notFound:
-                throw ActionError(message: "Couldn't find the playlist '\(name)', so nothing played.")
-            case .duplicated:
-                throw ActionError(message: "More than one playlist is named '\(name)', so nothing played. Rename one to play it with the others.")
-            case .unique(let pid):
-                persistentID = pid
-            }
-            // Read by the identity the check resolved, never by the name again.
-            guard let tracks = readers.playlist(persistentID) else {
-                throw ActionError(message: "Music didn't answer while reading '\(name)', so nothing played. Try again.")
+            guard case .tracks(let tracks) = read else {
+                throw ActionError(message: markedPlaylistGoneLine(name))
             }
             guard !tracks.isEmpty else {
                 throw ActionError(message: "'\(name)' has no tracks, so nothing played.")
@@ -192,6 +136,12 @@ func markedRowLabel(_ label: String, marked: Bool) -> String {
 /// The footer line after `m`: how many are marked and what to do next.
 func markedCountLine(_ count: Int) -> String {
     count == 0 ? "Nothing marked" : "Marked \(count) \u{00B7} p plays them, Esc clears"
+}
+
+/// The footer line after `m` on a rail row whose playlist ID was not read: it
+/// cannot be marked, because a mark is that ID.
+func playlistUnmarkableLine(_ name: String) -> String {
+    "'\(name)' can't be marked: its playlist ID wasn't read, so nothing was marked."
 }
 
 /// The footer line after Esc cleared the marks.
