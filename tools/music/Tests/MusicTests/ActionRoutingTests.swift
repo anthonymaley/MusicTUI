@@ -434,6 +434,17 @@ final class ActionRoutingTests: XCTestCase {
         XCTAssertTrue(cliBridgeExceptions.contains(.radioAddURL), "the favourite itself stays MusicTUI's own state")
     }
 
+    /// Discover's `/` search is the catalogue search's TUI invoker (concert
+    /// catalogue-search, S4): the action is invoked from both surfaces now. The
+    /// CLI route is unchanged, so it stays dispatched and out of the exceptions.
+    func testCatalogueSearchIsInvokedFromTheTuiAndTheCli() {
+        XCTAssertEqual(MusicTUIAction.catalogSearch.surfaces, [.tui, .cli])
+        XCTAssertTrue(cliDispatchedOnBridge.contains(.catalogSearch))
+        XCTAssertFalse(cliBridgeExceptions.contains(.catalogSearch))
+        XCTAssertEqual(routeAction(.catalogSearch, in: .source, from: .cli), .source)
+        XCTAssertEqual(routeAction(.catalogSearch, in: .musicApp, from: .cli), .musicApp)
+    }
+
     /// S8 closes the inventory: the exception set is exactly section 2's E
     /// rows plus the M rows, and nothing else. `.volume` and `.airplayRoute`
     /// left it (refused on Bridge); the TUI-only rows S6 carried left it too,
