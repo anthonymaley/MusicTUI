@@ -194,8 +194,8 @@ final class CatalogueSearchModelTests: XCTestCase {
         XCTAssertEqual(cursorHit, A1, "clamped at the top")
         press(.down, .down)
         XCTAssertEqual(cursorHit, B1, "A2 then over the Albums header to B1")
-        press(.char("j"), .char("j"))
-        XCTAssertEqual(cursorHit, S1, "B3 then over the Songs header")
+        press(.char("j"), .char("j"), .char("j"))
+        XCTAssertEqual(cursorHit, S1, "B2, B3, then over the Songs header")
         press(.down, .char("j"))
         XCTAssertEqual(cursorHit, S1, "clamped at the bottom")
         press(.char("k"))
@@ -263,7 +263,7 @@ final class CatalogueSearchModelTests: XCTestCase {
         XCTAssertEqual(host.intents, [.search("kid a")], "p on an artist emits nothing")
         press(.end, .char("p"))
         XCTAssertEqual(host.intents, [.search("kid a")], "p on a song emits nothing")
-        press(.up, .up)
+        press(.up)
         XCTAssertEqual(cursorHit, B3)
         press(.char("p"))
         XCTAssertEqual(host.lastOrNone.intent, .playAlbum(B3))
@@ -571,7 +571,8 @@ final class CatalogueSearchModelTests: XCTestCase {
         onResults(CatalogueSearchResults(artists: [A1], albums: [long], songs: [S1],
                                          artistsServed: true, artistsNote: nil))
         for w in [12, 20, 40] {
-            let lines = plain(w, 12)
+            let lines = pane.layout(width: w, height: 12).map(\.text)
+            XCTAssertFalse(lines.isEmpty)
             for line in lines { XCTAssertLessThanOrEqual(line.count, w, "width \(w): \(line)") }
         }
         XCTAssertTrue(plain(30, 12).contains { $0.hasSuffix("…") })
