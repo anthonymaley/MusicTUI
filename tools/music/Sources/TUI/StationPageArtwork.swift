@@ -202,49 +202,59 @@ func urlSessionStationPageTransport(_ request: URLRequest,
     return task
 }
 
-/// The real page fetcher: a plain GET, blocking up to `timeout`. No token, no
-/// cookies sent; nil on transport failure or timeout.
+/// Sends `request` through `transport` and blocks up to `timeout` for the
+/// answer; nil on transport failure or timeout.
 ///
 /// The result is handed over under a lock, and whichever of the callback and
 /// the timeout comes first decides it: on a timeout the task is cancelled, so
-/// a hung request does not keep running behind the backfill's two slots, and a
-/// callback arriving afterwards is dropped (`onLateCallback`, a test seam)
-/// instead of writing into a fetch that has already returned (Codex review
-/// finding 3). The number of fetches in flight is bounded by the caller,
-/// `StationArtworkBackfill`'s two slots.
-func makeStationPageFetch(transport: @escaping StationPageTransport = urlSessionStationPageTransport,
-                          timeout: TimeInterval = 15,
-                          onLateCallback: @escaping () -> Void = {}) -> StationPageFetch {
+/// a hung request does not keep running, and a callback arriving afterwards is
+/// dropped (`onLateCallback`, a test seam) instead of writing into a fetch that
+/// has already returned (Codex review finding 3, radio-art r1). Shared by the
+/// station page fetcher and the radio catalogue fetch.
+func blockingTransportFetch(_ request: URLRequest,
+                            transport: StationPageTransport,
+                            timeout: TimeInterval,
+                            onLateCallback: @escaping () -> Void) -> RadioCatalogResponse? {
     final class Handoff {
         let lock = NSLock()
         var finished = false
         var result: RadioCatalogResponse?
     }
+    let handoff = Handoff()
+    let sem = DispatchSemaphore(value: 0)
+    let task = transport(request) { data, response in
+        handoff.lock.lock()
+        let late = handoff.finished
+        if !late {
+            handoff.finished = true
+            if let data, let http = response as? HTTPURLResponse {
+                handoff.result = RadioCatalogResponse(status: http.statusCode, data: data)
+            }
+        }
+        handoff.lock.unlock()
+        if late { onLateCallback() } else { sem.signal() }
+    }
+    let timedOut = sem.wait(timeout: .now() + timeout) == .timedOut
+    handoff.lock.lock()
+    // A callback that won the race just as the wait timed out still counts.
+    let answered = handoff.finished
+    handoff.finished = true
+    let result = handoff.result
+    handoff.lock.unlock()
+    if timedOut && !answered { task.cancel() }
+    return result
+}
+
+/// The real page fetcher: a plain GET, blocking up to `timeout`. No token, no
+/// cookies sent; nil on transport failure or timeout. The timeout handoff is
+/// `blockingTransportFetch`'s. The number of fetches in flight is bounded by
+/// the caller, `StationArtworkBackfill`'s two slots.
+func makeStationPageFetch(transport: @escaping StationPageTransport = urlSessionStationPageTransport,
+                          timeout: TimeInterval = 15,
+                          onLateCallback: @escaping () -> Void = {}) -> StationPageFetch {
     return { url in
         var req = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: timeout)
         req.httpShouldHandleCookies = false
-        let handoff = Handoff()
-        let sem = DispatchSemaphore(value: 0)
-        let task = transport(req) { data, response in
-            handoff.lock.lock()
-            let late = handoff.finished
-            if !late {
-                handoff.finished = true
-                if let data, let http = response as? HTTPURLResponse {
-                    handoff.result = RadioCatalogResponse(status: http.statusCode, data: data)
-                }
-            }
-            handoff.lock.unlock()
-            if late { onLateCallback() } else { sem.signal() }
-        }
-        let timedOut = sem.wait(timeout: .now() + timeout) == .timedOut
-        handoff.lock.lock()
-        // A callback that won the race just as the wait timed out still counts.
-        let answered = handoff.finished
-        handoff.finished = true
-        let result = handoff.result
-        handoff.lock.unlock()
-        if timedOut && !answered { task.cancel() }
-        return result
+        return blockingTransportFetch(req, transport: transport, timeout: timeout, onLateCallback: onLateCallback)
     }
 }

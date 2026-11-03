@@ -145,8 +145,10 @@ func radioCatalogRequest(url: URL, developerToken: String, userToken: String?) -
 
 /// The catalogue's real fetch: a GET with the developer token (and the user
 /// token when there is one), blocking up to `timeout`; nil with no developer
-/// token, on transport failure or on timeout. `transport` and
-/// `onLateCallback` are test seams; shipped code uses URLSession.shared.
+/// token, on transport failure or on timeout. A timed-out request is
+/// cancelled and its late callback dropped (`blockingTransportFetch`).
+/// `transport` and `onLateCallback` are test seams; shipped code uses
+/// URLSession.shared.
 func makeRadioCatalogFetch(transport: @escaping StationPageTransport = urlSessionStationPageTransport,
                            timeout: TimeInterval = 20,
                            onLateCallback: @escaping () -> Void = {},
@@ -155,16 +157,7 @@ func makeRadioCatalogFetch(transport: @escaping StationPageTransport = urlSessio
     return { urlString in
         guard let url = URL(string: urlString), let tok = developerToken() else { return nil }
         let req = radioCatalogRequest(url: url, developerToken: tok, userToken: userToken())
-        let sem = DispatchSemaphore(value: 0)
-        var out: RadioCatalogResponse?
-        _ = transport(req) { data, response in
-            if let data, let http = response as? HTTPURLResponse {
-                out = RadioCatalogResponse(status: http.statusCode, data: data)
-            }
-            sem.signal()
-        }
-        _ = sem.wait(timeout: .now() + timeout)
-        return out
+        return blockingTransportFetch(req, transport: transport, timeout: timeout, onLateCallback: onLateCallback)
     }
 }
 
