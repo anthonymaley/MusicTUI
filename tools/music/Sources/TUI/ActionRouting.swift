@@ -172,8 +172,10 @@ extension MusicTUIAction {
     /// The surfaces that can actually invoke this action, decided from the key
     /// maps and the subcommand list on 2026-09-16 — never from the case name.
     /// That rule is why `libraryArtistTierFilter` is TUI-only (`a` cycles a
-    /// filter, it does not add to the library) and why `catalogSearch` is
+    /// filter, it does not add to the library) and why `catalogSearch` was
     /// CLI-only (Library's `/` filters rows already loaded, it does not search).
+    /// It is both since the catalogue search landed on Discover: `/` there asks
+    /// Apple Music (`slice.search`), which is the same action `music search` runs.
     ///
     /// An EMPTY set means no invoker exists anywhere in the tree. It is not a
     /// placeholder: `ActionRoutingTests` names every such row, so a new one
@@ -198,7 +200,8 @@ extension MusicTUIAction {
              .playlistListing,      // Shell.swift:94 / PlaylistCommands.swift:23
              .discoverFeed,         // DiscoverScene.swift:462 / DiscoverCommands.swift:52
              .airplayRoute,         // SpeakersScene.swift:332 / SpeakerCommands.swift:48
-             .eq:                   // SpeakersScene.swift:311 e / EQCommands.swift:4
+             .eq,                   // SpeakersScene.swift:311 e / EQCommands.swift:4
+             .catalogSearch:        // DiscoverScene.swift, `/` on Discover (catalogue search) / SearchCommand.swift:33
             return [.tui, .cli]
 
         // TUI only.
@@ -229,7 +232,6 @@ extension MusicTUIAction {
              .cliPlayArtist,     // PlaybackCommands.swift:11 — DECLARED, see below
              .cliPlayQuery,      // PlaybackCommands.swift, `playViaMusicApp` smart positional args
              .cliPlayCatalogSong,// PlaybackCommands.swift, `playViaMusicApp` one-arg Apple Music link
-             .catalogSearch,     // SearchCommand.swift:33
              .searchLibrary,     // SearchCommand.swift:18
              .recent,            // HistoryCommands.swift:22
              .rotation,          // HistoryCommands.swift:46
