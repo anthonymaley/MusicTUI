@@ -123,6 +123,30 @@ final class MarkedSetQueueTests: XCTestCase {
         XCTAssertFalse(r.log.contains("playlist Chill"), "never guesses which of the two to read")
     }
 
+    // MARK: - A partly available album keeps its skipped count
+
+    func testAPartlyAvailableAlbumCountsItsSkippedSongsAcrossTheSet() throws {
+        let r = mixedRig()
+        // Moon Safari: 3 matched, 2 playable. Mezzanine: 4 matched, 1 playable.
+        r.albums["Moon Safari"] = AlbumResolution(tracks: [entry("00000000000000A1", "La Femme d'Argent"),
+                                                           entry("00000000000000A2", "Sexy Boy")], matched: 3)
+        r.albums["Mezzanine"] = AlbumResolution(tracks: [entry("00000000000000C1", "Risingson")], matched: 4)
+        let plan = try markedSetPlan(mixed, shuffle: false, readers: r.readers)
+        XCTAssertEqual(plan.queue.tracks.count, 5, "2 + 2 (playlist) + 1 queued")
+        XCTAssertEqual(plan.matched, 9, "2 + 1 skipped, summed across the set; the playlist counts as matched in full")
+        XCTAssertEqual(plan.notice, "5 of 9 are queued \u{2014} the rest aren't available yet.")
+        XCTAssertEqual(plan.playingLine, "Playing 5 of 9 \u{2014} the rest aren't available yet.")
+        XCTAssertEqual(plan.notice, partialAvailabilityNotice(queued: 5, matched: 9), "the single-album wording")
+        XCTAssertEqual(plan.playingLine, partialAvailabilityPlayingLine(queued: 5, matched: 9))
+        XCTAssertEqual(try markedSetQueue(mixed, shuffle: false, readers: r.readers), plan.queue)
+
+        // Every matched track queued: no notice, no line.
+        let full = try markedSetPlan(mixed, shuffle: false, readers: mixedRig().readers)
+        XCTAssertEqual(full.matched, full.queue.tracks.count)
+        XCTAssertNil(full.notice)
+        XCTAssertNil(full.playingLine)
+    }
+
     func testNothingMarkedRefuses() {
         XCTAssertThrowsError(try markedSetQueue([], shuffle: false, readers: Readers().readers))
     }

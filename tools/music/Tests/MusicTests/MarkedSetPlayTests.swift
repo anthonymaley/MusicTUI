@@ -106,7 +106,8 @@ final class MarkedSetPlayTests: XCTestCase {
         let marks = MarkedSetStore()
         marks.toggle(.playlist(name: "Chill"), source: .bridge)
         playMarkedSet(marks.snapshot, shuffle: false, backend: counter.backend, appQueue: store,
-                      routing: musicAppRouting(), actions: actions, spanDACData: { false }, readers: r.readers)
+                      routing: musicAppRouting(), actions: actions, status: status, spanDACData: { false },
+                      readers: r.readers)
         actions.waitUntilIdle()
         XCTAssertEqual(status.current()?.text, markedPlayNeedsMusicTUIData)
         XCTAssertEqual(r.reads, 0)
@@ -121,7 +122,8 @@ final class MarkedSetPlayTests: XCTestCase {
         let marks2 = MarkedSetStore()
         marks2.toggle(.album(title: "Moon Safari", artist: "Air"), source: .musicApp)
         playMarkedSet(marks2.snapshot, shuffle: true, backend: counter.backend, appQueue: store,
-                      routing: musicAppRouting(), actions: actions2, spanDACData: { true }, readers: r2.readers)
+                      routing: musicAppRouting(), actions: actions2, status: status2, spanDACData: { true },
+                      readers: r2.readers)
         actions2.waitUntilIdle()
         XCTAssertEqual(status2.current()?.text, LibraryProvenance.bridgeSelectedMusicAppList)
         XCTAssertEqual(r2.reads, 0)
@@ -191,6 +193,113 @@ final class MarkedSetPlayTests: XCTestCase {
         XCTAssertEqual(shuffled?.tracks.map(\.index).sorted(), q?.tracks.map(\.index).sorted())
         XCTAssertEqual(paused.targets.first, shuffled.map { RequestedTrack.persistentID(persistentIDOfQueueEntry($0.tracks[0].index)) })
         XCTAssertEqual(paused.posts, [playNotStartedWarning("1 album and 1 playlist")])
+    }
+
+    // MARK: - A partly available album keeps its skipped count
+
+    private func partialReaders() -> CountingReaders {
+        let r = readers()
+        r.albums["Moon Safari"] = AlbumResolution(tracks: [entry("00000000000000A1", "La Femme d'Argent"),
+                                                           entry("00000000000000A2", "Sexy Boy")], matched: 3)
+        return r
+    }
+
+    private let partialNotice = "3 of 4 are queued \u{2014} the rest aren't available yet."
+    private let partialLine = "Playing 3 of 4 \u{2014} the rest aren't available yet."
+
+    func testAPartlyAvailableMarkedAlbumSaysSoThroughEitherRail() {
+        // Confirmed at once, from the Playlists rail: the play posts the line.
+        let fake = HonestPlayingTests.FakeMusicInterpreter()
+        let status = StatusStore()
+        let rig = HonestPlayingTests.ConfirmRig(
+            [PlayerIdentityReading(state: "playing", persistentID: "00000000000000A1", requestedID: nil)],
+            status: status)
+        let store = AppQueueStore()
+        store.confirmer = rig.confirmer
+        let actions = ActionRunner(status: status)
+        let marks = MarkedSetStore()
+        let r = partialReaders()
+        let lib = libraryScene(backend: fake.backend, store: store, status: status, actions: actions, marks: marks,
+                               readers: r.readers)
+        let pls = playlistsScene(backend: fake.backend, store: store, status: status, actions: actions, marks: marks,
+                                 readers: r.readers)
+        _ = lib.handle(.char("m"))
+        _ = pls.handle(.char("m"))
+        XCTAssertEqual(pls.handle(.char("p")), .push(.nowPlaying))
+        actions.waitUntilIdle()
+        rig.runJobs()
+        XCTAssertEqual(store.read()?.tracks.count, 3)
+        XCTAssertEqual(rig.posts, [], "Music confirmed the requested track")
+        XCTAssertEqual(status.current()?.text, partialLine, "the skipped song was dropped silently")
+
+        // Not confirmed, from the Library rail: the warning carries the notice.
+        let status2 = StatusStore()
+        let paused = HonestPlayingTests.ConfirmRig(
+            [PlayerIdentityReading(state: "paused", persistentID: "0000000000000099", requestedID: nil)],
+            status: status2)
+        let store2 = AppQueueStore()
+        store2.confirmer = paused.confirmer
+        let actions2 = ActionRunner(status: status2)
+        let marks2 = MarkedSetStore()
+        let lib2 = libraryScene(backend: fake.backend, store: store2, status: status2, actions: actions2,
+                                marks: marks2, readers: partialReaders().readers)
+        let pls2 = playlistsScene(backend: fake.backend, store: store2, status: status2, actions: actions2,
+                                  marks: marks2, readers: partialReaders().readers)
+        _ = lib2.handle(.char("m"))
+        _ = pls2.handle(.char("m"))
+        XCTAssertEqual(lib2.handle(.char("p")), .push(.nowPlaying))
+        actions2.waitUntilIdle()
+        paused.runJobs()
+        XCTAssertEqual(paused.posts, [playNotStartedWarning("1 album and 1 playlist") + " " + partialNotice],
+                       "the warning erased the skipped count")
+    }
+
+    func testALateConfirmationRestoresTheMarkedSetsAvailabilityLine() {
+        let fake = HonestPlayingTests.FakeMusicInterpreter()
+        let status = StatusStore()
+        let rig = HonestPlayingTests.ConfirmRig(
+            [PlayerIdentityReading(state: "paused", persistentID: "0000000000000099", requestedID: nil)],
+            status: status)
+        // Music starts the set late, after the warning showed.
+        rig.onRead = { n in
+            if n == 9 {
+                rig.setReadings([PlayerIdentityReading(state: "playing", persistentID: "00000000000000A1",
+                                                       requestedID: "00000000000000A1")])
+            }
+        }
+        let store = AppQueueStore()
+        store.confirmer = rig.confirmer
+        let actions = ActionRunner(status: status)
+        let marks = MarkedSetStore()
+        marks.toggle(.album(title: "Moon Safari", artist: "Air"), source: .musicApp)
+        marks.toggle(.playlist(name: "Chill"), source: .musicApp)
+        playMarkedSet(marks.snapshot, shuffle: false, backend: fake.backend, appQueue: store,
+                      routing: musicAppRouting(), actions: actions, status: status, spanDACData: { false },
+                      readers: partialReaders().readers)
+        actions.waitUntilIdle()
+        rig.runJobs()
+        XCTAssertEqual(rig.posts.first, playNotStartedWarning("1 album and 1 playlist") + " " + partialNotice)
+        XCTAssertEqual(status.current()?.text, partialLine,
+                       "the late confirmation took the availability line away with the warning")
+    }
+
+    func testAFullyAvailableMarkedSetPostsNoAvailabilityLine() {
+        let fake = HonestPlayingTests.FakeMusicInterpreter()
+        let status = StatusStore()
+        let rig = HonestPlayingTests.ConfirmRig(
+            [PlayerIdentityReading(state: "paused", persistentID: "0000000000000099", requestedID: nil)],
+            status: status)
+        let store = AppQueueStore()
+        store.confirmer = rig.confirmer
+        let actions = ActionRunner(status: status)
+        let marks = MarkedSetStore()
+        marks.toggle(.album(title: "Moon Safari", artist: "Air"), source: .musicApp)
+        playMarkedSet(marks.snapshot, shuffle: false, backend: fake.backend, appQueue: store,
+                      routing: musicAppRouting(), actions: actions, status: status, spanDACData: { false },
+                      readers: readers().readers)
+        actions.waitUntilIdle()
+        rig.runJobs()
+        XCTAssertEqual(rig.posts, [playNotStartedWarning("Moon Safari")], "no notice when nothing was skipped")
     }
 
     // MARK: - Nothing is ever written
