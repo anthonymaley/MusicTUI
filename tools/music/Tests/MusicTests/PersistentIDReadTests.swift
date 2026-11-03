@@ -59,11 +59,12 @@ final class PersistentIDReadTests: XCTestCase {
     func testPlaylistIDReadIsOneBulkScript() {
         let script = playlistTrackIDsScript(playlist: "Chill")
         // Four bulk column reads over the playlist's tracks.
-        XCTAssertEqual(script.components(separatedBy: "tracks 1 thru total of playlist").count - 1, 4,
+        XCTAssertEqual(script.components(separatedBy: "of every track of playlist").count - 1, 4,
                        "persistent ID, name, artist and album: one bulk get each")
-        XCTAssertTrue(script.contains("persistent ID of tracks 1 thru total of playlist"))
+        XCTAssertTrue(script.contains("persistent ID of every track of playlist"))
+        // `tracks 1 thru n` answers a bare value for a one-track playlist (probed live), so it is not used.
+        XCTAssertFalse(script.contains("thru"))
         // No per-track Apple Events: no iteration over tracks, no per-track property gets.
-        XCTAssertFalse(script.contains("every track"))
         XCTAssertFalse(script.contains("repeat with t"))
         XCTAssertFalse(script.contains("of track i"))
         XCTAssertFalse(script.contains("of item i of tracks"))

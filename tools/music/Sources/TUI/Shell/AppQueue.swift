@@ -271,6 +271,71 @@ func fetchPlaylistTracks(backend: AppleScriptBackend, playlist: String) -> [Trac
     return out
 }
 
+/// Read a playlist's tracks, in playlist order, as persistent ID + name +
+/// artist + album, for a queue addressed by identity (`persistentIDQueueEntry`).
+/// One script, four bulk gets (`<prop> of every track of playlist`, never
+/// `tracks 1 thru n`: of a ONE-track playlist that answers a bare value, not a
+/// list, probed live 2026-11-03, and the columns then fail the length check),
+/// never a per-track read: the only loop indexes lists already in memory, which
+/// sends no Apple Events (the `fetchPlaylistTracks` perf convention).
+///
+/// The reply opens with the track count, then one line per track:
+/// "count<LF>" and "persistentID<FS>name<FS>artist<FS>album<LF>" rows.
+/// The count lets the parser tell a torn reply from a short playlist, and the
+/// column-length check makes a library that changed between the gets an error
+/// (a reply is never assembled from columns of different sets).
+func playlistTrackIDsScript(playlist: String) -> String {
+    let esc = escapeAppleScriptString(playlist)
+    return """
+        set fs to (ASCII character 31)
+        set total to count of tracks of playlist "\(esc)"
+        set output to (total as text) & linefeed
+        if total > 0 then
+            set pids to persistent ID of every track of playlist "\(esc)"
+            set ns to name of every track of playlist "\(esc)"
+            set ars to artist of every track of playlist "\(esc)"
+            set als to album of every track of playlist "\(esc)"
+            if (count of pids) is not total or (count of ns) is not total or (count of ars) is not total or (count of als) is not total then error "playlist ids: column lengths differ" number 1001
+            repeat with i from 1 to total
+                set output to output & (item i of pids) & fs & (item i of ns) & fs & (item i of ars) & fs & (item i of als) & linefeed
+            end repeat
+        end if
+        return output
+        """
+}
+
+/// Parse `playlistTrackIDsScript`'s reply into queue entries, in reply order.
+/// Pure. Fails closed: nil, never a partial list, when the count line is
+/// missing or not a number, the number of rows differs from it (a torn or
+/// over-long reply), or any row does not have exactly four fields with a
+/// sixteen-hex-digit persistent ID first.
+func parsePlaylistTrackIDs(_ raw: String) -> [TrackListEntry]? {
+    var lines = raw.components(separatedBy: "\n")
+    while lines.last == "" { lines.removeLast() }
+    guard let header = lines.first, let count = Int(header), count >= 0 else { return nil }
+    let rows = lines.dropFirst()
+    guard rows.count == count else { return nil }
+    var out: [TrackListEntry] = []
+    out.reserveCapacity(count)
+    for line in rows {
+        let f = line.split(separator: asFieldSep, maxSplits: 4, omittingEmptySubsequences: false).map(String.init)
+        guard f.count == 4,
+              let entry = persistentIDQueueEntry(persistentID: f[0], name: f[1], artist: f[2], album: f[3])
+        else { return nil }
+        out.append(entry)
+    }
+    return out
+}
+
+/// A playlist's tracks as identity-addressed queue entries, in playlist order,
+/// or nil when the read failed, was torn, or returned any malformed ID. An empty
+/// playlist is an empty list, not nil.
+func fetchPlaylistTrackIDs(backend: AppleScriptBackend, playlist: String) -> [TrackListEntry]? {
+    guard let raw = try? backend.runMusicBlocking(playlistTrackIDsScript(playlist: playlist), timeout: 30)
+    else { return nil }
+    return parsePlaylistTrackIDs(raw)
+}
+
 /// Parse the FS-separated "index<FS>name<FS>artist" lines from
 /// `fetchLibraryTracksWithPositions` into rows. Pure, so it's unit-testable.
 func parseLibraryTrackPositions(_ raw: String) -> [TrackListEntry] {
@@ -326,9 +391,12 @@ struct LibraryAlbumRow: Equatable {
     let disc: Int
     let track: Int
     let album: String
+    /// The track's persistent ID (sixteen hex digits), read only by the
+    /// identity variant of the album read (`persistentIDs: true`); "" otherwise.
+    let persistentID: String
 
     init(index: Int, name: String, artist: String, albumArtist: String, cloudStatus: String,
-         disc: Int = 0, track: Int = 0, album: String = "") {
+         disc: Int = 0, track: Int = 0, album: String = "", persistentID: String = "") {
         self.index = index
         self.name = name
         self.artist = artist
@@ -337,6 +405,7 @@ struct LibraryAlbumRow: Equatable {
         self.disc = disc
         self.track = track
         self.album = album
+        self.persistentID = persistentID
     }
 }
 
@@ -354,6 +423,29 @@ func parseLibraryAlbumRows(_ raw: String) -> [LibraryAlbumRow] {
                                    disc: disc, track: track, album: f[7]))
     }
     return out
+}
+
+/// The identity variant of `parseLibraryAlbumRows`: nine fields, the eighth
+/// being the album and the ninth the track's persistent ID (sixteen hex digits).
+/// Fails closed: it returns nil, never a shorter list, when ANY non-empty line
+/// is malformed (wrong field count, non-numeric index/disc/track, or an ID that
+/// is not sixteen hex digits), because a dropped row is a track silently missing
+/// from an identity-addressed queue. An empty reply is an empty list (no match).
+func parseLibraryAlbumRowsWithIDs(_ raw: String) -> [LibraryAlbumRow]? {
+    var out: [LibraryAlbumRow] = []
+    for line in raw.components(separatedBy: "\n") where !line.isEmpty {
+        let f = line.split(separator: asFieldSep, maxSplits: 8, omittingEmptySubsequences: false).map(String.init)
+        guard f.count == 9, let idx = Int(f[0]), let disc = Int(f[5]), let track = Int(f[6]),
+              isPersistentIDText(f[8]) else { return nil }
+        out.append(LibraryAlbumRow(index: idx, name: f[1], artist: f[2], albumArtist: f[3], cloudStatus: f[4],
+                                   disc: disc, track: track, album: f[7], persistentID: f[8]))
+    }
+    return out
+}
+
+/// Whether `s` is a persistent ID `persistentIDQueueEntry` would accept.
+func isPersistentIDText(_ s: String) -> Bool {
+    s.count == 16 && s.allSatisfy(\.isHexDigit)
 }
 
 /// Album play order for resolved rows: disc, then track number, with the fetch
@@ -808,7 +900,12 @@ func fetchLibraryAlbumRows(backend: AppleScriptBackend, whereClause: String) -> 
 /// Measured 2026-09-23 via osascript on this library: `artist is "Radiohead"`
 /// (295 rows) 0.32s, against 46.5s for the per-track loop, which is past the 30s
 /// watchdog; `album is "In Rainbows"` (19 rows) 0.33s against 2.9s.
-func libraryAlbumRowsScript(whereClause: String) -> String {
+///
+/// `persistentIDs: true` adds one more guarded column, `persistent ID`, as a
+/// ninth field (read by `parseLibraryAlbumRowsWithIDs`) and one more length
+/// check; with the default `false` the script text is exactly the eight-field
+/// read every existing caller uses.
+func libraryAlbumRowsScript(whereClause: String, persistentIDs: Bool = false) -> String {
     let hits = "every track of playlist \"Library\" whose \(whereClause)"
     func guarded(_ list: String, _ prop: String, _ item: String, _ fallback: String, _ read: String) -> String {
         """
@@ -828,6 +925,9 @@ func libraryAlbumRowsScript(whereClause: String) -> String {
         end if
         """
     }
+    let pidColumn = persistentIDs ? "\n" + guarded("pids", "persistent ID", "pidText", "\"\"", "(persistent ID of t)") : ""
+    let pidCountCheck = persistentIDs ? " or (count of pids) is not n" : ""
+    let pidField = persistentIDs ? " & fs & (item i of pids)" : ""
     return """
         set fs to (ASCII character 31)
         if (count of (\(hits))) is 0 then return ""
@@ -840,17 +940,17 @@ func libraryAlbumRowsScript(whereClause: String) -> String {
         \(guarded("css", "cloud status", "cs", "\"unknown\"", "(cloud status of t as text)"))
         \(guarded("dns", "disc number", "dn", "0", "(disc number of t)"))
         \(guarded("tns", "track number", "tn", "0", "(track number of t)"))
-        \(guarded("als", "album", "al", "\"\"", "(album of t)"))
+        \(guarded("als", "album", "al", "\"\"", "(album of t)"))\(pidColumn)
         set idsAfter to (database ID of \(hits))
         if idsAfter is not idsBefore then error "album rows: the matching tracks changed during the read" number 1002
-        if (count of ns) is not n or (count of ars) is not n or (count of aas) is not n or (count of css) is not n or (count of dns) is not n or (count of tns) is not n or (count of als) is not n then error "album rows: column lengths differ" number 1001
+        if (count of ns) is not n or (count of ars) is not n or (count of aas) is not n or (count of css) is not n or (count of dns) is not n or (count of tns) is not n or (count of als) is not n\(pidCountCheck) then error "album rows: column lengths differ" number 1001
         set outLines to {}
         repeat with i from 1 to n
             set cs to "unknown"
             try
                 set cs to ((item i of css) as text)
             end try
-            set end of outLines to "" & (item i of ixs) & fs & (item i of ns) & fs & (item i of ars) & fs & (item i of aas) & fs & cs & fs & (item i of dns) & fs & (item i of tns) & fs & (item i of als) & linefeed
+            set end of outLines to "" & (item i of ixs) & fs & (item i of ns) & fs & (item i of ars) & fs & (item i of aas) & fs & cs & fs & (item i of dns) & fs & (item i of tns) & fs & (item i of als)\(pidField) & linefeed
         end repeat
         set astid to AppleScript's text item delimiters
         set AppleScript's text item delimiters to ""
@@ -899,18 +999,53 @@ func emptyResolutionMessage(_ res: AlbumResolution, name: String,
 /// otherwise make `play track` silently no-op; `matched` keeps the pre-filter count
 /// for the "N of M" message.
 func resolveAlbumPlaybackTracks(backend: AppleScriptBackend, title: String, artist: String) -> AlbumResolution {
+    guard let matched = resolveAlbumRows(title: title, artist: artist, read: {
+        fetchLibraryAlbumRows(backend: backend, whereClause: $0)
+    }) else { return .readFailure }
+    return orderedPlayableAlbumTracks(matched)
+}
+
+/// `resolveAlbumPlaybackTracks`, with each track addressed by its persistent ID:
+/// the same strict-then-title-only matching (`resolveAlbumRows`), the same album
+/// order and the same playability filter (`orderedPlayableAlbumRows` is
+/// shared), but the library read carries each track's persistent ID, and every
+/// returned entry is a `persistentIDQueueEntry`. Fails closed: a read that
+/// failed, or any row whose ID is not a persistent ID, is `.readFailure`, never
+/// a shorter list. `matched` is the pre-filter count, as everywhere.
+func resolveAlbumPlaybackTrackIDs(backend: AppleScriptBackend, title: String, artist: String) -> AlbumResolution {
+    guard let matched = resolveAlbumRows(title: title, artist: artist, read: { clause in
+        guard let raw = try? backend.runMusicBlocking(
+            libraryAlbumRowsScript(whereClause: clause, persistentIDs: true), timeout: 30)
+        else { return nil }
+        return parseLibraryAlbumRowsWithIDs(raw)
+    }) else { return .readFailure }
+    var entries: [TrackListEntry] = []
+    for row in orderedPlayableAlbumRows(matched) {
+        guard let entry = persistentIDQueueEntry(persistentID: row.persistentID, name: row.name,
+                                                 artist: row.artist, album: row.album) else { return .readFailure }
+        entries.append(entry)
+    }
+    return AlbumResolution(tracks: entries, matched: matched.count)
+}
+
+/// The one copy of the album matching: try the strict album+artist clause, and
+/// only if it matches nothing fall back to the title-only clause with the artist
+/// resolved in Swift (`selectAlbumTracks`). `read` runs a `whose` clause and
+/// answers nil when the read failed; a failed strict read never reaches the
+/// fallback. Returns nil when a read failed, else the matched rows (unsorted,
+/// unfiltered).
+private func resolveAlbumRows(title: String, artist: String,
+                              read: (String) -> [LibraryAlbumRow]?) -> [LibraryAlbumRow]? {
     let escTitle = escapeAppleScriptString(title)
     let escArtist = escapeAppleScriptString(artist)
-    guard let strict = fetchLibraryAlbumRows(
-        backend: backend,
-        whereClause: "album is \"\(escTitle)\" and (artist is \"\(escArtist)\" or album artist is \"\(escArtist)\")")
-    else { return .readFailure }
+    guard let strict = read(
+        "album is \"\(escTitle)\" and (artist is \"\(escArtist)\" or album artist is \"\(escArtist)\")")
+    else { return nil }
     // Strict is already artist-scoped by the clause; only the title-only fallback
     // needs Swift-side disambiguation. A failed strict read never reaches it.
-    if !strict.isEmpty { return orderedPlayableAlbumTracks(strict) }
-    guard let byTitle = fetchLibraryAlbumRows(backend: backend, whereClause: "album is \"\(escTitle)\"")
-    else { return .readFailure }
-    return orderedPlayableAlbumTracks(selectAlbumTracks(byTitle, requestedArtist: artist))
+    if !strict.isEmpty { return strict }
+    guard let byTitle = read("album is \"\(escTitle)\"") else { return nil }
+    return selectAlbumTracks(byTitle, requestedArtist: artist)
 }
 
 /// The album resolver's single exit, shared by the strict and fallback paths:
@@ -918,10 +1053,17 @@ func resolveAlbumPlaybackTracks(backend: AppleScriptBackend, title: String, arti
 /// which can start an album mid-way), then drop tracks Music can't play yet.
 /// `matched` keeps the pre-filter count so "Playing N of M" is unaffected.
 func orderedPlayableAlbumTracks(_ matched: [LibraryAlbumRow]) -> AlbumResolution {
-    let playable = sortRowsByAlbumOrder(matched).filter { isPlayableCloudStatus($0.cloudStatus) }
+    let playable = orderedPlayableAlbumRows(matched)
         .map { TrackListEntry(index: $0.index, name: $0.name, artist: $0.artist, isCurrent: false,
                               album: $0.album) }
     return AlbumResolution(tracks: playable, matched: matched.count)
+}
+
+/// The sort-then-filter half of `orderedPlayableAlbumTracks`, on rows, so the
+/// position-addressed and identity-addressed resolutions cannot order or filter
+/// differently.
+func orderedPlayableAlbumRows(_ matched: [LibraryAlbumRow]) -> [LibraryAlbumRow] {
+    sortRowsByAlbumOrder(matched).filter { isPlayableCloudStatus($0.cloudStatus) }
 }
 
 /// The full play-order track list the now-playing view shows, with the current
