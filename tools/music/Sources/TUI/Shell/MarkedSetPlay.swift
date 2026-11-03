@@ -211,6 +211,13 @@ func markedSetSpanDACChangedLine(_ name: String) -> String {
     "SpanDAC's library changed while '\(name)' was being read, so nothing played. Try again."
 }
 
+/// A marked set read from a SpanDAC whose `slice.libraryAlbums` page names no
+/// process (`library_instance`): nothing can show that one SpanDAC served every
+/// read, so the set is refused rather than played unchecked.
+func markedSetSpanDACUnbracketedLine(_ name: String) -> String {
+    "This SpanDAC build can't confirm '\(name)' was read from one library, so nothing played. Update SpanDAC."
+}
+
 /// A marked set whose `slice.queue` request would not fit the 64 KiB request
 /// frame (`SourceAppControl.maximumRequestBytes`): refused whole, never cut short.
 func markedSetTooLargeForSpanDACLine(_ songs: Int) -> String {
@@ -345,15 +352,23 @@ func playMarkedSet(_ marked: (items: [MarkedItem], source: ListSource?), shuffle
 /// so a switch while a read is held, during a retry's wait or between two pages
 /// sends nothing further.
 ///
-/// One snapshot for the whole set: the first read's `generation` (SpanDAC's core
-/// generation, which album tracks and playlist pages both answer) is recorded,
-/// and every later album read and playlist page must answer the same one; one
-/// that does not refuses the whole set (`markedSetSpanDACChangedLine`), as the
-/// artist play refuses, rather than read it again. Not caught: a SpanDAC that
-/// restarted and reused the generation number between two reads, because
-/// neither `slice.libraryAlbumTracks` nor `slice.libraryPlaylistTracks` carries
-/// `library_instance`, so no read of this play can tell one SpanDAC process from
-/// another; and a refresh after the last read, before the queue is sent.
+/// One snapshot, from one SpanDAC process, for the whole set. The item reads
+/// are bracketed by two first-page `slice.libraryAlbums` reads of one row each,
+/// fenced and retried while warming as the item reads are: one before the
+/// first item read, one after the last, immediately before the queue. A
+/// bracket carries `library_instance` (the process answering) and SpanDAC's
+/// core generation, the same number album tracks and playlist pages answer.
+/// Every album read and playlist page must answer the first bracket's
+/// generation, and the second bracket must answer the first's instance and
+/// generation; anything else refuses the whole set
+/// (`markedSetSpanDACChangedLine`), as the artist play refuses, rather than read
+/// it again. That catches a refresh between two reads or after the last one,
+/// and a SpanDAC that restarted and reused the generation number, which the item
+/// reads alone cannot show: neither `slice.libraryAlbumTracks` nor
+/// `slice.libraryPlaylistTracks` carries `library_instance`. A bracket that
+/// names no process refuses too (`markedSetSpanDACUnbracketedLine`). Left to
+/// SpanDAC: a refresh after the closing bracket, before `slice.queue` resolves
+/// its IDs against the snapshot it then holds.
 ///
 /// A song in more than one marked item is queued once, at its first position
 /// (`firstOccurrences`, by library ID), before any shuffle, on both outputs:
@@ -399,13 +414,21 @@ private func playMarkedSetFromSpanDAC(_ items: [MarkedItem], shuffle: Bool, stam
             guard stillCurrent() else { throw switched }
             return answer
         }
-        // The snapshot the first read answered; every later read must match it.
-        var snapshot: Int?
-        func sameSnapshot(_ seen: Int?) -> Bool {
-            guard let seen else { return false }
-            guard let snapshot else { snapshot = seen; return true }
-            return seen == snapshot
+        // A bracket: SpanDAC's first album page, one row, for the process that
+        // answers and its core generation. Fenced inside the warming retry, as
+        // every item read is.
+        func bracket() throws -> (instance: String, generation: Int) {
+            let page = try retryingWhileWarming(budget: budget, onWarming: onWarming, sleep: sleep) {
+                try fencedRequest { try provider.libraryAlbums(cursor: nil, limit: 1) }
+            }
+            guard let instance = page.libraryInstance, let generation = page.generation else {
+                throw ActionError(message: markedSetSpanDACUnbracketedLine(name))
+            }
+            return (instance, generation)
         }
+        // The snapshot the first bracket answered; every item read must match it.
+        let opening = try bracket()
+        func sameSnapshot(_ seen: Int?) -> Bool { seen == opening.generation }
         let read = try markedSetSpanDACRows(
             items,
             albumTracks: { albumID in
@@ -462,6 +485,10 @@ private func playMarkedSetFromSpanDAC(_ items: [MarkedItem], shuffle: Bool, stam
                > SourceAppControl.maximumRequestBytes {
             throw ActionError(message: markedSetTooLargeForSpanDACLine(ids.count))
         }
+        // The closing bracket, after the last read and immediately before the
+        // queue: the same process and the same snapshot, or nothing plays.
+        let closing = try bracket()
+        guard closing.instance == opening.instance, closing.generation == opening.generation else { throw changed }
         var skippedUnavailable = 0
         var handedOff: HandoffPlayReport?
         try retryingWhileWarming(budget: budget, onWarming: onWarming, sleep: sleep) {
