@@ -110,9 +110,9 @@ final class PersistentIDReadTests: XCTestCase {
         XCTAssertTrue(script.contains("considering case"), "IDs compare exactly, never case-folded")
     }
 
-    /// The read is addressed by the playlist's own persistent ID, the one the
-    /// name check resolved, so a playlist renamed or duplicated in between is
-    /// never read by mistake.
+    /// The read is addressed by the playlist's own persistent ID, the one its
+    /// mark captured from the rail, so a playlist renamed, or another taking
+    /// its name, is never read by mistake.
     func testPlaylistIDReadIsAddressedByThePlaylistsOwnID() {
         let script = playlistTrackIDsScript(playlistID: chillID)
         XCTAssertTrue(script.contains("set pl to (first playlist whose persistent ID is \"\(chillID)\")"), script)
@@ -168,7 +168,8 @@ final class PersistentIDReadTests: XCTestCase {
     func testFetchPlaylistTrackIDsReturnsRowsAndFailsClosedOnTornReplyOrScriptError() throws {
         let good = playlistRow("0123456789ABCDEF", "N", "A", "B")
         let ok = FakeInterpreter(strictReply: "1\n" + good + "\n")
-        let rows = try XCTUnwrap(fetchPlaylistTrackIDs(backend: ok.backend, playlistID: chillID))
+        let read = try XCTUnwrap(fetchPlaylistTrackIDs(backend: ok.backend, playlistID: chillID))
+        guard case .tracks(let rows) = read else { return XCTFail("\(read)") }
         XCTAssertEqual(rows.map(\.name), ["N"])
         XCTAssertEqual(ok.scripts.count, 1, "one script run for the whole playlist")
         XCTAssertTrue(ok.scripts.first?.contains("whose persistent ID is \"\(chillID)\"") ?? false)
@@ -178,6 +179,33 @@ final class PersistentIDReadTests: XCTestCase {
 
         let failing = FakeInterpreter(strictReply: "", exitCode: 1)
         XCTAssertNil(fetchPlaylistTrackIDs(backend: failing.backend, playlistID: chillID))
+    }
+
+    /// No playlist has the ID any more: the script says so in its own reply,
+    /// told apart from a failed read, and resolves no other playlist. Only the
+    /// "no such object" error counts as gone; any other error still fails.
+    func testAPlaylistIDThatIsGoneIsMissingNotAFailure() throws {
+        let script = playlistTrackIDsScript(playlistID: chillID)
+        let lines = script.components(separatedBy: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
+        let at = try XCTUnwrap(lines.firstIndex(of: "set pl to (first playlist whose persistent ID is \"\(chillID)\")"),
+                               script)
+        XCTAssertEqual(lines[at - 1], "try", script)
+        XCTAssertEqual(lines[at + 1], "on error number -1728", script)
+        XCTAssertEqual(lines[at + 2], "return \"\(playlistMissingReply)\"", script)
+        XCTAssertEqual(lines[at + 3], "end try", script)
+        XCTAssertFalse(script.contains("whose name is"), "never falls back to a name")
+
+        XCTAssertEqual(parsePlaylistTrackIDsRead(playlistMissingReply + "\n"), .missing)
+        XCTAssertEqual(parsePlaylistTrackIDsRead(playlistMissingReply), .missing)
+        XCTAssertEqual(parsePlaylistTrackIDsRead("0\n"), .tracks([]))
+        XCTAssertNil(parsePlaylistTrackIDsRead(""))
+        XCTAssertNil(parsePlaylistTrackIDsRead("missing\n" + playlistRow("0123456789ABCDEF", "N", "A", "B")),
+                     "a missing reply with rows after it is torn, not missing")
+        XCTAssertNil(parsePlaylistTrackIDs(playlistMissingReply), "the rows parser never reads it as an empty list")
+
+        let gone = FakeInterpreter(strictReply: playlistMissingReply + "\n")
+        XCTAssertEqual(fetchPlaylistTrackIDs(backend: gone.backend, playlistID: chillID), .missing)
+        XCTAssertEqual(gone.scripts.count, 1, "one script, no second lookup")
     }
 
     func testTheComparisonErrorFailsClosed() {

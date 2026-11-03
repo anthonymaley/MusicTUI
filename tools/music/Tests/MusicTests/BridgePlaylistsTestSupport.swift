@@ -18,6 +18,8 @@ final class PlaylistAppleScriptSpy {
     /// What `loadMusicAppPlaylists()` answers.
     var names: [String] = []
     var subscription: Set<String> = []
+    /// Each name's playlist persistent ID, in the same order (nil: none read).
+    var persistentIDs: [String?] = []
 
     private func bump(_ key: String) { lock.lock(); counts[key, default: 0] += 1; lock.unlock() }
     func count(_ key: String) -> Int { lock.lock(); defer { lock.unlock() }; return counts[key] ?? 0 }
@@ -38,7 +40,7 @@ final class PlaylistAppleScriptSpy {
 
     func loadMusicAppPlaylists() -> MusicAppPlaylistNamesRead {
         bump("loadMusicAppPlaylists")
-        return .success(names: names, subscription: subscription)
+        return .success(names: names, subscription: subscription, persistentIDs: persistentIDs)
     }
 
     private func countedSources() -> PlaylistDataSources {
@@ -63,7 +65,8 @@ func playlistsTestScene(flag: BridgeSelectedFlag, wire: BridgeLibraryReadsWire, 
                         now: @escaping () -> Date = Date.init,
                         widthProvider: (() -> Int)? = nil,
                         routing given: RoutingCoordinator? = nil,
-                        loadMusicAppPlaylists loader: (() -> MusicAppPlaylistNamesRead)? = nil) -> PlaylistsScene {
+                        loadMusicAppPlaylists loader: (() -> MusicAppPlaylistNamesRead)? = nil,
+                        marks: MarkedSetStore = MarkedSetStore()) -> PlaylistsScene {
     // `names` (this construction's own `playlists:`) and `spy.names` (what a
     // LATER async reload answers) are different concerns — only set the spy's
     // when the caller is using the direct-construction path and hasn't
@@ -90,7 +93,8 @@ func playlistsTestScene(flag: BridgeSelectedFlag, wire: BridgeLibraryReadsWire, 
                           now: now,
                           // Injected (rule 15/D10): tests never depend on the
                           // real terminal. 138 defaults to three-zone.
-                          screenWidth: widthProvider ?? { width })
+                          screenWidth: widthProvider ?? { width },
+                          marks: marks)
 }
 
 @discardableResult

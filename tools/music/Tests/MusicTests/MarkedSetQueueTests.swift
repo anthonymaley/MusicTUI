@@ -11,14 +11,18 @@ final class MarkedSetQueueTests: XCTestCase {
         persistentIDQueueEntry(persistentID: pid, name: name, artist: "Art", album: album)!
     }
 
+    /// The marked "Chill" playlist's own persistent ID, captured at mark time.
+    private static let chillID = "00000000000000F1"
+    /// Another playlist's ID: one that took the name "Chill" after the mark.
+    private static let otherID = "00000000000000F2"
+
     /// Fake readers over canned data, logging every read in order.
     private final class Readers {
         var albums: [String: AlbumResolution] = [:]
+        /// Each playlist's tracks by its own persistent ID, the ONLY key a
+        /// marked playlist is read by. `.some(nil)` is a read that did not
+        /// answer; an ID with no entry is a playlist that no longer exists.
         var playlists: [String: [TrackListEntry]?] = [:]
-        var playlistCounts: [String: Int?] = [:]
-        /// Each playlist's own persistent ID, by name: what the name check
-        /// resolves, and the ONLY key the track read is addressed by.
-        var playlistIDs: [String: String] = ["Chill": "00000000000000F1"]
         private(set) var log: [String] = []
 
         var readers: MarkedSetReaders {
@@ -27,20 +31,10 @@ final class MarkedSetQueueTests: XCTestCase {
                     self.log.append("album \(title) / \(artist)")
                     return self.albums[title] ?? AlbumResolution(tracks: [], matched: 0)
                 },
-                playlistID: { name in
-                    self.log.append("count \(name)")
-                    if let c = self.playlistCounts[name] {
-                        guard let c else { return nil }
-                        if c == 0 { return .notFound }
-                        if c > 1 { return .duplicated(count: c) }
-                    }
-                    guard self.playlists[name] != nil, let pid = self.playlistIDs[name] else { return .notFound }
-                    return .unique(persistentID: pid)
-                },
                 playlist: { pid in
                     self.log.append("playlist \(pid)")
-                    guard let name = self.playlistIDs.first(where: { $0.value == pid })?.key else { return nil }
-                    return self.playlists[name] ?? nil
+                    guard let hit = self.playlists[pid] else { return .missing }
+                    return hit.map { .tracks($0) }
                 })
         }
     }
@@ -49,13 +43,13 @@ final class MarkedSetQueueTests: XCTestCase {
         let r = Readers()
         r.albums["Moon Safari"] = AlbumResolution(tracks: [entry("00000000000000A1", "La Femme d'Argent"),
                                                            entry("00000000000000A2", "Sexy Boy")], matched: 2)
-        r.playlists["Chill"] = [entry("00000000000000B1", "Teardrop"), entry("00000000000000B2", "Angel")]
+        r.playlists[Self.chillID] = [entry("00000000000000B1", "Teardrop"), entry("00000000000000B2", "Angel")]
         r.albums["Mezzanine"] = AlbumResolution(tracks: [entry("00000000000000C1", "Risingson")], matched: 1)
         return r
     }
 
     private let mixed: [MarkedItem] = [.album(title: "Moon Safari", artist: "Air"),
-                                       .playlist(name: "Chill"),
+                                       .playlist(id: MarkedSetQueueTests.chillID, name: "Chill"),
                                        .album(title: "Mezzanine", artist: "Massive Attack")]
 
     func testMixedSetPlaysInMarkOrder() throws {
@@ -67,18 +61,19 @@ final class MarkedSetQueueTests: XCTestCase {
                         "00000000000000C1"])
         XCTAssertEqual(q.currentIndex, 1)
         XCTAssertEqual(q.contextLabel, "2 albums and 1 playlist")
-        XCTAssertEqual(r.log, ["album Moon Safari / Air", "count Chill", "playlist 00000000000000F1",
+        XCTAssertEqual(r.log, ["album Moon Safari / Air", "playlist 00000000000000F1",
                                "album Mezzanine / Massive Attack"],
-                       "read in mark order, the playlist by the persistent ID its name check resolved")
+                       "read in mark order, the playlist by the persistent ID its mark carries, with no name check")
     }
 
     func testASingleMarkIsLabelledByItsOwnName() throws {
         let r = mixedRig()
-        XCTAssertEqual(try markedSetQueue([.playlist(name: "Chill")], shuffle: false, readers: r.readers).contextLabel,
+        XCTAssertEqual(try markedSetQueue([.playlist(id: Self.chillID, name: "Chill")], shuffle: false, readers: r.readers).contextLabel,
                        "Chill")
         XCTAssertEqual(try markedSetQueue([.album(title: "Moon Safari", artist: "Air")], shuffle: false,
                                           readers: r.readers).contextLabel, "Moon Safari")
-        XCTAssertEqual(markedSetDisplayName([.playlist(name: "A"), .playlist(name: "B")]), "2 playlists")
+        XCTAssertEqual(markedSetDisplayName([.playlist(id: "00000000000000E1", name: "A"),
+                                             .playlist(id: "00000000000000E2", name: "B")]), "2 playlists")
         XCTAssertEqual(markedSetDisplayName([.album(title: "A", artist: "x"), .album(title: "B", artist: "y")]),
                        "2 albums")
     }
@@ -96,7 +91,7 @@ final class MarkedSetQueueTests: XCTestCase {
 
     func testOneFailedReadFailsTheWholePlay() {
         let r = mixedRig()
-        r.playlists["Chill"] = .some(nil)       // the playlist read did not answer
+        r.playlists[Self.chillID] = .some(nil)       // the playlist read did not answer
         XCTAssertThrowsError(try markedSetQueue(mixed, shuffle: false, readers: r.readers)) { error in
             let message = (error as? ActionError)?.message ?? ""
             XCTAssertTrue(message.contains("'Chill'"), "names the item that failed: \(message)")
@@ -114,30 +109,38 @@ final class MarkedSetQueueTests: XCTestCase {
         emptyAlbum.albums["Mezzanine"] = AlbumResolution(tracks: [], matched: 0)
         XCTAssertThrowsError(try markedSetQueue(mixed, shuffle: false, readers: emptyAlbum.readers),
                              "an album with nothing to play is never left out silently")
-
-        let countFailed = mixedRig()
-        countFailed.playlistCounts["Chill"] = .some(nil)
-        XCTAssertThrowsError(try markedSetQueue(mixed, shuffle: false, readers: countFailed.readers)) { error in
-            XCTAssertTrue(((error as? ActionError)?.message ?? "").contains("'Chill'"))
-        }
-        XCTAssertFalse(countFailed.log.contains { $0.hasPrefix("playlist ") }, "a failed name check reads no tracks")
     }
 
-    func testADuplicatedPlaylistNameRefuses() {
-        let r = mixedRig()
-        r.playlistCounts["Chill"] = 2
-        XCTAssertThrowsError(try markedSetQueue(mixed, shuffle: false, readers: r.readers)) { error in
-            let message = (error as? ActionError)?.message ?? ""
-            XCTAssertTrue(message.contains("'Chill'"), message)
-        }
-        XCTAssertFalse(r.log.contains { $0.hasPrefix("playlist ") }, "never guesses which of the two to read")
+    // MARK: - A marked playlist is its persistent ID, never its name
 
-        let gone = mixedRig()
-        gone.playlistCounts["Chill"] = 0
-        XCTAssertThrowsError(try markedSetQueue(mixed, shuffle: false, readers: gone.readers)) { error in
-            XCTAssertTrue(((error as? ActionError)?.message ?? "").contains("Couldn't find the playlist 'Chill'"))
+    /// The reviewer's case: "Chill" is marked, then renamed, and another
+    /// playlist takes the name "Chill" before `p`. The play reads the marked
+    /// playlist by the ID the mark captured, and never the one now called
+    /// "Chill".
+    func testARenamedMarkedPlaylistIsReadByItsOriginalIDNeverTheOneThatTookItsName() throws {
+        let r = mixedRig()
+        // The original, renamed since the mark: still the same ID.
+        r.playlists[Self.chillID] = [entry("00000000000000B1", "Teardrop")]
+        // The newcomer that now carries the name "Chill".
+        r.playlists[Self.otherID] = [entry("00000000000000D1", "Not This")]
+        let q = try markedSetQueue([.playlist(id: Self.chillID, name: "Chill")], shuffle: false, readers: r.readers)
+        XCTAssertEqual(q.tracks.map { persistentIDOfQueueEntry($0.index) }, ["00000000000000B1"])
+        XCTAssertEqual(r.log, ["playlist \(Self.chillID)"], "only the marked ID was read")
+        XCTAssertFalse(r.log.contains("playlist \(Self.otherID)"), "the playlist that took the name was read")
+    }
+
+    /// The marked ID is gone at play time: the play refuses, naming the
+    /// playlist, and reads no other playlist in its place.
+    func testAMarkedPlaylistThatIsGoneRefusesAndReadsNoOther() {
+        let r = mixedRig()
+        r.playlists = [Self.otherID: [entry("00000000000000D1", "Not This")]]   // a namesake, not the marked one
+        XCTAssertThrowsError(try markedSetQueue(mixed, shuffle: false, readers: r.readers)) { error in
+            XCTAssertEqual((error as? ActionError)?.message,
+                           "'Chill' is no longer in your playlists, so nothing played.")
         }
-        XCTAssertFalse(gone.log.contains { $0.hasPrefix("playlist ") })
+        XCTAssertEqual(r.log, ["album Moon Safari / Air", "playlist \(Self.chillID)"],
+                       "one read of the marked ID, no other playlist, and nothing after it")
+        XCTAssertEqual(markedPlaylistGoneLine("Chill"), "'Chill' is no longer in your playlists, so nothing played.")
     }
 
     // MARK: - A partly available album keeps its skipped count
@@ -179,34 +182,5 @@ final class MarkedSetQueueTests: XCTestCase {
                        .bounded(label: "2 albums and 1 playlist", source: persistentIDQueueSource, tracks: q.tracks))
         XCTAssertEqual(continuationShuffleTracks(continuationSource(for: q))?.map(\.index).sorted(),
                        q.tracks.map(\.index).sorted())
-    }
-
-    func testTheNameCheckScriptOnlyReadsAndResolvesTheOnePlaylistsID() {
-        let script = playlistIdentityScript("Chill \"Mix\"")
-        XCTAssertTrue(script.contains("every playlist whose name is \"Chill \\\"Mix\\\"\""), script)
-        XCTAssertTrue(script.contains("persistent ID of every playlist whose name is \"Chill \\\"Mix\\\"\""), script)
-        XCTAssertTrue(script.contains("as list"), "one match can answer a bare value: \(script)")
-        for word in ["make new", "duplicate", "delete", "set name"] {
-            XCTAssertFalse(script.contains(word), word)
-        }
-        for word in ["before", "after", "active", "left"] {
-            XCTAssertNil(script.range(of: "set \(word) to"), "reserved word as a variable: \(word)")
-        }
-        // A hostile name stays inside the literal.
-        let hostile = "x\" & (do shell script \"id\") & \""
-        XCTAssertFalse(playlistIdentityScript(hostile).contains("\"\(hostile)\""))
-        XCTAssertTrue(playlistIdentityScript(hostile).contains(escapeAppleScriptString(hostile)))
-
-        XCTAssertEqual(parsePlaylistIdentity("1\n00000000000000F1\n"), .unique(persistentID: "00000000000000F1"))
-        XCTAssertEqual(parsePlaylistIdentity("1\n00000000000000f1"), .unique(persistentID: "00000000000000F1"))
-        XCTAssertEqual(parsePlaylistIdentity("0\n"), .notFound)
-        XCTAssertEqual(parsePlaylistIdentity("2\n"), .duplicated(count: 2))
-        XCTAssertNil(parsePlaylistIdentity(""))
-        XCTAssertNil(parsePlaylistIdentity("two"))
-        XCTAssertNil(parsePlaylistIdentity("1\n"), "one playlist and no ID")
-        XCTAssertNil(parsePlaylistIdentity("1\nnot-an-id"))
-        XCTAssertNil(parsePlaylistIdentity("1\n00000000000000F1\n00000000000000F2"))
-        XCTAssertNil(parsePlaylistIdentity("2\n00000000000000F1"))
-        XCTAssertNil(parsePlaylistIdentity("-1\n"))
     }
 }

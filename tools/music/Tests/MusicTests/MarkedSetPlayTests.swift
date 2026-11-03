@@ -29,7 +29,11 @@ final class MarkedSetPlayTests: XCTestCase {
         persistentIDQueueEntry(persistentID: pid, name: name, artist: "Art", album: nil)!
     }
 
-    /// Readers over canned data that count every read.
+    /// The marked "Chill" playlist's own persistent ID, as the rail read it.
+    private static let chillID = "00000000000000F1"
+
+    /// Readers over canned data that count every read. Playlists are keyed by
+    /// their persistent ID, the only key a marked playlist is read by.
     private final class CountingReaders {
         private let lock = NSLock()
         private var n = 0
@@ -40,18 +44,10 @@ final class MarkedSetPlayTests: XCTestCase {
         var readers: MarkedSetReaders {
             MarkedSetReaders(
                 album: { title, _ in self.bump(); return self.albums[title] ?? .readFailure },
-                playlistID: { name in
-                    self.bump()
-                    return self.playlists[name] == nil ? .notFound : .unique(persistentID: Self.pid(name))
-                },
                 playlist: { pid in
                     self.bump()
-                    return self.playlists.first { Self.pid($0.key) == pid }?.value
+                    return self.playlists[pid].map { .tracks($0) } ?? .missing
                 })
-        }
-        /// A playlist's own persistent ID in this fake: stable per name.
-        static func pid(_ name: String) -> String {
-            name == "Chill" ? "00000000000000F1" : "00000000000000F2"
         }
     }
 
@@ -59,7 +55,7 @@ final class MarkedSetPlayTests: XCTestCase {
         let r = CountingReaders()
         r.albums["Moon Safari"] = AlbumResolution(tracks: [entry("00000000000000A1", "La Femme d'Argent"),
                                                            entry("00000000000000A2", "Sexy Boy")], matched: 2)
-        r.playlists["Chill"] = [entry("00000000000000B1", "Teardrop")]
+        r.playlists[Self.chillID] = [entry("00000000000000B1", "Teardrop")]
         return r
     }
 
@@ -92,7 +88,7 @@ final class MarkedSetPlayTests: XCTestCase {
         let spy = PlaylistAppleScriptSpy()
         spy.names = ["Chill"]
         let s = PlaylistsScene(backend: backend, routing: musicAppRouting(),
-                               playlists: ["Chill"], sources: spy.sources(),
+                               playlists: ["Chill"], playlistIDs: [Self.chillID], sources: spy.sources(),
                                appQueue: store, status: status, actions: actions,
                                metaCache: temporaryPlaylistMetaCache().cache,
                                loadMusicAppPlaylists: { spy.loadMusicAppPlaylists() },
@@ -114,7 +110,7 @@ final class MarkedSetPlayTests: XCTestCase {
         let actions = ActionRunner(status: status)
         let store = AppQueueStore()
         let marks = MarkedSetStore()
-        marks.toggle(.playlist(name: "Chill"), source: .bridge)
+        marks.toggle(.playlist(id: "pl1", name: "Chill"), source: .bridge)
         playMarkedSet(marks.snapshot, shuffle: false, backend: counter.backend, appQueue: store,
                       routing: musicAppRouting(), actions: actions, status: status, spanDACData: { false },
                       readers: r.readers)
@@ -145,7 +141,7 @@ final class MarkedSetPlayTests: XCTestCase {
         let status3 = StatusStore()
         let actions3 = ActionRunner(status: status3)
         let marks3 = MarkedSetStore()
-        marks3.toggle(.playlist(name: "Chill"), source: .bridge)
+        marks3.toggle(.playlist(id: "pl1", name: "Chill"), source: .bridge)
         let s = playlistsScene(backend: counter.backend, store: store, status: status3, actions: actions3,
                                marks: marks3, readers: r3.readers)
         let before = counter.callCount
@@ -282,7 +278,7 @@ final class MarkedSetPlayTests: XCTestCase {
         let actions = ActionRunner(status: status)
         let marks = MarkedSetStore()
         marks.toggle(.album(title: "Moon Safari", artist: "Air"), source: .musicApp)
-        marks.toggle(.playlist(name: "Chill"), source: .musicApp)
+        marks.toggle(.playlist(id: Self.chillID, name: "Chill"), source: .musicApp)
         playMarkedSet(marks.snapshot, shuffle: false, backend: fake.backend, appQueue: store,
                       routing: musicAppRouting(), actions: actions, status: status, spanDACData: { false },
                       readers: partialReaders().readers)
@@ -314,35 +310,37 @@ final class MarkedSetPlayTests: XCTestCase {
 
     // MARK: - Nothing is ever written
 
-    /// A fake `osascript` for the LIVE readers: answers the name count, the
-    /// playlist's identity read, the album's identity read and the play, and
-    /// logs every script it is handed. The album read is matched first: its
-    /// strict clause says `artist is`, and it too reads `persistent ID of
-    /// every track of playlist "Library"`.
+    /// A fake `osascript` for the LIVE readers: answers each playlist's
+    /// identity read by the persistent ID the script addresses (an ID it does
+    /// not hold answers `playlistMissingReply`, as the real script does), the
+    /// album's identity read and the play, and logs every script it is handed.
+    /// The album read is matched first: its strict clause says `artist is`,
+    /// and it too reads `persistent ID of every track of playlist "Library"`.
     private final class ReadOnlyMusic {
         let backend: AppleScriptBackend
         private let logPath: String
         private static let separator = "----8<----"
-        /// The persistent ID the name check answers for "Chill".
-        static let chillID = "00000000000000F1"
 
-        init(playlistReply: String, albumReply: String) {
+        init(playlistReplies: [String: String], albumReply: String) {
             let dir = FileManager.default.temporaryDirectory
             let id = UUID().uuidString
             logPath = dir.appendingPathComponent("marked-log-\(id).txt").path
-            let playlistPath = dir.appendingPathComponent("marked-playlist-\(id).txt").path
             let albumPath = dir.appendingPathComponent("marked-album-\(id).txt").path
-            try? playlistReply.write(toFile: playlistPath, atomically: true, encoding: .utf8)
             try? albumReply.write(toFile: albumPath, atomically: true, encoding: .utf8)
+            var byID = ""
+            for (pid, reply) in playlistReplies {
+                let path = dir.appendingPathComponent("marked-playlist-\(pid)-\(id).txt").path
+                try? reply.write(toFile: path, atomically: true, encoding: .utf8)
+                byID += "  *\"playlist whose persistent ID is \\\"\(pid)\\\"\"*) cat \"\(path)\" ;;\n"
+            }
             let scriptPath = dir.appendingPathComponent("marked-fake-\(id).sh").path
             let script = """
                 #!/bin/sh
                 printf '%s\\n%s\\n' "$2" '\(Self.separator)' >> "\(logPath)"
                 case "$2" in
                   *"play item"*) exit 0 ;;
-                  *"every playlist whose name is"*) printf '1\\n\(Self.chillID)\\n' ;;
                   *"artist is"*) cat "\(albumPath)" ;;
-                  *"playlist whose persistent ID is"*) cat "\(playlistPath)" ;;
+                \(byID)  *"playlist whose persistent ID is"*) printf '\(playlistMissingReply)\\n' ;;
                 esac
                 exit 0
                 """
@@ -357,15 +355,21 @@ final class MarkedSetPlayTests: XCTestCase {
         }
     }
 
+    private func playlistReply(_ rows: [[String]]) -> String {
+        "\(rows.count)\n" + rows.map { $0.joined(separator: fs) + "\n" }.joined()
+    }
+
+    private var albumReply: String {
+        [["1", "La Femme d'Argent", "Air", "Air", "subscription", "1", "1", "Moon Safari",
+          "00000000000000A1"].joined(separator: fs),
+         ["2", "Sexy Boy", "Air", "Air", "subscription", "1", "2", "Moon Safari",
+          "00000000000000A2"].joined(separator: fs)].joined(separator: "\n") + "\n"
+    }
+
     func testNoPlaylistWriteScriptIsEverSent() {
-        let playlistReply = "2\n"
-            + ["00000000000000B1", "Teardrop", "Massive Attack", "Mezzanine"].joined(separator: fs) + "\n"
-            + ["00000000000000B2", "Angel", "Massive Attack", "Mezzanine"].joined(separator: fs) + "\n"
-        let albumReply = [["1", "La Femme d'Argent", "Air", "Air", "subscription", "1", "1", "Moon Safari",
-                           "00000000000000A1"].joined(separator: fs),
-                          ["2", "Sexy Boy", "Air", "Air", "subscription", "1", "2", "Moon Safari",
-                           "00000000000000A2"].joined(separator: fs)].joined(separator: "\n") + "\n"
-        let music = ReadOnlyMusic(playlistReply: playlistReply, albumReply: albumReply)
+        let chill = playlistReply([["00000000000000B1", "Teardrop", "Massive Attack", "Mezzanine"],
+                                   ["00000000000000B2", "Angel", "Massive Attack", "Mezzanine"]])
+        let music = ReadOnlyMusic(playlistReplies: [Self.chillID: chill], albumReply: albumReply)
         let status = StatusStore()
         let store = AppQueueStore()
         let actions = ActionRunner(status: status)
@@ -384,9 +388,9 @@ final class MarkedSetPlayTests: XCTestCase {
 
         XCTAssertEqual(store.read()?.tracks.count, 4, "the set played: \(status.current()?.text ?? "")")
         let scripts = music.scripts
-        XCTAssertTrue(scripts.contains { $0.contains("every playlist whose name is \"Chill\"") }, "the name check ran")
-        XCTAssertTrue(scripts.contains { $0.contains("first playlist whose persistent ID is \"\(ReadOnlyMusic.chillID)\"") },
-                      "the track read is addressed by the ID the name check resolved")
+        XCTAssertTrue(scripts.contains { $0.contains("first playlist whose persistent ID is \"\(Self.chillID)\"") },
+                      "the track read is addressed by the ID the mark captured")
+        XCTAssertFalse(scripts.contains { $0.contains("whose name is") }, "no name check or name lookup ran")
         XCTAssertFalse(scripts.contains { $0.contains("of playlist \"Chill\"") }, "no read addressed by name")
         XCTAssertEqual(scripts.filter { $0.contains("play item") }.count, 2, "one play per keypress")
         for script in scripts {
@@ -395,5 +399,60 @@ final class MarkedSetPlayTests: XCTestCase {
                 XCTAssertFalse(lower.contains(word), "a write reached Music (\(word)):\n\(script)")
             }
         }
+    }
+
+    // MARK: - A marked playlist is read by the ID its mark captured
+
+    /// "Chill" (F1) is marked from the rail, then renamed, and another
+    /// playlist (F2) takes the name "Chill" before `p`. Through the LIVE
+    /// readers, the play reads F1 by its ID and plays F1's tracks; nothing
+    /// addresses F2 or the name.
+    func testARenamedMarkedPlaylistPlaysTheOriginalNeverTheOneThatTookItsName() {
+        let otherID = "00000000000000F2"
+        let original = playlistReply([["00000000000000B1", "Teardrop", "Massive Attack", "Mezzanine"]])
+        let namesake = playlistReply([["00000000000000D1", "Not This", "Someone", "Else"]])
+        let music = ReadOnlyMusic(playlistReplies: [Self.chillID: original, otherID: namesake],
+                                  albumReply: albumReply)
+        let status = StatusStore()
+        let store = AppQueueStore()
+        let actions = ActionRunner(status: status)
+        let marks = MarkedSetStore()
+        let pls = playlistsScene(backend: music.backend, store: store, status: status, actions: actions, marks: marks,
+                                 readers: nil)
+        _ = pls.handle(.char("m"))
+        XCTAssertEqual(marks.items, [.playlist(id: Self.chillID, name: "Chill")])
+        _ = pls.handle(.char("p"))
+        actions.waitUntilIdle()
+
+        XCTAssertEqual(store.read()?.tracks.map { persistentIDOfQueueEntry($0.index) }, ["00000000000000B1"],
+                       "the original played: \(status.current()?.text ?? "")")
+        let scripts = music.scripts
+        XCTAssertFalse(scripts.contains { $0.contains(otherID) }, "the playlist that took the name was read")
+        XCTAssertFalse(scripts.contains { $0.contains("whose name is") }, "the name was looked up again")
+        XCTAssertEqual(scripts.filter { $0.contains("whose persistent ID is \"\(Self.chillID)\"") }.count, 1)
+    }
+
+    /// The marked ID is gone at play time: the play refuses with the message
+    /// naming it, reads no other playlist, plays nothing and sets no queue.
+    func testAMarkedPlaylistGoneAtPlayTimeRefusesAndPlaysNothing() {
+        let otherID = "00000000000000F2"
+        let namesake = playlistReply([["00000000000000D1", "Not This", "Someone", "Else"]])
+        let music = ReadOnlyMusic(playlistReplies: [otherID: namesake], albumReply: albumReply)
+        let status = StatusStore()
+        let store = AppQueueStore()
+        let actions = ActionRunner(status: status)
+        let marks = MarkedSetStore()
+        let pls = playlistsScene(backend: music.backend, store: store, status: status, actions: actions, marks: marks,
+                                 readers: nil)
+        _ = pls.handle(.char("m"))
+        _ = pls.handle(.char("p"))
+        actions.waitUntilIdle()
+
+        XCTAssertEqual(status.current()?.text, "'Chill' is no longer in your playlists, so nothing played.")
+        XCTAssertNil(store.read(), "a queue was set")
+        let scripts = music.scripts
+        XCTAssertEqual(scripts.filter { $0.contains("play item") }.count, 0, "something played")
+        XCTAssertFalse(scripts.contains { $0.contains(otherID) }, "another playlist was read in its place")
+        XCTAssertFalse(scripts.contains { $0.contains("whose name is") })
     }
 }

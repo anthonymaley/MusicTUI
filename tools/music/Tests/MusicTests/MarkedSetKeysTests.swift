@@ -66,11 +66,16 @@ final class MarkedSetKeysTests: XCTestCase {
         return LibraryRig(scene: scene, status: status, actions: actions, store: store, fake: fake, resolved: resolved)
     }
 
-    private func playlistsScene(marks: MarkedSetStore, status: StatusStore = StatusStore()) -> PlaylistsScene {
+    private static let chillID = "00000000000000F1"
+    private static let focusID = "00000000000000F2"
+
+    private func playlistsScene(marks: MarkedSetStore, status: StatusStore = StatusStore(),
+                                ids: [String?] = [MarkedSetKeysTests.chillID, MarkedSetKeysTests.focusID]) -> PlaylistsScene {
         let spy = PlaylistAppleScriptSpy()
         spy.names = ["Chill", "Focus"]
+        spy.persistentIDs = ids
         return PlaylistsScene(backend: HonestPlayingTests.FakeMusicInterpreter().backend, routing: musicAppRouting(),
-                              playlists: ["Chill", "Focus"], sources: spy.sources(),
+                              playlists: ["Chill", "Focus"], playlistIDs: ids, sources: spy.sources(),
                               appQueue: AppQueueStore(), status: status, actions: ActionRunner(status: status),
                               metaCache: temporaryPlaylistMetaCache().cache,
                               loadMusicAppPlaylists: { spy.loadMusicAppPlaylists() },
@@ -111,7 +116,10 @@ final class MarkedSetKeysTests: XCTestCase {
         let s = playlistsScene(marks: marks, status: status)
         _ = s.tick(snapshot: idle)
         XCTAssertEqual(s.handle(.char("m")), .redraw)
-        XCTAssertEqual(marks.items, [.playlist(name: "Chill")])
+        XCTAssertEqual(marks.items, [.playlist(id: Self.chillID, name: "Chill")])
+        guard case .playlist(let id, let name)? = marks.items.first else { return XCTFail("\(marks.items)") }
+        XCTAssertEqual(id, Self.chillID, "the mark records the row's own persistent ID")
+        XCTAssertEqual(name, "Chill", "and keeps the name for display")
         XCTAssertEqual(status.current()?.text, "Marked 1 \u{00B7} p plays them, Esc clears")
         XCTAssertTrue(s.render(frame: frame, snapshot: idle).contains("\(glyph) Chill"))
         XCTAssertFalse(s.render(frame: frame, snapshot: idle).contains("\(glyph) Focus"))
@@ -130,7 +138,8 @@ final class MarkedSetKeysTests: XCTestCase {
         // And back to Library.
         r.scene.becameActive()
         _ = r.scene.tick(snapshot: idle)
-        XCTAssertEqual(marks.items, [.album(title: "Moon Safari", artist: "Air"), .playlist(name: "Chill")])
+        XCTAssertEqual(marks.items, [.album(title: "Moon Safari", artist: "Air"),
+                                     .playlist(id: Self.chillID, name: "Chill")])
         XCTAssertTrue(r.scene.render(frame: frame, snapshot: idle).contains("\(glyph) Moon Safari"))
         XCTAssertTrue(p.render(frame: frame, snapshot: idle).contains("\(glyph) Chill"))
     }
@@ -163,6 +172,24 @@ final class MarkedSetKeysTests: XCTestCase {
         XCTAssertTrue(r.fake.playScripts.allSatisfy { $0.contains("play track 41 of playlist \"Library\"") },
                       r.fake.playScripts.joined(separator: "\n---\n"))
         XCTAssertTrue(marks.isEmpty)
+    }
+
+    /// A rail row whose persistent ID was not read cannot be marked: `m` says
+    /// why, and nothing is added. The rows that have one still mark.
+    func testMOnARowWithNoIDSaysWhyAndMarksNothing() {
+        let marks = MarkedSetStore()
+        let status = StatusStore()
+        let s = playlistsScene(marks: marks, status: status, ids: [Self.chillID, nil])
+        _ = s.tick(snapshot: idle)
+        _ = s.handle(.down)
+        XCTAssertEqual(s.handle(.char("m")), .redraw)
+        XCTAssertTrue(marks.isEmpty, "a row with no ID was marked: \(marks.items)")
+        XCTAssertEqual(status.current()?.text, "'Focus' can't be marked: its playlist ID wasn't read, so nothing was marked.")
+        XCTAssertEqual(status.current()?.text, playlistUnmarkableLine("Focus"))
+        XCTAssertFalse(s.render(frame: frame, snapshot: idle).contains("\(glyph) Focus"))
+        _ = s.handle(.up)
+        _ = s.handle(.char("m"))
+        XCTAssertEqual(marks.items, [.playlist(id: Self.chillID, name: "Chill")])
     }
 
     func testMIsIgnoredOffTheRails() {
