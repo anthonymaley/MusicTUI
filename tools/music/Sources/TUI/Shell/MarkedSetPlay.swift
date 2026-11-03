@@ -212,8 +212,12 @@ func markedSetSpanDACChangedLine(_ name: String) -> String {
 }
 
 /// A marked set read from a SpanDAC whose `slice.libraryAlbums` page names no
-/// process (`library_instance`): nothing can show that one SpanDAC served every
-/// read, so the set is refused rather than played unchecked.
+/// process (`library_instance`), whose playlist page carries no `list_rev`, or
+/// which does not serve `slice.listRev`: nothing can show that one SpanDAC
+/// served every read, or that a marked playlist is one list, so the set is
+/// refused rather than played unchecked. A current SpanDAC on this Mac puts
+/// `list_rev` on every playlist page it serves and answers `slice.listRev`, so
+/// either one missing means an older build.
 func markedSetSpanDACUnbracketedLine(_ name: String) -> String {
     "This SpanDAC build can't confirm '\(name)' was read from one library, so nothing played. Update SpanDAC."
 }
@@ -239,7 +243,9 @@ func markedSetSpanDACRows(_ items: [MarkedItem],
                           playlistTracks: (_ playlistID: String) throws -> (rows: [MusicRow], skippedVideos: Int))
     throws -> MarkedSetSpanDACRows {
     guard !items.isEmpty else { throw ActionError(message: "Nothing is marked.") }
-    let whole: Set<String> = [sourceChangedNothingPlayed, markedSetSpanDACChangedLine(markedSetDisplayName(items))]
+    let setName = markedSetDisplayName(items)
+    let whole: Set<String> = [sourceChangedNothingPlayed, markedSetSpanDACChangedLine(setName),
+                              markedSetSpanDACUnbracketedLine(setName)]
     func namingFailure<T>(_ name: String, _ read: () throws -> T) throws -> T {
         try markedItemNamingFailure(name, passing: whole, read)
     }
@@ -366,9 +372,23 @@ func playMarkedSet(_ marked: (items: [MarkedItem], source: ListSource?), shuffle
 /// and a SpanDAC that restarted and reused the generation number, which the item
 /// reads alone cannot show: neither `slice.libraryAlbumTracks` nor
 /// `slice.libraryPlaylistTracks` carries `library_instance`. A bracket that
-/// names no process refuses too (`markedSetSpanDACUnbracketedLine`). Left to
-/// SpanDAC: a refresh after the closing bracket, before `slice.queue` resolves
-/// its IDs against the snapshot it then holds.
+/// names no process refuses too (`markedSetSpanDACUnbracketedLine`).
+///
+/// One revision of each marked playlist. A playlist's membership is read live,
+/// so an edit to it moves no generation: each page's `list_rev` (the
+/// fingerprint of the whole ordered list) is what shows it. The first page's
+/// revision is the walk's, every later page must answer it, and a restart of
+/// the walk is a change; each is refused as a changed library. Then, after the
+/// last item read and immediately before the closing bracket, each marked
+/// playlist's revision is read again with `slice.listRev {kind: playlist, id}`
+/// (the revision alone, no rows), fenced and retried while warming as every
+/// read is, and must still be the walk's. It comes before the bracket so the
+/// bracket's instance and generation check covers it too. A page with no
+/// `list_rev`, or a SpanDAC that does not serve `slice.listRev`, refuses with
+/// the update line (`markedSetSpanDACUnbracketedLine`).
+///
+/// Left to SpanDAC: a refresh or a playlist edit after the closing bracket,
+/// before `slice.queue` resolves its IDs against the snapshot it then holds.
 ///
 /// A song in more than one marked item is queued once, at its first position
 /// (`firstOccurrences`, by library ID), before any shuffle, on both outputs:
@@ -402,6 +422,7 @@ private func playMarkedSetFromSpanDAC(_ items: [MarkedItem], shuffle: Bool, stam
         let stillCurrent = { routing.playOutputKind(expecting: stamp) != .stale }
         let switched = ActionError(message: sourceChangedNothingPlayed)
         let changed = ActionError(message: markedSetSpanDACChangedLine(name))
+        let unrevisioned = ActionError(message: markedSetSpanDACUnbracketedLine(name))
         // ONE request, fenced on both sides. A source change is reported as one,
         // never as a read that failed or went on warming after it.
         func fencedRequest<T>(_ request: () throws -> T) throws -> T {
@@ -429,6 +450,8 @@ private func playMarkedSetFromSpanDAC(_ items: [MarkedItem], shuffle: Bool, stam
         // The snapshot the first bracket answered; every item read must match it.
         let opening = try bracket()
         func sameSnapshot(_ seen: Int?) -> Bool { seen == opening.generation }
+        // Each marked playlist's revision, as its walk read it, in mark order.
+        var walkedRevisions: [(playlistID: String, listRev: String)] = []
         let read = try markedSetSpanDACRows(
             items,
             albumTracks: { albumID in
@@ -446,8 +469,12 @@ private func playMarkedSetFromSpanDAC(_ items: [MarkedItem], shuffle: Bool, stam
                 var skippedVideos = 0
                 var crossedSwitch = false
                 var crossedSnapshot = false
+                var unrevisionedPage = false
+                var walkRev: String?
                 let failed = walkLibraryPages(
                     fetch: { cursor, limit in
+                        // A restarted walk is a changed list: ask for nothing more.
+                        if crossedSnapshot { throw changed }
                         do {
                             return try fencedRequest {
                                 try provider.playlistTracksForQueue(playlistID: playlistID, cursor: cursor, limit: limit)
@@ -462,15 +489,23 @@ private func playMarkedSetFromSpanDAC(_ items: [MarkedItem], shuffle: Bool, stam
                     limit: PlaylistsScene.bridgeTracksPageLimit,
                     onPage: { page in
                         guard sameSnapshot(page.generation) else { crossedSnapshot = true; return false }
+                        // The first page's revision is the walk's; every later
+                        // page must answer it.
+                        guard let rev = page.listRev else { unrevisionedPage = true; return false }
+                        if let first = walkRev, first != rev { crossedSnapshot = true; return false }
+                        walkRev = rev
                         rows += page.rows
                         skippedVideos = page.skippedVideos
                         return true
                     },
-                    onRestart: { rows = []; skippedVideos = 0 },
+                    onRestart: { crossedSnapshot = true; rows = []; skippedVideos = 0 },
                     onWarming: onWarming, sleep: sleep, budget: budget)
                 if crossedSwitch { throw switched }
                 if crossedSnapshot { throw changed }
+                if unrevisionedPage { throw unrevisioned }
                 if let failed { throw failed }
+                guard let walkRev else { throw unrevisioned }
+                walkedRevisions.append((playlistID, walkRev))
                 return (rows, skippedVideos)
             })
         // One entry per library ID, the first, before any shuffle: SpanDAC
@@ -484,6 +519,27 @@ private func playMarkedSetFromSpanDAC(_ items: [MarkedItem], shuffle: Bool, stam
            SourceAppControl.libraryQueueRequestBytes(libraryIDs: ids, startRequired: false)
                > SourceAppControl.maximumRequestBytes {
             throw ActionError(message: markedSetTooLargeForSpanDACLine(ids.count))
+        }
+        // Each marked playlist's revision again, the revision alone, after the
+        // last read and before the closing bracket (which then covers it): an
+        // edit since its walk refuses the set. Fenced inside the warming retry.
+        let playlistNames = Dictionary(items.compactMap { item -> (String, String)? in
+            if case .playlist(let id, let playlistName) = item { return (id, playlistName) }
+            return nil
+        }, uniquingKeysWith: { first, _ in first })
+        for walked in walkedRevisions {
+            let current = try markedItemNamingFailure(playlistNames[walked.playlistID] ?? name,
+                                                      passing: [switched.message, unrevisioned.message]) {
+                do {
+                    return try retryingWhileWarming(budget: budget, onWarming: onWarming, sleep: sleep) {
+                        try fencedRequest { try provider.listRev(kind: .playlist, id: walked.playlistID) }
+                    }
+                } catch MusicProviderError.notImplemented {
+                    // A SpanDAC that does not serve the revision read.
+                    throw unrevisioned
+                }
+            }
+            guard current.listRev == walked.listRev else { throw changed }
         }
         // The closing bracket, after the last read and immediately before the
         // queue: the same process and the same snapshot, or nothing plays.
