@@ -324,6 +324,12 @@ final class DiscoverScene: Scene {
     private var searchResultsRead: RowsRead?
     private var searchAlbumsRead: RowsRead?
 
+    /// The track list `/` was pressed on, if any. Discover keeps one
+    /// `trackRows`, which an album the search opens replaces (and Back
+    /// clears), so it is put back when the search closes; a read still out
+    /// when `/` was pressed is left behind and read again then.
+    private var trackListUnderSearch: (item: DiscoverItem, rows: [DiscoverItem], read: RowsRead?, reread: Bool)?
+
     /// One search or artist-albums answer, as the background read left it.
     private enum SearchAnswer {
         case results(CatalogueSearchResults)
@@ -1606,6 +1612,10 @@ extension DiscoverScene: CatalogueSearchHost {
             _ = pane.handle(.char("/"))
             return .redraw
         }
+        if case .tracks(let item) = current.level {
+            trackListUnderSearch = (item, trackRows, tracksRead, tracksInFlight)
+            if tracksInFlight { abandonDrill() }
+        }
         stack = pushLevel(stack, .search)
         searchPane = CatalogueSearchPane(host: self)
         return .redraw
@@ -1616,12 +1626,24 @@ extension DiscoverScene: CatalogueSearchHost {
         if let at = stack.firstIndex(where: { $0.level == .search }), at > 0 {
             stack = Array(stack.prefix(at))
         }
+        let under = trackListUnderSearch
         dropSearch()
+        guard let under, case .tracks(let item) = current.level, item.id == under.item.id else { return }
+        if under.reread {
+            // Its read was left behind: open it again, from the same level.
+            stack = popLevel(stack)
+            drillIn(item)
+        } else {
+            trackRows = under.rows
+            tracksRead = under.read
+            feedVersion += 1
+        }
     }
 
     /// The pane, its reads and any answer still in the slot go.
     private func dropSearch() {
         searchPane = nil
+        trackListUnderSearch = nil
         searchResultsRead = nil
         searchAlbumsRead = nil
         inboxLock.lock(); searchInbox = nil; inboxLock.unlock()
