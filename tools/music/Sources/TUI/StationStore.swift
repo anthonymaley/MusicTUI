@@ -54,6 +54,48 @@ final class StationStore {
         try writeLocked(list)
     }
 
+    /// Sets `artworkURL` on the favourite `id` only if it is still a favourite
+    /// and still has none — a page lookup that lands after the station was
+    /// removed must not re-add it, and art the catalog already gave is never
+    /// replaced. Returns whether it wrote.
+    @discardableResult
+    func setArtworkIfMissing(id: String, url: String) throws -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        var list = loadLocked()
+        guard let i = list.firstIndex(where: { $0.id == id }), list[i].artworkURL == nil else { return false }
+        let s = list[i]
+        list[i] = Station(id: s.id, name: s.name, url: s.url, isLive: s.isLive, artworkURL: url)
+        try writeLocked(list)
+        return true
+    }
+
+    /// Test seam: called inside `mergeResolved`, while the lock is held,
+    /// between reading the saved favourite and writing the merged one. nil in
+    /// shipped code. It must not call back into this store on its own thread.
+    var mergeWindowHook: (() -> Void)?
+
+    /// A catalogue lookup landing on a favourite: its metadata replaces the
+    /// saved entry in place, and its art wins only when it has some — a lookup
+    /// with no art keeps the art a station page already saved. One lock hold
+    /// for the read and the write, so a page fill cannot land in between and
+    /// be overwritten (Codex review finding 1).
+    ///
+    /// When the favourite was removed before the lookup landed, nothing is
+    /// written and false comes back: the remove is the person's later intent,
+    /// and an enrichment never re-adds a station.
+    @discardableResult
+    func mergeResolved(_ resolved: Station) throws -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        var list = loadLocked()
+        guard let i = list.firstIndex(where: { $0.id == resolved.id }) else { return false }
+        let art = resolved.artworkURL ?? list[i].artworkURL
+        mergeWindowHook?()
+        list[i] = Station(id: resolved.id, name: resolved.name, url: resolved.url,
+                          isLive: resolved.isLive, artworkURL: art)
+        try writeLocked(list)
+        return true
+    }
+
     func remove(id: String) throws {
         lock.lock(); defer { lock.unlock() }
         try writeLocked(loadLocked().filter { $0.id != id })

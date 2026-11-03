@@ -395,8 +395,10 @@ func runShell() {
             // Only `/` moves. Live, Personal and station resolution keep using
             // `catalog`, so with no key those stay empty exactly as they do
             // today and Favorites keep working with no network at all.
+            // Favourites the catalogue can't resolve (BBC Radio 1) get
+            // their art from the station's public page, once, saved.
             let scene = RadioScene(routing: routing, store: StationStore(), catalog: makeCatalog(),
-                                   kittyEnabled: kittyEnabled)
+                                   kittyEnabled: kittyEnabled, stationPages: makeStationPageFetch())
             scenes[id] = scene
             return scene
         default:
