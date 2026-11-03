@@ -153,7 +153,8 @@ final class ListedArtistPlayTests: XCTestCase {
             .joined(separator: String(asFieldSep))
     }
 
-    private func defaultScene(backend: AppleScriptBackend, queue: AppQueueStore, status: StatusStore) -> LibraryScene {
+    private func defaultScene(backend: AppleScriptBackend, queue: AppQueueStore, status: StatusStore,
+                              actions: ActionRunner) -> LibraryScene {
         let store = PlaybackModeStore(path: NSTemporaryDirectory() + "mode-\(UUID().uuidString).json")
         store.set(.musicApp)
         let routing = RoutingCoordinator(store: store, surface: .tui,
@@ -165,13 +166,20 @@ final class ListedArtistPlayTests: XCTestCase {
                                          onAlbumCover: { _ in nil })
         // No resolveArtist: this is the production default.
         return LibraryScene(backend: backend, routing: routing, sources: sources, appQueue: queue,
-                            status: status, actions: ActionRunner(status: status),
+                            status: status, actions: actions,
                             resultCache: temporaryResultCache().cache)
     }
 
-    private func settledQueue(_ queue: AppQueueStore, seconds: Double = 3.0) -> AppQueue? {
-        let deadline = Date().addingTimeInterval(seconds)
-        while Date() < deadline, queue.read() == nil { usleep(10_000) }
+    /// Plays on a scene whose action runner the test holds, then waits for that
+    /// runner to finish the play: no deadline. A clock here raced the first exec
+    /// of each freshly written fake, which on the Studio costs 1.5-2.3 s under
+    /// the system temp folder (measured 2026-11-03; later execs 5-80 ms) and
+    /// failed 7 of 12 class-only runs against the old 3 s wait.
+    private func playAndSettle(_ fake: (backend: AppleScriptBackend, log: String), queue: AppQueueStore,
+                               status: StatusStore, _ play: (LibraryScene) -> Void) -> AppQueue? {
+        let actions = ActionRunner(status: status)
+        play(defaultScene(backend: fake.backend, queue: queue, status: status, actions: actions))
+        actions.waitUntilIdle()
         return queue.read()
     }
 
@@ -194,17 +202,11 @@ final class ListedArtistPlayTests: XCTestCase {
         let fake = fakeInterpreter(payload: measuredShapes.map(line).joined(separator: "\n") + "\n")
         let queue = AppQueueStore()
         let status = StatusStore()
-        defaultScene(backend: fake.backend, queue: queue, status: status).playArtist(name: "Four Tet", shuffle: false)
-        let q = settledQueue(queue)
+        let q = playAndSettle(fake, queue: queue, status: status) { $0.playArtist(name: "Four Tet", shuffle: false) }
         XCTAssertEqual(q?.tracks.map(\.index), [14, 13, 15], "Mix (track 1, 2), then Rounds; no appearance, variant or pre-release")
         // The queue is set just before the first track is asked to play.
         let want = "play track 14 of playlist \"Library\""
-        var log = ""
-        let deadline = Date().addingTimeInterval(3.0)
-        while Date() < deadline, !log.contains(want) {
-            log = (try? String(contentsOfFile: fake.log, encoding: .utf8)) ?? ""
-            usleep(10_000)
-        }
+        let log = (try? String(contentsOfFile: fake.log, encoding: .utf8)) ?? ""
         XCTAssertTrue(log.contains(want), log)
         XCTAssertEqual(status.current()?.text, "Playing 3 of 4 \u{2014} the rest aren't available yet.")
     }
@@ -212,8 +214,8 @@ final class ListedArtistPlayTests: XCTestCase {
     func testShuffleQueuesTheSameSet() {
         let fake = fakeInterpreter(payload: measuredShapes.map(line).joined(separator: "\n") + "\n")
         let queue = AppQueueStore()
-        defaultScene(backend: fake.backend, queue: queue, status: StatusStore()).playArtist(name: "Four Tet", shuffle: true)
-        XCTAssertEqual(Set(settledQueue(queue)?.tracks.map(\.index) ?? []), [13, 14, 15])
+        let q = playAndSettle(fake, queue: queue, status: StatusStore()) { $0.playArtist(name: "Four Tet", shuffle: true) }
+        XCTAssertEqual(Set(q?.tracks.map(\.index) ?? []), [13, 14, 15])
     }
 
     func testPlayInATierQueuesOnlyThatTiersAlbums() {
@@ -222,9 +224,10 @@ final class ListedArtistPlayTests: XCTestCase {
         for (range, want) in [(6...Int.max, Array(3...8)), (2...5, [1, 2])] {
             let fake = fakeInterpreter(payload: (ep + lp).map(line).joined(separator: "\n") + "\n")
             let queue = AppQueueStore()
-            defaultScene(backend: fake.backend, queue: queue, status: StatusStore())
-                .playArtist(name: "A", shuffle: false, trackRange: range)
-            XCTAssertEqual(settledQueue(queue)?.tracks.map(\.index), want, "\(range)")
+            let q = playAndSettle(fake, queue: queue, status: StatusStore()) {
+                $0.playArtist(name: "A", shuffle: false, trackRange: range)
+            }
+            XCTAssertEqual(q?.tracks.map(\.index), want, "\(range)")
         }
     }
 }
