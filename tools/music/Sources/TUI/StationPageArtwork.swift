@@ -203,25 +203,48 @@ func urlSessionStationPageTransport(_ request: URLRequest,
 }
 
 /// The real page fetcher: a plain GET, blocking up to `timeout`. No token, no
-/// cookies sent; nil on transport failure.
+/// cookies sent; nil on transport failure or timeout.
 ///
-/// RED: today's behaviour behind the new seam — the result is read after the
-/// wait without synchronisation, and a timed-out task is never cancelled.
+/// The result is handed over under a lock, and whichever of the callback and
+/// the timeout comes first decides it: on a timeout the task is cancelled, so
+/// a hung request does not keep running behind the backfill's two slots, and a
+/// callback arriving afterwards is dropped (`onLateCallback`, a test seam)
+/// instead of writing into a fetch that has already returned (Codex review
+/// finding 3). The number of fetches in flight is bounded by the caller,
+/// `StationArtworkBackfill`'s two slots.
 func makeStationPageFetch(transport: @escaping StationPageTransport = urlSessionStationPageTransport,
                           timeout: TimeInterval = 15,
                           onLateCallback: @escaping () -> Void = {}) -> StationPageFetch {
+    final class Handoff {
+        let lock = NSLock()
+        var finished = false
+        var result: RadioCatalogResponse?
+    }
     return { url in
         var req = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: timeout)
         req.httpShouldHandleCookies = false
+        let handoff = Handoff()
         let sem = DispatchSemaphore(value: 0)
-        var out: RadioCatalogResponse?
-        _ = transport(req) { data, response in
-            if let data, let http = response as? HTTPURLResponse {
-                out = RadioCatalogResponse(status: http.statusCode, data: data)
+        let task = transport(req) { data, response in
+            handoff.lock.lock()
+            let late = handoff.finished
+            if !late {
+                handoff.finished = true
+                if let data, let http = response as? HTTPURLResponse {
+                    handoff.result = RadioCatalogResponse(status: http.statusCode, data: data)
+                }
             }
-            sem.signal()
+            handoff.lock.unlock()
+            if late { onLateCallback() } else { sem.signal() }
         }
-        _ = sem.wait(timeout: .now() + timeout)
-        return out
+        let timedOut = sem.wait(timeout: .now() + timeout) == .timedOut
+        handoff.lock.lock()
+        // A callback that won the race just as the wait timed out still counts.
+        let answered = handoff.finished
+        handoff.finished = true
+        let result = handoff.result
+        handoff.lock.unlock()
+        if timedOut && !answered { task.cancel() }
+        return result
     }
 }
