@@ -167,7 +167,19 @@ final class DiscoverScene: Scene {
     private var railsFailure: String?        // guarded by inboxLock
     private var tracksFailure: String?       // guarded by inboxLock
     private var tracksInbox: [DiscoverItem]?     // guarded by inboxLock
+    /// The drill token the read in `tracksInbox` was started under. A read
+    /// writes the slot only if its token is at least this one, so an older
+    /// read finishing late never evicts a newer one before tick() drains it.
+    private var tracksInboxToken = 0         // guarded by inboxLock
     private var tracksInFlight = false       // tick()/handle() thread only
+    /// Bumped by every drillIn (tick/handle thread only).
+    private var drillToken = 0
+    /// The drill whose read may still land: its token, the data epoch and the
+    /// frame (stack depth, container id) it was opened in. Back from its
+    /// track list, a reload, a refresh and a newer drill clear it, and tick()
+    /// drops a read whose token is not this one: its rows never appear and
+    /// its failure is never posted.
+    private var awaitedDrill: (token: Int, dataEpoch: Int, depth: Int, itemID: String)?
 
     // Real hero cover for the detail panel: store owns fetch/cache/render;
     // onReady sets artDirty under inboxLock (same discipline as the streaming
@@ -322,7 +334,10 @@ final class DiscoverScene: Scene {
             // every fetch, so this is memory hygiene rather than correctness —
             // but gating it on landing at .root meant it only fired on the
             // second pop and left the array alive in between.
-            if case .tracks = current.level { trackRows = [] }
+            if case .tracks = current.level {
+                trackRows = []
+                abandonDrill()
+            }
             stack = popLevel(stack)
             return .redraw
         case .char("r"):
@@ -950,9 +965,17 @@ final class DiscoverScene: Scene {
         trackRows = []
         railsRead = nil
         tracksRead = nil
+        abandonDrill()
         resetGenre()
         feedVersion += 1
         stack = [DiscoverFrameState(level: .root, cursor: DiscoverCursor())]
+    }
+
+    /// The drill in progress, if any, is left behind: its read is dropped
+    /// when it lands, and a new drill may start at once.
+    private func abandonDrill() {
+        awaitedDrill = nil
+        tracksInFlight = false
     }
 
     /// A new read of the sections serves the All-genres charts, so the genre
@@ -970,6 +993,7 @@ final class DiscoverScene: Scene {
         failed = false
         loadFailure = nil
         fetchStarted = false
+        abandonDrill()
         resetGenre()
         stack = [DiscoverFrameState(level: .root, cursor: DiscoverCursor())]
         status.post("Refreshing Discover\u{2026}")
@@ -988,6 +1012,9 @@ final class DiscoverScene: Scene {
         // visit's rows.
         feedVersion += 1
         tracksInFlight = true
+        drillToken += 1
+        let token = drillToken
+        awaitedDrill = (token, routing.dataEpoch, stack.count, item.id)
         DispatchQueue.global().async { [weak self] in
             guard let self else { return }
             var fetched: [DiscoverItem] = []
@@ -1004,9 +1031,12 @@ final class DiscoverScene: Scene {
                 failure = Self.words(for: error)
             }
             self.inboxLock.lock()
-            self.tracksInbox = fetched
-            self.tracksFailure = failure
-            self.tracksReadInbox = read
+            if token >= self.tracksInboxToken {
+                self.tracksInboxToken = token
+                self.tracksInbox = fetched
+                self.tracksFailure = failure
+                self.tracksReadInbox = read
+            }
             self.inboxLock.unlock()
         }
     }
@@ -1093,6 +1123,7 @@ final class DiscoverScene: Scene {
         let incomingGenreCharts = genreChartsInbox
         genreChartsInbox = nil
         let incomingTracks = tracksInbox
+        let incomingTracksToken = tracksInboxToken
         let incomingTracksFailure = tracksFailure
         let incomingTracksRead = tracksReadInbox
         tracksInbox = nil
@@ -1160,7 +1191,12 @@ final class DiscoverScene: Scene {
             }
             changed = true
         }
-        if let incomingTracks {
+        if incomingTracks != nil, !isAwaitedDrill(incomingTracksToken) {
+            // A read from a drill left behind: dropped whole, rows and failure.
+            // If it was the awaited one but its frame or data source has gone,
+            // nothing else will clear the drill, so it is abandoned here.
+            if awaitedDrill?.token == incomingTracksToken { abandonDrill() }
+        } else if let incomingTracks {
             trackRows = incomingTracks
             tracksRead = incomingTracksRead
             feedVersion += 1
@@ -1171,6 +1207,16 @@ final class DiscoverScene: Scene {
         }
         if artLanded { changed = true }
         return changed
+    }
+
+    /// The read under `token` belongs to the drill on screen: the one awaited,
+    /// in the frame it opened, under the data epoch it was opened with.
+    private func isAwaitedDrill(_ token: Int) -> Bool {
+        guard let awaited = awaitedDrill, awaited.token == token,
+              stack.count == awaited.depth,
+              case .tracks(let item) = current.level, item.id == awaited.itemID,
+              routing.dataEpoch == awaited.dataEpoch else { return false }
+        return true
     }
 
     // MARK: - Render
