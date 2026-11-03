@@ -278,6 +278,9 @@ final class ArtworkStore {
     private let cacheDir: String
     private let fetcher: (String, ArtworkFetchToken) -> ArtworkFetchOutcome
     private let render: (String, Int, Int) -> [String]
+    /// A test seam: runs on the store worker immediately before it reads an installed
+    /// SpanDAC library cover's file, so a test can hold the read or change the file.
+    var beforeLibraryCoverReadForTesting: (() -> Void)?
     private let now: () -> TimeInterval
     private let limits: Limits
     private let workers = DispatchQueue(label: "music.artwork", qos: .utility, attributes: .concurrent)
@@ -444,6 +447,7 @@ final class ArtworkStore {
            inPlace.deletingLastPathComponent().standardizedFileURL.path
                == URL(fileURLWithPath: cacheDir).standardizedFileURL.path,
            FileManager.default.fileExists(atPath: inPlace.path) {
+            beforeLibraryCoverReadForTesting?()
             return .path(inPlace.path)
         }
         try? FileManager.default.createDirectory(atPath: cacheDir, withIntermediateDirectories: true)
