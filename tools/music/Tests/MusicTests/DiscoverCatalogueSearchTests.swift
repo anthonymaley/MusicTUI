@@ -757,4 +757,60 @@ final class DiscoverCatalogueSearchTests: XCTestCase {
         XCTAssertTrue(out.contains("Song One"), "the results are hidden behind the loading line")
         feedHeld.signal()
     }
+
+    // MARK: - `/` from an album's own track list
+
+    private func isTracks(_ f: Fixture, _ id: String) -> Bool {
+        if case .tracks(let item) = f.scene.currentLevel { return item.id == id }
+        return false
+    }
+
+    /// `/` on an ordinary album's track list, a search album opened and left,
+    /// then the search closed: the first album's tracks are back, and Enter
+    /// plays them, not the search album's.
+    func testClosingASearchOpenedFromATrackListGivesItsTracksBack() {
+        let f = fixture(output: .source)
+        loadRails(f)
+        _ = f.scene.handle(.down)                       // Boom Bap, a playlist
+        _ = f.scene.handle(.enter)
+        ticks(f, until: { f.scene.trackRows.map(\.id) == ["901", "902"] })
+
+        search(f)
+        _ = f.scene.handle(.down)                       // Album One
+        _ = f.scene.handle(.enter)
+        ticks(f, until: { f.scene.trackRows.map(\.id) == Self.albumOneIDs })
+        _ = f.scene.handle(.left)                       // back to the results
+        _ = f.scene.handle(.escape)                     // closes the search
+
+        XCTAssertTrue(isTracks(f, "pl.u-abc"), "\(f.scene.currentLevel)")
+        XCTAssertEqual(f.scene.trackRows.map(\.id), ["901", "902"], "the track list came back empty or wrong")
+        _ = f.scene.handle(.enter)
+        drain(f.actions)
+        XCTAssertEqual(f.rig.sent("slice.queue").map { $0.body["ids"] as? [String] ?? [] }, [["901", "902"]])
+    }
+
+    /// `/` while an album's tracks are still being read, closed at once: the
+    /// album's tracks still arrive.
+    func testClosingASearchOpenedWhileATrackListLoadsStillLoadsIt() {
+        let f = fixture(output: .source)
+        let held = DispatchSemaphore(value: 0)
+        var first = true
+        let lock = NSLock()
+        f.rig.during["slice.containerTracks"] = {
+            lock.lock(); let hold = first; first = false; lock.unlock()
+            if hold { _ = held.wait(timeout: .now() + 5) }
+        }
+        loadRails(f)
+        _ = f.scene.handle(.down)
+        _ = f.scene.handle(.enter)                      // its read is held
+        ticks(f, until: { f.rig.sent("slice.containerTracks").count == 1 })
+
+        _ = f.scene.handle(.char("/"))
+        held.signal()
+        settle(f, seconds: 0.2)
+        _ = f.scene.handle(.escape)                     // nothing searched: closes
+
+        XCTAssertTrue(isTracks(f, "pl.u-abc"), "\(f.scene.currentLevel)")
+        ticks(f, until: { f.scene.trackRows.map(\.id) == ["901", "902"] })
+    }
 }
