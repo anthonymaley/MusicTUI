@@ -197,7 +197,9 @@ final class MarkedSetPlayTests: XCTestCase {
 
     /// A fake `osascript` for the LIVE readers: answers the name count, the
     /// playlist's identity read, the album's identity read and the play, and
-    /// logs every script it is handed.
+    /// logs every script it is handed. The album read is matched first: its
+    /// strict clause says `artist is`, and it too reads `persistent ID of
+    /// every track of playlist "Library"`.
     private final class ReadOnlyMusic {
         let backend: AppleScriptBackend
         private let logPath: String
@@ -218,8 +220,8 @@ final class MarkedSetPlayTests: XCTestCase {
                 case "$2" in
                   *"play item"*) exit 0 ;;
                   *"every playlist whose name is"*) echo 1 ;;
-                  *"persistent ID of every track of playlist"*) cat "\(playlistPath)" ;;
                   *"artist is"*) cat "\(albumPath)" ;;
+                  *"persistent ID of every track of playlist"*) cat "\(playlistPath)" ;;
                 esac
                 exit 0
                 """

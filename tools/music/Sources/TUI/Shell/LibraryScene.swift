@@ -753,6 +753,9 @@ final class LibraryScene: Scene {
     /// The rows marked with `m` to play together, shared with the Playlists
     /// tab (one store, built by the shell), so marks survive a tab switch.
     let marks: MarkedSetStore
+    /// What a marked play reads (`MarkedSetReaders.live` over `backend`
+    /// unless a test injects fakes).
+    private let markedSetReaders: MarkedSetReaders
 
     init(backend: AppleScriptBackend,
          routing: RoutingCoordinator, sources: LibraryDataSources,
@@ -770,10 +773,12 @@ final class LibraryScene: Scene {
          resultCache: ResultCache = ResultCache(),
          now: @escaping () -> Date = { Date() },
          screenWidth: @escaping () -> Int = { ScreenFrame.current().width },
-         marks: MarkedSetStore = MarkedSetStore()) {
+         marks: MarkedSetStore = MarkedSetStore(),
+         markedSetReaders: MarkedSetReaders? = nil) {
         self.now = now
         self.screenWidth = screenWidth
         self.marks = marks
+        self.markedSetReaders = markedSetReaders ?? .live(backend: backend)
         self.libraryCovers = libraryCovers
         self.artwork = artwork
         self.resolveAlbum = resolveAlbum
@@ -2509,6 +2514,14 @@ final class LibraryScene: Scene {
             return toggleMarkUnderCursor()
         case .char("["): libKey = .switchPrev
         case .char("]"): libKey = .switchNext
+        // Combined play: with marks, `p` / `s` on an album rail play the
+        // marked set; with none they mean what they always did.
+        case .char("p") where isAlbumRail && !marks.isEmpty, .char("P") where isAlbumRail && !marks.isEmpty:
+            playMarks(shuffle: false)
+            return .push(.nowPlaying)
+        case .char("s") where isAlbumRail && !marks.isEmpty, .char("S") where isAlbumRail && !marks.isEmpty:
+            playMarks(shuffle: true)
+            return .push(.nowPlaying)
         case .char("p"), .char("P"): libKey = .play
         case .char("s"), .char("S"): libKey = .shuffle
         case .char("/"):
@@ -2680,6 +2693,13 @@ final class LibraryScene: Scene {
         marks.toggle(.album(title: album.name, artist: album.artist), source: source)
         status.post(markedCountLine(marks.count))
         return .redraw
+    }
+
+    /// The marked set as one queue (`playMarkedSet`).
+    private func playMarks(shuffle: Bool) {
+        let makeProvider = self.makeProvider
+        playMarkedSet(marks.snapshot, shuffle: shuffle, backend: backend, appQueue: appQueue, routing: routing,
+                      actions: actions, spanDACData: { makeProvider() != nil }, readers: markedSetReaders)
     }
 
     /// C3 item 5: decided by the source of the list the action came from, not

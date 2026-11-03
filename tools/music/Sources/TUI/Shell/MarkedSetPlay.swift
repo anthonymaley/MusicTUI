@@ -132,3 +132,52 @@ func markedCountLine(_ count: Int) -> String {
 
 /// The footer line after Esc cleared the marks.
 let marksClearedLine = "Marks cleared"
+
+// MARK: - Playing the marked set (combined play, step 5)
+
+/// A marked play from rows read on SpanDAC data: not offered yet (the SpanDAC
+/// route is a later follow-up), so it refuses before reading anything.
+let markedPlayNeedsMusicTUIData =
+    "Playing marked albums and playlists together needs MusicTUI's own data for now, so nothing played."
+
+/// `p` / `s` with marks: the marked set as one queue, on the action queue.
+///
+/// The library album play's shape (`LibraryScene.playAlbum`), with the
+/// SpanDAC hand-off's first play (`PersistentIDHandoff`): marks from SpanDAC
+/// data refuse first, then `refuseOpenDataPlayBeforeReading` (a switch to
+/// SpanDAC data since, or a blocked stored output), both before any read; then
+/// the reads (`markedSetQueue`, all or nothing); then `routing.perform`
+/// against the keypress's stamp, where the Music.app branch sets the queue
+/// and plays its first entry by persistent ID, confirmed by that identity
+/// (`playRequestedQueueTrack`). A first play whose script fails clears the
+/// queue, so the poller is never left driving a queue that never started.
+/// `.libraryPlay` routes it: it is a play from MusicTUI's own library data,
+/// and it routes exactly as `.playlistPlay` does.
+func playMarkedSet(_ marked: (items: [MarkedItem], source: ListSource?), shuffle: Bool,
+                   backend: AppleScriptBackend, appQueue store: AppQueueStore, routing: RoutingCoordinator,
+                   actions: ActionRunner, spanDACData: @escaping () -> Bool, readers: MarkedSetReaders) {
+    let stamp = routing.stamp
+    actions.run("Play") {
+        if marked.source == .bridge { throw ActionError(message: markedPlayNeedsMusicTUIData) }
+        try refuseOpenDataPlayBeforeReading(.libraryPlay, routing: routing, spanDACData: spanDACData())
+        let queue = try markedSetQueue(marked.items, shuffle: shuffle, readers: readers)
+        do {
+            try routing.perform(.libraryPlay, expecting: stamp, origin: .openData(resultNumber: nil),
+                musicApp: { path in
+                    guard path == .shipped else { throw ActionError(message: pickASpanDACOutput) }
+                    store.set(queue)
+                    let title = queue.contextLabel
+                    guard playRequestedQueueTrack(backend: backend, appQueue: store, playlist: queue.playlistName,
+                                                  position: queue.currentSourcePosition, title: title) else {
+                        store.clear()
+                        throw ActionError(message: "Couldn't play '\(title)'.")
+                    }
+                },
+                source: { _ in throw ActionError(message: LibraryProvenance.bridgeSelectedMusicAppList) },
+                unaffected: {})
+        } catch let error as SourceAppError {
+            // ActionRunner reduces anything but an ActionError to "Play failed."
+            throw ActionError(message: error.message)
+        }
+    }
+}
