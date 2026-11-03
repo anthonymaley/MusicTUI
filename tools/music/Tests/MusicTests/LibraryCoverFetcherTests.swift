@@ -396,6 +396,7 @@ final class LibraryCoverFetcherTests: XCTestCase {
         XCTAssertEqual(h.contents(a), Self.payload(40_000))
 
         let next = Harness(dir: h.dir)
+        next.spandac.covers["album|\(Self.albumID)"] = Self.payload(40_000)
         XCTAssertEqual(next.fetcher.cover(for: a)?.key, h.key(a), "a saved cover shows before any readiness read")
         next.rest(a)
         XCTAssertEqual(next.statusReads(), 1)
@@ -521,9 +522,9 @@ final class LibraryCoverFetcherTests: XCTestCase {
                                              encoding: .utf8) ?? ""]
                                  })
         func render(_ cover: LibraryCover) -> [String]? {
-            if let hit = store.lines(key: cover.key, url: cover.url, width: 8, height: 4, onReady: {}) { return hit }
-            let ready = expectation(description: "rendered")
-            _ = store.lines(key: cover.key, url: cover.url, width: 8, height: 4) { ready.fulfill() }
+            let ready = XCTestExpectation(description: "rendered")
+            if let hit = store.lines(key: cover.key, url: cover.url, width: 8, height: 4,
+                                     onReady: { ready.fulfill() }) { return hit }
             wait(for: [ready], timeout: 2)
             return store.lines(key: cover.key, url: cover.url, width: 8, height: 4) { }
         }
@@ -543,8 +544,10 @@ final class LibraryCoverFetcherTests: XCTestCase {
         let inode = h.attributes(underB)[.systemFileNumber] as? Int
         XCTAssertNotNil(inode)
         let shown = h.fetcher.cover(for: underB)
-        let before = h.fetcher.landed
+        h.lanes.held = [.fetch]
         h.rest(underB)
+        let before = h.fetcher.landed   // after the readiness read's own move
+        h.lanes.release(.fetch)
         XCTAssertEqual(h.spandac.firstRequests.count, 1)
         XCTAssertEqual(h.attributes(underB)[.systemFileNumber] as? Int, inode, "not replaced")
         XCTAssertEqual(h.attributes(underB)[.modificationDate] as? Date, h.clock.date,
@@ -563,13 +566,13 @@ final class LibraryCoverFetcherTests: XCTestCase {
             ("transfer expired twice", { $0.spandac.chunkOverride = { _ in .refused(.transferExpired) } }, 30),
         ]
         for (name, fail, retry) in failures {
-            let (h, underB) = savedUnderB(Self.payload(800, seed: 1))
-            h.spandac.covers["album|\(Self.albumID)"] = Self.payload(900, seed: 2)
+            let (h, underB) = savedUnderB(Self.payload(40_000, seed: 1))   // two chunks
+            h.spandac.covers["album|\(Self.albumID)"] = Self.payload(40_000, seed: 2)
             fail(h)
             h.rest(underB)
             let asked = h.spandac.firstRequests.count
             XCTAssertGreaterThan(asked, 0, name)
-            XCTAssertEqual(h.contents(underB), Self.payload(800, seed: 1), name)
+            XCTAssertEqual(h.contents(underB), Self.payload(40_000, seed: 1), name)
             XCTAssertEqual(h.fetcher.cover(for: underB)?.key, h.key(underB), name)
             h.spandac.corruptDigest = false
             h.spandac.chunkOverride = nil
@@ -577,7 +580,7 @@ final class LibraryCoverFetcherTests: XCTestCase {
             XCTAssertEqual(h.spandac.firstRequests.count, asked, "\(name): nothing before the backoff")
             h.tick(retry, underB)
             XCTAssertEqual(h.spandac.firstRequests.count, asked + 1, "\(name): a failure does not spend the recheck")
-            XCTAssertEqual(h.contents(underB), Self.payload(900, seed: 2), name)
+            XCTAssertEqual(h.contents(underB), Self.payload(40_000, seed: 2), name)
         }
     }
 

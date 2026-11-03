@@ -128,12 +128,16 @@ final class BridgeLibraryCoversSceneTests: XCTestCase {
 
     func testABridgeAlbumHeroDrawsItsInstalledCover() {
         let rig = loadedAlbumsRig([albumPage(instance: Self.instanceA)])
-        rig.install(rig.target())
+        rig.install(rig.target())   // left by an earlier run
+        rig.spandac.covers["album|al1"] = LibraryCoverFetcherTests.payload(2_000)   // unchanged since
 
         _ = rig.tick(at: 0, snapshot: idle)
-        _ = rig.tick(at: 0.3, snapshot: idle)   // the rest ends, readiness is read
-        XCTAssertTrue(heroShowsMarker(rig), "the installed cover never reached the hero")
-        XCTAssertTrue(rig.spandac.firstRequests.isEmpty, "an installed cover must not be asked for again")
+        XCTAssertTrue(heroShowsMarker(rig), "a saved cover reaches the hero before SpanDAC is asked anything")
+        _ = rig.tick(at: 0.3, snapshot: idle)   // the rest ends, readiness is read, the recheck runs
+        _ = rig.tick(at: 9, snapshot: idle)
+        XCTAssertTrue(heroShowsMarker(rig), "the same bytes keep the same cover")
+        XCTAssertEqual(rig.spandac.firstRequests.map(\.libraryInstance), [Self.instanceA],
+                       "one background recheck this run, under the row's own instance")
     }
 
     func testWithoutTheCapabilityTheHeroStaysGradient() {
@@ -332,6 +336,10 @@ final class BridgeLibraryCoversSceneTests: XCTestCase {
         XCTAssertEqual(rig.spandac.firstRequests.count, 1, "the Artists list asks for nothing")
 
         // Opened again: read again, and the rows are asked for under the NEW read's generation.
+        // (The saved file is gone, as eviction would leave it: a cover this instance has
+        // already installed is not asked for again at a new generation.)
+        try? FileManager.default.removeItem(
+            atPath: "\(rig.dir)/\(LibraryCoverFetcher.cacheKey(for: rig.artistTarget(), px: 512))")
         openArtist(rig)
         _ = rig.tick(at: 10, snapshot: idle)
         _ = rig.tick(at: 10.3, snapshot: idle)
