@@ -147,6 +147,15 @@ final class RadioScene: Scene {
     // there and 0 is always < any positive railScroll.
     private var railScroll = 0
 
+    /// Artwork from a station's public page, for favourites the catalog cannot
+    /// resolve (StationPageArtwork). nil when no page fetcher was given: then
+    /// nothing is fetched and those favourites keep the gradient, as before.
+    /// The launch sweep runs once per scene, off the main thread; a fill sets
+    /// `artFilled` under `inboxLock` and tick() repaints.
+    private let artBackfill: StationArtworkBackfill?
+    private var backfillStarted = false
+    private var artFilled = false
+
     init(routing: RoutingCoordinator,
 store: StationStore, catalog: RadioCatalog?,
          opener: Opener = SystemOpener(), kittyEnabled: Bool = false,
@@ -157,6 +166,17 @@ store: StationStore, catalog: RadioCatalog?,
         self.opener = opener
         self.kittyEnabled = kittyEnabled
         self.browseStamp = Stamp(routing.stamp)
+        self.artBackfill = stationPages.map { StationArtworkBackfill(store: store, fetch: $0) }
+    }
+
+    /// Fills one favourite's art from its station page, off the main thread.
+    /// Quiet: a miss leaves the gradient and says nothing.
+    private func fillArtwork(id: String) {
+        guard let backfill = artBackfill else { return }
+        Thread.detachNewThread { [weak self] in
+            guard backfill.fill(id: id), let self else { return }
+            self.inboxLock.lock(); self.artFilled = true; self.inboxLock.unlock()
+        }
     }
 
     /// Music.app mode's provider: the catalogue and opener this scene was
@@ -332,7 +352,10 @@ store: StationStore, catalog: RadioCatalog?,
                 message = "✗ Couldn't start \(s.name)"
             }
         case .toggleFavorite(let s):
-            do { try store.toggle(s) } catch { message = "✗ Couldn't save favorite" }
+            do {
+                try store.toggle(s)
+                if s.artworkURL == nil, store.isFavorite(id: s.id) { fillArtwork(id: s.id) }
+            } catch { message = "✗ Couldn't save favorite" }
         }
     }
 
@@ -374,6 +397,9 @@ store: StationStore, catalog: RadioCatalog?,
             message = "✗ Couldn't save favorite"
             return
         }
+        // Art from the station's public page, independent of the catalog
+        // lookup below (which 404s for BBC Radio 1 and its kind).
+        fillArtwork(id: p.id)
         // Enrichment through the provider chosen for `.radioStationLookup`,
         // chosen on the lookup's own thread so a playback action holding the
         // ordering lock cannot stall this keypress. `try?` in BOTH modes: this
@@ -588,6 +614,14 @@ store: StationStore, catalog: RadioCatalog?,
             personalFetchStarted = true
             startBrowse(.personal)
         }
+        // Favourites saved without art: one sweep per scene, off-thread.
+        if !backfillStarted, let backfill = artBackfill {
+            backfillStarted = true
+            Thread.detachNewThread { [weak self] in
+                guard !backfill.fillMissing().isEmpty, let self else { return }
+                self.inboxLock.lock(); self.artFilled = true; self.inboxLock.unlock()
+            }
+        }
 
         inboxLock.lock()
         let freshLive = liveInbox; liveInbox = nil
@@ -595,6 +629,7 @@ store: StationStore, catalog: RadioCatalog?,
         let freshResolve = resolveInbox; resolveInbox = nil
         let freshSearch = searchInbox; searchInbox = nil
         let artLanded = artDirty; artDirty = false
+        let pageArtLanded = artFilled; artFilled = false
         inboxLock.unlock()
 
         if let freshLive {
@@ -616,7 +651,14 @@ store: StationStore, catalog: RadioCatalog?,
         if let freshResolve {
             if freshResolve.stamp != stamp { staleDrops.append("lookup") }
             else {
-                try? store.add(freshResolve.station)
+                // A lookup with no art keeps art the station page already gave.
+                var resolved = freshResolve.station
+                if resolved.artworkURL == nil,
+                   let saved = store.favorites().first(where: { $0.id == resolved.id })?.artworkURL {
+                    resolved = Station(id: resolved.id, name: resolved.name, url: resolved.url,
+                                       isLive: resolved.isLive, artworkURL: saved)
+                }
+                try? store.add(resolved)
                 message = "★ \(freshResolve.station.name)"
                 changed = true
             }
@@ -637,7 +679,7 @@ store: StationStore, catalog: RadioCatalog?,
                     : "Search \u{201C}\(freshSearch.term)\u{201D} — \(freshSearch.hits.count) result(s) \u{00B7} f favorite \u{00B7} Esc clear")
             changed = true
         }
-        if artLanded { changed = true }
+        if artLanded || pageArtLanded { changed = true }
         return changed
     }
 

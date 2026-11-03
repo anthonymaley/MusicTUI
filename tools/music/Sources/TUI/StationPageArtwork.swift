@@ -1,34 +1,163 @@
 // Station artwork from the station's public web page — the fallback for
 // favourites the catalog API cannot resolve (BBC Radio 1/2/…, VRT Studio
 // Brussel: `/v1/catalog/{us,gb}/stations/<id>` answers 404 for them, so
-// `RadioCatalog.resolve` never fills `artworkURL`).
+// `RadioCatalog.resolve` never fills `artworkURL` and the hero draws a
+// gradient).
 //
-// RED STUB: the shapes the tests drive, with no behaviour yet.
+// Measured 2026-11-02: https://music.apple.com/us/station/bbc-radio-1/ra.1460912634
+// answers 200 with no token and no special User-Agent; the gb page 404s. The
+// page carries a `<script type="application/json" id="serialized-server-data">`
+// whose station item has `"id": "<station id>"` and
+// `"artwork": {"dictionary": {"url": ".../{w}x{h}bb.{f}"}}`, and an SEO block
+// with `"appleContentId": "<station id>"` and `"artworkUrl"` (same template).
+// Only art tied to THIS station's id is taken, so a page that ever carries
+// other stations' art (a shelf) cannot give the wrong logo. og:image is not
+// used: it is a 1200x630 letterbox crop, and on a page with no station art it
+// could be a generic image rather than nothing.
+//
+// Failure is quiet by design: a 404, a changed page or no art is nil, and the
+// hero keeps its gradient. Never a toast.
 import Foundation
 
 /// One page fetch: nil is a transport failure, otherwise the status and body.
 typealias StationPageFetch = (URL) -> RadioCatalogResponse?
 
 enum StationPageArtwork {
-    static func pageURLs(for station: Station) -> [URL] { [] }
+    /// The pages to try, in order: the station's own storefront, then `us`.
+    /// A music:// favourite URL is fetched over https.
+    static func pageURLs(for station: Station) -> [URL] {
+        var out: [URL] = []
+        if var comps = URLComponents(string: station.url.trimmingCharacters(in: .whitespaces)),
+           comps.host == "music.apple.com", comps.path.contains("/station/") {
+            comps.scheme = "https"
+            comps.query = nil
+            comps.fragment = nil
+            if let own = comps.url { out.append(own) }
+        }
+        let slug = parseStationURL(station.url.replacingOccurrences(of: "music://", with: "https://"))?.slug
+            ?? "station"
+        if let us = URL(string: "https://music.apple.com/us/station/\(slug)/\(station.id)"),
+           !out.contains(us) {
+            out.append(us)
+        }
+        return out
+    }
 
-    static func template(inPage html: Data, stationID: String) -> String? { nil }
+    /// The artwork template for `stationID` in a station page, with `{f}`
+    /// normalised to `jpg` (`ArtworkStore.resolveURL` substitutes only
+    /// `{w}x{h}`, which is the shape the catalog API's own templates take).
+    /// nil when the page has no serialized data, or no art for this id.
+    static func template(inPage html: Data, stationID: String) -> String? {
+        guard let text = String(data: html, encoding: .utf8),
+              let marker = text.range(of: "id=\"serialized-server-data\""),
+              let open = text.range(of: ">", range: marker.upperBound..<text.endIndex),
+              let close = text.range(of: "</script>", range: open.upperBound..<text.endIndex),
+              let root = try? JSONSerialization.jsonObject(with: Data(text[open.upperBound..<close.lowerBound].utf8))
+        else { return nil }
+        guard let raw = artwork(in: root, for: stationID) else { return nil }
+        let template = raw.replacingOccurrences(of: "{f}", with: "jpg")
+        guard let url = URL(string: template.replacingOccurrences(of: "{w}x{h}", with: "1x1")),
+              url.scheme == "https", let host = url.host,
+              host == "mzstatic.com" || host.hasSuffix(".mzstatic.com")
+        else { return nil }
+        return template
+    }
 
-    static func lookup(_ station: Station, fetch: StationPageFetch) -> String? { nil }
+    /// Depth-first: the first dict tied to `id` that carries an artwork URL,
+    /// either as the station item (`id` + `artwork.dictionary.url`) or as its
+    /// SEO block (`appleContentId` + `artworkUrl`).
+    private static func artwork(in node: Any, for id: String) -> String? {
+        if let dict = node as? [String: Any] {
+            if dict["id"] as? String == id,
+               let art = dict["artwork"] as? [String: Any],
+               let inner = art["dictionary"] as? [String: Any],
+               let url = inner["url"] as? String {
+                return url
+            }
+            if dict["appleContentId"] as? String == id, let url = dict["artworkUrl"] as? String {
+                return url
+            }
+            for value in dict.values {
+                if let hit = artwork(in: value, for: id) { return hit }
+            }
+        } else if let list = node as? [Any] {
+            for value in list {
+                if let hit = artwork(in: value, for: id) { return hit }
+            }
+        }
+        return nil
+    }
+
+    /// Tries each page in `pageURLs` order until one gives this station's art.
+    /// Any failure (transport, non-2xx, no art) falls through to the next.
+    static func lookup(_ station: Station, fetch: StationPageFetch) -> String? {
+        for url in pageURLs(for: station) {
+            guard let response = fetch(url), (200...299).contains(response.status) else { continue }
+            if let template = template(inPage: response.data, stationID: station.id) { return template }
+        }
+        return nil
+    }
 }
 
+/// Fills favourites that have no art from their station pages and saves the
+/// result into stations.json, so a station is looked up once, not every
+/// launch. Bounded: each station id is tried at most once per instance (the
+/// scene holds one per run), at most two page fetches each. A miss is retried
+/// on the next launch only, which is how a station whose page gains art later
+/// still picks it up without a retry storm inside one run.
+///
+/// Synchronous; the caller runs it off the main thread.
 final class StationArtworkBackfill {
     private let store: StationStore
     private let fetch: StationPageFetch
+    private let lock = NSLock()
+    private var attempted: Set<String> = []
 
     init(store: StationStore, fetch: @escaping StationPageFetch) {
         self.store = store
         self.fetch = fetch
     }
 
+    /// Every favourite with no art not yet tried this run. Returns the ids
+    /// whose art was saved.
     @discardableResult
-    func fillMissing() -> [String] { [] }
+    func fillMissing() -> [String] {
+        store.favorites().filter { $0.artworkURL == nil }.compactMap { fillIfUntried($0) ? $0.id : nil }
+    }
 
+    /// One favourite (the add path). false when it is not a favourite, already
+    /// has art, was already tried this run, or its page gave none.
     @discardableResult
-    func fill(id: String) -> Bool { false }
+    func fill(id: String) -> Bool {
+        guard let station = store.favorites().first(where: { $0.id == id }),
+              station.artworkURL == nil else { return false }
+        return fillIfUntried(station)
+    }
+
+    private func fillIfUntried(_ station: Station) -> Bool {
+        lock.lock()
+        let fresh = attempted.insert(station.id).inserted
+        lock.unlock()
+        guard fresh, let template = StationPageArtwork.lookup(station, fetch: fetch) else { return false }
+        return (try? store.setArtworkIfMissing(id: station.id, url: template)) ?? false
+    }
+}
+
+/// The real page fetcher: a plain GET, blocking up to 15 s. No token, no
+/// cookies sent; nil on transport failure.
+func makeStationPageFetch() -> StationPageFetch {
+    return { url in
+        var req = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 15)
+        req.httpShouldHandleCookies = false
+        let sem = DispatchSemaphore(value: 0)
+        var out: RadioCatalogResponse?
+        URLSession.shared.dataTask(with: req) { data, response, _ in
+            if let data, let http = response as? HTTPURLResponse {
+                out = RadioCatalogResponse(status: http.statusCode, data: data)
+            }
+            sem.signal()
+        }.resume()
+        _ = sem.wait(timeout: .now() + 20)
+        return out
+    }
 }

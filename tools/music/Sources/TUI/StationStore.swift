@@ -54,9 +54,20 @@ final class StationStore {
         try writeLocked(list)
     }
 
-    /// RED STUB.
+    /// Sets `artworkURL` on the favourite `id` only if it is still a favourite
+    /// and still has none — a page lookup that lands after the station was
+    /// removed must not re-add it, and art the catalog already gave is never
+    /// replaced. Returns whether it wrote.
     @discardableResult
-    func setArtworkIfMissing(id: String, url: String) throws -> Bool { false }
+    func setArtworkIfMissing(id: String, url: String) throws -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        var list = loadLocked()
+        guard let i = list.firstIndex(where: { $0.id == id }), list[i].artworkURL == nil else { return false }
+        let s = list[i]
+        list[i] = Station(id: s.id, name: s.name, url: s.url, isLive: s.isLive, artworkURL: url)
+        try writeLocked(list)
+        return true
+    }
 
     func remove(id: String) throws {
         lock.lock(); defer { lock.unlock() }
