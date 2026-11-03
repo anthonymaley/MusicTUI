@@ -271,34 +271,55 @@ func fetchPlaylistTracks(backend: AppleScriptBackend, playlist: String) -> [Trac
     return out
 }
 
-/// Read a playlist's tracks, in playlist order, as persistent ID + name +
-/// artist + album, for a queue addressed by identity (`persistentIDQueueEntry`).
-/// One script, four bulk gets (`<prop> of every track of playlist`, never
+/// The error `playlistTrackIDsScript` raises when the playlist's track IDs,
+/// read again at the end, differ from the first read.
+let playlistIDsChangedError = "playlist ids: tracks changed during the read"
+
+/// Read the tracks of the playlist whose persistent ID is `playlistID`, in
+/// playlist order, as persistent ID + name + artist + album, for a queue
+/// addressed by identity (`persistentIDQueueEntry`). The playlist is addressed
+/// by its own persistent ID, the one `playlistIdentityScript` resolved from its
+/// unique name, so a playlist renamed or duplicated in between is never read
+/// in its place; it is resolved once, and every get goes through that reference.
+/// One script, four bulk gets (`<prop> of every track of pl`, never
 /// `tracks 1 thru n`: of a ONE-track playlist that answers a bare value, not a
 /// list, probed live 2026-11-03, and the columns then fail the length check),
 /// never a per-track read: the only loop indexes lists already in memory, which
-/// sends no Apple Events (the `fetchPlaylistTracks` perf convention).
+/// sends no Apple Events (the `fetchPlaylistTracks` perf convention). Every
+/// column is coerced to a list, so one track compares and indexes as a list.
 ///
 /// The reply opens with the track count, then one line per track:
 /// "count<LF>" and "persistentID<FS>name<FS>artist<FS>album<LF>" rows.
 /// The count lets the parser tell a torn reply from a short playlist, and the
-/// column-length check makes a library that changed between the gets an error
-/// (a reply is never assembled from columns of different sets).
-func playlistTrackIDsScript(playlist: String) -> String {
-    let esc = escapeAppleScriptString(playlist)
+/// column-length check makes a library that changed between the gets an error.
+/// The four gets are four Apple Events, so the IDs are read once more at the
+/// end and must equal the first read exactly (`playlistIDsChangedError`): a
+/// reply is never assembled from columns of different sets.
+func playlistTrackIDsScript(playlistID: String) -> String {
+    let pid = escapeAppleScriptString(playlistID)
     return """
         set fs to (ASCII character 31)
-        set total to count of tracks of playlist "\(esc)"
+        set pl to (first playlist whose persistent ID is "\(pid)")
+        set total to count of tracks of pl
         set output to (total as text) & linefeed
         if total > 0 then
-            set pids to persistent ID of every track of playlist "\(esc)"
-            set ns to name of every track of playlist "\(esc)"
-            set ars to artist of every track of playlist "\(esc)"
-            set als to album of every track of playlist "\(esc)"
+            set pids to persistent ID of every track of pl
+            set ns to name of every track of pl
+            set ars to artist of every track of pl
+            set als to album of every track of pl
+            set pids to pids as list
+            set ns to ns as list
+            set ars to ars as list
+            set als to als as list
             if (count of pids) is not total or (count of ns) is not total or (count of ars) is not total or (count of als) is not total then error "playlist ids: column lengths differ" number 1001
             repeat with i from 1 to total
                 set output to output & (item i of pids) & fs & (item i of ns) & fs & (item i of ars) & fs & (item i of als) & linefeed
             end repeat
+            set recheck to persistent ID of every track of pl
+            set recheck to recheck as list
+            considering case
+                if recheck is not pids then error "\(playlistIDsChangedError)" number 1002
+            end considering
         end if
         return output
         """
@@ -327,11 +348,14 @@ func parsePlaylistTrackIDs(_ raw: String) -> [TrackListEntry]? {
     return out
 }
 
-/// A playlist's tracks as identity-addressed queue entries, in playlist order,
-/// or nil when the read failed, was torn, or returned any malformed ID. An empty
-/// playlist is an empty list, not nil.
-func fetchPlaylistTrackIDs(backend: AppleScriptBackend, playlist: String) -> [TrackListEntry]? {
-    guard let raw = try? backend.runMusicBlocking(playlistTrackIDsScript(playlist: playlist), timeout: 30)
+/// The tracks of the playlist whose persistent ID is `playlistID`, as
+/// identity-addressed queue entries, in playlist order, or nil when the ID is
+/// not sixteen hex digits (no script runs), or the read failed, was torn, saw
+/// the tracks change (`playlistIDsChangedError`), or returned any malformed ID.
+/// An empty playlist is an empty list, not nil.
+func fetchPlaylistTrackIDs(backend: AppleScriptBackend, playlistID: String) -> [TrackListEntry]? {
+    guard isPersistentIDText(playlistID),
+          let raw = try? backend.runMusicBlocking(playlistTrackIDsScript(playlistID: playlistID), timeout: 30)
     else { return nil }
     return parsePlaylistTrackIDs(raw)
 }

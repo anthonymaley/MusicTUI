@@ -16,37 +16,72 @@ struct MarkedSetReaders {
     /// An album's playable tracks as identity-addressed entries
     /// (`resolveAlbumPlaybackTrackIDs`).
     let album: (_ title: String, _ artist: String) -> AlbumResolution
-    /// How many playlists carry exactly this name; nil when the read failed.
-    let playlistsNamed: (_ name: String) -> Int?
-    /// A playlist's tracks as identity-addressed entries, in playlist order;
-    /// nil when the read failed (`fetchPlaylistTrackIDs`).
-    let playlist: (_ name: String) -> [TrackListEntry]?
+    /// Whether exactly one playlist carries this name and, when it does, that
+    /// playlist's own persistent ID; nil when the read failed.
+    let playlistID: (_ name: String) -> PlaylistIdentity?
+    /// The tracks of the playlist with this persistent ID (the one
+    /// `playlistID` resolved) as identity-addressed entries, in playlist
+    /// order; nil when the read failed (`fetchPlaylistTrackIDs`).
+    let playlist: (_ persistentID: String) -> [TrackListEntry]?
 
     /// The AppleScript readers. Read-only scripts, every one.
     static func live(backend: AppleScriptBackend) -> MarkedSetReaders {
         MarkedSetReaders(
             album: { resolveAlbumPlaybackTrackIDs(backend: backend, title: $0, artist: $1) },
-            playlistsNamed: { name in
-                guard let raw = try? backend.runMusicBlocking(playlistsNamedScript(name)) else { return nil }
-                return parsePlaylistsNamedCount(raw)
+            playlistID: { name in
+                guard let raw = try? backend.runMusicBlocking(playlistIdentityScript(name)) else { return nil }
+                return parsePlaylistIdentity(raw)
             },
-            playlist: { fetchPlaylistTrackIDs(backend: backend, playlist: $0) })
+            playlist: { fetchPlaylistTrackIDs(backend: backend, playlistID: $0) })
     }
 }
 
-/// Counts the playlists named exactly `name`, of every kind, because
-/// `playlist "<name>"` (which the track read addresses) resolves against all of
-/// them and silently takes the first. A read: it changes nothing.
-func playlistsNamedScript(_ name: String) -> String {
-    "count of (every playlist whose name is \"\(escapeAppleScriptString(name))\")"
+/// What the name check found: no playlist by that name, more than one (never
+/// guessed between), or exactly one, with its own persistent ID.
+enum PlaylistIdentity: Equatable {
+    case notFound
+    case duplicated(count: Int)
+    case unique(persistentID: String)
 }
 
-/// The count `playlistsNamedScript` answers, or nil for anything that is not
-/// a whole number. Pure.
-func parsePlaylistsNamedCount(_ raw: String) -> Int? {
-    let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard let n = Int(text), n >= 0 else { return nil }
-    return n
+/// Counts the playlists named exactly `name`, of every kind, because a name
+/// resolves against all of them and silently takes the first; when there is
+/// exactly one, answers its persistent ID too, so the track read is addressed
+/// by that identity (`playlistTrackIDsScript`) and a playlist renamed or
+/// duplicated after this check can never be read in its place. A read: it
+/// changes nothing.
+///
+/// The reply is "count<LF>", plus "persistentID<LF>" when the count is 1. The
+/// ID get is coerced to a list, because one match can answer a bare value, and
+/// a second match appearing between the two gets is an error, never a guess.
+func playlistIdentityScript(_ name: String) -> String {
+    let esc = escapeAppleScriptString(name)
+    return """
+        set hitCount to count of (every playlist whose name is "\(esc)")
+        if hitCount is not 1 then return hitCount as text
+        set hitIDs to persistent ID of every playlist whose name is "\(esc)"
+        set hitIDs to hitIDs as list
+        if (count of hitIDs) is not 1 then error "playlist id: the name changed during the read" number 1003
+        return "1" & linefeed & (item 1 of hitIDs)
+        """
+}
+
+/// What `playlistIdentityScript` answered, or nil for anything else: a count
+/// that is not a whole number, a count of one without exactly one sixteen-hex-
+/// digit ID after it, or any other count followed by more lines. Pure.
+func parsePlaylistIdentity(_ raw: String) -> PlaylistIdentity? {
+    var lines = raw.components(separatedBy: "\n").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+    while lines.last == "" { lines.removeLast() }
+    guard let header = lines.first, let count = Int(header), count >= 0 else { return nil }
+    switch count {
+    case 0:
+        return lines.count == 1 ? .notFound : nil
+    case 1:
+        guard lines.count == 2, isPersistentIDText(lines[1]) else { return nil }
+        return .unique(persistentID: lines[1].uppercased())
+    default:
+        return lines.count == 1 ? .duplicated(count: count) : nil
+    }
 }
 
 /// What Now Playing calls the marked set: the one item's own name, else
@@ -116,16 +151,20 @@ func markedSetPlan(_ items: [MarkedItem], shuffle: Bool, readers: MarkedSetReade
             entries += res.tracks
             matched += max(res.matched, res.tracks.count)
         case .playlist(let name):
-            guard let named = readers.playlistsNamed(name) else {
+            guard let identity = readers.playlistID(name) else {
                 throw ActionError(message: "Music didn't answer while reading '\(name)', so nothing played. Try again.")
             }
-            guard named > 0 else {
+            let persistentID: String
+            switch identity {
+            case .notFound:
                 throw ActionError(message: "Couldn't find the playlist '\(name)', so nothing played.")
-            }
-            guard named == 1 else {
+            case .duplicated:
                 throw ActionError(message: "More than one playlist is named '\(name)', so nothing played. Rename one to play it with the others.")
+            case .unique(let pid):
+                persistentID = pid
             }
-            guard let tracks = readers.playlist(name) else {
+            // Read by the identity the check resolved, never by the name again.
+            guard let tracks = readers.playlist(persistentID) else {
                 throw ActionError(message: "Music didn't answer while reading '\(name)', so nothing played. Try again.")
             }
             guard !tracks.isEmpty else {
