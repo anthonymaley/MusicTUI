@@ -62,7 +62,8 @@ final class MarkedSetPlaylistIDTests: XCTestCase {
     func testRailScriptIsBulkAndOnlyReads() {
         let script = railPlaylistNamesScript
         for cls in ["user playlist", "subscription playlist"] {
-            XCTAssertEqual(script.components(separatedBy: "persistent ID of every \(cls)\n").count - 1, 1, cls)
+            // Two ID gets per class: the read, and the re-read after the names that proves the pairing.
+            XCTAssertEqual(script.components(separatedBy: "persistent ID of every \(cls)\n").count - 1, 2, cls)
             XCTAssertEqual(script.components(separatedBy: "name of every \(cls)\n").count - 1, 1, cls)
             XCTAssertTrue(script.contains("count of \(cls)s"), "\(cls): the guard against an empty class")
         }
