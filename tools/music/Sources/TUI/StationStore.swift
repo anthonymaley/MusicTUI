@@ -69,22 +69,30 @@ final class StationStore {
         return true
     }
 
-    /// Test seam: called between reading the saved favourite and writing the
-    /// merged one. nil in shipped code.
+    /// Test seam: called inside `mergeResolved`, while the lock is held,
+    /// between reading the saved favourite and writing the merged one. nil in
+    /// shipped code. It must not call back into this store on its own thread.
     var mergeWindowHook: (() -> Void)?
 
-    /// RED: today's two-step behaviour, moved here unchanged — read the saved
-    /// art under one lock hold, then `add` under another.
+    /// A catalogue lookup landing on a favourite: its metadata replaces the
+    /// saved entry in place, and its art wins only when it has some — a lookup
+    /// with no art keeps the art a station page already saved. One lock hold
+    /// for the read and the write, so a page fill cannot land in between and
+    /// be overwritten (Codex review finding 1).
+    ///
+    /// When the favourite was removed before the lookup landed, nothing is
+    /// written and false comes back: the remove is the person's later intent,
+    /// and an enrichment never re-adds a station.
     @discardableResult
     func mergeResolved(_ resolved: Station) throws -> Bool {
-        var merged = resolved
-        if resolved.artworkURL == nil,
-           let saved = favorites().first(where: { $0.id == resolved.id })?.artworkURL {
-            merged = Station(id: resolved.id, name: resolved.name, url: resolved.url,
-                             isLive: resolved.isLive, artworkURL: saved)
-        }
+        lock.lock(); defer { lock.unlock() }
+        var list = loadLocked()
+        guard let i = list.firstIndex(where: { $0.id == resolved.id }) else { return false }
+        let art = resolved.artworkURL ?? list[i].artworkURL
         mergeWindowHook?()
-        try add(merged)
+        list[i] = Station(id: resolved.id, name: resolved.name, url: resolved.url,
+                          isLive: resolved.isLive, artworkURL: art)
+        try writeLocked(list)
         return true
     }
 
