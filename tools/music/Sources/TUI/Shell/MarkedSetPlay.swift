@@ -68,8 +68,12 @@ struct MarkedSetPlan: Equatable {
     let queue: AppQueue
     let matched: Int
     /// Entries removed because the song was already earlier in the set
-    /// (`firstOccurrences`): never counted as unavailable, always said.
+    /// (`firstOccurrences`): they leave `matched`, and are never counted as
+    /// unavailable. [A, B, A, A] removes two.
     var repeated = 0
+    /// The distinct songs among them (`repeatedIdentityCount`): what the play
+    /// says. [A, B, A, A] is one repeated song, though two entries went.
+    var repeatedSongs = 0
 
     /// The single-album wording, over the whole set: the warning's notice
     /// (`partialAvailabilityNotice`), with the repeated-song sentence last
@@ -77,7 +81,7 @@ struct MarkedSetPlan: Equatable {
     /// no song repeated.
     var notice: String? {
         let said = [partialAvailabilityNotice(queued: queue.tracks.count, matched: matched),
-                    repeatedSongsNotice(repeated)].compactMap { $0 }
+                    repeatedSongsNotice(repeatedSongs)].compactMap { $0 }
         return said.isEmpty ? nil : said.joined(separator: " ")
     }
     /// The play's own line, restored by a late confirmation: the availability
@@ -85,7 +89,7 @@ struct MarkedSetPlan: Equatable {
     /// the plain "Playing '...' on MusicTUI." when only a song repeated, with
     /// the repeated-song sentence last; nil when nothing was skipped or repeated.
     var playingLine: String? {
-        let repeatedSaid = repeatedSongsNotice(repeated)
+        let repeatedSaid = repeatedSongsNotice(repeatedSongs)
         let base = partialAvailabilityPlayingLine(queued: queue.tracks.count, matched: matched)
             ?? repeatedSaid.map { _ in LibraryProvenance.playingOnMusicTUI(queue.contextLabel) }
         guard let base else { return nil }
@@ -145,10 +149,11 @@ func markedSetPlan(_ items: [MarkedItem], shuffle: Bool, readers: MarkedSetReade
     // leaves the matched count as well as the queue.
     let unique = firstOccurrences(entries, by: \.index)
     let repeated = entries.count - unique.count
+    let repeatedSongs = repeatedIdentityCount(entries, by: \.index)
     matched -= repeated
     let queue = AppQueue(playlistName: persistentIDQueueSource, tracks: shuffle ? unique.shuffled() : unique,
                          currentIndex: 1, displayName: markedSetDisplayName(items))
-    return MarkedSetPlan(queue: queue, matched: matched, repeated: repeated)
+    return MarkedSetPlan(queue: queue, matched: matched, repeated: repeated, repeatedSongs: repeatedSongs)
 }
 
 /// `items` with each identity kept only where it first appears, in order. The
@@ -159,6 +164,18 @@ func markedSetPlan(_ items: [MarkedItem], shuffle: Bool, readers: MarkedSetReade
 func firstOccurrences<T, ID: Hashable>(_ items: [T], by identity: (T) -> ID) -> [T] {
     var seen = Set<ID>()
     return items.filter { seen.insert(identity($0)).inserted }
+}
+
+/// How many distinct identities occur more than once in `items`: the songs a
+/// play says repeated. [A, B, A, A] is one, though `firstOccurrences` drops two
+/// entries; [A, B, A, B] is two.
+func repeatedIdentityCount<T, ID: Hashable>(_ items: [T], by identity: (T) -> ID) -> Int {
+    var seen = Set<ID>(), repeats = Set<ID>()
+    for item in items {
+        let id = identity(item)
+        if !seen.insert(id).inserted { repeats.insert(id) }
+    }
+    return repeats.count
 }
 
 // MARK: - Marking on the rails (combined play, step 4)
@@ -530,7 +547,7 @@ private func playMarkedSetFromSpanDAC(_ items: [MarkedItem], shuffle: Bool, stam
         // One entry per library ID, the first, before any shuffle: SpanDAC
         // refuses a queue that repeats one, and the hand-off plays the same set.
         let rows = firstOccurrences(read.rows, by: \.id)
-        let repeated = read.rows.count - rows.count
+        let repeatedSongs = repeatedIdentityCount(read.rows, by: \.id)
         let sent = bridgeQueueRows(rows, shuffle: shuffle, startAt: 1)
         let ids = sent.map(\.id)
         // A SpanDAC output takes the set as one request: refuse one too large
@@ -574,7 +591,7 @@ private func playMarkedSetFromSpanDAC(_ items: [MarkedItem], shuffle: Bool, stam
                     handedOff = try playThroughHandoff(spanDAC.handoff, rows: rows, startAt: 1,
                                                        startRequired: false, shuffle: shuffle, title: name,
                                                        skippedVideos: read.skippedVideos,
-                                                       repeatedSongs: repeated)
+                                                       repeatedSongs: repeatedSongs)
                 },
                 source: { client in
                     let played = try spanDACOutputPlayer(client).playRetainingToken(ids: ids, startRequired: false)
@@ -599,8 +616,8 @@ private func playMarkedSetFromSpanDAC(_ items: [MarkedItem], shuffle: Bool, stam
         // from the songs SpanDAC could not play.
         let line = [bridgePlaylistPlayMessage(name: name, queued: ids.count, skippedVideos: read.skippedVideos,
                                               skippedUnavailable: skippedUnavailable, startAt: 1, shuffle: shuffle),
-                    repeatedSongsNotice(repeated)].compactMap { $0 }.joined(separator: " ")
-        status.post(line, untilStateChange: skippedUnavailable > 0 || read.skippedVideos > 0 || repeated > 0)
+                    repeatedSongsNotice(repeatedSongs)].compactMap { $0 }.joined(separator: " ")
+        status.post(line, untilStateChange: skippedUnavailable > 0 || read.skippedVideos > 0 || repeatedSongs > 0)
     } catch let error as MusicProviderError {
         throw ActionError(message: error.errorDescription ?? "Couldn't play '\(name)' on SpanDAC.")
     } catch let error as SourceAppError {
