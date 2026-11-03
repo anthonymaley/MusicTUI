@@ -98,10 +98,12 @@ func spanDACOutputPlayer(_ client: SourceAppClient) -> MusicDataProvider {
 /// the hand-off confirms under.
 @discardableResult
 func playThroughHandoff(_ handoff: MusicTUIHandoff, rows: [MusicRow], startAt: Int, startRequired: Bool,
-                        shuffle: Bool, title: String, skippedVideos: Int = 0) throws -> HandoffPlayReport {
+                        shuffle: Bool, title: String, skippedVideos: Int = 0,
+                        repeatedSongs: Int = 0) throws -> HandoffPlayReport {
     do {
         return try handoff.playLibrary(rows: rows, startAt: startAt, startRequired: startRequired,
-                                       shuffle: shuffle, title: title, skippedVideos: skippedVideos)
+                                       shuffle: shuffle, title: title, skippedVideos: skippedVideos,
+                                       repeatedSongs: repeatedSongs)
     } catch let error as ActionError {
         throw error
     } catch {

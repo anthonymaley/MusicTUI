@@ -24,6 +24,12 @@ protocol MusicTUIHandoff {
     @discardableResult
     func playLibrary(rows: [MusicRow], startAt: Int, startRequired: Bool, shuffle: Bool,
                      title: String, skippedVideos: Int) throws -> HandoffPlayReport
+    /// The same play, for rows from which `repeatedSongs` entries were already
+    /// removed because the song was in the set before: the report says so, and
+    /// so does what its confirmation says if Music does not confirm the start.
+    @discardableResult
+    func playLibrary(rows: [MusicRow], startAt: Int, startRequired: Bool, shuffle: Bool,
+                     title: String, skippedVideos: Int, repeatedSongs: Int) throws -> HandoffPlayReport
 }
 
 extension MusicTUIHandoff {
@@ -35,6 +41,17 @@ extension MusicTUIHandoff {
         var report = try playLibrary(rows: rows, startAt: startAt, startRequired: startRequired, shuffle: shuffle,
                                      title: title)
         report.skippedVideos = skippedVideos
+        return report
+    }
+
+    /// A hand-off with no confirmation of its own: the repeated songs join the
+    /// report it returns.
+    @discardableResult
+    func playLibrary(rows: [MusicRow], startAt: Int, startRequired: Bool, shuffle: Bool,
+                     title: String, skippedVideos: Int, repeatedSongs: Int) throws -> HandoffPlayReport {
+        var report = try playLibrary(rows: rows, startAt: startAt, startRequired: startRequired, shuffle: shuffle,
+                                     title: title, skippedVideos: skippedVideos)
+        report.repeatedSongs = repeatedSongs
         return report
     }
 

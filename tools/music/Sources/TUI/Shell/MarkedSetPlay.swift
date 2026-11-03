@@ -67,13 +67,30 @@ func markedSetDisplayName(_ items: [MarkedItem]) -> String {
 struct MarkedSetPlan: Equatable {
     let queue: AppQueue
     let matched: Int
+    /// Entries removed because the song was already earlier in the set
+    /// (`firstOccurrences`): never counted as unavailable, always said.
+    var repeated = 0
 
-    /// The single-album wording, over the whole set: the warning's notice,
-    /// or nil when every matched track was queued (`partialAvailabilityNotice`).
-    var notice: String? { partialAvailabilityNotice(queued: queue.tracks.count, matched: matched) }
-    /// The play's own line, restored by a late confirmation, or nil when
-    /// nothing was skipped (`partialAvailabilityPlayingLine`).
-    var playingLine: String? { partialAvailabilityPlayingLine(queued: queue.tracks.count, matched: matched) }
+    /// The single-album wording, over the whole set: the warning's notice
+    /// (`partialAvailabilityNotice`), with the repeated-song sentence last
+    /// (`repeatedSongsNotice`), or nil when every matched track was queued and
+    /// no song repeated.
+    var notice: String? {
+        let said = [partialAvailabilityNotice(queued: queue.tracks.count, matched: matched),
+                    repeatedSongsNotice(repeated)].compactMap { $0 }
+        return said.isEmpty ? nil : said.joined(separator: " ")
+    }
+    /// The play's own line, restored by a late confirmation: the availability
+    /// line when a song was skipped (`partialAvailabilityPlayingLine`), else
+    /// the plain "Playing '...' on MusicTUI." when only a song repeated, with
+    /// the repeated-song sentence last; nil when nothing was skipped or repeated.
+    var playingLine: String? {
+        let repeatedSaid = repeatedSongsNotice(repeated)
+        let base = partialAvailabilityPlayingLine(queued: queue.tracks.count, matched: matched)
+            ?? repeatedSaid.map { _ in LibraryProvenance.playingOnMusicTUI(queue.contextLabel) }
+        guard let base else { return nil }
+        return [base, repeatedSaid].compactMap { $0 }.joined(separator: " ")
+    }
 }
 
 /// The marked rows as one queue (`markedSetPlan`'s queue).
@@ -127,10 +144,11 @@ func markedSetPlan(_ items: [MarkedItem], shuffle: Bool, readers: MarkedSetReade
     // shuffle. A removed duplicate is not a song that isn't available: it
     // leaves the matched count as well as the queue.
     let unique = firstOccurrences(entries, by: \.index)
-    matched -= entries.count - unique.count
+    let repeated = entries.count - unique.count
+    matched -= repeated
     let queue = AppQueue(playlistName: persistentIDQueueSource, tracks: shuffle ? unique.shuffled() : unique,
                          currentIndex: 1, displayName: markedSetDisplayName(items))
-    return MarkedSetPlan(queue: queue, matched: matched)
+    return MarkedSetPlan(queue: queue, matched: matched, repeated: repeated)
 }
 
 /// `items` with each identity kept only where it first appears, in order. The
@@ -393,7 +411,8 @@ func playMarkedSet(_ marked: (items: [MarkedItem], source: ListSource?), shuffle
 /// A song in more than one marked item is queued once, at its first position
 /// (`firstOccurrences`, by library ID), before any shuffle, on both outputs:
 /// SpanDAC refuses a `slice.queue` that repeats an ID. A dropped duplicate is
-/// not a skip, so no notice counts or mentions it.
+/// not a skip, so no skip notice counts it; the play's line says how many
+/// repeated songs played once (`repeatedSongsNotice`), last.
 ///
 /// Then ONE `routing.perform(.libraryPlay, origin: .spandacLibrary)`, through
 /// the same two branches a single SpanDAC album or playlist play takes: a
@@ -511,6 +530,7 @@ private func playMarkedSetFromSpanDAC(_ items: [MarkedItem], shuffle: Bool, stam
         // One entry per library ID, the first, before any shuffle: SpanDAC
         // refuses a queue that repeats one, and the hand-off plays the same set.
         let rows = firstOccurrences(read.rows, by: \.id)
+        let repeated = read.rows.count - rows.count
         let sent = bridgeQueueRows(rows, shuffle: shuffle, startAt: 1)
         let ids = sent.map(\.id)
         // A SpanDAC output takes the set as one request: refuse one too large
@@ -553,7 +573,8 @@ private func playMarkedSetFromSpanDAC(_ items: [MarkedItem], shuffle: Bool, stam
                     guard path == .handoff else { throw ActionError(message: pickASpanDACOutput) }
                     handedOff = try playThroughHandoff(spanDAC.handoff, rows: rows, startAt: 1,
                                                        startRequired: false, shuffle: shuffle, title: name,
-                                                       skippedVideos: read.skippedVideos)
+                                                       skippedVideos: read.skippedVideos,
+                                                       repeatedSongs: repeated)
                 },
                 source: { client in
                     let played = try spanDACOutputPlayer(client).playRetainingToken(ids: ids, startRequired: false)
@@ -576,9 +597,10 @@ private func playMarkedSetFromSpanDAC(_ items: [MarkedItem], shuffle: Bool, stam
         }
         // The single SpanDAC playlist play's own sentence: the videos apart
         // from the songs SpanDAC could not play.
-        status.post(bridgePlaylistPlayMessage(name: name, queued: ids.count, skippedVideos: read.skippedVideos,
+        let line = [bridgePlaylistPlayMessage(name: name, queued: ids.count, skippedVideos: read.skippedVideos,
                                               skippedUnavailable: skippedUnavailable, startAt: 1, shuffle: shuffle),
-                    untilStateChange: skippedUnavailable > 0 || read.skippedVideos > 0)
+                    repeatedSongsNotice(repeated)].compactMap { $0 }.joined(separator: " ")
+        status.post(line, untilStateChange: skippedUnavailable > 0 || read.skippedVideos > 0 || repeated > 0)
     } catch let error as MusicProviderError {
         throw ActionError(message: error.errorDescription ?? "Couldn't play '\(name)' on SpanDAC.")
     } catch let error as SourceAppError {
