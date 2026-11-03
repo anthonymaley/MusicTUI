@@ -3,21 +3,22 @@ import Foundation
 
 /// A row the person has marked (`m`) on the Albums or Playlists list, to be
 /// played together with the others as one queue. An album is its title AND
-/// artist (two artists can each have a "Greatest Hits"). A playlist is its
-/// `id`, captured from the rail's own read when it was marked: on MusicTUI's
-/// data, the playlist's persistent ID (sixteen hex digits, upper-cased), the
-/// only key a marked play reads it by; on SpanDAC data, SpanDAC's own id for
-/// it (a marked play from SpanDAC data refuses before reading anything).
-/// `name` is what the rail showed, kept for display and messages only: two
-/// playlists sharing a name are two marks, and a playlist renamed since is
-/// still the same one.
+/// artist (two artists can each have a "Greatest Hits"), and on SpanDAC data
+/// also SpanDAC's own `id` for it, the only key a marked play reads its tracks
+/// by there ("" on MusicTUI's data, where the album is read by title and
+/// artist). A playlist is its `id`, captured from the rail's own read when it
+/// was marked: on MusicTUI's data, the playlist's persistent ID (sixteen hex
+/// digits, upper-cased); on SpanDAC data, SpanDAC's own id for it. Either way
+/// it is the only key a marked play reads it by. `name` is what the rail
+/// showed, kept for display and messages only: two playlists sharing a name
+/// are two marks, and a playlist renamed since is still the same one.
 enum MarkedItem: Equatable {
-    case album(title: String, artist: String)
+    case album(title: String, artist: String, id: String = "")
     case playlist(id: String, name: String)
 
     static func == (lhs: MarkedItem, rhs: MarkedItem) -> Bool {
         switch (lhs, rhs) {
-        case let (.album(lt, la), .album(rt, ra)): return lt == rt && la == ra
+        case let (.album(lt, la, lid), .album(rt, ra, rid)): return lt == rt && la == ra && lid == rid
         case let (.playlist(lid, _), .playlist(rid, _)): return lid == rid
         default: return false
         }

@@ -1455,10 +1455,24 @@ struct SourceAppControl: SourceControlling {
     /// is this without the token.
     func queueRetainingToken(libraryIDs: [String], startRequired: Bool = false) throws
         -> (skippedUnavailable: Int, queueToken: String?) {
-        let body: [String: Any] = ["op": "slice.queue", "library_ids": libraryIDs, "start_required": startRequired]
+        let body = Self.libraryQueueBody(libraryIDs: libraryIDs, startRequired: startRequired)
         let reply = try send(body, over: libraryTransport)
         return (try Self.skippedUnavailable(in: reply, sent: libraryIDs.count),
                 Self.queueToken(reply["queue_token"]))
+    }
+
+    /// The library-id queue request, exactly as `queueRetainingToken` sends it.
+    static func libraryQueueBody(libraryIDs: [String], startRequired: Bool) -> [String: Any] {
+        ["op": "slice.queue", "library_ids": libraryIDs, "start_required": startRequired]
+    }
+
+    /// The size in bytes of that request's line, measured by the same
+    /// serialization `send` measures against `maximumRequestBytes`, so a caller
+    /// can refuse a queue too large to send before it sends anything. A body
+    /// that cannot be serialized at all counts as too large (`Int.max`).
+    static func libraryQueueRequestBytes(libraryIDs: [String], startRequired: Bool) -> Int {
+        let body = libraryQueueBody(libraryIDs: libraryIDs, startRequired: startRequired)
+        return (try? JSONSerialization.data(withJSONObject: body))?.count ?? Int.max
     }
 
     /// Part 2, P1: `queue(catalogIDs:)`'s exact request, with the skip count

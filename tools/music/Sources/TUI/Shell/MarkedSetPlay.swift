@@ -4,11 +4,14 @@ import Foundation
 // MARK: - The marked set as one queue (combined play, step 3)
 //
 // The rows marked with `m` on the Albums and Playlists rails play as ONE
-// app-owned queue, in mark order, addressed by persistent ID
-// (`persistentIDQueueSource`), so the poller's advance, next/previous, Now's
-// jump and the bounded end-of-queue continuation all play exactly these
-// tracks. It is a temporary queue only: everything here READS. Nothing makes,
-// duplicates, renames or deletes a playlist or a track.
+// queue, in mark order. On MusicTUI's own data it is an app-owned queue
+// addressed by persistent ID (`persistentIDQueueSource`), so the poller's
+// advance, next/previous, Now's jump and the bounded end-of-queue continuation
+// all play exactly these tracks. On SpanDAC data it is the routed output's
+// queue: one `slice.queue` of library IDs on a SpanDAC output, or the
+// persistent-ID hand-off's app-owned queue on the MusicTUI output. It is a
+// temporary queue only: everything here READS. Nothing makes, duplicates,
+// renames or deletes a playlist or a track, in Music or in SpanDAC's library.
 
 /// The two reads a marked play makes, injected so the queue is built and
 /// tested without Music.
@@ -42,7 +45,7 @@ func markedPlaylistGoneLine(_ name: String) -> String {
 func markedSetDisplayName(_ items: [MarkedItem]) -> String {
     if items.count == 1 {
         switch items[0] {
-        case .album(let title, _): return title
+        case .album(let title, _, _): return title
         case .playlist(_, let name): return name
         }
     }
@@ -91,7 +94,7 @@ func markedSetPlan(_ items: [MarkedItem], shuffle: Bool, readers: MarkedSetReade
     var matched = 0
     for item in items {
         switch item {
-        case .album(let title, let artist):
+        case .album(let title, let artist, _):
             let res = readers.album(title, artist)
             if res.readFailed {
                 throw ActionError(message: "Music didn't answer while reading '\(title)', so nothing played. Try again.")
@@ -147,36 +150,141 @@ func playlistUnmarkableLine(_ name: String) -> String {
 /// The footer line after Esc cleared the marks.
 let marksClearedLine = "Marks cleared"
 
+// MARK: - Reading the marked set on SpanDAC data
+
+/// What a marked play needs to play rows read on SpanDAC data: the scene's
+/// SpanDAC data provider (nil once MusicTUI no longer uses SpanDAC for music
+/// data), the hand-off the MusicTUI output plays through, and the wait between
+/// warming retries.
+struct MarkedSetSpanDAC {
+    let makeProvider: () -> MusicDataProvider?
+    let handoff: MusicTUIHandoff
+    let sleep: (TimeInterval) -> Void
+
+    /// No SpanDAC at all: marks from SpanDAC data refuse, as a SpanDAC list
+    /// played after MusicTUI stopped using SpanDAC for music data does.
+    static var unavailable: MarkedSetSpanDAC {
+        MarkedSetSpanDAC(makeProvider: { nil }, handoff: RefusingHandoff(), sleep: { _ in })
+    }
+}
+
+/// The marked items' songs as SpanDAC served them, in mark order, and how many
+/// playlist videos SpanDAC left out of them (a queue never holds a video).
+struct MarkedSetSpanDACRows: Equatable {
+    var rows: [MusicRow] = []
+    var skippedVideos = 0
+}
+
+/// A marked item SpanDAC could not read: the whole play fails, naming it, in
+/// SpanDAC's own words.
+func markedSpanDACReadFailedLine(_ name: String, _ detail: String) -> String {
+    "Couldn't read '\(name)' from SpanDAC, so nothing played: \(detail)"
+}
+
+/// A marked item SpanDAC holds no playable song for.
+func markedSpanDACEmptyLine(_ name: String) -> String {
+    "'\(name)' has no songs SpanDAC can play, so nothing played."
+}
+
+/// A marked set whose `slice.queue` request would not fit the 64 KiB request
+/// frame (`SourceAppControl.maximumRequestBytes`): refused whole, never cut short.
+func markedSetTooLargeForSpanDACLine(_ songs: Int) -> String {
+    "\(groupedCount(songs)) songs are more than SpanDAC can take in one queue, so nothing played. "
+        + "Mark fewer albums or playlists."
+}
+
+/// Each marked item's songs read from SpanDAC, in mark order, each by the ID
+/// its mark recorded (an album by SpanDAC's album ID, a playlist by SpanDAC's
+/// playlist ID), never by a name. Fails closed and whole, as `markedSetPlan`
+/// does: a read that fails (a playlist that is gone included, in SpanDAC's own
+/// words), an album with no recorded ID, or an item with no song to play throws
+/// an `ActionError` naming that item, and reads stop at the first failure. A
+/// source change reported by a read (`sourceChangedNothingPlayed`) is passed on
+/// as itself.
+func markedSetSpanDACRows(_ items: [MarkedItem],
+                          albumTracks: (_ albumID: String) throws -> [MusicRow],
+                          playlistTracks: (_ playlistID: String) throws -> (rows: [MusicRow], skippedVideos: Int))
+    throws -> MarkedSetSpanDACRows {
+    guard !items.isEmpty else { throw ActionError(message: "Nothing is marked.") }
+    var out = MarkedSetSpanDACRows()
+    for item in items {
+        let name: String
+        let read: (rows: [MusicRow], skippedVideos: Int)
+        switch item {
+        case .album(let title, _, let id):
+            name = title
+            guard !id.isEmpty else { throw ActionError(message: "Couldn't find the album '\(title)', so nothing played.") }
+            read = try namingFailure(name) { (try albumTracks(id), 0) }
+        case .playlist(let id, let playlistName):
+            name = playlistName
+            read = try namingFailure(name) { try playlistTracks(id) }
+        }
+        guard !read.rows.isEmpty else { throw ActionError(message: markedSpanDACEmptyLine(name)) }
+        out.rows += read.rows
+        out.skippedVideos += read.skippedVideos
+    }
+    return out
+}
+
+/// `read`, with any failure but a source change restated as the marked item's own.
+private func namingFailure<T>(_ name: String, _ read: () throws -> T) throws -> T {
+    do {
+        return try read()
+    } catch let error as ActionError where error.message == sourceChangedNothingPlayed {
+        throw error
+    } catch {
+        let detail: String
+        switch error {
+        case let e as ActionError: detail = e.message
+        case let e as SourceAppError: detail = e.message
+        default: detail = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+        }
+        throw ActionError(message: markedSpanDACReadFailedLine(name, detail))
+    }
+}
+
 // MARK: - Playing the marked set (combined play, step 5)
 
-/// A marked play from rows read on SpanDAC data: not offered yet (the SpanDAC
-/// route is a later follow-up), so it refuses before reading anything.
-let markedPlayNeedsMusicTUIData =
-    "Playing marked albums and playlists together needs MusicTUI's own data for now, so nothing played."
+/// The line a marked play posts once it played, on either data source: the
+/// single-album wording when anything matched was left out ("Playing N of M —
+/// the rest aren't available yet.", `partialAvailabilityPlayingLine`), kept
+/// until the next change; otherwise `played`, the output's own line.
+private func postMarkedSetPlayed(_ status: StatusStore, queued: Int, matched: Int, played: String) {
+    if let line = partialAvailabilityPlayingLine(queued: queued, matched: matched) {
+        status.post(line, untilStateChange: true)
+    } else {
+        status.post(played)
+    }
+}
 
 /// `p` / `s` with marks: the marked set as one queue, on the action queue.
 ///
-/// The library album play's shape (`LibraryScene.playAlbum`), with the
-/// SpanDAC hand-off's first play (`PersistentIDHandoff`): marks from SpanDAC
-/// data refuse first, then `refuseOpenDataPlayBeforeReading` (a switch to
-/// SpanDAC data since, or a blocked stored output), both before any read; then
-/// the reads (`markedSetPlan`, all or nothing); then `routing.perform`
-/// against the keypress's stamp, where the Music.app branch sets the queue
-/// and plays its first entry by persistent ID, confirmed by that identity
+/// Marks from SpanDAC data play through `playMarkedSetFromSpanDAC`; marks from
+/// MusicTUI's own data take the library album play's shape
+/// (`LibraryScene.playAlbum`), with the SpanDAC hand-off's first play
+/// (`PersistentIDHandoff`): `refuseOpenDataPlayBeforeReading` (a switch to
+/// SpanDAC data since, or a blocked stored output) before any read; then the
+/// reads (`markedSetPlan`, all or nothing); then `routing.perform` against the
+/// keypress's stamp, where the Music.app branch sets the queue and plays its
+/// first entry by persistent ID, confirmed by that identity
 /// (`playRequestedQueueTrack`). A first play whose script fails clears the
 /// queue, so the poller is never left driving a queue that never started.
 /// When a marked album is only partly available, the play says so as the
 /// single-album play does: its line ("Playing N of M ..."), the warning's
 /// notice, and the line a late confirmation restores, all over the whole set.
-/// `.libraryPlay` routes it: it is a play from MusicTUI's own library data,
-/// and it routes exactly as `.playlistPlay` does.
+/// `.libraryPlay` routes it: it is a play from the library, and it routes
+/// exactly as `.playlistPlay` does.
 func playMarkedSet(_ marked: (items: [MarkedItem], source: ListSource?), shuffle: Bool,
                    backend: AppleScriptBackend, appQueue store: AppQueueStore, routing: RoutingCoordinator,
                    actions: ActionRunner, status: StatusStore, spanDACData: @escaping () -> Bool,
-                   readers: MarkedSetReaders) {
+                   readers: MarkedSetReaders, spanDAC: MarkedSetSpanDAC = .unavailable) {
     let stamp = routing.stamp
     actions.run("Play") {
-        if marked.source == .bridge { throw ActionError(message: markedPlayNeedsMusicTUIData) }
+        if marked.source == .bridge {
+            try playMarkedSetFromSpanDAC(marked.items, shuffle: shuffle, stamp: stamp, routing: routing,
+                                         status: status, spanDAC: spanDAC)
+            return
+        }
         try refuseOpenDataPlayBeforeReading(.libraryPlay, routing: routing, spanDACData: spanDACData())
         let plan = try markedSetPlan(marked.items, shuffle: shuffle, readers: readers)
         let queue = plan.queue
@@ -201,5 +309,122 @@ func playMarkedSet(_ marked: (items: [MarkedItem], source: ListSource?), shuffle
             // ActionRunner reduces anything but an ActionError to "Play failed."
             throw ActionError(message: error.message)
         }
+    }
+}
+
+/// The marked set from SpanDAC data, run on the action queue: the shape of
+/// `LibraryScene.playBridgeArtist`, the existing play of several SpanDAC
+/// albums as one ID list.
+///
+/// Refuses before any read when MusicTUI no longer uses SpanDAC for music data
+/// (marks never play from another data source). Reads each marked item from
+/// SpanDAC on this Mac in mark order (`markedSetSpanDACRows`), every read
+/// fenced on both sides against the keypress's stamp, inside one warming
+/// budget for the whole action. Then ONE `routing.perform(.libraryPlay, origin:
+/// .spandacLibrary)`, through the same two branches a single SpanDAC album or
+/// playlist play takes: a SpanDAC output (this Mac's, or an iPhone's) is sent
+/// the concatenated IDs as one `slice.queue {library_ids}`, shuffled together
+/// for `s`; the MusicTUI output hands the rows to the persistent-ID hand-off,
+/// which builds one app-owned queue (and shuffles it for `s`). There is no
+/// SpanDAC container that is exactly these items, so it is never a whole
+/// `slice.playLibrary`. A set whose request would not fit the request frame is
+/// refused before anything is sent. Everything here READS, apart from the one
+/// play: nothing is written to Music or to the SpanDAC library.
+private func playMarkedSetFromSpanDAC(_ items: [MarkedItem], shuffle: Bool, stamp: (epoch: Int, dataEpoch: Int),
+                                      routing: RoutingCoordinator, status: StatusStore,
+                                      spanDAC: MarkedSetSpanDAC) throws {
+    guard let provider = spanDAC.makeProvider() else {
+        throw ActionError(message: LibraryProvenance.musicAppSelectedBridgeList)
+    }
+    let name = markedSetDisplayName(items)
+    let sleep = spanDAC.sleep
+    do {
+        let budget = WarmUpBudget()
+        let onWarming: (TimeInterval) -> Void = { _ in
+            status.post("Preparing your library \u{2014} '\(name)' will play when it's ready\u{2026}")
+        }
+        let stillCurrent = { routing.playOutputKind(expecting: stamp) != .stale }
+        // A source change is reported as one, never as a read that failed.
+        func fenced<T>(_ read: () throws -> T) throws -> T {
+            guard stillCurrent() else { throw ActionError(message: sourceChangedNothingPlayed) }
+            let answer: T
+            do { answer = try read() } catch {
+                guard stillCurrent() else { throw ActionError(message: sourceChangedNothingPlayed) }
+                throw error
+            }
+            guard stillCurrent() else { throw ActionError(message: sourceChangedNothingPlayed) }
+            return answer
+        }
+        let read = try markedSetSpanDACRows(
+            items,
+            albumTracks: { albumID in
+                try fenced {
+                    try retryingWhileWarming(budget: budget, onWarming: onWarming, sleep: sleep) {
+                        try provider.albumTracks(albumID: albumID)
+                    }
+                }.rows
+            },
+            playlistTracks: { playlistID in
+                try fenced {
+                    // The whole-playlist play's own walk (`for_queue`), every page.
+                    var rows: [MusicRow] = []
+                    var skippedVideos = 0
+                    let failed = walkLibraryPages(
+                        fetch: { cursor, limit in
+                            try provider.playlistTracksForQueue(playlistID: playlistID, cursor: cursor, limit: limit)
+                        },
+                        limit: PlaylistsScene.bridgeTracksPageLimit,
+                        onPage: { page in
+                            rows += page.rows
+                            skippedVideos = page.skippedVideos
+                            return true
+                        },
+                        onRestart: { rows = []; skippedVideos = 0 },
+                        onWarming: onWarming, sleep: sleep, budget: budget)
+                    if let failed { throw failed }
+                    return (rows, skippedVideos)
+                }
+            })
+        let rows = read.rows
+        let sent = bridgeQueueRows(rows, shuffle: shuffle, startAt: 1)
+        let ids = sent.map(\.id)
+        // The matched count, as the MusicTUI-data play counts it: every song
+        // read and every video SpanDAC left out of a playlist.
+        let matched = rows.count + read.skippedVideos
+        // A SpanDAC output takes the set as one request: refuse one too large
+        // to send, before anything is sent, rather than cut it short.
+        if routing.musicTUISpanDACStamp == nil,
+           SourceAppControl.libraryQueueRequestBytes(libraryIDs: ids, startRequired: false)
+               > SourceAppControl.maximumRequestBytes {
+            throw ActionError(message: markedSetTooLargeForSpanDACLine(ids.count))
+        }
+        var skippedUnavailable = 0
+        var handedOff: HandoffPlayReport?
+        try retryingWhileWarming(budget: budget, onWarming: onWarming, sleep: sleep) {
+            try routing.perform(.libraryPlay, expecting: stamp, origin: .spandacLibrary,
+                musicApp: { path in
+                    guard path == .handoff else { throw ActionError(message: pickASpanDACOutput) }
+                    handedOff = try playThroughHandoff(spanDAC.handoff, rows: rows, startAt: 1,
+                                                       startRequired: false, shuffle: shuffle, title: name)
+                },
+                source: { client in
+                    let played = try spanDACOutputPlayer(client).playRetainingToken(ids: ids, startRequired: false)
+                    skippedUnavailable = played.skippedUnavailable
+                    routing.recordSpanDACPlay(sent, token: played.queueToken)
+                },
+                unaffected: {})
+        }
+        if let handedOff {
+            postMarkedSetPlayed(status, queued: rows.count - handedOff.skippedUnavailable, matched: matched,
+                                played: LibraryProvenance.playingOnMusicTUI(name))
+            return
+        }
+        let queued = ids.count - skippedUnavailable
+        postMarkedSetPlayed(status, queued: queued, matched: matched,
+                            played: "Playing '\(name)' on SpanDAC \u{2014} \(queued) tracks.")
+    } catch let error as MusicProviderError {
+        throw ActionError(message: error.errorDescription ?? "Couldn't play '\(name)' on SpanDAC.")
+    } catch let error as SourceAppError {
+        throw ActionError(message: error.message)
     }
 }

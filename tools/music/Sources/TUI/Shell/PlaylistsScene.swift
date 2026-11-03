@@ -1623,7 +1623,8 @@ final class PlaylistsScene: Scene {
         let makeProvider = self.makeProvider
         playMarkedSet(marks.snapshot, shuffle: shuffle, backend: backend, appQueue: appQueue, routing: routing,
                       actions: actions, status: status, spanDACData: { makeProvider() != nil },
-                      readers: markedSetReaders)
+                      readers: markedSetReaders,
+                      spanDAC: MarkedSetSpanDAC(makeProvider: makeProvider, handoff: handoff, sleep: warmUpSleep))
     }
 
     /// The Music.app rail row `index`'s playlist persistent ID, or nil when

@@ -47,6 +47,10 @@ final class MarkedSetSpanDACPlayTests: XCTestCase {
         return "{\"ok\":true,\"op\":\"slice.libraryPlaylistTracks\",\"generation\":3,\"total\":\(ids.count),"
             + "\"items\":[\(items)],\"next_cursor\":null,\"skipped_videos\":\(skippedVideos)}"
     }
+    private let queuedStatus = """
+    {"ok":true,"op":"slice.status","status":{"playback":"playing","title":"T","artist":"A",
+     "contract":3,"authorization":"authorized","queue":{"phase":"complete","requested":1,"present":1,"index":0}}}
+    """
     private func queued(skippedUnavailable: Int = 0) -> String {
         """
         {"ok":true,"op":"slice.queue","skipped_unavailable":\(skippedUnavailable),
@@ -54,10 +58,6 @@ final class MarkedSetSpanDACPlayTests: XCTestCase {
          "contract":3,"authorization":"authorized","queue":{"phase":"complete","requested":1,"present":1,"index":0}}}
         """
     }
-    private let status = """
-    {"ok":true,"op":"slice.status","playback":"playing","title":"T","artist":"A",
-     "contract":3,"authorization":"authorized","queue":{"phase":"complete","requested":1,"present":1,"index":0}}
-    """
 
     /// The mixed set's SpanDAC reads: In Rainbows (t1, t2), Chill (p1, p2), Amnesiac (t3).
     private func scriptMixedReads(_ r: Rig, aliases: [String: String] = [:]) {
@@ -99,7 +99,8 @@ final class MarkedSetSpanDACPlayTests: XCTestCase {
         let data = BridgeLibraryReadsWire()
         let output = BridgeLibraryReadsWire()
         output.stickyStatus = true
-        output.script("slice.status", [status])
+        // The status read after a queue: the same shape the queue reply carries.
+        output.script("slice.status", [queuedStatus])
         let routing = RoutingCoordinator(
             store: modes, surface: .tui, outputLock: nil, dataStore: dataStore,
             makeSourceFor: { _ in

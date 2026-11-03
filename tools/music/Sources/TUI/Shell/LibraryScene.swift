@@ -2690,9 +2690,15 @@ final class LibraryScene: Scene {
         let vis = visibleAlbumIndices()
         guard nav.cursor >= 0, nav.cursor < vis.count else { return .none }
         let album = currentAlbums[vis[nav.cursor]]
-        marks.toggle(.album(title: album.name, artist: album.artist), source: source)
+        marks.toggle(markedAlbum(album, source: source), source: source)
         status.post(markedCountLine(marks.count))
         return .redraw
+    }
+
+    /// An album row as a mark: on SpanDAC data it carries SpanDAC's album ID,
+    /// which a marked play reads its tracks by.
+    private func markedAlbum(_ album: LibraryAlbum, source: ListSource?) -> MarkedItem {
+        .album(title: album.name, artist: album.artist, id: source == .bridge ? album.id : "")
     }
 
     /// The marked set as one queue (`playMarkedSet`).
@@ -2700,7 +2706,8 @@ final class LibraryScene: Scene {
         let makeProvider = self.makeProvider
         playMarkedSet(marks.snapshot, shuffle: shuffle, backend: backend, appQueue: appQueue, routing: routing,
                       actions: actions, status: status, spanDACData: { makeProvider() != nil },
-                      readers: markedSetReaders)
+                      readers: markedSetReaders,
+                      spanDAC: MarkedSetSpanDAC(makeProvider: makeProvider, handoff: handoff, sleep: warmUpSleep))
     }
 
     /// C3 item 5: decided by the source of the list the action came from, not
@@ -3865,7 +3872,7 @@ final class LibraryScene: Scene {
             out += ANSICode.moveTo(row: row, col: z.railX)
             let a = currentAlbums[i]
             let label = markedRowLabel("\(a.name) \u{2014} \(a.artist)",
-                                       marked: showMarks && marked.items.contains(.album(title: a.name, artist: a.artist)))
+                                       marked: showMarks && marked.items.contains(markedAlbum(a, source: currentAlbumSource)))
             let nm = railName(label, nameWidth: nameWidth)
             let padName = nm + String(repeating: " ", count: max(0, nameWidth - nm.count))
             if p == cursorPos {
