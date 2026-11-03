@@ -529,7 +529,7 @@ final class RoutingCoordinator {
                  musicApp: () throws -> Void,
                  source: (SourceAppClient) throws -> Void,
                  unaffected: () throws -> Void) throws {
-        try route(action, expecting: expecting, origin: nil, shippedOnly: true,
+        try route(action, expecting: expecting, origin: nil, searchOrigin: false, shippedOnly: true,
                   musicApp: { _ in try musicApp() },
                   source: source, unaffected: unaffected)
     }
@@ -548,6 +548,13 @@ final class RoutingCoordinator {
     ///   every body. `.source` runs `source` with the OUTPUT client, except a
     ///   pure read, which gets the DATA client (SpanDAC on this Mac): a read
     ///   has no output. Nothing falls back on either axis.
+    /// - `searchOrigin`: the play was started from Discover's catalogue search
+    ///   (a result, or a track of an album opened from one). On the MusicTUI
+    ///   output it refuses with `searchPlaysOnSpanDACOnly` here, at admission
+    ///   and under the lock, before the path is chosen and before any body
+    ///   (phase A, an add, the lifecycle, a player) runs (ruling 2026-11-03
+    ///   17:40: search plays on the SpanDAC output only). Every other branch
+    ///   ignores it.
     func perform(_ action: MusicTUIAction,
                  expecting: (epoch: Int, dataEpoch: Int)?,
                  origin: PlayOrigin? = nil,
@@ -555,7 +562,7 @@ final class RoutingCoordinator {
                  musicApp: (MusicTUIPlayPath) throws -> Void,
                  source: (SourceAppClient) throws -> Void,
                  unaffected: () throws -> Void) throws {
-        try route(action, expecting: expecting, origin: origin, shippedOnly: false,
+        try route(action, expecting: expecting, origin: origin, searchOrigin: searchOrigin, shippedOnly: false,
                   musicApp: musicApp, source: source, unaffected: unaffected)
     }
 
@@ -568,6 +575,7 @@ final class RoutingCoordinator {
     private func route(_ action: MusicTUIAction,
                        expecting: (epoch: Int, dataEpoch: Int)?,
                        origin: PlayOrigin?,
+                       searchOrigin: Bool,
                        shippedOnly: Bool,
                        musicApp: (MusicTUIPlayPath) throws -> Void,
                        source: (SourceAppClient) throws -> Void,
@@ -600,6 +608,9 @@ final class RoutingCoordinator {
                 admitAPlay()
                 try source(client)
             case .musicApp:
+                // A play from the catalogue search never reaches the MusicTUI
+                // output: refused before its path, so before any body runs.
+                if searchOrigin, action.playsChosenMusic { throw ActionError(message: searchPlaysOnSpanDACOnly) }
                 let path = try musicTUIPath(for: action, origin: origin, in: now)
                 if shippedOnly, path != .shipped { throw ActionError(message: pickASpanDACOutput) }
                 admitAPlay()

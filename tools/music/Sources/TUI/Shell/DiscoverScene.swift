@@ -298,24 +298,72 @@ final class DiscoverScene: Scene {
     /// describing an item from the previous feed while the left pane says
     /// "Loading…".
     private var selection: DiscoverSelection? {
-        guard loaded, !failed else { return nil }
+        // The search reads nothing of the root feed, so an album it opened
+        // plays whether the feed is loading, loaded or failed.
+        guard (loaded && !failed) || searchPane != nil else { return nil }
         return discoverSelection(rows: rows, cursor: cursorIndex)
     }
 
     private var canGoBack: Bool { stack.count > 1 }
 
-    // MARK: - Catalogue search (red-phase stubs)
+    // MARK: - Catalogue search state (the host glue is the extension at the end)
 
-    /// The catalogue search pane while a search frame is in the stack.
+    /// The catalogue search pane, while a `.search` frame is in the stack.
+    /// Readable, not private, so a test can see what it shows.
     private(set) var searchPane: CatalogueSearchPane?
 
     /// The level on screen, for a test.
     var currentLevel: DiscoverLevel { current.level }
 
+    /// What a pane intent asked `handle` to return (a play jumps to Now, a
+    /// close redraws). Set and read on the handle thread only.
+    private var searchIntentAction: SceneAction?
+
+    /// Where the results and the artist's albums on screen were read, so a
+    /// play from them carries that read's stamp and origin (tick/handle thread).
+    private var searchResultsRead: RowsRead?
+    private var searchAlbumsRead: RowsRead?
+
+    /// One search or artist-albums answer, as the background read left it.
+    private enum SearchAnswer {
+        case results(CatalogueSearchResults)
+        case albums(ArtistAlbums)
+        case failure(String)
+    }
+
+    /// The one slot a search read writes, keyed on the pane's request id and
+    /// the data epoch it was read under. A read writes only if its id is at
+    /// least the slot's, so an older one never evicts a newer before tick().
+    private var searchInbox: (requestID: Int, dataEpoch: Int, read: RowsRead?, answer: SearchAnswer)?   // guarded by inboxLock
+
     static let searchNeedsSpanDAC = "Search needs SpanDAC on this Mac."
     static let searchDataSourceChanged = "Data source changed while searching; search again."
+    /// Results per kind (Apple's order), and one artist's albums (one page).
+    static let searchLimit = 10
+    static let artistAlbumsLimit = 25
 
-    static func discoverItem(for hit: CatalogueHit) -> DiscoverItem? { nil }
+    /// The Discover row a catalogue hit plays and drills as: an album is
+    /// Discover's album (subtitle the artist), a song its song. An artist is
+    /// not a Discover row; it opens its albums inside the pane.
+    static func discoverItem(for hit: CatalogueHit) -> DiscoverItem? {
+        switch hit.kind {
+        case .album:
+            return DiscoverItem(id: hit.id, name: hit.title, subtitle: hit.subtitle, url: nil, artworkURL: nil,
+                                detail: .album(trackCount: nil, year: nil, genre: nil))
+        case .song:
+            return DiscoverItem(id: hit.id, name: hit.title, subtitle: hit.subtitle, url: nil, artworkURL: nil,
+                                detail: .song)
+        case .artist:
+            return nil
+        }
+    }
+
+    /// The box captures every key only while it is being typed in; results
+    /// and every other level leave the shell's keys to the shell.
+    var capturesAllInput: Bool {
+        if case .search = current.level { return searchPane?.isEditing ?? false }
+        return false
+    }
 
     /// `r` is guarded to the top level in handle(), because refresh() resets the
     /// stack — offering it deeper would silently teleport the user to Discover. The
@@ -326,13 +374,28 @@ final class DiscoverScene: Scene {
     }
 
     var footerHint: String {
-        discoverFooterHint(selection, canGoBack: canGoBack, canRefresh: canRefresh,
+        if case .search = current.level, let pane = searchPane {
+            return pane.isEditing
+                ? "Type to search  Enter Search  Esc Cancel"
+                : "\u{2191}\u{2193} Move  Enter Open/Play  p Play album  / Search  \u{2190} Back"
+        }
+        return discoverFooterHint(selection, canGoBack: canGoBack, canRefresh: canRefresh,
                            inTrackList: { if case .tracks = current.level { return true }; return false }())
     }
 
     // MARK: - Input
 
     func handle(_ key: KeyPress) -> SceneAction {
+        // The search on top takes every key the shell hands it, raw (before
+        // the vim aliases), and passes none on.
+        if case .search = current.level, let pane = searchPane {
+            searchIntentAction = nil
+            let drawn = pane.handle(key)
+            let asked = searchIntentAction
+            searchIntentAction = nil
+            return asked ?? drawn
+        }
+        if key == .char("/") { return openSearch() }
         let k = vimAlias(key, listScene: true)
         let count = selectableDiscoverIndices(rows).count
 
@@ -549,7 +612,8 @@ final class DiscoverScene: Scene {
                          read: tracksRead,
                          copy: discoverCopyRequest(container: container, rows: trackRows, selected: cursorIndex)
                              ?? discoverAlbumRequest(container: container, rows: trackRows, selected: cursorIndex),
-                         albumTitle: Self.catalogueAlbumTitle(container))
+                         albumTitle: Self.catalogueAlbumTitle(container),
+                         searchOrigin: current.searchOrigin)
         return .push(.nowPlaying)
     }
 
@@ -557,13 +621,20 @@ final class DiscoverScene: Scene {
     /// the same single-track play as a one-row slice. The rails' own read
     /// stamps it, so a play whose data or output moved since plays nothing.
     private func playRailSong(_ item: DiscoverItem) -> SceneAction {
+        playRailSong(item, read: railsRead, searchOrigin: false)
+    }
+
+    /// `read` is where the song's row was read (the rails, or a search);
+    /// `searchOrigin` marks a search result for the coordinator.
+    private func playRailSong(_ item: DiscoverItem, read: RowsRead?, searchOrigin: Bool) -> SceneAction {
         // See `playFromHere` for why this door reads the selection.
         guard api != nil || !shippedPathNeedsTheSignIn else {
             status.post(Self.signInToPlay, error: true, untilStateChange: true)
             return .redraw
         }
         playCatalogSlice(catalogIDs: [item.id], containerTitle: item.name,
-                         trackName: item.name, trackArtist: item.subtitle, read: railsRead)
+                         trackName: item.name, trackArtist: item.subtitle, read: read,
+                         searchOrigin: searchOrigin)
         return .push(.nowPlaying)
     }
 
@@ -582,6 +653,12 @@ final class DiscoverScene: Scene {
     /// dispatch off the input loop for their own fetches.
     // Internal, not private, so the routing binding is reachable from a test.
     func playAllFromRail(_ item: DiscoverItem) {
+        playAllFromRail(item, read: railsRead, searchOrigin: false)
+    }
+
+    /// `read` is where the container's row was read (the rails, or a
+    /// search); `searchOrigin` marks a search album for the coordinator.
+    private func playAllFromRail(_ item: DiscoverItem, read rowRead: RowsRead?, searchOrigin: Bool) {
         // See `playFromHere` for why this door reads the selection.
         guard api != nil || !shippedPathNeedsTheSignIn else {
             status.post(Self.signInToPlay, error: true, untilStateChange: true)
@@ -591,7 +668,7 @@ final class DiscoverScene: Scene {
         // The output epoch at the keypress: a play pressed for one output
         // never runs on another. The rail row's own read gives the data half.
         let keypressEpoch = routing.epoch
-        let railRead = railsRead
+        let railRead = rowRead
         actions.run("Play") {
             // Two decisions, in order, neither nested in the other: which feed
             // to READ the tracks from (the DATA selection), then where to PLAY
@@ -616,7 +693,7 @@ final class DiscoverScene: Scene {
                        origin: Self.origin(of: read, singleTrack: false),
                        copy: discoverCopyRequest(container: item, rows: tracks, selected: 0)
                            ?? discoverAlbumRequest(container: item, rows: tracks, selected: 0),
-                       albumTitle: Self.catalogueAlbumTitle(item))
+                       albumTitle: Self.catalogueAlbumTitle(item), searchOrigin: searchOrigin)
         }
     }
 
@@ -665,7 +742,8 @@ final class DiscoverScene: Scene {
     /// clean-up refuses instead.
     func playCatalogSlice(catalogIDs: [String], containerTitle: String, trackName: String,
                           trackArtist: String? = nil, read: RowsRead? = nil,
-                          copy: DiscoverCopyRequest? = nil, albumTitle: String? = nil) {
+                          copy: DiscoverCopyRequest? = nil, albumTitle: String? = nil,
+                          searchOrigin: Bool = false) {
         let expecting = read.map { (epoch: routing.epoch, dataEpoch: $0.dataEpoch) }
         let origin = read.map { Self.origin(of: $0, singleTrack: copy == nil && catalogIDs.count == 1) }
         actions.run("Play") {
@@ -676,7 +754,7 @@ final class DiscoverScene: Scene {
                            : "Playing \(trackName) on SpanDAC — \(catalogIDs.count) tracks.",
                        expecting: expecting, origin: origin,
                        track: (title: trackName, artist: trackArtist), copy: copy,
-                       albumTitle: albumTitle)
+                       albumTitle: albumTitle, searchOrigin: searchOrigin)
         }
     }
 
@@ -713,7 +791,8 @@ final class DiscoverScene: Scene {
                        musicAppTitle: String, bridgeToast: String,
                        expecting: (epoch: Int, dataEpoch: Int)?, origin: PlayOrigin?,
                        track: (title: String, artist: String?)? = nil,
-                       copy: DiscoverCopyRequest? = nil, albumTitle: String? = nil) throws {
+                       copy: DiscoverCopyRequest? = nil, albumTitle: String? = nil,
+                       searchOrigin: Bool = false) throws {
         let lifecycle = self.lifecycle
         let routing = self.routing
         let status = self.status
@@ -727,7 +806,9 @@ final class DiscoverScene: Scene {
         // what it captured, for phase B below.
         var phaseA: DiscoverCopyPhaseA?
         do {
-            try routing.perform(action, expecting: expecting, origin: origin,
+            // `searchOrigin`: a search play refuses on the MusicTUI output
+            // inside the coordinator, before any body below runs.
+            try routing.perform(action, expecting: expecting, origin: origin, searchOrigin: searchOrigin,
                 musicApp: { path in
                     // A Discover album: each branch below that adds to the
                     // library refuses first, before any mutation.
@@ -974,6 +1055,12 @@ final class DiscoverScene: Scene {
     /// `refresh` without the toast: the rows go, and the next tick reads the
     /// rails again from the data source now selected.
     private func reloadForANewDataSource() {
+        // A search open now was read from the source just left: it goes, its
+        // pending answer with it, and he is told to search again.
+        if searchPane != nil {
+            dropSearch()
+            status.post(Self.searchDataSourceChanged)
+        }
         loaded = false
         failed = false
         loadFailure = nil
@@ -1148,7 +1235,11 @@ final class DiscoverScene: Scene {
         tracksReadInbox = nil
         let artLanded = artDirty
         artDirty = false
+        let incomingSearch = searchInbox
+        searchInbox = nil
         inboxLock.unlock()
+
+        if let incomingSearch, applySearchAnswer(incomingSearch) { changed = true }
 
         if let incomingRails {
             rails = incomingRails
@@ -1247,6 +1338,9 @@ final class DiscoverScene: Scene {
         // here, but nothing recomputed scroll from it until the next arrow
         // key, leaving a resized terminal showing a stale window. Calling it
         // here keeps that fix in place.
+        if case .search = current.level, let pane = searchPane {
+            return renderSearch(pane, frame: frame)
+        }
         clampScroll()
         var out = ""
         for r in frame.bodyY..<(frame.bodyY + frame.bodyHeight) {
@@ -1299,15 +1393,17 @@ final class DiscoverScene: Scene {
         // working feed behind a sign-in line: found 2026-09-22 by DoD 6's
         // rename-away control, with `config.json` and `user-token` moved
         // aside. It follows the DATA selection, never the output.
-        if feed == nil, routing.data != .spandacMac {
+        // An album the search opened needs none of the root feed.
+        let fromSearch = current.searchOrigin
+        if !fromSearch, feed == nil, routing.data != .spandacMac {
             out += ANSICode.moveTo(row: y, col: 3)
             return out + "\(ANSICode.dim)Sign in to see your Discover feed (music auth setup).\(ANSICode.reset)"
         }
-        if !loaded {
+        if !fromSearch, !loaded {
             out += ANSICode.moveTo(row: y, col: 3)
             return out + "\(ANSICode.dim)Loading\u{2026}\(ANSICode.reset)"
         }
-        if failed || rails.isEmpty {
+        if !fromSearch, failed || rails.isEmpty {
             out += ANSICode.moveTo(row: y, col: 3)
             // A failure with words of its own says them. No automatic fallback
             // means the person has to be able to read WHY.
@@ -1444,6 +1540,160 @@ final class DiscoverScene: Scene {
             guard y <= bottom else { break }
             out += ANSICode.moveTo(row: y, col: x) + text
             y += 1
+        }
+        return out
+    }
+}
+
+// MARK: - Catalogue search host
+
+// Discover hosts the catalogue search pane (catalogue-search score S5, r2
+// items 1, 2, 3, 6, 7). The pane owns the box, the rows, the cursors and the
+// request ids; this glue does its reads (off the input loop, through
+// `routing.choose(.catalogSearch, …)`, by the DATA selection) and its plays
+// (Discover's own, each marked as a search play so the coordinator refuses it
+// on the MusicTUI output). It lives in this file because Swift's `private` is
+// file-scoped.
+extension DiscoverScene: CatalogueSearchHost {
+
+    func cataloguePane(_ pane: CatalogueSearchPane, emit intent: CatalogueSearchIntent, requestID: Int) {
+        guard pane === searchPane else { return }
+        switch intent {
+        case .search(let term):
+            readCatalogue(requestID: requestID) {
+                .results(try $0.browseCatalogue(term: term, limit: Self.searchLimit))
+            }
+        case .openArtist(let artist):
+            readCatalogue(requestID: requestID) {
+                .albums(try $0.artistAlbums(artistID: artist.id, limit: Self.artistAlbumsLimit))
+            }
+        case .openAlbum(let hit):
+            guard let item = Self.discoverItem(for: hit) else { return }
+            // Discover's own drill (and its drill token); the frame it opens
+            // is marked, so a play from its tracks is a search play too.
+            let depth = stack.count
+            drillIn(item)
+            if stack.count > depth { current.searchOrigin = true }
+            searchIntentAction = .redraw
+        case .playAlbum(let hit):
+            guard let item = Self.discoverItem(for: hit) else { return }
+            playAllFromRail(item, read: searchReadOnScreen, searchOrigin: true)
+            searchIntentAction = .push(.nowPlaying)
+        case .playSong(let hit):
+            guard let item = Self.discoverItem(for: hit) else { return }
+            searchIntentAction = playRailSong(item, read: searchReadOnScreen, searchOrigin: true)
+        case .close:
+            closeSearch()
+            searchIntentAction = .redraw
+        }
+    }
+
+    /// The read the rows on screen came from: the artist's albums while that
+    /// level shows, else the results.
+    private var searchReadOnScreen: RowsRead? {
+        searchPane?.model.artist != nil ? searchAlbumsRead : searchResultsRead
+    }
+
+    /// `/` from any level. With a search already in the stack (an album it
+    /// opened is on top), it goes back to that search and reopens its box.
+    private func openSearch() -> SceneAction {
+        if let at = stack.firstIndex(where: { $0.level == .search }), let pane = searchPane {
+            if case .tracks = current.level {
+                trackRows = []
+                abandonDrill()
+            }
+            stack = Array(stack.prefix(at + 1))
+            _ = pane.handle(.char("/"))
+            return .redraw
+        }
+        stack = pushLevel(stack, .search)
+        searchPane = CatalogueSearchPane(host: self)
+        return .redraw
+    }
+
+    /// The pane's own close: back to the level `/` was pressed on.
+    private func closeSearch() {
+        if let at = stack.firstIndex(where: { $0.level == .search }), at > 0 {
+            stack = Array(stack.prefix(at))
+        }
+        dropSearch()
+    }
+
+    /// The pane, its reads and any answer still in the slot go.
+    private func dropSearch() {
+        searchPane = nil
+        searchResultsRead = nil
+        searchAlbumsRead = nil
+        inboxLock.lock(); searchInbox = nil; inboxLock.unlock()
+    }
+
+    /// One search or artist-albums read, off the input loop. The choice is
+    /// made inside the coordinator's lock and the round trip outside it, as
+    /// for every Discover read. MusicTUI's own data has no catalogue search
+    /// here: nothing is read and the pane says why.
+    private func readCatalogue(requestID: Int, _ read: @escaping (CatalogueBrowsing) throws -> SearchAnswer) {
+        let fallbackEpoch = routing.dataEpoch
+        let routing = self.routing
+        DispatchQueue.global().async { [weak self] in
+            guard let self else { return }
+            var dataEpoch = fallbackEpoch
+            var rowsRead: RowsRead?
+            let answer: SearchAnswer
+            do {
+                let choice: ProviderChoice<CatalogueBrowsing?> = try routing.choose(.catalogSearch,
+                    musicApp: { nil },
+                    source: { BridgeMusicProvider(control: $0.control) })
+                dataEpoch = choice.dataEpoch
+                if let provider = choice.provider {
+                    answer = try read(provider)
+                    rowsRead = RowsRead(choice)
+                } else {
+                    answer = .failure(Self.searchNeedsSpanDAC)
+                }
+            } catch {
+                answer = .failure(Self.words(for: error) ?? "Couldn't search Apple Music.")
+            }
+            self.inboxLock.lock()
+            if (self.searchInbox?.requestID ?? 0) <= requestID {
+                self.searchInbox = (requestID, dataEpoch, rowsRead, answer)
+            }
+            self.inboxLock.unlock()
+            self.inboxWritten?("search")
+        }
+    }
+
+    /// tick(): an answer reaches the pane only while a search is open and its
+    /// data source is still the selected one; the pane drops an id it is not
+    /// waiting on. True when the screen changed.
+    private func applySearchAnswer(_ incoming: (requestID: Int, dataEpoch: Int, read: RowsRead?, answer: SearchAnswer)) -> Bool {
+        guard let pane = searchPane, incoming.dataEpoch == routing.dataEpoch else { return false }
+        switch incoming.answer {
+        case .results(let results):
+            guard pane.didReceive(results: results, requestID: incoming.requestID) else { return false }
+            searchResultsRead = incoming.read
+            return true
+        case .albums(let albums):
+            guard pane.didReceive(albums: albums, requestID: incoming.requestID) else { return false }
+            searchAlbumsRead = incoming.read
+            return true
+        case .failure(let message):
+            return pane.didFail(message, requestID: incoming.requestID)
+        }
+    }
+
+    /// The search level: the pane alone, no art panel (his "too busy"), and
+    /// any cover still placed is deleted. On MusicTUI's own data the empty
+    /// note line says why search will not work here.
+    private func renderSearch(_ pane: CatalogueSearchPane, frame: ShellFrame) -> String {
+        var out = pane.render(frame: frame)
+        if routing.data != .spandacMac, pane.model.note == nil, frame.bodyHeight > 1 {
+            out += ANSICode.moveTo(row: frame.bodyY + 1, col: 2)
+                + "\(ANSICode.dim)\(truncText(Self.searchNeedsSpanDAC, to: max(1, frame.width - 2)))\(ANSICode.reset)"
+        }
+        art.dropDemand()
+        if let last = lastPlaced {
+            out += kittyDeleteEscape(id: last.id)
+            lastPlaced = nil
         }
         return out
     }

@@ -323,7 +323,8 @@ final class DiscoverCatalogueSearchTests: XCTestCase {
         drain(f.actions)
 
         XCTAssertEqual((f.rig.sent("slice.queue").first?.body["ids"] as? [String])?.count, 101, "the album was cut")
-        XCTAssertEqual(f.status.current()?.text, Self.tooManySentence)
+        XCTAssertEqual(f.status.current()?.text, "SpanDAC refused: " + Self.tooManySentence,
+                       "not the sentence an ordinary Discover play of the same album posts")
         assertNoLibraryOrPlay(f)
     }
 
@@ -336,7 +337,8 @@ final class DiscoverCatalogueSearchTests: XCTestCase {
         drain(f.actions)
 
         XCTAssertEqual(f.rig.sent("slice.queue").first?.body["ids"] as? [String], ["r1", "r2", "r1"])
-        XCTAssertEqual(f.status.current()?.text, Self.repeatedSentence)
+        XCTAssertEqual(f.status.current()?.text, "SpanDAC refused: " + Self.repeatedSentence,
+                       "not the sentence an ordinary Discover play of the same album posts")
     }
 
     // MARK: - The MusicTUI output refuses at the coordinator
