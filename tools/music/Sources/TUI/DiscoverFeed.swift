@@ -578,8 +578,10 @@ final class DiscoverFeed: DiscoverFeedReading {
 
 /// The feed's real fetch: a GET with both tokens, blocking up to `timeout`;
 /// nil without both tokens, on transport failure or on timeout. The body is
-/// returned whatever the HTTP status, as before. `transport` and
-/// `onLateCallback` are test seams; shipped code uses URLSession.shared.
+/// returned whatever the HTTP status, as before. A timed-out request is
+/// cancelled and its late callback dropped (`blockingTransportFetch`).
+/// `transport` and `onLateCallback` are test seams; shipped code uses
+/// URLSession.shared.
 func makeDiscoverFeedFetch(transport: @escaping StationPageTransport = urlSessionStationPageTransport,
                            timeout: TimeInterval = 20,
                            onLateCallback: @escaping () -> Void = {},
@@ -592,11 +594,8 @@ func makeDiscoverFeedFetch(transport: @escaping StationPageTransport = urlSessio
         var req = URLRequest(url: url)
         req.setValue("Bearer \(dev)", forHTTPHeaderField: "Authorization")
         req.setValue(user, forHTTPHeaderField: "Music-User-Token")
-        let sem = DispatchSemaphore(value: 0)
-        var out: Data?
-        _ = transport(req) { d, _ in out = d; sem.signal() }
-        _ = sem.wait(timeout: .now() + timeout)
-        return out
+        return blockingTransportFetch(req, transport: transport, timeout: timeout,
+                                      onLateCallback: onLateCallback)?.data
     }
 }
 
