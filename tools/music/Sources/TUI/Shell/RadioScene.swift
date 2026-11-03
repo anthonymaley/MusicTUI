@@ -617,12 +617,16 @@ store: StationStore, catalog: RadioCatalog?,
             personalFetchStarted = true
             startBrowse(.personal)
         }
-        // Favourites saved without art: one sweep per scene, off-thread.
+        // Favourites saved without art: one sweep per scene, off-thread, two
+        // at a time. Each saved cover posts as it lands, so it repaints on the
+        // next tick rather than after the whole sweep (Codex review finding 2).
         if !backfillStarted, let backfill = artBackfill {
             backfillStarted = true
             Thread.detachNewThread { [weak self] in
-                guard !backfill.fillMissing().isEmpty, let self else { return }
-                self.inboxLock.lock(); self.artFilled = true; self.inboxLock.unlock()
+                backfill.fillMissing { _ in
+                    guard let self else { return }
+                    self.inboxLock.lock(); self.artFilled = true; self.inboxLock.unlock()
+                }
             }
         }
 

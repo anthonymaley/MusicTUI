@@ -106,23 +106,59 @@ enum StationPageArtwork {
 /// on the next launch only, which is how a station whose page gains art later
 /// still picks it up without a retry storm inside one run.
 ///
+/// Concurrency: at most `maxConcurrent` (2) station lookups run at once,
+/// across the launch sweep and every single fill together, so at most two page
+/// fetches are ever in flight. Two, because the hero shows one cover at a time
+/// and a slow or dead page then holds back at most half the sweep, while a
+/// dozen favourites still finish in about six round trips; it also matches
+/// ArtworkStore's two cover slots, so the page fetches never outnumber the
+/// image fetches they feed.
+///
 /// Synchronous; the caller runs it off the main thread.
 final class StationArtworkBackfill {
+    static let maxConcurrent = 2
+
     private let store: StationStore
     private let fetch: StationPageFetch
     private let lock = NSLock()
     private var attempted: Set<String> = []
+    private let slots = DispatchSemaphore(value: StationArtworkBackfill.maxConcurrent)
 
     init(store: StationStore, fetch: @escaping StationPageFetch) {
         self.store = store
         self.fetch = fetch
     }
 
-    /// Every favourite with no art not yet tried this run. Returns the ids
-    /// whose art was saved.
+    /// Every favourite with no art not yet tried this run, `maxConcurrent` at
+    /// a time. `onFilled` is called, on a worker thread, as EACH station's art
+    /// is saved, so its cover can show without waiting for the rest. Returns
+    /// the ids whose art was saved, once every lookup has finished.
     @discardableResult
-    func fillMissing() -> [String] {
-        store.favorites().filter { $0.artworkURL == nil }.compactMap { fillIfUntried($0) ? $0.id : nil }
+    func fillMissing(onFilled: @escaping (String) -> Void = { _ in }) -> [String] {
+        let todo = store.favorites().filter { $0.artworkURL == nil }
+        guard !todo.isEmpty else { return [] }
+        let queueLock = NSLock()
+        var next = 0
+        var filled: [String] = []
+        let group = DispatchGroup()
+        for _ in 0..<min(Self.maxConcurrent, todo.count) {
+            group.enter()
+            Thread.detachNewThread { [self] in
+                defer { group.leave() }
+                while true {
+                    queueLock.lock()
+                    guard next < todo.count else { queueLock.unlock(); return }
+                    let station = todo[next]; next += 1
+                    queueLock.unlock()
+                    guard fillIfUntried(station) else { continue }
+                    queueLock.lock(); filled.append(station.id); queueLock.unlock()
+                    onFilled(station.id)
+                }
+            }
+        }
+        group.wait()
+        // Favourites order, not completion order.
+        return todo.map(\.id).filter { filled.contains($0) }
     }
 
     /// One favourite (the add path). false when it is not a favourite, already
@@ -138,7 +174,11 @@ final class StationArtworkBackfill {
         lock.lock()
         let fresh = attempted.insert(station.id).inserted
         lock.unlock()
-        guard fresh, let template = StationPageArtwork.lookup(station, fetch: fetch) else { return false }
+        guard fresh else { return false }
+        slots.wait()
+        let template = StationPageArtwork.lookup(station, fetch: fetch)
+        slots.signal()
+        guard let template else { return false }
         return (try? store.setArtworkIfMissing(id: station.id, url: template)) ?? false
     }
 }
