@@ -94,4 +94,96 @@ final class StationArtworkReviewTests: XCTestCase {
 
         XCTAssertEqual(StationStore(path: path).favorites(), [], "the lookup re-added a removed favourite")
     }
+
+    // MARK: 2. the launch sweep shows each cover as it lands, two at a time
+
+    private func us(_ id: String) -> Station {
+        Station(id: id, name: id, url: "https://music.apple.com/us/station/s/\(id)", isLive: nil, artworkURL: nil)
+    }
+
+    /// The first favourite's page is held; the second's answers at once. Its
+    /// cover must repaint while the first is still held, not after the whole
+    /// sweep.
+    func testAFastFillRepaintsWhileASlowOneIsHeld() throws {
+        let (store, path) = tempStore()
+        try store.add(us("ra.111"))
+        try store.add(T.radio1(url: T.radio1US))
+        let pages = HeldStationPages(held: ["ra.111"], answers: [T.radio1US: T.page(try T.fixture())])
+        defer { pages.releaseAll() }
+        let s = RadioScene(routing: RoutingCoordinator(store: PlaybackModeStore(path: NSTemporaryDirectory() + "m-\(UUID().uuidString).json"),
+                                                       surface: .tui, makeSource: { SourceAppClient() }),
+                           store: store, catalog: nil, stationPages: pages.fetch)
+        let idle = NowPlayingSnapshot(outcome: .unavailable, history: [], surrounding: [])
+        let deadline = Date().addingTimeInterval(3)
+        while s.pageArtRepaints == 0 && Date() < deadline { _ = s.tick(snapshot: idle); usleep(2_000) }
+
+        XCTAssertEqual(s.pageArtRepaints, 1, "no repaint until the held fetch finished")
+        XCTAssertTrue(pages.stillHeld("ra.111"), "the slow fetch was not still in flight")
+        XCTAssertEqual(StationStore(path: path).favorites().last?.artworkURL, T.radio1Template)
+    }
+
+    /// Four favourites, every page held: at most two fetches are in flight.
+    func testTheSweepFetchesAtMostTwoAtATime() throws {
+        let (store, _) = tempStore()
+        let ids = ["ra.1", "ra.2", "ra.3", "ra.4"]
+        for id in ids { try store.add(us(id)) }
+        let pages = HeldStationPages(held: Set(ids), answers: [:])
+        let backfill = StationArtworkBackfill(store: store, fetch: pages.fetch)
+        let done = DispatchSemaphore(value: 0)
+        Thread.detachNewThread { backfill.fillMissing(); done.signal() }
+
+        let deadline = Date().addingTimeInterval(1)
+        while pages.inFlight < 2 && Date() < deadline { usleep(1_000) }
+        usleep(100_000)   // room for a third to start, if anything lets it
+        XCTAssertEqual(pages.maxInFlight, 2)
+        pages.releaseAll()
+        XCTAssertEqual(done.wait(timeout: .now() + 5), .success)
+        XCTAssertEqual(Set(pages.asked), Set(ids.map { "https://music.apple.com/us/station/s/\($0)" }),
+                       "every station asked once")
+        XCTAssertEqual(pages.maxInFlight, 2)
+    }
+}
+
+/// Holds fetches for the given station ids until released; answers others
+/// from a table (anything else 404). Counts fetches in flight.
+final class HeldStationPages {
+    private let lock = NSLock()
+    private let held: Set<String>
+    private let answers: [String: RadioCatalogResponse]
+    private let gate = DispatchSemaphore(value: 0)
+    private var released = false
+    private var waiting: Set<String> = []
+    private var _asked: [String] = []
+    private var _inFlight = 0
+    private var _maxInFlight = 0
+
+    init(held: Set<String>, answers: [String: RadioCatalogResponse]) {
+        self.held = held
+        self.answers = answers
+    }
+
+    var asked: [String] { lock.lock(); defer { lock.unlock() }; return _asked }
+    var inFlight: Int { lock.lock(); defer { lock.unlock() }; return _inFlight }
+    var maxInFlight: Int { lock.lock(); defer { lock.unlock() }; return _maxInFlight }
+    func stillHeld(_ id: String) -> Bool { lock.lock(); defer { lock.unlock() }; return waiting.contains(id) }
+
+    func releaseAll() {
+        lock.lock(); released = true; let n = waiting.count; lock.unlock()
+        for _ in 0..<max(n, 8) { gate.signal() }
+    }
+
+    var fetch: StationPageFetch {
+        return { [self] url in
+            let id = url.lastPathComponent
+            lock.lock()
+            _asked.append(url.absoluteString)
+            _inFlight += 1; _maxInFlight = max(_maxInFlight, _inFlight)
+            let hold = held.contains(id) && !released
+            if hold { waiting.insert(id) }
+            lock.unlock()
+            if hold { _ = gate.wait(timeout: .now() + 10) }
+            lock.lock(); _inFlight -= 1; waiting.remove(id); lock.unlock()
+            return answers[url.absoluteString] ?? RadioCatalogResponse(status: 404, data: Data())
+        }
+    }
 }

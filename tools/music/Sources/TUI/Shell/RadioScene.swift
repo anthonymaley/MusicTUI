@@ -155,6 +155,9 @@ final class RadioScene: Scene {
     private let artBackfill: StationArtworkBackfill?
     private var backfillStarted = false
     private var artFilled = false
+    /// Ticks that repainted because page art landed. Main-thread only; nothing
+    /// reads it but tests.
+    private(set) var pageArtRepaints = 0
 
     init(routing: RoutingCoordinator,
 store: StationStore, catalog: RadioCatalog?,
@@ -676,6 +679,7 @@ store: StationStore, catalog: RadioCatalog?,
                     : "Search \u{201C}\(freshSearch.term)\u{201D} — \(freshSearch.hits.count) result(s) \u{00B7} f favorite \u{00B7} Esc clear")
             changed = true
         }
+        if pageArtLanded { pageArtRepaints += 1 }
         if artLanded || pageArtLanded { changed = true }
         return changed
     }
