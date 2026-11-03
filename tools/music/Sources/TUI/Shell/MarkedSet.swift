@@ -49,6 +49,19 @@ final class MarkedSetStore {
         return marked
     }
 
+    /// The data source the marks were made from; nil when nothing is marked.
+    var listSource: ListSource? {
+        lock.lock(); defer { lock.unlock() }
+        return source
+    }
+
+    /// The marks and their source, read together under one lock, so a play
+    /// never pairs one set's items with another's source.
+    var snapshot: (items: [MarkedItem], source: ListSource?) {
+        lock.lock(); defer { lock.unlock() }
+        return (marked, source)
+    }
+
     var count: Int {
         lock.lock(); defer { lock.unlock() }
         return marked.count

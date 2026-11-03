@@ -69,7 +69,7 @@ final class PlaylistsScene: Scene {
         // key, and a failed one says "press r to retry" on the rail itself.
         let refresh = railSource == .bridge && bridgeFailure == nil
             ? (libraryRefreshAdvertisedForFooter ? "  r Refresh" : "  r Reload") : ""
-        return "\u{2191}\u{2193} Move  Enter Open  p Play  s Shuffle  / Filter" + refresh
+        return "\u{2191}\u{2193} Move  Enter Open  m Mark  p Play  s Shuffle  / Filter" + refresh
     }
 
     /// The rail's last two rows, when there's room for them (D8). Dim, never
@@ -423,6 +423,10 @@ final class PlaylistsScene: Scene {
 
     /// SpanDAC's covers for the top-level Playlists hero (the shell's one fetcher).
     let libraryCovers: LibraryCoverFetcher?
+
+    /// The rows marked with `m` to play together, shared with the Library
+    /// tab (one store, built by the shell), so marks survive a tab switch.
+    let marks: MarkedSetStore
     /// The generation and library instance of the list page(s) whose rows are
     /// APPLIED to `bridgePlaylistRows`: they change only when those rows change,
     /// and either being nil means no cover may be asked for.
@@ -446,7 +450,9 @@ final class PlaylistsScene: Scene {
          handoff: MusicTUIHandoff = RefusingHandoff(),
          warmUpSleep: @escaping (TimeInterval) -> Void = { Thread.sleep(forTimeInterval: $0) },
          now: @escaping () -> Date = Date.init,
-         screenWidth: @escaping () -> Int = { ScreenFrame.current().width }) {
+         screenWidth: @escaping () -> Int = { ScreenFrame.current().width },
+         marks: MarkedSetStore = MarkedSetStore()) {
+        self.marks = marks
         self.routing = routing
         self.libraryCovers = libraryCovers
         self.artwork = artwork
@@ -1478,6 +1484,14 @@ final class PlaylistsScene: Scene {
             invalidateBridgePreview()
             return .pop
         case .escape:
+            // Combined play: Esc clears the marks first, at either focus; its
+            // back and leave-the-tab meanings apply only once nothing is
+            // marked. (The filter's own Esc, above, still only closes it.)
+            if !marks.isEmpty {
+                marks.clear()
+                status.post(marksClearedLine)
+                return .redraw
+            }
             if focus == .tracks {
                 if railSource == .bridge { bridgeTracksFeed?.reset(); bridgeTracksFeed = nil }
                 focus = .playlists
@@ -1548,9 +1562,35 @@ final class PlaylistsScene: Scene {
             playPlaylist(shuffle: true); return .push(.nowPlaying)
         case .char("b"):
             return .push(.nowPlaying)
+        case .char("m"):
+            return toggleMarkUnderCursor()
         default:
             return .none
         }
+    }
+
+    /// `m` on the rail: marks or unmarks the highlighted playlist, recorded
+    /// with the source of the rail it is on. In the tracks pane, or on a rail
+    /// with nothing highlighted, `m` does nothing.
+    private func toggleMarkUnderCursor() -> SceneAction {
+        guard focus == .playlists, let source = railSource else { return .none }
+        let name: String
+        if source == .bridge {
+            guard let row = currentBridgeRow() else { return .none }
+            name = row.title
+        } else {
+            guard playlists.indices.contains(plCursor), visibleIndices().contains(plCursor) else { return .none }
+            name = playlists[plCursor]
+        }
+        marks.toggle(.playlist(name: name), source: source)
+        status.post(markedCountLine(marks.count))
+        return .redraw
+    }
+
+    /// Whether the rail row named `name` shows the mark: marked, on a rail
+    /// from the source the marks were made on.
+    private func showsMark(_ name: String, _ marked: (items: [MarkedItem], source: ListSource?)) -> Bool {
+        marked.source != nil && marked.source == railSource && marked.items.contains(.playlist(name: name))
     }
 
     // MARK: playback (user-initiated; brief inline stall acceptable)
@@ -1889,12 +1929,13 @@ final class PlaylistsScene: Scene {
         if pos >= plScroll + maxVisible { plScroll = pos - maxVisible + 1 }
         let end = min(vis.count, plScroll + maxVisible)
         let nameWidth = z.railWidth - 2 - metaCol - 1
+        let marked = marks.snapshot
         for p in plScroll..<end {
             let i = vis[p]
             let row = listY + (p - plScroll)
             out += ANSICode.moveTo(row: row, col: z.railX)
             let m = meta[i]
-            let display = m.name
+            let display = markedRowLabel(m.name, marked: showsMark(m.name, marked))
             let nm = railName(display, nameWidth: max(1, nameWidth))
             let metaCell: String
             if !m.loaded {
@@ -2144,12 +2185,14 @@ final class PlaylistsScene: Scene {
             if pos >= plScroll + maxVisible { plScroll = pos - maxVisible + 1 }
             let end = min(vis.count, plScroll + maxVisible)
             let nameWidth = z.railWidth - 2 - metaCol - 1
+            let marked = marks.snapshot
             for p in plScroll..<end {
                 let i = vis[p]
                 let row = listY + (p - plScroll)
                 out += ANSICode.moveTo(row: row, col: z.railX)
                 let r = bridgePlaylistRows[i]
-                let nm = railName(r.title, nameWidth: max(1, nameWidth))
+                let nm = railName(markedRowLabel(r.title, marked: showsMark(r.title, marked)),
+                                  nameWidth: max(1, nameWidth))
                 // No "·" loading dot and no badge (D1: MusicKit gives no
                 // smart flag). C3: the count, once a preview/drill-in/play
                 // has read this playlist — "The rail count: N (songs)" (D11).

@@ -284,6 +284,10 @@ func runShell() {
     // the tab or the data source moves.
     let libraryCovers = LibraryCoverFetcher(provider: { spanDACDataProvider(routing: routing) },
                                             dataEpoch: { routing.dataEpoch })
+    // The rows marked with `m` to play together (combined play): ONE store,
+    // shared by the Library and Playlists scenes, so albums and playlists mix
+    // in one set and the marks survive a tab switch.
+    let marks = MarkedSetStore()
     var scenes: [SceneID: Scene] = [.nowPlaying: NowPlayingScene(backend: backend, appQueue: appQueue, status: status, actions: actions, routing: routing, restArtworkAPI: makeArtworkAPI(), kittyEnabled: kittyEnabled,
                                                                   setArtSize: { cols, rows in poller.setDesiredArtSize(cols: cols, rows: rows) })]
     // Declaration order IS the tab strip order and the 1-6 digit shortcuts.
@@ -327,7 +331,8 @@ func runShell() {
                                    makeSources: { makePlaylistDataSources(backend: backend, names: $0, artworkAPI: makeArtworkAPI()) },
                                    // A SpanDAC playlist on the MusicTUI output plays
                                    // its owned songs by exact persistent ID.
-                                   handoff: liveMusicTUIHandoff(backend: backend, appQueue: appQueue, routing: routing))
+                                   handoff: liveMusicTUIHandoff(backend: backend, appQueue: appQueue, routing: routing),
+                                   marks: marks)
                 }
             )
             scenes[id] = scene
@@ -364,7 +369,8 @@ func runShell() {
                                      libraryCovers: libraryCovers,
                                      makeProvider: { spanDACDataProvider(routing: routing) },
                                      // Owned songs by exact persistent ID.
-                                     handoff: liveMusicTUIHandoff(backend: backend, appQueue: appQueue, routing: routing))
+                                     handoff: liveMusicTUIHandoff(backend: backend, appQueue: appQueue, routing: routing),
+                                     marks: marks)
             scenes[id] = scene
             return scene
         case .discover:

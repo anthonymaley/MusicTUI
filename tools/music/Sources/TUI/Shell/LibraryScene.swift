@@ -212,7 +212,7 @@ final class LibraryScene: Scene {
         if isArtistList {
             return "[ ] View  Enter Open  / Filter  a View: \(artistFilter.label)  p Play  s Shuffle"
         }
-        return "[ ] View  Enter Open  / Filter  p Play  s Shuffle"
+        return "[ ] View  Enter Open  / Filter  m Mark  p Play  s Shuffle"
     }
 
     private let backend: AppleScriptBackend
@@ -750,6 +750,10 @@ final class LibraryScene: Scene {
     /// SpanDAC's covers for the top-level Albums hero (the shell's one fetcher).
     let libraryCovers: LibraryCoverFetcher?
 
+    /// The rows marked with `m` to play together, shared with the Playlists
+    /// tab (one store, built by the shell), so marks survive a tab switch.
+    let marks: MarkedSetStore
+
     init(backend: AppleScriptBackend,
          routing: RoutingCoordinator, sources: LibraryDataSources,
          appQueue: AppQueueStore, status: StatusStore, actions: ActionRunner,
@@ -765,9 +769,11 @@ final class LibraryScene: Scene {
          warmUpSleep: @escaping (TimeInterval) -> Void = { Thread.sleep(forTimeInterval: $0) },
          resultCache: ResultCache = ResultCache(),
          now: @escaping () -> Date = { Date() },
-         screenWidth: @escaping () -> Int = { ScreenFrame.current().width }) {
+         screenWidth: @escaping () -> Int = { ScreenFrame.current().width },
+         marks: MarkedSetStore = MarkedSetStore()) {
         self.now = now
         self.screenWidth = screenWidth
+        self.marks = marks
         self.libraryCovers = libraryCovers
         self.artwork = artwork
         self.resolveAlbum = resolveAlbum
@@ -2429,6 +2435,15 @@ final class LibraryScene: Scene {
             break
         }
 
+        // Combined play: Esc clears the marks first, at any level; its back
+        // and leave-the-tab meanings apply only once nothing is marked. (The
+        // filter's own Esc, above, still only closes the filter.)
+        if case .escape = key, !marks.isEmpty {
+            marks.clear()
+            status.post(marksClearedLine)
+            return .redraw
+        }
+
         let libKey: LibraryKey
         switch key {
         case .up: libKey = .up
@@ -2490,6 +2505,8 @@ final class LibraryScene: Scene {
             inboxLock.unlock()
             status.post("Retrying the Music library read\u{2026}")
             return .none
+        case .char("m"):
+            return toggleMarkUnderCursor()
         case .char("["): libKey = .switchPrev
         case .char("]"): libKey = .switchNext
         case .char("p"), .char("P"): libKey = .play
@@ -2650,6 +2667,19 @@ final class LibraryScene: Scene {
         case .none:
             break
         }
+    }
+
+    /// `m` on an album rail (the Albums list or an artist's albums): marks or
+    /// unmarks the highlighted album, recorded with the source of the list it
+    /// is on. Anywhere else `m` does nothing.
+    private func toggleMarkUnderCursor() -> SceneAction {
+        guard isAlbumRail, let source = currentAlbumSource else { return .none }
+        let vis = visibleAlbumIndices()
+        guard nav.cursor >= 0, nav.cursor < vis.count else { return .none }
+        let album = currentAlbums[vis[nav.cursor]]
+        marks.toggle(.album(title: album.name, artist: album.artist), source: source)
+        status.post(markedCountLine(marks.count))
+        return .redraw
     }
 
     /// C3 item 5: decided by the source of the list the action came from, not
@@ -3805,12 +3835,16 @@ final class LibraryScene: Scene {
         if cursorPos >= railScroll + maxVisible { railScroll = cursorPos - maxVisible + 1 }
         let end = min(vis.count, railScroll + maxVisible)
         let nameWidth = max(1, z.railWidth - 2)
+        // Marks show only on a list from the source they were made on.
+        let marked = marks.snapshot
+        let showMarks = marked.source != nil && marked.source == currentAlbumSource
         for p in railScroll..<end {
             let i = vis[p]
             let row = listY + (p - railScroll)
             out += ANSICode.moveTo(row: row, col: z.railX)
             let a = currentAlbums[i]
-            let label = "\(a.name) \u{2014} \(a.artist)"
+            let label = markedRowLabel("\(a.name) \u{2014} \(a.artist)",
+                                       marked: showMarks && marked.items.contains(.album(title: a.name, artist: a.artist)))
             let nm = railName(label, nameWidth: nameWidth)
             let padName = nm + String(repeating: " ", count: max(0, nameWidth - nm.count))
             if p == cursorPos {

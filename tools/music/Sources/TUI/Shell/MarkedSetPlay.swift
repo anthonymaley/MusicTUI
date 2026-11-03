@@ -114,3 +114,21 @@ func markedSetQueue(_ items: [MarkedItem], shuffle: Bool, readers: MarkedSetRead
     return AppQueue(playlistName: persistentIDQueueSource, tracks: shuffle ? entries.shuffled() : entries,
                     currentIndex: 1, displayName: markedSetDisplayName(items))
 }
+
+// MARK: - Marking on the rails (combined play, step 4)
+
+/// What a marked row shows before its name, on the Albums and Playlists rails.
+let markedRowGlyph = "\u{25CF}"
+
+/// `label` with the mark glyph in front when `marked`.
+func markedRowLabel(_ label: String, marked: Bool) -> String {
+    marked ? "\(markedRowGlyph) \(label)" : label
+}
+
+/// The footer line after `m`: how many are marked and what to do next.
+func markedCountLine(_ count: Int) -> String {
+    count == 0 ? "Nothing marked" : "Marked \(count) \u{00B7} p plays them, Esc clears"
+}
+
+/// The footer line after Esc cleared the marks.
+let marksClearedLine = "Marks cleared"
