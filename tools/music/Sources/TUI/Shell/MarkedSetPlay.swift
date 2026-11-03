@@ -84,7 +84,9 @@ func markedSetQueue(_ items: [MarkedItem], shuffle: Bool, readers: MarkedSetRead
 /// The marked rows as one queue: each item's tracks, in mark order (shuffled
 /// together when `shuffle`), addressed by persistent ID and labelled by
 /// `markedSetDisplayName`, with the set's matched count, so an album only
-/// partly available is never shortened silently. Fails closed and whole: any
+/// partly available is never shortened silently. A track in more than one
+/// marked item plays once, at its first position (`firstOccurrences`, by
+/// persistent ID), and is not counted as a skipped song. Fails closed and whole: any
 /// read that fails, an album with nothing to play, a playlist that is gone,
 /// empty, or shares its name with another playlist throws an `ActionError`
 /// naming that item, and no queue exists. Reads stop at the first failure.
@@ -121,9 +123,24 @@ func markedSetPlan(_ items: [MarkedItem], shuffle: Bool, readers: MarkedSetReade
             matched += tracks.count
         }
     }
-    let queue = AppQueue(playlistName: persistentIDQueueSource, tracks: shuffle ? entries.shuffled() : entries,
+    // A song in two marked items plays once, at its first position, before any
+    // shuffle. A removed duplicate is not a song that isn't available: it
+    // leaves the matched count as well as the queue.
+    let unique = firstOccurrences(entries, by: \.index)
+    matched -= entries.count - unique.count
+    let queue = AppQueue(playlistName: persistentIDQueueSource, tracks: shuffle ? unique.shuffled() : unique,
                          currentIndex: 1, displayName: markedSetDisplayName(items))
     return MarkedSetPlan(queue: queue, matched: matched)
+}
+
+/// `items` with each identity kept only where it first appears, in order. The
+/// marked set's one rule for a song in more than one marked item (or twice in
+/// one): it plays once, at its first position, on every output. SpanDAC refuses
+/// a `slice.queue` that repeats a library ID, so this is also what lets such a
+/// set play on a SpanDAC output at all.
+func firstOccurrences<T, ID: Hashable>(_ items: [T], by identity: (T) -> ID) -> [T] {
+    var seen = Set<ID>()
+    return items.filter { seen.insert(identity($0)).inserted }
 }
 
 // MARK: - Marking on the rails (combined play, step 4)
@@ -338,6 +355,11 @@ func playMarkedSet(_ marked: (items: [MarkedItem], source: ListSource?), shuffle
 /// `library_instance`, so no read of this play can tell one SpanDAC process from
 /// another; and a refresh after the last read, before the queue is sent.
 ///
+/// A song in more than one marked item is queued once, at its first position
+/// (`firstOccurrences`, by library ID), before any shuffle, on both outputs:
+/// SpanDAC refuses a `slice.queue` that repeats an ID. A dropped duplicate is
+/// not a skip, so no notice counts or mentions it.
+///
 /// Then ONE `routing.perform(.libraryPlay, origin: .spandacLibrary)`, through
 /// the same two branches a single SpanDAC album or playlist play takes: a
 /// SpanDAC output (this Mac's, or an iPhone's) is sent the concatenated IDs as
@@ -428,7 +450,9 @@ private func playMarkedSetFromSpanDAC(_ items: [MarkedItem], shuffle: Bool, stam
                 if let failed { throw failed }
                 return (rows, skippedVideos)
             })
-        let rows = read.rows
+        // One entry per library ID, the first, before any shuffle: SpanDAC
+        // refuses a queue that repeats one, and the hand-off plays the same set.
+        let rows = firstOccurrences(read.rows, by: \.id)
         let sent = bridgeQueueRows(rows, shuffle: shuffle, startAt: 1)
         let ids = sent.map(\.id)
         // A SpanDAC output takes the set as one request: refuse one too large
