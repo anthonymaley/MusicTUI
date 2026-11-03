@@ -149,7 +149,8 @@ final class RadioScene: Scene {
 
     init(routing: RoutingCoordinator,
 store: StationStore, catalog: RadioCatalog?,
-         opener: Opener = SystemOpener(), kittyEnabled: Bool = false) {
+         opener: Opener = SystemOpener(), kittyEnabled: Bool = false,
+         stationPages: StationPageFetch? = nil) {
         self.routing = routing
         self.store = store
         self.catalog = catalog

@@ -54,6 +54,10 @@ final class StationStore {
         try writeLocked(list)
     }
 
+    /// RED STUB.
+    @discardableResult
+    func setArtworkIfMissing(id: String, url: String) throws -> Bool { false }
+
     func remove(id: String) throws {
         lock.lock(); defer { lock.unlock() }
         try writeLocked(loadLocked().filter { $0.id != id })
