@@ -454,15 +454,20 @@ final class BridgeLibraryDataRouteTests: XCTestCase {
         XCTAssertGreaterThan(spy.count("onSongs"), 0)
 
         // The shipped album body: the app-owned queue, then AppleScript.
+        // Wait on the rig's action runner, not a clock: the first exec of the
+        // counter's freshly written fake costs 1.5-2.3 s under the system temp
+        // folder on the Studio (measured 2026-11-03), which raced the old 3 s wait.
         s.playAlbum(title: "Album", artist: "A", shuffle: false)
-        XCTAssertTrue(wait { queue.read()?.displayName == "Album" }, "the shipped album body did not run")
+        r.actions.waitUntilIdle()
+        XCTAssertEqual(queue.read()?.displayName, "Album", "the shipped album body did not run")
         XCTAssertEqual(queue.read()?.tracks.count, 3)
-        XCTAssertTrue(wait { r.counter.callCount > 0 }, "the shipped body never reached AppleScript")
+        XCTAssertGreaterThan(r.counter.callCount, 0, "the shipped body never reached AppleScript")
 
         // A song row plays through the shipped AppleScript resolution too.
         let before = r.counter.callCount
         _ = s.handle(.enter)
-        XCTAssertTrue(wait { r.counter.callCount > before }, "the shipped song path never reached AppleScript")
+        r.actions.waitUntilIdle()
+        XCTAssertGreaterThan(r.counter.callCount, before, "the shipped song path never reached AppleScript")
 
         XCTAssertEqual(r.built.dataCount, 0, "open data built a SpanDAC data client")
         XCTAssertEqual(r.built.outputModes, [], "open data built a SpanDAC output client")
