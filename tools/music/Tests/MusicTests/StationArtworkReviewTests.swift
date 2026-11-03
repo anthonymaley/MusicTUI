@@ -142,6 +142,80 @@ final class StationArtworkReviewTests: XCTestCase {
                        "every station asked once")
         XCTAssertEqual(pages.maxInFlight, 2)
     }
+
+    // MARK: 3. the real fetcher's timeout
+
+    private let pageURL = URL(string: "https://music.apple.com/us/station/bbc-radio-1/ra.1460912634")!
+
+    private func ok(_ url: URL) -> (Data?, URLResponse?) {
+        (Data("page".utf8), HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil))
+    }
+
+    func testAnAnswerBeforeTheTimeoutIsReturnedAndNotCancelled() {
+        let transport = FakePageTransport()
+        let fetch = makeStationPageFetch(transport: transport.start(answerAfter: 0, with: ok(pageURL)), timeout: 2)
+        let response = fetch(pageURL)
+        XCTAssertEqual(response?.status, 200)
+        XCTAssertEqual(response.map { String(decoding: $0.data, as: UTF8.self) }, "page")
+        XCTAssertEqual(transport.cancels, 0)
+        XCTAssertEqual(transport.requests.first?.httpShouldHandleCookies, false)
+    }
+
+    /// No answer within the timeout: nil, and the task is cancelled rather
+    /// than left running. A callback arriving after that is ignored.
+    func testATimeoutCancelsTheTaskAndIgnoresALateCallback() {
+        let transport = FakePageTransport()
+        let dropped = DispatchSemaphore(value: 0)
+        let fetch = makeStationPageFetch(transport: transport.start(answerAfter: nil, with: ok(pageURL)), timeout: 0.05,
+                                         onLateCallback: { dropped.signal() })
+        let started = Date()
+        XCTAssertNil(fetch(pageURL))
+        XCTAssertLessThan(Date().timeIntervalSince(started), 1, "waited well past the timeout")
+        XCTAssertEqual(transport.cancels, 1, "a timed-out request was left running")
+
+        // The late callback lands after fetch returned; it must be dropped.
+        XCTAssertTrue(transport.fireLate())
+        XCTAssertEqual(dropped.wait(timeout: .now() + 1), .success, "a late callback was not dropped")
+    }
+}
+
+/// A fake `StationPageTransport`: answers after a delay (nil: never, until
+/// `fireLate`), records requests and cancels.
+final class FakePageTransport {
+    private let lock = NSLock()
+    private var _requests: [URLRequest] = []
+    private var _cancels = 0
+    private var pending: ((Data?, URLResponse?) -> Void, (Data?, URLResponse?))?
+
+    var requests: [URLRequest] { lock.lock(); defer { lock.unlock() }; return _requests }
+    var cancels: Int { lock.lock(); defer { lock.unlock() }; return _cancels }
+
+    final class Task: StationPageTask {
+        let onCancel: () -> Void
+        init(_ onCancel: @escaping () -> Void) { self.onCancel = onCancel }
+        func cancel() { onCancel() }
+    }
+
+    func start(answerAfter delay: TimeInterval?, with answer: (Data?, URLResponse?)) -> StationPageTransport {
+        return { [self] request, completion in
+            lock.lock(); _requests.append(request); lock.unlock()
+            if let delay {
+                DispatchQueue.global().asyncAfter(deadline: .now() + delay) { completion(answer.0, answer.1) }
+            } else {
+                lock.lock(); pending = (completion, answer); lock.unlock()
+            }
+            return Task { [self] in lock.lock(); _cancels += 1; lock.unlock() }
+        }
+    }
+
+    /// Delivers the held answer now, as a URLSession callback racing a
+    /// timeout would.
+    func fireLate() -> Bool {
+        lock.lock(); let p = pending; pending = nil; lock.unlock()
+        guard let p else { return false }
+        p.0(p.1.0, p.1.1)
+        return true
+    }
 }
 
 /// Holds fetches for the given station ids until released; answers others

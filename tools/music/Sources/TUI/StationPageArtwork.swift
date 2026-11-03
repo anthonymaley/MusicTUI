@@ -183,21 +183,45 @@ final class StationArtworkBackfill {
     }
 }
 
-/// The real page fetcher: a plain GET, blocking up to 15 s. No token, no
+/// A started page request; `cancel` abandons it.
+protocol StationPageTask: AnyObject {
+    func cancel()
+}
+
+extension URLSessionDataTask: StationPageTask {}
+
+/// Starts `request` and calls back once with what came back. The seam a test
+/// replaces to drive the timeout and a late callback without a network.
+typealias StationPageTransport = (URLRequest, @escaping (Data?, URLResponse?) -> Void) -> StationPageTask
+
+/// The shipped transport: URLSession.shared.
+func urlSessionStationPageTransport(_ request: URLRequest,
+                                    _ completion: @escaping (Data?, URLResponse?) -> Void) -> StationPageTask {
+    let task = URLSession.shared.dataTask(with: request) { data, response, _ in completion(data, response) }
+    task.resume()
+    return task
+}
+
+/// The real page fetcher: a plain GET, blocking up to `timeout`. No token, no
 /// cookies sent; nil on transport failure.
-func makeStationPageFetch() -> StationPageFetch {
+///
+/// RED: today's behaviour behind the new seam — the result is read after the
+/// wait without synchronisation, and a timed-out task is never cancelled.
+func makeStationPageFetch(transport: @escaping StationPageTransport = urlSessionStationPageTransport,
+                          timeout: TimeInterval = 15,
+                          onLateCallback: @escaping () -> Void = {}) -> StationPageFetch {
     return { url in
-        var req = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 15)
+        var req = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: timeout)
         req.httpShouldHandleCookies = false
         let sem = DispatchSemaphore(value: 0)
         var out: RadioCatalogResponse?
-        URLSession.shared.dataTask(with: req) { data, response, _ in
+        _ = transport(req) { data, response in
             if let data, let http = response as? HTTPURLResponse {
                 out = RadioCatalogResponse(status: http.statusCode, data: data)
             }
             sem.signal()
-        }.resume()
-        _ = sem.wait(timeout: .now() + 20)
+        }
+        _ = sem.wait(timeout: .now() + timeout)
         return out
     }
 }
