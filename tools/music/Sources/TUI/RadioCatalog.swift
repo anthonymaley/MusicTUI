@@ -143,6 +143,31 @@ func radioCatalogRequest(url: URL, developerToken: String, userToken: String?) -
     return req
 }
 
+/// The catalogue's real fetch: a GET with the developer token (and the user
+/// token when there is one), blocking up to `timeout`; nil with no developer
+/// token, on transport failure or on timeout. `transport` and
+/// `onLateCallback` are test seams; shipped code uses URLSession.shared.
+func makeRadioCatalogFetch(transport: @escaping StationPageTransport = urlSessionStationPageTransport,
+                           timeout: TimeInterval = 20,
+                           onLateCallback: @escaping () -> Void = {},
+                           developerToken: @escaping () -> String?,
+                           userToken: @escaping () -> String?) -> (String) -> RadioCatalogResponse? {
+    return { urlString in
+        guard let url = URL(string: urlString), let tok = developerToken() else { return nil }
+        let req = radioCatalogRequest(url: url, developerToken: tok, userToken: userToken())
+        let sem = DispatchSemaphore(value: 0)
+        var out: RadioCatalogResponse?
+        _ = transport(req) { data, response in
+            if let data, let http = response as? HTTPURLResponse {
+                out = RadioCatalogResponse(status: http.statusCode, data: data)
+            }
+            sem.signal()
+        }
+        _ = sem.wait(timeout: .now() + timeout)
+        return out
+    }
+}
+
 /// Wired against the real AuthManager. nil when there's no developer token —
 /// callers degrade to favorites-only rather than erroring.
 func makeCatalog() -> RadioCatalog? {
@@ -151,20 +176,7 @@ func makeCatalog() -> RadioCatalog? {
     return RadioCatalog(
         storefront: auth.storefront(),
         token: { try? AuthManager().requireDeveloperToken() },
-        fetch: { urlString in
-            guard let url = URL(string: urlString),
-                  let tok = try? AuthManager().requireDeveloperToken() else { return nil }
-            let req = radioCatalogRequest(url: url, developerToken: tok, userToken: AuthManager().userToken())
-            let sem = DispatchSemaphore(value: 0)
-            var out: RadioCatalogResponse?
-            URLSession.shared.dataTask(with: req) { data, response, _ in
-                if let data, let http = response as? HTTPURLResponse {
-                    out = RadioCatalogResponse(status: http.statusCode, data: data)
-                }
-                sem.signal()
-            }.resume()
-            _ = sem.wait(timeout: .now() + 20)
-            return out
-        },
+        fetch: makeRadioCatalogFetch(developerToken: { try? AuthManager().requireDeveloperToken() },
+                                     userToken: { AuthManager().userToken() }),
         hasUserToken: { AuthManager().userToken() != nil })
 }
