@@ -15,10 +15,21 @@ import Foundation
 // No callback reaches a scene. `landed` moves on every change that can alter a
 // `cover(for:)` answer; a scene repaints when the value it last saw differs.
 //
-// Fail-closed: a cover shows only while a `slice.status` read within the last
-// 5.0 s confirmed the op is advertised AND names the target's own instance. A row
-// observed under one SpanDAC process is never asked for, and never shows a cover,
-// once status names another.
+// Requests stay fail-closed: a cover is asked for only while a `slice.status` read
+// within the last 5.0 s confirmed the op is advertised AND names the target's own
+// instance, and the request carries the row's own instance and generation. A row
+// observed under one SpanDAC process is never asked for once status names another.
+//
+// The installed FILE outlives SpanDAC processes. Its name carries only kind, id and
+// size (`cacheKey`), because MusicKit's library ids are stable across a SpanDAC
+// restart and a library refresh (measured 2026-11-03: 969 of 969 album ids
+// identical across two restarts and a refresh, with a new instance each time).
+// So a saved cover shows on focus at once, with no wait for SpanDAC, and the
+// normal fetch then rechecks it in the background once per (instance, generation,
+// cover) per run, so a library refresh picks up changed art too, replacing it only
+// when the bytes differ. A recheck that fails never removes
+// it; a `no_artwork` / `not_in_library` answer does, and is remembered only for
+// that instance and generation.
 
 /// Disk bounds for installed covers, `sd_*` files only: everything else in the art
 /// cache is ArtworkStore's and never touched here.
@@ -33,9 +44,14 @@ struct LibraryCoverEviction: Equatable {
     /// A pass runs at init and after every this-many installs.
     let everyInstalls: Int
 
+    /// Sized to keep the whole library: ~1,031 album and playlist covers at ~74 KB
+    /// each (512 px JPEG, measured 2026-11-03) is ~75 MB, under the 80 MB target. The
+    /// file target leaves room to grow (1,600 x 74 KB is past 80 MB, so bytes bind
+    /// first at a typical size), and the triggers keep the old 1.25x hysteresis so a
+    /// pass does not run on every install near the bound.
     static let standard = LibraryCoverEviction(maximumAge: 30 * 86_400,
-                                               triggerFiles: 1_500, triggerBytes: 48 * 1_048_576,
-                                               targetFiles: 1_200, targetBytes: 38 * 1_048_576,
+                                               triggerFiles: 2_000, triggerBytes: 100 * 1_048_576,
+                                               targetFiles: 1_600, targetBytes: 80 * 1_048_576,
                                                everyInstalls: 25)
 }
 
@@ -94,13 +110,18 @@ final class LibraryCoverFetcher {
     static let minimumWarmingRetry: TimeInterval = 1
 
     /// The installed file's name for a target: `sd_` + the first 32 hex of
-    /// sha256(`v1|<instance>|<generation>|<kind>|<id>|<px>`). Letters, digits and
-    /// `_` only, so `ArtworkStore.cacheKey` leaves it unchanged and the store finds
-    /// the file without fetching. No id or instance in clear.
+    /// sha256(`v2|<kind>|<id>|<px>`). No instance and no generation: the file is the
+    /// cover's, and survives a SpanDAC restart. Files named under v1 (which carried
+    /// both) are never matched again and age out through eviction. Letters, digits
+    /// and `_` only, so `ArtworkStore.cacheKey` leaves it unchanged and the store
+    /// finds the file without fetching. No id in clear.
     static func cacheKey(for target: Target, px: Int) -> String {
-        let text = "v1|\(target.libraryInstance)|\(target.generation)|\(target.kind.rawValue)|\(target.id)|\(px)"
-        let hex = SHA256.hash(data: Data(text.utf8)).map { String(format: "%02x", $0) }.joined()
-        return "sd_" + hex.prefix(32)
+        let text = "v2|\(target.kind.rawValue)|\(target.id)|\(px)"
+        return "sd_" + hex(Data(text.utf8)).prefix(32)
+    }
+
+    private static func hex(_ data: Data) -> String {
+        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 
     /// Two serial queues, one per lane.
@@ -132,9 +153,12 @@ final class LibraryCoverFetcher {
         let fresh: Bool
     }
 
-    /// The newest cover installed this session for one row, whatever generation.
-    private struct InterimKey: Hashable {
+    /// One cover in one list snapshot: what an outcome (a negative, a backoff, a
+    /// warming hint, a stale generation) and a spent recheck are remembered for. In
+    /// memory only.
+    private struct OutcomeKey: Hashable {
         let instance: String
+        let generation: Int
         let kind: LibraryArtworkKind
         let id: String
     }
@@ -329,16 +353,23 @@ final class LibraryCoverFetcher {
     private var readFailures = 0
     private var forceRead = false
     private var announced: Validity?
-    // Per-key outcomes, all cleared when status names another instance.
-    private var negatives: Set<String> = []
-    private var backoffUntil: [String: Date] = [:]
-    private var warmingUntil: [String: Date] = [:]
-    private var staleKeys: Set<String> = []
+    // Per-snapshot outcomes, all cleared when status names another instance.
+    private var negatives: Set<OutcomeKey> = []
+    private var backoffUntil: [OutcomeKey: Date] = [:]
+    private var warmingUntil: [OutcomeKey: Date] = [:]
+    private var staleKeys: Set<OutcomeKey> = []
+    /// Covers this run has confirmed (installed, or rechecked) under an instance and
+    /// generation: one recheck per newly applied generation, and no more.
+    private var rechecked: Set<OutcomeKey> = []
+    /// File key → a short digest of the bytes installed there: set on every install,
+    /// read from the file once for a cover an earlier run saved. The render key is the
+    /// file key plus this, so a scene's ArtworkStore, which memoizes renders by key for
+    /// the session, never draws its memo of other bytes once the file has changed.
+    private var renderDigest: [String: String] = [:]
     /// Per owner, the list the latest `stale_generation` refusal came from. Not
     /// cleared by anything: a scene acts on it only while its APPLIED list still
     /// carries that very generation and instance, and a new list never does.
     private var staleLists: [Owner: StaleList] = [:]
-    private var interims: [InterimKey: String] = [:]
     // The fetch worker: at most one job in flight, a newer submit replaces the
     // waiting one (the UpNextFillWorker pattern).
     private var pendingFetch: (() -> Void)?
@@ -364,7 +395,7 @@ final class LibraryCoverFetcher {
     // MARK: the scenes' and the shell's side
 
     /// Moves on every change that can alter a `cover(for:)` answer: an install, a
-    /// negative, an interim cleared, a readiness change (including a result
+    /// negative, a replacement, a readiness change (including a result
     /// passing its 5.0 s deadline), a cancel.
     var landed: Int {
         lock.lock(); defer { lock.unlock() }
@@ -411,18 +442,14 @@ final class LibraryCoverFetcher {
         run(work)
     }
 
-    /// The cover to draw for `target`, or nil for the gradient. Nil unless
-    /// readiness is valid for the target; then its own installed file, else the
-    /// newest cover installed this session for the same instance, kind and id,
-    /// unless SpanDAC said this generation has none.
+    /// The cover to draw for `target`, or nil for the gradient: its saved file,
+    /// whatever SpanDAC process installed it and whether or not readiness has been
+    /// read yet, unless SpanDAC said this instance and generation has none.
     func cover(for target: Target) -> LibraryCover? {
         lock.lock(); defer { lock.unlock() }
-        guard target.dataEpoch == dataEpoch(), validLocked(for: target, at: now()) else { return nil }
+        guard target.dataEpoch == dataEpoch(), !negatives.contains(outcomeKey(target)) else { return nil }
         let key = Self.cacheKey(for: target, px: px)
-        if installed(key) { return libraryCover(key) }
-        guard !negatives.contains(key),
-              let interim = interims[interimKey(target)], installed(interim) else { return nil }
-        return libraryCover(interim)
+        return installed(key) ? libraryCover(key) : nil
     }
 
     /// The list the owner's latest `stale_generation` refusal named, or nil. A scene
@@ -495,15 +522,17 @@ final class LibraryCoverFetcher {
     }
 
     /// After the rest's read, with readiness valid for the target and nothing that
-    /// says wait: no installed file, no negative, no backoff, no warming hint
-    /// pending, no `stale_generation` for this generation, no job already for it.
+    /// says wait: no saved file, or one not yet rechecked under this instance; no
+    /// negative, no backoff, no warming hint pending, no `stale_generation` for this
+    /// generation, no job already for it.
     private func fetchJobLocked(for target: Target, at t: Date) -> (() -> Void)? {
         guard restPhase == .done, fetchWanted?.target != target, validLocked(for: target, at: t) else { return nil }
         let key = Self.cacheKey(for: target, px: px)
-        guard !negatives.contains(key), !staleKeys.contains(key),
-              backoffUntil[key].map({ t >= $0 }) ?? true,
-              warmingUntil[key].map({ t >= $0 }) ?? true,
-              !installed(key) else { return nil }
+        let outcome = outcomeKey(target)
+        guard !negatives.contains(outcome), !staleKeys.contains(outcome),
+              backoffUntil[outcome].map({ t >= $0 }) ?? true,
+              warmingUntil[outcome].map({ t >= $0 }) ?? true,
+              !installed(key) || !rechecked.contains(outcome) else { return nil }
         fetchToken += 1
         let token = fetchToken
         let epoch = cancelEpoch
@@ -607,7 +636,7 @@ final class LibraryCoverFetcher {
         backoffUntil = [:]
         warmingUntil = [:]
         staleKeys = []
-        interims = [:]
+        rechecked = []
         _landed += 1
     }
 
@@ -709,27 +738,32 @@ final class LibraryCoverFetcher {
         // the backoff is per key, and a cooldown must survive focus moving away and back.
         guard cancelEpoch == epoch, dataEpoch() == target.dataEpoch else { return }
         let t = now()
+        let outcome = outcomeKey(target)
         switch stop {
         case .stopped:
             break
         case .backoff:
-            backoffUntil[key] = t.addingTimeInterval(Self.transientBackoff)
+            backoffUntil[outcome] = t.addingTimeInterval(Self.transientBackoff)
         case .renderTimeout(let hint):
-            // Per key, like every backoff here: focus moving away and back keeps it, a new
-            // generation is another key, and `negatives` is never touched, so an interim
-            // cover keeps showing while the row waits.
-            backoffUntil[key] = t.addingTimeInterval(Self.renderTimeoutBackoff(hint: hint))
+            // Per outcome key, like every backoff here: focus moving away and back keeps
+            // it, a new generation is another key, and `negatives` is never touched, so a
+            // saved cover keeps showing while the row waits.
+            backoffUntil[outcome] = t.addingTimeInterval(Self.renderTimeoutBackoff(hint: hint))
         case .warming(let retryAfter):
-            warmingUntil[key] = t.addingTimeInterval(max(retryAfter, Self.minimumWarmingRetry))
+            warmingUntil[outcome] = t.addingTimeInterval(max(retryAfter, Self.minimumWarmingRetry))
         case .stale:
             // No retry for this generation; a new one is another key.
-            staleKeys.insert(key)
+            staleKeys.insert(outcome)
             staleLists[target.owner] = StaleList(generation: target.generation,
                                                  libraryInstance: target.libraryInstance)
             forceRead = true
         case .negative:
-            negatives.insert(key)
-            interims[interimKey(target)] = nil
+            // SpanDAC says this cover has no art now: the saved file goes too, or it
+            // would show again on the next focus or the next run. Only this instance
+            // and generation remember the answer; a new one asks again.
+            negatives.insert(outcome)
+            try? FileManager.default.removeItem(atPath: "\(cacheDir)/\(key)")
+            renderDigest[key] = nil
             _landed += 1
         case .unsupported:
             // Readiness false until it is read again.
@@ -739,11 +773,21 @@ final class LibraryCoverFetcher {
         }
     }
 
-    /// `<key>.tmp-<pid>`, the final check, then `rename` over `<key>`. A cancel
-    /// either lands before the check (nothing installed, the temp file deleted) or
-    /// after the rename.
+    /// A verified cover. The same bytes as the saved file: nothing is written, the
+    /// file's modification time is refreshed (age eviction counts from the last
+    /// confirmation) and the recheck is spent. Otherwise `<key>.tmp-<pid>`, the final
+    /// check, then `rename` over `<key>`: a cancel either lands before the check
+    /// (nothing installed, the temp file deleted) or after the rename.
     private func install(_ jpeg: Data, target: Target, key: String, epoch: Int) {
         let path = "\(cacheDir)/\(key)"
+        let saved = FileManager.default.contents(atPath: path)
+        if saved == jpeg {
+            lock.lock()
+            if cancelEpoch == epoch, dataEpoch() == target.dataEpoch { rechecked.insert(outcomeKey(target)) }
+            lock.unlock()
+            try? FileManager.default.setAttributes([.modificationDate: now()], ofItemAtPath: path)
+            return
+        }
         let temp = "\(path).tmp-\(ProcessInfo.processInfo.processIdentifier)"
         try? FileManager.default.createDirectory(atPath: cacheDir, withIntermediateDirectories: true)
         guard (try? jpeg.write(to: URL(fileURLWithPath: temp))) != nil else {
@@ -760,7 +804,8 @@ final class LibraryCoverFetcher {
         let renamed = rename(temp, path) == 0
         var evictNow = false
         if renamed {
-            interims[interimKey(target)] = key
+            rechecked.insert(outcomeKey(target))
+            renderDigest[key] = Self.renderDigest(jpeg)
             installs += 1
             evictNow = installs % max(1, eviction.everyInstalls) == 0
             _landed += 1
@@ -811,12 +856,23 @@ final class LibraryCoverFetcher {
         FileManager.default.fileExists(atPath: "\(cacheDir)/\(key)")
     }
 
-    private func libraryCover(_ key: String) -> LibraryCover {
-        LibraryCover(key: key, url: URL(fileURLWithPath: "\(cacheDir)/\(key)").absoluteString)
+    /// The render key is the file key plus a digest of the bytes installed there; the
+    /// URL is always the file itself, which ArtworkStore reads in place (it lives in
+    /// the store's own cache directory), so no copy is made. Nil when the file cannot
+    /// be read (an eviction racing this call).
+    private func libraryCover(_ key: String) -> LibraryCover? {
+        let path = "\(cacheDir)/\(key)"
+        if renderDigest[key] == nil {
+            guard let bytes = FileManager.default.contents(atPath: path) else { return nil }
+            renderDigest[key] = Self.renderDigest(bytes)
+        }
+        return LibraryCover(key: "\(key)_\(renderDigest[key]!)", url: URL(fileURLWithPath: path).absoluteString)
     }
 
-    private func interimKey(_ target: Target) -> InterimKey {
-        InterimKey(instance: target.libraryInstance, kind: target.kind, id: target.id)
+    static func renderDigest(_ bytes: Data) -> String { String(hex(bytes).prefix(12)) }
+
+    private func outcomeKey(_ target: Target) -> OutcomeKey {
+        OutcomeKey(instance: target.libraryInstance, generation: target.generation, kind: target.kind, id: target.id)
     }
 
     private func run(_ work: [(Lane, () -> Void)]) {

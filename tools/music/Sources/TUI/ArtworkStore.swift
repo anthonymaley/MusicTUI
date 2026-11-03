@@ -278,6 +278,9 @@ final class ArtworkStore {
     private let cacheDir: String
     private let fetcher: (String, ArtworkFetchToken) -> ArtworkFetchOutcome
     private let render: (String, Int, Int) -> [String]
+    /// A test seam: runs on the store worker immediately before it reads an installed
+    /// SpanDAC library cover's file, so a test can hold the read or change the file.
+    var beforeLibraryCoverReadForTesting: (() -> Void)?
     private let now: () -> TimeInterval
     private let limits: Limits
     private let workers = DispatchQueue(label: "music.artwork", qos: .utility, attributes: .concurrent)
@@ -427,6 +430,47 @@ final class ArtworkStore {
 
     private enum BytesResult { case path(String), failed, abandoned }
 
+    /// One read of an installed SpanDAC library cover: a `LibraryCoverFetcher` file in
+    /// this cache directory, asked for under `<file>_<digest>`, where the digest names
+    /// the bytes the fetcher installed. The file can be replaced (a recheck) or evicted
+    /// under a worker, so it is read ONCE into memory and only those bytes are used.
+    private enum LibraryCoverRead {
+        /// Read, and their digest is the key's.
+        case bytes(Data)
+        /// Gone at the read: an eviction racing this ask. Never negative-cached.
+        case missing
+        /// Other bytes than the key names: a replacement racing this ask. A cooldown,
+        /// not a negative; the fetcher hands out the new key.
+        case mismatch
+    }
+
+    /// Nil when `key`/`url` is not an installed library cover read in place.
+    private func readLibraryCover(key: String, url: String) -> LibraryCoverRead? {
+        guard key.hasPrefix("sd_"), let file = URL(string: url), file.isFileURL,
+              file.lastPathComponent.hasPrefix("sd_"), key.hasPrefix(file.lastPathComponent + "_"),
+              file.deletingLastPathComponent().standardizedFileURL.path
+                  == URL(fileURLWithPath: cacheDir).standardizedFileURL.path else { return nil }
+        let expected = key.dropFirst(file.lastPathComponent.count + 1)
+        beforeLibraryCoverReadForTesting?()
+        guard let data = FileManager.default.contents(atPath: file.path) else { return .missing }
+        return LibraryCoverFetcher.renderDigest(data) == expected ? .bytes(data) : .mismatch
+    }
+
+    /// The read's verified bytes, or nil after recording why there are none.
+    private func verifiedLibraryCoverBytes(_ read: LibraryCoverRead, key: String) -> Data? {
+        switch read {
+        case .bytes(let data): return data
+        case .missing:         return nil
+        case .mismatch:        noteTemporaryFailure(key); return nil
+        }
+    }
+
+    /// Bytes that were read and verified but do not decode: a bad cover, negative-cached
+    /// under its key (which names exactly these bytes), whatever the file holds now.
+    private func noteUndecodable(_ key: String) {
+        lock.lock(); failed.insert(key); lock.unlock()
+    }
+
     /// Ensure `key`'s raw artwork bytes are cached to disk (fetching on a
     /// miss) and return the local path. A permanent failure is negative-cached
     /// in `failed` (subject to the `sd_` rule), a temporary one starts a
@@ -558,10 +602,26 @@ final class ArtworkStore {
         lock.lock()
         if let hit = rendered.get(memoKey) { demand = nil; lock.unlock(); return hit }
         let body: (Job) -> Void = { [unowned self] job in
-            guard case .path(let path) = self.ensureBytesOnDisk(key: key, url: url, token: job.token),
-                  !job.token.isCancelled else { return }
-            let lines = self.render(path, width, height)
-            if lines.isEmpty { self.noteFailure(key); return }
+            let lines: [String]
+            if let read = self.readLibraryCover(key: key, url: url) {
+                guard let data = self.verifiedLibraryCoverBytes(read, key: key), !job.token.isCancelled else { return }
+                // The renderer reads a path: hand it a private copy of exactly the
+                // verified bytes, never the installed file, which may change under it.
+                let copy = FileManager.default.temporaryDirectory
+                    .appendingPathComponent("musictui-cover-\(UUID().uuidString)").path
+                guard (try? data.write(to: URL(fileURLWithPath: copy))) != nil else {
+                    self.noteTemporaryFailure(key)
+                    return
+                }
+                defer { try? FileManager.default.removeItem(atPath: copy) }
+                lines = self.render(copy, width, height)
+                if lines.isEmpty { self.noteUndecodable(key); return }
+            } else {
+                guard case .path(let path) = self.ensureBytesOnDisk(key: key, url: url, token: job.token),
+                      !job.token.isCancelled else { return }
+                lines = self.render(path, width, height)
+                if lines.isEmpty { self.noteFailure(key); return }
+            }
             self.lock.lock()
             self.rendered.set(memoKey, lines)
             if self.demand?.workKey == memoKey { self.demand = nil }
@@ -603,12 +663,20 @@ final class ArtworkStore {
         let body: (Job) -> Void = { [unowned self] job in
             // ensureBytesOnDisk has already decided whether a failed fetch is
             // negative-cached; only the read and the PNG conversion are decided here.
-            guard case .path(let path) = self.ensureBytesOnDisk(key: key, url: url, token: job.token),
-                  !job.token.isCancelled else { return }
-            guard let data = FileManager.default.contents(atPath: path),
-                  let png = imageDataToPNG(data) else {
-                self.noteFailure(key)
-                return
+            let png: Data
+            if let read = self.readLibraryCover(key: key, url: url) {
+                guard let data = self.verifiedLibraryCoverBytes(read, key: key), !job.token.isCancelled else { return }
+                guard let converted = imageDataToPNG(data) else { self.noteUndecodable(key); return }
+                png = converted
+            } else {
+                guard case .path(let path) = self.ensureBytesOnDisk(key: key, url: url, token: job.token),
+                      !job.token.isCancelled else { return }
+                guard let data = FileManager.default.contents(atPath: path),
+                      let converted = imageDataToPNG(data) else {
+                    self.noteFailure(key)
+                    return
+                }
+                png = converted
             }
             let escape = kittyTransmitEscape(id: id, png: png)
             self.lock.lock()
