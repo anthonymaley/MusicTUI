@@ -18,9 +18,26 @@ protocol MusicTUIHandoff {
     @discardableResult
     func playLibrary(rows: [MusicRow], startAt: Int, startRequired: Bool, shuffle: Bool,
                      title: String) throws -> HandoffPlayReport
+    /// The same play, for rows whose read also left `skippedVideos` playlist
+    /// videos out: they are part of what the play reports, and of what its
+    /// confirmation says if Music does not confirm the start.
+    @discardableResult
+    func playLibrary(rows: [MusicRow], startAt: Int, startRequired: Bool, shuffle: Bool,
+                     title: String, skippedVideos: Int) throws -> HandoffPlayReport
 }
 
 extension MusicTUIHandoff {
+    /// A hand-off with no confirmation of its own (a stub, a test spy): the
+    /// videos join the report it returns.
+    @discardableResult
+    func playLibrary(rows: [MusicRow], startAt: Int, startRequired: Bool, shuffle: Bool,
+                     title: String, skippedVideos: Int) throws -> HandoffPlayReport {
+        var report = try playLibrary(rows: rows, startAt: startAt, startRequired: startRequired, shuffle: shuffle,
+                                     title: title)
+        report.skippedVideos = skippedVideos
+        return report
+    }
+
     /// A whole play: no row was picked.
     @discardableResult
     func playLibrary(rows: [MusicRow], startAt: Int, shuffle: Bool, title: String) throws -> HandoffPlayReport {
