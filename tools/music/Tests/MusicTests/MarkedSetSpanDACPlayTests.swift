@@ -32,7 +32,8 @@ final class MarkedSetSpanDACPlayTests: XCTestCase {
     /// The read ops a marked play may send, and the play op itself. Nothing
     /// else, on either wire: no write op exists in this set.
     private let readAndPlayOps: Set<String> = ["slice.libraryAlbums", "slice.libraryAlbumTracks",
-                                               "slice.libraryPlaylistTracks", "slice.queue", "slice.status"]
+                                               "slice.libraryPlaylistTracks", "slice.listRev", "slice.queue",
+                                               "slice.status"]
 
     /// The bracket read on either side of the item reads: the first page of
     /// `slice.libraryAlbums`, which carries the SpanDAC process (`library_instance`)
@@ -52,10 +53,18 @@ final class MarkedSetSpanDACPlayTests: XCTestCase {
         let items = ids.map { song($0, alias: aliases[$0]) }.joined(separator: ",")
         return "{\"ok\":true,\"op\":\"slice.libraryAlbumTracks\",\"generation\":3,\"items\":[\(items)]}"
     }
-    private func playlistTracks(_ ids: [String], skippedVideos: Int = 0, aliases: [String: String] = [:]) -> String {
+    /// `listRev`: the playlist's `list_rev`, the same on every page of one read
+    /// ("pr1" unless a test moves it); nil is a SpanDAC that sends none.
+    private func playlistTracks(_ ids: [String], skippedVideos: Int = 0, aliases: [String: String] = [:],
+                                listRev: String? = "pr1") -> String {
         let items = ids.map { song($0, alias: aliases[$0]) }.joined(separator: ",")
+        let rev = listRev.map { ",\"list_rev\":\"\($0)\"" } ?? ""
         return "{\"ok\":true,\"op\":\"slice.libraryPlaylistTracks\",\"generation\":3,\"total\":\(ids.count),"
-            + "\"items\":[\(items)],\"next_cursor\":null,\"skipped_videos\":\(skippedVideos)}"
+            + "\"items\":[\(items)],\"next_cursor\":null,\"skipped_videos\":\(skippedVideos)\(rev)}"
+    }
+    /// `slice.listRev`'s answer for a playlist: its revision, no rows.
+    private func revision(_ rev: String = "pr1", count: Int = 2) -> String {
+        "{\"ok\":true,\"op\":\"slice.listRev\",\"kind\":\"playlist\",\"list_rev\":\"\(rev)\",\"count\":\(count)}"
     }
     private let queuedStatus = """
     {"ok":true,"op":"slice.status","status":{"playback":"playing","title":"T","artist":"A",
@@ -101,8 +110,11 @@ final class MarkedSetSpanDACPlayTests: XCTestCase {
     }
 
     /// `brackets`: script both bracket reads as one unchanged SpanDAC (the same
-    /// instance and generation 3); false leaves them to the test.
-    private func rig(output mode: PlaybackMode, data file: DataFile = .accepted, brackets: Bool = true) -> Rig {
+    /// instance and generation 3); false leaves them to the test. `revisions`:
+    /// script the closing revision read of a marked playlist as unchanged ("pr1");
+    /// false leaves it to the test.
+    private func rig(output mode: PlaybackMode, data file: DataFile = .accepted, brackets: Bool = true,
+                     revisions: Bool = true) -> Rig {
         let dir = NSTemporaryDirectory() + "marked-spandac-\(UUID().uuidString)"
         try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
         let modes = PlaybackModeStore(path: dir + "/mode.json")
@@ -111,6 +123,7 @@ final class MarkedSetSpanDACPlayTests: XCTestCase {
         if file == .accepted { XCTAssertTrue(dataStore.accept()) }
         let data = BridgeLibraryReadsWire()
         if brackets { data.script("slice.libraryAlbums", [bracket(), bracket()]) }
+        if revisions { data.script("slice.listRev", [revision(), revision()]) }
         let output = BridgeLibraryReadsWire()
         output.stickyStatus = true
         // The status read after a queue: the same shape the queue reply carries.
@@ -176,7 +189,7 @@ final class MarkedSetSpanDACPlayTests: XCTestCase {
         // Read in mark order, each by the ID its mark recorded, between the two brackets.
         XCTAssertEqual(r.data.opsInOrder(), ["slice.libraryAlbums", "slice.libraryAlbumTracks",
                                              "slice.libraryPlaylistTracks", "slice.libraryAlbumTracks",
-                                             "slice.libraryAlbums"])
+                                             "slice.listRev", "slice.libraryAlbums"])
         XCTAssertEqual(r.data.sent("slice.libraryAlbumTracks").map { $0["id"] as? String }, ["al1", "al2"])
         XCTAssertEqual(r.data.sent("slice.libraryPlaylistTracks").first?["id"] as? String, "pl1")
         XCTAssertEqual(r.status.current()?.text, "Playing '\(mixedName)' on SpanDAC \u{2014} 5 tracks.")
@@ -358,8 +371,10 @@ final class MarkedSetSpanDACPlayTests: XCTestCase {
     private func albumTracks(_ ids: [String], generation: Int, aliases: [String: String] = [:]) -> String {
         albumTracks(ids, aliases: aliases).replacingOccurrences(of: "\"generation\":3", with: "\"generation\":\(generation)")
     }
-    private func playlistTracks(_ ids: [String], generation: Int, nextCursor: String? = nil) -> String {
-        var page = playlistTracks(ids).replacingOccurrences(of: "\"generation\":3", with: "\"generation\":\(generation)")
+    private func playlistTracks(_ ids: [String], generation: Int, nextCursor: String? = nil,
+                                listRev: String? = "pr1") -> String {
+        var page = playlistTracks(ids, listRev: listRev)
+            .replacingOccurrences(of: "\"generation\":3", with: "\"generation\":\(generation)")
         if let nextCursor {
             page = page.replacingOccurrences(of: "\"next_cursor\":null", with: "\"next_cursor\":\"\(nextCursor)\"")
         }
@@ -498,7 +513,7 @@ final class MarkedSetSpanDACPlayTests: XCTestCase {
 
         XCTAssertEqual(r.data.opsInOrder(), ["slice.libraryAlbums", "slice.libraryAlbumTracks",
                                              "slice.libraryPlaylistTracks", "slice.libraryAlbumTracks",
-                                             "slice.libraryAlbums"])
+                                             "slice.listRev", "slice.libraryAlbums"])
         let brackets = r.data.sent("slice.libraryAlbums")
         XCTAssertEqual(brackets.count, 2)
         for body in brackets {
@@ -621,6 +636,205 @@ final class MarkedSetSpanDACPlayTests: XCTestCase {
         XCTAssertEqual(r.data.sent("slice.libraryAlbums").count, 2)
         XCTAssertTrue(r.output.sent("slice.queue").isEmpty)
         XCTAssertTrue(r.data.sent("slice.queue").isEmpty)
+    }
+
+    // MARK: - One revision of each marked playlist
+
+    private let setOfTwo = "1 album and 1 playlist"
+    private var setOfTwoChangedLine: String {
+        "SpanDAC's library changed while '\(setOfTwo)' was being read, so nothing played. Try again."
+    }
+
+    /// A playlist edit between two pages: SpanDAC's generation stays 3 (a
+    /// playlist's membership is read live), but the second page answers another
+    /// `list_rev`. Nothing plays, and nothing is read after that page.
+    func testARevisionChangeBetweenPagesWithTheGenerationUnchangedRefuses() {
+        let r = rig(output: .source)
+        r.data.script("slice.libraryAlbumTracks", [albumTracks(["t1", "t2"])])
+        r.data.script("slice.libraryPlaylistTracks", [
+            playlistTracks(["p1"], generation: 3, nextCursor: "c2", listRev: "pr1"),
+            playlistTracks(["p2"], generation: 3, listRev: "pr2"),
+        ])
+        r.output.script("slice.queue", [queued()])
+        play([inRainbows, chill], r)
+
+        XCTAssertEqual(r.status.current()?.text, setOfTwoChangedLine)
+        XCTAssertEqual(r.data.opsInOrder(), ["slice.libraryAlbums", "slice.libraryAlbumTracks",
+                                             "slice.libraryPlaylistTracks", "slice.libraryPlaylistTracks"],
+                       "reads went on after the playlist's revision moved")
+        XCTAssertTrue(r.output.sent("slice.queue").isEmpty, "a queue of a mixed playlist was sent")
+        XCTAssertEqual(r.output.requestCount, 0)
+    }
+
+    /// A restart of the playlist's walk is a change too, even when the restarted
+    /// pages answer the same generation and revision as the first bracket.
+    func testARestartedPlaylistWalkRefusesEvenOnTheSameGeneration() {
+        let r = rig(output: .source)
+        r.data.script("slice.libraryAlbumTracks", [albumTracks(["t1", "t2"])])
+        r.data.script("slice.libraryPlaylistTracks", [
+            playlistTracks(["p1"], generation: 3, nextCursor: "c2"),
+            #"{"ok":false,"op":"slice.libraryPlaylistTracks","error":{"kind":"stale_generation","detail":"That playlist changed while you were reading it; start again."}}"#,
+            playlistTracks(["p1", "p2"], generation: 3),
+        ])
+        r.output.script("slice.queue", [queued()])
+        play([inRainbows, chill], r)
+
+        XCTAssertEqual(r.status.current()?.text, setOfTwoChangedLine)
+        XCTAssertTrue(r.output.sent("slice.queue").isEmpty, "a restarted walk was played")
+        XCTAssertTrue(r.data.sent("slice.listRev").isEmpty)
+    }
+
+    /// A playlist edit after its last page, before the queue: the walk agreed
+    /// with itself, the generation never moved, but the revision read before the
+    /// closing bracket answers another `list_rev`. Nothing plays.
+    func testARevisionChangeAfterTheLastPageRefuses() {
+        let r = rig(output: .source, revisions: false)
+        scriptMixedReads(r)
+        r.data.script("slice.listRev", [revision("pr2")])
+        r.output.script("slice.queue", [queued()])
+        play(mixed, r)
+
+        XCTAssertEqual(r.status.current()?.text, changedLine)
+        XCTAssertTrue(r.output.sent("slice.queue").isEmpty, "a queue of a playlist that changed was sent")
+        XCTAssertTrue(r.data.sent("slice.queue").isEmpty)
+        XCTAssertEqual(r.output.requestCount, 0, "the output was asked")
+        XCTAssertEqual(r.data.sent("slice.libraryAlbums").count, 1, "the closing bracket was read after a refusal")
+    }
+
+    func testARevisionChangeAfterTheLastPageRefusesOnTheMusicTUIOutput() {
+        let r = rig(output: .musicApp, revisions: false)
+        scriptMixedReads(r, aliases: aliases)
+        r.data.script("slice.listRev", [revision("pr2")])
+        r.library.hits = handoffHits(allRows)
+        play(mixed, r)
+
+        XCTAssertEqual(r.status.current()?.text, changedLine)
+        XCTAssertEqual(r.player.queues.count, 0, "a hand-off of a playlist that changed played")
+        XCTAssertEqual(r.library.reads.count, 0)
+    }
+
+    /// A SpanDAC that sends no `list_rev` on a playlist page cannot show the
+    /// pages are one list: refused with the bracket's update line, before the
+    /// revision read or the closing bracket.
+    func testAPlaylistPageWithoutARevisionRefusesWithTheUpdateLine() {
+        let r = rig(output: .source)
+        r.data.script("slice.libraryAlbumTracks", [albumTracks(["t1", "t2"])])
+        r.data.script("slice.libraryPlaylistTracks", [playlistTracks(["p1", "p2"], listRev: nil)])
+        r.output.script("slice.queue", [queued()])
+        play([inRainbows, chill], r)
+
+        XCTAssertEqual(r.status.current()?.text,
+                       "This SpanDAC build can't confirm '\(setOfTwo)' was read from one library, so nothing played. "
+                           + "Update SpanDAC.")
+        XCTAssertTrue(r.data.sent("slice.listRev").isEmpty)
+        XCTAssertEqual(r.data.sent("slice.libraryAlbums").count, 1)
+        XCTAssertTrue(r.output.sent("slice.queue").isEmpty)
+    }
+
+    /// A SpanDAC whose pages carry `list_rev` but which does not serve the
+    /// revision read (`unknown_op`): the same update line, and nothing plays.
+    func testASpanDACWithoutTheRevisionReadRefusesWithTheUpdateLine() {
+        let r = rig(output: .source, revisions: false)
+        scriptMixedReads(r)
+        r.data.script("slice.listRev", [
+            #"{"ok":false,"op":"slice.listRev","error":{"kind":"unknown_op","detail":"unknown op slice.listRev"}}"#,
+        ])
+        r.output.script("slice.queue", [queued()])
+        play(mixed, r)
+
+        XCTAssertEqual(r.status.current()?.text,
+                       "This SpanDAC build can't confirm '\(mixedName)' was read from one library, so nothing played. "
+                           + "Update SpanDAC.")
+        XCTAssertTrue(r.output.sent("slice.queue").isEmpty)
+        XCTAssertEqual(r.output.requestCount, 0)
+    }
+
+    /// An unchanged revision plays as before: every page and the revision read
+    /// agree, and the revision read is the smallest one there is, one
+    /// `slice.listRev` of the playlist by its ID, no rows, sent after the last
+    /// item read and before the closing bracket.
+    func testAnUnchangedRevisionPlaysAsBefore() {
+        let r = rig(output: .source)
+        r.data.script("slice.libraryAlbumTracks", [albumTracks(["t1", "t2"])])
+        r.data.script("slice.libraryPlaylistTracks", [
+            playlistTracks(["p1"], generation: 3, nextCursor: "c2"),
+            playlistTracks(["p2"], generation: 3),
+        ])
+        r.output.script("slice.queue", [queued()])
+        play([inRainbows, chill], r)
+
+        XCTAssertEqual(r.output.sent("slice.queue").first?["library_ids"] as? [String], ["t1", "t2", "p1", "p2"])
+        XCTAssertEqual(r.status.current()?.text, "Playing '\(setOfTwo)' on SpanDAC \u{2014} 4 tracks.")
+        XCTAssertEqual(r.data.opsInOrder(), ["slice.libraryAlbums", "slice.libraryAlbumTracks",
+                                             "slice.libraryPlaylistTracks", "slice.libraryPlaylistTracks",
+                                             "slice.listRev", "slice.libraryAlbums"])
+        let asked = r.data.sent("slice.listRev")
+        XCTAssertEqual(asked.count, 1)
+        XCTAssertEqual(asked.first?["op"] as? String, "slice.listRev")
+        XCTAssertEqual(asked.first?["kind"] as? String, "playlist")
+        XCTAssertEqual(asked.first?["id"] as? String, "pl1")
+        XCTAssertEqual(asked.first.map { Set($0.keys) }, ["op", "kind", "id"])
+        XCTAssertTrue(r.opsSent.isSubset(of: readAndPlayOps))
+    }
+
+    /// Only playlists are revalidated: a set of albums sends no revision read.
+    func testASetOfAlbumsSendsNoRevisionRead() {
+        let r = rig(output: .source)
+        r.data.script("slice.libraryAlbumTracks", [albumTracks(["t1", "t2"]), albumTracks(["t3"])])
+        r.output.script("slice.queue", [queued()])
+        play([inRainbows, amnesiac], r)
+
+        XCTAssertEqual(r.output.sent("slice.queue").first?["library_ids"] as? [String], ["t1", "t2", "t3"])
+        XCTAssertTrue(r.data.sent("slice.listRev").isEmpty)
+    }
+
+    /// The revision read answers `warming`: retried inside the play's budget,
+    /// then the set plays.
+    func testAWarmingRevisionReadIsRetried() {
+        let r = rig(output: .source, revisions: false)
+        scriptMixedReads(r)
+        r.data.script("slice.listRev", [
+            #"{"ok":false,"op":"slice.listRev","error":{"kind":"warming","detail":"preparing your library","retry_after":0}}"#,
+            revision(),
+        ])
+        r.output.script("slice.queue", [queued()])
+        play(mixed, r)
+
+        XCTAssertEqual(r.output.sent("slice.queue").first?["library_ids"] as? [String], ["t1", "t2", "p1", "p2", "t3"])
+        XCTAssertEqual(r.data.sent("slice.listRev").count, 2)
+    }
+
+    /// The revision read is held while the output switches: the closing bracket
+    /// is never read and nothing is queued, on the old output or the new one.
+    func testASwitchWhileTheRevisionReadIsHeldQueuesNothing() throws {
+        let r = rig(output: .source)
+        scriptMixedReads(r)
+        r.output.script("slice.queue", [queued()])
+        try switchWhileHeld(r, mixed, op: "slice.listRev")
+
+        XCTAssertEqual(r.status.current()?.text, sourceChangedNothingPlayed)
+        XCTAssertEqual(r.data.sent("slice.listRev").count, 1)
+        XCTAssertEqual(r.data.sent("slice.libraryAlbums").count, 1, "the closing bracket was read after the switch")
+        XCTAssertTrue(r.output.sent("slice.queue").isEmpty)
+        XCTAssertTrue(r.data.sent("slice.queue").isEmpty)
+    }
+
+    /// A warming revision read is held while the output switches: its retry is
+    /// never sent.
+    func testASwitchWhileAWarmingRevisionReadIsHeldSendsNoRetry() throws {
+        let r = rig(output: .source, revisions: false)
+        scriptMixedReads(r)
+        r.data.script("slice.listRev", [
+            #"{"ok":false,"op":"slice.listRev","error":{"kind":"warming","detail":"preparing your library","retry_after":0}}"#,
+            revision(),
+        ])
+        r.output.script("slice.queue", [queued()])
+        try switchWhileHeld(r, mixed, op: "slice.listRev")
+
+        XCTAssertEqual(r.status.current()?.text, sourceChangedNothingPlayed)
+        XCTAssertEqual(r.data.sent("slice.listRev").count, 1, "the warming revision read was retried after the switch")
+        XCTAssertEqual(r.data.sent("slice.libraryAlbums").count, 1)
+        XCTAssertTrue(r.output.sent("slice.queue").isEmpty)
     }
 
     // MARK: - Up Next after SpanDAC skipped a song
