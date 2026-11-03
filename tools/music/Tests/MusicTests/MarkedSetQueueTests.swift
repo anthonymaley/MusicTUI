@@ -167,6 +167,51 @@ final class MarkedSetQueueTests: XCTestCase {
         XCTAssertNil(full.playingLine)
     }
 
+    // MARK: - A song in two marked items plays once, at its first position
+
+    /// Moon Safari and Chill share "Sexy Boy" (A2): it plays once, where the
+    /// album put it, and the playlist's copy is dropped.
+    private func sharingRig() -> Readers {
+        let r = mixedRig()
+        r.playlists[Self.chillID] = [entry("00000000000000B1", "Teardrop"), entry("00000000000000A2", "Sexy Boy"),
+                                     entry("00000000000000B2", "Angel")]
+        return r
+    }
+
+    func testASongInTwoMarkedItemsPlaysOnceAtItsFirstPosition() throws {
+        let q = try markedSetQueue(mixed, shuffle: false, readers: sharingRig().readers)
+        XCTAssertEqual(q.tracks.map { persistentIDOfQueueEntry($0.index) },
+                       ["00000000000000A1", "00000000000000A2", "00000000000000B1", "00000000000000B2",
+                        "00000000000000C1"],
+                       "the shared song plays once, at the album's position")
+    }
+
+    func testShuffleDeDuplicatesBeforeShuffling() throws {
+        let q = try markedSetQueue(mixed, shuffle: true, readers: sharingRig().readers)
+        XCTAssertEqual(q.tracks.count, 5)
+        XCTAssertEqual(Set(q.tracks.map(\.index)).count, 5, "a shuffled set holds a shared song twice")
+    }
+
+    /// A removed duplicate is not a skipped song: a fully available set says
+    /// nothing, and a partly available one says what it says without the duplicate.
+    func testARemovedDuplicateIsNotCountedAsUnavailable() throws {
+        let full = try markedSetPlan(mixed, shuffle: false, readers: sharingRig().readers)
+        XCTAssertEqual(full.matched, 5)
+        XCTAssertNil(full.notice, "a duplicate was reported as a song not available")
+        XCTAssertNil(full.playingLine)
+
+        // Moon Safari: 3 matched, 2 playable. Chill shares A2. The same notice
+        // as the same set without the shared song.
+        let partly = sharingRig()
+        partly.albums["Moon Safari"] = AlbumResolution(tracks: [entry("00000000000000A1", "La Femme d'Argent"),
+                                                                entry("00000000000000A2", "Sexy Boy")], matched: 3)
+        let plan = try markedSetPlan(mixed, shuffle: false, readers: partly.readers)
+        XCTAssertEqual(plan.queue.tracks.count, 5)
+        XCTAssertEqual(plan.matched, 6)
+        XCTAssertEqual(plan.notice, "5 of 6 are queued \u{2014} the rest aren't available yet.")
+        XCTAssertEqual(plan.playingLine, "Playing 5 of 6 \u{2014} the rest aren't available yet.")
+    }
+
     func testNothingMarkedRefuses() {
         XCTAssertThrowsError(try markedSetQueue([], shuffle: false, readers: Readers().readers))
     }

@@ -578,6 +578,77 @@ final class MarkedSetSpanDACPlayTests: XCTestCase {
         XCTAssertEqual(r.status.current()?.text, line, "the late confirmation dropped part of the set's notice")
     }
 
+    // MARK: - A song in two marked items plays once, at its first position
+
+    /// SpanDAC refuses a `slice.queue` that repeats a library ID, so a shared
+    /// song is sent once, where the first item put it. Chill holds t2, which
+    /// In Rainbows played first.
+    private func scriptSharingReads(_ r: Rig, skippedVideos: Int = 0, aliases: [String: String] = [:]) {
+        r.data.script("slice.libraryAlbumTracks", [albumTracks(["t1", "t2"], aliases: aliases),
+                                                   albumTracks(["t3"], aliases: aliases)])
+        r.data.script("slice.libraryPlaylistTracks", [playlistTracks(["p1", "t2", "p2"], skippedVideos: skippedVideos,
+                                                                     aliases: aliases)])
+    }
+
+    func testASharedSongIsSentOnceAtItsFirstPosition() {
+        let r = rig(output: .source)
+        scriptSharingReads(r)
+        r.output.script("slice.queue", [queued()])
+        play(mixed, r)
+
+        let ids = r.output.sent("slice.queue").first?["library_ids"] as? [String] ?? []
+        XCTAssertEqual(ids, ["t1", "t2", "p1", "p2", "t3"], "the shared song once, at the album's position")
+        XCTAssertEqual(Set(ids).count, ids.count, "the request repeats a library ID")
+        XCTAssertEqual(r.status.current()?.text, "Playing '\(mixedName)' on SpanDAC \u{2014} 5 tracks.",
+                       "a removed duplicate is not a skipped song")
+    }
+
+    func testAShuffledSetSendsASharedSongOnce() {
+        let r = rig(output: .source)
+        scriptSharingReads(r)
+        r.output.script("slice.queue", [queued()])
+        play(mixed, shuffle: true, r)
+
+        let ids = r.output.sent("slice.queue").first?["library_ids"] as? [String] ?? []
+        XCTAssertEqual(ids.sorted(), ["p1", "p2", "t1", "t2", "t3"], "a shuffle repeats or drops a song")
+    }
+
+    /// The same videos and the same song SpanDAC can't play, with and without
+    /// the shared song: the same sentence.
+    func testADuplicateLeavesTheAvailabilityLineAsItWas() {
+        let r = rig(output: .source)
+        scriptSharingReads(r, skippedVideos: 2)
+        r.output.script("slice.queue", [queued(skippedUnavailable: 1)])
+        play(mixed, r)
+
+        XCTAssertEqual(r.output.sent("slice.queue").first?["library_ids"] as? [String], ["t1", "t2", "p1", "p2", "t3"])
+        XCTAssertEqual(r.status.current()?.text,
+                       "Playing 4 of 7 from '\(mixedName)' on SpanDAC: 2 videos skipped. 1 song isn't available to SpanDAC.")
+    }
+
+    func testOnTheMusicTUIOutputASharedSongIsHandedOffOnce() {
+        let r = rig(output: .musicApp)
+        scriptSharingReads(r, aliases: aliases)
+        r.library.hits = handoffHits(allRows)
+        play(mixed, r)
+
+        XCTAssertEqual(r.player.queues.count, 1, "the hand-off built no queue: \(String(describing: r.status.current()?.text))")
+        XCTAssertEqual(r.player.queues.first?.tracks.map { persistentIDOfQueueEntry($0.index) },
+                       ["1", "2", "3", "4", "5"].map(hex), "the shared song once, at the album's position")
+        XCTAssertEqual(r.status.current()?.text, LibraryProvenance.playingOnMusicTUI(mixedName),
+                       "a removed duplicate is not a skipped song")
+    }
+
+    func testOnTheMusicTUIOutputAShuffledSetHandsASharedSongOffOnce() {
+        let r = rig(output: .musicApp)
+        scriptSharingReads(r, aliases: aliases)
+        r.library.hits = handoffHits(allRows)
+        play(mixed, shuffle: true, r)
+
+        XCTAssertEqual(r.player.queues.first?.tracks.map { persistentIDOfQueueEntry($0.index) }.sorted(),
+                       ["1", "2", "3", "4", "5"].map(hex).sorted())
+    }
+
     // MARK: - Marks never play from another data source
 
     func testSpanDACMarksDoNotPlayOnMusicTUIData() {
