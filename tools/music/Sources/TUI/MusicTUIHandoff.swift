@@ -63,16 +63,46 @@ struct HandoffTrackHit: Equatable {
 
 /// What a hand-off played beyond its queue: the songs it left out because
 /// SpanDAC gave them no identity (Apple no longer has them available), under
-/// the 2026-09-24 ruling "unavailable songs are skipped with a notice".
+/// the 2026-09-24 ruling "unavailable songs are skipped with a notice", and
+/// the playlist videos the caller's read left out before the rows reached it
+/// (a queue never holds a video).
 struct HandoffPlayReport: Equatable {
     /// Songs skipped because they carried no identity.
     var skippedUnavailable = 0
+    /// Playlist videos SpanDAC left out of the rows handed over. Set only by a
+    /// caller that says so (`playLibrary(...skippedVideos:)`); 0 otherwise.
+    var skippedVideos = 0
+    /// Entries the caller removed because the song was already in the set
+    /// (`firstOccurrences`): not skipped, not unavailable, but said. Set only by
+    /// a caller that says so (`playLibrary(...repeatedSongs:)`); 0 otherwise.
+    var repeatedSongs = 0
 
     /// The sentence a person reads beside "Playing ...", or nil when nothing
-    /// was left out. The SpanDAC output's own wording.
+    /// was left out or repeated: the videos first, then the songs, each in the
+    /// SpanDAC output's own wording, then the repeated songs last. The
+    /// unconfirmed-play warning carries it, and a late confirmation restores the
+    /// line that holds it.
     var notice: String? {
-        skippedUnavailable > 0 ? bridgeUnavailableSongsNotice(skippedUnavailable) : nil
+        let parts = [skippedVideos > 0 ? bridgeSkippedVideosNotice(skippedVideos) : nil,
+                     skippedUnavailable > 0 ? bridgeUnavailableSongsNotice(skippedUnavailable) : nil,
+                     repeatedSongsNotice(repeatedSongs)]
+        let said = parts.compactMap { $0 }
+        return said.isEmpty ? nil : said.joined(separator: " ")
     }
+}
+
+/// The videos a play left out, worded as the single SpanDAC playlist play's
+/// footer words them (`bridgePlaylistPlayMessage`): "2 videos skipped."
+func bridgeSkippedVideosNotice(_ n: Int) -> String {
+    "\(n) video\(n == 1 ? "" : "s") skipped."
+}
+
+/// The songs a marked play left out because they were already in the set,
+/// worded as the other notices are, last on the line: "1 repeated song plays
+/// once." / "3 repeated songs play once." Nil when nothing was repeated.
+func repeatedSongsNotice(_ n: Int) -> String? {
+    guard n > 0 else { return nil }
+    return n == 1 ? "1 repeated song plays once." : "\(n) repeated songs play once."
 }
 
 /// The read-only identity lookup behind the hand-off.
@@ -351,6 +381,24 @@ struct PersistentIDHandoff: MusicTUIHandoff {
     @discardableResult
     func playLibrary(rows: [MusicRow], startAt: Int, startRequired: Bool, shuffle: Bool,
                      title: String) throws -> HandoffPlayReport {
+        try playLibrary(rows: rows, startAt: startAt, startRequired: startRequired, shuffle: shuffle,
+                        title: title, skippedVideos: 0)
+    }
+
+    @discardableResult
+    func playLibrary(rows: [MusicRow], startAt: Int, startRequired: Bool, shuffle: Bool,
+                     title: String, skippedVideos: Int) throws -> HandoffPlayReport {
+        try playLibrary(rows: rows, startAt: startAt, startRequired: startRequired, shuffle: shuffle,
+                        title: title, skippedVideos: skippedVideos, repeatedSongs: 0)
+    }
+
+    /// The play, with `skippedVideos` and `repeatedSongs` in the report the
+    /// player confirms under, so the unconfirmed-play warning and a late
+    /// confirmation's restored line both say what the whole read left out and
+    /// what it played only once.
+    @discardableResult
+    func playLibrary(rows: [MusicRow], startAt: Int, startRequired: Bool, shuffle: Bool,
+                     title: String, skippedVideos: Int, repeatedSongs: Int) throws -> HandoffPlayReport {
         guard let entry = currentStamp() else { throw ActionError(message: sourceChangedNothingPlayed) }
         // The self-check speaks first: a macOS that reports no identities
         // at all is not a playlist of unavailable songs.
@@ -369,9 +417,12 @@ struct PersistentIDHandoff: MusicTUIHandoff {
         let current = shuffle ? 1 : min(max(1, available.startAt), ordered.count)
         // C-EPOCH: re-read after the reads, before the one sound mutation.
         guard currentStamp() == entry else { throw ActionError(message: sourceChangedNothingPlayed) }
+        var report = available.report
+        report.skippedVideos = skippedVideos
+        report.repeatedSongs = repeatedSongs
         try player.play(AppQueue(playlistName: persistentIDQueueSource, tracks: ordered, currentIndex: current,
-                                 displayName: title), report: available.report)
-        return available.report
+                                 displayName: title), report: report)
+        return report
     }
 }
 

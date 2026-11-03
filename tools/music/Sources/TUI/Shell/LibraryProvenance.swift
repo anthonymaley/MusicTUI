@@ -93,13 +93,17 @@ func spanDACOutputPlayer(_ client: SourceAppClient) -> MusicDataProvider {
 /// Runs the hand-off (C-HANDOFF) for a SpanDAC library play on the MusicTUI
 /// output, so its refusal reaches the footer in its own words: the shell's
 /// `ActionRunner` shows an `ActionError`'s message and reduces any other error
-/// to "Play failed.", which would hide `pickASpanDACOutput`.
+/// to "Play failed.", which would hide `pickASpanDACOutput`. `skippedVideos`
+/// is the playlist videos the caller's read left out, carried into the report
+/// the hand-off confirms under.
 @discardableResult
 func playThroughHandoff(_ handoff: MusicTUIHandoff, rows: [MusicRow], startAt: Int, startRequired: Bool,
-                        shuffle: Bool, title: String) throws -> HandoffPlayReport {
+                        shuffle: Bool, title: String, skippedVideos: Int = 0,
+                        repeatedSongs: Int = 0) throws -> HandoffPlayReport {
     do {
         return try handoff.playLibrary(rows: rows, startAt: startAt, startRequired: startRequired,
-                                       shuffle: shuffle, title: title)
+                                       shuffle: shuffle, title: title, skippedVideos: skippedVideos,
+                                       repeatedSongs: repeatedSongs)
     } catch let error as ActionError {
         throw error
     } catch {

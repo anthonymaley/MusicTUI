@@ -355,54 +355,152 @@ func isTempPlaylistName(_ name: String) -> Bool {
     tempPlaylistPrefixes.contains { name.hasPrefix($0) }
 }
 
-/// Parse the rail-names script output: one `U<US>name` (user playlist) or
-/// `S<US>name` (subscription playlist) line per playlist. Pure, tested.
-/// Filters obsolete temp playlists (queue, Discover, ...) so they don't clutter
-/// the rail.
-func parseRailPlaylistNames(_ raw: String) -> (names: [String], subscription: Set<String>) {
+/// Parse the rail-names script output: one `U<US>persistentID<US>name` (user
+/// playlist) or `S<US>persistentID<US>name` (subscription playlist) line per
+/// playlist. Pure, tested. Filters obsolete temp playlists (queue, Discover,
+/// ...) so they don't clutter the rail.
+///
+/// `persistentIDs` runs parallel to `names`, one per kept row, upper-cased: the
+/// identity `m` records for that row (`MarkedItem.playlist`). It fails closed:
+/// an ID that is not sixteen hex digits is nil, never guessed, and the row
+/// stays on the rail for every other consumer but cannot be marked. A line in
+/// the old two-field `U<US>name` shape keeps its name with no ID.
+func parseRailPlaylistNames(_ raw: String)
+    -> (names: [String], subscription: Set<String>, persistentIDs: [String?]) {
     var names: [String] = []
     var subscription: Set<String> = []
+    var ids: [String?] = []
     for line in raw.components(separatedBy: "\n") {
-        let parts = line.split(separator: asFieldSep, maxSplits: 1).map(String.init)
-        guard parts.count == 2 else { continue }
-        let name = parts[1].trimmingCharacters(in: .whitespaces)
+        let parts = line.split(separator: asFieldSep, maxSplits: 2, omittingEmptySubsequences: false)
+            .map(String.init)
+        guard parts.count >= 2 else { continue }
+        let name = parts[parts.count - 1].trimmingCharacters(in: .whitespaces)
         guard !name.isEmpty, !isTempPlaylistName(name) else { continue }
+        var id: String? = nil
+        if parts.count == 3 {
+            let field = parts[1].trimmingCharacters(in: .whitespacesAndNewlines)
+            if isPersistentIDText(field) { id = field.uppercased() }
+        }
         names.append(name)
+        ids.append(id)
         if parts[0].trimmingCharacters(in: .whitespaces) == "S" { subscription.insert(name) }
     }
-    return (names, subscription)
+    return (names, subscription, ids)
 }
 
 /// Outcome of one read of the rail's playlist names on the MusicTUI
 /// (AppleScript) path. A failed read is its own case, never an empty list:
 /// `[]` means one thing, a successful read of a library with no playlists
 /// (the same rule `LibraryReadResult` holds for the Library tab).
+/// `persistentIDs` runs parallel to `names` (`parseRailPlaylistNames`); a row
+/// past its end, or nil, has no ID and cannot be marked.
 enum MusicAppPlaylistNamesRead: Equatable {
-    case success(names: [String], subscription: Set<String>)
+    case success(names: [String], subscription: Set<String>, persistentIDs: [String?] = [])
     case failure
 }
 
-/// Apple-curated playlists added to the library are class `subscription
-/// playlist`, NOT `user playlist` — `every user playlist` silently omits them
-/// (they only ever appeared in the rail via manual duplicates). Enumerate both
-/// classes in one call; downstream code resolves `playlist "name"` generically,
-/// which covers both.
+/// The Playlists rail's read on the MusicTUI data path. Apple-curated
+/// playlists added to the library are class `subscription playlist`, NOT
+/// `user playlist` — `every user playlist` silently omits them (they only
+/// ever appeared in the rail via manual duplicates) — so both classes are
+/// read; downstream code resolves `playlist "name"` generically, which covers
+/// both.
+///
+/// Bulk, per class: one count, one get of every persistent ID, one of every
+/// name, then the IDs once more, never a per-row Apple Event (the loop indexes
+/// lists already in memory). The count guards an empty class, so no property
+/// get is ever sent to zero elements. Both columns are coerced to lists,
+/// because one playlist can answer a bare value.
+///
+/// The rail needs only names; the IDs are an addition for `m`. So the first ID
+/// get sits in a `try`: if it fails, or its count is not the class's, that
+/// class's rows come back as the two-field `U<US>name` / `S<US>name` shape,
+/// which the parser reads as nil IDs (browsable, not markable). The name get
+/// is NOT in a `try`, and a names count that is not the class's is an error:
+/// the script fails only when the NAMES cannot be read. The pairing is checked,
+/// not assumed: after the name get the IDs are read again and compared as
+/// lists `considering case`; a re-read that differs (a rename that reorders,
+/// a delete plus a create, any same-count change that persists across the
+/// gets) or fails drops that class's IDs for this refresh, never the rail.
+/// It detects a change that persists across the reads, not one undone between
+/// them (A->B->A); `m` still plays by ID, so
+/// such a miss can only show a wrong name. It only reads.
+let railPlaylistNamesScript = """
+    set fs to (ASCII character 31)
+    set output to ""
+    set uTotal to count of user playlists
+    if uTotal > 0 then
+        set uIDs to {}
+        try
+            set uIDs to persistent ID of every user playlist
+            set uIDs to uIDs as list
+        on error
+            set uIDs to {}
+        end try
+        set uNames to name of every user playlist
+        set uNames to uNames as list
+        if (count of uNames) is not uTotal then error "rail names: the playlists changed during the read" number 1004
+        set uPaired to ((count of uIDs) is uTotal)
+        if uPaired then
+            try
+                set uIDsAgain to persistent ID of every user playlist
+                set uIDsAgain to uIDsAgain as list
+                considering case
+                    set uPaired to (uIDsAgain is uIDs)
+                end considering
+            on error
+                set uPaired to false
+            end try
+        end if
+        repeat with i from 1 to uTotal
+            if output is not "" then set output to output & linefeed
+            if uPaired then
+                set output to output & "U" & fs & (item i of uIDs) & fs & (item i of uNames)
+            else
+                set output to output & "U" & fs & (item i of uNames)
+            end if
+        end repeat
+    end if
+    set sTotal to count of subscription playlists
+    if sTotal > 0 then
+        set sIDs to {}
+        try
+            set sIDs to persistent ID of every subscription playlist
+            set sIDs to sIDs as list
+        on error
+            set sIDs to {}
+        end try
+        set sNames to name of every subscription playlist
+        set sNames to sNames as list
+        if (count of sNames) is not sTotal then error "rail names: the playlists changed during the read" number 1004
+        set sPaired to ((count of sIDs) is sTotal)
+        if sPaired then
+            try
+                set sIDsAgain to persistent ID of every subscription playlist
+                set sIDsAgain to sIDsAgain as list
+                considering case
+                    set sPaired to (sIDsAgain is sIDs)
+                end considering
+            on error
+                set sPaired to false
+            end try
+        end if
+        repeat with i from 1 to sTotal
+            if output is not "" then set output to output & linefeed
+            if sPaired then
+                set output to output & "S" & fs & (item i of sIDs) & fs & (item i of sNames)
+            else
+                set output to output & "S" & fs & (item i of sNames)
+            end if
+        end repeat
+    end if
+    return output
+    """
+
 func fetchUserPlaylistNames(backend: AppleScriptBackend) -> MusicAppPlaylistNamesRead {
-    guard let result = try? backend.runMusicBlocking("""
-            set fs to (ASCII character 31)
-            set output to ""
-            repeat with p in (every user playlist)
-                if output is not "" then set output to output & linefeed
-                set output to output & "U" & fs & name of p
-            end repeat
-            repeat with p in (every subscription playlist)
-                if output is not "" then set output to output & linefeed
-                set output to output & "S" & fs & name of p
-            end repeat
-            return output
-        """) else { return .failure }
+    guard let result = try? backend.runMusicBlocking(railPlaylistNamesScript) else { return .failure }
     let parsed = parseRailPlaylistNames(result)
-    return .success(names: parsed.names, subscription: parsed.subscription)
+    return .success(names: parsed.names, subscription: parsed.subscription, persistentIDs: parsed.persistentIDs)
 }
 
 /// Build the three data-source closures over a fixed `names` list. Each closure

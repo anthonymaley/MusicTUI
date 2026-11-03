@@ -212,7 +212,7 @@ final class LibraryScene: Scene {
         if isArtistList {
             return "[ ] View  Enter Open  / Filter  a View: \(artistFilter.label)  p Play  s Shuffle"
         }
-        return "[ ] View  Enter Open  / Filter  p Play  s Shuffle"
+        return "[ ] View  Enter Open  / Filter  m Mark  p Play  s Shuffle"
     }
 
     private let backend: AppleScriptBackend
@@ -750,6 +750,13 @@ final class LibraryScene: Scene {
     /// SpanDAC's covers for the top-level Albums hero (the shell's one fetcher).
     let libraryCovers: LibraryCoverFetcher?
 
+    /// The rows marked with `m` to play together, shared with the Playlists
+    /// tab (one store, built by the shell), so marks survive a tab switch.
+    let marks: MarkedSetStore
+    /// What a marked play reads (`MarkedSetReaders.live` over `backend`
+    /// unless a test injects fakes).
+    private let markedSetReaders: MarkedSetReaders
+
     init(backend: AppleScriptBackend,
          routing: RoutingCoordinator, sources: LibraryDataSources,
          appQueue: AppQueueStore, status: StatusStore, actions: ActionRunner,
@@ -765,9 +772,13 @@ final class LibraryScene: Scene {
          warmUpSleep: @escaping (TimeInterval) -> Void = { Thread.sleep(forTimeInterval: $0) },
          resultCache: ResultCache = ResultCache(),
          now: @escaping () -> Date = { Date() },
-         screenWidth: @escaping () -> Int = { ScreenFrame.current().width }) {
+         screenWidth: @escaping () -> Int = { ScreenFrame.current().width },
+         marks: MarkedSetStore = MarkedSetStore(),
+         markedSetReaders: MarkedSetReaders? = nil) {
         self.now = now
         self.screenWidth = screenWidth
+        self.marks = marks
+        self.markedSetReaders = markedSetReaders ?? .live(backend: backend)
         self.libraryCovers = libraryCovers
         self.artwork = artwork
         self.resolveAlbum = resolveAlbum
@@ -2429,6 +2440,15 @@ final class LibraryScene: Scene {
             break
         }
 
+        // Combined play: Esc clears the marks first, at any level; its back
+        // and leave-the-tab meanings apply only once nothing is marked. (The
+        // filter's own Esc, above, still only closes the filter.)
+        if case .escape = key, !marks.isEmpty {
+            marks.clear()
+            status.post(marksClearedLine)
+            return .redraw
+        }
+
         let libKey: LibraryKey
         switch key {
         case .up: libKey = .up
@@ -2490,8 +2510,18 @@ final class LibraryScene: Scene {
             inboxLock.unlock()
             status.post("Retrying the Music library read\u{2026}")
             return .none
+        case .char("m"):
+            return toggleMarkUnderCursor()
         case .char("["): libKey = .switchPrev
         case .char("]"): libKey = .switchNext
+        // Combined play: with marks, `p` / `s` on an album rail play the
+        // marked set; with none they mean what they always did.
+        case .char("p") where isAlbumRail && !marks.isEmpty, .char("P") where isAlbumRail && !marks.isEmpty:
+            playMarks(shuffle: false)
+            return .push(.nowPlaying)
+        case .char("s") where isAlbumRail && !marks.isEmpty, .char("S") where isAlbumRail && !marks.isEmpty:
+            playMarks(shuffle: true)
+            return .push(.nowPlaying)
         case .char("p"), .char("P"): libKey = .play
         case .char("s"), .char("S"): libKey = .shuffle
         case .char("/"):
@@ -2650,6 +2680,34 @@ final class LibraryScene: Scene {
         case .none:
             break
         }
+    }
+
+    /// `m` on an album rail (the Albums list or an artist's albums): marks or
+    /// unmarks the highlighted album, recorded with the source of the list it
+    /// is on. Anywhere else `m` does nothing.
+    private func toggleMarkUnderCursor() -> SceneAction {
+        guard isAlbumRail, let source = currentAlbumSource else { return .none }
+        let vis = visibleAlbumIndices()
+        guard nav.cursor >= 0, nav.cursor < vis.count else { return .none }
+        let album = currentAlbums[vis[nav.cursor]]
+        marks.toggle(markedAlbum(album, source: source), source: source)
+        status.post(markedCountLine(marks.count))
+        return .redraw
+    }
+
+    /// An album row as a mark: on SpanDAC data it carries SpanDAC's album ID,
+    /// which a marked play reads its tracks by.
+    private func markedAlbum(_ album: LibraryAlbum, source: ListSource?) -> MarkedItem {
+        .album(title: album.name, artist: album.artist, id: source == .bridge ? album.id : "")
+    }
+
+    /// The marked set as one queue (`playMarkedSet`).
+    private func playMarks(shuffle: Bool) {
+        let makeProvider = self.makeProvider
+        playMarkedSet(marks.snapshot, shuffle: shuffle, backend: backend, appQueue: appQueue, routing: routing,
+                      actions: actions, status: status, spanDACData: { makeProvider() != nil },
+                      readers: markedSetReaders,
+                      spanDAC: MarkedSetSpanDAC(makeProvider: makeProvider, handoff: handoff, sleep: warmUpSleep))
     }
 
     /// C3 item 5: decided by the source of the list the action came from, not
@@ -3805,12 +3863,16 @@ final class LibraryScene: Scene {
         if cursorPos >= railScroll + maxVisible { railScroll = cursorPos - maxVisible + 1 }
         let end = min(vis.count, railScroll + maxVisible)
         let nameWidth = max(1, z.railWidth - 2)
+        // Marks show only on a list from the source they were made on.
+        let marked = marks.snapshot
+        let showMarks = marked.source != nil && marked.source == currentAlbumSource
         for p in railScroll..<end {
             let i = vis[p]
             let row = listY + (p - railScroll)
             out += ANSICode.moveTo(row: row, col: z.railX)
             let a = currentAlbums[i]
-            let label = "\(a.name) \u{2014} \(a.artist)"
+            let label = markedRowLabel("\(a.name) \u{2014} \(a.artist)",
+                                       marked: showMarks && marked.items.contains(markedAlbum(a, source: currentAlbumSource)))
             let nm = railName(label, nameWidth: nameWidth)
             let padName = nm + String(repeating: " ", count: max(0, nameWidth - nm.count))
             if p == cursorPos {
