@@ -146,8 +146,9 @@ final class LibraryCoverFetcherTests: XCTestCase {
         var epoch = 0
         private(set) var fetcher: LibraryCoverFetcher!
 
-        init(dir: String? = nil, eviction: LibraryCoverEviction = .standard) {
-            spandac = FakeSpanDAC(clock: clock)
+        init(dir: String? = nil, eviction: LibraryCoverEviction = .standard,
+             instance: String = LibraryCoverFetcherTests.instanceA) {
+            spandac = FakeSpanDAC(clock: clock, instance: instance)
             if let dir {
                 self.dir = dir
             } else {
@@ -194,6 +195,19 @@ final class LibraryCoverFetcherTests: XCTestCase {
 
         func contents(_ target: Target) -> Data? {
             FileManager.default.contents(atPath: "\(dir)/\(key(target))")
+        }
+
+        /// Writes `data` as the saved cover for `target`, as an earlier run left it.
+        func save(_ data: Data, for target: Target, modified: Date? = nil) {
+            let path = "\(dir)/\(key(target))"
+            try? data.write(to: URL(fileURLWithPath: path))
+            if let modified {
+                try? FileManager.default.setAttributes([.modificationDate: modified], ofItemAtPath: path)
+            }
+        }
+
+        func attributes(_ target: Target) -> [FileAttributeKey: Any] {
+            (try? FileManager.default.attributesOfItem(atPath: "\(dir)/\(key(target))")) ?? [:]
         }
 
         func statusReads() -> Int { spandac.statusReadTimes.count }
@@ -382,27 +396,23 @@ final class LibraryCoverFetcherTests: XCTestCase {
         XCTAssertEqual(h.contents(a), Self.payload(40_000))
 
         let next = Harness(dir: h.dir)
-        XCTAssertNil(next.fetcher.cover(for: a), "nothing shows before a readiness read")
+        XCTAssertEqual(next.fetcher.cover(for: a)?.key, h.key(a), "a saved cover shows before any readiness read")
         next.rest(a)
         XCTAssertEqual(next.statusReads(), 1)
-        XCTAssertTrue(next.spandac.firstRequests.isEmpty)
+        XCTAssertEqual(next.spandac.firstRequests.count, 1, "one background recheck this run")
         XCTAssertEqual(next.fetcher.cover(for: a)?.key, h.key(a))
     }
 
     // MARK: instance
 
-    func testAnInstanceACoverIsNotShownOnceStatusSaysInstanceB() {
+    func testASavedCoverKeepsShowingOnceStatusSaysInstanceBButNothingIsAskedUnderA() {
         let h = served()
         let a = album()
         h.rest(a)
         XCTAssertNotNil(h.fetcher.cover(for: a))
         h.spandac.readiness = { LibraryArtworkReadiness(supported: true, instance: Self.instanceB) }
-        h.ticks(from: 0.1, to: 3.9, a)
-        XCTAssertNotNil(h.fetcher.cover(for: a))
-        h.tick(4.0, a)   // the renewal names B
-        XCTAssertNil(h.fetcher.cover(for: a))
-        h.ticks(from: 4.1, to: 12, a) { _ in XCTAssertNil(h.fetcher.cover(for: a)) }
-        XCTAssertEqual(h.spandac.firstRequests.count, 1)
+        h.ticks(from: 0.1, to: 12, a) { _ in XCTAssertNotNil(h.fetcher.cover(for: a)) }
+        XCTAssertEqual(h.spandac.firstRequests.count, 1, "A-observed rows are never asked for under B")
     }
 
     func testRowsObservedUnderAAreNeverRequestedUnderBEvenAtTheSameGeneration() {
@@ -413,9 +423,7 @@ final class LibraryCoverFetcherTests: XCTestCase {
         // SpanDAC restarts as B, whose live core generation is also 2: the fake
         // would serve an A-instance request. The applied rows still carry A.
         h.spandac.readiness = { LibraryArtworkReadiness(supported: true, instance: Self.instanceB) }
-        h.ticks(from: 0.1, to: 60, a) { t in
-            if t >= 4.0 { XCTAssertNil(h.fetcher.cover(for: a), "at \(t)") }
-        }
+        h.ticks(from: 0.1, to: 60, a) { t in XCTAssertNotNil(h.fetcher.cover(for: a), "the saved file, at \(t)") }
         XCTAssertEqual(h.spandac.firstRequests.count, 1, "nothing asked under B for A-observed rows")
         // The scene applies a list drain observed under B.
         let b = album(generation: 2, instance: Self.instanceB)
@@ -435,20 +443,180 @@ final class LibraryCoverFetcherTests: XCTestCase {
         h.spandac.firstReplies = [.refused(.noArtwork)]
         h.rest(b, at: 5)
         XCTAssertEqual(h.spandac.firstRequests.last?.libraryInstance, Self.instanceB)
-        XCTAssertNil(h.fetcher.cover(for: b), "the A cover is never B's interim")
+        XCTAssertNil(h.fetcher.cover(for: b), "B said there is no art")
         XCTAssertNil(h.fetcher.cover(for: a))
+    }
+
+    // MARK: saved covers across SpanDAC restarts
+
+    /// What an earlier run under instance A left on disk, and the B row that names it.
+    private func savedUnderB(_ bytes: Data = LibraryCoverFetcherTests.payload(40_000)) -> (Harness, Target) {
+        let h = Harness(instance: Self.instanceB)
+        let underB = album(generation: 5, instance: Self.instanceB)
+        h.save(bytes, for: underB)
+        return (h, underB)
+    }
+
+    func testASavedCoverShowsUnderANewInstanceBeforeAnythingIsAsked() {
+        let (h, underB) = savedUnderB()
+        h.tick(0, underB)
+        XCTAssertEqual(h.fetcher.cover(for: underB)?.key, h.key(underB), "on focus, with no wait for SpanDAC")
+        XCTAssertEqual(h.statusReads(), 0)
+        XCTAssertTrue(h.spandac.firstRequests.isEmpty)
+        h.tick(0.25, underB)
+        XCTAssertEqual(h.spandac.firstRequests,
+                       [LibraryArtworkRequest(kind: .album, id: Self.albumID, generation: 5,
+                                              libraryInstance: Self.instanceB, px: 512)],
+                       "the recheck carries the current instance and generation")
+    }
+
+    func testTheRecheckRunsOncePerInstance() {
+        let (h, underB) = savedUnderB()
+        h.spandac.covers["album|\(Self.albumID)"] = Self.payload(40_000)
+        h.rest(underB)
+        XCTAssertEqual(h.spandac.firstRequests.count, 1)
+        let other = album("other", generation: 5, instance: Self.instanceB)
+        h.rest(other, at: 1)
+        h.rest(underB, at: 2)
+        h.ticks(from: 2.1, to: 60, underB)
+        let laterGeneration = album(generation: 6, instance: Self.instanceB)
+        h.rest(laterGeneration, at: 61)
+        XCTAssertEqual(h.spandac.firstRequests.map(\.id), [Self.albumID, "other"],
+                       "focus away and back, or a new generation, does not recheck again")
+
+        // SpanDAC restarts as C: once more, under C.
+        h.spandac.readiness = { LibraryArtworkReadiness(supported: true, instance: "C-INSTANCE") }
+        let underC = album(generation: 1, instance: "C-INSTANCE")
+        h.rest(underC, at: 70)
+        h.ticks(from: 70.1, to: 80, underC)
+        XCTAssertEqual(h.spandac.firstRequests.map(\.libraryInstance),
+                       [Self.instanceB, Self.instanceB, "C-INSTANCE"])
+    }
+
+    func testARecheckWithChangedBytesReplacesTheFileAndRepaints() {
+        let (h, underB) = savedUnderB(Self.payload(800, seed: 1))
+        h.spandac.covers["album|\(Self.albumID)"] = Self.payload(900, seed: 2)
+        h.lanes.held = [.fetch]
+        h.rest(underB)
+        let shown = h.fetcher.cover(for: underB)
+        XCTAssertEqual(shown?.key, h.key(underB))
+        let before = h.fetcher.landed
+        h.lanes.release(.fetch)
+        XCTAssertEqual(h.contents(underB), Self.payload(900, seed: 2))
+        XCTAssertEqual(h.files(), [h.key(underB)], "replaced in place by rename, no temp file left")
+        XCTAssertGreaterThan(h.fetcher.landed, before, "repaint")
+        let replaced = h.fetcher.cover(for: underB)
+        XCTAssertNotNil(replaced)
+        XCTAssertNotEqual(replaced?.key, shown?.key, "a new render key, so a session's memo cannot hold the old art")
+        XCTAssertEqual(replaced?.url, shown?.url, "the same file on disk")
+    }
+
+    func testAChangedCoverRendersTheNewBytesInArtworkStore() {
+        let (h, underB) = savedUnderB(Data("OLD".utf8))
+        h.spandac.covers["album|\(Self.albumID)"] = Data("NEW".utf8)
+        let store = ArtworkStore(cacheDir: h.dir,
+                                 fetch: { url in URL(string: url).flatMap { try? Data(contentsOf: $0) } },
+                                 render: { path, _, _ in
+                                     [String(data: FileManager.default.contents(atPath: path) ?? Data(),
+                                             encoding: .utf8) ?? ""]
+                                 })
+        func render(_ cover: LibraryCover) -> [String]? {
+            if let hit = store.lines(key: cover.key, url: cover.url, width: 8, height: 4, onReady: {}) { return hit }
+            let ready = expectation(description: "rendered")
+            _ = store.lines(key: cover.key, url: cover.url, width: 8, height: 4) { ready.fulfill() }
+            wait(for: [ready], timeout: 2)
+            return store.lines(key: cover.key, url: cover.url, width: 8, height: 4) { }
+        }
+        h.lanes.held = [.fetch]
+        h.rest(underB)
+        XCTAssertEqual(h.fetcher.cover(for: underB).flatMap(render), ["OLD"])
+        h.lanes.release(.fetch)
+        XCTAssertEqual(h.fetcher.cover(for: underB).flatMap(render), ["NEW"])
+    }
+
+    func testARecheckWithTheSameBytesKeepsTheFileAndRefreshesItsAge() throws {
+        let bytes = Self.payload(40_000)
+        let h = Harness(instance: Self.instanceB)
+        let underB = album(generation: 5, instance: Self.instanceB)
+        h.save(bytes, for: underB, modified: h.clock.date.addingTimeInterval(-20 * 86_400))
+        h.spandac.covers["album|\(Self.albumID)"] = bytes
+        let inode = h.attributes(underB)[.systemFileNumber] as? Int
+        XCTAssertNotNil(inode)
+        let shown = h.fetcher.cover(for: underB)
+        let before = h.fetcher.landed
+        h.rest(underB)
+        XCTAssertEqual(h.spandac.firstRequests.count, 1)
+        XCTAssertEqual(h.attributes(underB)[.systemFileNumber] as? Int, inode, "not replaced")
+        XCTAssertEqual(h.attributes(underB)[.modificationDate] as? Date, h.clock.date,
+                       "confirmed now, so age eviction counts from today")
+        XCTAssertEqual(h.files(), [h.key(underB)])
+        XCTAssertEqual(h.fetcher.cover(for: underB), shown, "the same cover, no new render key")
+        XCTAssertEqual(h.fetcher.landed, before, "nothing to repaint")
+    }
+
+    func testAFailedRecheckKeepsTheSavedCoverAndTriesAgainAfterItsBackoff() {
+        let failures: [(String, (Harness) -> Void, TimeInterval)] = [
+            ("busy", { $0.spandac.firstReplies = [.refused(.busy)] }, 30),
+            ("render timeout", { $0.spandac.firstReplies = [.refused(.renderTimeout(retryAfter: 120))] }, 120),
+            ("warming", { $0.spandac.firstReplies = [.refused(.warming(retryAfter: 3))] }, 3),
+            ("digest mismatch", { $0.spandac.corruptDigest = true }, 30),
+            ("transfer expired twice", { $0.spandac.chunkOverride = { _ in .refused(.transferExpired) } }, 30),
+        ]
+        for (name, fail, retry) in failures {
+            let (h, underB) = savedUnderB(Self.payload(800, seed: 1))
+            h.spandac.covers["album|\(Self.albumID)"] = Self.payload(900, seed: 2)
+            fail(h)
+            h.rest(underB)
+            let asked = h.spandac.firstRequests.count
+            XCTAssertGreaterThan(asked, 0, name)
+            XCTAssertEqual(h.contents(underB), Self.payload(800, seed: 1), name)
+            XCTAssertEqual(h.fetcher.cover(for: underB)?.key, h.key(underB), name)
+            h.spandac.corruptDigest = false
+            h.spandac.chunkOverride = nil
+            h.ticks(from: 0.1, to: retry - 0.1, underB)
+            XCTAssertEqual(h.spandac.firstRequests.count, asked, "\(name): nothing before the backoff")
+            h.tick(retry, underB)
+            XCTAssertEqual(h.spandac.firstRequests.count, asked + 1, "\(name): a failure does not spend the recheck")
+            XCTAssertEqual(h.contents(underB), Self.payload(900, seed: 2), name)
+        }
+    }
+
+    func testAFocusChangeDuringTheRecheckLeavesItDue() {
+        let (h, underB) = savedUnderB(Self.payload(70_000, seed: 1))
+        h.spandac.covers["album|\(Self.albumID)"] = Self.payload(70_000, seed: 2)
+        let other = album("other", generation: 5, instance: Self.instanceB)
+        h.spandac.onChunk = { index in if index == 1 { h.fetcher.focus(other) } }
+        h.rest(underB)
+        XCTAssertEqual(h.contents(underB), Self.payload(70_000, seed: 1), "dropped: nothing installed")
+        XCTAssertNotNil(h.fetcher.cover(for: underB))
+        h.spandac.onChunk = nil
+        h.rest(underB, at: 5)
+        XCTAssertEqual(h.spandac.firstRequests.map(\.id), [Self.albumID, Self.albumID])
+        XCTAssertEqual(h.contents(underB), Self.payload(70_000, seed: 2))
+    }
+
+    func testANegativeIsNotCarriedIntoTheNextRun() {
+        let h = served()
+        h.spandac.firstReplies = [.refused(.noArtwork)]
+        let a = album(generation: 1)
+        h.rest(a)
+        h.ticks(from: 0.1, to: 30, a)
+        XCTAssertEqual(h.spandac.firstRequests.count, 1)
+        let next = Harness(dir: h.dir)
+        next.spandac.covers["album|\(Self.albumID)"] = Self.payload(500)
+        next.rest(a)
+        XCTAssertEqual(next.spandac.firstRequests.count, 1, "a negative lives in memory, per generation")
+        XCTAssertNotNil(next.fetcher.cover(for: a))
     }
 
     // MARK: readiness validity and renewal
 
-    func testWithoutAFreshValidationTheHeroIsGradient() {
+    func testASavedCoverDoesNotWaitOnAFreshValidation() {
         let h = served()
         let a = album()
         h.rest(a)
         h.spandac.readiness = { throw ReadFailed() }
-        h.ticks(from: 0.1, to: 4.9, a)
-        XCTAssertNotNil(h.fetcher.cover(for: a))
-        h.ticks(from: 5.0, to: 6.9, a) { t in XCTAssertNil(h.fetcher.cover(for: a), "at \(t)") }
+        h.ticks(from: 0.1, to: 6.9, a) { t in XCTAssertNotNil(h.fetcher.cover(for: a), "at \(t)") }
         h.spandac.readiness = { LibraryArtworkReadiness(supported: true, instance: Self.instanceA) }
         h.tick(7.0, a)   // the retry ladder's third read (4, 5, 7) succeeds
         XCTAssertEqual(h.spandac.statusReadTimes, [0, 4, 5, 7])
@@ -473,7 +641,7 @@ final class LibraryCoverFetcherTests: XCTestCase {
         h.ticks(from: 5.1, to: 9.0, a) { t in XCTAssertNotNil(h.fetcher.cover(for: a), "at \(t)") }
     }
 
-    func testAHungRenewalShowsTheGradientAtTheDeadline() {
+    func testAHungRenewalKeepsTheSavedCoverPastTheDeadline() {
         let h = served()
         let a = album()
         h.rest(a)
@@ -482,7 +650,8 @@ final class LibraryCoverFetcherTests: XCTestCase {
         h.ticks(from: 4.0, to: 4.9, a)
         XCTAssertNotNil(h.fetcher.cover(for: a))
         h.tick(5.0, a)
-        XCTAssertNil(h.fetcher.cover(for: a))
+        XCTAssertNotNil(h.fetcher.cover(for: a))
+        XCTAssertNil(h.fetcher.readinessInstance(), "readiness itself has expired")
         h.ticks(from: 5.1, to: 6.9, a)
         XCTAssertEqual(h.statusReads(), 1)
         XCTAssertEqual(h.lanes.waitingCount(.status), 1, "no second read while the renewal is held")
@@ -497,14 +666,11 @@ final class LibraryCoverFetcherTests: XCTestCase {
         let a = album()
         h.rest(a)
         h.spandac.readiness = { throw ReadFailed() }
-        h.ticks(from: 0.1, to: 20, a) { t in
-            if t >= 5.0 { XCTAssertNil(h.fetcher.cover(for: a), "at \(t)") }
-            else { XCTAssertNotNil(h.fetcher.cover(for: a), "at \(t)") }
-        }
+        h.ticks(from: 0.1, to: 20, a) { t in XCTAssertNotNil(h.fetcher.cover(for: a), "at \(t)") }
         XCTAssertEqual(h.spandac.statusReadTimes, [0, 4, 5, 7, 11, 19])
     }
 
-    func testUnsupportedOrBlankInstanceDropsTheCoverAtOnce() {
+    func testUnsupportedOrBlankInstanceKeepsTheSavedCoverAndAsksNothing() {
         for answer in [LibraryArtworkReadiness(supported: false, instance: Self.instanceA),
                        LibraryArtworkReadiness(supported: false, instance: nil)] {
             let h = served()
@@ -513,9 +679,10 @@ final class LibraryCoverFetcherTests: XCTestCase {
             h.ticks(from: 0.1, to: 3.9, a)
             h.spandac.readiness = { answer }
             h.tick(4.0, a)
-            XCTAssertNil(h.fetcher.cover(for: a), "\(answer)")
+            XCTAssertNotNil(h.fetcher.cover(for: a), "\(answer)")
             h.ticks(from: 4.1, to: 40, a)
             XCTAssertEqual(h.spandac.statusReadTimes, [0, 4, 34], "\(answer)")
+            XCTAssertEqual(h.spandac.firstRequests.count, 1, "\(answer)")
         }
     }
 
@@ -577,35 +744,34 @@ final class LibraryCoverFetcherTests: XCTestCase {
 
     // MARK: interim and generations
 
-    func testAGenerationBNegativeClearsTheGenerationAInterim() {
+    func testANewGenerationUnderTheSameInstanceShowsTheSavedCoverWithoutAsking() {
         let h = served()
         let gen1 = album(generation: 1)
         h.rest(gen1)
         let gen2 = album(generation: 2)
-        let gen3 = album(generation: 3)
-        h.lanes.held = [.fetch]
+        XCTAssertEqual(h.key(gen1), h.key(gen2), "the file is the cover's, not the generation's")
+        XCTAssertEqual(h.fetcher.cover(for: gen2)?.key, h.key(gen1))
         h.rest(gen2, at: 1)
-        XCTAssertEqual(h.fetcher.cover(for: gen2)?.key, h.key(gen1), "the interim while gen 2 is drawn")
-        XCTAssertEqual(h.fetcher.cover(for: gen3)?.key, h.key(gen1))
-        h.spandac.firstReplies = [.refused(.noArtwork)]
-        h.lanes.release(.fetch)
-        XCTAssertNil(h.fetcher.cover(for: gen2))
-        XCTAssertNil(h.fetcher.cover(for: gen3), "the interim is gone, not only gen 2's answer")
+        h.ticks(from: 1.1, to: 10, gen2)
+        XCTAssertEqual(h.spandac.firstRequests.count, 1, "this instance's install already checked it")
     }
 
-    func testChangedArtUnderTheSameIDIsReplacedOnTheNextGeneration() {
-        let h = Harness()
-        h.spandac.covers["album|\(Self.albumID)|1"] = Self.payload(800, seed: 1)
-        h.spandac.covers["album|\(Self.albumID)|2"] = Self.payload(900, seed: 2)
-        let gen1 = album(generation: 1)
-        let gen2 = album(generation: 2)
-        h.rest(gen1)
-        h.lanes.held = [.fetch]
-        h.rest(gen2, at: 1)
-        XCTAssertEqual(h.fetcher.cover(for: gen2)?.key, h.key(gen1))
-        h.lanes.release(.fetch)
-        XCTAssertEqual(h.fetcher.cover(for: gen2)?.key, h.key(gen2))
-        XCTAssertEqual(h.contents(gen2), Self.payload(900, seed: 2))
+    func testANegativeUnderANewInstanceRemovesTheSavedCover() {
+        let h = served()
+        let underA = album(generation: 1, instance: Self.instanceA)
+        h.rest(underA)
+        let next = Harness(dir: h.dir, instance: Self.instanceB)
+        let gen2 = album(generation: 2, instance: Self.instanceB)
+        let gen3 = album(generation: 3, instance: Self.instanceB)
+        next.lanes.held = [.fetch]
+        next.rest(gen2)
+        XCTAssertEqual(next.fetcher.cover(for: gen2)?.key, h.key(underA), "shown while the recheck waits")
+        next.spandac.firstReplies = [.refused(.noArtwork)]
+        next.lanes.release(.fetch)
+        XCTAssertEqual(next.spandac.firstRequests.map(\.libraryInstance), [Self.instanceB])
+        XCTAssertNil(next.fetcher.cover(for: gen2))
+        XCTAssertNil(next.fetcher.cover(for: gen3), "SpanDAC said there is no art: the saved file is gone")
+        XCTAssertEqual(next.files(), [])
     }
 
     // MARK: outcomes
@@ -731,19 +897,16 @@ final class LibraryCoverFetcherTests: XCTestCase {
         XCTAssertNotNil(h.fetcher.cover(for: gen3))
     }
 
-    func testARenderTimeoutIsNeverANegativeAndKeepsTheInterimCover() {
-        let h = served()
-        h.spandac.covers["album|\(Self.albumID)|1"] = Self.payload(800, seed: 1)
-        let gen1 = album(generation: 1)
-        h.rest(gen1)
-        XCTAssertNotNil(h.fetcher.cover(for: gen1))
-
+    func testARenderTimeoutIsNeverANegativeAndKeepsTheSavedCover() {
+        let h = Harness(instance: Self.instanceB)
+        let gen2 = album(generation: 2, instance: Self.instanceB)
+        h.save(Self.payload(800, seed: 1), for: gen2)
         h.spandac.firstReplies = [.refused(.renderTimeout(retryAfter: 600))]
-        let gen2 = album(generation: 2)
-        h.rest(gen2, at: 1)
-        XCTAssertEqual(h.spandac.firstRequests.map(\.generation), [1, 2])
-        XCTAssertEqual(h.fetcher.cover(for: gen2)?.key, h.key(gen1),
-                       "unlike a negative, a render timeout leaves the earlier generation's cover showing")
+        h.rest(gen2)
+        XCTAssertEqual(h.spandac.firstRequests.map(\.generation), [2])
+        XCTAssertEqual(h.fetcher.cover(for: gen2)?.key, h.key(gen2),
+                       "unlike a negative, a render timeout leaves the saved cover showing")
+        XCTAssertEqual(h.contents(gen2), Self.payload(800, seed: 1))
     }
 
     func testARenderTimeoutNeverPoisonsArtworkStore() {
@@ -919,19 +1082,20 @@ final class LibraryCoverFetcherTests: XCTestCase {
         XCTAssertNil(h.fetcher.readinessInstance())
     }
 
-    func testRestartWithTheSameGenerationIsAnotherKey() {
+    func testARestartKeepsTheSameFileAndRechecksItUnderTheNewInstance() {
         let h = served()
         let underA = album(generation: 2, instance: Self.instanceA)
-        let underB = album(generation: 2, instance: Self.instanceB)
-        XCTAssertNotEqual(h.key(underA), h.key(underB))
+        let underB = album(generation: 5, instance: Self.instanceB)
+        XCTAssertEqual(h.key(underA), h.key(underB), "the key carries neither instance nor generation")
         h.rest(underA)
         h.spandac.readiness = { LibraryArtworkReadiness(supported: true, instance: Self.instanceB) }
         h.ticks(from: 0.1, to: 4.0, underA)
-        XCTAssertNil(h.fetcher.cover(for: underB), "A's file is not B's")
+        XCTAssertEqual(h.fetcher.cover(for: underB)?.key, h.key(underA), "shown before B is asked anything")
         h.rest(underB, at: 5)
         XCTAssertEqual(h.spandac.firstRequests.map(\.libraryInstance), [Self.instanceA, Self.instanceB])
+        XCTAssertEqual(h.spandac.firstRequests.last?.generation, 5, "the request carries B's own generation")
         XCTAssertEqual(h.fetcher.cover(for: underB)?.key, h.key(underB))
-        XCTAssertEqual(h.files(), [h.key(underA), h.key(underB)].sorted())
+        XCTAssertEqual(h.files(), [h.key(underA)])
     }
 
     func testTransferExpiredRestartsOnce() {
@@ -981,9 +1145,14 @@ final class LibraryCoverFetcherTests: XCTestCase {
     // MARK: disk
 
     func testEvictionKeepsWithinBounds() throws {
+        // The whole library fits: ~1,031 covers at ~74 KB (512 px) is ~75 MB.
         XCTAssertEqual(LibraryCoverEviction.standard,
-                       LibraryCoverEviction(maximumAge: 30 * 86_400, triggerFiles: 1_500, triggerBytes: 48 * 1_048_576,
-                                            targetFiles: 1_200, targetBytes: 38 * 1_048_576, everyInstalls: 25))
+                       LibraryCoverEviction(maximumAge: 30 * 86_400, triggerFiles: 2_000, triggerBytes: 100 * 1_048_576,
+                                            targetFiles: 1_600, targetBytes: 80 * 1_048_576, everyInstalls: 25))
+        XCTAssertGreaterThanOrEqual(LibraryCoverEviction.standard.targetBytes, 1_031 * 74 * 1_024)
+        XCTAssertGreaterThanOrEqual(LibraryCoverEviction.standard.targetFiles * 74 * 1_024,
+                                    LibraryCoverEviction.standard.targetBytes,
+                                    "at a typical cover size the byte target binds before the file target")
         let small = LibraryCoverEviction(maximumAge: 100, triggerFiles: 5, triggerBytes: 1_000,
                                          targetFiles: 3, targetBytes: 600, everyInstalls: 2)
         let fm = FileManager.default
@@ -1023,12 +1192,14 @@ final class LibraryCoverFetcherTests: XCTestCase {
     func testTheKeySurvivesArtworkStoreCacheKey() {
         let target = album()
         let key = LibraryCoverFetcher.cacheKey(for: target, px: 512)
-        let text = "v1|\(Self.instanceA)|2|album|\(Self.albumID)|512"
+        let text = "v2|album|\(Self.albumID)|512"
         let hex = SHA256.hash(data: Data(text.utf8)).map { String(format: "%02x", $0) }.joined()
         XCTAssertEqual(key, "sd_" + hex.prefix(32))
         XCTAssertEqual(ArtworkStore.cacheKey(key), key)
         XCTAssertNotEqual(key, LibraryCoverFetcher.cacheKey(for: target, px: 300))
         XCTAssertNotEqual(key, LibraryCoverFetcher.cacheKey(for: playlist(Self.albumID), px: 512))
+        XCTAssertEqual(key, LibraryCoverFetcher.cacheKey(for: album(generation: 9, instance: Self.instanceB), px: 512))
+        XCTAssertNotEqual(key, LibraryCoverFetcher.cacheKey(for: album("other"), px: 512))
     }
 
     func testInstalledFileNamesCarryNoID() {
