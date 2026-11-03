@@ -576,6 +576,30 @@ final class DiscoverFeed: DiscoverFeedReading {
     }
 }
 
+/// The feed's real fetch: a GET with both tokens, blocking up to `timeout`;
+/// nil without both tokens, on transport failure or on timeout. The body is
+/// returned whatever the HTTP status, as before. `transport` and
+/// `onLateCallback` are test seams; shipped code uses URLSession.shared.
+func makeDiscoverFeedFetch(transport: @escaping StationPageTransport = urlSessionStationPageTransport,
+                           timeout: TimeInterval = 20,
+                           onLateCallback: @escaping () -> Void = {},
+                           developerToken: @escaping () -> String?,
+                           userToken: @escaping () -> String?) -> (String) -> Data? {
+    return { urlString in
+        guard let url = URL(string: urlString),
+              let dev = developerToken(),
+              let user = userToken() else { return nil }
+        var req = URLRequest(url: url)
+        req.setValue("Bearer \(dev)", forHTTPHeaderField: "Authorization")
+        req.setValue(user, forHTTPHeaderField: "Music-User-Token")
+        let sem = DispatchSemaphore(value: 0)
+        var out: Data?
+        _ = transport(req) { d, _ in out = d; sem.signal() }
+        _ = sem.wait(timeout: .now() + timeout)
+        return out
+    }
+}
+
 /// Wired against the real AuthManager. nil when either token is missing —
 /// callers hide the Discover tab rather than showing an error surface, the same way
 /// makeCatalog() degrades to favorites-only.
@@ -585,20 +609,8 @@ func makeDiscoverFeed() -> DiscoverFeed? {
     return DiscoverFeed(
         storefront: auth.storefront(),
         token: { AuthManager().userToken() },
-        fetch: { urlString in
-            let auth = AuthManager()
-            guard let url = URL(string: urlString),
-                  let dev = try? auth.requireDeveloperToken(),
-                  let user = auth.userToken() else { return nil }
-            var req = URLRequest(url: url)
-            req.setValue("Bearer \(dev)", forHTTPHeaderField: "Authorization")
-            req.setValue(user, forHTTPHeaderField: "Music-User-Token")
-            let sem = DispatchSemaphore(value: 0)
-            var out: Data?
-            URLSession.shared.dataTask(with: req) { d, _, _ in out = d; sem.signal() }.resume()
-            _ = sem.wait(timeout: .now() + 20)
-            return out
-        })
+        fetch: makeDiscoverFeedFetch(developerToken: { try? AuthManager().requireDeveloperToken() },
+                                     userToken: { AuthManager().userToken() }))
 }
 
 /// Whether the Discover tab opens at all.
