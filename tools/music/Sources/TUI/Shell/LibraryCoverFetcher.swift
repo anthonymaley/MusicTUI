@@ -25,8 +25,9 @@ import Foundation
 // restart and a library refresh (measured 2026-11-03: 969 of 969 album ids
 // identical across two restarts and a refresh, with a new instance each time).
 // So a saved cover shows on focus at once, with no wait for SpanDAC, and the
-// normal fetch then rechecks it in the background once per (instance, cover) per
-// run, replacing it only when the bytes differ. A recheck that fails never removes
+// normal fetch then rechecks it in the background once per (instance, generation,
+// cover) per run, so a library refresh picks up changed art too, replacing it only
+// when the bytes differ. A recheck that fails never removes
 // it; a `no_artwork` / `not_in_library` answer does, and is remembered only for
 // that instance and generation.
 
@@ -152,15 +153,9 @@ final class LibraryCoverFetcher {
         let fresh: Bool
     }
 
-    /// One cover as one SpanDAC process sees it: what a recheck is spent for.
-    private struct CoverKey: Hashable {
-        let instance: String
-        let kind: LibraryArtworkKind
-        let id: String
-    }
-
     /// One cover in one list snapshot: what an outcome (a negative, a backoff, a
-    /// warming hint, a stale generation) is remembered for. In memory only.
+    /// warming hint, a stale generation) and a spent recheck are remembered for. In
+    /// memory only.
     private struct OutcomeKey: Hashable {
         let instance: String
         let generation: Int
@@ -363,12 +358,14 @@ final class LibraryCoverFetcher {
     private var backoffUntil: [OutcomeKey: Date] = [:]
     private var warmingUntil: [OutcomeKey: Date] = [:]
     private var staleKeys: Set<OutcomeKey> = []
-    /// Covers this run has confirmed (installed, or rechecked) under an instance.
-    private var rechecked: Set<CoverKey> = []
-    /// File key → a short digest of bytes that replaced it this run. The render key
-    /// handed out changes with it, so a scene's ArtworkStore, which memoizes renders
-    /// by key for the session, draws the new art rather than its memo of the old.
-    private var replacedDigest: [String: String] = [:]
+    /// Covers this run has confirmed (installed, or rechecked) under an instance and
+    /// generation: one recheck per newly applied generation, and no more.
+    private var rechecked: Set<OutcomeKey> = []
+    /// File key → a short digest of the bytes installed there: set on every install,
+    /// read from the file once for a cover an earlier run saved. The render key is the
+    /// file key plus this, so a scene's ArtworkStore, which memoizes renders by key for
+    /// the session, never draws its memo of other bytes once the file has changed.
+    private var renderDigest: [String: String] = [:]
     /// Per owner, the list the latest `stale_generation` refusal came from. Not
     /// cleared by anything: a scene acts on it only while its APPLIED list still
     /// carries that very generation and instance, and a new list never does.
@@ -535,7 +532,7 @@ final class LibraryCoverFetcher {
         guard !negatives.contains(outcome), !staleKeys.contains(outcome),
               backoffUntil[outcome].map({ t >= $0 }) ?? true,
               warmingUntil[outcome].map({ t >= $0 }) ?? true,
-              !installed(key) || !rechecked.contains(coverKey(target)) else { return nil }
+              !installed(key) || !rechecked.contains(outcome) else { return nil }
         fetchToken += 1
         let token = fetchToken
         let epoch = cancelEpoch
@@ -766,7 +763,7 @@ final class LibraryCoverFetcher {
             // and generation remember the answer; a new one asks again.
             negatives.insert(outcome)
             try? FileManager.default.removeItem(atPath: "\(cacheDir)/\(key)")
-            replacedDigest[key] = nil
+            renderDigest[key] = nil
             _landed += 1
         case .unsupported:
             // Readiness false until it is read again.
@@ -786,7 +783,7 @@ final class LibraryCoverFetcher {
         let saved = FileManager.default.contents(atPath: path)
         if saved == jpeg {
             lock.lock()
-            if cancelEpoch == epoch, dataEpoch() == target.dataEpoch { rechecked.insert(coverKey(target)) }
+            if cancelEpoch == epoch, dataEpoch() == target.dataEpoch { rechecked.insert(outcomeKey(target)) }
             lock.unlock()
             try? FileManager.default.setAttributes([.modificationDate: now()], ofItemAtPath: path)
             return
@@ -807,8 +804,8 @@ final class LibraryCoverFetcher {
         let renamed = rename(temp, path) == 0
         var evictNow = false
         if renamed {
-            rechecked.insert(coverKey(target))
-            if saved != nil { replacedDigest[key] = String(Self.hex(jpeg).prefix(12)) }
+            rechecked.insert(outcomeKey(target))
+            renderDigest[key] = Self.renderDigest(jpeg)
             installs += 1
             evictNow = installs % max(1, eviction.everyInstalls) == 0
             _landed += 1
@@ -859,17 +856,20 @@ final class LibraryCoverFetcher {
         FileManager.default.fileExists(atPath: "\(cacheDir)/\(key)")
     }
 
-    /// The file's own key, or after a replacement this run, the key plus a digest of
-    /// the new bytes. The URL is always the file, so ArtworkStore reads it from there.
-    private func libraryCover(_ key: String) -> LibraryCover {
-        let url = URL(fileURLWithPath: "\(cacheDir)/\(key)").absoluteString
-        guard let digest = replacedDigest[key] else { return LibraryCover(key: key, url: url) }
-        return LibraryCover(key: "\(key)_\(digest)", url: url)
+    /// The render key is the file key plus a digest of the bytes installed there; the
+    /// URL is always the file itself, which ArtworkStore reads in place (it lives in
+    /// the store's own cache directory), so no copy is made. Nil when the file cannot
+    /// be read (an eviction racing this call).
+    private func libraryCover(_ key: String) -> LibraryCover? {
+        let path = "\(cacheDir)/\(key)"
+        if renderDigest[key] == nil {
+            guard let bytes = FileManager.default.contents(atPath: path) else { return nil }
+            renderDigest[key] = Self.renderDigest(bytes)
+        }
+        return LibraryCover(key: "\(key)_\(renderDigest[key]!)", url: URL(fileURLWithPath: path).absoluteString)
     }
 
-    private func coverKey(_ target: Target) -> CoverKey {
-        CoverKey(instance: target.libraryInstance, kind: target.kind, id: target.id)
-    }
+    static func renderDigest(_ bytes: Data) -> String { String(hex(bytes).prefix(12)) }
 
     private func outcomeKey(_ target: Target) -> OutcomeKey {
         OutcomeKey(instance: target.libraryInstance, generation: target.generation, kind: target.kind, id: target.id)

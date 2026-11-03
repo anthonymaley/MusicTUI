@@ -436,6 +436,16 @@ final class ArtworkStore {
     private func ensureBytesOnDisk(key: String, url: String, token: ArtworkFetchToken) -> BytesResult {
         let path = "\(cacheDir)/\(key)"
         if FileManager.default.fileExists(atPath: path) { return .path(path) }
+        // A SpanDAC library cover `LibraryCoverFetcher` installed in this cache directory
+        // (an `sd_` file whose `sd_` key names its bytes, not its file) is read where it
+        // is, never copied. Every other file URL is copied under its key, as before.
+        if key.hasPrefix("sd_"), let inPlace = URL(string: url), inPlace.isFileURL,
+           inPlace.lastPathComponent.hasPrefix("sd_"),
+           inPlace.deletingLastPathComponent().standardizedFileURL.path
+               == URL(fileURLWithPath: cacheDir).standardizedFileURL.path,
+           FileManager.default.fileExists(atPath: inPlace.path) {
+            return .path(inPlace.path)
+        }
         try? FileManager.default.createDirectory(atPath: cacheDir, withIntermediateDirectories: true)
         let outcome = fetcher(url, token)
         if token.isCancelled {

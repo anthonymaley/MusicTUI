@@ -535,7 +535,8 @@ final class LibraryCoverFetcherTests: XCTestCase {
         h.lanes.held = [.fetch]
         h.rest(underB)
         let shown = h.fetcher.cover(for: underB)
-        XCTAssertEqual(shown?.key, h.key(underB))
+        XCTAssertEqual(h.shownFile(underB), h.key(underB))
+        XCTAssertEqual(shown?.key, h.key(underB) + "_" + Self.digest(Self.payload(800, seed: 1)))
         let before = h.fetcher.landed
         h.lanes.release(.fetch)
         XCTAssertEqual(h.contents(underB), Self.payload(900, seed: 2))
