@@ -417,12 +417,14 @@ enum MusicAppPlaylistNamesRead: Equatable {
 /// class's rows come back as the two-field `U<US>name` / `S<US>name` shape,
 /// which the parser reads as nil IDs (browsable, not markable). The name get
 /// is NOT in a `try`, and a names count that is not the class's is an error:
-/// the script fails only when the NAMES cannot be read. The pairing is proven,
+/// the script fails only when the NAMES cannot be read. The pairing is checked,
 /// not assumed: after the name get the IDs are read again and compared as
 /// lists `considering case`; a re-read that differs (a rename that reorders,
-/// a delete plus a create, any same-count change between the gets) or fails
-/// drops that class's IDs for this refresh, never the rail. Nothing is
-/// guessed or paired by position across a change. It only reads.
+/// a delete plus a create, any same-count change that persists across the
+/// gets) or fails drops that class's IDs for this refresh, never the rail.
+/// It detects a change that persists across the reads, not one undone between
+/// them (A->B->A); `m` still plays by ID, so
+/// such a miss can only show a wrong name. It only reads.
 let railPlaylistNamesScript = """
     set fs to (ASCII character 31)
     set output to ""
