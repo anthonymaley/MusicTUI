@@ -422,8 +422,14 @@ func playMarkedSet(_ marked: (items: [MarkedItem], source: ListSource?), shuffle
 /// `list_rev`, or a SpanDAC that does not serve `slice.listRev`, refuses with
 /// the update line (`markedSetSpanDACUnbracketedLine`).
 ///
-/// Left to SpanDAC: a refresh or a playlist edit after the closing bracket,
-/// before `slice.queue` resolves its IDs against the snapshot it then holds.
+/// What these checks do not prove: a current, atomic snapshot of the whole
+/// set. They reduce inconsistency; they cannot rule it out. The revision
+/// reads are sequential, so an earlier playlist edited after its own
+/// revalidation can still be missed; the bracket proves one process and
+/// generation, not every playlist's revision at one instant; SpanDAC may
+/// answer a walk and its revision read from its own membership cache, so both
+/// can agree and still be a little stale; and a refresh or edit after
+/// validation, before `slice.queue` resolves its IDs, is SpanDAC's to catch.
 ///
 /// A song in more than one marked item is queued once, at its first position
 /// (`firstOccurrences`, by library ID), before any shuffle, on both outputs:
