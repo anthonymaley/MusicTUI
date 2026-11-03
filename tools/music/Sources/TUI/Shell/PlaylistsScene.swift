@@ -1605,7 +1605,8 @@ final class PlaylistsScene: Scene {
     private func playMarks(shuffle: Bool) {
         let makeProvider = self.makeProvider
         playMarkedSet(marks.snapshot, shuffle: shuffle, backend: backend, appQueue: appQueue, routing: routing,
-                      actions: actions, spanDACData: { makeProvider() != nil }, readers: markedSetReaders)
+                      actions: actions, status: status, spanDACData: { makeProvider() != nil },
+                      readers: markedSetReaders)
     }
 
     /// Whether the rail row named `name` shows the mark: marked, on a rail

@@ -2699,7 +2699,8 @@ final class LibraryScene: Scene {
     private func playMarks(shuffle: Bool) {
         let makeProvider = self.makeProvider
         playMarkedSet(marks.snapshot, shuffle: shuffle, backend: backend, appQueue: appQueue, routing: routing,
-                      actions: actions, spanDACData: { makeProvider() != nil }, readers: markedSetReaders)
+                      actions: actions, status: status, spanDACData: { makeProvider() != nil },
+                      readers: markedSetReaders)
     }
 
     /// C3 item 5: decided by the source of the list the action came from, not

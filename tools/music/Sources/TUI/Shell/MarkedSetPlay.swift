@@ -70,15 +70,37 @@ func markedSetDisplayName(_ items: [MarkedItem]) -> String {
     }
 }
 
+/// A marked play's queue, and how many tracks the marked set matched: every
+/// queued track plus each album's songs that aren't available yet, summed
+/// across the set (a playlist's tracks all count as matched and queued).
+struct MarkedSetPlan: Equatable {
+    let queue: AppQueue
+    let matched: Int
+
+    /// The single-album wording, over the whole set: the warning's notice,
+    /// or nil when every matched track was queued (`partialAvailabilityNotice`).
+    var notice: String? { partialAvailabilityNotice(queued: queue.tracks.count, matched: matched) }
+    /// The play's own line, restored by a late confirmation, or nil when
+    /// nothing was skipped (`partialAvailabilityPlayingLine`).
+    var playingLine: String? { partialAvailabilityPlayingLine(queued: queue.tracks.count, matched: matched) }
+}
+
+/// The marked rows as one queue (`markedSetPlan`'s queue).
+func markedSetQueue(_ items: [MarkedItem], shuffle: Bool, readers: MarkedSetReaders) throws -> AppQueue {
+    try markedSetPlan(items, shuffle: shuffle, readers: readers).queue
+}
+
 /// The marked rows as one queue: each item's tracks, in mark order (shuffled
 /// together when `shuffle`), addressed by persistent ID and labelled by
-/// `markedSetDisplayName`. Fails closed and whole: any read that fails, an
-/// album with nothing to play, a playlist that is gone, empty, or shares its
-/// name with another playlist throws an `ActionError` naming that item, and
-/// no queue exists. Reads stop at the first failure.
-func markedSetQueue(_ items: [MarkedItem], shuffle: Bool, readers: MarkedSetReaders) throws -> AppQueue {
+/// `markedSetDisplayName`, with the set's matched count, so an album only
+/// partly available is never shortened silently. Fails closed and whole: any
+/// read that fails, an album with nothing to play, a playlist that is gone,
+/// empty, or shares its name with another playlist throws an `ActionError`
+/// naming that item, and no queue exists. Reads stop at the first failure.
+func markedSetPlan(_ items: [MarkedItem], shuffle: Bool, readers: MarkedSetReaders) throws -> MarkedSetPlan {
     guard !items.isEmpty else { throw ActionError(message: "Nothing is marked.") }
     var entries: [TrackListEntry] = []
+    var matched = 0
     for item in items {
         switch item {
         case .album(let title, let artist):
@@ -92,6 +114,7 @@ func markedSetQueue(_ items: [MarkedItem], shuffle: Bool, readers: MarkedSetRead
                     : "Couldn't find the album '\(title)', so nothing played.")
             }
             entries += res.tracks
+            matched += max(res.matched, res.tracks.count)
         case .playlist(let name):
             guard let named = readers.playlistsNamed(name) else {
                 throw ActionError(message: "Music didn't answer while reading '\(name)', so nothing played. Try again.")
@@ -109,10 +132,12 @@ func markedSetQueue(_ items: [MarkedItem], shuffle: Bool, readers: MarkedSetRead
                 throw ActionError(message: "'\(name)' has no tracks, so nothing played.")
             }
             entries += tracks
+            matched += tracks.count
         }
     }
-    return AppQueue(playlistName: persistentIDQueueSource, tracks: shuffle ? entries.shuffled() : entries,
-                    currentIndex: 1, displayName: markedSetDisplayName(items))
+    let queue = AppQueue(playlistName: persistentIDQueueSource, tracks: shuffle ? entries.shuffled() : entries,
+                         currentIndex: 1, displayName: markedSetDisplayName(items))
+    return MarkedSetPlan(queue: queue, matched: matched)
 }
 
 // MARK: - Marking on the rails (combined play, step 4)
@@ -146,21 +171,26 @@ let markedPlayNeedsMusicTUIData =
 /// SpanDAC hand-off's first play (`PersistentIDHandoff`): marks from SpanDAC
 /// data refuse first, then `refuseOpenDataPlayBeforeReading` (a switch to
 /// SpanDAC data since, or a blocked stored output), both before any read; then
-/// the reads (`markedSetQueue`, all or nothing); then `routing.perform`
+/// the reads (`markedSetPlan`, all or nothing); then `routing.perform`
 /// against the keypress's stamp, where the Music.app branch sets the queue
 /// and plays its first entry by persistent ID, confirmed by that identity
 /// (`playRequestedQueueTrack`). A first play whose script fails clears the
 /// queue, so the poller is never left driving a queue that never started.
+/// When a marked album is only partly available, the play says so as the
+/// single-album play does: its line ("Playing N of M ..."), the warning's
+/// notice, and the line a late confirmation restores, all over the whole set.
 /// `.libraryPlay` routes it: it is a play from MusicTUI's own library data,
 /// and it routes exactly as `.playlistPlay` does.
 func playMarkedSet(_ marked: (items: [MarkedItem], source: ListSource?), shuffle: Bool,
                    backend: AppleScriptBackend, appQueue store: AppQueueStore, routing: RoutingCoordinator,
-                   actions: ActionRunner, spanDACData: @escaping () -> Bool, readers: MarkedSetReaders) {
+                   actions: ActionRunner, status: StatusStore, spanDACData: @escaping () -> Bool,
+                   readers: MarkedSetReaders) {
     let stamp = routing.stamp
     actions.run("Play") {
         if marked.source == .bridge { throw ActionError(message: markedPlayNeedsMusicTUIData) }
         try refuseOpenDataPlayBeforeReading(.libraryPlay, routing: routing, spanDACData: spanDACData())
-        let queue = try markedSetQueue(marked.items, shuffle: shuffle, readers: readers)
+        let plan = try markedSetPlan(marked.items, shuffle: shuffle, readers: readers)
+        let queue = plan.queue
         do {
             try routing.perform(.libraryPlay, expecting: stamp, origin: .openData(resultNumber: nil),
                 musicApp: { path in
@@ -168,10 +198,13 @@ func playMarkedSet(_ marked: (items: [MarkedItem], source: ListSource?), shuffle
                     store.set(queue)
                     let title = queue.contextLabel
                     guard playRequestedQueueTrack(backend: backend, appQueue: store, playlist: queue.playlistName,
-                                                  position: queue.currentSourcePosition, title: title) else {
+                                                  position: queue.currentSourcePosition, title: title,
+                                                  notice: plan.notice, restore: plan.playingLine) else {
                         store.clear()
                         throw ActionError(message: "Couldn't play '\(title)'.")
                     }
+                    // Say so rather than silently playing a shortened set.
+                    if let line = plan.playingLine { status.post(line, untilStateChange: true) }
                 },
                 source: { _ in throw ActionError(message: LibraryProvenance.bridgeSelectedMusicAppList) },
                 unaffected: {})
