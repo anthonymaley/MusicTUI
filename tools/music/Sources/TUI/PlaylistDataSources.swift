@@ -407,40 +407,89 @@ enum MusicAppPlaylistNamesRead: Equatable {
 /// both.
 ///
 /// Bulk, per class: one count, one get of every persistent ID, one of every
-/// name, never a per-row Apple Event (the loop indexes lists already in
-/// memory). The count guards an empty class, so no property get is ever sent
-/// to zero elements, and checks both columns: a library that changed between
-/// the gets so that a column's length differs is an error, never a reply.
-/// Both columns are coerced to lists, because one playlist can answer a bare
-/// value. A same-length change between the two gets (one playlist deleted and
-/// another made within the read) could still pair a name with its neighbour's
-/// ID; the mark then plays the playlist that ID names, never a name lookup.
-/// It only reads.
+/// name, then the IDs once more, never a per-row Apple Event (the loop indexes
+/// lists already in memory). The count guards an empty class, so no property
+/// get is ever sent to zero elements. Both columns are coerced to lists,
+/// because one playlist can answer a bare value.
+///
+/// The rail needs only names; the IDs are an addition for `m`. So the first ID
+/// get sits in a `try`: if it fails, or its count is not the class's, that
+/// class's rows come back as the two-field `U<US>name` / `S<US>name` shape,
+/// which the parser reads as nil IDs (browsable, not markable). The name get
+/// is NOT in a `try`, and a names count that is not the class's is an error:
+/// the script fails only when the NAMES cannot be read. The pairing is proven,
+/// not assumed: after the name get the IDs are read again and compared as
+/// lists `considering case`; a re-read that differs (a rename that reorders,
+/// a delete plus a create, any same-count change between the gets) or fails
+/// drops that class's IDs for this refresh, never the rail. Nothing is
+/// guessed or paired by position across a change. It only reads.
 let railPlaylistNamesScript = """
     set fs to (ASCII character 31)
     set output to ""
     set uTotal to count of user playlists
     if uTotal > 0 then
-        set uIDs to persistent ID of every user playlist
+        set uIDs to {}
+        try
+            set uIDs to persistent ID of every user playlist
+            set uIDs to uIDs as list
+        on error
+            set uIDs to {}
+        end try
         set uNames to name of every user playlist
-        set uIDs to uIDs as list
         set uNames to uNames as list
-        if (count of uIDs) is not uTotal or (count of uNames) is not uTotal then error "rail names: the playlists changed during the read" number 1004
+        if (count of uNames) is not uTotal then error "rail names: the playlists changed during the read" number 1004
+        set uPaired to ((count of uIDs) is uTotal)
+        if uPaired then
+            try
+                set uIDsAgain to persistent ID of every user playlist
+                set uIDsAgain to uIDsAgain as list
+                considering case
+                    set uPaired to (uIDsAgain is uIDs)
+                end considering
+            on error
+                set uPaired to false
+            end try
+        end if
         repeat with i from 1 to uTotal
             if output is not "" then set output to output & linefeed
-            set output to output & "U" & fs & (item i of uIDs) & fs & (item i of uNames)
+            if uPaired then
+                set output to output & "U" & fs & (item i of uIDs) & fs & (item i of uNames)
+            else
+                set output to output & "U" & fs & (item i of uNames)
+            end if
         end repeat
     end if
     set sTotal to count of subscription playlists
     if sTotal > 0 then
-        set sIDs to persistent ID of every subscription playlist
+        set sIDs to {}
+        try
+            set sIDs to persistent ID of every subscription playlist
+            set sIDs to sIDs as list
+        on error
+            set sIDs to {}
+        end try
         set sNames to name of every subscription playlist
-        set sIDs to sIDs as list
         set sNames to sNames as list
-        if (count of sIDs) is not sTotal or (count of sNames) is not sTotal then error "rail names: the playlists changed during the read" number 1004
+        if (count of sNames) is not sTotal then error "rail names: the playlists changed during the read" number 1004
+        set sPaired to ((count of sIDs) is sTotal)
+        if sPaired then
+            try
+                set sIDsAgain to persistent ID of every subscription playlist
+                set sIDsAgain to sIDsAgain as list
+                considering case
+                    set sPaired to (sIDsAgain is sIDs)
+                end considering
+            on error
+                set sPaired to false
+            end try
+        end if
         repeat with i from 1 to sTotal
             if output is not "" then set output to output & linefeed
-            set output to output & "S" & fs & (item i of sIDs) & fs & (item i of sNames)
+            if sPaired then
+                set output to output & "S" & fs & (item i of sIDs) & fs & (item i of sNames)
+            else
+                set output to output & "S" & fs & (item i of sNames)
+            end if
         end repeat
     end if
     return output
