@@ -551,6 +551,7 @@ final class RoutingCoordinator {
     func perform(_ action: MusicTUIAction,
                  expecting: (epoch: Int, dataEpoch: Int)?,
                  origin: PlayOrigin? = nil,
+                 searchOrigin: Bool = false,
                  musicApp: (MusicTUIPlayPath) throws -> Void,
                  source: (SourceAppClient) throws -> Void,
                  unaffected: () throws -> Void) throws {

@@ -114,6 +114,7 @@ final class DiscoverScene: Scene {
         case .rail(let rail):  return "rail:\(rail.id)"
         case .tracks(let it):  return "tracks:\(it.id)"
         case .genres:          return "genres"
+        case .search:          return "search"
         }
     }
 
@@ -282,6 +283,9 @@ final class DiscoverScene: Scene {
             computed = trackRows.map { DiscoverDisplayRow.item($0) }
         case .genres:
             computed = [.genreChoice(nil)] + genres.map { DiscoverDisplayRow.genreChoice($0) }
+        case .search:
+            // The pane draws its own rows; Discover's list has none here.
+            computed = []
         }
         rowsCacheKey = key
         rowsCache = computed
@@ -299,6 +303,19 @@ final class DiscoverScene: Scene {
     }
 
     private var canGoBack: Bool { stack.count > 1 }
+
+    // MARK: - Catalogue search (red-phase stubs)
+
+    /// The catalogue search pane while a search frame is in the stack.
+    private(set) var searchPane: CatalogueSearchPane?
+
+    /// The level on screen, for a test.
+    var currentLevel: DiscoverLevel { current.level }
+
+    static let searchNeedsSpanDAC = "Search needs SpanDAC on this Mac."
+    static let searchDataSourceChanged = "Data source changed while searching; search again."
+
+    static func discoverItem(for hit: CatalogueHit) -> DiscoverItem? { nil }
 
     /// `r` is guarded to the top level in handle(), because refresh() resets the
     /// stack — offering it deeper would silently teleport the user to Discover. The
@@ -1263,6 +1280,7 @@ final class DiscoverScene: Scene {
         case .rail(let rail):  return rail.title
         case .tracks(let it):  return it.name
         case .genres:          return "Genres"
+        case .search:          return "Search"
         }
     }
 

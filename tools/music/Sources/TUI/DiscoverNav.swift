@@ -20,11 +20,18 @@ enum DiscoverLevel: Equatable {
     case tracks(DiscoverItem)
     /// The genre list, opened from the Top charts' genre row.
     case genres
+    /// The catalogue search (`/`), opened from any level. The pane holds its
+    /// own rows and cursors; this frame only marks where it sits in the stack,
+    /// so closing it returns to the level it was opened from.
+    case search
 }
 
 struct DiscoverFrameState: Equatable {
     let level: DiscoverLevel
     var cursor: DiscoverCursor
+    /// True for a frame the catalogue search opened (an album's `.tracks`):
+    /// every play from it carries the search origin to the coordinator.
+    var searchOrigin = false
 }
 
 /// Push a level with a fresh cursor, leaving the parent's position untouched so

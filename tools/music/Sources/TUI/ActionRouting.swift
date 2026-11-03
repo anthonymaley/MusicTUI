@@ -790,6 +790,9 @@ let finishSwitchingToSpanDAC =
 let notAvailableWithSpanDACData = "Not available with SpanDAC data in this version."
 
 /// C-EPOCH: a read-then-play whose stamp moved. CHOSEN wording.
+/// Said instead of a play started from Discover's catalogue search on the
+/// MusicTUI output (ruling 2026-11-03 17:40: search plays on SpanDAC only).
+let searchPlaysOnSpanDACOnly = "Search plays on the SpanDAC output for now. Pick SpanDAC on the Output tab."
 let sourceChangedNothingPlayed = "Output or MusicTUI's music source changed; nothing was played."
 
 /// `switchMode` to a SpanDAC output without accepted data. CHOSEN wording.
