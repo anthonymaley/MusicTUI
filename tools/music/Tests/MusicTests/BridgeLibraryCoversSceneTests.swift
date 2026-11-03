@@ -335,16 +335,55 @@ final class BridgeLibraryCoversSceneTests: XCTestCase {
         _ = rig.tick(at: 5.3, snapshot: idle)
         XCTAssertEqual(rig.spandac.firstRequests.count, 1, "the Artists list asks for nothing")
 
-        // Opened again: read again, and the rows are asked for under the NEW read's generation.
-        // (The saved file is gone, as eviction would leave it: a cover this instance has
-        // already installed is not asked for again at a new generation.)
-        try? FileManager.default.removeItem(
-            atPath: "\(rig.dir)/\(LibraryCoverFetcher.cacheKey(for: rig.artistTarget(), px: 512))")
+        // Opened again: read again, and the rows are asked for under the NEW read's generation
+        // (a recheck of the saved cover: one per newly applied generation).
         openArtist(rig)
         _ = rig.tick(at: 10, snapshot: idle)
         _ = rig.tick(at: 10.3, snapshot: idle)
         XCTAssertEqual(rig.wire.sent("slice.libraryArtistAlbums").count, 2)
         XCTAssertEqual(rig.spandac.firstRequests.map(\.generation), [7, 8])
+    }
+
+    func testAnEvictedCoverIsAskedForAgainWhenTheArtistIsOpenedAgain() {
+        let rig = artistsRig([artistAlbumsPage(generation: 7), artistAlbumsPage(generation: 8)])
+        rig.spandac.covers["album|al1"] = LibraryCoverFetcherTests.payload(40_000)
+        openArtist(rig)
+        _ = rig.tick(at: 0, snapshot: idle)
+        _ = rig.tick(at: 0.3, snapshot: idle)
+        _ = rig.scene.handle(.escape)
+        _ = rig.tick(at: 5, snapshot: idle)
+        try? FileManager.default.removeItem(
+            atPath: "\(rig.dir)/\(LibraryCoverFetcher.cacheKey(for: rig.artistTarget(), px: 512))")   // evicted
+        openArtist(rig)
+        _ = rig.tick(at: 10, snapshot: idle)
+        _ = rig.tick(at: 10.3, snapshot: idle)
+        XCTAssertEqual(rig.spandac.firstRequests.map(\.generation), [7, 8])
+        XCTAssertNotNil(rig.fetcher.cover(for: rig.artistTarget(generation: 8)), "installed again")
+    }
+
+    func testARefreshedAlbumsListShowsTheSavedCoverAtOnceAndRechecksItOnceUnderTheNewGeneration() {
+        let rig = loadedAlbumsRig([albumsPage(["al1", "al2"], generation: 1),
+                                   albumsPage(["al1", "al2"], generation: 2)])
+        rig.install(rig.target(generation: 1))   // left by an earlier run
+        rig.spandac.covers["album|al1"] = LibraryCoverFetcherTests.payload(2_000)
+        _ = rig.tick(at: 0, snapshot: idle)
+        XCTAssertTrue(heroShowsMarker(rig), "the saved cover never reached the hero before the rest")
+        _ = rig.tick(at: 0.3, snapshot: idle)
+        XCTAssertEqual(rig.spandac.firstRequests.map(\.generation), [1])
+
+        // A person's refresh: the list is read again and applies generation 2.
+        _ = rig.scene.albumsFeedForTest.refresh(end: { _ in })
+        XCTAssertTrue(settle(rig, at: 1) { rig.wire.sent("slice.libraryAlbums").count == 2
+                                           && rig.fetcher.cover(for: rig.target(generation: 2)) != nil },
+                      "the refreshed list never applied")
+        _ = rig.tick(at: 1, snapshot: idle)
+        XCTAssertTrue(heroShowsMarker(rig), "the saved cover is shown under the new generation without waiting")
+        XCTAssertEqual(rig.spandac.firstRequests.count, 1, "nothing is asked before the rest")
+        _ = rig.tick(at: 5, snapshot: idle)
+        _ = rig.tick(at: 5.3, snapshot: idle)
+        for step in 0..<20 { _ = rig.tick(at: 6 + Double(step), snapshot: idle) }
+        XCTAssertEqual(rig.spandac.firstRequests.map(\.generation), [1, 2], "one recheck per applied generation")
+        XCTAssertTrue(heroShowsMarker(rig))
     }
 
     func testTheMusicAppArtistPathIsUnchanged() {
