@@ -561,6 +561,25 @@ final class CatalogueSearchModelTests: XCTestCase {
         XCTAssertTrue(texts.contains("Albums"))
     }
 
+    /// Titles, credits and notes come from Apple via SpanDAC; a C0/C1 control
+    /// (ESC above all) must never reach the terminal from this pane.
+    func testNoControlCharacterFromAResultOrANoteReachesALine() {
+        let esc = "\u{1B}[2J", bell = "\u{07}", c1 = "\u{9B}31m", del = "\u{7F}"
+        let bad = CatalogueSearchResults(
+            artists: [artist("ar9", "Art\(esc)ist")],
+            albums: [album("al9", "Al\(bell)bum", "By\(c1)line")],
+            songs: [song("so9", "So\(del)ng", "Cre\(esc)dit", on: "On\(bell)album")],
+            artistsServed: false, artistsNote: "No\(esc)te")
+        onResults(bad)
+        let texts = pane.layout(width: 80, height: 14).map(\.text)
+        XCTAssertTrue(texts.contains { $0.contains("Art[2Jist") }, "only the control scalar goes; printable text stays")
+        XCTAssertTrue(texts.contains { $0.contains("No[2Jte") })
+        for t in texts {
+            let control = t.unicodeScalars.filter { $0.value < 0x20 || (0x7F...0x9F).contains($0.value) }
+            XCTAssertTrue(control.isEmpty, "control scalars \(control.map(\.value)) in \(t.debugDescription)")
+        }
+    }
+
     func testTheNoteRendersOnTheSecondLine() {
         search("kid a")
         XCTAssertEqual(plain(60, 12)[1], "Searching “kid a”…")
