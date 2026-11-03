@@ -62,6 +62,71 @@ protocol CatalogueSearching {
     func searchCatalogue(term: String, limit: Int) throws -> [CatalogueRecord]
 }
 
+/// The TUI's catalogue browse (Discover's `/` search): artists, albums and
+/// songs, and one artist's albums. TUI-only: the CLI's `music search` reads
+/// `CatalogueSearching` and `CatalogueRecord`, which this does not touch.
+protocol CatalogueBrowsing {
+    /// One `slice.search`, grouped by kind in Apple's order. Artists are asked
+    /// for only when SpanDAC says it serves them; `artistsNote` says why not.
+    func browseCatalogue(term: String, limit: Int) throws -> CatalogueSearchResults
+    /// `slice.artistAlbums`: the first `limit` of an artist's catalogue albums.
+    func artistAlbums(artistID: String, limit: Int) throws -> ArtistAlbums
+}
+
+/// A conformer that serves neither read says so, in the same update sentence
+/// an older SpanDAC's `unknown_op` gives, never as an empty answer.
+extension CatalogueBrowsing {
+    func browseCatalogue(term: String, limit: Int) throws -> CatalogueSearchResults {
+        throw MusicProviderError.notImplemented(BridgeMusicProvider.unsupportedSentence(forWireOp: "slice.search"))
+    }
+    func artistAlbums(artistID: String, limit: Int) throws -> ArtistAlbums {
+        throw MusicProviderError.notImplemented(
+            BridgeMusicProvider.unsupportedSentence(forWireOp: catalogueArtistAlbumsOp))
+    }
+}
+
+/// The op that lists an artist's catalogue albums, and its capability name.
+let catalogueArtistAlbumsOp = "slice.artistAlbums"
+/// The capability that says `slice.search` answers `"artists": true`.
+let catalogueSearchArtistCapability = "search.artist"
+
+/// One catalogue browse result. The kind is SpanDAC's, never inferred from the
+/// id's spelling; a kind this build does not model never becomes a hit.
+struct CatalogueHit: Equatable {
+    enum Kind: Equatable { case artist, album, song }
+    let kind: Kind
+    let id: String
+    let title: String
+    /// The wire's `subtitle` (the credit line). Always present for an album or
+    /// a song; an artist record carries none.
+    let subtitle: String?
+    /// A song's album title, when SpanDAC sends one.
+    let album: String?
+}
+
+/// One `slice.search`, grouped, each group in Apple's order.
+struct CatalogueSearchResults: Equatable {
+    var artists: [CatalogueHit]
+    var albums: [CatalogueHit]
+    var songs: [CatalogueHit]
+    /// True only when artists were asked for (both capabilities listed).
+    var artistsServed: Bool
+    /// Why there are no artists, when they were not asked for: an older SpanDAC
+    /// (`artistsNeedNewerSpanDAC`) or a status that could not be read
+    /// (`artistsCouldNotCheck`). nil when artists were served.
+    var artistsNote: String?
+
+    static let artistsNeedNewerSpanDAC = "Artists need a newer SpanDAC on this Mac."
+    static let artistsCouldNotCheck = "Couldn't check SpanDAC for artist search."
+}
+
+/// One artist's catalogue albums: the first page only. `more` true means there
+/// are others beyond it (the screen says "First 25 albums.").
+struct ArtistAlbums: Equatable {
+    let albums: [CatalogueHit]
+    let more: Bool
+}
+
 /// The account's listening history.
 protocol HistoryProviding {
     func recentTracks(limit: Int) throws -> [HistoryItem]

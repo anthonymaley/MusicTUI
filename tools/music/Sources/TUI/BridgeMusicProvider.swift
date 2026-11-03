@@ -376,8 +376,23 @@ struct BridgeMusicProvider: MusicDataProvider {
             return "This SpanDAC build can't read a list's revision — update SpanDAC"
         case "slice.libraryArtwork":
             return "This SpanDAC build can't send library covers — update SpanDAC"
+        case catalogueArtistAlbumsOp:
+            return "This SpanDAC build can't list an artist's catalogue albums — update SpanDAC"
         default:
             return "SpanDAC doesn't serve that yet — update SpanDAC"
         }
+    }
+}
+
+/// Discover's catalogue search, with `searchCatalogue`'s error translation.
+extension BridgeMusicProvider: CatalogueBrowsing {
+    func browseCatalogue(term: String, limit: Int) throws -> CatalogueSearchResults {
+        do { return try control.browseCatalogue(term: term, limit: limit) }
+        catch let error as SourceAppError { throw Self.translate(error) }
+    }
+
+    func artistAlbums(artistID: String, limit: Int) throws -> ArtistAlbums {
+        do { return try control.artistAlbums(artistID: artistID, limit: limit) }
+        catch let error as SourceAppError { throw Self.translate(error) }
     }
 }
