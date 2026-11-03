@@ -192,24 +192,53 @@ final class MarkedSetQueueTests: XCTestCase {
         XCTAssertEqual(Set(q.tracks.map(\.index)).count, 5, "a shuffled set holds a shared song twice")
     }
 
-    /// A removed duplicate is not a skipped song: a fully available set says
-    /// nothing, and a partly available one says what it says without the duplicate.
-    func testARemovedDuplicateIsNotCountedAsUnavailable() throws {
+    /// A removed duplicate is not a skipped song, but the play says it was
+    /// removed: a fully available set carries only the repeated-song sentence,
+    /// and a partly available one carries the availability sentence it carries
+    /// without the duplicate, then the repeated-song sentence last.
+    func testARemovedDuplicateIsNotCountedAsUnavailableButIsSaid() throws {
         let full = try markedSetPlan(mixed, shuffle: false, readers: sharingRig().readers)
         XCTAssertEqual(full.matched, 5)
-        XCTAssertNil(full.notice, "a duplicate was reported as a song not available")
-        XCTAssertNil(full.playingLine)
+        XCTAssertEqual(full.notice, "1 repeated song plays once.", "a duplicate was reported as a song not available")
+        XCTAssertEqual(full.playingLine, "Playing '2 albums and 1 playlist' on MusicTUI. 1 repeated song plays once.")
 
-        // Moon Safari: 3 matched, 2 playable. Chill shares A2. The same notice
-        // as the same set without the shared song.
+        // Moon Safari: 3 matched, 2 playable. Chill shares A2. The same
+        // availability sentence as the same set without the shared song.
         let partly = sharingRig()
         partly.albums["Moon Safari"] = AlbumResolution(tracks: [entry("00000000000000A1", "La Femme d'Argent"),
                                                                 entry("00000000000000A2", "Sexy Boy")], matched: 3)
         let plan = try markedSetPlan(mixed, shuffle: false, readers: partly.readers)
         XCTAssertEqual(plan.queue.tracks.count, 5)
         XCTAssertEqual(plan.matched, 6)
-        XCTAssertEqual(plan.notice, "5 of 6 are queued \u{2014} the rest aren't available yet.")
-        XCTAssertEqual(plan.playingLine, "Playing 5 of 6 \u{2014} the rest aren't available yet.")
+        XCTAssertEqual(plan.notice,
+                       "5 of 6 are queued \u{2014} the rest aren't available yet. 1 repeated song plays once.")
+        XCTAssertEqual(plan.playingLine,
+                       "Playing 5 of 6 \u{2014} the rest aren't available yet. 1 repeated song plays once.")
+    }
+
+    /// A song repeated inside one marked playlist: every entry after the first
+    /// is counted, one sentence, plural form.
+    func testARepeatInsideOnePlaylistIsCountedAndSaid() throws {
+        let r = Readers()
+        r.playlists[Self.chillID] = [entry("00000000000000B1", "Teardrop"), entry("00000000000000B2", "Angel"),
+                                     entry("00000000000000B1", "Teardrop"), entry("00000000000000B2", "Angel"),
+                                     entry("00000000000000B1", "Teardrop")]
+        let plan = try markedSetPlan([.playlist(id: Self.chillID, name: "Chill")], shuffle: false, readers: r.readers)
+        XCTAssertEqual(plan.queue.tracks.map { persistentIDOfQueueEntry($0.index) },
+                       ["00000000000000B1", "00000000000000B2"])
+        XCTAssertEqual(plan.notice, "3 repeated songs play once.")
+        XCTAssertEqual(plan.playingLine, "Playing 'Chill' on MusicTUI. 3 repeated songs play once.")
+
+        r.playlists[Self.chillID] = [entry("00000000000000B1", "Teardrop"), entry("00000000000000B1", "Teardrop")]
+        let one = try markedSetPlan([.playlist(id: Self.chillID, name: "Chill")], shuffle: false, readers: r.readers)
+        XCTAssertEqual(one.notice, "1 repeated song plays once.")
+    }
+
+    /// Nothing repeated: the notice and the line are what they were.
+    func testASetWithNoRepeatSaysNothingOfRepeats() throws {
+        let plan = try markedSetPlan(mixed, shuffle: false, readers: mixedRig().readers)
+        XCTAssertNil(plan.notice)
+        XCTAssertNil(plan.playingLine)
     }
 
     func testNothingMarkedRefuses() {

@@ -311,6 +311,116 @@ final class MarkedSetPlayTests: XCTestCase {
         XCTAssertEqual(rig.posts, [playNotStartedWarning("Moon Safari")], "no notice when nothing was skipped")
     }
 
+    // MARK: - A repeated song plays once, and the play says so
+
+    /// Moon Safari (A1, A2) and Chill (B1, A2): A2 is in both.
+    private func repeatAcrossReaders() -> CountingReaders {
+        let r = readers()
+        r.playlists[Self.chillID] = [entry("00000000000000B1", "Teardrop"), entry("00000000000000A2", "Sexy Boy")]
+        return r
+    }
+
+    /// Chill alone, with B1 three times and B2 once.
+    private func repeatInsideReaders() -> CountingReaders {
+        let r = readers()
+        r.playlists[Self.chillID] = [entry("00000000000000B1", "Teardrop"), entry("00000000000000B1", "Teardrop"),
+                                     entry("00000000000000B2", "Angel"), entry("00000000000000B1", "Teardrop")]
+        return r
+    }
+
+    private let acrossItems: [MarkedItem] = [.album(title: "Moon Safari", artist: "Air"),
+                                             .playlist(id: MarkedSetPlayTests.chillID, name: "Chill")]
+    private let insideItems: [MarkedItem] = [.playlist(id: MarkedSetPlayTests.chillID, name: "Chill")]
+
+    /// Plays `items` with Music answering `readings`; `lateAt` makes Music
+    /// start the set at that read, after the warning showed.
+    private func playMarked(_ items: [MarkedItem], _ r: CountingReaders,
+                            readings: [PlayerIdentityReading], lateAt: Int? = nil, first: String = "00000000000000A1")
+        -> (status: StatusStore, rig: HonestPlayingTests.ConfirmRig, store: AppQueueStore) {
+        let fake = HonestPlayingTests.FakeMusicInterpreter()
+        let status = StatusStore()
+        let rig = HonestPlayingTests.ConfirmRig(readings, status: status)
+        if let lateAt {
+            rig.onRead = { n in
+                if n == lateAt {
+                    rig.setReadings([PlayerIdentityReading(state: "playing", persistentID: first, requestedID: first)])
+                }
+            }
+        }
+        let store = AppQueueStore()
+        store.confirmer = rig.confirmer
+        let actions = ActionRunner(status: status)
+        let marks = MarkedSetStore()
+        for item in items { marks.toggle(item, source: .musicApp) }
+        playMarkedSet(marks.snapshot, shuffle: false, backend: fake.backend, appQueue: store,
+                      routing: musicAppRouting(), actions: actions, status: status, spanDACData: { false },
+                      readers: r.readers)
+        actions.waitUntilIdle()
+        rig.runJobs()
+        return (status, rig, store)
+    }
+
+    private let confirmed = [PlayerIdentityReading(state: "playing", persistentID: "00000000000000A1", requestedID: nil)]
+    private let unconfirmed = [PlayerIdentityReading(state: "paused", persistentID: "0000000000000099", requestedID: nil)]
+
+    func testARepeatAcrossAnAlbumAndAPlaylistIsSaidWhenConfirmed() {
+        let p = playMarked(acrossItems, repeatAcrossReaders(), readings: confirmed)
+        XCTAssertEqual(p.store.read()?.tracks.count, 3, "the shared song plays once")
+        XCTAssertEqual(p.rig.posts, [], "Music confirmed the requested track")
+        XCTAssertEqual(p.status.current()?.text,
+                       "Playing '1 album and 1 playlist' on MusicTUI. 1 repeated song plays once.")
+    }
+
+    func testARepeatInsideOnePlaylistIsSaidInThePluralWhenConfirmed() {
+        let p = playMarked(insideItems, repeatInsideReaders(),
+                           readings: [PlayerIdentityReading(state: "playing", persistentID: "00000000000000B1",
+                                                            requestedID: nil)])
+        XCTAssertEqual(p.store.read()?.tracks.count, 2)
+        XCTAssertEqual(p.status.current()?.text, "Playing 'Chill' on MusicTUI. 2 repeated songs play once.")
+    }
+
+    func testTheRepeatSentenceSurvivesAnUnconfirmedPlayThenALateConfirmation() {
+        // Across an album and a playlist: the warning carries it, and the late
+        // confirmation puts the line back with it.
+        let across = playMarked(acrossItems, repeatAcrossReaders(), readings: unconfirmed, lateAt: 9)
+        XCTAssertEqual(across.rig.posts.first,
+                       playNotStartedWarning("1 album and 1 playlist") + " 1 repeated song plays once.",
+                       "the warning erased the repeated-song sentence")
+        XCTAssertEqual(across.status.current()?.text,
+                       "Playing '1 album and 1 playlist' on MusicTUI. 1 repeated song plays once.",
+                       "the late confirmation took the repeated-song sentence away with the warning")
+
+        // Inside one playlist, in the plural.
+        let inside = playMarked(insideItems, repeatInsideReaders(), readings: unconfirmed, lateAt: 9,
+                                first: "00000000000000B1")
+        XCTAssertEqual(inside.rig.posts.first, playNotStartedWarning("Chill") + " 2 repeated songs play once.")
+        XCTAssertEqual(inside.status.current()?.text, "Playing 'Chill' on MusicTUI. 2 repeated songs play once.")
+    }
+
+    /// The sentence is last, after the availability sentence, in the warning
+    /// and in the restored line.
+    func testTheRepeatSentenceFollowsTheAvailabilitySentence() {
+        let r = repeatAcrossReaders()
+        r.albums["Moon Safari"] = AlbumResolution(tracks: [entry("00000000000000A1", "La Femme d'Argent"),
+                                                           entry("00000000000000A2", "Sexy Boy")], matched: 3)
+        let p = playMarked(acrossItems, r, readings: unconfirmed, lateAt: 9)
+        XCTAssertEqual(p.rig.posts.first,
+                       playNotStartedWarning("1 album and 1 playlist")
+                           + " 3 of 4 are queued \u{2014} the rest aren't available yet. 1 repeated song plays once.")
+        XCTAssertEqual(p.status.current()?.text,
+                       "Playing 3 of 4 \u{2014} the rest aren't available yet. 1 repeated song plays once.")
+    }
+
+    /// Nothing repeated: no line is posted for a confirmed play and the
+    /// warning is the bare warning, as before.
+    func testASetWithNoRepeatPostsNoRepeatSentence() {
+        let confirmedPlay = playMarked(acrossItems, readers(), readings: confirmed)
+        XCTAssertNil(confirmedPlay.status.current(), "a set with no repeat and no skip posts no line")
+        XCTAssertEqual(confirmedPlay.rig.posts, [])
+        let warned = playMarked(acrossItems, readers(), readings: unconfirmed)
+        XCTAssertEqual(warned.rig.posts, [playNotStartedWarning("1 album and 1 playlist")])
+    }
+
     // MARK: - Nothing is ever written
 
     /// A fake `osascript` for the LIVE readers: answers each playlist's

@@ -964,8 +964,9 @@ final class MarkedSetSpanDACPlayTests: XCTestCase {
         let ids = r.output.sent("slice.queue").first?["library_ids"] as? [String] ?? []
         XCTAssertEqual(ids, ["t1", "t2", "p1", "p2", "t3"], "the shared song once, at the album's position")
         XCTAssertEqual(Set(ids).count, ids.count, "the request repeats a library ID")
-        XCTAssertEqual(r.status.current()?.text, "Playing '\(mixedName)' on SpanDAC \u{2014} 5 tracks.",
-                       "a removed duplicate is not a skipped song")
+        XCTAssertEqual(r.status.current()?.text,
+                       "Playing '\(mixedName)' on SpanDAC \u{2014} 5 tracks. 1 repeated song plays once.",
+                       "a removed duplicate is said, and is not a skipped song")
     }
 
     func testAShuffledSetSendsASharedSongOnce() {
@@ -979,8 +980,8 @@ final class MarkedSetSpanDACPlayTests: XCTestCase {
     }
 
     /// The same videos and the same song SpanDAC can't play, with and without
-    /// the shared song: the same sentence.
-    func testADuplicateLeavesTheAvailabilityLineAsItWas() {
+    /// the shared song: the same availability sentences, then the repeated one.
+    func testADuplicateLeavesTheAvailabilitySentencesAsTheyWere() {
         let r = rig(output: .source)
         scriptSharingReads(r, skippedVideos: 2)
         r.output.script("slice.queue", [queued(skippedUnavailable: 1)])
@@ -988,7 +989,8 @@ final class MarkedSetSpanDACPlayTests: XCTestCase {
 
         XCTAssertEqual(r.output.sent("slice.queue").first?["library_ids"] as? [String], ["t1", "t2", "p1", "p2", "t3"])
         XCTAssertEqual(r.status.current()?.text,
-                       "Playing 4 of 7 from '\(mixedName)' on SpanDAC: 2 videos skipped. 1 song isn't available to SpanDAC.")
+                       "Playing 4 of 7 from '\(mixedName)' on SpanDAC: 2 videos skipped. 1 song isn't available to SpanDAC. "
+                           + "1 repeated song plays once.")
     }
 
     func testOnTheMusicTUIOutputASharedSongIsHandedOffOnce() {
@@ -1000,8 +1002,9 @@ final class MarkedSetSpanDACPlayTests: XCTestCase {
         XCTAssertEqual(r.player.queues.count, 1, "the hand-off built no queue: \(String(describing: r.status.current()?.text))")
         XCTAssertEqual(r.player.queues.first?.tracks.map { persistentIDOfQueueEntry($0.index) },
                        ["1", "2", "3", "4", "5"].map(hex), "the shared song once, at the album's position")
-        XCTAssertEqual(r.status.current()?.text, LibraryProvenance.playingOnMusicTUI(mixedName),
-                       "a removed duplicate is not a skipped song")
+        XCTAssertEqual(r.status.current()?.text,
+                       LibraryProvenance.playingOnMusicTUI(mixedName) + " 1 repeated song plays once.",
+                       "a removed duplicate is said, and is not a skipped song")
     }
 
     func testOnTheMusicTUIOutputAShuffledSetHandsASharedSongOffOnce() {
@@ -1012,6 +1015,115 @@ final class MarkedSetSpanDACPlayTests: XCTestCase {
 
         XCTAssertEqual(r.player.queues.first?.tracks.map { persistentIDOfQueueEntry($0.index) }.sorted(),
                        ["1", "2", "3", "4", "5"].map(hex).sorted())
+    }
+
+    // MARK: - The repeated-song sentence, last, on every path
+
+    /// Chill alone, with p1 three times and p2 once.
+    private func scriptRepeatInsideChill(_ r: Rig, aliases: [String: String] = [:]) {
+        r.data.script("slice.libraryPlaylistTracks", [playlistTracks(["p1", "p1", "p2", "p1"], aliases: aliases)])
+    }
+
+    func testOnASpanDACOutputARepeatInsideOnePlaylistIsSaidInThePlural() {
+        let r = rig(output: .source)
+        scriptRepeatInsideChill(r)
+        r.output.script("slice.queue", [queued()])
+        play([chill], r)
+
+        XCTAssertEqual(r.output.sent("slice.queue").first?["library_ids"] as? [String], ["p1", "p2"])
+        XCTAssertEqual(r.status.current()?.text, "Playing 'Chill' on SpanDAC \u{2014} 2 tracks. 2 repeated songs play once.")
+    }
+
+    func testOnASpanDACOutputOneRepeatIsSaidInTheSingular() {
+        let r = rig(output: .source)
+        r.data.script("slice.libraryPlaylistTracks", [playlistTracks(["p1", "p2", "p1"])])
+        r.output.script("slice.queue", [queued()])
+        play([chill], r)
+
+        XCTAssertEqual(r.status.current()?.text, "Playing 'Chill' on SpanDAC \u{2014} 2 tracks. 1 repeated song plays once.")
+    }
+
+    func testASetWithNoRepeatKeepsItsSpanDACLineOnBothOutputs() {
+        let r = rig(output: .source)
+        scriptMixedReads(r)
+        r.output.script("slice.queue", [queued()])
+        play(mixed, r)
+        XCTAssertEqual(r.status.current()?.text, "Playing '\(mixedName)' on SpanDAC \u{2014} 5 tracks.")
+
+        let h = rig(output: .musicApp)
+        scriptMixedReads(h, aliases: aliases)
+        h.library.hits = handoffHits(allRows)
+        play(mixed, h)
+        XCTAssertEqual(h.status.current()?.text, LibraryProvenance.playingOnMusicTUI(mixedName))
+    }
+
+    func testOnTheMusicTUIOutputARepeatInsideOnePlaylistIsSaidInThePlural() {
+        let r = rig(output: .musicApp)
+        scriptRepeatInsideChill(r, aliases: aliases)
+        r.library.hits = handoffHits(allRows)
+        play([chill], r)
+
+        XCTAssertEqual(r.player.queues.first?.tracks.map { persistentIDOfQueueEntry($0.index) }, ["3", "4"].map(hex))
+        XCTAssertEqual(r.status.current()?.text, "Playing 'Chill' on MusicTUI. 2 repeated songs play once.")
+    }
+
+    /// Through the real hand-off, the shell's player and a confirmer: Music
+    /// does not confirm at first (the warning), then confirms late (the line
+    /// comes back). Both carry the video, the song with no identity and the
+    /// repeated song, in that order.
+    private func handoffWithConfirmer(_ items: [MarkedItem], _ r: Rig, first: String)
+        -> (confirm: HonestPlayingTests.ConfirmRig, store: AppQueueStore) {
+        let confirm = HonestPlayingTests.ConfirmRig([PlayerIdentityReading(state: "paused", persistentID: "00000000000000A1",
+                                                                           requestedID: nil)],
+                                                    status: r.status)
+        confirm.onRead = { n in
+            if n == 9 { confirm.setReadings([PlayerIdentityReading(state: "playing", persistentID: first, requestedID: nil)]) }
+        }
+        let store = AppQueueStore()
+        store.confirmer = confirm.confirmer
+        let routing = r.routing
+        let handoff = PersistentIDHandoff(
+            library: r.library,
+            player: AppQueueHandoffPlayer(store: store,
+                                          playFirst: requestedHandoffPlayFirst(backend: r.counter.backend, appQueue: store)),
+            selfCheck: LibraryAliasSelfCheck(), currentStamp: { routing.musicTUISpanDACStamp })
+        let marks = MarkedSetStore()
+        for item in items { marks.toggle(item, source: .bridge) }
+        playMarkedSet(marks.snapshot, shuffle: false, backend: r.counter.backend, appQueue: store,
+                      routing: routing, actions: r.actions, status: r.status,
+                      spanDACData: { spanDACDataProvider(routing: routing) != nil },
+                      readers: refusingReaders(Counter()),
+                      spanDAC: MarkedSetSpanDAC(makeProvider: { spanDACDataProvider(routing: routing) },
+                                                handoff: handoff, sleep: { _ in }))
+        r.actions.waitUntilIdle()
+        confirm.runJobs()
+        return (confirm, store)
+    }
+
+    func testTheRepeatSentenceSurvivesAnUnconfirmedAndALateConfirmedHandoff() {
+        // Across items, singular: In Rainbows (t1, t2), Chill (p1, t2, p2),
+        // Amnesiac (t3, no identity), with a video left out.
+        let r = rig(output: .musicApp)
+        var some = aliases
+        some["t3"] = nil
+        r.data.script("slice.libraryAlbumTracks", [albumTracks(["t1", "t2"], aliases: some),
+                                                   albumTracks(["t3"], aliases: some)])
+        r.data.script("slice.libraryPlaylistTracks", [playlistTracks(["p1", "t2", "p2"], skippedVideos: 1, aliases: some)])
+        r.library.hits = handoffHits(allRows.filter { $0.id != "t3" })
+        let across = handoffWithConfirmer(mixed, r, first: hex("1"))
+        let notice = "1 video skipped. 1 song isn't available to SpanDAC. 1 repeated song plays once."
+        XCTAssertEqual(across.confirm.posts, [playNotStartedWarning(mixedName) + " " + notice],
+                       "the unconfirmed warning dropped part of the set's notice")
+        XCTAssertEqual(r.status.current()?.text, "Playing '\(mixedName)' on MusicTUI. \(notice)",
+                       "the late confirmation dropped part of the set's notice")
+
+        // Inside one playlist, plural, nothing else left out.
+        let q = rig(output: .musicApp)
+        scriptRepeatInsideChill(q, aliases: aliases)
+        q.library.hits = handoffHits(allRows)
+        let inside = handoffWithConfirmer([chill], q, first: hex("3"))
+        XCTAssertEqual(inside.confirm.posts, [playNotStartedWarning("Chill") + " 2 repeated songs play once."])
+        XCTAssertEqual(q.status.current()?.text, "Playing 'Chill' on MusicTUI. 2 repeated songs play once.")
     }
 
     // MARK: - Marks never play from another data source
