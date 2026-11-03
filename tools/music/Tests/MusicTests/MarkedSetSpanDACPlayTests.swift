@@ -51,11 +51,12 @@ final class MarkedSetSpanDACPlayTests: XCTestCase {
     {"ok":true,"op":"slice.status","status":{"playback":"playing","title":"T","artist":"A",
      "contract":3,"authorization":"authorized","queue":{"phase":"complete","requested":1,"present":1,"index":0}}}
     """
-    private func queued(skippedUnavailable: Int = 0) -> String {
-        """
-        {"ok":true,"op":"slice.queue","skipped_unavailable":\(skippedUnavailable),
+    private func queued(skippedUnavailable: Int = 0, token: String? = nil) -> String {
+        let t = token.map { ",\"queue_token\":\"\($0)\"" } ?? ""
+        return """
+        {"ok":true,"op":"slice.queue","skipped_unavailable":\(skippedUnavailable)\(t),
          "status":{"playback":"playing","title":"T","artist":"A",
-         "contract":3,"authorization":"authorized","queue":{"phase":"complete","requested":1,"present":1,"index":0}}}
+         "contract":3,"authorization":"authorized","queue":{"phase":"complete","requested":1,"present":1,"index":0}\(t)}}
         """
     }
 
@@ -270,8 +271,11 @@ final class MarkedSetSpanDACPlayTests: XCTestCase {
         r.output.script("slice.queue", [queued(skippedUnavailable: 1)])
         play(mixed, r)
 
-        // 5 IDs sent, 1 skipped by SpanDAC, 2 videos never sent: 4 of 7.
-        XCTAssertEqual(r.status.current()?.text, "Playing 4 of 7 \u{2014} the rest aren't available yet.")
+        // 5 IDs sent, 1 skipped by SpanDAC, 2 videos never sent: 4 of 7, worded as
+        // the single SpanDAC playlist play words it (`bridgePlaylistPlayMessage`):
+        // the videos apart from the song SpanDAC can't play.
+        XCTAssertEqual(r.status.current()?.text,
+                       "Playing 4 of 7 from '\(mixedName)' on SpanDAC: 2 videos skipped. 1 song isn't available to SpanDAC.")
         XCTAssertEqual(r.status.current(now: Date().addingTimeInterval(3600))?.staysUntilStateChange, true)
     }
 
@@ -329,7 +333,249 @@ final class MarkedSetSpanDACPlayTests: XCTestCase {
         play(mixed, r)
 
         XCTAssertEqual(r.player.queues.first?.tracks.count, 4)
-        XCTAssertEqual(r.status.current()?.text, "Playing 4 of 5 \u{2014} the rest aren't available yet.")
+        // The hand-off's own wording, as a single SpanDAC album or playlist play
+        // on the MusicTUI output words it.
+        XCTAssertEqual(r.status.current()?.text,
+                       "Playing '\(mixedName)' on MusicTUI. 1 song isn't available to SpanDAC.")
+    }
+
+    // MARK: - One snapshot for the whole set
+
+    private func albumTracks(_ ids: [String], generation: Int, aliases: [String: String] = [:]) -> String {
+        albumTracks(ids, aliases: aliases).replacingOccurrences(of: "\"generation\":3", with: "\"generation\":\(generation)")
+    }
+    private func playlistTracks(_ ids: [String], generation: Int, nextCursor: String? = nil) -> String {
+        var page = playlistTracks(ids).replacingOccurrences(of: "\"generation\":3", with: "\"generation\":\(generation)")
+        if let nextCursor {
+            page = page.replacingOccurrences(of: "\"next_cursor\":null", with: "\"next_cursor\":\"\(nextCursor)\"")
+        }
+        return page
+    }
+    private var changedLine: String {
+        "SpanDAC's library changed while '\(mixedName)' was being read, so nothing played. Try again."
+    }
+
+    /// A refresh lands between two marked items: the playlist answers a newer
+    /// snapshot than the album before it. Nothing is queued, and the reads stop.
+    func testARefreshBetweenTwoItemsRefusesAndSendsNoQueue() {
+        let r = rig(output: .source)
+        r.data.script("slice.libraryAlbumTracks", [albumTracks(["t1", "t2"], generation: 3),
+                                                   albumTracks(["t3"], generation: 4)])
+        r.data.script("slice.libraryPlaylistTracks", [playlistTracks(["p1", "p2"], generation: 4)])
+        r.output.script("slice.queue", [queued()])
+        play(mixed, r)
+
+        XCTAssertEqual(r.status.current()?.text, changedLine)
+        XCTAssertTrue(r.output.sent("slice.queue").isEmpty, "a queue mixing two snapshots was sent")
+        XCTAssertTrue(r.data.sent("slice.queue").isEmpty)
+        XCTAssertEqual(r.data.sent("slice.libraryAlbumTracks").count, 1, "reads went on after the snapshot moved")
+        XCTAssertTrue(r.opsSent.isSubset(of: readAndPlayOps))
+    }
+
+    /// The same between two albums, on the MusicTUI output: no hand-off.
+    func testARefreshBetweenTwoAlbumsRefusesOnTheMusicTUIOutput() {
+        let r = rig(output: .musicApp)
+        r.data.script("slice.libraryAlbumTracks", [albumTracks(["t1", "t2"], generation: 3, aliases: aliases),
+                                                   albumTracks(["t3"], generation: 4, aliases: aliases)])
+        r.library.hits = handoffHits(allRows)
+        play([inRainbows, amnesiac], r)
+
+        XCTAssertEqual(r.status.current()?.text,
+                       "SpanDAC's library changed while '2 albums' was being read, so nothing played. Try again.")
+        XCTAssertEqual(r.player.queues.count, 0, "a hand-off mixing two snapshots played")
+        XCTAssertEqual(r.library.reads.count, 0)
+    }
+
+    /// A playlist whose walk restarted onto a newer snapshot, after an album was
+    /// read on the older one: the restarted pages are not the album's snapshot.
+    func testAPlaylistWalkThatRestartsOntoANewSnapshotRefuses() {
+        let r = rig(output: .source)
+        r.data.script("slice.libraryAlbumTracks", [albumTracks(["t1", "t2"], generation: 3)])
+        r.data.script("slice.libraryPlaylistTracks", [
+            playlistTracks(["p1"], generation: 3, nextCursor: "c2"),
+            #"{"ok":false,"op":"slice.libraryPlaylistTracks","error":{"kind":"stale_generation","detail":"That playlist changed while you were reading it; start again."}}"#,
+            playlistTracks(["p1", "p2"], generation: 4),
+        ])
+        r.output.script("slice.queue", [queued()])
+        play([inRainbows, chill], r)
+
+        XCTAssertEqual(r.status.current()?.text,
+                       "SpanDAC's library changed while '1 album and 1 playlist' was being read, so nothing played. Try again.")
+        XCTAssertTrue(r.output.sent("slice.queue").isEmpty)
+    }
+
+    // MARK: - A switch while a request is held
+
+    private let iPhone = PlaybackMode.networkSource("0E6A3F6C-4B51-4D1B-9E1E-5C2A8D3B7F10")
+
+    private func until(_ condition: () -> Bool) -> Bool {
+        let deadline = Date().addingTimeInterval(3)
+        while Date() < deadline {
+            if condition() { return true }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.005))
+        }
+        return condition()
+    }
+
+    /// Starts the play without waiting, holds the `n`th request of `op`, switches
+    /// the output while it is held, then lets it answer.
+    private func switchWhileHeld(_ r: Rig, _ items: [MarkedItem], op: String, at n: Int = 0) throws {
+        r.data.gate(op: op, at: n)
+        let marks = MarkedSetStore()
+        for item in items { marks.toggle(item, source: .bridge) }
+        let routing = r.routing
+        playMarkedSet(marks.snapshot, shuffle: false, backend: r.counter.backend, appQueue: AppQueueStore(),
+                      routing: routing, actions: r.actions, status: r.status,
+                      spanDACData: { spanDACDataProvider(routing: routing) != nil },
+                      readers: refusingReaders(Counter()), spanDAC: r.spanDAC)
+        XCTAssertTrue(until { r.data.reached(op: op, at: n) }, "the play never sent \(op)")
+        let switched = try r.routing.switchMode(to: iPhone, readiness: { .ready },
+                                                pauseOutgoing: { _ in true }, dropQueue: { _ in })
+        XCTAssertEqual(switched, .switched(to: iPhone))
+        r.data.release(op: op, at: n)
+        r.actions.waitUntilIdle()
+    }
+
+    /// The album read answers `warming` while the output switches: the retry is
+    /// never sent, nor any later read, and nothing plays.
+    func testASwitchWhileAWarmingAlbumReadIsHeldSendsNothingMore() throws {
+        let r = rig(output: .source)
+        r.data.script("slice.libraryAlbumTracks", [
+            #"{"ok":false,"op":"slice.libraryAlbumTracks","error":{"kind":"warming","detail":"preparing your library","retry_after":0}}"#,
+            albumTracks(["t1", "t2"]), albumTracks(["t3"]),
+        ])
+        r.data.script("slice.libraryPlaylistTracks", [playlistTracks(["p1", "p2"])])
+        r.output.script("slice.queue", [queued()])
+        try switchWhileHeld(r, mixed, op: "slice.libraryAlbumTracks")
+
+        XCTAssertEqual(r.status.current()?.text, sourceChangedNothingPlayed)
+        XCTAssertEqual(r.data.sent("slice.libraryAlbumTracks").count, 1, "the warming read was retried after the switch")
+        XCTAssertTrue(r.data.sent("slice.libraryPlaylistTracks").isEmpty)
+        XCTAssertTrue(r.output.sent("slice.queue").isEmpty)
+        XCTAssertTrue(r.data.sent("slice.queue").isEmpty)
+    }
+
+    /// The first page of a playlist answers, with more to come, while the output
+    /// switches: the next page is never asked for, and nothing plays.
+    func testASwitchWhileTheFirstPlaylistPageIsHeldSendsNothingMore() throws {
+        let r = rig(output: .source)
+        r.data.script("slice.libraryPlaylistTracks", [playlistTracks(["p1"], generation: 3, nextCursor: "c2"),
+                                                      playlistTracks(["p2"], generation: 3)])
+        r.data.script("slice.libraryAlbumTracks", [albumTracks(["t1", "t2"])])
+        r.output.script("slice.queue", [queued()])
+        try switchWhileHeld(r, [chill, inRainbows], op: "slice.libraryPlaylistTracks")
+
+        XCTAssertEqual(r.status.current()?.text, sourceChangedNothingPlayed)
+        XCTAssertEqual(r.data.sent("slice.libraryPlaylistTracks").count, 1, "the next page was read after the switch")
+        XCTAssertTrue(r.data.sent("slice.libraryAlbumTracks").isEmpty)
+        XCTAssertTrue(r.output.sent("slice.queue").isEmpty)
+        XCTAssertTrue(r.data.sent("slice.queue").isEmpty)
+    }
+
+    // MARK: - Up Next after SpanDAC skipped a song
+
+    /// The status SpanDAC answers after the play: `row` and `next_rows` are
+    /// indexes into the request MusicTUI sent, so a skipped song shifts nothing.
+    private func playingStatus(row: Int, title: String, nextRows: [Int]?, token: String) -> String {
+        let next = nextRows.map { ",\"next_rows\":[\($0.map(String.init).joined(separator: ","))]" } ?? ""
+        return """
+        {"ok":true,"op":"slice.status","status":{"playback":"playing","title":"\(title)","artist":"Radiohead",
+         "contract":3,"authorization":"authorized","capabilities":["slice.status","queue.jump"],
+         "row":\(row)\(next),"queue_token":"\(token)",
+         "queue":{"phase":"complete","requested":4,"present":4,"index":\(row)}}}
+        """
+    }
+
+    /// The mixed set with p1 (request index 2) skipped by SpanDAC, played.
+    private func playWithAMiddleSkip() -> (Rig, SourceAppClient) {
+        let r = rig(output: .source)
+        scriptMixedReads(r)
+        r.output.script("slice.queue", [queued(skippedUnavailable: 1, token: "tok-1")])
+        play(mixed, r)
+        return (r, SourceAppClient(path: "/nonexistent", transport: r.output.transport,
+                                   libraryTransport: r.output.transport))
+    }
+
+    /// With `next_rows`, Up Next is what SpanDAC vouched for, and a jump to a row
+    /// after the skipped song asks SpanDAC for THAT song's request index.
+    func testAJumpAfterAMiddleSkipTargetsTheSongShown() throws {
+        let (r, client) = playWithAMiddleSkip()
+        r.output.script("slice.status", [playingStatus(row: 0, title: "Tt1", nextRows: [1, 3, 4], token: "tok-1")])
+        let status = try client.control.status()
+        let play = try XCTUnwrap(r.routing.spanDACPlay())
+        let entries = spanDACQueueWindow(sent: play.rows, token: play.token, shuffled: play.shuffled,
+                                         status: status).entries
+        XCTAssertEqual(entries.map(\.name), ["Tt1", "Tt2", "Tp2", "Tt3"], "the skipped song is listed")
+        let target = try XCTUnwrap(entries.first { $0.name == "Tp2" })
+        r.output.script("slice.queueJump", [
+            #"{"ok":true,"op":"slice.queueJump","status":{"playback":"playing","title":"Tp2","artist":"Radiohead","contract":3,"authorization":"authorized","row":3,"next_rows":[4],"queue_token":"tok-1"},"queue_token":"tok-1"}"#,
+        ])
+        _ = try jumpSpanDACQueue(routing: r.routing, client: client, displayedToken: "tok-1", entryIndex: target.index)
+        let row = try XCTUnwrap(r.output.sent("slice.queueJump").first?["row"] as? Int)
+        XCTAssertEqual(play.rows[row].id, "p2", "the jump asked for another song than the one shown")
+    }
+
+    /// Without `next_rows`, the sent order would stand in for SpanDAC's, and it
+    /// still holds the song SpanDAC skipped: nothing after the playing row is
+    /// listed, so no jump can be aimed at a row SpanDAC never queued.
+    func testWithoutNextRowsAPlayWithASkipListsNothingToJumpTo() throws {
+        let (r, client) = playWithAMiddleSkip()
+        r.output.script("slice.status", [playingStatus(row: 0, title: "Tt1", nextRows: nil, token: "tok-1")])
+        let status = try client.control.status()
+        let play = try XCTUnwrap(r.routing.spanDACPlay())
+        let entries = spanDACQueueWindow(sent: play.rows, token: play.token, shuffled: play.shuffled,
+                                         status: status).entries
+        XCTAssertEqual(entries.map(\.name), ["Tt1"], "rows SpanDAC did not vouch for were listed")
+    }
+
+    // MARK: - The whole set's notice through the hand-off's confirmation
+
+    /// A mixed set with a playlist video left out and a song SpanDAC gave no
+    /// identity, through the real hand-off, the shell's player and a confirmer.
+    /// Music does not confirm at first (the warning), then confirms late (the
+    /// line comes back): both keep the video and the song.
+    func testTheSetsNoticeSurvivesAnUnconfirmedAndALateConfirmedHandoff() throws {
+        let r = rig(output: .musicApp)
+        var some = aliases
+        some["t3"] = nil   // SpanDAC gave this song no identity
+        r.data.script("slice.libraryAlbumTracks", [albumTracks(["t1", "t2"], aliases: some),
+                                                   albumTracks(["t3"], aliases: some)])
+        r.data.script("slice.libraryPlaylistTracks", [playlistTracks(["p1", "p2"], skippedVideos: 1, aliases: some)])
+        r.library.hits = handoffHits(allRows.filter { $0.id != "t3" })
+        let first = hex("1")
+        let confirm = HonestPlayingTests.ConfirmRig([PlayerIdentityReading(state: "paused", persistentID: "00000000000000A1",
+                                                                           requestedID: nil)],
+                                                    status: r.status)
+        confirm.onRead = { n in
+            if n == 9 { confirm.setReadings([PlayerIdentityReading(state: "playing", persistentID: first, requestedID: nil)]) }
+        }
+        let store = AppQueueStore()
+        store.confirmer = confirm.confirmer
+        let routing = r.routing
+        let handoff = PersistentIDHandoff(
+            library: r.library,
+            player: AppQueueHandoffPlayer(store: store,
+                                          playFirst: requestedHandoffPlayFirst(backend: r.counter.backend, appQueue: store)),
+            selfCheck: LibraryAliasSelfCheck(), currentStamp: { routing.musicTUISpanDACStamp })
+        let marks = MarkedSetStore()
+        for item in mixed { marks.toggle(item, source: .bridge) }
+        playMarkedSet(marks.snapshot, shuffle: false, backend: r.counter.backend, appQueue: store,
+                      routing: routing, actions: r.actions, status: r.status,
+                      spanDACData: { spanDACDataProvider(routing: routing) != nil },
+                      readers: refusingReaders(Counter()),
+                      spanDAC: MarkedSetSpanDAC(makeProvider: { spanDACDataProvider(routing: routing) },
+                                                handoff: handoff, sleep: { _ in }))
+        r.actions.waitUntilIdle()
+        let notice = "1 video skipped. 1 song isn't available to SpanDAC."
+        let line = "Playing '\(mixedName)' on MusicTUI. \(notice)"
+        XCTAssertEqual(r.status.current()?.text, line, "the play's own line")
+        XCTAssertEqual(store.read()?.tracks.count, 4)
+
+        confirm.runJobs()
+        XCTAssertEqual(confirm.posts, [playNotStartedWarning(mixedName) + " " + notice],
+                       "the unconfirmed warning dropped part of the set's notice")
+        XCTAssertNil(confirm.confirmer.currentTicket(), "the late playing read confirmed it")
+        XCTAssertEqual(r.status.current()?.text, line, "the late confirmation dropped part of the set's notice")
     }
 
     // MARK: - Marks never play from another data source
