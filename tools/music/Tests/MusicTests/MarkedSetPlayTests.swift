@@ -5,7 +5,9 @@ import XCTest
 /// Combined play, step 5: `p` / `s` with marks play the marked set through
 /// `refuseOpenDataPlayBeforeReading` and `routing.perform(.libraryPlay, ...)`,
 /// as ONE identity-addressed queue whose first entry is confirmed by identity.
-/// SpanDAC data refuses before any read. Nothing is ever written to Music.
+/// Marks from one data source refuse on the other before any read (the
+/// SpanDAC route itself is `MarkedSetSpanDACPlayTests`). Nothing is ever
+/// written to Music.
 ///
 /// Every AppleScript goes to a fake interpreter (a temp shell script); the
 /// mode file and caches are temp files; the confirmer is
@@ -100,10 +102,11 @@ final class MarkedSetPlayTests: XCTestCase {
         return s
     }
 
-    // MARK: - SpanDAC data refuses before reading
+    // MARK: - Marks from the other data source refuse before reading
 
-    func testMarkedPlayRefusesBeforeReadingOnSpanDACData() {
-        // Marks made on SpanDAC data: refused, nothing read, nothing run.
+    func testMarkedPlayRefusesBeforeReadingAcrossDataSources() {
+        // Marks made on SpanDAC data, with MusicTUI's own data now (no SpanDAC
+        // provider): refused, nothing read, nothing run.
         let counter = AppleScriptCallCounter()
         let r = readers()
         let status = StatusStore()
@@ -115,7 +118,7 @@ final class MarkedSetPlayTests: XCTestCase {
                       routing: musicAppRouting(), actions: actions, status: status, spanDACData: { false },
                       readers: r.readers)
         actions.waitUntilIdle()
-        XCTAssertEqual(status.current()?.text, markedPlayNeedsMusicTUIData)
+        XCTAssertEqual(status.current()?.text, LibraryProvenance.musicAppSelectedBridgeList)
         XCTAssertEqual(r.reads, 0)
         XCTAssertEqual(counter.callCount, 0)
         XCTAssertNil(store.read())
@@ -147,7 +150,7 @@ final class MarkedSetPlayTests: XCTestCase {
         let before = counter.callCount
         XCTAssertEqual(s.handle(.char("p")), .push(.nowPlaying))
         actions3.waitUntilIdle()
-        XCTAssertEqual(status3.current()?.text, markedPlayNeedsMusicTUIData)
+        XCTAssertEqual(status3.current()?.text, LibraryProvenance.musicAppSelectedBridgeList)
         XCTAssertEqual(r3.reads, 0)
         XCTAssertEqual(counter.callCount, before, "the marked play ran no AppleScript")
         XCTAssertNil(store.read())
