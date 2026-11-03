@@ -376,6 +376,24 @@ final class MarkedSetPlayTests: XCTestCase {
                            readings: [PlayerIdentityReading(state: "playing", persistentID: "00000000000000B1",
                                                             requestedID: nil)])
         XCTAssertEqual(p.store.read()?.tracks.count, 2)
+        XCTAssertEqual(p.status.current()?.text, "Playing 'Chill' on MusicTUI. 1 repeated song plays once.",
+                       "B1 three times is one repeated song, not the two entries removed")
+    }
+
+    /// Chill alone: B1 and B2 each twice, B3 once.
+    private func repeatTwoSongsReaders() -> CountingReaders {
+        let r = readers()
+        r.playlists[Self.chillID] = [entry("00000000000000B1", "Teardrop"), entry("00000000000000B2", "Angel"),
+                                     entry("00000000000000B1", "Teardrop"), entry("00000000000000B2", "Angel"),
+                                     entry("00000000000000B3", "Inertia Creeps")]
+        return r
+    }
+
+    func testTwoDifferentSongsEachRepeatedAreSaidInThePluralWhenConfirmed() {
+        let p = playMarked(insideItems, repeatTwoSongsReaders(),
+                           readings: [PlayerIdentityReading(state: "playing", persistentID: "00000000000000B1",
+                                                            requestedID: nil)])
+        XCTAssertEqual(p.store.read()?.tracks.count, 3)
         XCTAssertEqual(p.status.current()?.text, "Playing 'Chill' on MusicTUI. 2 repeated songs play once.")
     }
 
@@ -393,8 +411,8 @@ final class MarkedSetPlayTests: XCTestCase {
         // Inside one playlist, in the plural.
         let inside = playMarked(insideItems, repeatInsideReaders(), readings: unconfirmed, lateAt: 9,
                                 first: "00000000000000B1")
-        XCTAssertEqual(inside.rig.posts.first, playNotStartedWarning("Chill") + " 2 repeated songs play once.")
-        XCTAssertEqual(inside.status.current()?.text, "Playing 'Chill' on MusicTUI. 2 repeated songs play once.")
+        XCTAssertEqual(inside.rig.posts.first, playNotStartedWarning("Chill") + " 1 repeated song plays once.")
+        XCTAssertEqual(inside.status.current()?.text, "Playing 'Chill' on MusicTUI. 1 repeated song plays once.")
     }
 
     /// The sentence is last, after the availability sentence, in the warning

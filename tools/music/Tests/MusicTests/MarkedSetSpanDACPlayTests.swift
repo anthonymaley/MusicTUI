@@ -1031,7 +1031,32 @@ final class MarkedSetSpanDACPlayTests: XCTestCase {
         play([chill], r)
 
         XCTAssertEqual(r.output.sent("slice.queue").first?["library_ids"] as? [String], ["p1", "p2"])
-        XCTAssertEqual(r.status.current()?.text, "Playing 'Chill' on SpanDAC \u{2014} 2 tracks. 2 repeated songs play once.")
+        XCTAssertEqual(r.status.current()?.text, "Playing 'Chill' on SpanDAC \u{2014} 2 tracks. 1 repeated song plays once.",
+                       "p1 three times is one repeated song, not the two entries removed")
+    }
+
+    /// [A, B, A, A] with a video and B not playable: the "N of M" figures are
+    /// those of the two songs sent, whatever the wording counts as repeated.
+    func testARepeatedSongLeavesTheSpanDACNOfMArithmeticAsItWas() {
+        let r = rig(output: .source)
+        r.data.script("slice.libraryPlaylistTracks", [playlistTracks(["p1", "p2", "p1", "p1"], skippedVideos: 1)])
+        r.output.script("slice.queue", [queued(skippedUnavailable: 1)])
+        play([chill], r)
+
+        XCTAssertEqual(r.output.sent("slice.queue").first?["library_ids"] as? [String], ["p1", "p2"])
+        XCTAssertEqual(r.status.current()?.text,
+                       "Playing 1 of 3 from 'Chill' on SpanDAC: 1 video skipped. 1 song isn't available to SpanDAC. "
+                           + "1 repeated song plays once.")
+    }
+
+    func testOnASpanDACOutputTwoDifferentSongsEachRepeatedAreSaidInThePlural() {
+        let r = rig(output: .source)
+        r.data.script("slice.libraryPlaylistTracks", [playlistTracks(["p1", "p2", "p1", "p2", "t3"])])
+        r.output.script("slice.queue", [queued()])
+        play([chill], r)
+
+        XCTAssertEqual(r.output.sent("slice.queue").first?["library_ids"] as? [String], ["p1", "p2", "t3"])
+        XCTAssertEqual(r.status.current()?.text, "Playing 'Chill' on SpanDAC \u{2014} 3 tracks. 2 repeated songs play once.")
     }
 
     func testOnASpanDACOutputOneRepeatIsSaidInTheSingular() {
@@ -1064,6 +1089,16 @@ final class MarkedSetSpanDACPlayTests: XCTestCase {
         play([chill], r)
 
         XCTAssertEqual(r.player.queues.first?.tracks.map { persistentIDOfQueueEntry($0.index) }, ["3", "4"].map(hex))
+        XCTAssertEqual(r.status.current()?.text, "Playing 'Chill' on MusicTUI. 1 repeated song plays once.")
+    }
+
+    func testOnTheMusicTUIOutputTwoDifferentSongsEachRepeatedAreSaidInThePlural() {
+        let r = rig(output: .musicApp)
+        r.data.script("slice.libraryPlaylistTracks", [playlistTracks(["p1", "p2", "p1", "p2", "t3"], aliases: aliases)])
+        r.library.hits = handoffHits(allRows)
+        play([chill], r)
+
+        XCTAssertEqual(r.player.queues.first?.tracks.map { persistentIDOfQueueEntry($0.index) }, ["3", "4", "5"].map(hex))
         XCTAssertEqual(r.status.current()?.text, "Playing 'Chill' on MusicTUI. 2 repeated songs play once.")
     }
 
@@ -1122,8 +1157,8 @@ final class MarkedSetSpanDACPlayTests: XCTestCase {
         scriptRepeatInsideChill(q, aliases: aliases)
         q.library.hits = handoffHits(allRows)
         let inside = handoffWithConfirmer([chill], q, first: hex("3"))
-        XCTAssertEqual(inside.confirm.posts, [playNotStartedWarning("Chill") + " 2 repeated songs play once."])
-        XCTAssertEqual(q.status.current()?.text, "Playing 'Chill' on MusicTUI. 2 repeated songs play once.")
+        XCTAssertEqual(inside.confirm.posts, [playNotStartedWarning("Chill") + " 1 repeated song plays once."])
+        XCTAssertEqual(q.status.current()?.text, "Playing 'Chill' on MusicTUI. 1 repeated song plays once.")
     }
 
     // MARK: - Marks never play from another data source

@@ -216,22 +216,58 @@ final class MarkedSetQueueTests: XCTestCase {
                        "Playing 5 of 6 \u{2014} the rest aren't available yet. 1 repeated song plays once.")
     }
 
-    /// A song repeated inside one marked playlist: every entry after the first
-    /// is counted, one sentence, plural form.
-    func testARepeatInsideOnePlaylistIsCountedAndSaid() throws {
+    /// A song repeated inside one marked playlist: the sentence counts the
+    /// distinct songs that repeated, not the entries removed. [A, B, A, A]
+    /// drops two entries but only A repeated; [A, B, A, B, A] drops three
+    /// entries and two songs repeated.
+    func testARepeatInsideOnePlaylistCountsTheSongsThatRepeatedNotTheEntriesRemoved() throws {
         let r = Readers()
+        r.playlists[Self.chillID] = [entry("00000000000000B1", "Teardrop"), entry("00000000000000B2", "Angel"),
+                                     entry("00000000000000B1", "Teardrop"), entry("00000000000000B1", "Teardrop")]
+        let one = try markedSetPlan([.playlist(id: Self.chillID, name: "Chill")], shuffle: false, readers: r.readers)
+        XCTAssertEqual(one.queue.tracks.map { persistentIDOfQueueEntry($0.index) },
+                       ["00000000000000B1", "00000000000000B2"])
+        XCTAssertEqual(one.matched, 2, "the removed entries leave the matched count, as before")
+        XCTAssertEqual(one.notice, "1 repeated song plays once.", "one song repeated three times is one repeated song")
+        XCTAssertEqual(one.playingLine, "Playing 'Chill' on MusicTUI. 1 repeated song plays once.")
+
         r.playlists[Self.chillID] = [entry("00000000000000B1", "Teardrop"), entry("00000000000000B2", "Angel"),
                                      entry("00000000000000B1", "Teardrop"), entry("00000000000000B2", "Angel"),
                                      entry("00000000000000B1", "Teardrop")]
-        let plan = try markedSetPlan([.playlist(id: Self.chillID, name: "Chill")], shuffle: false, readers: r.readers)
-        XCTAssertEqual(plan.queue.tracks.map { persistentIDOfQueueEntry($0.index) },
+        let two = try markedSetPlan([.playlist(id: Self.chillID, name: "Chill")], shuffle: false, readers: r.readers)
+        XCTAssertEqual(two.queue.tracks.map { persistentIDOfQueueEntry($0.index) },
                        ["00000000000000B1", "00000000000000B2"])
-        XCTAssertEqual(plan.notice, "3 repeated songs play once.")
-        XCTAssertEqual(plan.playingLine, "Playing 'Chill' on MusicTUI. 3 repeated songs play once.")
+        XCTAssertEqual(two.matched, 2)
+        XCTAssertEqual(two.notice, "2 repeated songs play once.")
+        XCTAssertEqual(two.playingLine, "Playing 'Chill' on MusicTUI. 2 repeated songs play once.")
 
         r.playlists[Self.chillID] = [entry("00000000000000B1", "Teardrop"), entry("00000000000000B1", "Teardrop")]
-        let one = try markedSetPlan([.playlist(id: Self.chillID, name: "Chill")], shuffle: false, readers: r.readers)
-        XCTAssertEqual(one.notice, "1 repeated song plays once.")
+        let pair = try markedSetPlan([.playlist(id: Self.chillID, name: "Chill")], shuffle: false, readers: r.readers)
+        XCTAssertEqual(pair.notice, "1 repeated song plays once.")
+    }
+
+    /// Across an album and a playlist: a song the playlist repeats is one
+    /// repeated song however many entries went, and a partly available album
+    /// keeps its "N of M" arithmetic.
+    func testARepeatAcrossItemsCountsSongsAndKeepsTheMatchedArithmetic() throws {
+        let r = mixedRig()
+        r.albums["Moon Safari"] = AlbumResolution(tracks: [entry("00000000000000A1", "La Femme d'Argent"),
+                                                           entry("00000000000000A2", "Sexy Boy")], matched: 3)
+        r.playlists[Self.chillID] = [entry("00000000000000A2", "Sexy Boy"), entry("00000000000000B1", "Teardrop"),
+                                     entry("00000000000000A2", "Sexy Boy")]
+        let plan = try markedSetPlan(mixed, shuffle: false, readers: r.readers)
+        XCTAssertEqual(plan.queue.tracks.count, 4, "A1, A2, B1, C1")
+        XCTAssertEqual(plan.matched, 5, "3 + 3 + 1, less the two removed entries")
+        XCTAssertEqual(plan.notice,
+                       "4 of 5 are queued \u{2014} the rest aren't available yet. 1 repeated song plays once.")
+
+        // Two different songs, each repeated.
+        r.playlists[Self.chillID] = [entry("00000000000000A1", "La Femme d'Argent"), entry("00000000000000A2", "Sexy Boy"),
+                                     entry("00000000000000B1", "Teardrop")]
+        let two = try markedSetPlan(mixed, shuffle: false, readers: r.readers)
+        XCTAssertEqual(two.matched, 5)
+        XCTAssertEqual(two.notice,
+                       "4 of 5 are queued \u{2014} the rest aren't available yet. 2 repeated songs play once.")
     }
 
     /// Nothing repeated: the notice and the line are what they were.
