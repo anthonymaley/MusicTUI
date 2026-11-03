@@ -652,13 +652,7 @@ store: StationStore, catalog: RadioCatalog?,
             if freshResolve.stamp != stamp { staleDrops.append("lookup") }
             else {
                 // A lookup with no art keeps art the station page already gave.
-                var resolved = freshResolve.station
-                if resolved.artworkURL == nil,
-                   let saved = store.favorites().first(where: { $0.id == resolved.id })?.artworkURL {
-                    resolved = Station(id: resolved.id, name: resolved.name, url: resolved.url,
-                                       isLive: resolved.isLive, artworkURL: saved)
-                }
-                try? store.add(resolved)
+                _ = try? store.mergeResolved(freshResolve.station)
                 message = "★ \(freshResolve.station.name)"
                 changed = true
             }

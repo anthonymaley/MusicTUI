@@ -69,6 +69,25 @@ final class StationStore {
         return true
     }
 
+    /// Test seam: called between reading the saved favourite and writing the
+    /// merged one. nil in shipped code.
+    var mergeWindowHook: (() -> Void)?
+
+    /// RED: today's two-step behaviour, moved here unchanged — read the saved
+    /// art under one lock hold, then `add` under another.
+    @discardableResult
+    func mergeResolved(_ resolved: Station) throws -> Bool {
+        var merged = resolved
+        if resolved.artworkURL == nil,
+           let saved = favorites().first(where: { $0.id == resolved.id })?.artworkURL {
+            merged = Station(id: resolved.id, name: resolved.name, url: resolved.url,
+                             isLive: resolved.isLive, artworkURL: saved)
+        }
+        mergeWindowHook?()
+        try add(merged)
+        return true
+    }
+
     func remove(id: String) throws {
         lock.lock(); defer { lock.unlock() }
         try writeLocked(loadLocked().filter { $0.id != id })
