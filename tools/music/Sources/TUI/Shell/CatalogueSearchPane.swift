@@ -22,6 +22,17 @@ final class CatalogueSearchPane {
     struct Line: Equatable {
         let text: String
         let style: LineStyle
+
+        /// Every line's text loses its C0/C1 control scalars (ESC, BEL, DEL,
+        /// CSI...) here, the one place all pane text passes: titles, credits
+        /// and notes come from Apple through SpanDAC, and a control scalar
+        /// reaching the terminal could move the cursor or rewrite the screen.
+        init(text: String, style: LineStyle) {
+            self.text = String(String.UnicodeScalarView(text.unicodeScalars.filter {
+                !($0.value < 0x20 || (0x7F...0x9F).contains($0.value))
+            }))
+            self.style = style
+        }
     }
 
     static let boxPrefix = "Search Apple Music: "
