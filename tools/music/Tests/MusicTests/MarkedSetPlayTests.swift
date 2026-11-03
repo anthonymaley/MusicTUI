@@ -40,8 +40,18 @@ final class MarkedSetPlayTests: XCTestCase {
         var readers: MarkedSetReaders {
             MarkedSetReaders(
                 album: { title, _ in self.bump(); return self.albums[title] ?? .readFailure },
-                playlistsNamed: { name in self.bump(); return self.playlists[name] == nil ? 0 : 1 },
-                playlist: { name in self.bump(); return self.playlists[name] })
+                playlistID: { name in
+                    self.bump()
+                    return self.playlists[name] == nil ? .notFound : .unique(persistentID: Self.pid(name))
+                },
+                playlist: { pid in
+                    self.bump()
+                    return self.playlists.first { Self.pid($0.key) == pid }?.value
+                })
+        }
+        /// A playlist's own persistent ID in this fake: stable per name.
+        static func pid(_ name: String) -> String {
+            name == "Chill" ? "00000000000000F1" : "00000000000000F2"
         }
     }
 
@@ -313,6 +323,8 @@ final class MarkedSetPlayTests: XCTestCase {
         let backend: AppleScriptBackend
         private let logPath: String
         private static let separator = "----8<----"
+        /// The persistent ID the name check answers for "Chill".
+        static let chillID = "00000000000000F1"
 
         init(playlistReply: String, albumReply: String) {
             let dir = FileManager.default.temporaryDirectory
@@ -328,9 +340,9 @@ final class MarkedSetPlayTests: XCTestCase {
                 printf '%s\\n%s\\n' "$2" '\(Self.separator)' >> "\(logPath)"
                 case "$2" in
                   *"play item"*) exit 0 ;;
-                  *"every playlist whose name is"*) echo 1 ;;
+                  *"every playlist whose name is"*) printf '1\\n\(Self.chillID)\\n' ;;
                   *"artist is"*) cat "\(albumPath)" ;;
-                  *"persistent ID of every track of playlist"*) cat "\(playlistPath)" ;;
+                  *"playlist whose persistent ID is"*) cat "\(playlistPath)" ;;
                 esac
                 exit 0
                 """
@@ -373,7 +385,9 @@ final class MarkedSetPlayTests: XCTestCase {
         XCTAssertEqual(store.read()?.tracks.count, 4, "the set played: \(status.current()?.text ?? "")")
         let scripts = music.scripts
         XCTAssertTrue(scripts.contains { $0.contains("every playlist whose name is \"Chill\"") }, "the name check ran")
-        XCTAssertTrue(scripts.contains { $0.contains("persistent ID of every track of playlist \"Chill\"") })
+        XCTAssertTrue(scripts.contains { $0.contains("first playlist whose persistent ID is \"\(ReadOnlyMusic.chillID)\"") },
+                      "the track read is addressed by the ID the name check resolved")
+        XCTAssertFalse(scripts.contains { $0.contains("of playlist \"Chill\"") }, "no read addressed by name")
         XCTAssertEqual(scripts.filter { $0.contains("play item") }.count, 2, "one play per keypress")
         for script in scripts {
             let lower = script.lowercased()

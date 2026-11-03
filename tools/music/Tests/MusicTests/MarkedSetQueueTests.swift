@@ -16,6 +16,9 @@ final class MarkedSetQueueTests: XCTestCase {
         var albums: [String: AlbumResolution] = [:]
         var playlists: [String: [TrackListEntry]?] = [:]
         var playlistCounts: [String: Int?] = [:]
+        /// Each playlist's own persistent ID, by name: what the name check
+        /// resolves, and the ONLY key the track read is addressed by.
+        var playlistIDs: [String: String] = ["Chill": "00000000000000F1"]
         private(set) var log: [String] = []
 
         var readers: MarkedSetReaders {
@@ -24,13 +27,19 @@ final class MarkedSetQueueTests: XCTestCase {
                     self.log.append("album \(title) / \(artist)")
                     return self.albums[title] ?? AlbumResolution(tracks: [], matched: 0)
                 },
-                playlistsNamed: { name in
+                playlistID: { name in
                     self.log.append("count \(name)")
-                    if let c = self.playlistCounts[name] { return c }
-                    return self.playlists[name] == nil ? 0 : 1
+                    if let c = self.playlistCounts[name] {
+                        guard let c else { return nil }
+                        if c == 0 { return .notFound }
+                        if c > 1 { return .duplicated(count: c) }
+                    }
+                    guard self.playlists[name] != nil, let pid = self.playlistIDs[name] else { return .notFound }
+                    return .unique(persistentID: pid)
                 },
-                playlist: { name in
-                    self.log.append("playlist \(name)")
+                playlist: { pid in
+                    self.log.append("playlist \(pid)")
+                    guard let name = self.playlistIDs.first(where: { $0.value == pid })?.key else { return nil }
                     return self.playlists[name] ?? nil
                 })
         }
@@ -58,8 +67,9 @@ final class MarkedSetQueueTests: XCTestCase {
                         "00000000000000C1"])
         XCTAssertEqual(q.currentIndex, 1)
         XCTAssertEqual(q.contextLabel, "2 albums and 1 playlist")
-        XCTAssertEqual(r.log, ["album Moon Safari / Air", "count Chill", "playlist Chill",
-                               "album Mezzanine / Massive Attack"], "read in mark order")
+        XCTAssertEqual(r.log, ["album Moon Safari / Air", "count Chill", "playlist 00000000000000F1",
+                               "album Mezzanine / Massive Attack"],
+                       "read in mark order, the playlist by the persistent ID its name check resolved")
     }
 
     func testASingleMarkIsLabelledByItsOwnName() throws {
@@ -110,7 +120,7 @@ final class MarkedSetQueueTests: XCTestCase {
         XCTAssertThrowsError(try markedSetQueue(mixed, shuffle: false, readers: countFailed.readers)) { error in
             XCTAssertTrue(((error as? ActionError)?.message ?? "").contains("'Chill'"))
         }
-        XCTAssertFalse(countFailed.log.contains("playlist Chill"), "a failed name check reads no tracks")
+        XCTAssertFalse(countFailed.log.contains { $0.hasPrefix("playlist ") }, "a failed name check reads no tracks")
     }
 
     func testADuplicatedPlaylistNameRefuses() {
@@ -120,7 +130,14 @@ final class MarkedSetQueueTests: XCTestCase {
             let message = (error as? ActionError)?.message ?? ""
             XCTAssertTrue(message.contains("'Chill'"), message)
         }
-        XCTAssertFalse(r.log.contains("playlist Chill"), "never guesses which of the two to read")
+        XCTAssertFalse(r.log.contains { $0.hasPrefix("playlist ") }, "never guesses which of the two to read")
+
+        let gone = mixedRig()
+        gone.playlistCounts["Chill"] = 0
+        XCTAssertThrowsError(try markedSetQueue(mixed, shuffle: false, readers: gone.readers)) { error in
+            XCTAssertTrue(((error as? ActionError)?.message ?? "").contains("Couldn't find the playlist 'Chill'"))
+        }
+        XCTAssertFalse(gone.log.contains { $0.hasPrefix("playlist ") })
     }
 
     // MARK: - A partly available album keeps its skipped count
@@ -164,14 +181,32 @@ final class MarkedSetQueueTests: XCTestCase {
                        q.tracks.map(\.index).sorted())
     }
 
-    func testTheNameCheckScriptOnlyReads() {
-        let script = playlistsNamedScript("Chill \"Mix\"")
+    func testTheNameCheckScriptOnlyReadsAndResolvesTheOnePlaylistsID() {
+        let script = playlistIdentityScript("Chill \"Mix\"")
         XCTAssertTrue(script.contains("every playlist whose name is \"Chill \\\"Mix\\\"\""), script)
+        XCTAssertTrue(script.contains("persistent ID of every playlist whose name is \"Chill \\\"Mix\\\"\""), script)
+        XCTAssertTrue(script.contains("as list"), "one match can answer a bare value: \(script)")
         for word in ["make new", "duplicate", "delete", "set name"] {
             XCTAssertFalse(script.contains(word), word)
         }
-        XCTAssertEqual(parsePlaylistsNamedCount("2\n"), 2)
-        XCTAssertNil(parsePlaylistsNamedCount(""))
-        XCTAssertNil(parsePlaylistsNamedCount("two"))
+        for word in ["before", "after", "active", "left"] {
+            XCTAssertNil(script.range(of: "set \(word) to"), "reserved word as a variable: \(word)")
+        }
+        // A hostile name stays inside the literal.
+        let hostile = "x\" & (do shell script \"id\") & \""
+        XCTAssertFalse(playlistIdentityScript(hostile).contains("\"\(hostile)\""))
+        XCTAssertTrue(playlistIdentityScript(hostile).contains(escapeAppleScriptString(hostile)))
+
+        XCTAssertEqual(parsePlaylistIdentity("1\n00000000000000F1\n"), .unique(persistentID: "00000000000000F1"))
+        XCTAssertEqual(parsePlaylistIdentity("1\n00000000000000f1"), .unique(persistentID: "00000000000000F1"))
+        XCTAssertEqual(parsePlaylistIdentity("0\n"), .notFound)
+        XCTAssertEqual(parsePlaylistIdentity("2\n"), .duplicated(count: 2))
+        XCTAssertNil(parsePlaylistIdentity(""))
+        XCTAssertNil(parsePlaylistIdentity("two"))
+        XCTAssertNil(parsePlaylistIdentity("1\n"), "one playlist and no ID")
+        XCTAssertNil(parsePlaylistIdentity("1\nnot-an-id"))
+        XCTAssertNil(parsePlaylistIdentity("1\n00000000000000F1\n00000000000000F2"))
+        XCTAssertNil(parsePlaylistIdentity("2\n00000000000000F1"))
+        XCTAssertNil(parsePlaylistIdentity("-1\n"))
     }
 }

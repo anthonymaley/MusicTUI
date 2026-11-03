@@ -16,7 +16,7 @@ final class PersistentIDReadTests: XCTestCase {
         let dir: String
         let scriptPath: String
         let logPath: String
-        init(strictReply: String, otherReply: String? = nil, exitCode: Int32 = 0) {
+        init(strictReply: String, otherReply: String? = nil, exitCode: Int32 = 0, stderr: String = "") {
             dir = NSTemporaryDirectory() + "pid-read-\(UUID().uuidString)"
             try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
             scriptPath = dir + "/fake.sh"
@@ -28,7 +28,7 @@ final class PersistentIDReadTests: XCTestCase {
             let body = """
                 #!/bin/sh
                 printf '%s\\n=====\\n' "$2" >> "\(logPath)"
-                if [ \(exitCode) -ne 0 ]; then exit \(exitCode); fi
+                if [ \(exitCode) -ne 0 ]; then printf '%s' '\(stderr)' >&2; exit \(exitCode); fi
                 case "$2" in
                   *"artist is"*) cat "\(strictPath)" ;;
                   *) cat "\(otherPath)" ;;
@@ -56,12 +56,14 @@ final class PersistentIDReadTests: XCTestCase {
 
     // MARK: - playlist read
 
+    private let chillID = "00000000000000F1"
+
     func testPlaylistIDReadIsOneBulkScript() {
-        let script = playlistTrackIDsScript(playlist: "Chill")
-        // Four bulk column reads over the playlist's tracks.
-        XCTAssertEqual(script.components(separatedBy: "of every track of playlist").count - 1, 4,
-                       "persistent ID, name, artist and album: one bulk get each")
-        XCTAssertTrue(script.contains("persistent ID of every track of playlist"))
+        let script = playlistTrackIDsScript(playlistID: chillID)
+        // Four bulk column reads over the playlist's tracks, and the identity re-read.
+        XCTAssertEqual(script.components(separatedBy: "of every track of pl\n").count - 1, 5,
+                       "persistent ID, name, artist and album: one bulk get each, then the IDs again: \(script)")
+        XCTAssertTrue(script.contains("persistent ID of every track of pl"))
         // `tracks 1 thru n` answers a bare value for a one-track playlist (probed live), so it is not used.
         XCTAssertFalse(script.contains("thru"))
         // No per-track Apple Events: no iteration over tracks, no per-track property gets.
@@ -73,6 +75,51 @@ final class PersistentIDReadTests: XCTestCase {
         for line in script.components(separatedBy: "\n") where line.contains("repeat with") {
             XCTAssertTrue(line.contains("repeat with i from 1 to total"), "unexpected loop: \(line)")
         }
+        for word in ["make new", "duplicate", "delete", "set name"] {
+            XCTAssertFalse(script.contains(word), word)
+        }
+        for word in ["before", "after", "active", "left"] {
+            XCTAssertNil(script.range(of: "set \(word) to"), "reserved word as a variable: \(word)")
+        }
+    }
+
+    /// The four column reads are four Apple Events: the IDs are read again at
+    /// the end and must equal the first read, or the script errors, so a
+    /// playlist edited between the gets never yields a reply.
+    func testPlaylistIDReadRereadsTheIdentitiesAndComparesThem() {
+        let script = playlistTrackIDsScript(playlistID: chillID)
+        let lines = script.components(separatedBy: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
+        let first = lines.firstIndex(of: "set pids to persistent ID of every track of pl")
+        let again = lines.firstIndex(of: "set recheck to persistent ID of every track of pl")
+        XCTAssertNotNil(first, script)
+        XCTAssertNotNil(again, script)
+        if let first, let again {
+            XCTAssertGreaterThan(again, first)
+            for column in ["ns", "ars", "als"] {
+                let at = lines.firstIndex { $0.hasPrefix("set \(column) to ") && $0.hasSuffix("of every track of pl") }
+                XCTAssertNotNil(at, column)
+                if let at { XCTAssertLessThan(at, again, "\(column) is read inside the bracket") }
+            }
+        }
+        // One track can answer a bare value, not a list: both reads are coerced
+        // to lists, so a one-track playlist compares item to item.
+        XCTAssertTrue(lines.contains("set pids to pids as list"), script)
+        XCTAssertTrue(lines.contains("set recheck to recheck as list"), script)
+        XCTAssertTrue(lines.contains("if recheck is not pids then error \"\(playlistIDsChangedError)\" number 1002"),
+                      script)
+        XCTAssertTrue(script.contains("considering case"), "IDs compare exactly, never case-folded")
+    }
+
+    /// The read is addressed by the playlist's own persistent ID, the one the
+    /// name check resolved, so a playlist renamed or duplicated in between is
+    /// never read by mistake.
+    func testPlaylistIDReadIsAddressedByThePlaylistsOwnID() {
+        let script = playlistTrackIDsScript(playlistID: chillID)
+        XCTAssertTrue(script.contains("set pl to (first playlist whose persistent ID is \"\(chillID)\")"), script)
+        XCTAssertFalse(script.contains("playlist \"Chill\""))
+        XCTAssertFalse(script.contains("whose name is"), "no name addressing in the read")
+        XCTAssertEqual(script.components(separatedBy: "whose persistent ID is").count - 1, 1,
+                       "the playlist is resolved once, then every read goes through that reference")
     }
 
     func testPlaylistIDParseKeepsOrder() throws {
@@ -121,29 +168,38 @@ final class PersistentIDReadTests: XCTestCase {
     func testFetchPlaylistTrackIDsReturnsRowsAndFailsClosedOnTornReplyOrScriptError() throws {
         let good = playlistRow("0123456789ABCDEF", "N", "A", "B")
         let ok = FakeInterpreter(strictReply: "1\n" + good + "\n")
-        let rows = try XCTUnwrap(fetchPlaylistTrackIDs(backend: ok.backend, playlist: "Chill"))
+        let rows = try XCTUnwrap(fetchPlaylistTrackIDs(backend: ok.backend, playlistID: chillID))
         XCTAssertEqual(rows.map(\.name), ["N"])
         XCTAssertEqual(ok.scripts.count, 1, "one script run for the whole playlist")
+        XCTAssertTrue(ok.scripts.first?.contains("whose persistent ID is \"\(chillID)\"") ?? false)
 
         let torn = FakeInterpreter(strictReply: "2\n" + good + "\n")
-        XCTAssertNil(fetchPlaylistTrackIDs(backend: torn.backend, playlist: "Chill"))
+        XCTAssertNil(fetchPlaylistTrackIDs(backend: torn.backend, playlistID: chillID))
 
         let failing = FakeInterpreter(strictReply: "", exitCode: 1)
-        XCTAssertNil(fetchPlaylistTrackIDs(backend: failing.backend, playlist: "Chill"))
+        XCTAssertNil(fetchPlaylistTrackIDs(backend: failing.backend, playlistID: chillID))
     }
 
-    func testPlaylistNameIsEscaped() {
-        let name = "He said \"hi\" \\ then left"
-        let script = playlistTrackIDsScript(playlist: name)
-        let esc = escapeAppleScriptString(name)
-        XCTAssertNotEqual(esc, name)
-        XCTAssertTrue(script.contains("playlist \"\(esc)\""))
-        XCTAssertFalse(script.contains("playlist \"\(name)\""), "the raw name reached the script")
-        // A name built to close the string and inject a statement stays inside the literal.
-        let hostile = "x\" & (do shell script \"id\") & \""
-        let hostileScript = playlistTrackIDsScript(playlist: hostile)
-        XCTAssertFalse(hostileScript.contains("playlist \"\(hostile)\""))
-        XCTAssertTrue(hostileScript.contains(escapeAppleScriptString(hostile)))
+    func testTheComparisonErrorFailsClosed() {
+        // The script's own error, as osascript reports it: on stderr, exit 1.
+        let changed = FakeInterpreter(strictReply: "", exitCode: 1,
+                                      stderr: "execution error: \(playlistIDsChangedError) (1002)")
+        XCTAssertNil(fetchPlaylistTrackIDs(backend: changed.backend, playlistID: chillID))
+        // The same text reaching stdout is never a reply either.
+        XCTAssertNil(parsePlaylistTrackIDs(playlistIDsChangedError))
+        XCTAssertNil(parsePlaylistTrackIDs("execution error: \(playlistIDsChangedError) (1002)\n"))
+        let echoed = FakeInterpreter(strictReply: playlistIDsChangedError + "\n")
+        XCTAssertNil(fetchPlaylistTrackIDs(backend: echoed.backend, playlistID: chillID))
+    }
+
+    func testAnIDThatIsNotAPersistentIDNeverReachesAScript() {
+        let fake = FakeInterpreter(strictReply: "0\n")
+        for bad in ["", "Chill", "0123456789ABCDE", "0123456789ABCDEFA", "x\" & (do shell script \"id\") & \""] {
+            XCTAssertNil(fetchPlaylistTrackIDs(backend: fake.backend, playlistID: bad), bad)
+        }
+        XCTAssertEqual(fake.scripts, [], "a malformed playlist ID ran a script")
+        // A valid one is escaped all the same.
+        XCTAssertTrue(playlistTrackIDsScript(playlistID: chillID).contains("\"\(escapeAppleScriptString(chillID))\""))
     }
 
     // MARK: - album read
