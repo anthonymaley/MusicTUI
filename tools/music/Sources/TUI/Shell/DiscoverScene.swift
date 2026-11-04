@@ -1860,9 +1860,9 @@ extension DiscoverScene {
             return .redraw
         case .ask(let prompt, let requestID)?:
             let seams = dj
-            startDJRequest(requestID: requestID) { live, stamp in
+            startDJRequest(requestID: requestID) { live, stamp, report in
                 let reading = Self.blockingRead(seams.reader, prompt, timeout: seams.readerTimeout)
-                return self.djOutcome(for: reading, seams: seams, stamp: stamp, requestID: requestID, live: live)
+                return self.djOutcome(for: reading, seams: seams, stamp: stamp, report: report, live: live)
             }
             return .redraw
         case .choose(let hit, let requestID)?:
@@ -1872,9 +1872,9 @@ extension DiscoverScene {
                 return .redraw
             }
             let seams = dj
-            startDJRequest(requestID: requestID) { live, stamp in
+            startDJRequest(requestID: requestID) { live, stamp, report in
                 self.djArtistMixOutcome(name: hit.title, chosen: hit, seams: seams, stamp: stamp,
-                                        requestID: requestID, live: live)
+                                        report: report, live: live)
             }
             return .redraw
         case .play(let plan)?:
@@ -1904,7 +1904,8 @@ extension DiscoverScene {
     /// the session and stamp of now. A nil answer is a job that found itself
     /// stale: nothing is delivered for it.
     private func startDJRequest(requestID: Int,
-                                _ work: @escaping (_ live: @escaping () -> Bool, _ stamp: DJStamp) -> DJOutcome?) {
+                                _ work: @escaping (_ live: @escaping () -> Bool, _ stamp: DJStamp,
+                                                   _ report: @escaping (DJOutcome) -> Void) -> DJOutcome?) {
         let session = djSession
         let stamp = currentDJStamp()
         djAskedStamp = stamp
@@ -1912,22 +1913,32 @@ extension DiscoverScene {
         DispatchQueue.global().async { [weak self] in
             guard let self else { return }
             let live: () -> Bool = { self.djIsLive(session, requestID, stamp) }
-            guard let outcome = work(live, stamp), live() else { return }
-            self.djDeliver(session: session, requestID: requestID, outcome)
+            // Everything this job delivers, progress included, goes out under the
+            // session and request it began in, never under whatever is current.
+            let report: (DJOutcome) -> Void = { self.djDeliver(session: session, requestID: requestID, $0) }
+            guard let outcome = work(live, stamp, report), live() else { return }
+            report(outcome)
         }
     }
 
-    /// One answer into the slot: only a request at least as new as the one
-    /// already there takes it.
+    /// One answer into the slot. Only the request the box is waiting on takes
+    /// it, judged here under the lock that guards the slot: an answer from a box
+    /// since closed, a request since replaced or a job since released finds the
+    /// pair no longer live and is dropped. (A request at least as new as the one
+    /// already there replaces it; the older never does.)
     private func djDeliver(session: Int, requestID: Int, _ outcome: DJOutcome) {
         inboxLock.lock()
-        if let held = djInbox, (held.session, held.requestID) > (session, requestID) {
-            // A newer request already holds the slot.
-        } else {
-            djInbox = (session, requestID, outcome)
+        var written = false
+        if djLive.session == session, djLive.requestID == requestID {
+            if let held = djInbox, (held.session, held.requestID) > (session, requestID) {
+                // A newer request already holds the slot.
+            } else {
+                djInbox = (session, requestID, outcome)
+                written = true
+            }
         }
         inboxLock.unlock()
-        inboxWritten?("dj")
+        if written { inboxWritten?("dj") }
     }
 
     /// The reader is async; the job is a plain background thread. Never on the
@@ -1983,8 +1994,8 @@ extension DiscoverScene {
 
     // MARK: the answer to one request
 
-    private func djOutcome(for reading: DJReading, seams: DJSeams, stamp: DJStamp, requestID: Int,
-                           live: @escaping () -> Bool) -> DJOutcome? {
+    private func djOutcome(for reading: DJReading, seams: DJSeams, stamp: DJStamp,
+                           report: @escaping (DJOutcome) -> Void, live: @escaping () -> Bool) -> DJOutcome? {
         guard live() else { return nil }
         switch reading {
         case .unavailable(let reason):
@@ -1998,7 +2009,7 @@ extension DiscoverScene {
             case .artistMix:
                 guard let artist = card.artist else { return .message(djUnsupportedRequest) }
                 return djArtistMixOutcome(name: artist, chosen: nil, seams: seams, stamp: stamp,
-                                          requestID: requestID, live: live)
+                                          report: report, live: live)
             case .genreUnheard:
                 guard let genre = card.genre else { return .message(djUnsupportedRequest) }
                 return djGenreOutcome(genre: genre, seams: seams, stamp: stamp, live: live)
@@ -2010,14 +2021,14 @@ extension DiscoverScene {
     /// combination is told so before anything is read (the coordinator refuses
     /// the play itself again, whatever this says).
     private func djArtistMixOutcome(name: String, chosen: CatalogueHit?, seams: DJSeams, stamp: DJStamp,
-                                    requestID: Int, live: @escaping () -> Bool) -> DJOutcome? {
+                                    report: @escaping (DJOutcome) -> Void, live: @escaping () -> Bool) -> DJOutcome? {
         switch routing.selection {
         case .consistent(.spandacMac, .musicApp): return .message(djArtistMixSpanDACOnly)
         case .consistent(.spandacMac, _): break
         default: return .message(djArtistMixNeedsSpanDACData)
         }
         seams.beforeProgress()
-        djDeliver(session: djSessionForJob(requestID: requestID), requestID: requestID, .working(chosen?.title ?? name))
+        report(.working(chosen?.title ?? name))
         do {
             let choice: ProviderChoice<DJCatalogue?> = try routing.choose(.catalogSearch,
                 musicApp: { nil },
@@ -2047,12 +2058,6 @@ extension DiscoverScene {
         } catch {
             return .message(djErrorText(error))
         }
-    }
-
-    /// The session a job began in is the box's session while the job is live.
-    private func djSessionForJob(requestID: Int) -> Int {
-        inboxLock.lock(); defer { inboxLock.unlock() }
-        return djLive.requestID == requestID ? djLive.session : -1
     }
 
     /// "A genre I haven't heard lately", from the data source now selected.
