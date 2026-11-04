@@ -1115,6 +1115,61 @@ final class DJBoxSceneTests: XCTestCase {
         XCTAssertEqual(f.log.created, [])
     }
 
+    /// 50 rows, the second and the fifth both "Autumn Leaves".
+    private func autumnRows() -> [MusicRow] {
+        (1...50).map { i in
+            MusicRow(id: "lib\(i)", title: (i == 2 || i == 5) ? "Autumn Leaves" : "Song \(i)", artist: "A",
+                     album: "B", kind: .song, alias: String(i))
+        }
+    }
+
+    func testGenreOnSpanDACOutputKeepsTheOldestOfARepeatedTitleAndSaysSo() throws {
+        let rows = autumnRows()
+        let source = DJFakeGenreSource(.success(spandacPick(rows, total: 312)))
+        let f = fixture(output: .source, genreSource: source)
+        loadRails(f)
+        f.reader.answer("jazz", with: genreReading("Jazz"))
+        askForCard(f, "jazz")
+
+        let card = try XCTUnwrap(plan(f), "\(String(describing: stage(f)))")
+        XCTAssertEqual(card.line, "Jazz you haven't played in 90 days \u{00B7} 49 songs (1 repeated title skipped)")
+        _ = f.scene.handle(.enter)
+        drain(f.actions)
+        let sent = try XCTUnwrap(f.rig.sent("slice.queue").first?.body["library_ids"] as? [String])
+        XCTAssertEqual(sent.count, 49)
+        XCTAssertFalse(sent.contains("lib5"), "the later Autumn Leaves must not be queued")
+        XCTAssertTrue(sent.contains("lib2"), "the first (oldest) Autumn Leaves is the one kept")
+        XCTAssertEqual(source.rechecks, 1)
+    }
+
+    func testGenreOnSpanDACOutputKeepsTitlesThatDifferOnlyInCase() throws {
+        var rows = autumnRows()
+        rows[4] = MusicRow(id: "lib5", title: "autumn leaves", artist: "A", album: "B", kind: .song, alias: "5")
+        let source = DJFakeGenreSource(.success(spandacPick(rows)))
+        let f = fixture(output: .source, genreSource: source)
+        loadRails(f)
+        f.reader.answer("jazz", with: genreReading("Jazz"))
+        askForCard(f, "jazz")
+        let card = try XCTUnwrap(plan(f))
+        XCTAssertEqual(card.line, "Jazz you haven't played in 90 days \u{00B7} 50 songs")
+    }
+
+    /// The MusicTUI output plays through a hand-off, not SpanDAC's queue preflight:
+    /// the refusal does not exist there, so the pick is left exactly as read.
+    func testGenreOnSpanDACDataAndTheMusicTUIOutputKeepsRepeatedTitles() throws {
+        let rows = autumnRows()
+        let source = DJFakeGenreSource(.success(spandacPick(rows)))
+        let f = fixture(output: .musicApp, genreSource: source)
+        loadRails(f)
+        f.reader.answer("jazz", with: genreReading("Jazz"))
+        askForCard(f, "jazz")
+        let card = try XCTUnwrap(plan(f))
+        XCTAssertEqual(card.line, "Jazz you haven't played in 90 days \u{00B7} 50 songs")
+        _ = f.scene.handle(.enter)
+        drain(f.actions)
+        XCTAssertEqual(f.handoff.calls.first?.count, 50)
+    }
+
     func testGenreOnSpanDACDataAndTheMusicTUIOutputHandsOffVerifiedAliasesOnly() throws {
         let rows = aliasRows(5)
         let source = DJFakeGenreSource(.success(spandacPick(rows)))

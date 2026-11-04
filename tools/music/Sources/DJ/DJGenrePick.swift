@@ -63,8 +63,11 @@ struct DJGenrePick: Equatable {
     }
 }
 
-func djGenreLine(genre: String, days: Int, songs: Int, unreadable: Int = 0) -> String {
-    let tail = unreadable > 0 ? " (\(unreadable) with an unreadable date skipped)" : ""
+func djGenreLine(genre: String, days: Int, songs: Int, unreadable: Int = 0, repeatedTitles: Int = 0) -> String {
+    var notes: [String] = []
+    if unreadable > 0 { notes.append("\(unreadable) with an unreadable date skipped") }
+    if repeatedTitles > 0 { notes.append(djRepeatedTitlesNote(repeatedTitles)) }
+    let tail = notes.isEmpty ? "" : " (\(notes.joined(separator: "; ")))"
     return "\(genre) you haven't played in \(days) days \u{00B7} \(djCount(songs, "song"))\(tail)"
 }
 

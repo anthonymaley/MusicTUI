@@ -2118,7 +2118,15 @@ extension DiscoverScene {
                 guard choice.stamp == stamp.routing else { return .message(djChangedLine) }
                 let result = try choice.provider.genreUnheard(genre: genre, days: days)
                 guard live() else { return nil }
-                let rows = seams.shuffler.shuffled(Array(result.rows.prefix(djGenreSongLimit)))
+                // SpanDAC's own queue refuses two songs of one exact title, so on a
+                // SpanDAC output keep the first (oldest) of each before the card is
+                // frozen. The MusicTUI output is a hand-off with no such refusal.
+                var offered = Array(result.rows.prefix(djGenreSongLimit))
+                var repeated = 0
+                if output != .musicApp {
+                    (offered, repeated) = djFirstPerTitle(offered, title: \.title)
+                }
+                let rows = seams.shuffler.shuffled(offered)
                 guard !rows.isEmpty else { return .message(djNoGenreSongs(genre: genre, days: days)) }
                 // The MusicTUI output plays only songs with a verified alias; one
                 // without fails the whole pick, nothing substituted.
@@ -2126,7 +2134,8 @@ extension DiscoverScene {
                     return .message(djGenreNeedsAliases)
                 }
                 return .plan(DJPlan(payload: .genreSpanDAC(rows: rows, pick: result, title: title),
-                                    line: djGenreLine(genre: genre, days: days, songs: rows.count), stamp: stamp))
+                                    line: djGenreLine(genre: genre, days: days, songs: rows.count,
+                                                    repeatedTitles: repeated), stamp: stamp))
 
             default:
                 // MusicTUI's own data with a SpanDAC output stored: refuses as
