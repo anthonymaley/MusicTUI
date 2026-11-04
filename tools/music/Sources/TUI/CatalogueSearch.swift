@@ -173,17 +173,16 @@ struct CatalogueSearchModel {
             guard let hit = selectedHit, hit.kind == .album else { return .init() }
             return emit(.playAlbum(hit))
         case .char("/"):
-            // On the results level only: from the artist level it is inert.
-            guard artist == nil else { return .init() }
+            // From either level: the artist's albums are left (their pending
+            // answer with them) and the box reopens with the last term over
+            // the results, which Esc from the box returns to.
+            leaveArtist()
             isEditing = true
             text = lastTerm
             return .init(changed: true)
         case .escape, .left:
             if artist != nil {
-                artist = nil
-                artistAlbums = nil
-                artistFailure = nil
-                pendingArtist = nil
+                leaveArtist()
                 return .init(changed: true)
             }
             return close()
@@ -209,6 +208,14 @@ struct CatalogueSearchModel {
             // → drills; a song has nothing to drill into, and → never plays.
             return drillOnly ? .init() : emit(.playSong(hit))
         }
+    }
+
+    /// Back to the results level; an albums answer still out finds no pending id.
+    private mutating func leaveArtist() {
+        artist = nil
+        artistAlbums = nil
+        artistFailure = nil
+        pendingArtist = nil
     }
 
     private mutating func close() -> CatalogueSearchOutcome {
