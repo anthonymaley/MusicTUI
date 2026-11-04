@@ -332,7 +332,15 @@ final class DiscoverScene: Scene {
     /// `trackRows`, which an album the search opens replaces (and Back
     /// clears), so it is put back when the search closes; a read still out
     /// when `/` was pressed is left behind and read again then.
-    private var trackListUnderSearch: (item: DiscoverItem, rows: [DiscoverItem], read: RowsRead?, reread: Bool)?
+    private var trackListUnderSearch: TrackListUnder?
+
+    /// An album's track list as it stood when a pane (the search, the DJ box)
+    /// opened over it: the rows and read it had, and whether its read was still
+    /// out (so it is read again when the pane closes, its answer having been left behind).
+    typealias TrackListUnder = (item: DiscoverItem, rows: [DiscoverItem], read: RowsRead?, reread: Bool)
+
+    /// The same for the DJ box.
+    private var trackListUnderDJ: TrackListUnder?
 
     /// One search or artist-albums answer, as the background read left it.
     private enum SearchAnswer {
@@ -1690,6 +1698,12 @@ extension DiscoverScene: CatalogueSearchHost {
         }
         let under = trackListUnderSearch
         dropSearch()
+        restoreTrackList(under)
+    }
+
+    /// Back on the level a pane was opened from: a track list it covered comes
+    /// back as it was, or is read again when its read was left behind.
+    private func restoreTrackList(_ under: TrackListUnder?) {
         guard let under, case .tracks(let item) = current.level, item.id == under.item.id else { return }
         if under.reread {
             // Its read was left behind: open it again, from the same level.
@@ -1806,6 +1820,13 @@ extension DiscoverScene: CatalogueSearchHost {
 extension DiscoverScene {
 
     private func openDJ() -> SceneAction {
+        // An album's track list under the box keeps its rows, and an album still
+        // loading is read again when the box closes (its answer would otherwise
+        // arrive to a screen that is not the album and be dropped), as under the search.
+        if case .tracks(let item) = current.level {
+            trackListUnderDJ = (item, trackRows, tracksRead, tracksInFlight)
+            if tracksInFlight { abandonDrill() }
+        }
         stack = pushLevel(stack, .dj)
         djSession += 1
         djModel = DJBoxModel()
@@ -1820,12 +1841,15 @@ extension DiscoverScene {
         if let at = stack.firstIndex(where: { $0.level == .dj }), at > 0 {
             stack = Array(stack.prefix(at))
         }
+        let under = trackListUnderDJ
         dropDJ()
+        restoreTrackList(under)
     }
 
     private func dropDJ() {
         djSession += 1
         djModel = nil
+        trackListUnderDJ = nil
         djAskedStamp = nil
         inboxLock.lock(); djInbox = nil; djLive = (-1, -1); inboxLock.unlock()
     }
