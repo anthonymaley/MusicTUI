@@ -104,6 +104,13 @@ jobs:
         with:
           ref: ${{ inputs.release_tag }}
 
+      - name: Log the toolchain on this runner
+        # Log only, no policy: records which Xcode and macOS SDK built this
+        # bottle (FoundationModels, and so the DJ, exists only in a macOS 26+ SDK).
+        run: |
+          xcodebuild -version
+          echo "macOS SDK: $(xcrun --show-sdk-version)"
+
       - name: Assert the tag matches the source version
         env:
           RELEASE_TAG: ${{ inputs.release_tag }}
