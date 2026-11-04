@@ -337,10 +337,21 @@ final class DiscoverScene: Scene {
         case failure(String)
     }
 
-    /// The one slot a search read writes, keyed on the pane's request id and
-    /// the data epoch it was read under. A read writes only if its id is at
-    /// least the slot's, so an older one never evicts a newer before tick().
-    private var searchInbox: (requestID: Int, dataEpoch: Int, read: RowsRead?, answer: SearchAnswer)?   // guarded by inboxLock
+    /// One search or artist-albums answer in the slot: the search session
+    /// and pane request id it was asked under, and the data epoch it was read under.
+    private typealias SearchInboxEntry = (session: Int, requestID: Int, dataEpoch: Int, read: RowsRead?, answer: SearchAnswer)
+
+    /// The one slot a search read writes. A read writes only if its
+    /// (session, request id) is at least the slot's, so an older one, from
+    /// this pane or a pane since closed, never evicts a newer before tick().
+    private var searchInbox: SearchInboxEntry?   // guarded by inboxLock
+
+    /// Scene-lifetime count of search panes, moved on by every new pane and
+    /// every drop. Each pane numbers its requests from 1, so a read carries
+    /// the session it was asked in, and only the current session's answers
+    /// are applied: a closed search's late answer cannot pass for the next
+    /// search's same-numbered request (handle/tick thread).
+    private var searchSession = 0
 
     static let searchNeedsSpanDAC = "Search needs SpanDAC on this Mac."
     static let searchDataSourceChanged = "Data source changed while searching; search again."
@@ -1617,6 +1628,7 @@ extension DiscoverScene: CatalogueSearchHost {
             if tracksInFlight { abandonDrill() }
         }
         stack = pushLevel(stack, .search)
+        searchSession += 1
         searchPane = CatalogueSearchPane(host: self)
         return .redraw
     }
@@ -1642,6 +1654,7 @@ extension DiscoverScene: CatalogueSearchHost {
 
     /// The pane, its reads and any answer still in the slot go.
     private func dropSearch() {
+        searchSession += 1
         searchPane = nil
         trackListUnderSearch = nil
         searchResultsRead = nil
@@ -1655,6 +1668,7 @@ extension DiscoverScene: CatalogueSearchHost {
     /// here: nothing is read and the pane says why.
     private func readCatalogue(requestID: Int, _ read: @escaping (CatalogueBrowsing) throws -> SearchAnswer) {
         let fallbackEpoch = routing.dataEpoch
+        let session = searchSession
         let routing = self.routing
         DispatchQueue.global().async { [weak self] in
             guard let self else { return }
@@ -1676,19 +1690,22 @@ extension DiscoverScene: CatalogueSearchHost {
                 answer = .failure(Self.words(for: error) ?? "Couldn't search Apple Music.")
             }
             self.inboxLock.lock()
-            if (self.searchInbox?.requestID ?? 0) <= requestID {
-                self.searchInbox = (requestID, dataEpoch, rowsRead, answer)
+            if let held = self.searchInbox, (held.session, held.requestID) > (session, requestID) {
+                // A newer read already holds the slot: this one is dropped.
+            } else {
+                self.searchInbox = (session, requestID, dataEpoch, rowsRead, answer)
             }
             self.inboxLock.unlock()
             self.inboxWritten?("search")
         }
     }
 
-    /// tick(): an answer reaches the pane only while a search is open and its
-    /// data source is still the selected one; the pane drops an id it is not
-    /// waiting on. True when the screen changed.
-    private func applySearchAnswer(_ incoming: (requestID: Int, dataEpoch: Int, read: RowsRead?, answer: SearchAnswer)) -> Bool {
-        guard let pane = searchPane, incoming.dataEpoch == routing.dataEpoch else { return false }
+    /// tick(): an answer reaches the pane only while the search it was asked
+    /// in is the one open and its data source is still the selected one; the
+    /// pane drops an id it is not waiting on. True when the screen changed.
+    private func applySearchAnswer(_ incoming: SearchInboxEntry) -> Bool {
+        guard let pane = searchPane, incoming.session == searchSession,
+              incoming.dataEpoch == routing.dataEpoch else { return false }
         switch incoming.answer {
         case .results(let results):
             guard pane.didReceive(results: results, requestID: incoming.requestID) else { return false }
