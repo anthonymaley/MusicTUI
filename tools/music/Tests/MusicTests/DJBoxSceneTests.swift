@@ -438,6 +438,45 @@ final class DJBoxSceneTests: XCTestCase {
         XCTAssertEqual(seen.count, DJUnavailable.allCases.count, "two states shared one message")
     }
 
+    func testAReaderThatDoesNotAnswerInTimeShowsTheTimeoutSentenceAndLeavesTheSpinner() {
+        let f = fixture(output: .source)
+        loadRails(f)
+        var seams = f.scene.dj
+        seams.readerTimeout = 0.1
+        f.scene.dj = seams
+        f.reader.hold("slow one")
+        ask(f, "slow one")
+        XCTAssertEqual(stage(f), .reading)
+        ticks(f, until: { self.message(f) != nil })
+        XCTAssertEqual(message(f), "The DJ took too long to answer. Try again.")
+        XCTAssertNotEqual(f.scene.djModel?.statusLine, "Asking the DJ\u{2026}")
+        XCTAssertEqual(djReaderTimedOutLine, "The DJ took too long to answer. Try again.")
+        f.reader.release("slow one")
+    }
+
+    func testTheDefaultReaderTimeoutIsTwentySeconds() {
+        XCTAssertEqual(DJSeams().readerTimeout, 20)
+    }
+
+    func testALateAnswerAfterTheTimeoutNeverLands() {
+        let f = fixture(output: .source)
+        loadRails(f)
+        var seams = f.scene.dj
+        seams.readerTimeout = 0.1
+        f.scene.dj = seams
+        f.reader.answer("late jazz", with: genreReading("Jazz"))
+        f.reader.hold("late jazz")
+        ask(f, "late jazz")
+        ticks(f, until: { self.message(f) != nil })
+        XCTAssertEqual(message(f), djReaderTimedOutLine)
+        // The reader finally answers with a real card.
+        f.reader.release("late jazz")
+        settle(f, seconds: 0.4)
+        XCTAssertEqual(message(f), djReaderTimedOutLine, "a late card replaced the timeout sentence")
+        XCTAssertNil(plan(f), "a late answer produced a card")
+        assertNoLibraryOrPlay(f)
+    }
+
     func testAFailedReadShowsItsOwnMessage() {
         let f = fixture(output: .source)
         loadRails(f)
