@@ -48,8 +48,8 @@ func djArtistHit(_ id: String, _ title: String) -> CatalogueHit {
     CatalogueHit(kind: .artist, id: id, title: title, subtitle: nil, album: nil)
 }
 
-func djSong(_ id: String, length: RowLength = .milliseconds(180_000)) -> DiscoverItem {
-    DiscoverItem(id: id, name: "Song \(id)", subtitle: "Artist", url: nil, artworkURL: nil, detail: .song,
+func djSong(_ id: String, title: String? = nil, length: RowLength = .milliseconds(180_000)) -> DiscoverItem {
+    DiscoverItem(id: id, name: title ?? "Song \(id)", subtitle: "Artist", url: nil, artworkURL: nil, detail: .song,
                  length: length)
 }
 
@@ -220,6 +220,69 @@ final class DJArtistMixTests: XCTestCase {
             XCTAssertEqual($0 as? DJArtistMixError, .cancelled)
         }
         XCTAssertEqual(cat.trackReads, ["alb1", "alb2"], "a read was sent after the fence turned")
+    }
+
+    // MARK: - Repeated titles (SpanDAC refuses a queue holding two songs of one exact title)
+
+    func testAKidAOnTwoAlbumsKeepsOnlyTheFirstInAlbumOrder() throws {
+        let cat = DJFakeCatalogue()
+        cat.albums = [djAlbum("kid"), djAlbum("reissue")]
+        cat.tracks["kid"] = [djSong("k1", title: "Everything In Its Right Place"), djSong("k2", title: "Kid A")]
+        cat.tracks["reissue"] = [djSong("r1", title: "Kid A"), djSong("r2", title: "Idioteque")]
+        let mix = try build(cat)
+        XCTAssertEqual(mix.ids.sorted(), ["k1", "k2", "r2"], "the reissue's Kid A (r1) must go")
+        XCTAssertEqual(mix.repeatedTitles, 1)
+        XCTAssertEqual(mix.albumCount, 2)
+        XCTAssertEqual(mix.line, "Radiohead \u{00B7} 3 songs from 2 albums (1 repeated title skipped)")
+    }
+
+    func testThreeSongsOfOneTitleKeepTheFirstAndCountTwo() throws {
+        let cat = DJFakeCatalogue()
+        cat.albums = [djAlbum("a"), djAlbum("b"), djAlbum("c")]
+        cat.tracks["a"] = [djSong("a1", title: "Creep")]
+        cat.tracks["b"] = [djSong("b1", title: "Creep"), djSong("b2", title: "Karma Police")]
+        cat.tracks["c"] = [djSong("c1", title: "Creep")]
+        let mix = try build(cat)
+        XCTAssertEqual(mix.ids.sorted(), ["a1", "b2"])
+        XCTAssertEqual(mix.repeatedTitles, 2)
+        XCTAssertTrue(mix.line.hasSuffix("(2 repeated titles skipped)"), mix.line)
+    }
+
+    func testTitlesDifferingOnlyInCaseAreBothKept() throws {
+        let cat = DJFakeCatalogue()
+        cat.albums = [djAlbum("a")]
+        cat.tracks["a"] = [djSong("a1", title: "Kid A"), djSong("a2", title: "kid a")]
+        let mix = try build(cat)
+        XCTAssertEqual(mix.ids.sorted(), ["a1", "a2"])
+        XCTAssertEqual(mix.repeatedTitles, 0)
+    }
+
+    func testRepeatedTitlesAreRemovedBeforeTheSampleOf50() throws {
+        let cat = DJFakeCatalogue()
+        cat.albums = [djAlbum("a"), djAlbum("b")]
+        cat.tracks["a"] = (1...30).map { djSong("a\($0)", title: "T\($0)") }
+        cat.tracks["b"] = (1...30).map { djSong("b\($0)", title: "T\($0)") }   // all repeat album a
+        let mix = try build(cat)
+        XCTAssertEqual(mix.ids.count, 30, "the 30 copies must not take places from a sample of 50")
+        XCTAssertEqual(mix.repeatedTitles, 30)
+        XCTAssertTrue(mix.ids.allSatisfy { $0.hasPrefix("a") })
+    }
+
+    func testAnUnavailableSongIsNotAlsoCountedAsARepeatedTitle() throws {
+        let cat = DJFakeCatalogue()
+        cat.albums = [djAlbum("a")]
+        cat.tracks["a"] = [djSong("a1", title: "Kid A", length: .null), djSong("a2", title: "Kid A")]
+        let mix = try build(cat)
+        XCTAssertEqual(mix.ids, ["a2"], "the unavailable copy is dropped first, so the playable one is kept")
+        XCTAssertEqual(mix.unavailable, 1)
+        XCTAssertEqual(mix.repeatedTitles, 0)
+    }
+
+    func testTheLineJoinsUnavailableAndRepeatedTitleNotes() {
+        let mix = DJArtistMix(artistName: "Radiohead", artistID: "a", ids: ["x", "y"], albumCount: 2,
+                              moreAlbums: false, unavailable: 2, repeatedTitles: 3)
+        XCTAssertEqual(mix.line,
+                       "Radiohead \u{00B7} 2 songs from 2 albums (2 unavailable skipped; 3 repeated titles skipped)")
     }
 
     // MARK: - The card line
