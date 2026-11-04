@@ -166,7 +166,7 @@ final class DJReaderTests: XCTestCase {
             "everything except radiohead",
             "play music but not jazz",
             "I don't want any jazz",
-            "no jazz tonight",
+            "avoid jazz tonight",
             "without the jazz",
         ]
         for p in prompts {
