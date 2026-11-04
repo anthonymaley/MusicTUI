@@ -136,17 +136,26 @@ final class DiscoverCatalogueSearchTests: XCTestCase {
                 return Self.searchReply(#"[{"kind":"album","id":"big","title":"Big Album","subtitle":"A"}]"#)
             case "twice":
                 return Self.searchReply(#"[{"kind":"album","id":"rep","title":"Twice Album","subtitle":"A"}]"#)
+            case "other":
+                return Self.searchReply(#"[{"kind":"artist","id":"art9","title":"Artist Nine"}]"#)
+            case "fail":
+                return #"{"ok":false,"op":"slice.search","error":{"kind":"unavailable","detail":"Apple Music isn't answering."}}"#
             default:
                 return Self.searchReply(Self.searchRecords)
             }
         }
-        rig.replies["slice.artistAlbums"] = Self.artistAlbumsReply
+        rig.responders["slice.artistAlbums"] = { body in
+            body["id"] as? String == "art9"
+                ? #"{"ok":true,"op":"slice.artistAlbums","records":[{"kind":"album","id":"alb9","title":"Album Nine","subtitle":"Artist Nine"}],"more":false}"#
+                : Self.artistAlbumsReply
+        }
         rig.responders["slice.containerTracks"] = { body in
             switch body["id"] as? String {
             case "alb1": return Self.tracksReply(Self.albumOneIDs)
             case "alb2": return Self.tracksReply(["b1", "b2"])
             case "big":  return Self.tracksReply((1...101).map { "n\($0)" })
             case "rep":  return Self.tracksReply(["r1", "r2", "r1"])
+            case "alb9": return Self.tracksReply(["c1", "c2"])
             default:     return Self.tracksReply(["901", "902"])
             }
         }
@@ -668,6 +677,168 @@ final class DiscoverCatalogueSearchTests: XCTestCase {
         XCTAssertEqual(f.scene.currentLevel, .root, "the late answer reopened the search")
         _ = f.scene.handle(.char("/"))
         XCTAssertNil(model(f)?.results, "a fresh box shows the abandoned search's results")
+    }
+
+    // MARK: - A closed search's answer never reaches the next search
+
+    // Every new pane numbers its requests from 1, so a search closed while
+    // its read is out and the next search asked in a new pane share request
+    // id 1 under the same data epoch (Codex 290dfcca, finding 1).
+
+    /// `/`, the term, Enter, with that search's read held at `ordinal`;
+    /// returns once the read has arrived at the fake.
+    private func heldSearch(_ f: Fixture, _ term: String, ordinal: Int,
+                            file: StaticString = #filePath, line: UInt = #line) {
+        f.searchGate.hold(ordinal)
+        _ = f.scene.handle(.char("/"))
+        type(f, term)
+        _ = f.scene.handle(.enter)
+        ticks(f, until: { f.searchGate.arrived == ordinal + 1 }, file: file, line: line)
+    }
+
+    /// Signalled each time a search read finishes with the slot, so two
+    /// answers can meet in it before a tick drains it.
+    private func slotWrites(_ f: Fixture) -> DispatchSemaphore {
+        let written = DispatchSemaphore(value: 0)
+        f.scene.inboxWritten = { if $0 == "search" { written.signal() } }
+        return written
+    }
+
+    /// The search on screen is "second": its own song, no failure, and
+    /// Enter queues exactly that song's id on the SpanDAC output.
+    private func assertShowsAndPlaysSecond(_ f: Fixture, file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertEqual(model(f)?.lastTerm, "second", file: file, line: line)
+        XCTAssertEqual(model(f)?.results?.songs.map(\.id), ["z2"], "not the second search's rows", file: file, line: line)
+        XCTAssertNil(model(f)?.failure, file: file, line: line)
+        XCTAssertNotEqual(model(f)?.note, "Searching “second”…", "the second search was left searching",
+                          file: file, line: line)
+        XCTAssertEqual(model(f)?.selectedHit?.id, "z2", file: file, line: line)
+        _ = f.scene.handle(.enter)
+        drain(f.actions)
+        XCTAssertEqual(f.rig.sent("slice.queue").map { $0.body["ids"] as? [String] ?? [] }, [["z2"]],
+                       "Enter did not play the second search's song", file: file, line: line)
+        assertNoLibraryOrPlay(f, file: file, line: line)
+    }
+
+    /// The closed search answers first, and is ticked in while the next one
+    /// is still out: it never shows, and the next one's answer still lands.
+    func testAClosedSearchsAnswerArrivingFirstNeverShowsUnderTheNextSearch() {
+        let f = fixture(output: .source)
+        loadRails(f)
+        heldSearch(f, "first", ordinal: 0)              // pane 1, request 1
+        _ = f.scene.handle(.escape)                     // closes it, its read still out
+        XCTAssertNil(f.scene.searchPane)
+        heldSearch(f, "second", ordinal: 1)             // pane 2, request 1 again
+
+        f.searchGate.release(0)
+        settle(f)
+        XCTAssertNil(model(f)?.results, "the closed search's rows showed under the new search")
+        XCTAssertEqual(model(f)?.note, "Searching “second”…")
+
+        f.searchGate.release(1)
+        ticks(f, until: { self.model(f)?.results != nil })
+        assertShowsAndPlaysSecond(f)
+    }
+
+    /// The new search answers first and the closed one second, both before a
+    /// tick: the closed one does not take the slot from the new one.
+    func testAClosedSearchsAnswerArrivingSecondDoesNotReplaceTheNextSearchsInTheSlot() {
+        let f = fixture(output: .source)
+        loadRails(f)
+        heldSearch(f, "first", ordinal: 0)
+        _ = f.scene.handle(.escape)
+        heldSearch(f, "second", ordinal: 1)
+        let written = slotWrites(f)
+
+        f.searchGate.release(1)
+        XCTAssertEqual(written.wait(timeout: .now() + 5), .success)
+        f.searchGate.release(0)
+        XCTAssertEqual(written.wait(timeout: .now() + 5), .success)
+        settle(f)
+        assertShowsAndPlaysSecond(f)
+    }
+
+    /// The closed pane had reached a higher request id (its second search)
+    /// than the new pane's first: its late answer cannot evict the new one
+    /// and leave it searching for ever.
+    func testAClosedSearchWithAHigherRequestIDCannotEvictTheNextSearch() {
+        let f = fixture(output: .source)
+        loadRails(f)
+        search(f, "first")                              // pane 1, request 1, answered
+        f.searchGate.hold(1)
+        _ = f.scene.handle(.char("/"))                  // reopens with "first"
+        for _ in 0..<5 { _ = f.scene.handle(.char("\u{7F}")) }
+        type(f, "daft")
+        _ = f.scene.handle(.enter)                      // pane 1, request 2, held
+        ticks(f, until: { f.searchGate.arrived == 2 })
+        _ = f.scene.handle(.escape)                     // closes pane 1
+        XCTAssertNil(f.scene.searchPane)
+        heldSearch(f, "second", ordinal: 2)             // pane 2, request 1
+        let written = slotWrites(f)
+
+        f.searchGate.release(2)
+        XCTAssertEqual(written.wait(timeout: .now() + 5), .success)
+        f.searchGate.release(1)
+        XCTAssertEqual(written.wait(timeout: .now() + 5), .success)
+        settle(f)
+        assertShowsAndPlaysSecond(f)
+    }
+
+    /// The same for an artist's albums: a closed pane's albums (request 2)
+    /// never show under the next pane's artist (also request 2), whose own
+    /// albums land and play.
+    func testAClosedSearchsArtistAlbumsNeverShowUnderTheNextSearchsArtist() {
+        let f = fixture(output: .source)
+        let albumsGate = OpGate()
+        f.rig.during["slice.artistAlbums"] = { albumsGate.arrive() }
+        loadRails(f)
+        search(f)                                       // pane 1: Artist One on the cursor
+        albumsGate.hold(0)
+        _ = f.scene.handle(.enter)                      // its albums, request 2, held
+        ticks(f, until: { albumsGate.arrived == 1 })
+        _ = f.scene.handle(.escape)                     // back to the results
+        _ = f.scene.handle(.escape)                     // closes pane 1
+        XCTAssertNil(f.scene.searchPane)
+
+        search(f, "other")                              // pane 2: Artist Nine
+        XCTAssertEqual(model(f)?.selectedHit?.id, "art9")
+        albumsGate.hold(1)
+        _ = f.scene.handle(.enter)                      // its albums, request 2, held
+        ticks(f, until: { albumsGate.arrived == 2 })
+
+        albumsGate.release(0)
+        settle(f)
+        XCTAssertNil(model(f)?.artistAlbums, "the closed search's albums showed under Artist Nine")
+
+        albumsGate.release(1)
+        ticks(f, until: { self.model(f)?.artistAlbums != nil })
+        XCTAssertEqual(model(f)?.artist?.id, "art9")
+        XCTAssertEqual(model(f)?.artistAlbums?.albums.map(\.id), ["alb9"], "not Artist Nine's albums")
+        XCTAssertEqual(model(f)?.selectedHit?.id, "alb9")
+        _ = f.scene.handle(.char("p"))
+        drain(f.actions)
+        XCTAssertEqual(f.rig.sent("slice.containerTracks").last?.body["id"] as? String, "alb9")
+        XCTAssertEqual(f.rig.sent("slice.queue").map { $0.body["ids"] as? [String] ?? [] }, [["c1", "c2"]],
+                       "p did not play Artist Nine's album")
+        assertNoLibraryOrPlay(f)
+    }
+
+    /// A closed search's failure never becomes the next search's failure,
+    /// and the next search's own answer still lands.
+    func testAClosedSearchsFailureNeverShowsUnderTheNextSearch() {
+        let f = fixture(output: .source)
+        loadRails(f)
+        heldSearch(f, "fail", ordinal: 0)
+        _ = f.scene.handle(.escape)
+        heldSearch(f, "second", ordinal: 1)
+
+        f.searchGate.release(0)
+        settle(f)
+        XCTAssertNil(model(f)?.failure, "the closed search's failure showed under the new search")
+
+        f.searchGate.release(1)
+        ticks(f, until: { self.model(f)?.results != nil })
+        assertShowsAndPlaysSecond(f)
     }
 
     // MARK: - An older SpanDAC
