@@ -7,8 +7,9 @@
 //
 // REQUEST IDS. Every ask takes the next id; the model applies an answer only
 // if it carries the current id AND the model is still waiting for it. So a
-// newer prompt wins, an older answer (an error included) is dropped, and a
-// closed box accepts nothing.
+// newer prompt wins, an older answer (an error included) is dropped, an edit
+// of the text while a request is out drops that request too, and a closed box
+// accepts nothing.
 import Foundation
 
 struct DJBoxModel {
@@ -108,12 +109,18 @@ struct DJBoxModel {
     }
 
     /// Editing the prompt drops a card, a picker, a message or a spent plan: it
-    /// is a new prompt now. A request already out is left to land (or to be
-    /// replaced by the next Enter).
+    /// is a new prompt now. A request still out is dropped with the old text:
+    /// the box is no longer waiting, so its answer (a failure too) finds
+    /// nothing to land on, even before the next Enter numbers a new request.
     private mutating func leaveSpentStage() {
+        stage = .typing
+    }
+
+    /// A request is out and the box is waiting for it.
+    var isRequestOut: Bool {
         switch stage {
-        case .reading, .working, .typing: break
-        case .pick, .card, .sent, .message: stage = .typing
+        case .reading, .working: return true
+        default: return false
         }
     }
 

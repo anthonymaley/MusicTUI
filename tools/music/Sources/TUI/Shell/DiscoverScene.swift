@@ -1848,8 +1848,12 @@ extension DiscoverScene {
 
     private func handleDJ(_ key: KeyPress) -> SceneAction {
         guard var model = djModel else { return .none }
+        let wasOut = model.isRequestOut
         let out = model.handle(key)
         djModel = model
+        // An edit that dropped the request still out: its job is released too,
+        // so it stops reading and can deliver nothing.
+        if out.emission == nil, wasOut, !model.isRequestOut { djRelease() }
         switch out.emission {
         case .close?:
             closeDJ()
@@ -1884,6 +1888,12 @@ extension DiscoverScene {
         guard var model = djModel else { return }
         model.drop(saying: words)
         djModel = model
+        djRelease()
+    }
+
+    /// Nothing is out for the box any more: the world it was asked in is
+    /// forgotten, the slot is emptied, and a job still running finds itself not live.
+    private func djRelease() {
         djAskedStamp = nil
         inboxLock.lock(); djInbox = nil; djLive = (-1, -1); inboxLock.unlock()
     }
