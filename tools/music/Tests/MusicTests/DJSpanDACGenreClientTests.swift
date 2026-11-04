@@ -11,8 +11,9 @@ final class DJSpanDACGenreClientTests: XCTestCase {
     private final class Wire: @unchecked Sendable {
         private let lock = NSLock()
         private var _sent: [[String: Any]] = []
-        var capabilities: [String] = ["library.genreUnheard"]
+        var capabilities: [String] = ["library.genreUnheard", "library.resolveIDs"]
         var genreReplies: [String] = []
+        var resolveReplies: [String] = []
         var statusFails = false
 
         var sent: [[String: Any]] { lock.lock(); defer { lock.unlock() }; return _sent }
@@ -25,6 +26,8 @@ final class DJSpanDACGenreClientTests: XCTestCase {
             let caps = capabilities
             let isGenre = (body["op"] as? String) == "library.genreUnheard"
             let reply = (isGenre && !genreReplies.isEmpty) ? genreReplies.removeFirst() : ""
+            let isResolve = (body["op"] as? String) == "library.resolveIDs"
+            let resolveReply = (isResolve && !resolveReplies.isEmpty) ? resolveReplies.removeFirst() : ""
             let failStatus = statusFails
             lock.unlock()
             switch body["op"] as? String {
@@ -34,6 +37,8 @@ final class DJSpanDACGenreClientTests: XCTestCase {
                 return #"{"ok":true,"op":"slice.status","status":{"playback":"stopped","capabilities":[\#(list)]}}"#
             case "library.genreUnheard":
                 return reply
+            case "library.resolveIDs":
+                return resolveReply
             default:
                 return #"{"ok":false,"error":{"kind":"unknown_op","detail":"no"}}"#
             }
@@ -184,47 +189,110 @@ final class DJSpanDACGenreClientTests: XCTestCase {
         XCTAssertThrowsError(try make(wire).genreUnheard(genre: "Jazz", days: 90))
     }
 
-    // MARK: recheck
+    // MARK: recheck (Codex review r1, finding 1)
+    //
+    // The re-check at Enter asks `library.resolveIDs` for the very ids the card
+    // will play, and requires the same instance and generation and EVERY id
+    // resolved. It is identity, not a comparison with a fresh oldest-50.
 
-    private func pickedThenRechecked(second: String) throws -> (Wire, DJSpanDACGenrePick, DJSpanDACGenreClient) {
+    private func resolved(_ count: Int, generation: Int = 7, instance: String = "inst-1") -> String {
+        #"{"ok":true,"op":"library.resolveIDs","count":\#(count),"generation":\#(generation),"instance":"\#(instance)"}"#
+    }
+
+    private func picked(resolveReplies: [String], capabilities: [String]? = nil) throws
+        -> (Wire, DJSpanDACGenrePick, DJSpanDACGenreClient) {
         let wire = Wire()
-        wire.genreReplies = [success(songs: twoSongs), second]
+        if let capabilities { wire.capabilities = capabilities }
+        wire.genreReplies = [success(songs: twoSongs)]
+        wire.resolveReplies = resolveReplies
         let client = make(wire)
         let pick = try client.genreUnheard(genre: "Jazz", days: 90)
         return (wire, pick, client)
     }
 
-    func testRecheckPassesWhenInstanceAndGenerationAreTheSame() throws {
-        let (wire, pick, client) = try pickedThenRechecked(second: success(songs: twoSongs))
+    func testRecheckAsksResolveIDsForExactlyTheChosenIDsAndPassesWhenAllResolveUnderTheSameStamp() throws {
+        let (wire, pick, client) = try picked(resolveReplies: [resolved(2)])
         XCTAssertNoThrow(try client.recheck(pick))
         let request = try XCTUnwrap(wire.sent.last)
-        XCTAssertEqual(request["op"] as? String, "library.genreUnheard")
-        XCTAssertEqual(request["genre"] as? String, "Jazz")
-        XCTAssertEqual(request["days"] as? Int, 90)
+        XCTAssertEqual(request["op"] as? String, "library.resolveIDs")
+        XCTAssertEqual(request["ids"] as? [String], ["i.1", "i.2"])
+        XCTAssertEqual(Set(request.keys), ["op", "ids"])
+    }
+
+    func testAMissingChosenIDFailsWithTheInstanceAndGenerationUnchanged() throws {
+        let (_, pick, client) = try picked(resolveReplies: [resolved(1)])
+        XCTAssertThrowsError(try client.recheck(pick)) {
+            XCTAssertEqual($0 as? DJGenreSourceError, .libraryChanged)
+        }
+    }
+
+    func testControlTheLibraryRankingMovingOnDoesNotMatterWhileEveryChosenIDResolves() throws {
+        // The oldest 50 would read differently now, but the question is only
+        // whether the chosen songs are still there: no new scan is made.
+        let (wire, pick, client) = try picked(resolveReplies: [resolved(2)])
+        wire.genreReplies = [success(songs: #"{"id":"i.9","title":"New","artist":"C","album":"Z","last_played":null}"#,
+                                     total: 1)]
+        XCTAssertNoThrow(try client.recheck(pick))
+        XCTAssertEqual(wire.ops.filter { $0 == "library.genreUnheard" }.count, 1, "recheck scanned the library again")
     }
 
     func testRecheckFailsWhenTheInstanceDiffers() throws {
-        let (_, pick, client) = try pickedThenRechecked(second: success(songs: twoSongs, instance: "inst-2"))
+        let (_, pick, client) = try picked(resolveReplies: [resolved(2, instance: "inst-2")])
         XCTAssertThrowsError(try client.recheck(pick)) {
             XCTAssertEqual($0 as? DJGenreSourceError, .libraryChanged)
         }
     }
 
     func testRecheckFailsWhenTheGenerationDiffers() throws {
-        let (_, pick, client) = try pickedThenRechecked(second: success(songs: twoSongs, generation: 8))
+        let (_, pick, client) = try picked(resolveReplies: [resolved(2, generation: 8)])
         XCTAssertThrowsError(try client.recheck(pick)) {
             XCTAssertEqual($0 as? DJGenreSourceError, .libraryChanged)
         }
     }
 
-    func testRecheckThatCannotReadFailsAndStaleGenerationIsLibraryChanged() throws {
-        let (_, pick, client) = try pickedThenRechecked(second: refusal("stale_generation"))
+    func testRecheckWithoutTheCapabilityAsksNothingAndNeedsANewerSpanDAC() throws {
+        let (wire, pick, client) = try picked(resolveReplies: [resolved(2)], capabilities: ["library.genreUnheard"])
         XCTAssertThrowsError(try client.recheck(pick)) {
-            XCTAssertEqual($0 as? DJGenreSourceError, .libraryChanged)
+            XCTAssertEqual($0 as? DJGenreSourceError, .needsNewerSpanDAC)
         }
-        let (_, pick2, client2) = try pickedThenRechecked(second: "garbage")
-        XCTAssertThrowsError(try client2.recheck(pick2)) {
-            guard case .failed? = $0 as? DJGenreSourceError else { return XCTFail("\($0)") }
+        XCTAssertFalse(wire.ops.contains("library.resolveIDs"), "resolveIDs went out without the capability")
+    }
+
+    func testRefusalsFromResolveIDsSurfaceThroughTheClientsMapping() throws {
+        func reply(_ kind: String, extra: String = "") -> String {
+            refusal(kind, extra: extra).replacingOccurrences(of: "library.genreUnheard", with: "library.resolveIDs")
+        }
+        let cases: [(reply: String, expected: DJGenreSourceError)] = [
+            (reply("stale_generation"), .libraryChanged),
+            (reply("unknown_op"), .needsNewerSpanDAC),
+            (reply("bad_request"), .failed(SourceAppError.refused("d").message)),
+            (reply("warming", extra: #","retry_after":2"#), .failed(SourceAppError.warming("d", retryAfter: 2).message)),
+        ]
+        for c in cases {
+            let (_, pick, client) = try picked(resolveReplies: [c.reply])
+            XCTAssertThrowsError(try client.recheck(pick), c.reply) {
+                XCTAssertEqual($0 as? DJGenreSourceError, c.expected, c.reply)
+            }
+        }
+    }
+
+    func testAMalformedResolveReplyFailsTheRecheck() throws {
+        let replies = [
+            "garbage",
+            #"{"ok":true,"op":"library.resolveIDs","generation":7,"instance":"inst-1"}"#,
+            #"{"ok":true,"op":"library.resolveIDs","count":"2","generation":7,"instance":"inst-1"}"#,
+            #"{"ok":true,"op":"library.resolveIDs","count":true,"generation":7,"instance":"inst-1"}"#,
+            #"{"ok":true,"op":"library.resolveIDs","count":2,"instance":"inst-1"}"#,
+            #"{"ok":true,"op":"library.resolveIDs","count":2,"generation":7}"#,
+            #"{"ok":true,"op":"library.resolveIDs","count":2,"generation":7,"instance":" "}"#,
+            resolved(3),
+            resolved(-1),
+        ]
+        for reply in replies {
+            let (_, pick, client) = try picked(resolveReplies: [reply])
+            XCTAssertThrowsError(try client.recheck(pick), reply) {
+                guard case .failed? = $0 as? DJGenreSourceError else { return XCTFail("\(reply): \($0)") }
+            }
         }
     }
 
@@ -235,5 +303,19 @@ final class DJSpanDACGenreClientTests: XCTestCase {
             XCTAssertEqual($0 as? DJGenreSourceError, .libraryChanged)
         }
         XCTAssertEqual(wire.ops, [], "nothing to compare, nothing sent")
+    }
+
+    func testRecheckOfNoRowsOrRepeatedOrTooManyIDsFailsClosedWithoutAsking() {
+        let row = { (id: String) in MusicRow(id: id, title: "T", artist: "A", album: "B", kind: .song) }
+        let many = (1...51).map { row("i.\($0)") }
+        for rows in [[], [row("i.1"), row("i.1")], many] {
+            let wire = Wire()
+            let pick = DJSpanDACGenrePick(rows: rows, total: rows.count, instance: "inst-1", generation: 7,
+                                          genre: "Jazz", days: 90)
+            XCTAssertThrowsError(try make(wire).recheck(pick), "\(rows.count) rows") {
+                guard case .failed? = $0 as? DJGenreSourceError else { return XCTFail("\($0)") }
+            }
+            XCTAssertEqual(wire.ops, [], "\(rows.count) rows: something was sent")
+        }
     }
 }

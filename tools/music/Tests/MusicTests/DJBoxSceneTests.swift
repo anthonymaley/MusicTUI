@@ -1485,4 +1485,97 @@ final class DJBoxSceneTests: XCTestCase {
         XCTAssertEqual(message(f), djUnsupportedRequest,
                        "the old job's progress replaced the new answer: \(String(describing: stage(f)))")
     }
+
+    // Finding 1: Enter checks the very songs the card will play, not only the stamp.
+
+    private final class ResolveAnswer: @unchecked Sendable {
+        private let lock = NSLock()
+        private var _count: Int?
+        private var _generation = 7
+        var count: Int? { get { lock.lock(); defer { lock.unlock() }; return _count }
+                          set { lock.lock(); _count = newValue; lock.unlock() } }
+        var generation: Int { get { lock.lock(); defer { lock.unlock() }; return _generation }
+                              set { lock.lock(); _generation = newValue; lock.unlock() } }
+    }
+
+    /// The real SpanDAC genre client over the rig's fake SpanDAC: five songs, each with an alias,
+    /// read under instance "inst" and generation 7; `library.resolveIDs` answers per `answer`
+    /// (all five resolved when `count` is nil).
+    private func realClientFixture(output: PlaybackMode, answer: ResolveAnswer) -> Fixture {
+        let f = fixture(output: output)
+        f.rig.replies["slice.status"] = #"{"ok":true,"op":"slice.status","status":{"playback":"playing","title":"On SpanDAC","artist":"A","authorization":"authorized","contract":3,"capabilities":["search.artist","slice.artistAlbums","library.genreUnheard","library.resolveIDs"]}}"#
+        let songs = (1...5).map {
+            #"{"id":"lib\#($0)","alias":"\#($0)","title":"Song \#($0)","artist":"A","album":"B","last_played":null}"#
+        }.joined(separator: ",")
+        f.rig.responders["library.genreUnheard"] = { _ in
+            #"{"ok":true,"op":"library.genreUnheard","songs":[\#(songs)],"total":5,"generation":7,"instance":"inst"}"#
+        }
+        f.rig.responders["library.resolveIDs"] = { body in
+            let sent = (body["ids"] as? [String])?.count ?? 0
+            return #"{"ok":true,"op":"library.resolveIDs","count":\#(answer.count ?? sent),"generation":\#(answer.generation),"instance":"inst"}"#
+        }
+        var seams = f.scene.dj
+        seams.spandacGenre = { DJSpanDACGenreClient(client: $0) }
+        f.scene.dj = seams
+        return f
+    }
+
+    func testAChosenSongGoneFromTheLibraryStopsTheGenreOnEitherOutputWithTheStampUnchanged() {
+        for output in [PlaybackMode.source, .musicApp] {
+            let answer = ResolveAnswer()
+            let f = realClientFixture(output: output, answer: answer)
+            loadRails(f)
+            f.reader.answer("jazz", with: genreReading("Jazz"))
+            askForCard(f, "jazz")
+            XCTAssertNotNil(plan(f), "\(output): \(String(describing: stage(f)))")
+            answer.count = 4                                    // one of the five chosen is gone
+            XCTAssertEqual(f.scene.handle(.enter), .push(.nowPlaying))
+            drain(f.actions)
+            XCTAssertEqual(f.rig.sent("slice.queue").count, 0, "\(output): queued with a chosen song gone")
+            XCTAssertEqual(f.handoff.calls.count, 0, "\(output): handed off with a chosen song gone")
+            XCTAssertEqual(f.status.current()?.text, djSpanDACLibraryChanged, "\(output)")
+            let asked = f.rig.sent("library.resolveIDs")
+            XCTAssertEqual(asked.count, 1, "\(output)")
+            XCTAssertEqual(Set(asked.first?.body["ids"] as? [String] ?? []), Set((1...5).map { "lib\($0)" }), "\(output)")
+        }
+    }
+
+    func testAChangedGenerationStopsTheGenreEvenWhenEveryChosenSongStillResolves() {
+        for output in [PlaybackMode.source, .musicApp] {
+            let answer = ResolveAnswer()
+            let f = realClientFixture(output: output, answer: answer)
+            loadRails(f)
+            f.reader.answer("jazz", with: genreReading("Jazz"))
+            askForCard(f, "jazz")
+            answer.generation = 8
+            _ = f.scene.handle(.enter)
+            drain(f.actions)
+            XCTAssertEqual(f.rig.sent("slice.queue").count, 0, "\(output)")
+            XCTAssertEqual(f.handoff.calls.count, 0, "\(output)")
+            XCTAssertEqual(f.status.current()?.text, djSpanDACLibraryChanged, "\(output)")
+        }
+    }
+
+    func testWhenEveryChosenSongStillResolvesTheGenrePlaysAfterTheCheckOnEitherOutput() {
+        for output in [PlaybackMode.source, .musicApp] {
+            let answer = ResolveAnswer()
+            let f = realClientFixture(output: output, answer: answer)
+            loadRails(f)
+            f.reader.answer("jazz", with: genreReading("Jazz"))
+            askForCard(f, "jazz")
+            _ = f.scene.handle(.enter)
+            drain(f.actions)
+            let ops = f.rig.sent.map(\.op)
+            XCTAssertEqual(ops.filter { $0 == "library.resolveIDs" }.count, 1, "\(output)")
+            XCTAssertEqual(ops.filter { $0 == "library.genreUnheard" }.count, 1, "\(output): Enter scanned the library again")
+            if output == .source {
+                let check = ops.firstIndex(of: "library.resolveIDs"), queue = ops.firstIndex(of: "slice.queue")
+                XCTAssertNotNil(check); XCTAssertNotNil(queue)
+                if let check, let queue { XCTAssertLessThan(check, queue, "the queue went out before the check") }
+                XCTAssertEqual(f.rig.sent("slice.queue").count, 1)
+            } else {
+                XCTAssertEqual(f.handoff.calls.count, 1)
+            }
+        }
+    }
 }
