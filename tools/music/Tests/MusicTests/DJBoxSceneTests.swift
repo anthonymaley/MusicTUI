@@ -1222,6 +1222,33 @@ final class DJBoxSceneTests: XCTestCase {
                                   musicApp: { _ in }, source: { _ in }, unaffected: {})
         }
         XCTAssertEqual(f.rig.sent("slice.queue").count, 0, "the artist mix queued after another play was admitted")
+        XCTAssertEqual(f.status.current()?.text, anotherPlayAdmittedNothingPlayed)
+    }
+
+    /// The coordinator's own admission: the expected serial is judged with the
+    /// epochs, before any body, and a refusal admits nothing.
+    func testTheCoordinatorRefusesAStaleExpectedPlaySerialBeforeAnyBodyAndAdmitsNothing() throws {
+        let routing = SceneDataRig(output: .source, accepted: true).coordinator()
+        let before = routing.playSerial
+        var ran = 0
+        try routing.perform(.libraryPlay, expecting: routing.stamp, expectingPlaySerial: before,
+                            origin: .spandacLibrary, musicApp: { _ in ran += 1 }, source: { _ in ran += 1 },
+                            unaffected: {})
+        XCTAssertEqual(ran, 1, "a current serial did not run")
+        XCTAssertEqual(routing.playSerial, before + 1)
+
+        XCTAssertThrowsError(try routing.perform(.libraryPlay, expecting: routing.stamp, expectingPlaySerial: before,
+                                                 origin: .spandacLibrary, musicApp: { _ in ran += 1 },
+                                                 source: { _ in ran += 1 }, unaffected: {})) {
+            XCTAssertEqual(($0 as? ActionError)?.message, anotherPlayAdmittedNothingPlayed)
+        }
+        XCTAssertEqual(ran, 1, "a stale serial still ran a body")
+        XCTAssertEqual(routing.playSerial, before + 1, "a refused play moved the serial")
+
+        // No serial given: nothing to keep honest, as before.
+        try routing.perform(.libraryPlay, expecting: routing.stamp, origin: .spandacLibrary,
+                            musicApp: { _ in ran += 1 }, source: { _ in ran += 1 }, unaffected: {})
+        XCTAssertEqual(ran, 2)
     }
 
     func testAnOpenDataGenreWhoseActionWaitedWhileAnotherPlayWasAdmittedPlaysNothing() throws {

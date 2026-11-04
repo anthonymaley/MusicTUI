@@ -529,7 +529,8 @@ final class RoutingCoordinator {
                  musicApp: () throws -> Void,
                  source: (SourceAppClient) throws -> Void,
                  unaffected: () throws -> Void) throws {
-        try route(action, expecting: expecting, origin: nil, searchOrigin: false, shippedOnly: true,
+        try route(action, expecting: expecting, expectingPlaySerial: nil, origin: nil, searchOrigin: false,
+                  shippedOnly: true,
                   musicApp: { _ in try musicApp() },
                   source: source, unaffected: unaffected)
     }
@@ -555,14 +556,21 @@ final class RoutingCoordinator {
     ///   (phase A, an add, the lifecycle, a player) runs (ruling 2026-11-03
     ///   17:40: search plays on the SpanDAC output only). Every other branch
     ///   ignores it.
+    /// - `expectingPlaySerial`: the play serial the caller's card was made
+    ///   under. Checked with the two epochs, inside the same boundary and
+    ///   before any branch: if another chosen-music play has been admitted
+    ///   since, nothing runs and it throws `anotherPlayAdmittedNothingPlayed`.
+    ///   Nil for a caller with no card to keep honest.
     func perform(_ action: MusicTUIAction,
                  expecting: (epoch: Int, dataEpoch: Int)?,
+                 expectingPlaySerial: Int? = nil,
                  origin: PlayOrigin? = nil,
                  searchOrigin: Bool = false,
                  musicApp: (MusicTUIPlayPath) throws -> Void,
                  source: (SourceAppClient) throws -> Void,
                  unaffected: () throws -> Void) throws {
-        try route(action, expecting: expecting, origin: origin, searchOrigin: searchOrigin, shippedOnly: false,
+        try route(action, expecting: expecting, expectingPlaySerial: expectingPlaySerial, origin: origin,
+                  searchOrigin: searchOrigin, shippedOnly: false,
                   musicApp: musicApp, source: source, unaffected: unaffected)
     }
 
@@ -574,6 +582,7 @@ final class RoutingCoordinator {
     /// before that made no sound and supersedes no reservation.
     private func route(_ action: MusicTUIAction,
                        expecting: (epoch: Int, dataEpoch: Int)?,
+                       expectingPlaySerial: Int?,
                        origin: PlayOrigin?,
                        searchOrigin: Bool,
                        shippedOnly: Bool,
@@ -584,6 +593,11 @@ final class RoutingCoordinator {
             let settled = settledState()
             if let expecting, expecting != settled.stamp {
                 throw ActionError(message: sourceChangedNothingPlayed)
+            }
+            // The serial moves only in `admitAPlay` below, inside this same
+            // boundary, so the check and the admission cannot be split.
+            if let expectingPlaySerial, expectingPlaySerial != playSerial {
+                throw ActionError(message: anotherPlayAdmittedNothingPlayed)
             }
             if let target = settled.playOut,
                try gatePlayOut(target, action: action, settled: settled, source: source) { return }

@@ -2158,15 +2158,17 @@ extension DiscoverScene {
         let status = self.status
         let seams = dj
         let stamp = plan.stamp.routing
+        let serial = plan.stamp.playSerial
         actions.run("Play") {
             do {
                 switch plan.payload {
                 case .artistMix(let mix):
-                    try Self.playDJArtistMix(mix, stamp: stamp, routing: routing, status: status)
+                    try Self.playDJArtistMix(mix, stamp: stamp, serial: serial, routing: routing, status: status)
                 case .genreOpen(let queue):
-                    try Self.playDJGenreOpen(queue, stamp: stamp, routing: routing, status: status, seams: seams)
+                    try Self.playDJGenreOpen(queue, stamp: stamp, serial: serial, routing: routing, status: status,
+                                             seams: seams)
                 case .genreSpanDAC(let rows, let pick, let title):
-                    try Self.playDJGenreSpanDAC(rows: rows, pick: pick, title: title, stamp: stamp,
+                    try Self.playDJGenreSpanDAC(rows: rows, pick: pick, title: title, stamp: stamp, serial: serial,
                                                 routing: routing, status: status, seams: seams)
                 }
             } catch let error as ActionError {
@@ -2182,9 +2184,9 @@ extension DiscoverScene {
     /// One `slice.queue` of the frozen catalogue ids on a SpanDAC output. The
     /// coordinator refuses the artist-mix origin on the MusicTUI output before
     /// any body runs.
-    private static func playDJArtistMix(_ mix: DJArtistMix, stamp: (epoch: Int, dataEpoch: Int),
+    private static func playDJArtistMix(_ mix: DJArtistMix, stamp: (epoch: Int, dataEpoch: Int), serial: Int,
                                         routing: RoutingCoordinator, status: StatusStore) throws {
-        try routing.perform(.discoverTrackPlay, expecting: stamp, origin: .djArtistMix,
+        try routing.perform(.discoverTrackPlay, expecting: stamp, expectingPlaySerial: serial, origin: .djArtistMix,
             musicApp: { _ in throw ActionError(message: djArtistMixSpanDACOnly) },
             source: { client in
                 let skipped = try BridgeMusicProvider(control: client.control).playCatalogue(ids: mix.ids)
@@ -2197,11 +2199,12 @@ extension DiscoverScene {
 
     /// MusicTUI's own data: the app-owned queue, addressed by persistent ID,
     /// set and started exactly as a marked play does.
-    private static func playDJGenreOpen(_ queue: AppQueue, stamp: (epoch: Int, dataEpoch: Int),
+    private static func playDJGenreOpen(_ queue: AppQueue, stamp: (epoch: Int, dataEpoch: Int), serial: Int,
                                         routing: RoutingCoordinator, status: StatusStore,
                                         seams: DJSeams) throws {
         let store = seams.appQueue
-        try routing.perform(.libraryPlay, expecting: stamp, origin: .openData(resultNumber: nil),
+        try routing.perform(.libraryPlay, expecting: stamp, expectingPlaySerial: serial,
+                            origin: .openData(resultNumber: nil),
             musicApp: { path in
                 guard path == .shipped else { throw ActionError(message: pickASpanDACOutput) }
                 store.set(queue)
@@ -2219,8 +2222,8 @@ extension DiscoverScene {
     /// output (as a combined play), or handed to the MusicTUI output by
     /// verified alias. The library is re-checked first; a changed one plays nothing.
     private static func playDJGenreSpanDAC(rows: [MusicRow], pick: DJSpanDACGenrePick, title: String,
-                                           stamp: (epoch: Int, dataEpoch: Int), routing: RoutingCoordinator,
-                                           status: StatusStore, seams: DJSeams) throws {
+                                           stamp: (epoch: Int, dataEpoch: Int), serial: Int,
+                                           routing: RoutingCoordinator, status: StatusStore, seams: DJSeams) throws {
         do {
             try seams.spandacGenre(routing.dataClient()).recheck(pick)
         } catch let error as DJGenreSourceError {
@@ -2228,7 +2231,7 @@ extension DiscoverScene {
         } catch {
             throw ActionError(message: DJGenreSourceError.failed(djErrorText(error)).message)
         }
-        try routing.perform(.libraryPlay, expecting: stamp, origin: .spandacLibrary,
+        try routing.perform(.libraryPlay, expecting: stamp, expectingPlaySerial: serial, origin: .spandacLibrary,
             musicApp: { path in
                 guard path == .handoff else { throw ActionError(message: pickASpanDACOutput) }
                 guard rows.allSatisfy({ $0.alias != nil }) else { throw ActionError(message: djGenreNeedsAliases) }
