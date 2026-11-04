@@ -244,8 +244,8 @@ struct DJSpanDACGenrePick: Equatable {
     let total: Int
     let instance: String?
     let generation: Int?
-    /// What was asked, so `recheck` can ask the same question again. Nil on a
-    /// pick that was not read through the wire client; such a pick cannot be re-checked.
+    /// What was asked. Nil on a pick that was not read through the wire client.
+    /// (The re-check at Enter does not ask it again: it checks the rows.)
     var genre: String? = nil
     var days: Int? = nil
 }
@@ -270,7 +270,8 @@ protocol DJSpanDACGenreSource: Sendable {
     /// SpanDAC's own oldest matches for the genre (at most 50, server side
     /// filtered and sorted), with the total matched. The client shuffles them.
     func genreUnheard(genre: String, days: Int) throws -> DJSpanDACGenrePick
-    /// At Enter: the same instance and generation still answer, and the chosen
-    /// ids still resolve in that SpanDAC library. Throws when they do not.
+    /// At Enter: the same instance and generation still answer, and every id in
+    /// `pick.rows` (the rows the card will play) still resolves in that SpanDAC
+    /// library. Throws when they do not, or when that cannot be checked.
     func recheck(_ pick: DJSpanDACGenrePick) throws
 }

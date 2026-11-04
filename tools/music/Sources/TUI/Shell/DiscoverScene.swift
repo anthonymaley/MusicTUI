@@ -2225,7 +2225,10 @@ extension DiscoverScene {
                                            stamp: (epoch: Int, dataEpoch: Int), serial: Int,
                                            routing: RoutingCoordinator, status: StatusStore, seams: DJSeams) throws {
         do {
-            try seams.spandacGenre(routing.dataClient()).recheck(pick)
+            // The check is of the very rows about to be queued or handed off.
+            let chosen = DJSpanDACGenrePick(rows: rows, total: pick.total, instance: pick.instance,
+                                            generation: pick.generation, genre: pick.genre, days: pick.days)
+            try seams.spandacGenre(routing.dataClient()).recheck(chosen)
         } catch let error as DJGenreSourceError {
             throw ActionError(message: error.message)
         } catch {

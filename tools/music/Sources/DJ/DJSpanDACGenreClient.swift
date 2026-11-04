@@ -12,9 +12,19 @@
 //
 // A reply that does not satisfy the contract fails the whole read: a shortened
 // list is indistinguishable from a real one.
+//
+// The re-check at Enter is a second, cheap op, `library.resolveIDs`: it asks the
+// live library whether every id the card will play still resolves, and answers
+// with the instance and generation that held. It is identity, not a comparison
+// with a fresh oldest-50 (which would wrongly reject songs still present when
+// the ranking has moved on).
+//
+//   -> {"op":"library.resolveIDs","ids":["<library id>", ... up to 50]}
+//   <- {"ok":true,"op":"library.resolveIDs","count":Int,"generation":Int,"instance":String}
 import Foundation
 
 let djGenreUnheardOp = "library.genreUnheard"
+let djResolveIDsOp = "library.resolveIDs"
 
 struct DJSpanDACGenreClient: DJSpanDACGenreSource {
     /// The most songs SpanDAC returns.
@@ -29,16 +39,31 @@ struct DJSpanDACGenreClient: DJSpanDACGenreSource {
         return try Self.decode(reply, genre: genre, days: days)
     }
 
-    /// Re-reads the same question and requires the same instance and generation.
-    /// This narrows how stale the pick can be at Enter; it does not prove the
-    /// library unchanged (a change that leaves both values alone is invisible).
+    /// At Enter: every id the card will play (the pick's rows) still resolves in
+    /// the live SpanDAC library, under the same instance and generation the pick
+    /// was read in. Anything else, or a check that cannot be made, fails whole.
+    /// This narrows how stale the pick can be at Enter; a change that leaves both
+    /// stamp values and every id alone is invisible to it.
     func recheck(_ pick: DJSpanDACGenrePick) throws {
-        guard let instance = pick.instance, let generation = pick.generation,
-              let genre = pick.genre, let days = pick.days else {
+        guard let instance = pick.instance, let generation = pick.generation else {
             throw DJGenreSourceError.libraryChanged
         }
-        let again = try Self.decode(try read(genre: genre, days: days), genre: genre, days: days)
-        guard again.instance == instance, again.generation == generation else {
+        let ids = pick.rows.map(\.id)
+        guard !ids.isEmpty, ids.count <= Self.maximumSongs, Set(ids).count == ids.count else {
+            throw DJGenreSourceError.failed("the chosen songs can't be checked")
+        }
+        let reply = try ask(djResolveIDsOp, ["op": djResolveIDsOp, "ids": ids])
+        guard let count = Self.int(reply["count"]), count >= 0, count <= ids.count else {
+            throw Self.bad("is missing a usable count", of: djResolveIDsOp)
+        }
+        guard let seenGeneration = Self.int(reply["generation"]) else {
+            throw Self.bad("is missing generation", of: djResolveIDsOp)
+        }
+        guard let seenInstance = reply["instance"] as? String,
+              !seenInstance.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw Self.bad("is missing instance", of: djResolveIDsOp)
+        }
+        guard seenInstance == instance, seenGeneration == generation, count == ids.count else {
             throw DJGenreSourceError.libraryChanged
         }
     }
@@ -46,14 +71,18 @@ struct DJSpanDACGenreClient: DJSpanDACGenreSource {
     // MARK: the request
 
     private func read(genre: String, days: Int) throws -> [String: Any] {
+        try ask(djGenreUnheardOp, ["op": djGenreUnheardOp, "genre": genre, "days": days])
+    }
+
+    /// One op on the library transport, sent only when the SpanDAC advertises it.
+    private func ask(_ op: String, _ body: [String: Any]) throws -> [String: Any] {
         let control = (client.control as? SourceAppControl)
             ?? SourceAppControl(path: client.path, transport: client.transport)
         do {
-            guard try control.capabilities().contains(djGenreUnheardOp) else {
+            guard try control.capabilities().contains(op) else {
                 throw DJGenreSourceError.needsNewerSpanDAC
             }
-            return try control.send(["op": djGenreUnheardOp, "genre": genre, "days": days],
-                                    over: control.libraryTransport)
+            return try control.send(body, over: control.libraryTransport)
         } catch let error as DJGenreSourceError {
             throw error
         } catch let error as SourceAppError {
@@ -71,8 +100,8 @@ struct DJSpanDACGenreClient: DJSpanDACGenreSource {
 
     // MARK: the reply
 
-    private static func bad(_ what: String) -> DJGenreSourceError {
-        .failed("SpanDAC's genre reply \(what)")
+    private static func bad(_ what: String, of op: String = djGenreUnheardOp) -> DJGenreSourceError {
+        .failed("SpanDAC's \(op == djGenreUnheardOp ? "genre" : "library check") reply \(what)")
     }
 
     private static func int(_ value: Any?) -> Int? {
