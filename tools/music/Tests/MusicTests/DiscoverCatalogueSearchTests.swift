@@ -960,6 +960,37 @@ final class DiscoverCatalogueSearchTests: XCTestCase {
         XCTAssertEqual(f.rig.sent("slice.queue").map { $0.body["ids"] as? [String] ?? [] }, [["901", "902"]])
     }
 
+    /// The chain an ordinary track list, `/`, an artist, one of its albums,
+    /// then `/` again: the box reopens with the last term over the results
+    /// level (the artist's albums are left), and Esc leaves the box onto the
+    /// results with the artist still on the cursor (Codex 290dfcca, finding 2).
+    func testSlashFromAnArtistsAlbumReopensTheBoxWithTheLastTermOverTheResults() {
+        let f = fixture(output: .source)
+        loadRails(f)
+        _ = f.scene.handle(.down)                       // Boom Bap, a playlist
+        _ = f.scene.handle(.enter)
+        ticks(f, until: { f.scene.trackRows.map(\.id) == ["901", "902"] })
+        search(f)                                       // "daft"
+        _ = f.scene.handle(.enter)                      // Artist One
+        ticks(f, until: { self.model(f)?.artistAlbums != nil })
+        _ = f.scene.handle(.enter)                      // Album Two
+        ticks(f, until: { f.scene.trackRows.map(\.id) == ["b1", "b2"] })
+
+        _ = f.scene.handle(.char("/"))
+        XCTAssertTrue(isSearch(f), "\(f.scene.currentLevel)")
+        XCTAssertEqual(model(f)?.isEditing, true, "/ from the artist's albums opened no box")
+        XCTAssertTrue(f.scene.capturesAllInput)
+        XCTAssertEqual(model(f)?.text, "daft")
+        XCTAssertNil(model(f)?.artist, "the box reopened over the artist's albums, not the results")
+
+        _ = f.scene.handle(.escape)                     // leaves the box
+        XCTAssertTrue(isSearch(f))
+        XCTAssertFalse(f.scene.capturesAllInput)
+        XCTAssertNil(model(f)?.artist)
+        XCTAssertEqual(model(f)?.results?.artists.map(\.id), ["art1"])
+        XCTAssertEqual(model(f)?.selectedHit?.id, "art1")
+    }
+
     /// `/` while an album's tracks are still being read, closed at once: the
     /// album's tracks still arrive.
     func testClosingASearchOpenedWhileATrackListLoadsStillLoadsIt() {

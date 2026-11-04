@@ -345,11 +345,33 @@ final class CatalogueSearchModelTests: XCTestCase {
         XCTAssertEqual(pane.model.cursor, 1)
     }
 
-    func testSlashIsInertOnTheArtistLevel() {
+    /// Was `testSlashIsInertOnTheArtistLevel`. Ruled otherwise (Codex
+    /// 290dfcca, finding 2; the score promises `/` on results reopens the box
+    /// with the last term): from the artist level `/` leaves the artist's
+    /// albums, their pending answer with them, and reopens the box over the
+    /// results, which Esc returns to with their own cursor.
+    func testSlashOnTheArtistLevelReopensTheBoxOverTheResults() {
         onResults()
+        press(.down)                 // A2
         press(.enter)
+        let albumsID = host.lastOrNone.id
+        XCTAssertEqual(host.lastOrNone.intent, .openArtist(A2))
+        let n = host.emitted.count
+
         press(.char("/"))
+        XCTAssertTrue(pane.isEditing)
+        XCTAssertEqual(pane.model.text, "kid a")
+        XCTAssertNil(pane.model.artist)
+        XCTAssertEqual(host.emitted.count, n, "/ emits nothing")
+        XCTAssertFalse(pane.didReceive(albums: ArtistAlbums(albums: [B1], more: false), requestID: albumsID),
+                       "the artist's late albums were applied after / left them")
+        XCTAssertFalse(pane.didFail("late", requestID: albumsID))
+
+        press(.escape)
         XCTAssertFalse(pane.isEditing)
+        XCTAssertNil(pane.model.artist)
+        XCTAssertEqual(pane.model.results, fullResults())
+        XCTAssertEqual(cursorHit, A2, "the results level lost its cursor")
     }
 
     // MARK: request ids
