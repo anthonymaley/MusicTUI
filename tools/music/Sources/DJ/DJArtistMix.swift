@@ -12,7 +12,7 @@
 //   CATALOGUE id (the name is never resolved a second time).
 // - An artist's albums are the first 25 (as search); any failed album read
 //   fails the WHOLE mix; songs are de-duplicated by id; a song SpanDAC gave no
-//   length is unavailable, dropped and counted; the mix is a uniformly random
+//   length is unavailable, dropped and counted; one song per exact title is kept (the first); the mix is a uniformly random
 //   50 (or all, when fewer) in shuffled order.
 import Foundation
 
@@ -79,6 +79,9 @@ struct DJArtistMix: Equatable {
     let moreAlbums: Bool
     /// Songs SpanDAC gave no length, dropped.
     let unavailable: Int
+    /// Songs dropped because an earlier one had the exact same title (SpanDAC
+    /// refuses a queue holding two).
+    var repeatedTitles: Int = 0
 
     /// "Radiohead · 50 songs from 9 albums (3 unavailable skipped)", with
     /// "first 25 albums" when the artist has more.
@@ -86,9 +89,20 @@ struct DJArtistMix: Equatable {
         var notes: [String] = []
         if moreAlbums { notes.append("first \(DiscoverScene.artistAlbumsLimit) albums") }
         if unavailable > 0 { notes.append("\(unavailable) unavailable skipped") }
+        if repeatedTitles > 0 { notes.append(djRepeatedTitlesNote(repeatedTitles)) }
         let tail = notes.isEmpty ? "" : " (\(notes.joined(separator: "; ")))"
         return "\(artistName) \u{00B7} \(djCount(ids.count, "song")) from \(djCount(albumCount, "album"))\(tail)"
     }
+}
+
+func djRepeatedTitlesNote(_ n: Int) -> String { "\(djCount(n, "repeated title")) skipped" }
+
+/// SpanDAC's queue preflight refuses two songs with the exact same title (case
+/// sensitive, no normalization). Keeps the first of each title, in order.
+func djFirstPerTitle<T>(_ items: [T], title: (T) -> String) -> (kept: [T], dropped: Int) {
+    var seen = Set<String>()
+    let kept = items.filter { seen.insert(title($0)).inserted }
+    return (kept, items.count - kept.count)
 }
 
 func djCount(_ n: Int, _ noun: String) -> String { "\(n) \(noun)\(n == 1 ? "" : "s")" }
@@ -139,7 +153,7 @@ func djBuildArtistMix(artist: CatalogueHit, catalogue: DJCatalogue, shuffler: DJ
     }
 
     var seen = Set<String>()
-    var songs: [(id: String, album: String)] = []
+    var songs: [(id: String, album: String, title: String)] = []
     var unavailable = 0
     for album in page.albums {
         guard isCurrent() else { throw DJArtistMixError.cancelled }
@@ -153,15 +167,18 @@ func djBuildArtistMix(artist: CatalogueHit, catalogue: DJCatalogue, shuffler: DJ
         }
         for track in tracks where seen.insert(track.id).inserted {
             if track.length == .null { unavailable += 1; continue }
-            songs.append((track.id, album.id))
+            songs.append((track.id, album.id, track.name))
         }
     }
     guard isCurrent() else { throw DJArtistMixError.cancelled }
     guard !songs.isEmpty else { throw DJArtistMixError.noSongs(artist: artist.title) }
 
+    // One song per exact title, the first in album order, before the sample.
+    let (distinct, repeated) = djFirstPerTitle(songs, title: \.title)
+
     // A full shuffle, then the first 50: uniform over every subset of 50.
-    let chosen = Array(shuffler.shuffled(songs).prefix(DJArtistMix.songLimit))
+    let chosen = Array(shuffler.shuffled(distinct).prefix(DJArtistMix.songLimit))
     return DJArtistMix(artistName: artist.title, artistID: artist.id, ids: chosen.map(\.id),
                        albumCount: Set(chosen.map(\.album)).count, moreAlbums: page.more,
-                       unavailable: unavailable)
+                       unavailable: unavailable, repeatedTitles: repeated)
 }
