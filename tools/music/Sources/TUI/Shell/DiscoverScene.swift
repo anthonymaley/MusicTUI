@@ -115,6 +115,7 @@ final class DiscoverScene: Scene {
         case .tracks(let it):  return "tracks:\(it.id)"
         case .genres:          return "genres"
         case .search:          return "search"
+        case .dj:              return "dj"
         }
     }
 
@@ -126,6 +127,9 @@ final class DiscoverScene: Scene {
         get { stack[stack.count - 1] }
         set { stack[stack.count - 1] = newValue }
     }
+
+    /// The cursor row of the level on screen, for a test.
+    var shownCursorIndex: Int { current.cursor.index }
 
     private var cursorIndex: Int {
         get { current.cursor.index }
@@ -283,7 +287,7 @@ final class DiscoverScene: Scene {
             computed = trackRows.map { DiscoverDisplayRow.item($0) }
         case .genres:
             computed = [.genreChoice(nil)] + genres.map { DiscoverDisplayRow.genreChoice($0) }
-        case .search:
+        case .search, .dj:
             // The pane draws its own rows; Discover's list has none here.
             computed = []
         }
@@ -328,7 +332,15 @@ final class DiscoverScene: Scene {
     /// `trackRows`, which an album the search opens replaces (and Back
     /// clears), so it is put back when the search closes; a read still out
     /// when `/` was pressed is left behind and read again then.
-    private var trackListUnderSearch: (item: DiscoverItem, rows: [DiscoverItem], read: RowsRead?, reread: Bool)?
+    private var trackListUnderSearch: TrackListUnder?
+
+    /// An album's track list as it stood when a pane (the search, the DJ box)
+    /// opened over it: the rows and read it had, and whether its read was still
+    /// out (so it is read again when the pane closes, its answer having been left behind).
+    typealias TrackListUnder = (item: DiscoverItem, rows: [DiscoverItem], read: RowsRead?, reread: Bool)
+
+    /// The same for the DJ box.
+    private var trackListUnderDJ: TrackListUnder?
 
     /// One search or artist-albums answer, as the background read left it.
     private enum SearchAnswer {
@@ -352,6 +364,33 @@ final class DiscoverScene: Scene {
     /// are applied: a closed search's late answer cannot pass for the next
     /// search's same-numbered request (handle/tick thread).
     private var searchSession = 0
+
+    // MARK: - The DJ box state (the host glue is the extension at the end)
+
+    /// What the DJ box reads and plays through. Fail-closed defaults; the shell
+    /// wires the real ones (`DJSeams.live`) and a test hands in fakes.
+    var dj = DJSeams()
+
+    /// The DJ box, while a `.dj` frame is in the stack. Readable, not private,
+    /// so a test can see what it shows.
+    private(set) var djModel: DJBoxModel?
+
+    /// Scene-lifetime count of DJ boxes, moved on by every open and every drop,
+    /// so a closed box's late answer can never pass for the next box's
+    /// same-numbered request (handle/tick thread).
+    private var djSession = 0
+
+    /// The world the latest request was asked in (handle/tick thread).
+    private var djAskedStamp: DJStamp?
+
+    /// An answer in the slot: the box session and request id it was asked under.
+    private typealias DJInboxEntry = (session: Int, requestID: Int, outcome: DJOutcome)
+    private var djInbox: DJInboxEntry?                       // guarded by inboxLock
+    /// The (session, request id) a background job may still deliver for; every
+    /// job asks it before each read. (-1, -1) while no box is open.
+    private var djLive: (session: Int, requestID: Int) = (-1, -1)   // guarded by inboxLock
+
+    static let djDataSourceChanged = "Data source changed while the DJ was open; ask again."
 
     static let searchNeedsSpanDAC = "Search needs SpanDAC on this Mac."
     static let searchDataSourceChanged = "Data source changed while searching; search again."
@@ -379,6 +418,7 @@ final class DiscoverScene: Scene {
     /// and every other level leave the shell's keys to the shell.
     var capturesAllInput: Bool {
         if case .search = current.level { return searchPane?.isEditing ?? false }
+        if case .dj = current.level { return djModel != nil }
         return false
     }
 
@@ -396,6 +436,9 @@ final class DiscoverScene: Scene {
                 ? "Type to search  Enter Search  Esc Cancel"
                 : "\u{2191}\u{2193} Move  Enter Open/Play  p Play album  / Search  \u{2190} Back"
         }
+        if case .dj = current.level, djModel != nil {
+            return "Type a request  Enter Ask or play the card  Esc Close"
+        }
         return discoverFooterHint(selection, canGoBack: canGoBack, canRefresh: canRefresh,
                            inTrackList: { if case .tracks = current.level { return true }; return false }())
     }
@@ -412,7 +455,10 @@ final class DiscoverScene: Scene {
             searchIntentAction = nil
             return asked ?? drawn
         }
+        // The DJ box takes every key the shell hands it, raw, and passes none on.
+        if case .dj = current.level, djModel != nil { return handleDJ(key) }
         if key == .char("/") { return openSearch() }
+        if key == .char("d") { return openDJ() }
         let k = vimAlias(key, listScene: true)
         let count = selectableDiscoverIndices(rows).count
 
@@ -1078,6 +1124,11 @@ final class DiscoverScene: Scene {
             dropSearch()
             status.post(Self.searchDataSourceChanged)
         }
+        // The same for the DJ box: its card, its reads and its keys go.
+        if djModel != nil {
+            dropDJ()
+            status.post(Self.djDataSourceChanged)
+        }
         loaded = false
         failed = false
         loadFailure = nil
@@ -1254,9 +1305,12 @@ final class DiscoverScene: Scene {
         artDirty = false
         let incomingSearch = searchInbox
         searchInbox = nil
+        let incomingDJ = djInbox
+        djInbox = nil
         inboxLock.unlock()
 
         if let incomingSearch, applySearchAnswer(incomingSearch) { changed = true }
+        if tickDJ(incomingDJ) { changed = true }
 
         if let incomingRails {
             rails = incomingRails
@@ -1358,6 +1412,9 @@ final class DiscoverScene: Scene {
         if case .search = current.level, let pane = searchPane {
             return renderSearch(pane, frame: frame)
         }
+        if case .dj = current.level, let model = djModel {
+            return renderDJ(model, frame: frame)
+        }
         clampScroll()
         var out = ""
         for r in frame.bodyY..<(frame.bodyY + frame.bodyHeight) {
@@ -1392,6 +1449,7 @@ final class DiscoverScene: Scene {
         case .tracks(let it):  return it.name
         case .genres:          return "Genres"
         case .search:          return "Search"
+        case .dj:              return "DJ"
         }
     }
 
@@ -1640,6 +1698,12 @@ extension DiscoverScene: CatalogueSearchHost {
         }
         let under = trackListUnderSearch
         dropSearch()
+        restoreTrackList(under)
+    }
+
+    /// Back on the level a pane was opened from: a track list it covered comes
+    /// back as it was, or is read again when its read was left behind.
+    private func restoreTrackList(_ under: TrackListUnder?) {
         guard let under, case .tracks(let item) = current.level, item.id == under.item.id else { return }
         if under.reread {
             // Its read was left behind: open it again, from the same level.
@@ -1728,6 +1792,497 @@ extension DiscoverScene: CatalogueSearchHost {
         if routing.data != .spandacMac, pane.model.note == nil, frame.bodyHeight > 1 {
             out += ANSICode.moveTo(row: frame.bodyY + 1, col: 2)
                 + "\(ANSICode.dim)\(truncText(Self.searchNeedsSpanDAC, to: max(1, frame.width - 2)))\(ANSICode.reset)"
+        }
+        art.dropDemand()
+        if let last = lastPlaced {
+            out += kittyDeleteEscape(id: last.id)
+            lastPlaced = nil
+        }
+        return out
+    }
+}
+
+// MARK: - The DJ box host
+
+// Discover hosts the DJ box (DJ prompt score, S2 and S3). `DJBoxModel` owns the
+// text, the stages and the request ids; this glue does the work (a model read,
+// the lookups behind a card, the one play) and feeds each answer back with the
+// request id it was asked under. It lives in this file because Swift's
+// `private` is file-scoped.
+//
+// FENCES. Every request carries the box session, its request id, and the stamp
+// (both routing epochs and the play serial) it was asked under. A background
+// job asks `djIsLive` before each step and drops itself the moment any of them
+// moved; `tickDJ` applies an answer only for the current session and request
+// and only while the world is still the one it was asked in. A card plays only
+// while its stamp still holds, through `routing.perform(expecting:)`, which
+// checks both epochs again inside the coordinator's boundary.
+extension DiscoverScene {
+
+    private func openDJ() -> SceneAction {
+        // An album's track list under the box keeps its rows, and an album still
+        // loading is read again when the box closes (its answer would otherwise
+        // arrive to a screen that is not the album and be dropped), as under the search.
+        if case .tracks(let item) = current.level {
+            trackListUnderDJ = (item, trackRows, tracksRead, tracksInFlight)
+            if tracksInFlight { abandonDrill() }
+        }
+        stack = pushLevel(stack, .dj)
+        djSession += 1
+        djModel = DJBoxModel()
+        djAskedStamp = nil
+        inboxLock.lock(); djInbox = nil; djLive = (-1, -1); inboxLock.unlock()
+        return .redraw
+    }
+
+    /// Esc: back to the level `d` was pressed on; the box, its reads and any
+    /// answer still in the slot go.
+    private func closeDJ() {
+        if let at = stack.firstIndex(where: { $0.level == .dj }), at > 0 {
+            stack = Array(stack.prefix(at))
+        }
+        let under = trackListUnderDJ
+        dropDJ()
+        restoreTrackList(under)
+    }
+
+    private func dropDJ() {
+        djSession += 1
+        djModel = nil
+        trackListUnderDJ = nil
+        djAskedStamp = nil
+        inboxLock.lock(); djInbox = nil; djLive = (-1, -1); inboxLock.unlock()
+    }
+
+    private func currentDJStamp() -> DJStamp {
+        let stamp = routing.stamp
+        return DJStamp(epoch: stamp.epoch, dataEpoch: stamp.dataEpoch, playSerial: routing.playSerial)
+    }
+
+    /// Whether the job for (`session`, `requestID`) may still read and deliver:
+    /// that request is the box's latest, and the world is the one it began in.
+    private func djIsLive(_ session: Int, _ requestID: Int, _ stamp: DJStamp) -> Bool {
+        inboxLock.lock()
+        let live = djLive.session == session && djLive.requestID == requestID
+        inboxLock.unlock()
+        return live && currentDJStamp() == stamp
+    }
+
+    // MARK: keys
+
+    private func handleDJ(_ key: KeyPress) -> SceneAction {
+        guard var model = djModel else { return .none }
+        let wasOut = model.isRequestOut
+        let out = model.handle(key)
+        djModel = model
+        // An edit that dropped the request still out: its job is released too,
+        // so it stops reading and can deliver nothing.
+        if out.emission == nil, wasOut, !model.isRequestOut { djRelease() }
+        switch out.emission {
+        case .close?:
+            closeDJ()
+            return .redraw
+        case .ask(let prompt, let requestID)?:
+            let seams = dj
+            startDJRequest(requestID: requestID) { live, stamp, report in
+                let reading = Self.blockingRead(seams.reader, prompt, timeout: seams.readerTimeout)
+                return self.djOutcome(for: reading, seams: seams, stamp: stamp, report: report, live: live)
+            }
+            return .redraw
+        case .choose(let hit, let requestID)?:
+            // The picker's world must still be the one it was read in.
+            if let asked = djAskedStamp, asked != currentDJStamp() {
+                djDrop(saying: djChangedLine)
+                return .redraw
+            }
+            let seams = dj
+            startDJRequest(requestID: requestID) { live, stamp, report in
+                self.djArtistMixOutcome(name: hit.title, chosen: hit, seams: seams, stamp: stamp,
+                                        report: report, live: live)
+            }
+            return .redraw
+        case .play(let plan)?:
+            return playDJ(plan)
+        case nil:
+            return out.changed ? .redraw : .none
+        }
+    }
+
+    private func djDrop(saying words: String) {
+        guard var model = djModel else { return }
+        model.drop(saying: words)
+        djModel = model
+        djRelease()
+    }
+
+    /// Nothing is out for the box any more: the world it was asked in is
+    /// forgotten, the slot is emptied, and a job still running finds itself not live.
+    private func djRelease() {
+        djAskedStamp = nil
+        inboxLock.lock(); djInbox = nil; djLive = (-1, -1); inboxLock.unlock()
+    }
+
+    // MARK: asking
+
+    /// Starts one background job for a request the model just numbered, under
+    /// the session and stamp of now. A nil answer is a job that found itself
+    /// stale: nothing is delivered for it.
+    private func startDJRequest(requestID: Int,
+                                _ work: @escaping (_ live: @escaping () -> Bool, _ stamp: DJStamp,
+                                                   _ report: @escaping (DJOutcome) -> Void) -> DJOutcome?) {
+        let session = djSession
+        let stamp = currentDJStamp()
+        djAskedStamp = stamp
+        inboxLock.lock(); djLive = (session, requestID); djInbox = nil; inboxLock.unlock()
+        DispatchQueue.global().async { [weak self] in
+            guard let self else { return }
+            let live: () -> Bool = { self.djIsLive(session, requestID, stamp) }
+            // Everything this job delivers, progress included, goes out under the
+            // session and request it began in, never under whatever is current.
+            let report: (DJOutcome) -> Void = { self.djDeliver(session: session, requestID: requestID, $0) }
+            guard let outcome = work(live, stamp, report), live() else { return }
+            report(outcome)
+        }
+    }
+
+    /// One answer into the slot. Only the request the box is waiting on takes
+    /// it, judged here under the lock that guards the slot: an answer from a box
+    /// since closed, a request since replaced or a job since released finds the
+    /// pair no longer live and is dropped. (A request at least as new as the one
+    /// already there replaces it; the older never does.)
+    private func djDeliver(session: Int, requestID: Int, _ outcome: DJOutcome) {
+        inboxLock.lock()
+        var written = false
+        if djLive.session == session, djLive.requestID == requestID {
+            if let held = djInbox, (held.session, held.requestID) > (session, requestID) {
+                // A newer request already holds the slot.
+            } else {
+                djInbox = (session, requestID, outcome)
+                written = true
+            }
+        }
+        inboxLock.unlock()
+        if written { inboxWritten?("dj") }
+    }
+
+    /// The reader is async; the job is a plain background thread. Never on the
+    /// input loop.
+    private static func blockingRead(_ reader: DJReader, _ prompt: String, timeout: TimeInterval) -> DJReading {
+        final class Slot: @unchecked Sendable { var value: DJReading = .failed("The DJ didn't answer.") }
+        let slot = Slot()
+        let done = DispatchSemaphore(value: 0)
+        let task = Task.detached {
+            let reading = await reader.read(prompt)
+            if !Task.isCancelled { slot.value = reading }
+            done.signal()
+        }
+        guard done.wait(timeout: .now() + timeout) == .success else {
+            // Abandoned: whatever the reader says later is written nowhere this
+            // call (or any box) reads.
+            task.cancel()
+            return .failed(djReaderTimedOutLine)
+        }
+        return slot.value
+    }
+
+    /// tick(): apply the answer in the slot, and drop what the world has left behind.
+    private func tickDJ(_ incoming: DJInboxEntry?) -> Bool {
+        guard var model = djModel else { return false }
+        var changed = false
+        if let incoming, incoming.session == djSession {
+            // An answer from a world that has since moved is no answer.
+            if let asked = djAskedStamp, asked != currentDJStamp() {
+                model.drop(saying: djChangedLine)
+                djModel = model
+                djAskedStamp = nil
+                return true
+            }
+            if model.receive(incoming.outcome, requestID: incoming.requestID) { changed = true }
+        }
+        // A card, a picker or a request in flight belongs to the world it was
+        // asked in: an output switch or another play drops it, and says so.
+        switch model.stage {
+        case .reading, .working, .pick, .card:
+            if let asked = djAskedStamp, asked != currentDJStamp() {
+                model.drop(saying: djChangedLine)
+                djAskedStamp = nil
+                inboxLock.lock(); djInbox = nil; djLive = (-1, -1); inboxLock.unlock()
+                changed = true
+            }
+        case .typing, .sent, .message:
+            break
+        }
+        djModel = model
+        return changed
+    }
+
+    // MARK: the answer to one request
+
+    private func djOutcome(for reading: DJReading, seams: DJSeams, stamp: DJStamp,
+                           report: @escaping (DJOutcome) -> Void, live: @escaping () -> Bool) -> DJOutcome? {
+        guard live() else { return nil }
+        switch reading {
+        case .unavailable(let reason):
+            return .message(reason.message)
+        case .failed(let text):
+            return .message(text == djReaderTimedOutLine ? text : djFailedLine(text))
+        case .card(let card):
+            switch card.kind {
+            case .unsupported:
+                return .message(djUnsupportedRequest)
+            case .artistMix:
+                guard let artist = card.artist else { return .message(djUnsupportedRequest) }
+                return djArtistMixOutcome(name: artist, chosen: nil, seams: seams, stamp: stamp,
+                                          report: report, live: live)
+            case .genreUnheard:
+                guard let genre = card.genre else { return .message(djUnsupportedRequest) }
+                return djGenreOutcome(genre: genre, seams: seams, stamp: stamp, live: live)
+            }
+        }
+    }
+
+    /// An artist mix: SpanDAC data on a SpanDAC output only. Every other
+    /// combination is told so before anything is read (the coordinator refuses
+    /// the play itself again, whatever this says).
+    private func djArtistMixOutcome(name: String, chosen: CatalogueHit?, seams: DJSeams, stamp: DJStamp,
+                                    report: @escaping (DJOutcome) -> Void, live: @escaping () -> Bool) -> DJOutcome? {
+        switch routing.selection {
+        case .consistent(.spandacMac, .musicApp): return .message(djArtistMixSpanDACOnly)
+        case .consistent(.spandacMac, _): break
+        default: return .message(djArtistMixNeedsSpanDACData)
+        }
+        seams.beforeProgress()
+        report(.working(chosen?.title ?? name))
+        do {
+            let choice: ProviderChoice<DJCatalogue?> = try routing.choose(.catalogSearch,
+                musicApp: { nil },
+                source: { BridgeMusicProvider(control: $0.control) })
+            guard live() else { return nil }
+            guard choice.stamp == stamp.routing, let catalogue = choice.provider else { return .message(djChangedLine) }
+            let artist: CatalogueHit
+            if let chosen {
+                artist = chosen
+            } else {
+                let results = try catalogue.browseCatalogue(term: name, limit: Self.searchLimit)
+                guard live() else { return nil }
+                guard results.artistsServed else {
+                    return .message(results.artistsNote ?? CatalogueSearchResults.artistsNeedNewerSpanDAC)
+                }
+                switch djResolveArtist(named: name, in: results.artists) {
+                case .none: return .message(djNoArtistFound(name))
+                case .pick(let hits): return .pick(artist: name, hits: hits)
+                case .chosen(let hit): artist = hit
+                }
+            }
+            let mix = try djBuildArtistMix(artist: artist, catalogue: catalogue, shuffler: seams.shuffler,
+                                           isCurrent: live)
+            return .plan(DJPlan(payload: .artistMix(mix), line: mix.line, stamp: stamp))
+        } catch let error as DJArtistMixError {
+            return error == .cancelled ? nil : .message(error.message)
+        } catch {
+            return .message(djErrorText(error))
+        }
+    }
+
+    /// "A genre I haven't heard lately", from the data source now selected.
+    private func djGenreOutcome(genre: String, seams: DJSeams, stamp: DJStamp,
+                                live: @escaping () -> Bool) -> DJOutcome? {
+        let days = djUnheardDays
+        let title = "\(genre) you haven't played"
+        do {
+            switch routing.selection {
+            case .consistent(.open, .musicApp):
+                // MusicTUI's own data on the MusicTUI output: a separate timed
+                // read of Music's library, in the bulk-column shape.
+                try refuseOpenDataPlayBeforeReading(.libraryPlay, routing: routing, spanDACData: false)
+                let read = try djReadLibraryForGenre(run: seams.runScript)
+                guard live() else { return nil }
+                let pick = djPickUnheard(read.songs, genre: genre, now: seams.now(), days: days,
+                                         limit: djGenreSongLimit, shuffler: seams.shuffler)
+                guard !pick.picked.isEmpty else {
+                    let skipped = pick.unreadable > 0
+                        ? " (\(pick.unreadable) with an unreadable date skipped.)" : ""
+                    return .message(djNoGenreSongs(genre: genre, days: days) + skipped)
+                }
+                guard let queue = djOpenQueue(pick.picked, title: title) else {
+                    return .message("Some of those songs have no identity MusicTUI can play by, so nothing played.")
+                }
+                return .plan(DJPlan(payload: .genreOpen(queue), line: pick.line(genre: genre, days: days),
+                                    stamp: stamp))
+
+            case .consistent(.spandacMac, let output):
+                let choice: ProviderChoice<DJSpanDACGenreSource> = try routing.choose(.searchLibrary,
+                    musicApp: { throw ActionError(message: djChangedLine) },
+                    source: { seams.spandacGenre($0) })
+                guard live() else { return nil }
+                guard choice.stamp == stamp.routing else { return .message(djChangedLine) }
+                let result = try choice.provider.genreUnheard(genre: genre, days: days)
+                guard live() else { return nil }
+                let rows = seams.shuffler.shuffled(Array(result.rows.prefix(djGenreSongLimit)))
+                guard !rows.isEmpty else { return .message(djNoGenreSongs(genre: genre, days: days)) }
+                // The MusicTUI output plays only songs with a verified alias; one
+                // without fails the whole pick, nothing substituted.
+                if output == .musicApp, rows.contains(where: { $0.alias == nil }) {
+                    return .message(djGenreNeedsAliases)
+                }
+                return .plan(DJPlan(payload: .genreSpanDAC(rows: rows, pick: result, title: title),
+                                    line: djGenreLine(genre: genre, days: days, songs: rows.count), stamp: stamp))
+
+            default:
+                // MusicTUI's own data with a SpanDAC output stored: refuses as
+                // a marked play does, before any read.
+                try refuseOpenDataPlayBeforeReading(.libraryPlay, routing: routing, spanDACData: false)
+                return .message(djChangedLine)
+            }
+        } catch let error as DJLibraryReadError {
+            return .message(error.message)
+        } catch let error as DJGenreSourceError {
+            return .message(error.message)
+        } catch {
+            return .message(djErrorText(error))
+        }
+    }
+
+    // MARK: Enter on the card
+
+    /// Plays exactly the frozen plan, once, on the action queue. The card's
+    /// stamp must still hold now (and is checked again inside the coordinator).
+    private func playDJ(_ plan: DJPlan) -> SceneAction {
+        guard plan.stamp == currentDJStamp() else {
+            djDrop(saying: djChangedLine)
+            return .redraw
+        }
+        djAskedStamp = nil
+        inboxLock.lock(); djInbox = nil; djLive = (-1, -1); inboxLock.unlock()
+        let routing = self.routing
+        let status = self.status
+        let seams = dj
+        let stamp = plan.stamp.routing
+        let serial = plan.stamp.playSerial
+        actions.run("Play") {
+            do {
+                switch plan.payload {
+                case .artistMix(let mix):
+                    try Self.playDJArtistMix(mix, stamp: stamp, serial: serial, routing: routing, status: status)
+                case .genreOpen(let queue):
+                    try Self.playDJGenreOpen(queue, stamp: stamp, serial: serial, routing: routing, status: status,
+                                             seams: seams)
+                case .genreSpanDAC(let rows, let pick, let title):
+                    try Self.playDJGenreSpanDAC(rows: rows, pick: pick, title: title, stamp: stamp, serial: serial,
+                                                routing: routing, status: status, seams: seams)
+                }
+            } catch let error as ActionError {
+                throw error
+            } catch {
+                // ActionRunner reduces anything but an ActionError to "Play failed."
+                throw ActionError(message: djErrorText(error))
+            }
+        }
+        return .push(.nowPlaying)
+    }
+
+    /// One `slice.queue` of the frozen catalogue ids on a SpanDAC output. The
+    /// coordinator refuses the artist-mix origin on the MusicTUI output before
+    /// any body runs.
+    private static func playDJArtistMix(_ mix: DJArtistMix, stamp: (epoch: Int, dataEpoch: Int), serial: Int,
+                                        routing: RoutingCoordinator, status: StatusStore) throws {
+        try routing.perform(.discoverTrackPlay, expecting: stamp, expectingPlaySerial: serial, origin: .djArtistMix,
+            musicApp: { _ in throw ActionError(message: djArtistMixSpanDACOnly) },
+            source: { client in
+                let skipped = try BridgeMusicProvider(control: client.control).playCatalogue(ids: mix.ids)
+                let base = "Playing \(mix.artistName) mix on SpanDAC \u{2014} \(djCount(mix.ids.count, "song"))."
+                status.post(skipped > 0 ? base + " " + bridgeUnavailableSongsNotice(skipped) : base,
+                            untilStateChange: skipped > 0)
+            },
+            unaffected: {})
+    }
+
+    /// MusicTUI's own data: the app-owned queue, addressed by persistent ID,
+    /// set and started exactly as a marked play does.
+    private static func playDJGenreOpen(_ queue: AppQueue, stamp: (epoch: Int, dataEpoch: Int), serial: Int,
+                                        routing: RoutingCoordinator, status: StatusStore,
+                                        seams: DJSeams) throws {
+        let store = seams.appQueue
+        try routing.perform(.libraryPlay, expecting: stamp, expectingPlaySerial: serial,
+                            origin: .openData(resultNumber: nil),
+            musicApp: { path in
+                guard path == .shipped else { throw ActionError(message: pickASpanDACOutput) }
+                store.set(queue)
+                guard seams.playFirst(queue) else {
+                    store.clear()
+                    throw ActionError(message: "Couldn't play '\(queue.contextLabel)'.")
+                }
+                status.post(LibraryProvenance.playingOnMusicTUI(queue.contextLabel))
+            },
+            source: { _ in throw ActionError(message: LibraryProvenance.bridgeSelectedMusicAppList) },
+            unaffected: {})
+    }
+
+    /// SpanDAC's data: the library rows, queued by library id on a SpanDAC
+    /// output (as a combined play), or handed to the MusicTUI output by
+    /// verified alias. The library is re-checked first; a changed one plays nothing.
+    private static func playDJGenreSpanDAC(rows: [MusicRow], pick: DJSpanDACGenrePick, title: String,
+                                           stamp: (epoch: Int, dataEpoch: Int), serial: Int,
+                                           routing: RoutingCoordinator, status: StatusStore, seams: DJSeams) throws {
+        do {
+            // The check is of the very rows about to be queued or handed off.
+            let chosen = DJSpanDACGenrePick(rows: rows, total: pick.total, instance: pick.instance,
+                                            generation: pick.generation, genre: pick.genre, days: pick.days)
+            try seams.spandacGenre(routing.dataClient()).recheck(chosen)
+        } catch let error as DJGenreSourceError {
+            throw ActionError(message: error.message)
+        } catch {
+            throw ActionError(message: DJGenreSourceError.failed(djErrorText(error)).message)
+        }
+        try routing.perform(.libraryPlay, expecting: stamp, expectingPlaySerial: serial, origin: .spandacLibrary,
+            musicApp: { path in
+                guard path == .handoff else { throw ActionError(message: pickASpanDACOutput) }
+                guard rows.allSatisfy({ $0.alias != nil }) else { throw ActionError(message: djGenreNeedsAliases) }
+                let report = try playThroughHandoff(seams.handoff, rows: rows, startAt: 1, startRequired: false,
+                                                    shuffle: false, title: title)
+                status.post(LibraryProvenance.playingOnMusicTUI(title, report: report),
+                            untilStateChange: report.notice != nil)
+            },
+            source: { client in
+                let played = try spanDACOutputPlayer(client).playRetainingToken(ids: rows.map(\.id), startRequired: false)
+                routing.recordSpanDACPlay(rows, token: played.queueToken, shuffled: played.skippedUnavailable > 0)
+                let base = "Playing \(title) on SpanDAC \u{2014} \(djCount(rows.count, "song"))."
+                status.post(played.skippedUnavailable > 0
+                                ? base + " " + bridgeUnavailableSongsNotice(played.skippedUnavailable) : base,
+                            untilStateChange: played.skippedUnavailable > 0)
+            },
+            unaffected: {})
+    }
+
+    // MARK: render
+
+    /// The DJ box: the line to type in, the line saying where things stand, and
+    /// a picker when there is one. No art panel, and any cover still placed is deleted.
+    private func renderDJ(_ model: DJBoxModel, frame: ShellFrame) -> String {
+        var out = ""
+        for r in frame.bodyY..<(frame.bodyY + frame.bodyHeight) {
+            out += ANSICode.moveTo(row: r, col: 1) + ANSICode.clearLine
+        }
+        let width = max(1, frame.width - 2)
+        let prefix = DJBoxModel.boxPrefix
+        let room = max(1, width - prefix.count - DJBoxModel.caret.count)
+        let shown = model.text.count > room ? "\u{2026}" + String(model.text.suffix(max(0, room - 1))) : model.text
+        out += ANSICode.moveTo(row: frame.bodyY, col: 2)
+            + "\(ANSICode.cyan)\(prefix)\(ANSICode.reset)\(ANSICode.brightWhite)\(shown)\(DJBoxModel.caret)\(ANSICode.reset)"
+        if frame.bodyHeight > 1 {
+            let words = DJBoxModel.clean(model.statusLine ?? "Ask for an artist mix, or a genre you haven't heard lately.")
+            out += ANSICode.moveTo(row: frame.bodyY + 1, col: 2)
+                + "\(ANSICode.dim)\(truncText(words, to: width))\(ANSICode.reset)"
+        }
+        if case .pick(let picker) = model.stage {
+            for (i, hit) in picker.hits.enumerated() where 2 + i < frame.bodyHeight {
+                let selected = i == picker.cursor
+                let label = DJBoxModel.clean((selected ? "\u{25B8} " : "  ") + hit.title)
+                out += ANSICode.moveTo(row: frame.bodyY + 2 + i, col: 2)
+                    + (selected
+                        ? "\(ANSICode.bold)\(ANSICode.brightWhite)\(truncText(label, to: width))\(ANSICode.reset)"
+                        : truncText(label, to: width))
+            }
         }
         art.dropDemand()
         if let last = lastPlaced {

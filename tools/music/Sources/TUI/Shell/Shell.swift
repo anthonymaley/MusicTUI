@@ -393,6 +393,11 @@ func runShell() {
                                       // the Output tab's selection, not an env var.
                                       routing: routing,
                                       kittyEnabled: kittyEnabled)
+            // The DJ box (`d`): Apple's on-device model, the real library read and
+            // the shell's queue and hand-off. Asks nothing until the person does.
+            scene.dj = DJSeams.live(backend: backend, appQueue: appQueue,
+                                    handoff: liveMusicTUIHandoff(backend: backend, appQueue: appQueue,
+                                                                 routing: routing))
             scenes[id] = scene
             return scene
         case .radio:

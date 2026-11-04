@@ -616,6 +616,11 @@ enum PlayOrigin: Equatable {
     case spandacCatalogue
     /// A Discover album, playlist or play-from-here slice read from SpanDAC.
     case spandacDiscoverContainer
+    /// The DJ box's artist mix: catalogue songs read from SpanDAC and played
+    /// ONLY on a SpanDAC output. The coordinator refuses it on the MusicTUI
+    /// output before any body runs (`djArtistMixSpanDACOnly`); no add, no
+    /// lifecycle call and no play-serial move follows a refusal.
+    case djArtistMix
     /// A row read under open data. `resultNumber` is the CLI's `N`.
     case openData(resultNumber: Int?)
 
@@ -794,6 +799,9 @@ let notAvailableWithSpanDACData = "Not available with SpanDAC data in this versi
 /// MusicTUI output (ruling 2026-11-03 17:40: search plays on SpanDAC only).
 let searchPlaysOnSpanDACOnly = "Search plays on the SpanDAC output for now. Pick SpanDAC on the Output tab."
 let sourceChangedNothingPlayed = "Output or MusicTUI's music source changed; nothing was played."
+/// A play that waited for its turn found another chosen-music play admitted
+/// first (the play serial moved), so it no longer describes what he asked for.
+let anotherPlayAdmittedNothingPlayed = "Another play started first; nothing was played."
 
 /// `switchMode` to a SpanDAC output without accepted data. CHOSEN wording.
 let switchMusicTUIToSpanDACFirst = "Switch MusicTUI to SpanDAC first. Still using MusicTUI."
