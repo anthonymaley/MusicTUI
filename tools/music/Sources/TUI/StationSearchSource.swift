@@ -920,6 +920,12 @@ protocol SourceControlling {
     func station(id: String) throws -> Station?
     /// `slice.search` (D5): songs and albums, unpaged.
     func searchCatalogue(term: String, limit: Int) throws -> [CatalogueRecord]
+    /// Discover's catalogue search: one `slice.status` for the capabilities,
+    /// then one `slice.search`, with `"artists": true` only when the status
+    /// lists both `search.artist` and `slice.artistAlbums`.
+    func browseCatalogue(term: String, limit: Int) throws -> CatalogueSearchResults
+    /// `slice.artistAlbums {"id","limit"}`: album records and `more`.
+    func artistAlbums(artistID: String, limit: Int) throws -> ArtistAlbums
     /// `slice.recentTracks` (D5).
     func recentTracks(limit: Int) throws -> [HistoryItem]
     /// `slice.heavyRotation` (D5).
@@ -993,6 +999,12 @@ extension SourceControlling {
     func station(id: String) throws -> Station? { throw SourceAppError.unsupported("slice.station") }
     func searchCatalogue(term: String, limit: Int) throws -> [CatalogueRecord] {
         throw SourceAppError.unsupported("slice.search")
+    }
+    func browseCatalogue(term: String, limit: Int) throws -> CatalogueSearchResults {
+        throw SourceAppError.unsupported("slice.search")
+    }
+    func artistAlbums(artistID: String, limit: Int) throws -> ArtistAlbums {
+        throw SourceAppError.unsupported(catalogueArtistAlbumsOp)
     }
     func recentTracks(limit: Int) throws -> [HistoryItem] { throw SourceAppError.unsupported("slice.recentTracks") }
     func heavyRotation(limit: Int) throws -> [HistoryItem] { throw SourceAppError.unsupported("slice.heavyRotation") }
@@ -1620,6 +1632,79 @@ struct SourceAppControl: SourceControlling {
                   let subtitle = row["subtitle"] as? String else { throw SourceAppError.unreadable }
             return CatalogueRecord(kind: kind, catalogueID: id, title: title, artist: subtitle,
                                    album: try Self.optionalText(row, "album"))
+        }
+    }
+
+    /// Discover's catalogue search. Without both capabilities the search
+    /// request is exactly `searchCatalogue`'s (same keys, same values); with
+    /// them it adds `"artists": true`. A status that cannot be read is not an
+    /// older SpanDAC: Albums and Songs still search, and the note says the
+    /// check failed. An artist record the request did not ask for is dropped.
+    func browseCatalogue(term: String, limit: Int) throws -> CatalogueSearchResults {
+        let support = artistSearchSupport()
+        var body: [String: Any] = ["op": "slice.search", "term": term, "limit": limit]
+        if support == .offered { body["artists"] = true }
+        let hits = try Self.catalogueHits(fromReply: send(body))
+        let served = support == .offered
+        let note: String? = switch support {
+        case .offered:    nil
+        case .notOffered: CatalogueSearchResults.artistsNeedNewerSpanDAC
+        case .unknown:    CatalogueSearchResults.artistsCouldNotCheck
+        }
+        return CatalogueSearchResults(
+            artists: served ? hits.filter { $0.kind == .artist } : [],
+            albums: hits.filter { $0.kind == .album },
+            songs: hits.filter { $0.kind == .song },
+            artistsServed: served,
+            artistsNote: note)
+    }
+
+    /// `records` of `kind: album` (any other kind dropped) and a JSON-boolean
+    /// `more`. A missing `more` fails the read: a first page must never be
+    /// presented as the whole list.
+    func artistAlbums(artistID: String, limit: Int) throws -> ArtistAlbums {
+        let reply = try send(["op": catalogueArtistAlbumsOp, "id": artistID, "limit": limit])
+        guard let more = Self.bool(reply["more"]) else { throw SourceAppError.unreadable }
+        return ArtistAlbums(albums: try Self.catalogueHits(fromReply: reply).filter { $0.kind == .album },
+                            more: more)
+    }
+
+    private enum ArtistSearchSupport { case offered, notOffered, unknown }
+
+    /// The same `slice.status` read and key path `capabilities()` uses, but
+    /// telling "no capabilities key" (an older contract: `.notOffered`) apart
+    /// from a status that failed or is malformed (`.unknown`), which
+    /// `capabilities()` folds together.
+    private func artistSearchSupport() -> ArtistSearchSupport {
+        guard let reply = try? send(["op": "slice.status"]),
+              let status = reply["status"] as? [String: Any] else { return .unknown }
+        guard let raw = status["capabilities"] else { return .notOffered }
+        guard let capabilities = raw as? [String] else { return .unknown }
+        return capabilities.contains(catalogueSearchArtistCapability)
+            && capabilities.contains(catalogueArtistAlbumsOp) ? .offered : .notOffered
+    }
+
+    /// `records` [{`kind` artist|album|song, `id`, `title`, `subtitle`, `album`?}].
+    /// `subtitle` is required for an album or a song and optional for an
+    /// artist; an unknown kind is dropped; a missing required field fails the
+    /// whole read.
+    private static func catalogueHits(fromReply reply: [String: Any]) throws -> [CatalogueHit] {
+        guard let rows = reply["records"] as? [[String: Any]] else { throw SourceAppError.unreadable }
+        return try rows.compactMap { row in
+            guard let kindName = row["kind"] as? String else { throw SourceAppError.unreadable }
+            let kind: CatalogueHit.Kind
+            switch kindName {
+            case "artist": kind = .artist
+            case "album":  kind = .album
+            case "song":   kind = .song
+            default:       return nil
+            }
+            guard let id = row["id"] as? String,
+                  let title = row["title"] as? String else { throw SourceAppError.unreadable }
+            let subtitle = try optionalText(row, "subtitle")
+            if kind != .artist, subtitle == nil { throw SourceAppError.unreadable }
+            return CatalogueHit(kind: kind, id: id, title: title, subtitle: subtitle,
+                                album: try optionalText(row, "album"))
         }
     }
 
