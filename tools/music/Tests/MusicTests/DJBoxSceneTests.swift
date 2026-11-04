@@ -260,7 +260,7 @@ final class DJBoxSceneTests: XCTestCase {
         var seams = DJSeams()
         seams.reader = reader
         seams.runScript = { _, _ in try scripts.run() }
-        seams.spandacGenre = { _ in genreSource ?? DJSpanDACGenreStub() }
+        seams.spandacGenre = { _ in genreSource ?? DJFakeGenreSource(.failure(DJGenreSourceError.needsNewerSpanDAC)) }
         seams.appQueue = store
         seams.playFirst = { plays.record($0); return true }
         seams.handoff = handoff

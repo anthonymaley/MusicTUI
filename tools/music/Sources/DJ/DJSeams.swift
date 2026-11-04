@@ -14,9 +14,10 @@ struct DJSeams {
     var runScript: (String, TimeInterval) throws -> String = { _, _ in
         throw ActionError(message: "The DJ's library read isn't wired in this build.")
     }
-    /// SpanDAC's genre read, built from the Mac's data client. STUB until the
-    /// controller wires the private repo's `library.genreUnheard` contract.
-    var spandacGenre: (SourceAppClient) -> DJSpanDACGenreSource = { _ in DJSpanDACGenreStub() }
+    /// SpanDAC's genre read, built from the Mac's data client.
+    var spandacGenre: (SourceAppClient) -> DJSpanDACGenreSource = { DJSpanDACGenreClient(client: $0) }
+    /// How long one reader call may take before the box gives up on it (seconds).
+    var readerTimeout: TimeInterval = djReaderTimeoutSeconds
     /// The app-owned queue a MusicTUI-data genre play sets.
     var appQueue = AppQueueStore()
     /// Plays the queue's current entry on the MusicTUI output; false on failure.

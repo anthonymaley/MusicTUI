@@ -46,6 +46,10 @@ enum DJOutcome: Equatable {
 
 let djUnsupportedRequest = "The DJ can do artist mixes and genres you haven't heard lately for now."
 
+/// A reader call that has not answered by then is abandoned.
+let djReaderTimeoutSeconds: TimeInterval = 20
+/// The `failed` reading's text for it, shown as it is (no "couldn't read that" prefix).
+let djReaderTimedOutLine = "The DJ took too long to answer. Try again."
 func djFailedLine(_ text: String) -> String { "The DJ couldn't read that: \(text)" }
 
 /// Said (and the coordinator's own sentence) when an artist mix would play on the MusicTUI output.

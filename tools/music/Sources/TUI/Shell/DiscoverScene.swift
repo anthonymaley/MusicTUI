@@ -1854,7 +1854,7 @@ extension DiscoverScene {
         case .ask(let prompt, let requestID)?:
             let seams = dj
             startDJRequest(requestID: requestID) { live, stamp in
-                let reading = Self.blockingRead(seams.reader, prompt)
+                let reading = Self.blockingRead(seams.reader, prompt, timeout: seams.readerTimeout)
                 return self.djOutcome(for: reading, seams: seams, stamp: stamp, requestID: requestID, live: live)
             }
             return .redraw
@@ -1919,15 +1919,21 @@ extension DiscoverScene {
 
     /// The reader is async; the job is a plain background thread. Never on the
     /// input loop.
-    private static func blockingRead(_ reader: DJReader, _ prompt: String) -> DJReading {
+    private static func blockingRead(_ reader: DJReader, _ prompt: String, timeout: TimeInterval) -> DJReading {
         final class Slot: @unchecked Sendable { var value: DJReading = .failed("The DJ didn't answer.") }
         let slot = Slot()
         let done = DispatchSemaphore(value: 0)
-        Task.detached {
-            slot.value = await reader.read(prompt)
+        let task = Task.detached {
+            let reading = await reader.read(prompt)
+            if !Task.isCancelled { slot.value = reading }
             done.signal()
         }
-        done.wait()
+        guard done.wait(timeout: .now() + timeout) == .success else {
+            // Abandoned: whatever the reader says later is written nowhere this
+            // call (or any box) reads.
+            task.cancel()
+            return .failed(djReaderTimedOutLine)
+        }
         return slot.value
     }
 
@@ -1971,7 +1977,7 @@ extension DiscoverScene {
         case .unavailable(let reason):
             return .message(reason.message)
         case .failed(let text):
-            return .message(djFailedLine(text))
+            return .message(text == djReaderTimedOutLine ? text : djFailedLine(text))
         case .card(let card):
             switch card.kind {
             case .unsupported:

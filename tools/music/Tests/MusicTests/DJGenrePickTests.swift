@@ -246,11 +246,7 @@ final class DJGenrePickTests: XCTestCase {
 
     // MARK: - The SpanDAC source
 
-    func testTheStubSaysItNeedsANewerSpanDACAndNothingElse() {
-        let stub = DJSpanDACGenreStub()
-        XCTAssertThrowsError(try stub.genreUnheard(genre: "Jazz", days: 90)) {
-            XCTAssertEqual($0 as? DJGenreSourceError, .needsNewerSpanDAC)
-        }
+    func testTheNewerSpanDACErrorHasItsSentence() {
         XCTAssertEqual(DJGenreSourceError.needsNewerSpanDAC.message, djNeedsNewerSpanDAC)
         XCTAssertTrue(djNeedsNewerSpanDAC.contains("newer SpanDAC"))
     }

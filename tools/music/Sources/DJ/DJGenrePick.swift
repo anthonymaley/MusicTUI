@@ -244,6 +244,10 @@ struct DJSpanDACGenrePick: Equatable {
     let total: Int
     let instance: String?
     let generation: Int?
+    /// What was asked, so `recheck` can ask the same question again. Nil on a
+    /// pick that was not read through the wire client; such a pick cannot be re-checked.
+    var genre: String? = nil
+    var days: Int? = nil
 }
 
 enum DJGenreSourceError: Error, Equatable {
@@ -260,9 +264,8 @@ enum DJGenreSourceError: Error, Equatable {
     }
 }
 
-/// The SpanDAC half of the genre pick. The real client is wired by the
-/// controller from the private repo's `library.genreUnheard` contract; until
-/// then `DJSpanDACGenreStub` stands in.
+/// The SpanDAC half of the genre pick. The real client is `DJSpanDACGenreClient`
+/// (DJSpanDACGenreClient.swift), over the private repo's `library.genreUnheard` contract.
 protocol DJSpanDACGenreSource: Sendable {
     /// SpanDAC's own oldest matches for the genre (at most 50, server side
     /// filtered and sorted), with the total matched. The client shuffles them.
@@ -270,16 +273,4 @@ protocol DJSpanDACGenreSource: Sendable {
     /// At Enter: the same instance and generation still answer, and the chosen
     /// ids still resolve in that SpanDAC library. Throws when they do not.
     func recheck(_ pick: DJSpanDACGenrePick) throws
-}
-
-/// STUB. The concrete wire client for `library.genreUnheard` is not written
-/// here: its exact wire fields are not final in the private repo. Until the
-/// controller wires it, SpanDAC data says it needs a newer SpanDAC.
-struct DJSpanDACGenreStub: DJSpanDACGenreSource {
-    func genreUnheard(genre: String, days: Int) throws -> DJSpanDACGenrePick {
-        throw DJGenreSourceError.needsNewerSpanDAC
-    }
-    func recheck(_ pick: DJSpanDACGenrePick) throws {
-        throw DJGenreSourceError.needsNewerSpanDAC
-    }
 }

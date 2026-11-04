@@ -23,7 +23,8 @@ final class DJSpanDACGenreClientTests: XCTestCase {
             lock.lock()
             _sent.append(body)
             let caps = capabilities
-            var reply = genreReplies.isEmpty ? "" : genreReplies.removeFirst()
+            let isGenre = (body["op"] as? String) == "library.genreUnheard"
+            let reply = (isGenre && !genreReplies.isEmpty) ? genreReplies.removeFirst() : ""
             let failStatus = statusFails
             lock.unlock()
             switch body["op"] as? String {
@@ -32,7 +33,6 @@ final class DJSpanDACGenreClientTests: XCTestCase {
                 let list = caps.map { "\"\($0)\"" }.joined(separator: ",")
                 return #"{"ok":true,"op":"slice.status","status":{"playback":"stopped","capabilities":[\#(list)]}}"#
             case "library.genreUnheard":
-                if reply.isEmpty { reply = "" }
                 return reply
             default:
                 return #"{"ok":false,"error":{"kind":"unknown_op","detail":"no"}}"#
