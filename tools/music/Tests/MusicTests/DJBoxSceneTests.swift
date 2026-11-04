@@ -40,15 +40,24 @@ final class DJFakeReader: DJReader, @unchecked Sendable {
         gate?.signal()
     }
 
+    private func begin(_ prompt: String) -> DispatchSemaphore? {
+        lock.lock(); defer { lock.unlock() }
+        _asked.append(prompt)
+        return gates[prompt]
+    }
+
+    private func answer(for prompt: String) -> DJReading {
+        lock.lock(); defer { lock.unlock() }
+        return answers[prompt] ?? .card(.unsupported)
+    }
+
     func read(_ prompt: String) async -> DJReading {
-        lock.lock(); _asked.append(prompt); let gate = gates[prompt]; lock.unlock()
-        if let gate {
+        if let gate = begin(prompt) {
             await withCheckedContinuation { (done: CheckedContinuation<Void, Never>) in
                 DispatchQueue.global().async { _ = gate.wait(timeout: .now() + 10); done.resume() }
             }
         }
-        lock.lock(); defer { lock.unlock() }
-        return answers[prompt] ?? .card(.unsupported)
+        return answer(for: prompt)
     }
 }
 
@@ -164,7 +173,7 @@ final class DJBoxSceneTests: XCTestCase {
     private final class ScriptCalls {
         private let lock = NSLock()
         private var _count = 0
-        var reply: () throws -> String = { throw ScriptError.executionFailed("no script wired") }
+        var reply: () throws -> String = { throw AppleScriptBackend.ScriptError.executionFailed("no script wired") }
         var count: Int { lock.lock(); defer { lock.unlock() }; return _count }
         func run() throws -> String { lock.lock(); _count += 1; lock.unlock(); return try reply() }
     }
@@ -568,6 +577,24 @@ final class DJBoxSceneTests: XCTestCase {
         XCTAssertEqual(f.rig.sent("slice.containerTracks").count, 3, "Enter read the albums again")
     }
 
+    /// SpanDAC's own refusal of the queue reaches him as it is said; nothing else is added.
+    func testSpanDACsRefusalOfTheQueueSurfacesAsItIs() {
+        let f = fixture(output: .source)
+        loadRails(f)
+        f.rig.responders["slice.queue"] = { _ in
+            #"{"ok":false,"op":"slice.queue","error":{"kind":"bad_request","detail":"A queue holds at most 100 songs in SpanDAC; 101 were requested."}}"#
+        }
+        f.reader.answer("mix", with: artistMixReading())
+        askForCard(f, "mix")
+        _ = f.scene.handle(.enter)
+        drain(f.actions)
+        XCTAssertEqual(f.rig.sent("slice.queue").count, 1)
+        XCTAssertTrue(f.status.current()?.text.contains("A queue holds at most 100 songs") ?? false,
+                      f.status.current()?.text ?? "no status")
+        XCTAssertEqual(f.mac.allOps, [])
+        XCTAssertEqual(f.lib.events, [])
+    }
+
     func testEscDropsTheCardAndNothingEverPlays() {
         let f = fixture(output: .source)
         loadRails(f)
@@ -588,9 +615,9 @@ final class DJBoxSceneTests: XCTestCase {
         type(f, "!")
         XCTAssertEqual(stage(f), .typing)
         _ = f.scene.handle(.enter)       // asks again; does not play
+        ticks(f, until: { f.reader.asked == ["mix", "mix!"] })
         drain(f.actions)
         XCTAssertEqual(f.rig.sent("slice.queue").count, 0)
-        XCTAssertEqual(f.reader.asked, ["mix", "mix!"])
     }
 
     func testTheCardSaysFirst25AlbumsWhenTheArtistHasMore() {
@@ -878,8 +905,8 @@ final class DJBoxSceneTests: XCTestCase {
         let queue = try XCTUnwrap(f.plays.queues.first)
         XCTAssertEqual(queue.playlistName, persistentIDQueueSource)
         let played = queue.tracks.map { persistentIDOfQueueEntry($0.index) }
-        // The 50 oldest are songs 71...120; the test shuffler reverses them.
-        XCTAssertEqual(played, (71...120).map(pid).reversed().map { $0 })
+        // The 50 oldest are songs 71...120, oldest (120) first; the test shuffler reverses that order.
+        XCTAssertEqual(played, (71...120).map(pid))
         XCTAssertEqual(f.store.read(), queue)
         XCTAssertEqual(f.scripts.count, 1, "Enter read the library again")
     }
@@ -952,7 +979,7 @@ final class DJBoxSceneTests: XCTestCase {
 
     func testATimedOutReadRefuses() {
         let f = openFixture()
-        f.scripts.reply = { throw ScriptError.timeout("script") }
+        f.scripts.reply = { throw AppleScriptBackend.ScriptError.timeout("script") }
         settle(f, seconds: 0.1)
         f.reader.answer("jazz", with: genreReading("Jazz"))
         askForCard(f, "jazz")

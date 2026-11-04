@@ -611,6 +611,9 @@ final class RoutingCoordinator {
                 // A play from the catalogue search never reaches the MusicTUI
                 // output: refused before its path, so before any body runs.
                 if searchOrigin, action.playsChosenMusic { throw ActionError(message: searchPlaysOnSpanDACOnly) }
+                // The DJ's artist mix likewise: SpanDAC output only, refused
+                // before its path and before any body runs.
+                if origin == .djArtistMix, action.playsChosenMusic { throw ActionError(message: djArtistMixSpanDACOnly) }
                 let path = try musicTUIPath(for: action, origin: origin, in: now)
                 if shippedOnly, path != .shipped { throw ActionError(message: pickASpanDACOutput) }
                 admitAPlay()
@@ -1263,7 +1266,7 @@ final class RoutingCoordinator {
         case .openData(let number) where spandacData:
             if surface == .cli, let number { throw ActionError(message: resultFromBeforeSpanDACSwitch(number)) }
             throw ActionError(message: listFromBeforeSpanDACSwitch)
-        case .spandacLibrary, .spandacCatalogue, .spandacDiscoverContainer:
+        case .spandacLibrary, .spandacCatalogue, .spandacDiscoverContainer, .djArtistMix:
             if !spandacData { throw ActionError(message: sourceChangedNothingPlayed) }
         case .openData:
             break
@@ -1282,6 +1285,7 @@ final class RoutingCoordinator {
         case .spandacLibrary?: return .handoff
         case .spandacCatalogue?: return .add
         case .spandacDiscoverContainer?: return .addContainer
+        case .djArtistMix?: throw ActionError(message: djArtistMixSpanDACOnly)
         case .openData?, nil: throw ActionError(message: pickASpanDACOutput)
         }
     }

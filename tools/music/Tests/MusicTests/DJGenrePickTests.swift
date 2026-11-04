@@ -135,6 +135,15 @@ final class DJGenrePickTests: XCTestCase {
         XCTAssertTrue(script.contains("date +%s"), "the played date must leave the script as epoch text")
     }
 
+    /// Measured on the Studio's library (10,640 tracks, 4.1 s): AppleScript holds
+    /// epoch seconds as a real, and `... as text` of one renders 1.79E+9, which
+    /// this parser (rightly) reads as unreadable. The script builds plain digits.
+    func testTheScriptBuildsPlainDigitsAndTheParserDoesNotAcceptAnExponentForm() throws {
+        XCTAssertTrue(djLibraryGenreScript().contains("div 100000"))
+        let read = try djParseLibraryGenreRead(raw(ids: [pid(1)], played: ["1.793821586E+9"]))
+        XCTAssertEqual(read.songs.map(\.played), [.unreadable])
+    }
+
     func testParsingReadsNeverEpochAndUnreadable() throws {
         let epoch = 1_700_000_000
         let text = raw(ids: [pid(1), pid(2), pid(3)], played: ["N", "\(epoch)", "U"])
@@ -197,13 +206,13 @@ final class DJGenrePickTests: XCTestCase {
     }
 
     func testATimeoutRefusesAsATimeout() {
-        XCTAssertThrowsError(try djReadLibraryForGenre(run: { _, _ in throw ScriptError.timeout("script") })) {
+        XCTAssertThrowsError(try djReadLibraryForGenre(run: { _, _ in throw AppleScriptBackend.ScriptError.timeout("script") })) {
             XCTAssertEqual($0 as? DJLibraryReadError, .timedOut)
         }
     }
 
     func testAnyOtherFailureRefusesWithItsText() {
-        XCTAssertThrowsError(try djReadLibraryForGenre(run: { _, _ in throw ScriptError.executionFailed("boom") })) {
+        XCTAssertThrowsError(try djReadLibraryForGenre(run: { _, _ in throw AppleScriptBackend.ScriptError.executionFailed("boom") })) {
             guard case .failed(let text)? = $0 as? DJLibraryReadError else { return XCTFail("\($0)") }
             XCTAssertTrue(text.contains("boom"), text)
         }

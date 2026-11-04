@@ -616,6 +616,11 @@ enum PlayOrigin: Equatable {
     case spandacCatalogue
     /// A Discover album, playlist or play-from-here slice read from SpanDAC.
     case spandacDiscoverContainer
+    /// The DJ box's artist mix: catalogue songs read from SpanDAC and played
+    /// ONLY on a SpanDAC output. The coordinator refuses it on the MusicTUI
+    /// output before any body runs (`djArtistMixSpanDACOnly`); no add, no
+    /// lifecycle call and no play-serial move follows a refusal.
+    case djArtistMix
     /// A row read under open data. `resultNumber` is the CLI's `N`.
     case openData(resultNumber: Int?)
 
