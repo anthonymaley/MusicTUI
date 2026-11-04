@@ -66,6 +66,9 @@ final class DJFakeGenreSource: DJSpanDACGenreSource, @unchecked Sendable {
     private let lock = NSLock()
     var result: Result<DJSpanDACGenrePick, Error>
     var recheckError: Error?
+    /// When set, `recheck` signals `recheckStarted` and waits here (at most 5 s) before answering.
+    var recheckGate: DispatchSemaphore?
+    let recheckStarted = DispatchSemaphore(value: 0)
     private var _asked: [(genre: String, days: Int)] = []
     private var _rechecks = 0
     var asked: [(genre: String, days: Int)] { lock.lock(); defer { lock.unlock() }; return _asked }
@@ -79,7 +82,8 @@ final class DJFakeGenreSource: DJSpanDACGenreSource, @unchecked Sendable {
     }
 
     func recheck(_ pick: DJSpanDACGenrePick) throws {
-        lock.lock(); _rechecks += 1; let e = recheckError; lock.unlock()
+        lock.lock(); _rechecks += 1; let e = recheckError; let gate = recheckGate; lock.unlock()
+        if let gate { recheckStarted.signal(); _ = gate.wait(timeout: .now() + 5) }
         if let e { throw e }
     }
 }
@@ -1190,5 +1194,268 @@ final class DJBoxSceneTests: XCTestCase {
         f.reader.answer("jazz", with: genreReading("Jazz"))
         askForCard(f, "jazz")
         XCTAssertTrue(message(f)?.contains("SpanDAC is warming") ?? false, message(f) ?? "no message")
+    }
+
+    // MARK: - Codex branch review r1
+
+    /// A held action ahead of the DJ's: Enter queues the DJ play behind it, `admit`
+    /// lets a different play in meanwhile, then the hold is released.
+    private func enterBehindAHold(_ f: Fixture, admit: () throws -> Void) throws {
+        let hold = DispatchSemaphore(value: 0)
+        f.actions.run("hold") { _ = hold.wait(timeout: .now() + 5) }
+        XCTAssertEqual(f.scene.handle(.enter), .push(.nowPlaying))
+        try admit()
+        hold.signal()
+        drain(f.actions)
+    }
+
+    // Finding 2: the play serial is checked at admission, with both epochs.
+
+    func testAnArtistMixWhoseActionWaitedWhileAnotherPlayWasAdmittedPlaysNothing() throws {
+        let f = fixture(output: .source)
+        loadRails(f)
+        f.reader.answer("mix", with: artistMixReading())
+        askForCard(f, "mix")
+        XCTAssertNotNil(plan(f))
+        try enterBehindAHold(f) {
+            try f.routing.perform(.libraryPlay, expecting: f.routing.stamp, origin: .spandacLibrary,
+                                  musicApp: { _ in }, source: { _ in }, unaffected: {})
+        }
+        XCTAssertEqual(f.rig.sent("slice.queue").count, 0, "the artist mix queued after another play was admitted")
+    }
+
+    func testAnOpenDataGenreWhoseActionWaitedWhileAnotherPlayWasAdmittedPlaysNothing() throws {
+        let f = openFixture(library: libraryText(count: 3, genre: { _ in "Jazz" }, played: { _ in "N" }))
+        settle(f, seconds: 0.1)
+        f.reader.answer("jazz", with: genreReading("Jazz"))
+        askForCard(f, "jazz")
+        XCTAssertNotNil(plan(f))
+        try enterBehindAHold(f) {
+            try f.routing.perform(.libraryPlay, expecting: f.routing.stamp, origin: .openData(resultNumber: nil),
+                                  musicApp: { _ in }, source: { _ in }, unaffected: {})
+        }
+        XCTAssertEqual(f.plays.queues.count, 0, "the genre queue played after another play was admitted")
+        XCTAssertNil(f.store.read(), "the genre queue was set after another play was admitted")
+    }
+
+    func testASpanDACGenreWhoseActionWaitedWhileAnotherPlayWasAdmittedPlaysNothingOnEitherOutput() throws {
+        for output in [PlaybackMode.source, .musicApp] {
+            let source = DJFakeGenreSource(.success(spandacPick(aliasRows(5))))
+            let f = fixture(output: output, genreSource: source)
+            loadRails(f)
+            f.reader.answer("jazz", with: genreReading("Jazz"))
+            askForCard(f, "jazz")
+            XCTAssertNotNil(plan(f), "\(output)")
+            try enterBehindAHold(f) {
+                try f.routing.perform(.libraryPlay, expecting: f.routing.stamp, origin: .spandacLibrary,
+                                      musicApp: { _ in }, source: { _ in }, unaffected: {})
+            }
+            XCTAssertEqual(f.rig.sent("slice.queue").count, 0, "\(output): queued after another play was admitted")
+            XCTAssertEqual(f.handoff.calls.count, 0, "\(output): handed off after another play was admitted")
+        }
+    }
+
+    func testAPlayAdmittedWhileTheRecheckIsHeldStopsTheSpanDACGenre() throws {
+        for output in [PlaybackMode.source, .musicApp] {
+            let source = DJFakeGenreSource(.success(spandacPick(aliasRows(5))))
+            let gate = DispatchSemaphore(value: 0)
+            let f = fixture(output: output, genreSource: source)
+            loadRails(f)
+            f.reader.answer("jazz", with: genreReading("Jazz"))
+            askForCard(f, "jazz")
+            XCTAssertNotNil(plan(f), "\(output)")
+            source.recheckGate = gate
+            XCTAssertEqual(f.scene.handle(.enter), .push(.nowPlaying))
+            XCTAssertEqual(source.recheckStarted.wait(timeout: .now() + 5), .success, "the recheck never started")
+            try f.routing.perform(.libraryPlay, expecting: f.routing.stamp, origin: .spandacLibrary,
+                                  musicApp: { _ in }, source: { _ in }, unaffected: {})
+            gate.signal()
+            drain(f.actions)
+            XCTAssertEqual(f.rig.sent("slice.queue").count, 0, "\(output): queued after another play was admitted")
+            XCTAssertEqual(f.handoff.calls.count, 0, "\(output): handed off after another play was admitted")
+        }
+    }
+
+    // Finding 3: `d` over a loading Discover album does not lose the album read.
+
+    private func playlistTracksFixture() -> Fixture {
+        let f = fixture(output: .source)
+        let base = f.rig.responders["slice.containerTracks"]
+        f.rig.responders["slice.containerTracks"] = { body in
+            if body["id"] as? String == "pl.u-abc" { return Self.tracksReply(["901", "902"]) }
+            return base?(body) ?? ""
+        }
+        return f
+    }
+
+    private func isTracks(_ f: Fixture, _ id: String) -> Bool {
+        if case .tracks(let item) = f.scene.currentLevel { return item.id == id }
+        return false
+    }
+
+    func testDOverALoadingAlbumKeepsItsReadAndEscShowsTheRows() {
+        let f = playlistTracksFixture()
+        let held = DispatchSemaphore(value: 0)
+        let lock = NSLock()
+        var first = true
+        f.rig.during["slice.containerTracks"] = {
+            lock.lock(); let hold = first; first = false; lock.unlock()
+            if hold { _ = held.wait(timeout: .now() + 5) }
+        }
+        loadRails(f)
+        _ = f.scene.handle(.down)
+        _ = f.scene.handle(.enter)                      // the album's read is held
+        ticks(f, until: { f.rig.sent("slice.containerTracks").count == 1 })
+
+        _ = f.scene.handle(.char("d"))
+        XCTAssertTrue(isDJ(f))
+        held.signal()                                   // the read finishes under the box
+        settle(f, seconds: 0.2)
+        _ = f.scene.handle(.escape)
+
+        XCTAssertTrue(isTracks(f, "pl.u-abc"), "\(f.scene.currentLevel)")
+        ticks(f, until: { f.scene.trackRows.map(\.id) == ["901", "902"] })
+        XCTAssertEqual(f.scene.shownCursorIndex, 0)
+    }
+
+    func testDOverAnAlreadyLoadedAlbumLeavesItsRowsAndCursorAlone() {
+        let f = playlistTracksFixture()
+        loadRails(f)
+        _ = f.scene.handle(.down)
+        _ = f.scene.handle(.enter)
+        ticks(f, until: { f.scene.trackRows.map(\.id) == ["901", "902"] })
+        _ = f.scene.handle(.down)
+        XCTAssertEqual(f.scene.shownCursorIndex, 1)
+        let reads = f.rig.sent("slice.containerTracks").count
+
+        _ = f.scene.handle(.char("d"))
+        settle(f, seconds: 0.1)
+        _ = f.scene.handle(.escape)
+
+        XCTAssertTrue(isTracks(f, "pl.u-abc"))
+        XCTAssertEqual(f.scene.trackRows.map(\.id), ["901", "902"], "the loaded rows were lost")
+        XCTAssertEqual(f.scene.shownCursorIndex, 1, "the cursor moved")
+        XCTAssertEqual(f.rig.sent("slice.containerTracks").count, reads, "a loaded album was read again")
+    }
+
+    func testAnAlbumLoadingUnderTheBoxWhenTheDataSourceChangesIsLeftBehindWithTheBox() throws {
+        let f = playlistTracksFixture()
+        let held = DispatchSemaphore(value: 0)
+        f.rig.during["slice.containerTracks"] = { _ = held.wait(timeout: .now() + 5) }
+        loadRails(f)
+        _ = f.scene.handle(.down)
+        _ = f.scene.handle(.enter)
+        ticks(f, until: { f.rig.sent("slice.containerTracks").count == 1 })
+        _ = f.scene.handle(.char("d"))
+        _ = try f.routing.stopUsingSpanDACData(pauseOutgoing: { _ in true }, dropQueue: { _ in })
+        _ = f.scene.tick(snapshot: idle)
+        held.signal()
+        settle(f, seconds: 0.2)
+
+        XCTAssertNil(f.scene.djModel)
+        XCTAssertEqual(f.status.current()?.text, DiscoverScene.djDataSourceChanged)
+        XCTAssertEqual(f.scene.currentLevel, .root, "the old source's album is still on screen")
+        XCTAssertEqual(f.scene.trackRows, [])
+        _ = f.scene.handle(.char("d"))
+        _ = f.scene.handle(.escape)
+        XCTAssertEqual(f.scene.currentLevel, .root, "closing a later box brought the old album back")
+        XCTAssertEqual(f.scene.trackRows, [])
+    }
+
+    // Finding 4: editing a pending prompt invalidates the request that is out.
+
+    func testEditingAPendingPromptReleasesItsRequestAndTheNextEnterAsksTheNewText() {
+        let f = fixture(output: .source)
+        loadRails(f)
+        f.reader.answer("old", with: artistMixReading())
+        f.reader.hold("old")
+        ask(f, "old")
+        ticks(f, until: { f.reader.asked == ["old"] })
+        type(f, "x")
+        XCTAssertEqual(stage(f), .typing, "the edit left the old request waiting")
+        f.reader.release("old")
+        settle(f)
+        XCTAssertEqual(stage(f), .typing, "the old answer landed after the edit")
+        XCTAssertEqual(f.rig.sent("slice.search").count, 0, "the edited-away request went on to read the catalogue")
+        XCTAssertNil(plan(f))
+
+        f.reader.answer("oldx", with: .card(.unsupported))
+        _ = f.scene.handle(.enter)
+        ticks(f, until: { self.message(f) == djUnsupportedRequest })
+        XCTAssertEqual(f.reader.asked, ["old", "oldx"])
+    }
+
+    func testAnEditedAwayRequestsLateFailureNeverLands() {
+        let f = fixture(output: .source)
+        loadRails(f)
+        f.reader.answer("old", with: .failed("stale boom"))
+        f.reader.hold("old")
+        ask(f, "old")
+        ticks(f, until: { f.reader.asked == ["old"] })
+        _ = f.scene.handle(.char("\u{7F}"))
+        f.reader.release("old")
+        settle(f)
+        XCTAssertEqual(stage(f), .typing)
+        XCTAssertNil(message(f), "the old request's failure landed after the edit")
+    }
+
+    // Finding 5: a job's progress belongs to the session and request it began under.
+
+    /// Parks the first artist-mix job just before it reports progress.
+    private func parkFirstProgress(_ f: Fixture) -> (entered: DispatchSemaphore, release: DispatchSemaphore) {
+        let entered = DispatchSemaphore(value: 0), release = DispatchSemaphore(value: 0)
+        let lock = NSLock()
+        var calls = 0
+        var seams = f.scene.dj
+        seams.beforeProgress = {
+            lock.lock(); calls += 1; let first = calls == 1; lock.unlock()
+            guard first else { return }
+            entered.signal()
+            _ = release.wait(timeout: .now() + 5)
+        }
+        f.scene.dj = seams
+        return (entered, release)
+    }
+
+    func testAnOldJobsProgressNeverLandsUnderTheNextBoxsSameNumberedRequest() {
+        let f = fixture(output: .source)
+        loadRails(f)
+        let park = parkFirstProgress(f)
+        f.reader.answer("old mix", with: artistMixReading())
+        ask(f, "old mix")                                       // box 1, request 1
+        XCTAssertEqual(park.entered.wait(timeout: .now() + 5), .success, "the job never reached its progress")
+        _ = f.scene.handle(.escape)                             // closed ...
+        f.reader.hold("new")
+        f.reader.answer("new", with: .card(.unsupported))
+        ask(f, "new")                                           // ... reopened: box 2, request 1
+        ticks(f, until: { f.reader.asked.contains("new") })
+
+        park.release.signal()                                   // the old job reports "Looking up Radiohead"
+        settle(f, seconds: 0.4)
+        XCTAssertEqual(stage(f), .reading, "the old job's progress landed on the new box: \(String(describing: stage(f)))")
+
+        f.reader.release("new")
+        ticks(f, until: { self.message(f) == djUnsupportedRequest })
+    }
+
+    func testAnOldJobsProgressNeverReplacesTheNewAnswerAlreadyInTheSlot() {
+        let f = fixture(output: .source)
+        loadRails(f)
+        let park = parkFirstProgress(f)
+        let written = DispatchSemaphore(value: 0)
+        f.reader.answer("old mix", with: artistMixReading())
+        ask(f, "old mix")
+        XCTAssertEqual(park.entered.wait(timeout: .now() + 5), .success)
+        _ = f.scene.handle(.escape)
+        f.reader.answer("new", with: .card(.unsupported))
+        f.scene.inboxWritten = { if $0 == "dj" { written.signal() } }
+        ask(f, "new")                                           // answers at once: the slot holds it, untouched by a tick
+        XCTAssertEqual(written.wait(timeout: .now() + 5), .success, "the new answer never reached the slot")
+
+        park.release.signal()
+        usleep(300_000)                                         // the old job's progress arrives; no tick yet
+        settle(f, seconds: 0.3)
+        XCTAssertEqual(message(f), djUnsupportedRequest,
+                       "the old job's progress replaced the new answer: \(String(describing: stage(f)))")
     }
 }

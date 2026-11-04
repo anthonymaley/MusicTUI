@@ -106,6 +106,47 @@ final class DJBoxModelTests: XCTestCase {
         XCTAssertEqual(m.stage, .card(plan()))
     }
 
+    // MARK: - Editing a pending prompt invalidates the request that is out
+
+    func testEditingWhileReadingDropsTheRequestSoItsLateSuccessNeverLands() {
+        var m = DJBoxModel()
+        type(&m, "one"); _ = m.handle(.enter)
+        XCTAssertEqual(m.stage, .reading)
+        type(&m, "x")
+        XCTAssertEqual(m.stage, .typing, "an edit left the old request waiting")
+        XCTAssertFalse(m.receive(.plan(plan()), requestID: 1), "the edited-away request landed a card")
+        XCTAssertEqual(m.stage, .typing)
+    }
+
+    func testEditingWhileReadingDropsTheRequestSoItsLateFailureNeverLands() {
+        var m = DJBoxModel()
+        type(&m, "one"); _ = m.handle(.enter)
+        _ = m.handle(.char("\u{7F}"))
+        XCTAssertFalse(m.receive(.message("The DJ couldn't read that: boom"), requestID: 1))
+        XCTAssertEqual(m.stage, .typing)
+    }
+
+    func testEditingWhileLookingUpDropsTheRequestToo() {
+        var m = DJBoxModel()
+        type(&m, "one"); _ = m.handle(.enter)
+        XCTAssertTrue(m.receive(.working("Radiohead"), requestID: 1))
+        type(&m, "x")
+        XCTAssertEqual(m.stage, .typing)
+        XCTAssertFalse(m.receive(.plan(plan()), requestID: 1))
+        XCTAssertFalse(m.receive(.message("late"), requestID: 1))
+        XCTAssertEqual(m.stage, .typing)
+    }
+
+    func testTheEnterAfterAnEditAsksTheNewTextUnderANewID() {
+        var m = DJBoxModel()
+        type(&m, "one"); _ = m.handle(.enter)
+        type(&m, "x")
+        let out = m.handle(.enter)
+        XCTAssertEqual(out.emission, .ask(prompt: "onex", requestID: 2))
+        XCTAssertFalse(m.receive(.message("old"), requestID: 1))
+        XCTAssertTrue(m.receive(.plan(plan()), requestID: 2))
+    }
+
     // MARK: - The card
 
     func testEnterOnTheCardPlaysThatPlanOnceAndNeverAgain() {

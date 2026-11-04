@@ -128,6 +128,9 @@ final class DiscoverScene: Scene {
         set { stack[stack.count - 1] = newValue }
     }
 
+    /// The cursor row of the level on screen, for a test.
+    var shownCursorIndex: Int { current.cursor.index }
+
     private var cursorIndex: Int {
         get { current.cursor.index }
         set { current.cursor.index = newValue }
@@ -2003,6 +2006,7 @@ extension DiscoverScene {
         case .consistent(.spandacMac, _): break
         default: return .message(djArtistMixNeedsSpanDACData)
         }
+        seams.beforeProgress()
         djDeliver(session: djSessionForJob(requestID: requestID), requestID: requestID, .working(chosen?.title ?? name))
         do {
             let choice: ProviderChoice<DJCatalogue?> = try routing.choose(.catalogSearch,

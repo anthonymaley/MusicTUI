@@ -26,6 +26,10 @@ struct DJSeams {
     var handoff: MusicTUIHandoff = RefusingHandoff()
     var shuffler: DJShuffling = DJSystemShuffle()
     var now: () -> Date = { Date() }
+    /// Called on the background job the moment before an artist-mix request
+    /// reports its progress. Does nothing in the app; a test parks the job here
+    /// to close and reopen the box under it.
+    var beforeProgress: () -> Void = {}
 
     /// The shell's wiring: Apple's model, the real AppleScript runner, the
     /// shell's queue store and hand-off. Constructs nothing and reads nothing
