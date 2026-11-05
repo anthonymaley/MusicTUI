@@ -12,8 +12,9 @@ final class Router {
 
     init(root: SceneID) { stack = [root] }
 
-    /// Called synchronously, on the caller's thread, the moment the active scene
-    /// actually changes, with the scene just left. Not called when the switch
+    /// Called synchronously, on the caller's thread, with the scene about to be
+    /// left, BEFORE the stack changes: a DJ play revoked here can never claim
+    /// admission after the visible active scene has moved (Codex ef18ba04). Not called when the switch
     /// lands on the scene already active, or a pop at the root changes nothing.
     var onDeparture: ((SceneID) -> Void)?
 
@@ -21,20 +22,21 @@ final class Router {
 
     func switchTo(_ id: SceneID) {
         let left = active
-        stack = [id]
         if left != id { onDeparture?(left) }
+        stack = [id]
     }
 
     func push(_ id: SceneID) {
         let left = active
-        stack.append(id)
         if left != id { onDeparture?(left) }
+        stack.append(id)
     }
 
     func pop() {
         guard stack.count > 1 else { return }
-        let left = stack.removeLast()
-        if left != active { onDeparture?(left) }
+        let left = active
+        if left != stack[stack.count - 2] { onDeparture?(left) }
+        stack.removeLast()
     }
 }
 
