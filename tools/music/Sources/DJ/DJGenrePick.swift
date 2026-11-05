@@ -273,8 +273,8 @@ protocol DJSpanDACGenreSource: Sendable {
     /// SpanDAC's own oldest matches for the genre (at most 50, server side
     /// filtered and sorted), with the total matched. The client shuffles them.
     func genreUnheard(genre: String, days: Int) throws -> DJSpanDACGenrePick
-    /// At Enter: the same instance and generation still answer, and every id in
-    /// `pick.rows` (the rows the card will play) still resolves in that SpanDAC
+    /// Before the play: the same instance and generation still answer, and every id in
+    /// `pick.rows` (the rows about to play) still resolves in that SpanDAC
     /// library. Throws when they do not, or when that cannot be checked.
     func recheck(_ pick: DJSpanDACGenrePick) throws
 }

@@ -288,8 +288,13 @@ func runShell() {
     // shared by the Library and Playlists scenes, so albums and playlists mix
     // in one set and the marks survive a tab switch.
     let marks = MarkedSetStore()
+    // The DJ box lives on Now: Apple's on-device model, the real library read and
+    // the shell's queue and hand-off. It asks nothing until the person does.
     var scenes: [SceneID: Scene] = [.nowPlaying: NowPlayingScene(backend: backend, appQueue: appQueue, status: status, actions: actions, routing: routing, restArtworkAPI: makeArtworkAPI(), kittyEnabled: kittyEnabled,
-                                                                  setArtSize: { cols, rows in poller.setDesiredArtSize(cols: cols, rows: rows) })]
+                                                                  setArtSize: { cols, rows in poller.setDesiredArtSize(cols: cols, rows: rows) },
+                                                                  dj: DJSeams.live(backend: backend, appQueue: appQueue,
+                                                                                   handoff: liveMusicTUIHandoff(backend: backend, appQueue: appQueue,
+                                                                                                                routing: routing)))]
     // Declaration order IS the tab strip order and the 1-6 digit shortcuts.
     // Ordered by how often the user reaches for them: Now, then the browse
     // surfaces, then Speakers last (set once, rarely touched mid-session).
@@ -393,11 +398,6 @@ func runShell() {
                                       // the Output tab's selection, not an env var.
                                       routing: routing,
                                       kittyEnabled: kittyEnabled)
-            // The DJ box (`d`): Apple's on-device model, the real library read and
-            // the shell's queue and hand-off. Asks nothing until the person does.
-            scene.dj = DJSeams.live(backend: backend, appQueue: appQueue,
-                                    handoff: liveMusicTUIHandoff(backend: backend, appQueue: appQueue,
-                                                                 routing: routing))
             scenes[id] = scene
             return scene
         case .radio:

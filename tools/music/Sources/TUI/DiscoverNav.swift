@@ -24,10 +24,6 @@ enum DiscoverLevel: Equatable {
     /// own rows and cursors; this frame only marks where it sits in the stack,
     /// so closing it returns to the level it was opened from.
     case search
-    /// The DJ box (`d`), opened from any level. Like `.search`, it holds its own
-    /// state; this frame only marks where it sits in the stack, so closing it
-    /// returns to the level it was opened from.
-    case dj
 }
 
 struct DiscoverFrameState: Equatable {

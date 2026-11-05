@@ -5,15 +5,22 @@
 // optional emission comes out, and answers come back through `receive` keyed
 // by the request id they were asked under.
 //
+// There is no card and no second Enter: when a plan arrives for the current
+// request, `receive` hands it back to play and the box shows "Playing: ..." with
+// its text emptied for the next request.
+//
 // REQUEST IDS. Every ask takes the next id; the model applies an answer only
 // if it carries the current id AND the model is still waiting for it. So a
-// newer prompt wins, an older answer (an error included) is dropped, an edit
-// of the text while a request is out drops that request too, and a closed box
-// accepts nothing.
+// newer prompt wins, an older answer (an error included) is dropped, and an
+// edit of the text while a request is out drops that request too.
+//
+// Esc and the up arrow that leave the box are the HOST's: this model ignores
+// them (up and down only move the artist picker).
 import Foundation
 
 struct DJBoxModel {
-    static let boxPrefix = "Apple Music DJ: "
+    /// Shown dim inside the box while it is empty and not focused.
+    static let placeholder = "Make a request"
     static let caret = "\u{258F}"
     static let maxTextLength = 400
 
@@ -28,20 +35,27 @@ struct DJBoxModel {
         case typing
         /// A request is out.
         case reading
-        /// The DJ understood; the lookups behind the card are out. Carries the artist or genre.
+        /// The DJ understood; the lookups behind the plan are out. Carries the artist or genre.
         case working(String)
         case pick(Picker)
-        case card(DJPlan)
-        /// Enter was pressed on the card: the plan is spent.
-        case sent(String)
+        /// The plan arrived and was handed to play: what was understood, as the card used to say it.
+        case playing(String)
         case message(String)
     }
 
     enum Emission: Equatable {
         case ask(prompt: String, requestID: Int)
         case choose(CatalogueHit, requestID: Int)
+    }
+
+    /// What an answer did to the box.
+    enum Receipt: Equatable {
+        /// Not the request the box is waiting for: dropped.
+        case ignored
+        /// Applied; the screen changed.
+        case changed
+        /// A plan for the current request: play exactly this, once.
         case play(DJPlan)
-        case close
     }
 
     struct Outcome: Equatable {
@@ -52,7 +66,6 @@ struct DJBoxModel {
     private(set) var text = ""
     private(set) var stage: Stage = .typing
     private(set) var requestID = 0
-    private(set) var isClosed = false
 
     // MARK: derived view
 
@@ -61,9 +74,8 @@ struct DJBoxModel {
         case .typing: return nil
         case .reading: return "Asking the DJ\u{2026}"
         case .working(let what): return "Looking up \(what)\u{2026}"
-        case .pick(let picker): return "Which \(picker.artist)? \u{2191}\u{2193} to move, Enter to choose"
-        case .card(let plan): return "\(plan.line) \u{2014} Enter plays, Esc drops it"
-        case .sent(let line): return "Sent: \(line)"
+        case .pick(let picker): return "Which \(picker.artist)? \u{2191}\u{2193} to move, Enter to play"
+        case .playing(let line): return "Playing: \(line)"
         case .message(let text): return text
         }
     }
@@ -71,12 +83,7 @@ struct DJBoxModel {
     // MARK: keys
 
     mutating func handle(_ key: KeyPress) -> Outcome {
-        guard !isClosed else { return Outcome() }
         switch key {
-        case .escape:
-            isClosed = true
-            stage = .typing
-            return Outcome(changed: true, emission: .close)
         case .enter:
             return enter()
         case .up, .down:
@@ -108,7 +115,7 @@ struct DJBoxModel {
         return Outcome(changed: true)
     }
 
-    /// Editing the prompt drops a card, a picker, a message or a spent plan: it
+    /// Editing the prompt drops a picker, a message or a spent plan: it
     /// is a new prompt now. A request still out is dropped with the old text:
     /// the box is no longer waiting, so its answer (a failure too) finds
     /// nothing to land on, even before the next Enter numbers a new request.
@@ -124,20 +131,22 @@ struct DJBoxModel {
         }
     }
 
+    /// The artist picker is showing: up and down move it, and the host leaves
+    /// the box only on Esc.
+    var isPicking: Bool {
+        if case .pick = stage { return true }
+        return false
+    }
+
     private mutating func enter() -> Outcome {
         switch stage {
-        case .card(let plan):
-            stage = .sent(plan.line)
-            return Outcome(changed: true, emission: .play(plan))
         case .pick(let picker):
             guard picker.hits.indices.contains(picker.cursor) else { return Outcome() }
             let hit = picker.hits[picker.cursor]
             requestID += 1
             stage = .working(hit.title)
             return Outcome(changed: true, emission: .choose(hit, requestID: requestID))
-        case .sent:
-            return Outcome()
-        case .typing, .reading, .working, .message:
+        case .typing, .reading, .working, .playing, .message:
             let prompt = text.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !prompt.isEmpty else { return Outcome() }
             requestID += 1
@@ -149,33 +158,43 @@ struct DJBoxModel {
 
     // MARK: answers
 
-    /// True when the answer was applied (the screen changed).
     @discardableResult
-    mutating func receive(_ outcome: DJOutcome, requestID id: Int) -> Bool {
-        guard !isClosed, id == requestID else { return false }
+    mutating func receive(_ outcome: DJOutcome, requestID id: Int) -> Receipt {
+        guard id == requestID else { return .ignored }
         switch stage {
         case .reading, .working: break
-        default: return false
+        default: return .ignored
         }
         switch outcome {
         case .working(let what):
-            guard case .reading = stage else { return false }
+            guard case .reading = stage else { return .ignored }
             stage = .working(Self.clean(what))
         case .message(let words):
             stage = .message(Self.clean(words))
         case .pick(let artist, let hits):
-            guard !hits.isEmpty else { return false }
+            guard !hits.isEmpty else { return .ignored }
             stage = .pick(Picker(artist: Self.clean(artist), hits: hits))
         case .plan(let plan):
-            stage = .card(plan)
+            // Played straight away: the box empties for the next request.
+            stage = .playing(Self.clean(plan.line))
+            text = ""
+            return .play(plan)
         }
+        return .changed
+    }
+
+    /// The plan was refused or failed after the box said it was playing: the
+    /// box says why instead, if it is still showing that play. False when it moved on.
+    @discardableResult
+    mutating func playFailed(requestID id: Int, saying words: String) -> Bool {
+        guard id == requestID, case .playing = stage else { return false }
+        stage = .message(Self.clean(words))
         return true
     }
 
-    /// The card (or anything else held) is dropped for a reason, and the box
-    /// says why. Anything still out for the old request is dropped with it.
+    /// Whatever is held is dropped for a reason, and the box says why.
+    /// Anything still out for the old request is dropped with it.
     mutating func drop(saying words: String) {
-        guard !isClosed else { return }
         requestID += 1
         stage = .message(Self.clean(words))
     }
