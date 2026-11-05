@@ -1789,6 +1789,116 @@ final class DJNowBoxTests: XCTestCase {
         XCTAssertEqual(stage(f), .typing)
     }
 
+    // MARK: - Revocation is synchronous with the departure
+    //
+    // The shell changes `router.active` in the key handler and used to tell the
+    // scene on its NEXT loop pass; a held action released in between could claim
+    // and play on the other tab. The router now announces the departure itself,
+    // in the same call that changes the active scene. These tests release the
+    // held work right after the transition and before any tick.
+
+    private func routed(_ f: Fixture) -> Router {
+        let router = Router(root: .nowPlaying)
+        connectDepartures(of: router) { $0 == .nowPlaying ? f.scene : nil }
+        return router
+    }
+
+    func testARouterSwitchRevokesAHeldActionBeforeTheNextTick() {
+        let f = fixture(output: .source)
+        let router = routed(f)
+        f.reader.answer("mix", with: artistMixReading())
+        let hold = DispatchSemaphore(value: 0)
+        f.actions.run("hold") { _ = hold.wait(timeout: .now() + 5) }
+        ask(f, "mix")
+        ticks(f, until: { self.playingLine(f) != nil })
+        router.switchTo(.library)                                // no tick, no resignedActive call by hand
+        hold.signal()
+        drain(f.actions)
+        XCTAssertEqual(f.rig.sent("slice.queue").count, 0, "the play started on the other tab")
+    }
+
+    func testARouterPushRevokesAHeldActionAndPopDoesNotRevokeAgain() {
+        let f = fixture(output: .source)
+        let router = routed(f)
+        f.reader.answer("mix", with: artistMixReading())
+        let hold = DispatchSemaphore(value: 0)
+        f.actions.run("hold") { _ = hold.wait(timeout: .now() + 5) }
+        ask(f, "mix")
+        ticks(f, until: { self.playingLine(f) != nil })
+        router.push(.discover)
+        hold.signal()
+        drain(f.actions)
+        XCTAssertEqual(f.rig.sent("slice.queue").count, 0, "the play started on the pushed tab")
+        router.pop()
+        f.scene.becameActive()
+        XCTAssertEqual(message(f), NowPlayingScene.djLeftNow)
+    }
+
+    func testARouterSwitchRevokesAHeldRecheckBeforeTheNextTick() {
+        for output in [PlaybackMode.source, .musicApp] {
+            let source = DJFakeGenreSource(.success(spandacPick(aliasRows(5))))
+            let gate = DispatchSemaphore(value: 0)
+            let f = fixture(output: output, genreSource: source)
+            let router = routed(f)
+            f.reader.answer("jazz", with: genreReading("Jazz"))
+            source.recheckGate = gate
+            ask(f, "jazz")
+            ticks(f, until: { self.playingLine(f) != nil })
+            XCTAssertEqual(source.recheckStarted.wait(timeout: .now() + 5), .success, "the recheck never started")
+            router.switchTo(.playlists)
+            gate.signal()
+            drain(f.actions)
+            XCTAssertEqual(f.rig.sent("slice.queue").count, 0, "\(output): queued on the other tab")
+            XCTAssertEqual(f.handoff.calls.count, 0, "\(output): handed off on the other tab")
+        }
+    }
+
+    func testASwitchAfterTheClaimLeavesTheAdmittedPlayAlone() {
+        let f = fixture(output: .source)
+        let router = routed(f)
+        f.reader.answer("mix", with: artistMixReading())
+        askAndPlay(f, "mix")                                     // claimed and played
+        router.switchTo(.library)
+        drain(f.actions)
+        XCTAssertEqual(f.rig.sent("slice.queue").count, 1)
+        f.scene.becameActive()
+        XCTAssertNotNil(playingLine(f), "leaving after admission rewrote the box")
+    }
+
+    func testSwitchingToTheSceneAlreadyActiveRevokesNothing() {
+        let f = fixture(output: .source)
+        let router = routed(f)
+        f.reader.answer("mix", with: artistMixReading())
+        let hold = DispatchSemaphore(value: 0)
+        f.actions.run("hold") { _ = hold.wait(timeout: .now() + 5) }
+        ask(f, "mix")
+        ticks(f, until: { self.playingLine(f) != nil })
+        router.switchTo(.nowPlaying)                             // the same scene: not a departure
+        router.pop()                                             // a pop at the root: not either
+        hold.signal()
+        drain(f.actions)
+        XCTAssertEqual(f.rig.sent("slice.queue").count, 1, "a non-departure revoked the play")
+    }
+
+    func testTheRouterAnnouncesEachRealDepartureExactlyOnce() {
+        let router = Router(root: .nowPlaying)
+        var left: [SceneID] = []
+        router.onDeparture = { left.append($0) }
+        router.switchTo(.nowPlaying)
+        router.pop()
+        XCTAssertEqual(left, [])
+        router.switchTo(.library)
+        XCTAssertEqual(left, [.nowPlaying])
+        router.push(.discover)
+        XCTAssertEqual(left, [.nowPlaying, .library])
+        router.push(.discover)                                   // already on it
+        XCTAssertEqual(left, [.nowPlaying, .library])
+        router.pop()                                             // discover -> discover (stack of two)
+        XCTAssertEqual(left, [.nowPlaying, .library])
+        router.pop()                                             // discover -> library
+        XCTAssertEqual(left, [.nowPlaying, .library, .discover])
+    }
+
     // MARK: - The artist picker never hides its own box
 
     /// A frame whose body is exactly `rows` tall.
