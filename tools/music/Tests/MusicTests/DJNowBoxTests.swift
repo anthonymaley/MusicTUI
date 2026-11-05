@@ -1880,6 +1880,21 @@ final class DJNowBoxTests: XCTestCase {
         XCTAssertEqual(f.rig.sent("slice.queue").count, 1, "a non-departure revoked the play")
     }
 
+    /// Codex ef18ba04: the departure is announced while the scene being left is
+    /// still the active one, so a revoked play can never claim after the
+    /// visible scene has moved. Switch, push and pop alike.
+    func testTheRouterAnnouncesADepartureBeforeTheActiveSceneChanges() {
+        let router = Router(root: .nowPlaying)
+        var seen: [(left: SceneID, activeAtCall: SceneID)] = []
+        router.onDeparture = { [unowned router] in seen.append(($0, router.active)) }
+        router.switchTo(.library)
+        router.push(.discover)
+        router.pop()
+        XCTAssertEqual(seen.map(\.left), [.nowPlaying, .library, .discover])
+        XCTAssertEqual(seen.map(\.activeAtCall), [.nowPlaying, .library, .discover],
+                       "the active scene had already changed when the departure was announced")
+    }
+
     func testTheRouterAnnouncesEachRealDepartureExactlyOnce() {
         let router = Router(root: .nowPlaying)
         var left: [SceneID] = []
