@@ -73,6 +73,9 @@ final class NowPlayingScene: Scene {
         // (`effectiveOutput`), never the stored output (Codex review 101,
         // blocking 1): with SpanDAC on this Mac not serving, MusicTUI's
         // controls are the live ones.
+        if boxFocused {
+            return "Type a request  Enter Send  \u{2191}/Esc Back"
+        }
         if routing.effectiveOutput.usesSource {
             if spanDACGridShown {
                 return gridFocused ? "\u{2191}\u{2193} Row  Enter Set  \u{2192} Release  [ ] Seek  x Quiet"
@@ -228,7 +231,9 @@ final class NowPlayingScene: Scene {
          setArtSize: @escaping (Int, Int) -> Void = { _, _ in },
          bridgeCoverExtractor: ((String, String) -> String?)? = nil,
          makeArtworkStore: (() -> ArtworkStore)? = nil,
-         restLookup: ((_ title: String, _ artist: String, _ album: String) -> (id: String, url: String)?)? = nil) {
+         restLookup: ((_ title: String, _ artist: String, _ album: String) -> (id: String, url: String)?)? = nil,
+         dj: DJSeams = DJSeams()) {
+        self.djHost = DJHost(routing: routing, status: status, actions: actions, seams: dj)
         let makeStore = makeArtworkStore ?? { ArtworkStore() }
         self.bridgeArtwork = makeStore()
         self.restArtwork = makeStore()
@@ -255,6 +260,105 @@ final class NowPlayingScene: Scene {
     }
 
     private let routing: RoutingCoordinator
+
+    // MARK: - The DJ box (hosted here; `DJHost` owns the machinery and every fence)
+
+    private let djHost: DJHost
+
+    /// What the DJ box reads and plays through. Fail-closed defaults; the shell
+    /// wires the real ones (`DJSeams.live`) and a test hands in fakes.
+    var dj: DJSeams {
+        get { djHost.seams }
+        set { djHost.seams = newValue }
+    }
+
+    /// The box, as it stands, for a test.
+    var djModel: DJBoxModel { djHost.model }
+
+    /// A test's hook: called after a DJ answer lands in the slot ("dj").
+    var inboxWritten: ((String) -> Void)? {
+        get { djHost.inboxWritten }
+        set { djHost.inboxWritten = newValue }
+    }
+
+    /// Whether the box has the keyboard: ↓ past the last row of the control
+    /// grid or of Up Next puts it there; ↑ and Esc give it back.
+    private(set) var boxFocused = false
+    /// Where focus came from, so ↑ and Esc return to it.
+    private var boxReturnsToGrid = false
+    /// Whether the last frame had room to draw the box. Keys only reach it
+    /// while it is on screen.
+    private var boxFits = false
+
+    /// Said when the person left Now while a request was out: nothing plays
+    /// for an answer they were not there to see.
+    static let djLeftNow = djLeftNowLine
+
+    /// The body rows the rest of Now keeps above the box, and so the body the
+    /// box needs at the very least (this plus its own four rows).
+    private static let djRowsAboveBox = 6
+
+    /// Rows the box reserves at the bottom of the body: its two borders, the
+    /// request line, one line of words, and the picker's hits while one shows.
+    /// 0 when the frame has no room (or the continuation menu is up). A picker
+    /// never hides the box: when its hits do not fit they are clipped to the
+    /// rows there are (`renderDJBox` scrolls them to keep the selection in
+    /// view), so the box goes only under the minimum body, never for a picker.
+    private func djBoxRows(frame: ShellFrame, menu: Bool) -> Int {
+        guard !menu, frame.width >= 30, frame.bodyHeight >= 4 + Self.djRowsAboveBox else { return 0 }
+        var rows = 4
+        if case .pick(let picker) = djHost.model.stage { rows += min(picker.hits.count, 5) }
+        return min(rows, frame.bodyHeight - Self.djRowsAboveBox)
+    }
+
+    private func enterBox() {
+        boxReturnsToGrid = gridFocused
+        gridFocused = false
+        boxFocused = true
+    }
+
+    private func leaveBox() {
+        guard boxFocused else { return }
+        boxFocused = false
+        gridFocused = boxReturnsToGrid
+    }
+
+    /// Whether ↓ here is past the last row of what has focus.
+    private func downLeavesTheList() -> Bool {
+        let gridActive = gridFocused && (!routing.effectiveOutput.usesSource || spanDACGridShown)
+        if gridActive {
+            if routing.effectiveOutput.usesSource, let b = lastBridge {
+                return ControlGrid.spanDACStep(from: gridRow, by: 1, offersShuffle: b.offersShuffle,
+                                               offersRepeat: b.offersRepeat) == gridRow
+            }
+            return gridRow >= ControlGrid.rowCount - 1
+        }
+        return rows.isEmpty || cursor >= rows.count - 1
+    }
+
+    private func handleBox(_ key: KeyPress) -> SceneAction {
+        switch key {
+        case .escape:
+            leaveBox(); return .redraw
+        case .up where !djHost.model.isPicking:
+            leaveBox(); return .redraw
+        default:
+            return djHost.handle(key) ? .redraw : .none
+        }
+    }
+
+    func becameActive() {
+        if djHost.model.isRequestOut { djHost.abandon(saying: Self.djLeftNow) }
+    }
+
+    /// Leaving Now revokes a DJ play that was dispatched but has not yet been
+    /// admitted (an action still waiting its turn, or a SpanDAC genre still in
+    /// its library recheck): when released it neither queues nor plays. A play
+    /// already admitted is not undone. A request still being read or looked up
+    /// is abandoned on the way back (`becameActive`).
+    func resignedActive() {
+        djHost.revokePendingPlay()
+    }
 
     func artPlacementsInvalidated() { lastPlaced = nil }
 
@@ -300,7 +404,7 @@ final class NowPlayingScene: Scene {
     private func menuActive(_ snapshot: NowPlayingSnapshot) -> Bool {
         (snapshot.queueEnded && snapshot.endedTrack != dismissedSeed) || manualMenu
     }
-    var capturesAllInput: Bool { menuShownLastFrame }
+    var capturesAllInput: Bool { menuShownLastFrame || boxFocused }
 
     @discardableResult
     func tick(snapshot: NowPlayingSnapshot) -> Bool {
@@ -345,6 +449,8 @@ final class NowPlayingScene: Scene {
         if cursor >= rows.count { cursor = max(0, rows.count - 1) }
 
         var changed = false
+        if boxFocused, menuShownLastFrame { leaveBox() }
+        if djHost.tick() { changed = true }
 
         // A jump's reply: the queue SpanDAC says it is in now, current row first.
         // The next poll says the same and replaces it.
@@ -461,6 +567,88 @@ final class NowPlayingScene: Scene {
     }
 
     func render(frame: ShellFrame, snapshot: NowPlayingSnapshot) -> String {
+        // The DJ box sits under everything else, full width; the rest of the
+        // tab draws into what is above it.
+        let reserved = djBoxRows(frame: frame, menu: menuActive(snapshot))
+        boxFits = reserved > 0
+        if !boxFits { leaveBox() }
+        guard reserved > 0 else { return renderNow(frame: frame, snapshot: snapshot) }
+        let above = ShellFrame(width: frame.width, height: frame.height, barTier: frame.barTier,
+                               tabStyle: frame.tabStyle, labelY: frame.labelY, tabsY: frame.tabsY,
+                               ruleY: frame.ruleY, bodyY: frame.bodyY, bodyHeight: frame.bodyHeight - reserved,
+                               barY: frame.barY, barHeight: frame.barHeight, footerY: frame.footerY,
+                               cellW: frame.cellW, cellH: frame.cellH)
+        return renderNow(frame: above, snapshot: snapshot) + renderDJBox(frame: frame, reserved: reserved)
+    }
+
+    /// The bordered box: the request line (a dim "Make a request" while empty
+    /// and unfocused, a cursor while focused), then one line of words (what is
+    /// happening, what played, or why nothing did), then the artist picker
+    /// when there is one.
+    private func renderDJBox(frame: ShellFrame, reserved: Int) -> String {
+        let model = djHost.model
+        let top = frame.bodyY + frame.bodyHeight - reserved
+        let x = 3
+        let width = max(20, frame.width - 4)
+        let inner = width - 4
+        var out = ""
+        for r in top..<(top + reserved) { out += ANSICode.moveTo(row: r, col: 1) + ANSICode.clearLine }
+        let edge = boxFocused ? ANSICode.cyan : ANSICode.dim
+        let reset = ANSICode.reset
+        func line(_ y: Int, _ styled: String, visible: Int) -> String {
+            ANSICode.moveTo(row: y, col: x) + "\(edge)\u{2502}\(reset) " + styled
+                + String(repeating: " ", count: max(0, inner - visible)) + " \(edge)\u{2502}\(reset)"
+        }
+        var y = top
+        out += ANSICode.moveTo(row: y, col: x)
+            + "\(edge)\u{256D}\(String(repeating: "\u{2500}", count: width - 2))\u{256E}\(reset)"
+        y += 1
+        let tail = { (text: String, room: Int) -> String in
+            text.count > room ? "\u{2026}" + String(text.suffix(max(0, room - 1))) : text
+        }
+        if boxFocused {
+            let shown = tail(model.text, max(1, inner - DJBoxModel.caret.count))
+            out += line(y, "\(ANSICode.brightWhite)\(shown)\(DJBoxModel.caret)\(reset)",
+                        visible: shown.count + DJBoxModel.caret.count)
+        } else if model.text.isEmpty {
+            out += line(y, "\(ANSICode.dim)\(DJBoxModel.placeholder)\(reset)", visible: DJBoxModel.placeholder.count)
+        } else {
+            let shown = tail(model.text, inner)
+            out += line(y, shown, visible: shown.count)
+        }
+        y += 1
+        // Rows left inside the borders after the request line. With a picker the
+        // words line gives way before the choices do (the hits are what the
+        // person is acting on), and the hits are a window that follows the cursor.
+        let slots = max(0, reserved - 3)
+        var pickerSlots = 0
+        var showWords = true
+        if case .pick(let picker) = model.stage {
+            showWords = slots >= 2
+            pickerSlots = min(min(picker.hits.count, 5), slots - (showWords ? 1 : 0))
+        }
+        if showWords, let words = model.statusLine {
+            let shown = truncText(DJBoxModel.clean(words), to: inner)
+            out += line(y, "\(ANSICode.dim)\(shown)\(reset)", visible: shown.count)
+            y += 1
+        }
+        if case .pick(let picker) = model.stage, pickerSlots > 0 {
+            let first = picker.cursor < pickerSlots ? 0 : picker.cursor - pickerSlots + 1
+            for i in first..<min(picker.hits.count, first + pickerSlots) {
+                let hit = picker.hits[i]
+                let selected = i == picker.cursor
+                let label = truncText(DJBoxModel.clean((selected ? "\u{25B8} " : "  ") + hit.title), to: inner)
+                out += line(y, selected ? "\(ANSICode.bold)\(ANSICode.brightWhite)\(label)\(reset)" : label,
+                            visible: label.count)
+                y += 1
+            }
+        }
+        out += ANSICode.moveTo(row: y, col: x)
+            + "\(edge)\u{2570}\(String(repeating: "\u{2500}", count: width - 2))\u{256F}\(reset)"
+        return out
+    }
+
+    private func renderNow(frame: ShellFrame, snapshot: NowPlayingSnapshot) -> String {
         var out = ""
         for r in frame.bodyY..<(frame.bodyY + frame.bodyHeight) {
             out += ANSICode.moveTo(row: r, col: 1) + ANSICode.clearLine
@@ -1016,6 +1204,9 @@ final class NowPlayingScene: Scene {
     }
 
     func handle(_ key: KeyPress) -> SceneAction {
+        // The DJ box, while it has focus, takes every key raw: Space and every
+        // letter type, and none of this tab's shortcuts fire.
+        if boxFocused { return handleBox(key) }
         // Vim aliases first: j/k/h/ctrl-d/ctrl-u everywhere, but NOT l/g/G — this
         // tab binds those to Favorite and Genius Shuffle below.
         let key = vimAlias(key, listScene: false)
@@ -1055,6 +1246,11 @@ final class NowPlayingScene: Scene {
         // Manual open: 'n' (next-options) when no menu is up.
         if case .char("n") = key, !menuShownLastFrame {
             manualMenu = true; return .redraw
+        }
+
+        // ↓ past the last row of the control grid or of Up Next goes into the DJ box.
+        if case .down = key, boxFits, downLeavesTheList() {
+            enterBox(); return .redraw
         }
 
         // Bridge draws no grid, so nothing may focus it: the grid keys become

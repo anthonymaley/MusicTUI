@@ -530,7 +530,7 @@ final class RoutingCoordinator {
                  source: (SourceAppClient) throws -> Void,
                  unaffected: () throws -> Void) throws {
         try route(action, expecting: expecting, expectingPlaySerial: nil, origin: nil, searchOrigin: false,
-                  shippedOnly: true,
+                  shippedOnly: true, claim: nil,
                   musicApp: { _ in try musicApp() },
                   source: source, unaffected: unaffected)
     }
@@ -561,16 +561,24 @@ final class RoutingCoordinator {
     ///   before any branch: if another chosen-music play has been admitted
     ///   since, nothing runs and it throws `anotherPlayAdmittedNothingPlayed`.
     ///   Nil for a caller with no card to keep honest.
+    ///
+    /// - `claim`: the caller's last word, asked inside the same boundary right
+    ///   after the stamp and serial checks and before anything is admitted.
+    ///   It throws to refuse (nothing runs, the serial does not move); once it
+    ///   returns, the play is the caller's to have started and the caller may
+    ///   treat it as admitted. The DJ uses it to keep a play that waited on the
+    ///   action queue from starting after the person left Now.
     func perform(_ action: MusicTUIAction,
                  expecting: (epoch: Int, dataEpoch: Int)?,
                  expectingPlaySerial: Int? = nil,
                  origin: PlayOrigin? = nil,
                  searchOrigin: Bool = false,
+                 claim: (() throws -> Void)? = nil,
                  musicApp: (MusicTUIPlayPath) throws -> Void,
                  source: (SourceAppClient) throws -> Void,
                  unaffected: () throws -> Void) throws {
         try route(action, expecting: expecting, expectingPlaySerial: expectingPlaySerial, origin: origin,
-                  searchOrigin: searchOrigin, shippedOnly: false,
+                  searchOrigin: searchOrigin, shippedOnly: false, claim: claim,
                   musicApp: musicApp, source: source, unaffected: unaffected)
     }
 
@@ -586,6 +594,7 @@ final class RoutingCoordinator {
                        origin: PlayOrigin?,
                        searchOrigin: Bool,
                        shippedOnly: Bool,
+                       claim: (() throws -> Void)?,
                        musicApp: (MusicTUIPlayPath) throws -> Void,
                        source: (SourceAppClient) throws -> Void,
                        unaffected: () throws -> Void) throws {
@@ -599,6 +608,7 @@ final class RoutingCoordinator {
             if let expectingPlaySerial, expectingPlaySerial != playSerial {
                 throw ActionError(message: anotherPlayAdmittedNothingPlayed)
             }
+            try claim?()
             if let target = settled.playOut,
                try gatePlayOut(target, action: action, settled: settled, source: source) { return }
             let now = settled.selection

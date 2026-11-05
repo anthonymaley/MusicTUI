@@ -1,6 +1,6 @@
 // tools/music/Sources/DJ/DJSeams.swift
 //
-// Everything the DJ box reaches outside itself, as one value the scene holds.
+// Everything the DJ box reaches outside itself, as one value the host holds.
 // The defaults FAIL CLOSED: a scene built without wiring cannot ask a model,
 // run a script, queue anything or hand anything to Music. The shell wires the
 // real ones (`live`); a test hands in fakes and never touches a real player.

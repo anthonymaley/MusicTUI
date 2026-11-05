@@ -7,7 +7,7 @@
 //
 // The card is a reading, never a guarantee. Whatever a model returns is
 // validated here, in code, before anything downstream may act on it, and the
-// UI shows the interpreted card before anything plays.
+// box says what it understood ("Playing: ...") the moment it plays.
 import Foundation
 
 /// What the DJ understood. Only the fields its kind uses are ever set.

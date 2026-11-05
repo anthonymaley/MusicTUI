@@ -1,12 +1,12 @@
 // tools/music/Sources/DJ/DJPlan.swift
 //
-// What the DJ box holds between a card and Enter: the PLAN (the exact queue
-// behind the card line, frozen), the stamp it was made under, and the words
-// the box says. A plan is made once, shown, and played at most once.
+// What the DJ box carries from the DJ's answer to the play: the PLAN (the exact
+// queue behind the line, frozen), the stamp it was asked under, and the words
+// the box says. A plan is made once and played at most once, straight away.
 import Foundation
 
-/// Where the world stood when a request was sent: both routing epochs and the
-/// play serial. A card plays only while all three still hold.
+/// Where the world stood when a request was sent (at Enter): both routing
+/// epochs and the play serial. A plan plays only while all three still hold.
 struct DJStamp: Equatable {
     let epoch: Int
     let dataEpoch: Int
@@ -15,7 +15,7 @@ struct DJStamp: Equatable {
     var routing: (epoch: Int, dataEpoch: Int) { (epoch, dataEpoch) }
 }
 
-/// A card's frozen queue. Enter plays exactly this.
+/// A plan's frozen queue. The play is exactly this.
 struct DJPlan: Equatable {
     enum Payload: Equatable {
         /// Catalogue ids for one `slice.queue` on a SpanDAC output.
@@ -28,7 +28,7 @@ struct DJPlan: Equatable {
     }
 
     let payload: Payload
-    /// The one line shown: the interpreted kind, artist or genre, and the exact scope.
+    /// The one line shown (after "Playing: "): the interpreted kind, artist or genre, and the exact scope.
     let line: String
     let stamp: DJStamp
 }
