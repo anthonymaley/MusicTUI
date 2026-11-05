@@ -264,13 +264,14 @@ final class PlaybackPoller {
             result = .success(status)
             lastBridgeSurrounding = window.entries
             lastBridgeQueueToken = window.entries.isEmpty ? nil : played?.token
+            lastBridgeQueueIsCatalogue = !window.entries.isEmpty && (played?.catalogue ?? false)
             // The album is the sent row's, vouched for by the same title check
             // that gates the list; absent that, it stays empty.
             album = window.current?.album ?? ""
         }
         let bridge = bridgeLink.record(result)
         // A second consecutive miss reports a stop; the list goes with it.
-        if case .failure = result, !bridgeLink.inGrace { lastBridgeSurrounding = []; lastBridgeQueueToken = nil }
+        if case .failure = result, !bridgeLink.inGrace { lastBridgeSurrounding = []; lastBridgeQueueToken = nil; lastBridgeQueueIsCatalogue = false }
 
         let outcome: PollOutcome
         switch result {
@@ -291,6 +292,7 @@ final class PlaybackPoller {
         var snap = NowPlayingSnapshot(outcome: outcome, history: [], surrounding: lastBridgeSurrounding)
         snap.bridge = bridge
         snap.spanDACQueueToken = lastBridgeQueueToken
+        snap.spanDACQueueIsCatalogue = lastBridgeQueueIsCatalogue
         store.write(snap)
     }
 
@@ -298,6 +300,7 @@ final class PlaybackPoller {
     private var bridgeLink = BridgeLinkTracker()
     private var lastBridgeOutcome: PollOutcome = .stopped
     private var lastBridgeSurrounding: [TrackListEntry] = []
+    private var lastBridgeQueueIsCatalogue = false
     private var lastBridgeQueueToken: String?
 
     private func bridgeOutcome(_ status: SourceStatus, album: String) -> PollOutcome {

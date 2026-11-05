@@ -198,7 +198,8 @@ func bridgePositionLine(_ b: BridgeNow) -> String? {
 /// status carries neither; the playing song is then the ONE sent row whose
 /// title is exactly the status's (SpanDAC refuses a queue holding two songs
 /// with one title, and the mix keeps the first of each), and none when that is
-/// not exactly one. A status `row`, when it does come, wins.
+/// not exactly one. A status `row`, when it does come, wins. The rows listed after it are only
+/// those the status's queue phase and `present` prove are in the player.
 func spanDACQueueWindow(sent: [MusicRow]?, token: String? = nil, shuffled: Bool = false, catalogue: Bool = false,
                         status: SourceStatus) -> (current: MusicRow?, entries: [TrackListEntry]) {
     guard let sent else { return (nil, []) }
@@ -225,8 +226,24 @@ func spanDACQueueWindow(sent: [MusicRow]?, token: String? = nil, shuffled: Bool 
     // has no order the sent rows could stand in for, and SpanDAC may leave
     // `next_rows` out then: no Up Next list, never an error and never a guess.
     let unorderedWithoutNextRows = shuffled || status.shuffle == true
+    // A catalogue queue's successors are inserted by SpanDAC asynchronously and
+    // the build can fail, so only rows the status proves are in the player are
+    // listed: `complete` all remaining (up to `present` when SpanDAC queued
+    // fewer), `building` the rows below `present`, `invalid` or unknown none.
+    let remaining: [Int]
+    if catalogue {
+        let limit: Int
+        switch status.queuePhase {
+        case "complete": limit = min(sent.count, status.queuePresent.map { max(0, $0) } ?? sent.count)
+        case "building": limit = min(sent.count, status.queuePresent.map { max(0, $0) } ?? 0)
+        default: limit = 0
+        }
+        remaining = at + 1 < limit ? Array((at + 1)..<limit) : []
+    } else {
+        remaining = Array((at + 1)..<sent.count)
+    }
     let next = status.nextRows.map { $0.filter { sent.indices.contains($0) } }
-        ?? (unorderedWithoutNextRows ? [] : Array((at + 1)..<sent.count))
+        ?? (unorderedWithoutNextRows ? [] : remaining)
     func entry(_ i: Int, current: Bool) -> TrackListEntry {
         TrackListEntry(index: i + 1, name: sent[i].title, artist: sent[i].artist, isCurrent: current, album: sent[i].album)
     }
