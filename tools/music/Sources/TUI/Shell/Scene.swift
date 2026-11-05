@@ -53,6 +53,10 @@ protocol Scene: AnyObject {
     /// once, on arrival — never while the person is already browsing it.
     /// Default no-op.
     func becameActive()
+
+    /// Called on the scene that was active, right after the shell switches
+    /// away from it. Default no-op.
+    func resignedActive()
 }
 
 extension Scene {
@@ -60,6 +64,7 @@ extension Scene {
     var footerHint: String { "" }
     func artPlacementsInvalidated() {}
     func becameActive() {}
+    func resignedActive() {}
 }
 
 /// Pure decision: should the shell resolve global/navigation keys for the

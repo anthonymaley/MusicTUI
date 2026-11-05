@@ -206,6 +206,10 @@ final class DJNowBoxTests: XCTestCase {
                 return Self.searchReply(#"[{"kind":"artist","id":"b1","title":"The Beatles"}]"#)
             case "Rad":
                 return Self.searchReply(#"[{"kind":"artist","id":"r1","title":"Radio Dept"},{"kind":"artist","id":"r2","title":"Radio Head Fan"}]"#)
+            case "Many":
+                return Self.searchReply("[" + ["One", "Two", "Three", "Four", "Five"].enumerated().map {
+                    #"{"kind":"artist","id":"m\#($0.offset + 1)","title":"Many \#($0.element)"}"#
+                }.joined(separator: ",") + "]")
             case "Nobody":
                 return Self.searchReply("[]")
             case "Broken":
@@ -221,6 +225,7 @@ final class DJNowBoxTests: XCTestCase {
             case "n2":   return Self.albumsReply(["nb"])
             case "b1":   return Self.albumsReply(["alb1"], more: true)
             case "r1":   return Self.albumsReply(["alb1"])
+            case "m3":   return Self.albumsReply(["na"])
             default:     return Self.albumsReply([])
             }
         }
@@ -1639,6 +1644,212 @@ final class DJNowBoxTests: XCTestCase {
                 XCTAssertEqual(f.handoff.calls.count, 1)
             }
         }
+    }
+
+    // MARK: - Leaving Now revokes a play that was dispatched but not yet admitted
+    //
+    // The play is queued on the action queue the moment its answer arrives. A tab
+    // switch before the queue reaches it (or, for a SpanDAC genre, before its
+    // library recheck returns) must stop it. A play already admitted is not
+    // undone: the sound has started and leaving Now does not stop it.
+
+    private func leaveNow(_ f: Fixture) { f.scene.resignedActive() }
+
+    func testLeavingNowWhileTheArtistMixActionIsHeldPlaysNothing() {
+        let f = fixture(output: .source)
+        f.reader.answer("mix", with: artistMixReading())
+        let hold = DispatchSemaphore(value: 0)
+        f.actions.run("hold") { _ = hold.wait(timeout: .now() + 5) }
+        ask(f, "mix")
+        ticks(f, until: { self.playingLine(f) != nil })          // dispatched, behind the hold
+        leaveNow(f)
+        hold.signal()
+        drain(f.actions)
+        XCTAssertEqual(f.rig.sent("slice.queue").count, 0, "the artist mix queued after the person left Now")
+        f.scene.becameActive()
+        XCTAssertEqual(message(f), NowPlayingScene.djLeftNow, "the box still says Playing")
+    }
+
+    func testLeavingNowWhileAnOpenDataGenreActionIsHeldPlaysNothing() {
+        let text = libraryText(count: 60, genre: { _ in "Jazz" }, played: { self.daysAgoToken(99 + $0) })
+        let f = openFixture(library: text)
+        settle(f, seconds: 0.1)
+        f.reader.answer("jazz", with: genreReading("Jazz"))
+        let hold = DispatchSemaphore(value: 0)
+        f.actions.run("hold") { _ = hold.wait(timeout: .now() + 5) }
+        ask(f, "jazz")
+        ticks(f, until: { self.playingLine(f) != nil })
+        leaveNow(f)
+        hold.signal()
+        drain(f.actions)
+        XCTAssertEqual(f.plays.queues.count, 0, "the queue player ran after the person left Now")
+        XCTAssertNil(f.store.read(), "the app queue was set after the person left Now")
+    }
+
+    func testLeavingNowWhileASpanDACGenreActionIsHeldPlaysNothingOnEitherOutput() {
+        for output in [PlaybackMode.source, .musicApp] {
+            let source = DJFakeGenreSource(.success(spandacPick(aliasRows(5))))
+            let f = fixture(output: output, genreSource: source)
+            f.reader.answer("jazz", with: genreReading("Jazz"))
+            let hold = DispatchSemaphore(value: 0)
+            f.actions.run("hold") { _ = hold.wait(timeout: .now() + 5) }
+            ask(f, "jazz")
+            ticks(f, until: { self.playingLine(f) != nil })
+            leaveNow(f)
+            hold.signal()
+            drain(f.actions)
+            XCTAssertEqual(f.rig.sent("slice.queue").count, 0, "\(output): queued after the person left Now")
+            XCTAssertEqual(f.handoff.calls.count, 0, "\(output): handed off after the person left Now")
+        }
+    }
+
+    func testLeavingNowWhileTheSpanDACRecheckIsHeldPlaysNothingOnEitherOutput() {
+        for output in [PlaybackMode.source, .musicApp] {
+            let source = DJFakeGenreSource(.success(spandacPick(aliasRows(5))))
+            let gate = DispatchSemaphore(value: 0)
+            let f = fixture(output: output, genreSource: source)
+            f.reader.answer("jazz", with: genreReading("Jazz"))
+            source.recheckGate = gate
+            ask(f, "jazz")
+            ticks(f, until: { self.playingLine(f) != nil })
+            XCTAssertEqual(source.recheckStarted.wait(timeout: .now() + 5), .success, "the recheck never started")
+            leaveNow(f)
+            gate.signal()
+            drain(f.actions)
+            XCTAssertEqual(f.rig.sent("slice.queue").count, 0, "\(output): queued after the person left Now")
+            XCTAssertEqual(f.handoff.calls.count, 0, "\(output): handed off after the person left Now")
+        }
+    }
+
+    func testAPlayAlreadyAdmittedIsNotUndoneByLeavingNow() {
+        let f = fixture(output: .source)
+        f.reader.answer("mix", with: artistMixReading())
+        askAndPlay(f, "mix")
+        XCTAssertEqual(f.rig.sent("slice.queue").count, 1)
+        let line = playingLine(f)
+        XCTAssertNotNil(line)
+        leaveNow(f)
+        f.scene.becameActive()
+        drain(f.actions)
+        XCTAssertEqual(f.rig.sent("slice.queue").count, 1)
+        XCTAssertEqual(playingLine(f), line, "leaving Now rewrote a play that had already started")
+    }
+
+    func testReturningToNowAfterARevokedPlayAskingAgainPlaysNormally() {
+        let f = fixture(output: .source)
+        f.reader.answer("mix", with: artistMixReading())
+        let hold = DispatchSemaphore(value: 0)
+        f.actions.run("hold") { _ = hold.wait(timeout: .now() + 5) }
+        ask(f, "mix")
+        ticks(f, until: { self.playingLine(f) != nil })
+        leaveNow(f)
+        hold.signal()
+        drain(f.actions)
+        XCTAssertEqual(f.rig.sent("slice.queue").count, 0)
+        f.scene.becameActive()
+        for _ in 0..<5 { _ = f.scene.handle(.char("\u{7F}")) }
+        askAndPlay(f, "mix")
+        XCTAssertEqual(f.rig.sent("slice.queue").count, 1, "a normal play after returning to Now did not play")
+    }
+
+    func testLeavingNowWithNothingDispatchedChangesNothing() {
+        let f = fixture(output: .source)
+        focus(f)
+        type(f, "jazz")
+        leaveNow(f)
+        f.scene.becameActive()
+        XCTAssertEqual(f.scene.djModel.text, "jazz")
+        XCTAssertEqual(stage(f), .typing)
+    }
+
+    // MARK: - The artist picker never hides its own box
+
+    /// A frame whose body is exactly `rows` tall.
+    private func frame(bodyRows rows: Int) -> ShellFrame? {
+        (6...60).lazy.map { shellLayout(width: 120, height: $0) }.first { $0.bodyHeight == rows }
+    }
+
+    private func boxTopRow(_ out: String) -> Int? {
+        guard let range = out.range(of: "\u{256D}") else { return nil }
+        let head = String(out[out.startIndex..<range.lowerBound])
+        let moves = try? NSRegularExpression(pattern: "\u{1B}\\[(\\d+);\\d+H")
+        let last = moves?.matches(in: head, range: NSRange(head.startIndex..., in: head)).last
+        return last.flatMap { Range($0.range(at: 1), in: head) }.flatMap { Int(head[$0]) }
+    }
+
+    /// Focus the box on `small`, ask for the 5-artist picker, and wait for it.
+    private func fivePicker(_ f: Fixture, on small: ShellFrame) {
+        f.reader.answer("many mix", with: artistMixReading("Many"))
+        _ = f.scene.render(frame: small, snapshot: snap)
+        _ = f.scene.handle(.down)
+        XCTAssertTrue(f.scene.boxFocused, "↓ did not reach the box at body \(small.bodyHeight)")
+        type(f, "many mix")
+        _ = f.scene.handle(.enter)
+        ticks(f, until: { self.isPick(f) })
+    }
+
+    func testAFiveChoicePickerKeepsItsBoxAndFocusOnSmallBodies() throws {
+        for rows in 10...14 {
+            let small = try XCTUnwrap(frame(bodyRows: rows), "no frame with a \(rows)-row body")
+            let f = fixture(output: .source)
+            fivePicker(f, on: small)
+            let out = f.scene.render(frame: small, snapshot: snap)
+            let text = plain(out)
+            XCTAssertTrue(f.scene.boxFocused, "body \(rows): the picker took focus away")
+            XCTAssertTrue(f.scene.capturesAllInput, "body \(rows): the box stopped capturing input")
+            XCTAssertTrue(text.contains("\u{256D}") && text.contains("\u{2570}"), "body \(rows): the box was hidden")
+            XCTAssertTrue(text.contains("\u{25B8} Many One"), "body \(rows): the selected row is not visible\n\(text)")
+            let top = try XCTUnwrap(boxTopRow(out), "body \(rows): no box top border")
+            XCTAssertGreaterThanOrEqual(top - small.bodyY, 6, "body \(rows): the box ate the screen above it")
+        }
+    }
+
+    func testTheSelectedPickerRowStaysVisibleWhileArrowingAndEnterSelectsIt() throws {
+        let names = ["One", "Two", "Three", "Four", "Five"]
+        for rows in 10...14 {
+            let small = try XCTUnwrap(frame(bodyRows: rows))
+            let f = fixture(output: .source)
+            fivePicker(f, on: small)
+            for (i, name) in names.enumerated() {
+                if i > 0 { _ = f.scene.handle(.down) }
+                let text = plain(f.scene.render(frame: small, snapshot: snap))
+                XCTAssertTrue(f.scene.boxFocused, "body \(rows): focus dropped at choice \(i + 1)")
+                XCTAssertTrue(text.contains("\u{25B8} Many \(name)"),
+                              "body \(rows): choice \(i + 1) is selected but not visible\n\(text)")
+            }
+            for i in stride(from: names.count - 2, through: 0, by: -1) {
+                _ = f.scene.handle(.up)
+                let text = plain(f.scene.render(frame: small, snapshot: snap))
+                XCTAssertTrue(text.contains("\u{25B8} Many \(names[i])"), "body \(rows): going up lost choice \(i + 1)")
+            }
+            XCTAssertTrue(f.scene.boxFocused)
+        }
+    }
+
+    func testEnterOnAClippedPickerChoosesTheSelectedArtist() throws {
+        let small = try XCTUnwrap(frame(bodyRows: 10))
+        let f = fixture(output: .source)
+        fivePicker(f, on: small)
+        _ = f.scene.handle(.down); _ = f.scene.handle(.down)
+        _ = f.scene.render(frame: small, snapshot: snap)
+        _ = f.scene.handle(.enter)
+        ticks(f, until: { self.playingLine(f) != nil || self.message(f) != nil })
+        XCTAssertEqual(f.rig.sent("slice.artistAlbums").map { $0.body["id"] as? String ?? "" }, ["m3"])
+    }
+
+    func testResizingWhilePickerShowsKeepsTheBoxFocusAndSelection() throws {
+        let small = try XCTUnwrap(frame(bodyRows: 10))
+        let f = fixture(output: .source)
+        fivePicker(f, on: small)
+        _ = f.scene.handle(.down); _ = f.scene.handle(.down)
+        for size in [frame, small, try XCTUnwrap(self.frame(bodyRows: 12)), frame, small] {
+            let text = plain(f.scene.render(frame: size, snapshot: snap))
+            XCTAssertTrue(f.scene.boxFocused, "focus dropped at body \(size.bodyHeight)")
+            XCTAssertTrue(text.contains("\u{25B8} Many Three"), "selection lost at body \(size.bodyHeight)\n\(text)")
+        }
+        // Under the minimum the box goes, as it always has.
+        _ = f.scene.render(frame: shellLayout(width: 120, height: 12), snapshot: snap)
+        XCTAssertFalse(f.scene.boxFocused)
     }
 }
 
