@@ -244,9 +244,17 @@ final class SpanDACNowControlsTests: XCTestCase {
         XCTAssertTrue(plain(s.render(frame: frame, snapshot: snap)).contains("[Off]"), "the cell moves before the next poll")
         press(.down)                                // skips Order: Repeat
         press(.enter)                               // all -> one
-        press(.down)                                // Genius is disabled: stays
+        // Genius is disabled, so Repeat is the last usable row: ↓ past it enters the
+        // DJ box (Now box default 1) instead of staying on the grid.
+        press(.down)
+        XCTAssertTrue(s.boxFocused, "↓ past the last usable grid row did not reach the DJ box")
+        press(.enter)                               // an empty box asks nothing and sends nothing
+        XCTAssertEqual(lines.count, 2, "an Enter on the empty DJ box sent an op: \(lines)")
+        press(.up)                                  // back to the grid, on Repeat
+        XCTAssertFalse(s.boxFocused, "↑ did not leave the DJ box")
         press(.enter)                               // one -> off
         XCTAssertEqual(lines.map { $0["op"] as? String }, ["slice.shuffle", "slice.repeat", "slice.repeat"])
+        guard lines.count == 3 else { return }
         XCTAssertEqual(lines[0]["on"] as? Bool, false)
         XCTAssertEqual(lines[1]["mode"] as? String, "one")
         XCTAssertEqual(lines[2]["mode"] as? String, "off")
@@ -254,7 +262,7 @@ final class SpanDACNowControlsTests: XCTestCase {
         lines = []
         press(.char("s")); press(.char("r"))        // the keys do the same
         XCTAssertEqual(lines.map { $0["op"] as? String }, ["slice.shuffle", "slice.repeat"])
-        XCTAssertEqual(lines[0]["on"] as? Bool, true, "the override remembers the last press, not the stale status")
+        XCTAssertEqual(lines.first?["on"] as? Bool, true, "the override remembers the last press, not the stale status")
     }
 
     func testOrderAndGeniusAreRefusedInWordsAndNeverReachMusicApp() throws {
