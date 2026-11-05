@@ -2,8 +2,8 @@
 //
 // The DJ box as a pure model: raw text entry, one request id per ask (a newer
 // prompt wins, and an answer for any other id is dropped, errors included),
-// the card that Enter plays exactly once and Esc drops, the artist picker, and
-// the plain message states. No I/O, no clock, no host.
+// the plan that plays straight away, once, and empties the box, the artist
+// picker, and the plain message states. No I/O, no clock, no host.
 import XCTest
 @testable import music
 
@@ -76,34 +76,38 @@ final class DJBoxModelTests: XCTestCase {
         _ = m.handle(.char("\u{7F}")); _ = m.handle(.char("\u{7F}")); _ = m.handle(.char("\u{7F}"))
         type(&m, "two")
         XCTAssertEqual(m.handle(.enter).emission, .ask(prompt: "two", requestID: 2))
-        XCTAssertFalse(m.receive(.message("late one"), requestID: 1), "the older answer was applied")
+        XCTAssertEqual(m.receive(.message("late one"), requestID: 1), .ignored, "the older answer was applied")
         XCTAssertEqual(m.stage, .reading)
-        XCTAssertTrue(m.receive(.plan(plan()), requestID: 2))
-        XCTAssertEqual(m.stage, .card(plan()))
+        XCTAssertEqual(m.receive(.plan(plan()), requestID: 2), .play(plan()))
+        XCTAssertEqual(m.stage, .playing(plan().line))
     }
 
     func testALateErrorForAnOlderRequestIsDroppedToo() {
         var m = DJBoxModel()
         type(&m, "a"); _ = m.handle(.enter)
         type(&m, "b"); _ = m.handle(.enter)
-        XCTAssertTrue(m.receive(.plan(plan()), requestID: 2))
-        XCTAssertFalse(m.receive(.message("The DJ couldn't read that: boom"), requestID: 1))
-        XCTAssertEqual(m.stage, .card(plan()))
+        XCTAssertEqual(m.receive(.plan(plan()), requestID: 2), .play(plan()))
+        XCTAssertEqual(m.receive(.message("The DJ couldn't read that: boom"), requestID: 1), .ignored)
+        XCTAssertEqual(m.stage, .playing(plan().line))
     }
 
-    func testAnAnswerAfterEscFindsNothingToLandOn() {
+    func testEscAndTheArrowsAreTheHostsAndTheModelIgnoresThem() {
         var m = DJBoxModel()
-        type(&m, "a"); _ = m.handle(.enter)
-        XCTAssertEqual(m.handle(.escape).emission, .close)
-        XCTAssertFalse(m.receive(.plan(plan()), requestID: 1), "an answer landed after the box closed")
+        type(&m, "a")
+        XCTAssertFalse(m.handle(.escape).changed)
+        XCTAssertNil(m.handle(.escape).emission)
+        XCTAssertFalse(m.handle(.up).changed)
+        XCTAssertFalse(m.handle(.down).changed)
+        XCTAssertEqual(m.text, "a")
+        XCTAssertEqual(m.handle(.enter).emission, .ask(prompt: "a", requestID: 1), "Esc closed the model")
     }
 
-    func testTheSameAnswerCannotLandTwice() {
+    func testTheSameAnswerCannotLandOrPlayTwice() {
         var m = DJBoxModel()
         type(&m, "a"); _ = m.handle(.enter)
-        XCTAssertTrue(m.receive(.plan(plan()), requestID: 1))
-        XCTAssertFalse(m.receive(.plan(plan("second")), requestID: 1))
-        XCTAssertEqual(m.stage, .card(plan()))
+        XCTAssertEqual(m.receive(.plan(plan()), requestID: 1), .play(plan()))
+        XCTAssertEqual(m.receive(.plan(plan("second")), requestID: 1), .ignored)
+        XCTAssertEqual(m.stage, .playing(plan().line))
     }
 
     // MARK: - Editing a pending prompt invalidates the request that is out
@@ -114,7 +118,7 @@ final class DJBoxModelTests: XCTestCase {
         XCTAssertEqual(m.stage, .reading)
         type(&m, "x")
         XCTAssertEqual(m.stage, .typing, "an edit left the old request waiting")
-        XCTAssertFalse(m.receive(.plan(plan()), requestID: 1), "the edited-away request landed a card")
+        XCTAssertEqual(m.receive(.plan(plan()), requestID: 1), .ignored, "the edited-away request played")
         XCTAssertEqual(m.stage, .typing)
     }
 
@@ -122,18 +126,18 @@ final class DJBoxModelTests: XCTestCase {
         var m = DJBoxModel()
         type(&m, "one"); _ = m.handle(.enter)
         _ = m.handle(.char("\u{7F}"))
-        XCTAssertFalse(m.receive(.message("The DJ couldn't read that: boom"), requestID: 1))
+        XCTAssertEqual(m.receive(.message("The DJ couldn't read that: boom"), requestID: 1), .ignored)
         XCTAssertEqual(m.stage, .typing)
     }
 
     func testEditingWhileLookingUpDropsTheRequestToo() {
         var m = DJBoxModel()
         type(&m, "one"); _ = m.handle(.enter)
-        XCTAssertTrue(m.receive(.working("Radiohead"), requestID: 1))
+        XCTAssertEqual(m.receive(.working("Radiohead"), requestID: 1), .changed)
         type(&m, "x")
         XCTAssertEqual(m.stage, .typing)
-        XCTAssertFalse(m.receive(.plan(plan()), requestID: 1))
-        XCTAssertFalse(m.receive(.message("late"), requestID: 1))
+        XCTAssertEqual(m.receive(.plan(plan()), requestID: 1), .ignored)
+        XCTAssertEqual(m.receive(.message("late"), requestID: 1), .ignored)
         XCTAssertEqual(m.stage, .typing)
     }
 
@@ -143,56 +147,59 @@ final class DJBoxModelTests: XCTestCase {
         type(&m, "x")
         let out = m.handle(.enter)
         XCTAssertEqual(out.emission, .ask(prompt: "onex", requestID: 2))
-        XCTAssertFalse(m.receive(.message("old"), requestID: 1))
-        XCTAssertTrue(m.receive(.plan(plan()), requestID: 2))
+        XCTAssertEqual(m.receive(.message("old"), requestID: 1), .ignored)
+        XCTAssertEqual(m.receive(.plan(plan()), requestID: 2), .play(plan()))
     }
 
-    // MARK: - The card
+    // MARK: - The plan plays straight away
 
-    func testEnterOnTheCardPlaysThatPlanOnceAndNeverAgain() {
+    func testAPlanForTheCurrentRequestIsHandedBackToPlayOnceAndTheBoxEmpties() {
         var m = DJBoxModel()
-        type(&m, "a"); _ = m.handle(.enter)
-        _ = m.receive(.plan(plan()), requestID: 1)
-        let first = m.handle(.enter)
-        XCTAssertEqual(first.emission, .play(plan()))
-        XCTAssertEqual(m.stage, .sent(plan().line))
-        XCTAssertNil(m.handle(.enter).emission, "a second Enter played again")
+        type(&m, "a radiohead mix"); _ = m.handle(.enter)
+        XCTAssertEqual(m.receive(.plan(plan()), requestID: 1), .play(plan()))
+        XCTAssertEqual(m.stage, .playing(plan().line))
+        XCTAssertEqual(m.text, "", "the box did not empty for the next request")
+        XCTAssertNil(m.handle(.enter).emission, "an Enter on the emptied box asked or played again")
         XCTAssertNil(m.handle(.enter).emission)
     }
 
-    func testNothingIsEmittedUntilEnter() {
-        var m = DJBoxModel()
-        type(&m, "a"); _ = m.handle(.enter)
-        _ = m.receive(.plan(plan()), requestID: 1)
-        XCTAssertEqual(m.stage, .card(plan()), "a card appeared as played")
-    }
-
-    func testEscDropsTheCardAndClosesTheBox() {
-        var m = DJBoxModel()
-        type(&m, "a"); _ = m.handle(.enter)
-        _ = m.receive(.plan(plan()), requestID: 1)
-        XCTAssertEqual(m.handle(.escape).emission, .close)
-        XCTAssertNil(m.handle(.enter).emission, "the dropped card still played")
-    }
-
-    func testTypingOnTheCardDropsItAndEditsThePrompt() {
+    func testTypingAfterAPlayStartsANewRequestFromAnEmptyBox() {
         var m = DJBoxModel()
         type(&m, "jazz"); _ = m.handle(.enter)
         _ = m.receive(.plan(plan()), requestID: 1)
-        _ = m.handle(.char("!"))
+        type(&m, "rock")
         XCTAssertEqual(m.stage, .typing)
-        XCTAssertEqual(m.text, "jazz!")
-        XCTAssertEqual(m.handle(.enter).emission, .ask(prompt: "jazz!", requestID: 2),
-                       "Enter after an edit must ask again, not play the old card")
+        XCTAssertEqual(m.text, "rock")
+        XCTAssertEqual(m.handle(.enter).emission, .ask(prompt: "rock", requestID: 2))
     }
 
-    func testDroppingTheCardForAChange() {
+    func testDroppingAPlanForAChangeSaysWhyAndPlaysNothing() {
         var m = DJBoxModel()
         type(&m, "a"); _ = m.handle(.enter)
         _ = m.receive(.plan(plan()), requestID: 1)
         m.drop(saying: "The output changed.")
         XCTAssertEqual(m.stage, .message("The output changed."))
-        XCTAssertNil(m.handle(.enter).emission.flatMap { if case .play = $0 { return $0 } else { return nil } })
+        XCTAssertNil(m.handle(.enter).emission, "an emptied box asked")
+    }
+
+    func testAPlayThatFailedReplacesTheLineForThatRequestOnly() {
+        var m = DJBoxModel()
+        type(&m, "a"); _ = m.handle(.enter)
+        _ = m.receive(.plan(plan()), requestID: 1)
+        XCTAssertFalse(m.playFailed(requestID: 9, saying: "wrong request"))
+        XCTAssertEqual(m.stage, .playing(plan().line))
+        XCTAssertTrue(m.playFailed(requestID: 1, saying: "Couldn't play.\u{1B}[2J"))
+        XCTAssertEqual(m.stage, .message("Couldn't play.[2J"))
+        XCTAssertFalse(m.playFailed(requestID: 1, saying: "again"), "a failure landed twice")
+    }
+
+    func testAPlayFailureNeverReplacesWhatThePersonDidNext() {
+        var m = DJBoxModel()
+        type(&m, "a"); _ = m.handle(.enter)
+        _ = m.receive(.plan(plan()), requestID: 1)
+        type(&m, "b")
+        XCTAssertFalse(m.playFailed(requestID: 1, saying: "late failure"))
+        XCTAssertEqual(m.stage, .typing)
     }
 
     // MARK: - Messages
@@ -200,7 +207,7 @@ final class DJBoxModelTests: XCTestCase {
     func testAMessageShowsAndEnterAsksAgain() {
         var m = DJBoxModel()
         type(&m, "jazz"); _ = m.handle(.enter)
-        XCTAssertTrue(m.receive(.message("nope"), requestID: 1))
+        XCTAssertEqual(m.receive(.message("nope"), requestID: 1), .changed)
         XCTAssertEqual(m.stage, .message("nope"))
         XCTAssertEqual(m.handle(.enter).emission, .ask(prompt: "jazz", requestID: 2))
     }
@@ -219,7 +226,8 @@ final class DJBoxModelTests: XCTestCase {
     func testThePickerMovesAndEnterChoosesTheCatalogueHit() {
         var m = DJBoxModel()
         type(&m, "nirvana mix"); _ = m.handle(.enter)
-        XCTAssertTrue(m.receive(.pick(artist: "Nirvana", hits: nirvana), requestID: 1))
+        XCTAssertEqual(m.receive(.pick(artist: "Nirvana", hits: nirvana), requestID: 1), .changed)
+        XCTAssertTrue(m.isPicking)
         guard case .pick(let picker) = m.stage else { return XCTFail("\(m.stage)") }
         XCTAssertEqual(picker.cursor, 0)
         _ = m.handle(.down)
@@ -239,8 +247,8 @@ final class DJBoxModelTests: XCTestCase {
         type(&m, "nirvana mix"); _ = m.handle(.enter)
         _ = m.receive(.pick(artist: "Nirvana", hits: nirvana), requestID: 1)
         _ = m.handle(.enter)
-        XCTAssertFalse(m.receive(.plan(plan()), requestID: 1))
-        XCTAssertTrue(m.receive(.plan(plan()), requestID: 2))
+        XCTAssertEqual(m.receive(.plan(plan()), requestID: 1), .ignored)
+        XCTAssertEqual(m.receive(.plan(plan()), requestID: 2), .play(plan()))
     }
 
     func testTypingInThePickerDropsIt() {
@@ -256,9 +264,10 @@ final class DJBoxModelTests: XCTestCase {
     func testTheDJUnderstoodAndIsLookingUp() {
         var m = DJBoxModel()
         type(&m, "radiohead mix"); _ = m.handle(.enter)
-        XCTAssertTrue(m.receive(.working("Radiohead"), requestID: 1))
+        XCTAssertEqual(m.receive(.working("Radiohead"), requestID: 1), .changed)
         XCTAssertEqual(m.stage, .working("Radiohead"))
-        XCTAssertTrue(m.receive(.plan(plan()), requestID: 1), "the plan that follows `working` is the same request's")
+        XCTAssertEqual(m.receive(.plan(plan()), requestID: 1), .play(plan()),
+                       "the plan that follows `working` is the same request's")
     }
 
     // MARK: - The words shown
@@ -271,6 +280,6 @@ final class DJBoxModelTests: XCTestCase {
         _ = m.receive(.working("Radiohead"), requestID: 1)
         XCTAssertEqual(m.statusLine, "Looking up Radiohead\u{2026}")
         _ = m.receive(.plan(plan("The line")), requestID: 1)
-        XCTAssertEqual(m.statusLine, "The line \u{2014} Enter plays, Esc drops it")
+        XCTAssertEqual(m.statusLine, "Playing: The line")
     }
 }

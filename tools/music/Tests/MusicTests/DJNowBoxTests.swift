@@ -1,6 +1,6 @@
 // tools/music/Tests/MusicTests/DJBoxSceneTests.swift
 //
-// The DJ box on Discover (`d`), driven through the real scene over a real
+// The DJ box on the Now tab, driven through the real scene over a real
 // `RoutingCoordinator` and the SceneDataRig's fake SpanDAC clients, with a fake
 // reader (the Apple model is never asked), a fake AppleScript runner for the
 // MusicTUI-data library read, a fake SpanDAC genre source, a hand-off spy and a
@@ -8,13 +8,14 @@
 // the keychain, the network or ~/.config/music (the external-call tripwire is
 // armed for every test).
 //
-// What these pin: the box takes raw input and asks off the input loop; a newer
-// prompt wins and a stale answer (an error too) never lands; Esc closes and a
-// reopened box never shows the old one's answer; the card shows the exact scope
-// and freezes the queue; nothing plays before Enter and Enter plays exactly
-// once; a source or output change between card and Enter drops the card and
-// says so; an artist mix is SpanDAC data on a SpanDAC output only and refuses
-// every other combination before any read, add or lifecycle call.
+// What these pin: the box is reached by moving down past the last row of the
+// control grid or of Up Next, takes raw input (Space included) and asks off the
+// input loop; a newer prompt wins and a stale answer (an error too) never
+// lands; Enter on the request plays it the moment the answer arrives, with no
+// card and no second Enter, once; a source, output or play change between
+// Enter and the play stops it and says so; an artist mix is SpanDAC data on a
+// SpanDAC output only and refuses every other combination before any read or
+// add; the box says what played and empties.
 import XCTest
 @testable import music
 
@@ -108,11 +109,23 @@ private final class DJPlayLog {
     func record(_ q: AppQueue) { lock.lock(); _queues.append(q); lock.unlock() }
 }
 
-final class DJBoxSceneTests: XCTestCase {
+final class DJNowBoxTests: XCTestCase {
 
-    private let idle = NowPlayingSnapshot(outcome: .stopped, history: [], surrounding: [])
     private let fs = "\u{1F}", rs = "\u{1E}"
     private let fixedNow = Date(timeIntervalSince1970: 1_800_000_000)
+    private let frame = shellLayout(width: 120, height: 40)
+
+    /// What every tick and render sees: a track playing, SpanDAC answering, no
+    /// Up Next rows and no grid (so the box is the first thing ↓ reaches). A
+    /// Bridge snapshot, so a tick starts no Music.app read of its own.
+    private let snap: NowPlayingSnapshot = {
+        var np = NowPlayingState()
+        np.track = "Teardrop"; np.artist = "Massive Attack"; np.state = "playing"
+        var s = NowPlayingSnapshot(outcome: .active(np), history: [], surrounding: [])
+        s.bridge = BridgeNow(link: .answering, playback: "playing", title: "Teardrop", artist: "Massive Attack",
+                             queue: .none, index: nil)
+        return s
+    }()
 
     override func setUp() {
         super.setUp()
@@ -160,13 +173,10 @@ final class DJBoxSceneTests: XCTestCase {
 
     private struct Fixture {
         let rig: SceneDataRig
-        let scene: DiscoverScene
+        let scene: NowPlayingScene
         let routing: RoutingCoordinator
         let status: StatusStore
         let actions: ActionRunner
-        let log: SceneLifecycleLog
-        let mac: FakeSpanDACMac
-        let lib: FakeAppleLibrary
         let reader: DJFakeReader
         let handoff: DJHandoffSpy
         let store: AppQueueStore
@@ -180,24 +190,6 @@ final class DJBoxSceneTests: XCTestCase {
         var reply: () throws -> String = { throw AppleScriptBackend.ScriptError.executionFailed("no script wired") }
         var count: Int { lock.lock(); defer { lock.unlock() }; return _count }
         func run() throws -> String { lock.lock(); _count += 1; lock.unlock(); return try reply() }
-    }
-
-    private func lifecycle(_ log: SceneLifecycleLog) -> DiscoverLifecycleCoordinator {
-        enum Stop: Error { case stop }
-        let seams = DiscoverLifecycleCoordinator.Seams(
-            runSweep: { _ in }, create: { _, ids in log.create(ids); throw Stop.stop }, readCount: { _ in 0 },
-            play: { log.play($0) }, confirmRead: { _ in "" }, post: { _ in },
-            scheduler: DiscoverScheduler(now: { Date() }, deadline: { _ in Date() }, delay: { _ in }),
-            readCountByPersistentID: { _ in 100 },
-            confirmReadByPersistentID: { _ in discoverConfirmedToken },
-            readContainerTrackIDsByPersistentID: { log.mac?.containerTrackIDs($0) },
-            readTracksByPersistentID: { hexes in
-                guard let mac = log.mac else { throw Stop.stop }
-                return try mac.library.persistentIDReader.tracks(persistentIDs: hexes)
-            })
-        let c = DiscoverLifecycleCoordinator(seams: seams)
-        c.completeLaunchSweep(.swept)
-        return c
     }
 
     private func fixture(output: PlaybackMode, accepted: Bool = true, artists: Bool = true,
@@ -246,16 +238,6 @@ final class DJBoxSceneTests: XCTestCase {
         let routing = rig.coordinator()
         let status = StatusStore()
         let actions = ActionRunner(status: status)
-        let log = SceneLifecycleLog()
-        let lib = FakeAppleLibrary()
-        let mac = FakeSpanDACMac(library: lib)
-        log.mac = mac
-        let scene = DiscoverScene(feed: nil, status: status, actions: actions, api: nil,
-                                  lifecycle: lifecycle(log), routing: routing,
-                                  opener: SceneRecordingOpener())
-        scene.cataloguePlayer = SpanDACCataloguePlayer(seams: lib.seams)
-        scene.libraryOps = mac.client
-
         let reader = DJFakeReader()
         let handoff = DJHandoffSpy()
         let store = AppQueueStore()
@@ -270,16 +252,16 @@ final class DJBoxSceneTests: XCTestCase {
         seams.handoff = handoff
         seams.shuffler = DJReverseShuffle()
         seams.now = { self.fixedNow }
-        scene.dj = seams
-        return Fixture(rig: rig, scene: scene, routing: routing, status: status, actions: actions, log: log,
-                       mac: mac, lib: lib, reader: reader, handoff: handoff, store: store, plays: plays,
-                       scripts: scripts)
+        let scene = NowPlayingScene(backend: AppleScriptBackend(executable: "/usr/bin/true"), appQueue: store,
+                                    status: status, actions: actions, routing: routing, dj: seams)
+        return Fixture(rig: rig, scene: scene, routing: routing, status: status, actions: actions,
+                       reader: reader, handoff: handoff, store: store, plays: plays, scripts: scripts)
     }
 
     private func ticks(_ f: Fixture, until done: () -> Bool, file: StaticString = #filePath, line: UInt = #line) {
         let deadline = Date().addingTimeInterval(5)
         while !done() && Date() < deadline {
-            _ = f.scene.tick(snapshot: idle)
+            _ = f.scene.tick(snapshot: snap)
             usleep(2_000)
         }
         XCTAssertTrue(done(), "timed out", file: file, line: line)
@@ -288,13 +270,9 @@ final class DJBoxSceneTests: XCTestCase {
     private func settle(_ f: Fixture, seconds: TimeInterval = 0.4) {
         let deadline = Date().addingTimeInterval(seconds)
         while Date() < deadline {
-            _ = f.scene.tick(snapshot: idle)
+            _ = f.scene.tick(snapshot: snap)
             usleep(2_000)
         }
-    }
-
-    private func loadRails(_ f: Fixture, file: StaticString = #filePath, line: UInt = #line) {
-        ticks(f, until: { !f.scene.rails.isEmpty }, file: file, line: line)
     }
 
     private func drain(_ actions: ActionRunner) {
@@ -303,43 +281,72 @@ final class DJBoxSceneTests: XCTestCase {
         XCTAssertEqual(done.wait(timeout: .now() + 5), .success, "ActionRunner never drained")
     }
 
+    private func plain(_ s: String) -> String {
+        s.replacingOccurrences(of: "\u{1B}\\[[0-9;?]*[A-Za-z]", with: "", options: .regularExpression)
+    }
+
+    private func screen(_ f: Fixture) -> String { plain(f.scene.render(frame: frame, snapshot: snap)) }
+
+    /// ↓ into the box, as a person does: the first frame is drawn, then the key.
+    private func focus(_ f: Fixture, file: StaticString = #filePath, line: UInt = #line) {
+        if !f.scene.boxFocused {
+            _ = f.scene.render(frame: frame, snapshot: snap)
+            _ = f.scene.handle(.down)
+        }
+        XCTAssertTrue(f.scene.boxFocused, "↓ did not reach the box", file: file, line: line)
+    }
+
     private func type(_ f: Fixture, _ text: String) {
         for c in text { _ = f.scene.handle(c == " " ? .space : .char(c)) }
     }
 
-    private func stage(_ f: Fixture) -> DJBoxModel.Stage? { f.scene.djModel?.stage }
+    private func stage(_ f: Fixture) -> DJBoxModel.Stage { f.scene.djModel.stage }
 
-    private var isDJ: (Fixture) -> Bool { { if case .dj = $0.scene.currentLevel { return true }; return false } }
-
-    private func plan(_ f: Fixture) -> DJPlan? {
-        if case .card(let plan)? = stage(f) { return plan }
+    private func playingLine(_ f: Fixture) -> String? {
+        if case .playing(let line) = stage(f) { return line }
         return nil
     }
 
     private func message(_ f: Fixture) -> String? {
-        if case .message(let text)? = stage(f) { return text }
+        if case .message(let text) = stage(f) { return text }
         return nil
     }
 
-    /// `d`, the prompt, Enter.
+    private func isPick(_ f: Fixture) -> Bool {
+        if case .pick = stage(f) { return true }
+        return false
+    }
+
+    /// Focus the box, type the prompt, Enter. That is all a person does.
     private func ask(_ f: Fixture, _ prompt: String) {
-        if f.scene.djModel == nil { _ = f.scene.handle(.char("d")) }
+        focus(f)
         type(f, prompt)
         _ = f.scene.handle(.enter)
     }
 
-    /// Ask and wait for the answer to be on screen as a card.
-    private func askForCard(_ f: Fixture, _ prompt: String, file: StaticString = #filePath, line: UInt = #line) {
+    /// Ask, and wait until the box has an answer on screen: it is playing,
+    /// showing a message, or showing the artist picker.
+    private func askAndWait(_ f: Fixture, _ prompt: String, file: StaticString = #filePath, line: UInt = #line) {
         ask(f, prompt)
-        ticks(f, until: { self.plan(f) != nil || self.message(f) != nil }, file: file, line: line)
+        ticks(f, until: { self.playingLine(f) != nil || self.message(f) != nil || self.isPick(f) },
+              file: file, line: line)
     }
 
-    private func assertNoLibraryOrPlay(_ f: Fixture, file: StaticString = #filePath, line: UInt = #line) {
-        XCTAssertEqual(f.mac.allOps, [], "a SpanDAC library op was sent", file: file, line: line)
-        XCTAssertEqual(f.lib.events, [], "Music.app's library was touched", file: file, line: line)
-        XCTAssertEqual(f.log.created, [], "the lifecycle created a container", file: file, line: line)
-        XCTAssertEqual(f.log.played, [], "the lifecycle played", file: file, line: line)
+    /// Ask, wait for the play to be dispatched, and let the action queue run it.
+    private func askAndPlay(_ f: Fixture, _ prompt: String, file: StaticString = #filePath, line: UInt = #line) {
+        askAndWait(f, prompt, file: file, line: line)
+        drain(f.actions)
+    }
+
+    private func assertNothingPlayed(_ f: Fixture, file: StaticString = #filePath, line: UInt = #line) {
         XCTAssertEqual(f.rig.sent("slice.queue").count, 0, "a queue was sent", file: file, line: line)
+        XCTAssertEqual(f.plays.queues.count, 0, "the queue player ran", file: file, line: line)
+        XCTAssertEqual(f.handoff.calls.count, 0, "a hand-off ran", file: file, line: line)
+        XCTAssertNil(f.store.read(), "the app queue was set", file: file, line: line)
+        let libraryOps = f.rig.sent.map(\.op).filter {
+            $0.hasPrefix("library.") && $0 != "library.genreUnheard" && $0 != "library.resolveIDs"
+        }
+        XCTAssertEqual(libraryOps, [], "a SpanDAC library op was sent", file: file, line: line)
     }
 
     private func artistMixReading(_ artist: String = "Radiohead") -> DJReading {
@@ -350,50 +357,157 @@ final class DJBoxSceneTests: XCTestCase {
         .card(DJCard(kind: .genreUnheard, artist: nil, genre: genre))
     }
 
-    // MARK: - `d` and the box
-
-    func testDOpensTheBoxAndItCapturesEveryKeyUntilEscCloses() {
-        let f = fixture(output: .source)
-        loadRails(f)
-        XCTAssertFalse(f.scene.capturesAllInput)
-
-        XCTAssertEqual(f.scene.handle(.char("d")), .redraw)
-        XCTAssertTrue(isDJ(f), "\(f.scene.currentLevel)")
-        XCTAssertTrue(f.scene.capturesAllInput)
-        XCTAssertEqual(shellRoute(for: .space, sceneCapturing: f.scene.capturesAllInput), .scene)
-        type(f, "p r q j k / d")
-        XCTAssertEqual(f.scene.djModel?.text, "p r q j k / d")
-        let out = f.scene.render(frame: shellLayout(width: 120, height: 40), snapshot: idle)
-        XCTAssertTrue(out.contains(DJBoxModel.boxPrefix), "the box is not drawn")
-
-        XCTAssertEqual(f.scene.handle(.escape), .redraw)
-        XCTAssertFalse(isDJ(f))
-        XCTAssertFalse(f.scene.capturesAllInput)
-        XCTAssertNil(f.scene.djModel)
-        XCTAssertEqual(f.scene.currentLevel, .root)
+    private func switchToMusicTUIOutput(_ f: Fixture) throws {
+        _ = try f.routing.switchMode(to: .musicApp, readiness: { .ready },
+                                     pauseOutgoing: { _ in true }, dropQueue: { _ in })
     }
 
-    func testDDoesNothingInsideAnotherBoxOrTheSearch() {
+    /// Some other chosen-music play is admitted by the coordinator.
+    private func admitAnotherPlay(_ f: Fixture, origin: PlayOrigin = .spandacLibrary) throws {
+        try f.routing.perform(.libraryPlay, expecting: f.routing.stamp, origin: origin,
+                              musicApp: { _ in }, source: { _ in }, unaffected: {})
+    }
+
+    // MARK: - Reaching the box, leaving it
+
+    // (↓ from the Music.app control grid and from Up Next: `NowBoxFocusTests`, below.)
+
+    func testDownWithNothingToBrowseGoesStraightToTheBox() {
         let f = fixture(output: .source)
-        loadRails(f)
-        _ = f.scene.handle(.char("/"))
-        type(f, "d")
-        XCTAssertNil(f.scene.djModel, "d opened the DJ inside the search box")
-        XCTAssertEqual(f.scene.searchPane?.model.text, "d")
+        _ = f.scene.render(frame: frame, snapshot: snap)
+        XCTAssertEqual(f.scene.handle(.down), .redraw)
+        XCTAssertTrue(f.scene.boxFocused)
+    }
+
+    func testNothingPlayingStillHasTheBox() {
+        let f = fixture(output: .source)
+        let idle = NowPlayingSnapshot(outcome: .stopped, history: [], surrounding: [])
+        let out = plain(f.scene.render(frame: frame, snapshot: idle))
+        XCTAssertTrue(out.contains(DJBoxModel.placeholder), "no box on the empty state")
+        _ = f.scene.handle(.down)
+        XCTAssertTrue(f.scene.boxFocused)
+    }
+
+    func testDownBeforeTheFirstFrameFocusesNothing() {
+        let f = fixture(output: .source)
+        _ = f.scene.handle(.down)
+        XCTAssertFalse(f.scene.boxFocused, "the box took focus before it had been drawn")
+    }
+
+    func testUpAndEscBothLeaveTheBoxAndBothKeepTheTypedText() {
+        for leave in [KeyPress.up, KeyPress.escape] {
+            let f = fixture(output: .source)
+            focus(f)
+            type(f, "half a thought")
+            XCTAssertEqual(f.scene.handle(leave), .redraw)
+            XCTAssertFalse(f.scene.boxFocused, "\(leave)")
+            XCTAssertFalse(f.scene.capturesAllInput)
+            XCTAssertEqual(f.scene.djModel.text, "half a thought")
+            XCTAssertTrue(screen(f).contains("half a thought"))
+        }
+    }
+
+    func testTheBoxIsNotOfferedWhereThereIsNoRoom() {
+        let f = fixture(output: .source)
+        let tiny = shellLayout(width: 120, height: 12)
+        let out = plain(f.scene.render(frame: tiny, snapshot: snap))
+        XCTAssertFalse(out.contains(DJBoxModel.placeholder))
+        _ = f.scene.handle(.down)
+        XCTAssertFalse(f.scene.boxFocused)
+    }
+
+    func testTheBoxIsLeftWhenTheFrameShrinksUnderIt() {
+        let f = fixture(output: .source)
+        focus(f)
+        _ = f.scene.render(frame: shellLayout(width: 120, height: 12), snapshot: snap)
+        XCTAssertFalse(f.scene.boxFocused, "a focused box that is no longer drawn kept the keyboard")
+        XCTAssertFalse(f.scene.capturesAllInput)
+    }
+
+    // MARK: - The box on screen
+
+    func testTheBoxShowsMakeARequestWhileUnfocusedAndClearsItWhenFocused() {
+        let f = fixture(output: .source)
+        let before = screen(f)
+        XCTAssertTrue(before.contains("Make a request"), "the placeholder is not drawn")
+        XCTAssertTrue(before.contains("\u{256D}") && before.contains("\u{2570}"), "the box has no border")
+
+        focus(f)
+        let focused = screen(f)
+        XCTAssertFalse(focused.contains("Make a request"), "the placeholder stayed while focused")
+        XCTAssertTrue(focused.contains(DJBoxModel.caret), "no cursor while focused")
+
+        _ = f.scene.handle(.escape)
+        XCTAssertTrue(screen(f).contains("Make a request"), "the placeholder did not come back")
+    }
+
+    func testTheBoxIsAsWideAsTheContentAndSitsBelowTheRest() {
+        let f = fixture(output: .source)
+        let out = f.scene.render(frame: frame, snapshot: snap)
+        let rule = plain(out).split(separator: "\u{256D}").last.map { String($0) } ?? ""
+        let bars = rule.prefix(while: { $0 == "\u{2500}" }).count
+        XCTAssertEqual(bars, frame.width - 4 - 2, "the box is not the content's width")
+        // Its top border is at the bottom of the body, under everything else.
+        let boxRow: Int? = out.range(of: "\u{256D}").flatMap { range in
+            let head = String(out[out.startIndex..<range.lowerBound])
+            let moves = try? NSRegularExpression(pattern: "\u{1B}\\[(\\d+);\\d+H")
+            let last = moves?.matches(in: head, range: NSRange(head.startIndex..., in: head)).last
+            return last.flatMap { Range($0.range(at: 1), in: head) }.flatMap { Int(head[$0]) }
+        }
+        XCTAssertEqual(boxRow, frame.bodyY + frame.bodyHeight - 4, "the box is not at the bottom of the body")
     }
 
     func testTheFooterSaysHowToUseTheBox() {
         let f = fixture(output: .source)
-        loadRails(f)
-        _ = f.scene.handle(.char("d"))
+        focus(f)
+        XCTAssertTrue(f.scene.footerHint.contains("Enter"), f.scene.footerHint)
         XCTAssertTrue(f.scene.footerHint.contains("Esc"), f.scene.footerHint)
+    }
+
+    // MARK: - Raw keys
+
+    func testWhileFocusedEveryPrintableKeyTypesSpaceIncludedAndNowsShortcutsDoNotFire() {
+        let f = fixture(output: .source)
+        focus(f)
+        XCTAssertEqual(shellRoute(for: .space, sceneCapturing: f.scene.capturesAllInput), .scene,
+                       "Space would still go to play/pause")
+        for key in ["q", "z", "s", "x", "n", "l", "[", "]", "<", ">", "+", "-", "4", "p", "r", "m", "g"] {
+            XCTAssertEqual(shellRoute(for: .char(Character(key)), sceneCapturing: f.scene.capturesAllInput), .scene, key)
+        }
+        type(f, "q z s x n l [ ] < > + - 4 p r m g")
+        XCTAssertEqual(f.scene.djModel.text, "q z s x n l [ ] < > + - 4 p r m g")
+        XCTAssertEqual(f.scene.handle(.char("q")), .redraw, "q quit the app from the box")
+        XCTAssertEqual(f.rig.sent.count, 0, "a shortcut reached SpanDAC")
+        XCTAssertNil(f.status.current(), "a shortcut posted a status")
+        drain(f.actions)
+        XCTAssertEqual(f.rig.sent.count, 0)
+    }
+
+    func testNotFocusedSpaceIsStillPlayPauseAndTheBoxCapturesNothing() {
+        let f = fixture(output: .source)
+        _ = f.scene.render(frame: frame, snapshot: snap)
+        XCTAssertFalse(f.scene.capturesAllInput)
+        XCTAssertEqual(shellRoute(for: .space, sceneCapturing: f.scene.capturesAllInput), .globals)
+        XCTAssertEqual(resolveGlobalKey(.space), .playPause)
+        XCTAssertEqual(f.scene.djModel.text, "")
+    }
+
+    func testBackspaceEditsAndTheCursorMovesNoWhere() {
+        let f = fixture(output: .source)
+        focus(f)
+        type(f, "jazzz")
+        _ = f.scene.handle(.char("\u{7F}"))
+        XCTAssertEqual(f.scene.djModel.text, "jazz")
+        XCTAssertEqual(f.scene.handle(.left), .none, "← left the box or moved a Now cursor")
+        XCTAssertEqual(f.scene.handle(.right), .none)
+        XCTAssertTrue(f.scene.boxFocused)
+        XCTAssertEqual(f.scene.djModel.text, "jazz")
     }
 
     // MARK: - Asking: off the input loop, one reader call
 
     func testEnterAsksTheReaderOnceOffTheInputLoop() {
         let f = fixture(output: .source)
-        loadRails(f)
         f.reader.answer("some jazz", with: .card(.unsupported))
         f.reader.hold("some jazz")
         ask(f, "some jazz")
@@ -406,45 +520,42 @@ final class DJBoxSceneTests: XCTestCase {
 
     func testABlankPromptAsksNothing() {
         let f = fixture(output: .source)
-        loadRails(f)
         ask(f, "   ")
         settle(f, seconds: 0.1)
         XCTAssertEqual(f.reader.asked, [])
         XCTAssertEqual(stage(f), .typing)
     }
 
-    // MARK: - What the reader cannot do
+    // MARK: - What the reader cannot do: shown as the line, nothing plays
 
     func testAnUnsupportedPromptSaysWhatTheDJCanDoAndPlaysNothing() {
         let f = fixture(output: .source)
-        loadRails(f)
         f.reader.answer("music like tribe called quest", with: .card(.unsupported))
-        askForCard(f, "music like tribe called quest")
+        askAndWait(f, "music like tribe called quest")
         XCTAssertEqual(message(f), djUnsupportedRequest)
         XCTAssertEqual(djUnsupportedRequest, "The DJ can do artist mixes and genres you haven't heard lately for now.")
-        assertNoLibraryOrPlay(f)
+        XCTAssertTrue(screen(f).contains(djUnsupportedRequest), "the refusal is not on screen")
+        drain(f.actions)
+        assertNothingPlayed(f)
         XCTAssertEqual(f.rig.sent("slice.search").count, 0)
-        XCTAssertEqual(f.plays.queues.count, 0)
     }
 
     func testEveryUnavailableStateShowsItsOwnPlainMessageAndPlaysNothing() {
         var seen = Set<String>()
         for reason in DJUnavailable.allCases {
             let f = fixture(output: .source)
-            loadRails(f)
             f.reader.answer("x", with: .unavailable(reason))
-            askForCard(f, "x")
+            askAndWait(f, "x")
             XCTAssertEqual(message(f), reason.message, "\(reason)")
             seen.insert(reason.message)
-            assertNoLibraryOrPlay(f)
-            XCTAssertEqual(f.plays.queues.count, 0)
+            drain(f.actions)
+            assertNothingPlayed(f)
         }
         XCTAssertEqual(seen.count, DJUnavailable.allCases.count, "two states shared one message")
     }
 
     func testAReaderThatDoesNotAnswerInTimeShowsTheTimeoutSentenceAndLeavesTheSpinner() {
         let f = fixture(output: .source)
-        loadRails(f)
         var seams = f.scene.dj
         seams.readerTimeout = 0.1
         f.scene.dj = seams
@@ -453,7 +564,7 @@ final class DJBoxSceneTests: XCTestCase {
         XCTAssertEqual(stage(f), .reading)
         ticks(f, until: { self.message(f) != nil })
         XCTAssertEqual(message(f), "The DJ took too long to answer. Try again.")
-        XCTAssertNotEqual(f.scene.djModel?.statusLine, "Asking the DJ\u{2026}")
+        XCTAssertNotEqual(f.scene.djModel.statusLine, "Asking the DJ\u{2026}")
         XCTAssertEqual(djReaderTimedOutLine, "The DJ took too long to answer. Try again.")
         f.reader.release("slow one")
     }
@@ -462,9 +573,8 @@ final class DJBoxSceneTests: XCTestCase {
         XCTAssertEqual(DJSeams().readerTimeout, 20)
     }
 
-    func testALateAnswerAfterTheTimeoutNeverLands() {
+    func testALateAnswerAfterTheTimeoutNeverLandsOrPlays() {
         let f = fixture(output: .source)
-        loadRails(f)
         var seams = f.scene.dj
         seams.readerTimeout = 0.1
         f.scene.dj = seams
@@ -473,28 +583,26 @@ final class DJBoxSceneTests: XCTestCase {
         ask(f, "late jazz")
         ticks(f, until: { self.message(f) != nil })
         XCTAssertEqual(message(f), djReaderTimedOutLine)
-        // The reader finally answers with a real card.
         f.reader.release("late jazz")
         settle(f, seconds: 0.4)
+        drain(f.actions)
         XCTAssertEqual(message(f), djReaderTimedOutLine, "a late card replaced the timeout sentence")
-        XCTAssertNil(plan(f), "a late answer produced a card")
-        assertNoLibraryOrPlay(f)
+        XCTAssertNil(playingLine(f), "a late answer played")
+        assertNothingPlayed(f)
     }
 
     func testAFailedReadShowsItsOwnMessage() {
         let f = fixture(output: .source)
-        loadRails(f)
         f.reader.answer("x", with: .failed("the model errored"))
-        askForCard(f, "x")
+        askAndWait(f, "x")
         XCTAssertEqual(message(f), "The DJ couldn't read that: the model errored")
-        assertNoLibraryOrPlay(f)
+        assertNothingPlayed(f)
     }
 
     // MARK: - Newer prompt wins; stale answers never land
 
-    func testAnOlderPromptsAnswerArrivingLastNeverReplacesTheNewer() {
+    func testAnOlderPromptsAnswerArrivingLastNeverReplacesTheNewerNorPlays() {
         let f = fixture(output: .source)
-        loadRails(f)
         f.reader.answer("first", with: artistMixReading())
         f.reader.hold("first")
         f.reader.answer("second", with: .card(.unsupported))
@@ -507,13 +615,14 @@ final class DJBoxSceneTests: XCTestCase {
 
         f.reader.release("first")
         settle(f)
+        drain(f.actions)
         XCTAssertEqual(message(f), djUnsupportedRequest, "the older prompt's answer replaced the newer")
         XCTAssertEqual(f.rig.sent("slice.search").count, 0, "a stale request went on to read the catalogue")
+        assertNothingPlayed(f)
     }
 
     func testAnOlderPromptsErrorArrivingLastNeverReplacesTheNewer() {
         let f = fixture(output: .source)
-        loadRails(f)
         f.reader.answer("first", with: .failed("stale boom"))
         f.reader.hold("first")
         f.reader.answer("second", with: .card(.unsupported))
@@ -529,15 +638,17 @@ final class DJBoxSceneTests: XCTestCase {
         XCTAssertEqual(message(f), djUnsupportedRequest, "a stale error replaced the newer answer")
     }
 
-    func testAClosedBoxsLateAnswerNeverShowsUnderTheNextBox() {
+    /// The old box's "closed box" fences, for a box that no longer closes: leaving Now
+    /// with a request out abandons it, and its answer never shows under the next request.
+    func testAnAbandonedRequestsLateAnswerNeverShowsUnderTheNextRequest() {
         let f = fixture(output: .source)
-        loadRails(f)
-        f.reader.answer("first", with: .failed("old box"))
+        f.reader.answer("first", with: .failed("old request"))
         f.reader.hold("first")
         ask(f, "first")
         ticks(f, until: { f.reader.asked == ["first"] })
-        _ = f.scene.handle(.escape)
-        XCTAssertNil(f.scene.djModel)
+        f.scene.becameActive()                                   // the person came back from another tab
+        XCTAssertEqual(message(f), NowPlayingScene.djLeftNow)
+        for _ in 0..<5 { _ = f.scene.handle(.char("\u{7F}")) }
 
         f.reader.answer("second", with: .card(.unsupported))
         f.reader.hold("second")
@@ -545,233 +656,263 @@ final class DJBoxSceneTests: XCTestCase {
         ticks(f, until: { f.reader.asked == ["first", "second"] })
         f.reader.release("first")
         settle(f)
-        XCTAssertEqual(stage(f), .reading, "the closed box's answer landed in the new box")
+        XCTAssertEqual(stage(f), .reading, "the abandoned request's answer landed in the next one")
         f.reader.release("second")
-        ticks(f, until: { self.message(f) != nil })
-        XCTAssertEqual(message(f), djUnsupportedRequest)
+        ticks(f, until: { self.message(f) == djUnsupportedRequest })
     }
 
-    func testAClosedBoxsAnswerAfterEscNeverReopensIt() {
+    func testAnAbandonedRequestsAnswerNeverPlaysAndNeverReadsTheCatalogue() {
         let f = fixture(output: .source)
-        loadRails(f)
         f.reader.answer("x", with: artistMixReading())
         f.reader.hold("x")
         ask(f, "x")
         ticks(f, until: { f.reader.asked == ["x"] })
-        _ = f.scene.handle(.escape)
+        f.scene.becameActive()
         f.reader.release("x")
         settle(f)
-        XCTAssertNil(f.scene.djModel)
-        XCTAssertFalse(isDJ(f))
+        drain(f.actions)
+        XCTAssertEqual(message(f), NowPlayingScene.djLeftNow)
         XCTAssertEqual(f.rig.sent("slice.search").count, 0)
-        XCTAssertFalse(f.scene.capturesAllInput)
+        assertNothingPlayed(f)
     }
 
-    // MARK: - Artist mix: the card
-
-    func testAnArtistMixCardShowsKindArtistAndTheExactScopeAndPlaysNothing() {
+    func testComingBackToNowWithNothingOutLeavesTheBoxAlone() {
         let f = fixture(output: .source)
-        loadRails(f)
-        f.reader.answer("a radiohead mix", with: artistMixReading())
-        askForCard(f, "a radiohead mix")
+        focus(f)
+        type(f, "jazz")
+        f.scene.becameActive()
+        XCTAssertEqual(f.scene.djModel.text, "jazz")
+        XCTAssertEqual(stage(f), .typing)
+    }
 
-        let card = plan(f)
-        XCTAssertNotNil(card, "\(String(describing: stage(f)))")
-        XCTAssertEqual(card?.line, "Radiohead \u{00B7} 50 songs from 3 albums (3 unavailable skipped)")
-        guard case .artistMix(let mix)? = card?.payload else { return XCTFail("\(String(describing: card))") }
-        XCTAssertEqual(mix.ids.count, 50)
-        XCTAssertEqual(Set(mix.ids).count, 50)
+    func testLeavingTheBoxWithARequestOutDoesNotStopItsAnswerFromPlaying() {
+        let f = fixture(output: .source)
+        f.reader.answer("mix", with: artistMixReading())
+        f.reader.hold("mix")
+        ask(f, "mix")
+        ticks(f, until: { f.reader.asked == ["mix"] })
+        _ = f.scene.handle(.escape)
+        XCTAssertFalse(f.scene.boxFocused)
+        f.reader.release("mix")
+        ticks(f, until: { self.playingLine(f) != nil })
+        drain(f.actions)
+        XCTAssertEqual(f.rig.sent("slice.queue").count, 1)
+    }
+
+    // MARK: - Artist mix: plays straight away
+
+    func testAnArtistMixPlaysStraightAwayWithNoSecondKeyAndTheLineSaysTheExactScope() throws {
+        let f = fixture(output: .source)
+        f.reader.answer("a radiohead mix", with: artistMixReading())
+        askAndPlay(f, "a radiohead mix")                       // the one Enter, and nothing after it
+
+        XCTAssertEqual(playingLine(f), "Radiohead \u{00B7} 50 songs from 3 albums (3 unavailable skipped)")
+        XCTAssertEqual(f.scene.djModel.statusLine,
+                       "Playing: Radiohead \u{00B7} 50 songs from 3 albums (3 unavailable skipped)")
+        let queues = f.rig.sent("slice.queue")
+        XCTAssertEqual(queues.count, 1, "one Enter must be one queue")
+        let ids = try XCTUnwrap(queues.first?.body["ids"] as? [String])
+        XCTAssertEqual(ids.count, 50)
+        XCTAssertEqual(Set(ids).count, 50)
         let playable = Set(Self.radioheadAlbum1 + Self.radioheadAlbum2 + Self.radioheadAlbum3)
             .subtracting(Self.radioheadUnavailable)
-        XCTAssertTrue(Set(mix.ids).isSubset(of: playable), "an unavailable song is in the mix")
-        XCTAssertEqual(mix.unavailable, 3)
+        XCTAssertTrue(Set(ids).isSubset(of: playable), "an unavailable song is in the mix")
+        XCTAssertNotEqual(queues.first?.tag, "mac-data", "the queue went to the data client, not the output")
 
-        // Reads came from SpanDAC on this Mac; nothing was queued or added.
+        // Reads came from SpanDAC on this Mac.
         XCTAssertEqual(f.rig.sent("slice.search").map(\.tag), ["mac-data"])
         XCTAssertEqual(f.rig.sent("slice.search").first?.body["term"] as? String, "Radiohead")
         XCTAssertEqual(f.rig.sent("slice.artistAlbums").first?.body["id"] as? String, "art1")
         XCTAssertEqual(f.rig.sent("slice.artistAlbums").first?.body["limit"] as? Int, 25)
-        XCTAssertEqual(f.rig.sent("slice.containerTracks").count, 3)
-        assertNoLibraryOrPlay(f)
-        let out = f.scene.render(frame: shellLayout(width: 140, height: 40), snapshot: idle)
-        XCTAssertTrue(out.contains("Radiohead"), "the card is not drawn")
+        XCTAssertEqual(f.rig.sent("slice.containerTracks").count, 3, "the albums were read again")
+        XCTAssertEqual(f.plays.queues.count, 0)
+        XCTAssertEqual(f.handoff.calls.count, 0)
     }
 
-    func testEnterPlaysExactlyTheFrozenIDsOnceAndASecondEnterPlaysNothing() {
+    func testTheBoxSaysWhatPlayedAndEmptiesForTheNextRequest() {
         let f = fixture(output: .source)
-        loadRails(f)
         f.reader.answer("mix", with: artistMixReading())
-        askForCard(f, "mix")
-        guard case .artistMix(let mix)? = plan(f)?.payload else { return XCTFail() }
+        askAndPlay(f, "mix")
+        XCTAssertEqual(f.scene.djModel.text, "", "the box did not empty")
+        XCTAssertEqual(f.scene.djModel.statusLine,
+                       "Playing: Radiohead \u{00B7} 50 songs from 3 albums (3 unavailable skipped)")
+        let shown = screen(f)
+        XCTAssertTrue(shown.contains("Playing: Radiohead \u{00B7} 50 songs from 3 albums"), "the line is not on screen")
+        XCTAssertTrue(f.scene.boxFocused, "the box lost focus after a play")
 
-        XCTAssertEqual(f.scene.handle(.enter), .push(.nowPlaying))
-        drain(f.actions)
-        XCTAssertEqual(f.scene.handle(.enter), .none, "a second Enter did something")
-        drain(f.actions)
-
-        let queues = f.rig.sent("slice.queue")
-        XCTAssertEqual(queues.count, 1, "one Enter must be one queue")
-        XCTAssertEqual(queues.first?.body["ids"] as? [String], mix.ids)
-        XCTAssertNotEqual(queues.first?.tag, "mac-data", "the queue went to the data client, not the output")
-        XCTAssertEqual(f.mac.allOps, [])
-        XCTAssertEqual(f.lib.events, [])
-        XCTAssertEqual(f.log.created, [])
-        XCTAssertEqual(f.log.played, [])
-        XCTAssertEqual(f.rig.sent("slice.containerTracks").count, 3, "Enter read the albums again")
+        // The next request starts from an empty box and a typed key clears the line.
+        type(f, "j")
+        XCTAssertEqual(f.scene.djModel.text, "j")
+        XCTAssertEqual(stage(f), .typing)
+        XCTAssertNil(f.scene.djModel.statusLine)
     }
 
-    /// SpanDAC's own refusal of the queue reaches him as it is said; nothing else is added.
-    func testSpanDACsRefusalOfTheQueueSurfacesAsItIs() {
+    func testASecondEnterOnTheEmptiedBoxPlaysNothingMore() {
         let f = fixture(output: .source)
-        loadRails(f)
+        f.reader.answer("mix", with: artistMixReading())
+        askAndPlay(f, "mix")
+        XCTAssertEqual(f.scene.handle(.enter), .none, "an Enter on the emptied box did something")
+        drain(f.actions)
+        XCTAssertEqual(f.rig.sent("slice.queue").count, 1)
+        XCTAssertEqual(f.rig.sent("slice.containerTracks").count, 3, "a second Enter read the albums again")
+        XCTAssertEqual(f.reader.asked, ["mix"])
+    }
+
+    /// SpanDAC's own refusal of the queue reaches him as it is said, in the status and in the box.
+    func testSpanDACsRefusalOfTheQueueSurfacesAsItIsAndTheBoxStopsSayingPlaying() {
+        let f = fixture(output: .source)
         f.rig.responders["slice.queue"] = { _ in
             #"{"ok":false,"op":"slice.queue","error":{"kind":"bad_request","detail":"A queue holds at most 100 songs in SpanDAC; 101 were requested."}}"#
         }
         f.reader.answer("mix", with: artistMixReading())
-        askForCard(f, "mix")
-        _ = f.scene.handle(.enter)
-        drain(f.actions)
+        askAndPlay(f, "mix")
         XCTAssertEqual(f.rig.sent("slice.queue").count, 1)
         XCTAssertTrue(f.status.current()?.text.contains("A queue holds at most 100 songs") ?? false,
                       f.status.current()?.text ?? "no status")
-        XCTAssertEqual(f.mac.allOps, [])
-        XCTAssertEqual(f.lib.events, [])
+        ticks(f, until: { self.message(f) != nil })
+        XCTAssertTrue(message(f)?.contains("A queue holds at most 100 songs") ?? false, "\(stage(f))")
+        XCTAssertNil(playingLine(f), "the box kept saying Playing over a refused queue")
     }
 
-    func testEscDropsTheCardAndNothingEverPlays() {
+    func testTheLineSaysFirst25AlbumsWhenTheArtistHasMore() {
         let f = fixture(output: .source)
-        loadRails(f)
-        f.reader.answer("mix", with: artistMixReading())
-        askForCard(f, "mix")
-        _ = f.scene.handle(.escape)
-        XCTAssertNil(f.scene.djModel)
-        _ = f.scene.handle(.enter)       // a Discover Enter now, not the card's
-        drain(f.actions)
-        XCTAssertEqual(f.rig.sent("slice.queue").count, 0)
-    }
-
-    func testEditingThePromptAfterTheCardNeverPlaysTheOldCard() {
-        let f = fixture(output: .source)
-        loadRails(f)
-        f.reader.answer("mix", with: artistMixReading())
-        askForCard(f, "mix")
-        type(f, "!")
-        XCTAssertEqual(stage(f), .typing)
-        _ = f.scene.handle(.enter)       // asks again; does not play
-        ticks(f, until: { f.reader.asked == ["mix", "mix!"] })
-        drain(f.actions)
-        XCTAssertEqual(f.rig.sent("slice.queue").count, 0)
-    }
-
-    func testTheCardSaysFirst25AlbumsWhenTheArtistHasMore() {
-        let f = fixture(output: .source)
-        loadRails(f)
         f.reader.answer("beatles", with: artistMixReading("Beatles"))
-        askForCard(f, "beatles")
-        XCTAssertTrue(plan(f)?.line.contains("first 25 albums") ?? false, plan(f)?.line ?? "no card")
+        askAndPlay(f, "beatles")
+        XCTAssertTrue(playingLine(f)?.contains("first 25 albums") ?? false, playingLine(f) ?? "not playing")
         XCTAssertEqual(f.rig.sent("slice.artistAlbums").first?.body["id"] as? String, "b1",
                        "The Beatles is the one exact match for Beatles")
     }
 
-    // MARK: - Artist mix: choosing the artist
+    // MARK: - Artist mix: choosing the artist, then playing
 
-    func testTwoArtistsOfOneNameOfferAPickerAndTheChosenCatalogueIDIsKept() {
+    func testTwoArtistsOfOneNameShowAPickerInsideTheBoxAndChoosingPlaysStraightAway() throws {
         let f = fixture(output: .source)
-        loadRails(f)
         f.reader.answer("nirvana mix", with: artistMixReading("Nirvana"))
         ask(f, "nirvana mix")
-        ticks(f, until: { if case .pick? = self.stage(f) { return true } else { return false } })
+        ticks(f, until: { self.isPick(f) })
         XCTAssertEqual(f.rig.sent("slice.artistAlbums").count, 0, "an artist was chosen for him")
+        let shown = screen(f)
+        XCTAssertTrue(shown.contains("Which Nirvana?"), shown)
+        XCTAssertTrue(shown.contains("\u{25B8} Nirvana"), "the picker rows are not in the box")
+        drain(f.actions)
+        assertNothingPlayed(f)
+
         _ = f.scene.handle(.down)
-        _ = f.scene.handle(.enter)
-        ticks(f, until: { self.plan(f) != nil })
+        _ = f.scene.handle(.enter)                                  // the choice is the only key after the ask
+        ticks(f, until: { self.playingLine(f) != nil })
+        drain(f.actions)
 
         XCTAssertEqual(f.rig.sent("slice.search").count, 1, "the chosen artist was resolved by name again")
         XCTAssertEqual(f.rig.sent("slice.artistAlbums").map { $0.body["id"] as? String ?? "" }, ["n2"])
-        guard case .artistMix(let mix)? = plan(f)?.payload else { return XCTFail() }
-        XCTAssertEqual(Set(mix.ids), ["nb1", "nb2", "nb3"])
-        XCTAssertEqual(mix.artistID, "n2")
-        assertNoLibraryOrPlay(f)
+        let queues = f.rig.sent("slice.queue")
+        XCTAssertEqual(queues.count, 1)
+        XCTAssertEqual(Set(queues.first?.body["ids"] as? [String] ?? []), ["nb1", "nb2", "nb3"])
     }
 
-    func testNoExactMatchOffersTheNearestArtistsToPick() {
+    func testUpAndDownMoveThePickerAndOnlyEscLeavesTheBoxFromIt() {
         let f = fixture(output: .source)
-        loadRails(f)
+        f.reader.answer("nirvana mix", with: artistMixReading("Nirvana"))
+        ask(f, "nirvana mix")
+        ticks(f, until: { self.isPick(f) })
+        _ = f.scene.handle(.down)
+        XCTAssertEqual(f.scene.handle(.up), .redraw)
+        XCTAssertTrue(f.scene.boxFocused, "↑ left the box instead of moving the picker")
+        XCTAssertEqual(f.scene.handle(.up), .none)
+        XCTAssertTrue(f.scene.boxFocused, "↑ at the top of the picker left the box")
+        XCTAssertEqual(f.scene.handle(.escape), .redraw)
+        XCTAssertFalse(f.scene.boxFocused)
+    }
+
+    func testNoExactMatchOffersTheNearestArtistsAndChoosingPlays() {
+        let f = fixture(output: .source)
         f.reader.answer("rad", with: artistMixReading("Rad"))
         ask(f, "rad")
-        ticks(f, until: { if case .pick(let p)? = self.stage(f) { return p.hits.count == 2 } else { return false } })
+        ticks(f, until: { if case .pick(let p) = self.stage(f) { return p.hits.count == 2 } else { return false } })
         _ = f.scene.handle(.enter)
-        ticks(f, until: { self.plan(f) != nil })
+        ticks(f, until: { self.playingLine(f) != nil })
+        drain(f.actions)
         XCTAssertEqual(f.rig.sent("slice.artistAlbums").map { $0.body["id"] as? String ?? "" }, ["r1"])
+        XCTAssertEqual(f.rig.sent("slice.queue").count, 1)
+    }
+
+    func testEditingWhileThePickerShowsDropsItAndNothingPlays() {
+        let f = fixture(output: .source)
+        f.reader.answer("nirvana mix", with: artistMixReading("Nirvana"))
+        ask(f, "nirvana mix")
+        ticks(f, until: { self.isPick(f) })
+        type(f, "!")
+        XCTAssertEqual(stage(f), .typing)
+        _ = f.scene.handle(.enter)                 // asks "nirvana mix!" again, never plays
+        ticks(f, until: { f.reader.asked.count == 2 })
+        drain(f.actions)
+        assertNothingPlayed(f)
     }
 
     func testNoArtistFoundSaysSoAndPlaysNothing() {
         let f = fixture(output: .source)
-        loadRails(f)
         f.reader.answer("nobody", with: artistMixReading("Nobody"))
-        askForCard(f, "nobody")
+        askAndWait(f, "nobody")
         XCTAssertEqual(message(f), "No artist found for Nobody.")
         XCTAssertEqual(f.rig.sent("slice.artistAlbums").count, 0)
-        assertNoLibraryOrPlay(f)
+        drain(f.actions)
+        assertNothingPlayed(f)
     }
 
     func testAnOlderSpanDACWithoutArtistSearchSaysSo() {
         let f = fixture(output: .source, artists: false)
-        loadRails(f)
         f.reader.answer("radiohead", with: artistMixReading())
-        askForCard(f, "radiohead")
+        askAndWait(f, "radiohead")
         XCTAssertEqual(message(f), CatalogueSearchResults.artistsNeedNewerSpanDAC)
-        assertNoLibraryOrPlay(f)
+        assertNothingPlayed(f)
     }
 
     func testAFailedSearchShowsTheReasonAndPlaysNothing() {
         let f = fixture(output: .source)
-        loadRails(f)
         f.reader.answer("broken", with: artistMixReading("Broken"))
-        askForCard(f, "broken")
+        askAndWait(f, "broken")
         XCTAssertTrue(message(f)?.contains("Apple Music isn't answering") ?? false, message(f) ?? "no message")
-        assertNoLibraryOrPlay(f)
+        assertNothingPlayed(f)
     }
 
     func testAFailedAlbumReadFailsTheWholeMixAndPlaysNothing() {
         let f = fixture(output: .source)
-        loadRails(f)
         f.rig.responders["slice.artistAlbums"] = { _ in Self.albumsReply(["alb1", "bad", "alb3"]) }
         f.reader.answer("radiohead", with: artistMixReading())
-        askForCard(f, "radiohead")
-        XCTAssertNil(plan(f), "a partial mix was offered")
+        askAndWait(f, "radiohead")
+        XCTAssertNil(playingLine(f), "a partial mix played")
         XCTAssertTrue(message(f)?.contains("Title bad") ?? false, message(f) ?? "no message")
-        assertNoLibraryOrPlay(f)
+        drain(f.actions)
+        assertNothingPlayed(f)
     }
 
     func testAnArtistWithNoPlayableSongsPlaysNothing() {
         let f = fixture(output: .source)
-        loadRails(f)
         f.rig.responders["slice.artistAlbums"] = { _ in Self.albumsReply(["empty"]) }
         f.reader.answer("radiohead", with: artistMixReading())
-        askForCard(f, "radiohead")
-        XCTAssertNil(plan(f))
+        askAndWait(f, "radiohead")
+        XCTAssertNil(playingLine(f))
         XCTAssertEqual(message(f), "No playable songs found for Radiohead.")
+        assertNothingPlayed(f)
     }
 
-    // MARK: - Artist mix: every other combination refuses before any read, add or lifecycle call
+    // MARK: - Artist mix: every other combination refuses before any read, add or play
 
     private func assertArtistMixRefusedBeforeAnything(_ f: Fixture, expected: String,
                                                      file: StaticString = #filePath, line: UInt = #line) {
         f.reader.answer("mix", with: artistMixReading())
-        askForCard(f, "mix", file: file, line: line)
+        askAndWait(f, "mix", file: file, line: line)
         XCTAssertEqual(message(f), expected, file: file, line: line)
-        XCTAssertNil(plan(f), file: file, line: line)
+        XCTAssertNil(playingLine(f), file: file, line: line)
         XCTAssertEqual(f.rig.sent("slice.search").count, 0, "the catalogue was read", file: file, line: line)
         XCTAssertEqual(f.rig.sent("slice.artistAlbums").count, 0, file: file, line: line)
         XCTAssertEqual(f.rig.sent("slice.containerTracks").count, 0, file: file, line: line)
-        assertNoLibraryOrPlay(f, file: file, line: line)
+        drain(f.actions)
+        assertNothingPlayed(f, file: file, line: line)
         XCTAssertEqual(f.rig.outputBuilt, [], "an output client was built", file: file, line: line)
     }
 
     func testSpanDACDataOnTheMusicTUIOutputRefusesAnArtistMix() {
         let f = fixture(output: .musicApp)
-        loadRails(f)
         assertArtistMixRefusedBeforeAnything(f, expected: djArtistMixSpanDACOnly)
     }
 
@@ -821,80 +962,107 @@ final class DJBoxSceneTests: XCTestCase {
         XCTAssertEqual(sourced, 1)
     }
 
-    // MARK: - A source or output change between the card and Enter
+    // MARK: - A source, output or play change between Enter and the play stops it
 
-    func testAnOutputChangeAfterTheCardDropsItAndSaysSoOnTheNextTick() throws {
+    func testAnOutputChangeBeforeTheAnswerStopsItAndSaysSo() throws {
         let f = fixture(output: .source)
-        loadRails(f)
-        f.reader.answer("mix", with: artistMixReading())
-        askForCard(f, "mix")
-        _ = try f.routing.switchMode(to: .musicApp, readiness: { .ready },
-                                     pauseOutgoing: { _ in true }, dropQueue: { _ in })
-        _ = f.scene.tick(snapshot: idle)
-        XCTAssertNil(plan(f), "the card survived an output change")
-        XCTAssertEqual(message(f), djChangedLine)
-        _ = f.scene.handle(.enter)       // a message: Enter asks again, it does not play
-        drain(f.actions)
-        XCTAssertEqual(f.rig.sent("slice.queue").count, 0)
-        assertNoLibraryOrPlay(f)
-    }
-
-    func testAnOutputChangeAfterTheCardDropsItAtEnterEvenBeforeATick() throws {
-        let f = fixture(output: .source)
-        loadRails(f)
-        f.reader.answer("mix", with: artistMixReading())
-        askForCard(f, "mix")
-        _ = try f.routing.switchMode(to: .musicApp, readiness: { .ready },
-                                     pauseOutgoing: { _ in true }, dropQueue: { _ in })
-        _ = f.scene.handle(.enter)
-        drain(f.actions)
-        XCTAssertEqual(message(f), djChangedLine)
-        XCTAssertEqual(f.rig.sent("slice.queue").count, 0)
-        assertNoLibraryOrPlay(f)
-    }
-
-    func testADataSourceChangeAfterTheCardClosesTheBoxWithASentence() throws {
-        let f = fixture(output: .source)
-        loadRails(f)
-        f.reader.answer("mix", with: artistMixReading())
-        askForCard(f, "mix")
-        _ = try f.routing.stopUsingSpanDACData(pauseOutgoing: { _ in true }, dropQueue: { _ in })
-        _ = f.scene.tick(snapshot: idle)
-        XCTAssertNil(f.scene.djModel, "the box survived a change of data source")
-        XCTAssertFalse(isDJ(f))
-        XCTAssertFalse(f.scene.capturesAllInput)
-        XCTAssertEqual(f.status.current()?.text, DiscoverScene.djDataSourceChanged)
-        drain(f.actions)
-        XCTAssertEqual(f.rig.sent("slice.queue").count, 0)
-    }
-
-    func testAnotherPlayBetweenTheCardAndEnterDropsTheCard() throws {
-        let f = fixture(output: .source)
-        loadRails(f)
-        f.reader.answer("mix", with: artistMixReading())
-        askForCard(f, "mix")
-        // Some other chosen-music play is admitted meanwhile.
-        try f.routing.perform(.libraryPlay, expecting: f.routing.stamp, origin: .spandacLibrary,
-                              musicApp: { _ in }, source: { _ in }, unaffected: {})
-        _ = f.scene.handle(.enter)
-        drain(f.actions)
-        XCTAssertEqual(message(f), djChangedLine)
-        XCTAssertEqual(f.rig.sent("slice.queue").count, 0)
-    }
-
-    func testAnAnswerFromBeforeAnOutputSwitchNeverLandsAsACard() throws {
-        let f = fixture(output: .source)
-        loadRails(f)
         f.reader.answer("mix", with: artistMixReading())
         f.reader.hold("mix")
         ask(f, "mix")
         ticks(f, until: { f.reader.asked == ["mix"] })
-        _ = try f.routing.switchMode(to: .musicApp, readiness: { .ready },
-                                     pauseOutgoing: { _ in true }, dropQueue: { _ in })
+        try switchToMusicTUIOutput(f)
         f.reader.release("mix")
         settle(f)
-        XCTAssertNil(plan(f), "an answer from before the switch landed as a card")
+        drain(f.actions)
+        XCTAssertNil(playingLine(f), "an answer from before the switch played")
+        XCTAssertEqual(message(f), djChangedLine)
         XCTAssertEqual(f.rig.sent("slice.queue").count, 0)
+        assertNothingPlayed(f)
+    }
+
+    func testAnOutputChangeAfterTheAnswerIsInTheSlotButBeforeATickStopsItAndSaysSo() throws {
+        let f = fixture(output: .source)
+        let written = DispatchSemaphore(value: 0)
+        f.scene.inboxWritten = { if $0 == "dj" { written.signal() } }
+        f.reader.answer("mix", with: artistMixReading())
+        ask(f, "mix")
+        var waits = 0
+        // The mix answers in two parts (progress, then the plan): wait for the plan's.
+        while written.wait(timeout: .now() + 5) == .success, waits < 1 { waits += 1 }
+        try switchToMusicTUIOutput(f)
+        _ = f.scene.tick(snapshot: snap)
+        drain(f.actions)
+        XCTAssertNil(playingLine(f), "the answer played after an output change")
+        XCTAssertEqual(message(f), djChangedLine)
+        XCTAssertEqual(f.rig.sent("slice.queue").count, 0)
+        assertNothingPlayed(f)
+    }
+
+    func testADataSourceChangeBeforeTheAnswerStopsItWithASentenceAndNothingPlays() throws {
+        let f = fixture(output: .source)
+        f.reader.answer("mix", with: artistMixReading())
+        f.reader.hold("mix")
+        ask(f, "mix")
+        ticks(f, until: { f.reader.asked == ["mix"] })
+        _ = try f.routing.stopUsingSpanDACData(pauseOutgoing: { _ in true }, dropQueue: { _ in })
+        f.reader.release("mix")
+        settle(f)
+        drain(f.actions)
+        XCTAssertEqual(message(f), djChangedLine)
+        XCTAssertEqual(f.rig.sent("slice.queue").count, 0)
+    }
+
+    func testAnotherPlayAdmittedBetweenEnterAndTheAnswerStopsIt() throws {
+        let f = fixture(output: .source)
+        f.reader.answer("mix", with: artistMixReading())
+        f.reader.hold("mix")
+        ask(f, "mix")
+        ticks(f, until: { f.reader.asked == ["mix"] })
+        try admitAnotherPlay(f)
+        f.reader.release("mix")
+        settle(f)
+        drain(f.actions)
+        XCTAssertNil(playingLine(f))
+        XCTAssertEqual(message(f), djChangedLine)
+        XCTAssertEqual(f.rig.sent("slice.queue").count, 0)
+    }
+
+    func testAnOutputChangeWhileThePickerShowsDropsItAtTheNextTick() throws {
+        let f = fixture(output: .source)
+        f.reader.answer("nirvana mix", with: artistMixReading("Nirvana"))
+        ask(f, "nirvana mix")
+        ticks(f, until: { self.isPick(f) })
+        try switchToMusicTUIOutput(f)
+        _ = f.scene.tick(snapshot: snap)
+        XCTAssertFalse(isPick(f), "the picker survived an output change")
+        XCTAssertEqual(message(f), djChangedLine)
+        _ = f.scene.handle(.enter)             // a message: Enter asks again, it never plays
+        drain(f.actions)
+        XCTAssertEqual(f.rig.sent("slice.queue").count, 0)
+    }
+
+    /// The window the card used to leave to the person is now the action queue's:
+    /// the play is dispatched, another play is admitted before it runs, and the
+    /// coordinator's serial check at admission stops it.
+    func testAnArtistMixWhoseActionWaitedWhileAnotherPlayWasAdmittedPlaysNothing() throws {
+        let f = fixture(output: .source)
+        f.reader.answer("mix", with: artistMixReading())
+        try askBehindAHold(f, "mix") { try self.admitAnotherPlay(f) }
+        XCTAssertEqual(f.rig.sent("slice.queue").count, 0, "the artist mix queued after another play was admitted")
+        XCTAssertEqual(f.status.current()?.text, anotherPlayAdmittedNothingPlayed)
+        ticks(f, until: { self.message(f) == anotherPlayAdmittedNothingPlayed })
+    }
+
+    /// A held action ahead of the DJ's: the request is asked, its play is queued
+    /// behind the hold, `admit` lets a different play in meanwhile, then the hold is released.
+    private func askBehindAHold(_ f: Fixture, _ prompt: String, admit: () throws -> Void) throws {
+        let hold = DispatchSemaphore(value: 0)
+        f.actions.run("hold") { _ = hold.wait(timeout: .now() + 5) }
+        ask(f, prompt)
+        ticks(f, until: { self.playingLine(f) != nil })       // the play is dispatched, behind the hold
+        try admit()
+        hold.signal()
+        drain(f.actions)
     }
 
     // MARK: - Genre on MusicTUI's own data
@@ -921,7 +1089,7 @@ final class DJBoxSceneTests: XCTestCase {
         return f
     }
 
-    func testGenreOnMusicTUIDataShowsTheCardThenPlaysTheFrozenQueueOnce() throws {
+    func testGenreOnMusicTUIDataPlaysTheFrozenQueueStraightAwayAndOnce() throws {
         // 120 jazz songs, played 100...219 days ago (all eligible); song n played (99 + n) days ago,
         // so song 120 is the oldest. 30 rock songs never played (must not match).
         let text = libraryText(count: 150,
@@ -930,17 +1098,11 @@ final class DJBoxSceneTests: XCTestCase {
         let f = openFixture(library: text)
         settle(f, seconds: 0.1)
         f.reader.answer("some jazz", with: genreReading("jazz"))
-        askForCard(f, "some jazz")
+        askAndPlay(f, "some jazz")
 
-        let card = try XCTUnwrap(plan(f), "\(String(describing: stage(f)))")
-        XCTAssertEqual(card.line, "jazz you haven't played in 90 days \u{00B7} 50 songs")
+        XCTAssertEqual(playingLine(f), "jazz you haven't played in 90 days \u{00B7} 50 songs")
         XCTAssertEqual(f.scripts.count, 1, "the library was read more than once")
-        XCTAssertEqual(f.plays.queues.count, 0, "it played before Enter")
-        XCTAssertNil(f.store.read(), "the queue was set before Enter")
         XCTAssertEqual(f.rig.sent.count, 0, "a SpanDAC client was used for MusicTUI's own data")
-
-        XCTAssertEqual(f.scene.handle(.enter), .push(.nowPlaying))
-        drain(f.actions)
         XCTAssertEqual(f.scene.handle(.enter), .none)
         drain(f.actions)
 
@@ -951,7 +1113,7 @@ final class DJBoxSceneTests: XCTestCase {
         // The 50 oldest are songs 71...120, oldest (120) first; the test shuffler reverses that order.
         XCTAssertEqual(played, (71...120).map(pid))
         XCTAssertEqual(f.store.read(), queue)
-        XCTAssertEqual(f.scripts.count, 1, "Enter read the library again")
+        XCTAssertEqual(f.scripts.count, 1, "a second Enter read the library again")
     }
 
     func testGenreNeverPlayedAndRecentlyPlayedAreHandledAndTheCountIsExact() {
@@ -961,42 +1123,44 @@ final class DJBoxSceneTests: XCTestCase {
         let f = openFixture(library: text)
         settle(f, seconds: 0.1)
         f.reader.answer("jazz", with: genreReading("Jazz"))
-        askForCard(f, "jazz")
-        XCTAssertEqual(plan(f)?.line, "Jazz you haven't played in 90 days \u{00B7} 6 songs")
+        askAndPlay(f, "jazz")
+        XCTAssertEqual(playingLine(f), "Jazz you haven't played in 90 days \u{00B7} 6 songs")
+        XCTAssertEqual(f.plays.queues.first?.tracks.count, 6)
     }
 
-    func testAnEmptyResultOffersNoCard() {
+    func testAnEmptyResultPlaysNothing() {
         let text = libraryText(count: 5, genre: { _ in "Rock" }, played: { _ in "N" })
         let f = openFixture(library: text)
         settle(f, seconds: 0.1)
         f.reader.answer("jazz", with: genreReading("Jazz"))
-        askForCard(f, "jazz")
-        XCTAssertNil(plan(f))
+        askAndWait(f, "jazz")
+        XCTAssertNil(playingLine(f))
         XCTAssertEqual(message(f), "No Jazz songs you haven't played in 90 days.")
         _ = f.scene.handle(.enter)       // asks again, never plays
         drain(f.actions)
         XCTAssertEqual(f.plays.queues.count, 0)
     }
 
-    func testAnEmptyLibraryOffersNoCard() {
+    func testAnEmptyLibraryPlaysNothing() {
         let f = openFixture(library: libraryText(count: 0, genre: { _ in "" }, played: { _ in "N" }))
         settle(f, seconds: 0.1)
         f.reader.answer("jazz", with: genreReading("Jazz"))
-        askForCard(f, "jazz")
+        askAndWait(f, "jazz")
         XCTAssertEqual(message(f), "No Jazz songs you haven't played in 90 days.")
+        XCTAssertEqual(f.plays.queues.count, 0)
     }
 
     func testFiftyAndFewerThanFiftyAreBothExact() {
         let fifty = openFixture(library: libraryText(count: 50, genre: { _ in "Jazz" }, played: { _ in "N" }))
         settle(fifty, seconds: 0.1)
         fifty.reader.answer("jazz", with: genreReading("Jazz"))
-        askForCard(fifty, "jazz")
-        XCTAssertEqual(plan(fifty)?.line, "Jazz you haven't played in 90 days \u{00B7} 50 songs")
+        askAndPlay(fifty, "jazz")
+        XCTAssertEqual(playingLine(fifty), "Jazz you haven't played in 90 days \u{00B7} 50 songs")
         let one = openFixture(library: libraryText(count: 1, genre: { _ in "Jazz" }, played: { _ in "N" }))
         settle(one, seconds: 0.1)
         one.reader.answer("jazz", with: genreReading("Jazz"))
-        askForCard(one, "jazz")
-        XCTAssertEqual(plan(one)?.line, "Jazz you haven't played in 90 days \u{00B7} 1 song")
+        askAndPlay(one, "jazz")
+        XCTAssertEqual(playingLine(one), "Jazz you haven't played in 90 days \u{00B7} 1 song")
     }
 
     func testAnUnreadableDateIsSkippedAndSaid() {
@@ -1004,8 +1168,8 @@ final class DJBoxSceneTests: XCTestCase {
         let f = openFixture(library: text)
         settle(f, seconds: 0.1)
         f.reader.answer("jazz", with: genreReading("Jazz"))
-        askForCard(f, "jazz")
-        XCTAssertEqual(plan(f)?.line,
+        askAndPlay(f, "jazz")
+        XCTAssertEqual(playingLine(f),
                        "Jazz you haven't played in 90 days \u{00B7} 3 songs (1 with an unreadable date skipped)")
     }
 
@@ -1014,8 +1178,8 @@ final class DJBoxSceneTests: XCTestCase {
         let f = openFixture(library: skewed)
         settle(f, seconds: 0.1)
         f.reader.answer("jazz", with: genreReading("Jazz"))
-        askForCard(f, "jazz")
-        XCTAssertNil(plan(f))
+        askAndWait(f, "jazz")
+        XCTAssertNil(playingLine(f))
         XCTAssertEqual(message(f), djLibraryMisaligned)
         XCTAssertEqual(f.plays.queues.count, 0)
     }
@@ -1025,24 +1189,24 @@ final class DJBoxSceneTests: XCTestCase {
         f.scripts.reply = { throw AppleScriptBackend.ScriptError.timeout("script") }
         settle(f, seconds: 0.1)
         f.reader.answer("jazz", with: genreReading("Jazz"))
-        askForCard(f, "jazz")
-        XCTAssertNil(plan(f))
+        askAndWait(f, "jazz")
+        XCTAssertNil(playingLine(f))
         XCTAssertEqual(message(f), djLibraryReadTimedOut)
         XCTAssertEqual(f.plays.queues.count, 0)
     }
 
-    func testAFailedPlayStartClearsTheQueueAndSaysSo() throws {
+    func testAFailedPlayStartClearsTheQueueAndSaysSoInTheStatusAndTheBox() {
         let f = openFixture(library: libraryText(count: 3, genre: { _ in "Jazz" }, played: { _ in "N" }))
         var seams = f.scene.dj
         seams.playFirst = { _ in false }
         f.scene.dj = seams
         settle(f, seconds: 0.1)
         f.reader.answer("jazz", with: genreReading("Jazz"))
-        askForCard(f, "jazz")
-        _ = f.scene.handle(.enter)
-        drain(f.actions)
+        askAndPlay(f, "jazz")
         XCTAssertNil(f.store.read(), "a queue that never started was left for the poller")
         XCTAssertTrue(f.status.current()?.isError ?? false, "\(String(describing: f.status.current()))")
+        ticks(f, until: { self.message(f) != nil })
+        XCTAssertNil(playingLine(f), "the box kept saying Playing over a play that did not start")
     }
 
     func testMusicTUIDataWithASpanDACOutputRefusesBeforeReadingAnything() {
@@ -1050,23 +1214,24 @@ final class DJBoxSceneTests: XCTestCase {
         f.scripts.reply = { XCTFail("the library was read"); return "" }
         settle(f, seconds: 0.1)
         f.reader.answer("jazz", with: genreReading("Jazz"))
-        askForCard(f, "jazz")
-        XCTAssertNil(plan(f))
+        askAndWait(f, "jazz")
+        XCTAssertNil(playingLine(f))
         XCTAssertEqual(message(f), finishSwitchingToSpanDAC)
         XCTAssertEqual(f.scripts.count, 0)
         XCTAssertEqual(f.plays.queues.count, 0)
         XCTAssertEqual(f.rig.sent.count, 0)
     }
 
-    func testAnotherPlayBetweenTheGenreCardAndEnterDropsTheCard() throws {
+    func testAnotherPlayBetweenEnterAndTheGenreAnswerStopsIt() throws {
         let f = openFixture(library: libraryText(count: 3, genre: { _ in "Jazz" }, played: { _ in "N" }))
         settle(f, seconds: 0.1)
         f.reader.answer("jazz", with: genreReading("Jazz"))
-        askForCard(f, "jazz")
-        XCTAssertNotNil(plan(f))
-        try f.routing.perform(.libraryPlay, expecting: f.routing.stamp, origin: .openData(resultNumber: nil),
-                              musicApp: { _ in }, source: { _ in }, unaffected: {})
-        _ = f.scene.handle(.enter)
+        f.reader.hold("jazz")
+        ask(f, "jazz")
+        ticks(f, until: { f.reader.asked == ["jazz"] })
+        try admitAnotherPlay(f, origin: .openData(resultNumber: nil))
+        f.reader.release("jazz")
+        settle(f)
         drain(f.actions)
         XCTAssertEqual(message(f), djChangedLine)
         XCTAssertEqual(f.plays.queues.count, 0)
@@ -1085,23 +1250,17 @@ final class DJBoxSceneTests: XCTestCase {
         DJSpanDACGenrePick(rows: rows, total: total ?? rows.count, instance: "inst", generation: 7)
     }
 
-    func testGenreOnSpanDACDataAndOutputQueuesTheFrozenLibraryIDsOnce() throws {
+    func testGenreOnSpanDACDataAndOutputQueuesTheFrozenLibraryIDsStraightAwayAndOnce() {
         let rows = aliasRows(50)
         let source = DJFakeGenreSource(.success(spandacPick(rows, total: 312)))
         let f = fixture(output: .source, genreSource: source)
-        loadRails(f)
         f.reader.answer("jazz", with: genreReading("Jazz"))
-        askForCard(f, "jazz")
+        askAndPlay(f, "jazz")
 
-        let card = try XCTUnwrap(plan(f), "\(String(describing: stage(f)))")
-        XCTAssertEqual(card.line, "Jazz you haven't played in 90 days \u{00B7} 50 songs")
+        XCTAssertEqual(playingLine(f), "Jazz you haven't played in 90 days \u{00B7} 50 songs")
         XCTAssertEqual(source.asked.map(\.genre), ["Jazz"])
         XCTAssertEqual(source.asked.map(\.days), [90])
-        XCTAssertEqual(f.rig.sent("slice.queue").count, 0, "it played before Enter")
         XCTAssertEqual(f.scripts.count, 0, "AppleScript was read for SpanDAC data")
-
-        XCTAssertEqual(f.scene.handle(.enter), .push(.nowPlaying))
-        drain(f.actions)
         XCTAssertEqual(f.scene.handle(.enter), .none)
         drain(f.actions)
 
@@ -1110,9 +1269,8 @@ final class DJBoxSceneTests: XCTestCase {
         // The server's 50 are shuffled client side (the test shuffler reverses them).
         XCTAssertEqual(queues.first?.body["library_ids"] as? [String], rows.map(\.id).reversed().map { $0 })
         XCTAssertNotEqual(queues.first?.tag, "mac-data")
-        XCTAssertEqual(source.rechecks, 1, "the library was not re-checked at Enter")
+        XCTAssertEqual(source.rechecks, 1, "the library was not re-checked before playing")
         XCTAssertEqual(f.handoff.calls.count, 0)
-        XCTAssertEqual(f.log.created, [])
     }
 
     /// 50 rows, the second and the fifth both "Autumn Leaves".
@@ -1124,17 +1282,12 @@ final class DJBoxSceneTests: XCTestCase {
     }
 
     func testGenreOnSpanDACOutputKeepsTheOldestOfARepeatedTitleAndSaysSo() throws {
-        let rows = autumnRows()
-        let source = DJFakeGenreSource(.success(spandacPick(rows, total: 312)))
+        let source = DJFakeGenreSource(.success(spandacPick(autumnRows(), total: 312)))
         let f = fixture(output: .source, genreSource: source)
-        loadRails(f)
         f.reader.answer("jazz", with: genreReading("Jazz"))
-        askForCard(f, "jazz")
+        askAndPlay(f, "jazz")
 
-        let card = try XCTUnwrap(plan(f), "\(String(describing: stage(f)))")
-        XCTAssertEqual(card.line, "Jazz you haven't played in 90 days \u{00B7} 49 songs (1 repeated title skipped)")
-        _ = f.scene.handle(.enter)
-        drain(f.actions)
+        XCTAssertEqual(playingLine(f), "Jazz you haven't played in 90 days \u{00B7} 49 songs (1 repeated title skipped)")
         let sent = try XCTUnwrap(f.rig.sent("slice.queue").first?.body["library_ids"] as? [String])
         XCTAssertEqual(sent.count, 49)
         XCTAssertFalse(sent.contains("lib5"), "the later Autumn Leaves must not be queued")
@@ -1142,61 +1295,53 @@ final class DJBoxSceneTests: XCTestCase {
         XCTAssertEqual(source.rechecks, 1)
     }
 
-    func testGenreOnSpanDACOutputKeepsTitlesThatDifferOnlyInCase() throws {
+    func testGenreOnSpanDACOutputKeepsTitlesThatDifferOnlyInCase() {
         var rows = autumnRows()
         rows[4] = MusicRow(id: "lib5", title: "autumn leaves", artist: "A", album: "B", kind: .song, alias: "5")
         let source = DJFakeGenreSource(.success(spandacPick(rows)))
         let f = fixture(output: .source, genreSource: source)
-        loadRails(f)
         f.reader.answer("jazz", with: genreReading("Jazz"))
-        askForCard(f, "jazz")
-        let card = try XCTUnwrap(plan(f))
-        XCTAssertEqual(card.line, "Jazz you haven't played in 90 days \u{00B7} 50 songs")
+        askAndPlay(f, "jazz")
+        XCTAssertEqual(playingLine(f), "Jazz you haven't played in 90 days \u{00B7} 50 songs")
     }
 
     /// The MusicTUI output plays through a hand-off, not SpanDAC's queue preflight:
     /// the refusal does not exist there, so the pick is left exactly as read.
-    func testGenreOnSpanDACDataAndTheMusicTUIOutputKeepsRepeatedTitles() throws {
-        let rows = autumnRows()
-        let source = DJFakeGenreSource(.success(spandacPick(rows)))
+    func testGenreOnSpanDACDataAndTheMusicTUIOutputKeepsRepeatedTitles() {
+        let source = DJFakeGenreSource(.success(spandacPick(autumnRows())))
         let f = fixture(output: .musicApp, genreSource: source)
-        loadRails(f)
         f.reader.answer("jazz", with: genreReading("Jazz"))
-        askForCard(f, "jazz")
-        let card = try XCTUnwrap(plan(f))
-        XCTAssertEqual(card.line, "Jazz you haven't played in 90 days \u{00B7} 50 songs")
-        _ = f.scene.handle(.enter)
-        drain(f.actions)
+        askAndPlay(f, "jazz")
+        XCTAssertEqual(playingLine(f), "Jazz you haven't played in 90 days \u{00B7} 50 songs")
         XCTAssertEqual(f.handoff.calls.first?.count, 50)
     }
 
-    func testGenreOnSpanDACDataAndTheMusicTUIOutputHandsOffVerifiedAliasesOnly() throws {
+    func testGenreOnSpanDACDataAndTheMusicTUIOutputHandsOffVerifiedAliasesStraightAway() {
         let rows = aliasRows(5)
         let source = DJFakeGenreSource(.success(spandacPick(rows)))
         let f = fixture(output: .musicApp, genreSource: source)
-        loadRails(f)
         f.reader.answer("jazz", with: genreReading("Jazz"))
-        askForCard(f, "jazz")
-        XCTAssertNotNil(plan(f), "\(String(describing: stage(f)))")
-        XCTAssertEqual(f.handoff.calls.count, 0)
-
-        _ = f.scene.handle(.enter)
-        drain(f.actions)
+        askAndPlay(f, "jazz")
+        XCTAssertNotNil(playingLine(f), "\(stage(f))")
         XCTAssertEqual(f.handoff.calls.count, 1, "one Enter must be one hand-off")
         XCTAssertEqual(f.handoff.calls.first?.map(\.id), rows.map(\.id).reversed().map { $0 })
         XCTAssertEqual(f.rig.sent("slice.queue").count, 0)
         XCTAssertEqual(f.plays.queues.count, 0, "the open-data queue player was used for SpanDAC rows")
-        assertNoLibraryOrPlay(f)
+        assertNothingPlayedExceptTheHandoff(f)
+    }
+
+    private func assertNothingPlayedExceptTheHandoff(_ f: Fixture, file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertEqual(f.rig.sent("slice.queue").count, 0, file: file, line: line)
+        XCTAssertNil(f.store.read(), file: file, line: line)
     }
 
     func testAnySongWithoutAnAliasFailsTheWholePickOnTheMusicTUIOutput() {
         let rows = aliasRows(5, withAlias: { $0 != 3 })
         let source = DJFakeGenreSource(.success(spandacPick(rows)))
         let f = fixture(output: .musicApp, genreSource: source)
-        loadRails(f)
         f.reader.answer("jazz", with: genreReading("Jazz"))
-        askForCard(f, "jazz")
-        XCTAssertNil(plan(f), "a pick with an unaliased song was offered")
+        askAndWait(f, "jazz")
+        XCTAssertNil(playingLine(f), "a pick with an unaliased song played")
         XCTAssertEqual(message(f), djGenreNeedsAliases)
         XCTAssertEqual(f.handoff.calls.count, 0)
     }
@@ -1205,80 +1350,50 @@ final class DJBoxSceneTests: XCTestCase {
         let rows = aliasRows(3, withAlias: { _ in false })
         let source = DJFakeGenreSource(.success(spandacPick(rows)))
         let f = fixture(output: .source, genreSource: source)
-        loadRails(f)
         f.reader.answer("jazz", with: genreReading("Jazz"))
-        askForCard(f, "jazz")
-        XCTAssertNotNil(plan(f), "\(String(describing: stage(f)))")
+        askAndPlay(f, "jazz")
+        XCTAssertNotNil(playingLine(f), "\(stage(f))")
+        XCTAssertEqual(f.rig.sent("slice.queue").count, 1)
     }
 
-    func testALibraryThatChangedBeforeEnterDropsTheCardAndPlaysNothing() {
+    func testALibraryThatChangedBeforeThePlayStopsItAndPlaysNothing() {
         let source = DJFakeGenreSource(.success(spandacPick(aliasRows(5))))
         source.recheckError = DJGenreSourceError.libraryChanged
         let f = fixture(output: .source, genreSource: source)
-        loadRails(f)
         f.reader.answer("jazz", with: genreReading("Jazz"))
-        askForCard(f, "jazz")
-        _ = f.scene.handle(.enter)
-        drain(f.actions)
+        askAndPlay(f, "jazz")
         XCTAssertEqual(f.rig.sent("slice.queue").count, 0)
         XCTAssertEqual(f.status.current()?.text, DJGenreSourceError.libraryChanged.message)
+        ticks(f, until: { self.message(f) == DJGenreSourceError.libraryChanged.message })
     }
 
-    func testAnEmptySpanDACGenreResultOffersNoCard() {
+    func testAnEmptySpanDACGenreResultPlaysNothing() {
         let source = DJFakeGenreSource(.success(spandacPick([], total: 0)))
         let f = fixture(output: .source, genreSource: source)
-        loadRails(f)
         f.reader.answer("jazz", with: genreReading("Jazz"))
-        askForCard(f, "jazz")
+        askAndWait(f, "jazz")
         XCTAssertEqual(message(f), "No Jazz songs you haven't played in 90 days.")
+        assertNothingPlayed(f)
     }
 
     func testAnOlderSpanDACSaysItNeedsANewerOneAndPlaysNothing() {
         let f = fixture(output: .source)       // the stub source
-        loadRails(f)
         f.reader.answer("jazz", with: genreReading("Jazz"))
-        askForCard(f, "jazz")
+        askAndWait(f, "jazz")
         XCTAssertEqual(message(f), djNeedsNewerSpanDAC)
-        assertNoLibraryOrPlay(f)
+        assertNothingPlayed(f)
     }
 
     func testASpanDACGenreFailureIsSaidInItsOwnWords() {
         let source = DJFakeGenreSource(.failure(DJGenreSourceError.failed("SpanDAC is warming")))
         let f = fixture(output: .source, genreSource: source)
-        loadRails(f)
         f.reader.answer("jazz", with: genreReading("Jazz"))
-        askForCard(f, "jazz")
+        askAndWait(f, "jazz")
         XCTAssertTrue(message(f)?.contains("SpanDAC is warming") ?? false, message(f) ?? "no message")
+        assertNothingPlayed(f)
     }
 
-    // MARK: - Codex branch review r1
-
-    /// A held action ahead of the DJ's: Enter queues the DJ play behind it, `admit`
-    /// lets a different play in meanwhile, then the hold is released.
-    private func enterBehindAHold(_ f: Fixture, admit: () throws -> Void) throws {
-        let hold = DispatchSemaphore(value: 0)
-        f.actions.run("hold") { _ = hold.wait(timeout: .now() + 5) }
-        XCTAssertEqual(f.scene.handle(.enter), .push(.nowPlaying))
-        try admit()
-        hold.signal()
-        drain(f.actions)
-    }
-
-    // Finding 2: the play serial is checked at admission, with both epochs.
-
-    func testAnArtistMixWhoseActionWaitedWhileAnotherPlayWasAdmittedPlaysNothing() throws {
-        let f = fixture(output: .source)
-        loadRails(f)
-        f.reader.answer("mix", with: artistMixReading())
-        askForCard(f, "mix")
-        XCTAssertNotNil(plan(f))
-        try enterBehindAHold(f) {
-            try f.routing.perform(.libraryPlay, expecting: f.routing.stamp, origin: .spandacLibrary,
-                                  musicApp: { _ in }, source: { _ in }, unaffected: {})
-        }
-        XCTAssertEqual(f.rig.sent("slice.queue").count, 0, "the artist mix queued after another play was admitted")
-        XCTAssertEqual(f.status.current()?.text, anotherPlayAdmittedNothingPlayed)
-    }
+    // MARK: - The play serial is checked at admission, with both epochs
 
     /// The coordinator's own admission: the expected serial is judged with the
     /// epochs, before any body, and a refusal admits nothing.
@@ -1301,8 +1416,9 @@ final class DJBoxSceneTests: XCTestCase {
         XCTAssertEqual(routing.playSerial, before + 1, "a refused play moved the serial")
 
         // No serial given: nothing to keep honest, as before.
-        try routing.perform(.libraryPlay, expecting: routing.stamp, origin: .spandacLibrary,
-                            musicApp: { _ in ran += 1 }, source: { _ in ran += 1 }, unaffected: {})
+        try routing.perform(.libraryPlay, expecting: routing.stamp, expectingPlaySerial: nil,
+                            origin: .spandacLibrary, musicApp: { _ in ran += 1 }, source: { _ in ran += 1 },
+                            unaffected: {})
         XCTAssertEqual(ran, 2)
     }
 
@@ -1310,12 +1426,7 @@ final class DJBoxSceneTests: XCTestCase {
         let f = openFixture(library: libraryText(count: 3, genre: { _ in "Jazz" }, played: { _ in "N" }))
         settle(f, seconds: 0.1)
         f.reader.answer("jazz", with: genreReading("Jazz"))
-        askForCard(f, "jazz")
-        XCTAssertNotNil(plan(f))
-        try enterBehindAHold(f) {
-            try f.routing.perform(.libraryPlay, expecting: f.routing.stamp, origin: .openData(resultNumber: nil),
-                                  musicApp: { _ in }, source: { _ in }, unaffected: {})
-        }
+        try askBehindAHold(f, "jazz") { try self.admitAnotherPlay(f, origin: .openData(resultNumber: nil)) }
         XCTAssertEqual(f.plays.queues.count, 0, "the genre queue played after another play was admitted")
         XCTAssertNil(f.store.read(), "the genre queue was set after another play was admitted")
     }
@@ -1324,14 +1435,8 @@ final class DJBoxSceneTests: XCTestCase {
         for output in [PlaybackMode.source, .musicApp] {
             let source = DJFakeGenreSource(.success(spandacPick(aliasRows(5))))
             let f = fixture(output: output, genreSource: source)
-            loadRails(f)
             f.reader.answer("jazz", with: genreReading("Jazz"))
-            askForCard(f, "jazz")
-            XCTAssertNotNil(plan(f), "\(output)")
-            try enterBehindAHold(f) {
-                try f.routing.perform(.libraryPlay, expecting: f.routing.stamp, origin: .spandacLibrary,
-                                      musicApp: { _ in }, source: { _ in }, unaffected: {})
-            }
+            try askBehindAHold(f, "jazz") { try self.admitAnotherPlay(f) }
             XCTAssertEqual(f.rig.sent("slice.queue").count, 0, "\(output): queued after another play was admitted")
             XCTAssertEqual(f.handoff.calls.count, 0, "\(output): handed off after another play was admitted")
         }
@@ -1342,15 +1447,12 @@ final class DJBoxSceneTests: XCTestCase {
             let source = DJFakeGenreSource(.success(spandacPick(aliasRows(5))))
             let gate = DispatchSemaphore(value: 0)
             let f = fixture(output: output, genreSource: source)
-            loadRails(f)
             f.reader.answer("jazz", with: genreReading("Jazz"))
-            askForCard(f, "jazz")
-            XCTAssertNotNil(plan(f), "\(output)")
             source.recheckGate = gate
-            XCTAssertEqual(f.scene.handle(.enter), .push(.nowPlaying))
+            ask(f, "jazz")                                       // asked; the play is dispatched at the answer
+            ticks(f, until: { self.playingLine(f) != nil })
             XCTAssertEqual(source.recheckStarted.wait(timeout: .now() + 5), .success, "the recheck never started")
-            try f.routing.perform(.libraryPlay, expecting: f.routing.stamp, origin: .spandacLibrary,
-                                  musicApp: { _ in }, source: { _ in }, unaffected: {})
+            try admitAnotherPlay(f)
             gate.signal()
             drain(f.actions)
             XCTAssertEqual(f.rig.sent("slice.queue").count, 0, "\(output): queued after another play was admitted")
@@ -1358,97 +1460,10 @@ final class DJBoxSceneTests: XCTestCase {
         }
     }
 
-    // Finding 3: `d` over a loading Discover album does not lose the album read.
-
-    private func playlistTracksFixture() -> Fixture {
-        let f = fixture(output: .source)
-        let base = f.rig.responders["slice.containerTracks"]
-        f.rig.responders["slice.containerTracks"] = { body in
-            if body["id"] as? String == "pl.u-abc" { return Self.tracksReply(["901", "902"]) }
-            return base?(body) ?? ""
-        }
-        return f
-    }
-
-    private func isTracks(_ f: Fixture, _ id: String) -> Bool {
-        if case .tracks(let item) = f.scene.currentLevel { return item.id == id }
-        return false
-    }
-
-    func testDOverALoadingAlbumKeepsItsReadAndEscShowsTheRows() {
-        let f = playlistTracksFixture()
-        let held = DispatchSemaphore(value: 0)
-        let lock = NSLock()
-        var first = true
-        f.rig.during["slice.containerTracks"] = {
-            lock.lock(); let hold = first; first = false; lock.unlock()
-            if hold { _ = held.wait(timeout: .now() + 5) }
-        }
-        loadRails(f)
-        _ = f.scene.handle(.down)
-        _ = f.scene.handle(.enter)                      // the album's read is held
-        ticks(f, until: { f.rig.sent("slice.containerTracks").count == 1 })
-
-        _ = f.scene.handle(.char("d"))
-        XCTAssertTrue(isDJ(f))
-        held.signal()                                   // the read finishes under the box
-        settle(f, seconds: 0.2)
-        _ = f.scene.handle(.escape)
-
-        XCTAssertTrue(isTracks(f, "pl.u-abc"), "\(f.scene.currentLevel)")
-        ticks(f, until: { f.scene.trackRows.map(\.id) == ["901", "902"] })
-        XCTAssertEqual(f.scene.shownCursorIndex, 0)
-    }
-
-    func testDOverAnAlreadyLoadedAlbumLeavesItsRowsAndCursorAlone() {
-        let f = playlistTracksFixture()
-        loadRails(f)
-        _ = f.scene.handle(.down)
-        _ = f.scene.handle(.enter)
-        ticks(f, until: { f.scene.trackRows.map(\.id) == ["901", "902"] })
-        _ = f.scene.handle(.down)
-        XCTAssertEqual(f.scene.shownCursorIndex, 1)
-        let reads = f.rig.sent("slice.containerTracks").count
-
-        _ = f.scene.handle(.char("d"))
-        settle(f, seconds: 0.1)
-        _ = f.scene.handle(.escape)
-
-        XCTAssertTrue(isTracks(f, "pl.u-abc"))
-        XCTAssertEqual(f.scene.trackRows.map(\.id), ["901", "902"], "the loaded rows were lost")
-        XCTAssertEqual(f.scene.shownCursorIndex, 1, "the cursor moved")
-        XCTAssertEqual(f.rig.sent("slice.containerTracks").count, reads, "a loaded album was read again")
-    }
-
-    func testAnAlbumLoadingUnderTheBoxWhenTheDataSourceChangesIsLeftBehindWithTheBox() throws {
-        let f = playlistTracksFixture()
-        let held = DispatchSemaphore(value: 0)
-        f.rig.during["slice.containerTracks"] = { _ = held.wait(timeout: .now() + 5) }
-        loadRails(f)
-        _ = f.scene.handle(.down)
-        _ = f.scene.handle(.enter)
-        ticks(f, until: { f.rig.sent("slice.containerTracks").count == 1 })
-        _ = f.scene.handle(.char("d"))
-        _ = try f.routing.stopUsingSpanDACData(pauseOutgoing: { _ in true }, dropQueue: { _ in })
-        _ = f.scene.tick(snapshot: idle)
-        held.signal()
-        settle(f, seconds: 0.2)
-
-        XCTAssertNil(f.scene.djModel)
-        XCTAssertEqual(f.status.current()?.text, DiscoverScene.djDataSourceChanged)
-        XCTAssertEqual(f.scene.currentLevel, .root, "the old source's album is still on screen")
-        XCTAssertEqual(f.scene.trackRows, [])
-        _ = f.scene.handle(.char("d"))
-        _ = f.scene.handle(.escape)
-        XCTAssertEqual(f.scene.currentLevel, .root, "closing a later box brought the old album back")
-        XCTAssertEqual(f.scene.trackRows, [])
-    }
-
-    // Finding 4: editing a pending prompt invalidates the request that is out.
+    // MARK: - Editing a pending prompt invalidates the request that is out
 
     func testEditingAPendingPromptReleasesItsRequestAndTheNextEnterAsksTheNewText() {
         let f = fixture(output: .source)
-        loadRails(f)
         f.reader.answer("old", with: artistMixReading())
         f.reader.hold("old")
         ask(f, "old")
@@ -1457,9 +1472,10 @@ final class DJBoxSceneTests: XCTestCase {
         XCTAssertEqual(stage(f), .typing, "the edit left the old request waiting")
         f.reader.release("old")
         settle(f)
+        drain(f.actions)
         XCTAssertEqual(stage(f), .typing, "the old answer landed after the edit")
         XCTAssertEqual(f.rig.sent("slice.search").count, 0, "the edited-away request went on to read the catalogue")
-        XCTAssertNil(plan(f))
+        assertNothingPlayed(f)
 
         f.reader.answer("oldx", with: .card(.unsupported))
         _ = f.scene.handle(.enter)
@@ -1469,7 +1485,6 @@ final class DJBoxSceneTests: XCTestCase {
 
     func testAnEditedAwayRequestsLateFailureNeverLands() {
         let f = fixture(output: .source)
-        loadRails(f)
         f.reader.answer("old", with: .failed("stale boom"))
         f.reader.hold("old")
         ask(f, "old")
@@ -1481,7 +1496,7 @@ final class DJBoxSceneTests: XCTestCase {
         XCTAssertNil(message(f), "the old request's failure landed after the edit")
     }
 
-    // Finding 5: a job's progress belongs to the session and request it began under.
+    // MARK: - A job's progress belongs to the session and request it began under
 
     /// Parks the first artist-mix job just before it reports progress.
     private func parkFirstProgress(_ f: Fixture) -> (entered: DispatchSemaphore, release: DispatchSemaphore) {
@@ -1499,36 +1514,38 @@ final class DJBoxSceneTests: XCTestCase {
         return (entered, release)
     }
 
-    func testAnOldJobsProgressNeverLandsUnderTheNextBoxsSameNumberedRequest() {
+    func testAnOldJobsProgressNeverLandsUnderTheNextRequestsSameNumberedID() {
         let f = fixture(output: .source)
-        loadRails(f)
         let park = parkFirstProgress(f)
         f.reader.answer("old mix", with: artistMixReading())
-        ask(f, "old mix")                                       // box 1, request 1
+        ask(f, "old mix")
         XCTAssertEqual(park.entered.wait(timeout: .now() + 5), .success, "the job never reached its progress")
-        _ = f.scene.handle(.escape)                             // closed ...
+        f.scene.becameActive()                                   // abandoned: the session moves on
+        for _ in 0..<7 { _ = f.scene.handle(.char("\u{7F}")) }
         f.reader.hold("new")
         f.reader.answer("new", with: .card(.unsupported))
-        ask(f, "new")                                           // ... reopened: box 2, request 1
+        ask(f, "new")
         ticks(f, until: { f.reader.asked.contains("new") })
 
         park.release.signal()                                   // the old job reports "Looking up Radiohead"
         settle(f, seconds: 0.4)
-        XCTAssertEqual(stage(f), .reading, "the old job's progress landed on the new box: \(String(describing: stage(f)))")
+        XCTAssertEqual(stage(f), .reading, "the old job's progress landed on the new request: \(stage(f))")
 
         f.reader.release("new")
         ticks(f, until: { self.message(f) == djUnsupportedRequest })
+        drain(f.actions)
+        assertNothingPlayed(f)
     }
 
     func testAnOldJobsProgressNeverReplacesTheNewAnswerAlreadyInTheSlot() {
         let f = fixture(output: .source)
-        loadRails(f)
         let park = parkFirstProgress(f)
         let written = DispatchSemaphore(value: 0)
         f.reader.answer("old mix", with: artistMixReading())
         ask(f, "old mix")
         XCTAssertEqual(park.entered.wait(timeout: .now() + 5), .success)
-        _ = f.scene.handle(.escape)
+        f.scene.becameActive()
+        for _ in 0..<7 { _ = f.scene.handle(.char("\u{7F}")) }
         f.reader.answer("new", with: .card(.unsupported))
         f.scene.inboxWritten = { if $0 == "dj" { written.signal() } }
         ask(f, "new")                                           // answers at once: the slot holds it, untouched by a tick
@@ -1538,10 +1555,10 @@ final class DJBoxSceneTests: XCTestCase {
         usleep(300_000)                                         // the old job's progress arrives; no tick yet
         settle(f, seconds: 0.3)
         XCTAssertEqual(message(f), djUnsupportedRequest,
-                       "the old job's progress replaced the new answer: \(String(describing: stage(f)))")
+                       "the old job's progress replaced the new answer: \(stage(f))")
     }
 
-    // Finding 1: Enter checks the very songs the card will play, not only the stamp.
+    // MARK: - Enter checks the very songs the plan will play, not only the stamp
 
     private final class ResolveAnswer: @unchecked Sendable {
         private let lock = NSLock()
@@ -1579,13 +1596,9 @@ final class DJBoxSceneTests: XCTestCase {
         for output in [PlaybackMode.source, .musicApp] {
             let answer = ResolveAnswer()
             let f = realClientFixture(output: output, answer: answer)
-            loadRails(f)
             f.reader.answer("jazz", with: genreReading("Jazz"))
-            askForCard(f, "jazz")
-            XCTAssertNotNil(plan(f), "\(output): \(String(describing: stage(f)))")
             answer.count = 4                                    // one of the five chosen is gone
-            XCTAssertEqual(f.scene.handle(.enter), .push(.nowPlaying))
-            drain(f.actions)
+            askAndPlay(f, "jazz")
             XCTAssertEqual(f.rig.sent("slice.queue").count, 0, "\(output): queued with a chosen song gone")
             XCTAssertEqual(f.handoff.calls.count, 0, "\(output): handed off with a chosen song gone")
             XCTAssertEqual(f.status.current()?.text, djSpanDACLibraryChanged, "\(output)")
@@ -1599,12 +1612,9 @@ final class DJBoxSceneTests: XCTestCase {
         for output in [PlaybackMode.source, .musicApp] {
             let answer = ResolveAnswer()
             let f = realClientFixture(output: output, answer: answer)
-            loadRails(f)
             f.reader.answer("jazz", with: genreReading("Jazz"))
-            askForCard(f, "jazz")
             answer.generation = 8
-            _ = f.scene.handle(.enter)
-            drain(f.actions)
+            askAndPlay(f, "jazz")
             XCTAssertEqual(f.rig.sent("slice.queue").count, 0, "\(output)")
             XCTAssertEqual(f.handoff.calls.count, 0, "\(output)")
             XCTAssertEqual(f.status.current()?.text, djSpanDACLibraryChanged, "\(output)")
@@ -1615,14 +1625,11 @@ final class DJBoxSceneTests: XCTestCase {
         for output in [PlaybackMode.source, .musicApp] {
             let answer = ResolveAnswer()
             let f = realClientFixture(output: output, answer: answer)
-            loadRails(f)
             f.reader.answer("jazz", with: genreReading("Jazz"))
-            askForCard(f, "jazz")
-            _ = f.scene.handle(.enter)
-            drain(f.actions)
+            askAndPlay(f, "jazz")
             let ops = f.rig.sent.map(\.op)
             XCTAssertEqual(ops.filter { $0 == "library.resolveIDs" }.count, 1, "\(output)")
-            XCTAssertEqual(ops.filter { $0 == "library.genreUnheard" }.count, 1, "\(output): Enter scanned the library again")
+            XCTAssertEqual(ops.filter { $0 == "library.genreUnheard" }.count, 1, "\(output): the library was scanned again")
             if output == .source {
                 let check = ops.firstIndex(of: "library.resolveIDs"), queue = ops.firstIndex(of: "slice.queue")
                 XCTAssertNotNil(check); XCTAssertNotNil(queue)
@@ -1632,5 +1639,168 @@ final class DJBoxSceneTests: XCTestCase {
                 XCTAssertEqual(f.handoff.calls.count, 1)
             }
         }
+    }
+}
+
+/// ↓ into the box from the Music.app control grid and from Up Next, and ↑ / Esc
+/// back; and Discover's `d`, which opens nothing now. Not under the external-call
+/// tripwire: a Music.app-shaped Now tick starts its modes read, which the
+/// harmless backend (`/usr/bin/true`) swallows. Nothing here asks the DJ anything.
+final class NowBoxFocusTests: XCTestCase {
+
+    private let frame = shellLayout(width: 120, height: 40)
+
+    private func musicAppSnapshot(rows: Int) -> NowPlayingSnapshot {
+        var np = NowPlayingState()
+        np.track = "Song 1"; np.artist = "Artist"; np.state = "playing"
+        let entries = (0..<rows).map {
+            TrackListEntry(index: $0 + 1, name: "Song \($0 + 1)", artist: "Artist", isCurrent: $0 == 0)
+        }
+        return NowPlayingSnapshot(outcome: .active(np), history: [], surrounding: entries)
+    }
+
+    /// A Now scene on the MusicTUI output with a real grid and Up Next, ticked
+    /// and drawn once so its rows and its room for the box are in.
+    private func gridScene(rows: Int) -> (NowPlayingScene, NowPlayingSnapshot) {
+        let rig = SceneDataRig(output: .musicApp, accepted: false)
+        let status = StatusStore()
+        let scene = NowPlayingScene(backend: AppleScriptBackend(executable: "/usr/bin/true"), appQueue: AppQueueStore(),
+                                    status: status, actions: ActionRunner(status: status), routing: rig.coordinator())
+        let s = musicAppSnapshot(rows: rows)
+        _ = scene.tick(snapshot: s)
+        _ = scene.render(frame: frame, snapshot: s)
+        return (scene, s)
+    }
+
+    func testDownPastTheLastRowOfUpNextFocusesTheBoxAndUpReturnsToUpNext() {
+        let (scene, s) = gridScene(rows: 3)
+        XCTAssertFalse(scene.boxFocused)
+        XCTAssertEqual(scene.handle(.down), .redraw)                 // row 1 -> 2
+        XCTAssertEqual(scene.handle(.down), .redraw)                 // row 2 -> 3
+        XCTAssertFalse(scene.boxFocused, "the box took focus before the last row")
+        XCTAssertEqual(scene.handle(.down), .redraw)                 // past the last row
+        XCTAssertTrue(scene.boxFocused)
+        XCTAssertTrue(scene.capturesAllInput)
+
+        XCTAssertEqual(scene.handle(.up), .redraw)
+        XCTAssertFalse(scene.boxFocused)
+        XCTAssertFalse(scene.capturesAllInput)
+        _ = scene.render(frame: frame, snapshot: s)
+        // Back in Up Next, not the grid: ↑ moves the Up Next cursor off the last row,
+        // and ↓ then returns to it without reaching the box.
+        XCTAssertEqual(scene.handle(.up), .redraw)
+        XCTAssertEqual(scene.handle(.down), .redraw)
+        XCTAssertFalse(scene.boxFocused, "focus did not come back to Up Next")
+        XCTAssertEqual(scene.handle(.down), .redraw)
+        XCTAssertTrue(scene.boxFocused)
+    }
+
+    func testDownPastTheLastRowOfTheControlGridFocusesTheBoxAndEscReturnsToTheGrid() {
+        let (scene, s) = gridScene(rows: 3)
+        XCTAssertEqual(scene.handle(.left), .redraw)                  // focus the grid
+        for _ in 0..<(ControlGrid.rowCount - 1) {
+            XCTAssertEqual(scene.handle(.down), .redraw)
+            XCTAssertFalse(scene.boxFocused, "the box took focus before the grid's last row")
+        }
+        XCTAssertEqual(scene.handle(.down), .redraw)
+        XCTAssertTrue(scene.boxFocused)
+
+        XCTAssertEqual(scene.handle(.escape), .redraw)
+        XCTAssertFalse(scene.boxFocused)
+        _ = scene.render(frame: frame, snapshot: s)
+        // The grid has focus again, on its last row: ↑ then ↓ stays in the grid, and one more ↓ is the box.
+        XCTAssertEqual(scene.handle(.up), .redraw)
+        XCTAssertEqual(scene.handle(.down), .redraw)
+        XCTAssertFalse(scene.boxFocused)
+        XCTAssertEqual(scene.handle(.down), .redraw)
+        XCTAssertTrue(scene.boxFocused, "focus did not come back to the grid")
+    }
+
+    func testUpFromTheBoxReturnsToTheGridWhenTheGridSentYouThere() {
+        let (scene, _) = gridScene(rows: 3)
+        _ = scene.handle(.left)
+        for _ in 0..<ControlGrid.rowCount { _ = scene.handle(.down) }
+        XCTAssertTrue(scene.boxFocused)
+        XCTAssertEqual(scene.handle(.up), .redraw)
+        XCTAssertFalse(scene.boxFocused)
+        // Grid-focused: Enter would cycle a row; the footer says the grid has focus.
+        XCTAssertTrue(scene.footerHint.contains("Row"), scene.footerHint)
+    }
+
+    func testTheGridsMiddleRowsNeverFocusTheBox() {
+        let (scene, _) = gridScene(rows: 3)
+        _ = scene.handle(.left)
+        for _ in 0..<(ControlGrid.rowCount - 1) {
+            XCTAssertFalse(scene.boxFocused)
+            _ = scene.handle(.down)
+        }
+        XCTAssertFalse(scene.boxFocused)
+    }
+
+    func testTheUpNextCursorStaysWhereItWasWhileTheBoxHasFocus() {
+        let (scene, _) = gridScene(rows: 3)
+        for _ in 0..<3 { _ = scene.handle(.down) }
+        XCTAssertTrue(scene.boxFocused)
+        for key in ["a", "b"] { _ = scene.handle(.char(Character(key))) }
+        _ = scene.handle(.up)
+        XCTAssertFalse(scene.boxFocused)
+        XCTAssertEqual(scene.handle(.down), .redraw, "the cursor was not on the last row after the box")
+        XCTAssertTrue(scene.boxFocused)
+    }
+
+    // MARK: - Discover's `d`
+
+    private func lifecycle() -> DiscoverLifecycleCoordinator {
+        enum Stop: Error { case stop }
+        let log = SceneLifecycleLog()
+        let seams = DiscoverLifecycleCoordinator.Seams(
+            runSweep: { _ in }, create: { _, ids in log.create(ids); throw Stop.stop }, readCount: { _ in 0 },
+            play: { log.play($0) }, confirmRead: { _ in "" }, post: { _ in },
+            scheduler: DiscoverScheduler(now: { Date() }, deadline: { _ in Date() }, delay: { _ in }),
+            readCountByPersistentID: { _ in 100 },
+            confirmReadByPersistentID: { _ in discoverConfirmedToken },
+            readContainerTrackIDsByPersistentID: { _ in nil },
+            readTracksByPersistentID: { _ in throw Stop.stop })
+        let c = DiscoverLifecycleCoordinator(seams: seams)
+        c.completeLaunchSweep(.swept)
+        return c
+    }
+
+    func testDOnDiscoverNoLongerOpensAnythingAndItsFooterNoLongerOffersARequest() {
+        let rig = SceneDataRig(output: .source, accepted: true)
+        let status = StatusStore()
+        let scene = DiscoverScene(feed: nil, status: status, actions: ActionRunner(status: status), api: nil,
+                                  lifecycle: lifecycle(), routing: rig.coordinator(), opener: SceneRecordingOpener())
+        let idle = NowPlayingSnapshot(outcome: .stopped, history: [], surrounding: [])
+        let deadline = Date().addingTimeInterval(5)
+        while scene.rails.isEmpty && Date() < deadline { _ = scene.tick(snapshot: idle); usleep(2_000) }
+        XCTAssertFalse(scene.rails.isEmpty)
+
+        let level = scene.currentLevel
+        let footer = scene.footerHint
+        XCTAssertEqual(scene.handle(.char("d")), .none, "d did something on Discover")
+        XCTAssertEqual(scene.currentLevel, level)
+        XCTAssertFalse(scene.capturesAllInput, "d captured the keyboard")
+        XCTAssertEqual(scene.footerHint, footer)
+        XCTAssertFalse(footer.lowercased().contains("request"), footer)
+        let out = scene.render(frame: frame, snapshot: idle)
+        XCTAssertFalse(out.contains("Make a request"))
+        XCTAssertFalse(out.contains("Apple Music DJ"))
+        // A letter typed after it is not text anywhere.
+        XCTAssertEqual(scene.handle(.char("x")), .none)
+    }
+
+    func testDiscoversSearchStillOpensOnSlashAndCapturesKeys() {
+        let rig = SceneDataRig(output: .source, accepted: true)
+        let status = StatusStore()
+        let scene = DiscoverScene(feed: nil, status: status, actions: ActionRunner(status: status), api: nil,
+                                  lifecycle: lifecycle(), routing: rig.coordinator(), opener: SceneRecordingOpener())
+        let idle = NowPlayingSnapshot(outcome: .stopped, history: [], surrounding: [])
+        let deadline = Date().addingTimeInterval(5)
+        while scene.rails.isEmpty && Date() < deadline { _ = scene.tick(snapshot: idle); usleep(2_000) }
+        _ = scene.handle(.char("/"))
+        XCTAssertEqual(scene.currentLevel, .search)
+        for c in "d" { _ = scene.handle(.char(c)) }
+        XCTAssertEqual(scene.searchPane?.model.text, "d")
     }
 }
