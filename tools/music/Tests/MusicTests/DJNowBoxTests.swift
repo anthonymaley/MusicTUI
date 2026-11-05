@@ -734,6 +734,55 @@ final class DJNowBoxTests: XCTestCase {
         XCTAssertEqual(f.handoff.calls.count, 0)
     }
 
+    // MARK: - Artist mix: the rows behind the ids are kept with the queue's token
+
+    /// The mix is a catalogue queue. Up Next and the album line come from the
+    /// rows the play sent, which the coordinator keeps only when the play records
+    /// them with the reply's `queue_token` (Anthony, 2026-11-05 09:41: "Song 22
+    /// of 50" and no Up Next list).
+    func testAnArtistMixKeepsTheRowsItQueuedWithTheReplysQueueToken() throws {
+        let f = fixture(output: .source)
+        f.rig.responders["slice.queue"] = { _ in
+            #"{"ok":true,"op":"slice.queue","queue_token":"qmix-1","status":{"playback":"playing","title":"T","artist":"A"}}"#
+        }
+        f.reader.answer("mix", with: artistMixReading())
+        askAndPlay(f, "mix")
+
+        let sent = try XCTUnwrap(f.rig.sent("slice.queue").first?.body["ids"] as? [String])
+        let play = try XCTUnwrap(f.routing.spanDACPlay(), "the mix recorded no rows")
+        XCTAssertEqual(play.rows.map(\.id), sent, "the kept rows are the ids on the wire, in order")
+        XCTAssertEqual(play.token, "qmix-1")
+        XCTAssertEqual(play.catalogue, true)
+        XCTAssertFalse(play.shuffled)
+        XCTAssertTrue(play.rows.allSatisfy { $0.kind == .song && $0.artist == "A" && $0.title == "Track \($0.id)" },
+                      "a row is the song the id names")
+        XCTAssertTrue(play.rows.allSatisfy { $0.album?.hasPrefix("Title alb") == true }, "the album line comes from the album it was read in")
+    }
+
+    /// SpanDAC dropped songs it could not queue: it does not say which, so the
+    /// kept rows no longer describe the order and Up Next must not be drawn.
+    func testAnArtistMixThatLostSongsKeepsItsRowsAsUnordered() throws {
+        let f = fixture(output: .source)
+        f.rig.responders["slice.queue"] = { _ in
+            #"{"ok":true,"op":"slice.queue","queue_token":"qmix-2","skipped_unavailable":2,"status":{"playback":"playing","title":"T","artist":"A"}}"#
+        }
+        f.reader.answer("mix", with: artistMixReading())
+        askAndPlay(f, "mix")
+        let play = try XCTUnwrap(f.routing.spanDACPlay())
+        XCTAssertEqual(play.token, "qmix-2")
+        XCTAssertTrue(play.shuffled, "an order SpanDAC may have changed is not an order to list")
+    }
+
+    func testARefusedArtistMixKeepsNoRows() {
+        let f = fixture(output: .source)
+        f.rig.responders["slice.queue"] = { _ in
+            #"{"ok":false,"op":"slice.queue","error":{"kind":"bad_request","detail":"nope"}}"#
+        }
+        f.reader.answer("mix", with: artistMixReading())
+        askAndPlay(f, "mix")
+        XCTAssertNil(f.routing.spanDACPlay(), "a play that did not start recorded rows")
+    }
+
     func testTheBoxSaysWhatPlayedAndEmptiesForTheNextRequest() {
         let f = fixture(output: .source)
         f.reader.answer("mix", with: artistMixReading())
