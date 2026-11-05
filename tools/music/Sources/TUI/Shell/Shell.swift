@@ -295,6 +295,12 @@ func runShell() {
                                                                   dj: DJSeams.live(backend: backend, appQueue: appQueue,
                                                                                    handoff: liveMusicTUIHandoff(backend: backend, appQueue: appQueue,
                                                                                                                 routing: routing)))]
+    // A scene hears it was left in the same call that changes the active scene
+    // (digit, Tab, push, pop), never on the next loop pass: work it handed to the
+    // action queue (the DJ's play) must not start in the gap on another tab.
+    // A refused switch never reaches the router, and landing on the scene already
+    // active is not a departure.
+    connectDepartures(of: router) { scenes[$0] }
     // Declaration order IS the tab strip order and the 1-6 digit shortcuts.
     // Ordered by how often the user reaches for them: Now, then the browse
     // surfaces, then Speakers last (set once, rarely touched mid-session).
@@ -556,7 +562,6 @@ func runShell() {
         // a `.push` from a scene, a `.pop` back. Before `tick`, so a scene can set
         // its cursor and have that same tick publish it.
         if router.active != lastActiveScene {
-            scenes[lastActiveScene]?.resignedActive()
             lastActiveScene = router.active
             scene.becameActive()
         }

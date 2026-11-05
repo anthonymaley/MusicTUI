@@ -19,9 +19,23 @@ final class Router {
 
     var active: SceneID { stack.last! }
 
-    func switchTo(_ id: SceneID) { stack = [id] }
-    func push(_ id: SceneID) { stack.append(id) }
-    func pop() { if stack.count > 1 { stack.removeLast() } }
+    func switchTo(_ id: SceneID) {
+        let left = active
+        stack = [id]
+        if left != id { onDeparture?(left) }
+    }
+
+    func push(_ id: SceneID) {
+        let left = active
+        stack.append(id)
+        if left != id { onDeparture?(left) }
+    }
+
+    func pop() {
+        guard stack.count > 1 else { return }
+        let left = stack.removeLast()
+        if left != active { onDeparture?(left) }
+    }
 }
 
 /// Wires a router's departures to the scenes' `resignedActive()`, so a scene
