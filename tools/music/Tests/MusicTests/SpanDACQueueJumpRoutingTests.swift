@@ -141,6 +141,29 @@ final class SpanDACQueueJumpRoutingTests: XCTestCase {
         XCTAssertNil(h.status.current(), "a success posts no refusal")
     }
 
+    // MARK: a catalogue queue's rows are shown, not jumpable
+
+    func testEnterOnACatalogueUpNextRowSendsNothingAndSaysSo() {
+        let h = harness()
+        var snap = poll(h)
+        snap.spanDACQueueIsCatalogue = true
+        let before = h.counter.callCount, sentBefore = h.rig.sent.count
+        pressEnterOnSong2(h, snap)
+        XCTAssertEqual(h.jumps, [], "no queue.jump left the client")
+        XCTAssertEqual(h.rig.sent.count, sentBefore, "nothing at all was sent")
+        XCTAssertEqual(h.counter.callCount, before)
+        XCTAssertEqual(h.status.current()?.text, "Jumping to a song isn't available in a DJ mix yet.")
+        XCTAssertEqual(h.status.current()?.isError, false)
+    }
+
+    func testALibraryQueueControlStillJumps() {
+        let h = harness()
+        var snap = poll(h)
+        snap.spanDACQueueIsCatalogue = false
+        pressEnterOnSong2(h, snap)
+        XCTAssertEqual(h.jumps.count, 1)
+    }
+
     // MARK: refusals that send nothing
 
     private func assertRefusedNothingSent(_ h: Harness, _ text: String, callsBefore: Int,

@@ -14,12 +14,14 @@ final class SpanDACCatalogueUpNextTests: XCTestCase {
         MusicRow(id: "\(1000 + n)", title: title ?? "Song \(n)", artist: "Radiohead", album: album, kind: .song)
     }
 
-    private func reply(title: String, extra: String = "", token: String = "tok-1") -> String {
-        #"{"ok":true,"op":"slice.status","status":{"playback":"playing","contract":3,"authorization":"authorized","title":"\#(title)","artist":"Radiohead","queue_token":"\#(token)","queue":{"phase":"complete","requested":5,"present":5,"index":2}\#(extra)}}"#
+    private func reply(title: String, extra: String = "", token: String = "tok-1",
+                       queue: String = #""phase":"complete","requested":5,"present":5,"index":2"#) -> String {
+        #"{"ok":true,"op":"slice.status","status":{"playback":"playing","contract":3,"authorization":"authorized","title":"\#(title)","artist":"Radiohead","queue_token":"\#(token)","queue":{\#(queue)}\#(extra)}}"#
     }
 
-    private func status(title: String, extra: String = "", token: String = "tok-1") throws -> SourceStatus {
-        let r = reply(title: title, extra: extra, token: token)
+    private func status(title: String, extra: String = "", token: String = "tok-1",
+                        queue: String = #""phase":"complete","requested":5,"present":5,"index":2"#) throws -> SourceStatus {
+        let r = reply(title: title, extra: extra, token: token, queue: queue)
         return try SourceAppControl(path: "/nonexistent", transport: { _, _ in r }).status()
     }
 
@@ -117,5 +119,52 @@ final class SpanDACCatalogueUpNextTests: XCTestCase {
         let r = routing(reply: text)
         r.recordSpanDACPlay((0..<4).map { song($0) }, token: "tok-1")
         XCTAssertTrue(poll(r, reply: text).surrounding.isEmpty)
+    }
+
+    // MARK: only rows the status proves are in the player
+
+    private func futureNames(sent n: Int, queue: String) throws -> [String] {
+        let sent = (0..<n).map { song($0) }
+        let window = spanDACQueueWindow(sent: sent, token: "tok-1", catalogue: true,
+                                        status: try status(title: "Song 0", queue: queue))
+        XCTAssertEqual(window.current?.title, "Song 0")
+        return window.entries.dropFirst().map(\.name)
+    }
+
+    func testABuildingQueueShowsOnlyRowsBelowPresent() throws {
+        XCTAssertEqual(try futureNames(sent: 50, queue: #""phase":"building","requested":50,"present":1,"index":0"#), [])
+        XCTAssertEqual(try futureNames(sent: 50, queue: #""phase":"building","requested":50,"present":10,"index":0"#),
+                       (1..<10).map { "Song \($0)" })
+    }
+
+    func testACompleteQueueShowsAllRemainingRows() throws {
+        XCTAssertEqual(try futureNames(sent: 5, queue: #""phase":"complete","requested":5,"present":5,"index":0"#),
+                       (1..<5).map { "Song \($0)" })
+    }
+
+    func testACompleteQueueOfFewerThanSentShowsOnlyUpToPresent() throws {
+        XCTAssertEqual(try futureNames(sent: 5, queue: #""phase":"complete","requested":5,"present":3,"index":0"#),
+                       ["Song 1", "Song 2"])
+    }
+
+    func testAnInvalidOrUnknownPhaseShowsOnlyTheCurrentSong() throws {
+        XCTAssertEqual(try futureNames(sent: 5, queue: #""phase":"invalid","requested":5,"index":0"#), [])
+        XCTAssertEqual(try futureNames(sent: 5, queue: #""phase":"somethingnew","requested":5,"present":5,"index":0"#), [])
+        XCTAssertEqual(try futureNames(sent: 5, queue: #""requested":5,"present":5,"index":0"#), [])
+    }
+
+    func testALibraryQueueIsNotLimitedByPhase() throws {
+        let sent = (0..<5).map { song($0) }
+        let st = try status(title: "Song 0", extra: #","row":0,"next_rows":[1,2,3,4]"#,
+                            queue: #""phase":"building","requested":5,"present":1,"index":0"#)
+        let window = spanDACQueueWindow(sent: sent, token: "tok-1", status: st)
+        XCTAssertEqual(window.entries.count, 5)
+    }
+
+    func testThePollerFlagsACatalogueQueueForNow() throws {
+        let text = reply(title: "Song 1")
+        let r = routing(reply: text)
+        r.recordSpanDACPlay((0..<4).map { song($0) }, token: "tok-1", catalogue: true)
+        XCTAssertTrue(poll(r, reply: text).spanDACQueueIsCatalogue)
     }
 }
