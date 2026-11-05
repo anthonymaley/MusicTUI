@@ -556,6 +556,7 @@ func runShell() {
         // a `.push` from a scene, a `.pop` back. Before `tick`, so a scene can set
         // its cursor and have that same tick publish it.
         if router.active != lastActiveScene {
+            scenes[lastActiveScene]?.resignedActive()
             lastActiveScene = router.active
             scene.becameActive()
         }

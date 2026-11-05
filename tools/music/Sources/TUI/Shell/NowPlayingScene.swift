@@ -292,16 +292,23 @@ final class NowPlayingScene: Scene {
 
     /// Said when the person left Now while a request was out: nothing plays
     /// for an answer they were not there to see.
-    static let djLeftNow = "You left Now while the DJ was working, so nothing played. Ask again."
+    static let djLeftNow = djLeftNowLine
+
+    /// The body rows the rest of Now keeps above the box, and so the body the
+    /// box needs at the very least (this plus its own four rows).
+    private static let djRowsAboveBox = 6
 
     /// Rows the box reserves at the bottom of the body: its two borders, the
     /// request line, one line of words, and the picker's hits while one shows.
-    /// 0 when the frame has no room (or the continuation menu is up).
+    /// 0 when the frame has no room (or the continuation menu is up). A picker
+    /// never hides the box: when its hits do not fit they are clipped to the
+    /// rows there are (`renderDJBox` scrolls them to keep the selection in
+    /// view), so the box goes only under the minimum body, never for a picker.
     private func djBoxRows(frame: ShellFrame, menu: Bool) -> Int {
-        guard !menu, frame.width >= 30 else { return 0 }
+        guard !menu, frame.width >= 30, frame.bodyHeight >= 4 + Self.djRowsAboveBox else { return 0 }
         var rows = 4
         if case .pick(let picker) = djHost.model.stage { rows += min(picker.hits.count, 5) }
-        return frame.bodyHeight >= rows + 6 ? rows : 0
+        return min(rows, frame.bodyHeight - Self.djRowsAboveBox)
     }
 
     private func enterBox() {
@@ -342,6 +349,15 @@ final class NowPlayingScene: Scene {
 
     func becameActive() {
         if djHost.model.isRequestOut { djHost.abandon(saying: Self.djLeftNow) }
+    }
+
+    /// Leaving Now revokes a DJ play that was dispatched but has not yet been
+    /// admitted (an action still waiting its turn, or a SpanDAC genre still in
+    /// its library recheck): when released it neither queues nor plays. A play
+    /// already admitted is not undone. A request still being read or looked up
+    /// is abandoned on the way back (`becameActive`).
+    func resignedActive() {
+        djHost.revokePendingPlay()
     }
 
     func artPlacementsInvalidated() { lastPlaced = nil }
@@ -601,13 +617,25 @@ final class NowPlayingScene: Scene {
             out += line(y, shown, visible: shown.count)
         }
         y += 1
-        if let words = model.statusLine {
+        // Rows left inside the borders after the request line. With a picker the
+        // words line gives way before the choices do (the hits are what the
+        // person is acting on), and the hits are a window that follows the cursor.
+        let slots = max(0, reserved - 3)
+        var pickerSlots = 0
+        var showWords = true
+        if case .pick(let picker) = model.stage {
+            showWords = slots >= 2
+            pickerSlots = min(min(picker.hits.count, 5), slots - (showWords ? 1 : 0))
+        }
+        if showWords, let words = model.statusLine {
             let shown = truncText(DJBoxModel.clean(words), to: inner)
             out += line(y, "\(ANSICode.dim)\(shown)\(reset)", visible: shown.count)
             y += 1
         }
-        if case .pick(let picker) = model.stage {
-            for (i, hit) in picker.hits.enumerated().prefix(5) {
+        if case .pick(let picker) = model.stage, pickerSlots > 0 {
+            let first = picker.cursor < pickerSlots ? 0 : picker.cursor - pickerSlots + 1
+            for i in first..<min(picker.hits.count, first + pickerSlots) {
+                let hit = picker.hits[i]
                 let selected = i == picker.cursor
                 let label = truncText(DJBoxModel.clean((selected ? "\u{25B8} " : "  ") + hit.title), to: inner)
                 out += line(y, selected ? "\(ANSICode.bold)\(ANSICode.brightWhite)\(label)\(reset)" : label,

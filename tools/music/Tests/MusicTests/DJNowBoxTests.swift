@@ -1427,6 +1427,33 @@ final class DJNowBoxTests: XCTestCase {
         XCTAssertEqual(ran, 2)
     }
 
+    /// The last word on a dispatched DJ play is asked inside the boundary: a claim
+    /// that refuses runs no body and leaves the serial alone; a claim that
+    /// succeeds is admitted, and a revoke after it undoes nothing.
+    func testTheCoordinatorsClaimRefusesBeforeAnyBodyAndLeavesTheSerialAlone() throws {
+        let routing = SceneDataRig(output: .source, accepted: true).coordinator()
+        let before = routing.playSerial
+        var ran = 0
+        let token = DJPlayToken()
+        XCTAssertTrue(token.revoke())
+        XCTAssertThrowsError(try routing.perform(.libraryPlay, expecting: routing.stamp, expectingPlaySerial: before,
+                                                 origin: .spandacLibrary, claim: { try token.claim() },
+                                                 musicApp: { _ in ran += 1 }, source: { _ in ran += 1 },
+                                                 unaffected: {})) {
+            XCTAssertEqual(($0 as? ActionError)?.message, djLeftNowLine)
+        }
+        XCTAssertEqual(ran, 0, "a revoked play still ran a body")
+        XCTAssertEqual(routing.playSerial, before, "a revoked play moved the serial")
+
+        let live = DJPlayToken()
+        try routing.perform(.libraryPlay, expecting: routing.stamp, expectingPlaySerial: before,
+                            origin: .spandacLibrary, claim: { try live.claim() },
+                            musicApp: { _ in ran += 1 }, source: { _ in ran += 1 }, unaffected: {})
+        XCTAssertEqual(ran, 1)
+        XCTAssertEqual(routing.playSerial, before + 1)
+        XCTAssertFalse(live.revoke(), "a claimed play was revoked after admission")
+    }
+
     func testAnOpenDataGenreWhoseActionWaitedWhileAnotherPlayWasAdmittedPlaysNothing() throws {
         let f = openFixture(library: libraryText(count: 3, genre: { _ in "Jazz" }, played: { _ in "N" }))
         settle(f, seconds: 0.1)

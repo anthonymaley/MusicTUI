@@ -20,6 +20,45 @@
 // the coordinator's boundary. An edit of the text releases a request still out.
 import Foundation
 
+/// Said (box and footer) when the person left Now before a dispatched play was
+/// admitted: nothing played, and nothing will for that request.
+let djLeftNowLine = "You left Now while the DJ was working, so nothing played. Ask again."
+
+/// One dispatched DJ play's liveness. The play waits on the action queue (and,
+/// for a SpanDAC genre, on a library recheck) after the box says "Playing";
+/// leaving Now revokes it, and the coordinator's boundary claims it just before
+/// admission, under the coordinator's lock. Whichever comes first wins: a
+/// revoked play never starts, a claimed one is admitted and is NOT undone by a
+/// later revoke (the sound has begun; leaving Now does not stop it).
+final class DJPlayToken: @unchecked Sendable {
+    private enum State { case pending, claimed, revoked }
+    private let lock = NSLock()
+    private var state = State.pending
+
+    /// Throws if the play was revoked. Cheap early exit before slow work.
+    func check() throws {
+        lock.lock(); defer { lock.unlock() }
+        if state == .revoked { throw ActionError(message: djLeftNowLine) }
+    }
+
+    /// Admission: throws if revoked, otherwise the play is claimed for good.
+    func claim() throws {
+        lock.lock(); defer { lock.unlock() }
+        if state == .revoked { throw ActionError(message: djLeftNowLine) }
+        state = .claimed
+    }
+
+    /// True when this call stopped a play that had not been admitted.
+    func revoke() -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        guard state == .pending else { return false }
+        state = .revoked
+        return true
+    }
+
+    var isPending: Bool { lock.lock(); defer { lock.unlock() }; return state == .pending }
+}
+
 final class DJHost {
 
     /// What the box reads and plays through. Fail-closed defaults; the shell
@@ -124,6 +163,24 @@ final class DJHost {
         case nil:
             return out.changed
         }
+    }
+
+    /// Plays handed to the action queue and not yet admitted (handle/tick thread).
+    private var pendingPlays: [DJPlayToken] = []
+
+    /// The person left Now: a play dispatched but not yet admitted is revoked, so
+    /// a held action or a held recheck released later neither queues nor plays.
+    /// A play already admitted is not undone. True when something was revoked.
+    @discardableResult
+    func revokePendingPlay() -> Bool {
+        var revoked = false
+        for token in pendingPlays where token.revoke() { revoked = true }
+        pendingPlays.removeAll()
+        guard revoked else { return false }
+        // The box must not go on saying "Playing" for a play that will not start.
+        // (If the person has begun typing the next request, the text stays.)
+        if case .playing = model.stage { drop(saying: djLeftNowLine) }
+        return true
     }
 
     /// The box abandons what it held and says why: used when the person left
@@ -406,17 +463,23 @@ final class DJHost {
         let stamp = plan.stamp.routing
         let serial = plan.stamp.playSerial
         let session = self.session
+        let token = DJPlayToken()
+        pendingPlays.removeAll { !$0.isPending }
+        pendingPlays.append(token)
         actions.run("Play") { [weak self] in
             do {
+                // Left Now since it was dispatched: nothing starts, nothing is read.
+                try token.check()
                 switch plan.payload {
                 case .artistMix(let mix):
-                    try Self.playArtistMix(mix, stamp: stamp, serial: serial, routing: routing, status: status)
+                    try Self.playArtistMix(mix, stamp: stamp, serial: serial, token: token, routing: routing,
+                                           status: status)
                 case .genreOpen(let queue):
-                    try Self.playGenreOpen(queue, stamp: stamp, serial: serial, routing: routing, status: status,
-                                           seams: seams)
+                    try Self.playGenreOpen(queue, stamp: stamp, serial: serial, token: token, routing: routing,
+                                           status: status, seams: seams)
                 case .genreSpanDAC(let rows, let pick, let title):
                     try Self.playGenreSpanDAC(rows: rows, pick: pick, title: title, stamp: stamp, serial: serial,
-                                              routing: routing, status: status, seams: seams)
+                                              token: token, routing: routing, status: status, seams: seams)
                 }
             } catch let error as ActionError {
                 self?.noteFailure(session: session, requestID: requestID, error.message)
@@ -440,8 +503,10 @@ final class DJHost {
     /// coordinator refuses the artist-mix origin on the MusicTUI output before
     /// any body runs.
     private static func playArtistMix(_ mix: DJArtistMix, stamp: (epoch: Int, dataEpoch: Int), serial: Int,
-                                      routing: RoutingCoordinator, status: StatusStore) throws {
+                                      token: DJPlayToken, routing: RoutingCoordinator,
+                                      status: StatusStore) throws {
         try routing.perform(.discoverTrackPlay, expecting: stamp, expectingPlaySerial: serial, origin: .djArtistMix,
+            claim: { try token.claim() },
             musicApp: { _ in throw ActionError(message: djArtistMixSpanDACOnly) },
             source: { client in
                 let skipped = try BridgeMusicProvider(control: client.control).playCatalogue(ids: mix.ids)
@@ -455,11 +520,11 @@ final class DJHost {
     /// MusicTUI's own data: the app-owned queue, addressed by persistent ID,
     /// set and started exactly as a marked play does.
     private static func playGenreOpen(_ queue: AppQueue, stamp: (epoch: Int, dataEpoch: Int), serial: Int,
-                                      routing: RoutingCoordinator, status: StatusStore,
+                                      token: DJPlayToken, routing: RoutingCoordinator, status: StatusStore,
                                       seams: DJSeams) throws {
         let store = seams.appQueue
         try routing.perform(.libraryPlay, expecting: stamp, expectingPlaySerial: serial,
-                            origin: .openData(resultNumber: nil),
+                            origin: .openData(resultNumber: nil), claim: { try token.claim() },
             musicApp: { path in
                 guard path == .shipped else { throw ActionError(message: pickASpanDACOutput) }
                 store.set(queue)
@@ -477,7 +542,7 @@ final class DJHost {
     /// output (as a combined play), or handed to the MusicTUI output by
     /// verified alias. The library is re-checked first; a changed one plays nothing.
     private static func playGenreSpanDAC(rows: [MusicRow], pick: DJSpanDACGenrePick, title: String,
-                                         stamp: (epoch: Int, dataEpoch: Int), serial: Int,
+                                         stamp: (epoch: Int, dataEpoch: Int), serial: Int, token: DJPlayToken,
                                          routing: RoutingCoordinator, status: StatusStore, seams: DJSeams) throws {
         do {
             // The check is of the very rows about to be queued or handed off.
@@ -489,7 +554,11 @@ final class DJHost {
         } catch {
             throw ActionError(message: DJGenreSourceError.failed(djErrorText(error)).message)
         }
+        // The recheck can be slow, and the person may have left Now meanwhile: the
+        // claim inside the boundary below is the final word, this is just the early exit.
+        try token.check()
         try routing.perform(.libraryPlay, expecting: stamp, expectingPlaySerial: serial, origin: .spandacLibrary,
+            claim: { try token.claim() },
             musicApp: { path in
                 guard path == .handoff else { throw ActionError(message: pickASpanDACOutput) }
                 guard rows.allSatisfy({ $0.alias != nil }) else { throw ActionError(message: djGenreNeedsAliases) }
