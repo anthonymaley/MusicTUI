@@ -718,7 +718,8 @@ final class RoutingCoordinator {
     /// The rows the last SpanDAC collection play sent, in the order sent, the
     /// play serial it ran under, and the `queue_token` its reply carried (nil
     /// from a SpanDAC that predates it). Guarded by `state`.
-    private var _spanDACSent: (serial: Int, rows: [MusicRow], token: String?, listRev: String?, shuffled: Bool)?
+    private var _spanDACSent: (serial: Int, rows: [MusicRow], token: String?, listRev: String?, shuffled: Bool,
+                               catalogue: Bool)?
 
     /// Records the rows a SpanDAC play just sent, in exactly the order their ids
     /// went on the wire: SpanDAC's status `row` / `next_rows` index this list.
@@ -738,11 +739,16 @@ final class RoutingCoordinator {
     ///
     /// Returns the play serial the record is tied to, for a caller that fills the
     /// rows in later (`fillSpanDACPlayRows`).
+    ///
+    /// `catalogue` is true for a play queued by catalogue id (the DJ's artist
+    /// mix): SpanDAC sends no `row` for such a queue, and a catalogue queue
+    /// cannot hold two songs with one title, so the playing song is placed by
+    /// its exact title (`spanDACQueueWindow`).
     @discardableResult
     func recordSpanDACPlay(_ rows: [MusicRow], token: String? = nil, listRev: String? = nil,
-                           shuffled: Bool = false) -> Int {
+                           shuffled: Bool = false, catalogue: Bool = false) -> Int {
         state.lock(); defer { state.unlock() }
-        _spanDACSent = (_playSerial, rows, token, listRev, shuffled)
+        _spanDACSent = (_playSerial, rows, token, listRev, shuffled, catalogue)
         return _playSerial
     }
 
@@ -772,7 +778,7 @@ final class RoutingCoordinator {
         guard !rows.isEmpty, let listRev, let sent = _spanDACSent,
               sent.serial == serial, serial == _playSerial,
               sent.rows.isEmpty, sent.token == token, sent.listRev == listRev else { return false }
-        _spanDACSent = (sent.serial, rows, sent.token, sent.listRev, sent.shuffled)
+        _spanDACSent = (sent.serial, rows, sent.token, sent.listRev, sent.shuffled, sent.catalogue)
         return true
     }
 
@@ -786,10 +792,10 @@ final class RoutingCoordinator {
 
     /// The current play's rows with the token its reply carried, the
     /// `list_rev` they were read under, and whether SpanDAC shuffled the play.
-    func spanDACPlay() -> (rows: [MusicRow], token: String?, listRev: String?, shuffled: Bool)? {
+    func spanDACPlay() -> (rows: [MusicRow], token: String?, listRev: String?, shuffled: Bool, catalogue: Bool)? {
         state.lock(); defer { state.unlock() }
         guard let sent = _spanDACSent, sent.serial == _playSerial else { return nil }
-        return (sent.rows, sent.token, sent.listRev, sent.shuffled)
+        return (sent.rows, sent.token, sent.listRev, sent.shuffled, sent.catalogue)
     }
 
     /// PHASE A. Valid only on a thread that is inside one of this coordinator's

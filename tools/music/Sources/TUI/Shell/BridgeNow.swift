@@ -192,9 +192,21 @@ func bridgePositionLine(_ b: BridgeNow) -> String? {
 /// records none.
 ///
 /// `shuffled` is true when the play was a shuffle SpanDAC made itself.
-func spanDACQueueWindow(sent: [MusicRow]?, token: String? = nil, shuffled: Bool = false,
+///
+/// `catalogue` is true for a play queued by catalogue id (the DJ's artist mix).
+/// SpanDAC's `row` and `next_rows` come from the library roster only, so such a
+/// status carries neither; the playing song is then the ONE sent row whose
+/// title is exactly the status's (SpanDAC refuses a queue holding two songs
+/// with one title, and the mix keeps the first of each), and none when that is
+/// not exactly one. A status `row`, when it does come, wins.
+func spanDACQueueWindow(sent: [MusicRow]?, token: String? = nil, shuffled: Bool = false, catalogue: Bool = false,
                         status: SourceStatus) -> (current: MusicRow?, entries: [TrackListEntry]) {
-    guard let sent, let at = status.row, sent.indices.contains(at) else { return (nil, []) }
+    guard let sent else { return (nil, []) }
+    let placed: Int?
+    if let row = status.row { placed = row }
+    else if catalogue { placed = uniqueRow(titled: status.title, in: sent) }
+    else { placed = nil }
+    guard let at = placed, sent.indices.contains(at) else { return (nil, []) }
     // The play recorded a token: these rows describe that assignment and no
     // other. A status that echoes a different token (another process replaced
     // the queue) or none (the player was unloaded) shows its own data only.
@@ -219,4 +231,12 @@ func spanDACQueueWindow(sent: [MusicRow]?, token: String? = nil, shuffled: Bool 
         TrackListEntry(index: i + 1, name: sent[i].title, artist: sent[i].artist, isCurrent: current, album: sent[i].album)
     }
     return (current, [entry(at, current: true)] + next.map { entry($0, current: false) })
+}
+
+/// The index of the one row whose title equals `title` (trimmed, case-folded),
+/// nil when there is none, two or more, or no title to look for.
+private func uniqueRow(titled title: String?, in rows: [MusicRow]) -> Int? {
+    guard let wanted = title?.trimmingCharacters(in: .whitespaces).lowercased(), !wanted.isEmpty else { return nil }
+    let hits = rows.indices.filter { rows[$0].title.trimmingCharacters(in: .whitespaces).lowercased() == wanted }
+    return hits.count == 1 ? hits[0] : nil
 }

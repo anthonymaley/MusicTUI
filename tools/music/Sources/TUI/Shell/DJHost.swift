@@ -509,7 +509,13 @@ final class DJHost {
             claim: { try token.claim() },
             musicApp: { _ in throw ActionError(message: djArtistMixSpanDACOnly) },
             source: { client in
-                let skipped = try BridgeMusicProvider(control: client.control).playCatalogue(ids: mix.ids)
+                let played = try BridgeMusicProvider(control: client.control).playCatalogueRetainingToken(ids: mix.ids)
+                let skipped = played.skippedUnavailable
+                // The rows behind the ids, with the reply's token: Up Next and the
+                // album line on Now are drawn from them. SpanDAC drops songs it
+                // cannot queue without saying which, so a play that lost any keeps
+                // them unordered (no Up Next after the playing song).
+                routing.recordSpanDACPlay(mix.rows, token: played.queueToken, shuffled: skipped > 0, catalogue: true)
                 let base = "Playing \(mix.artistName) mix on SpanDAC \u{2014} \(djCount(mix.ids.count, "song"))."
                 status.post(skipped > 0 ? base + " " + bridgeUnavailableSongsNotice(skipped) : base,
                             untilStateChange: skipped > 0)

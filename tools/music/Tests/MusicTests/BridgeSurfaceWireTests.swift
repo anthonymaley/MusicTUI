@@ -232,6 +232,16 @@ final class BridgeSurfaceWireTests: XCTestCase {
         XCTAssertEqual(try control(wire).queueReportingSkips(catalogIDs: ["1", "2", "3"]), 1)
     }
 
+    func testQueueRetainingTokenReturnsTheRepliesTokenAndTheSkipCount() throws {
+        let wire = Wire(#"{"ok":true,"op":"slice.queue","skipped_unavailable":1,"queue_token":"q7-1"}"#)
+        let sent = try control(wire).queueRetainingToken(catalogIDs: ["1", "2", "3"])
+        XCTAssertEqual(sent.skippedUnavailable, 1)
+        XCTAssertEqual(sent.queueToken, "q7-1")
+        let bare = try control(Wire(#"{"ok":true,"op":"slice.queue"}"#)).queueRetainingToken(catalogIDs: ["1"])
+        XCTAssertEqual(bare.skippedUnavailable, 0)
+        XCTAssertNil(bare.queueToken, "an older SpanDAC sends no token")
+    }
+
     func testQueueReportingSkipsFromAnOlderBridgeIsZero() throws {
         let wire = Wire(#"{"ok":true,"op":"slice.queue"}"#)
         XCTAssertEqual(try control(wire).queueReportingSkips(catalogIDs: ["1"]), 0)
