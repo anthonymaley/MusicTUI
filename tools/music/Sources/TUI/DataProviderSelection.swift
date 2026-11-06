@@ -147,3 +147,20 @@ let pickASpanDACOutput = "Pick a SpanDAC output to play this."
 /// reads it. Never "Music.app" (that name stays internal: types, cases, and
 /// code comments may keep it).
 let musicTUIOutputName = "MusicTUI"
+
+/// " The Mac's sound is still on <DAC>; ..." when SpanDAC reports its DAC as the
+/// Mac's sound output, else "". Switching back to MusicTUI does not move the
+/// Mac's output off the DAC SpanDAC chose (seen live 2026-11-03), so the line
+/// says where the sound goes and how to change it. Read-only: nothing here
+/// writes an output (Anthony 2026-11-06 11:30; automatic restore is Backlog).
+func macSoundStillOnTheDAC(_ output: SourceOutputInfo?) -> String {
+    guard let output, output.dac == .connected else { return "" }
+    let name = output.name.map { $0.isEmpty ? "your DAC" : $0 } ?? "your DAC"
+    return " The Mac's sound is still on \(name); change it in Sound settings for other speakers."
+}
+
+/// The status line after the Output tab switches to MusicTUI.
+func musicTUIOutputLine(_ output: SourceOutputInfo?) -> String {
+    let tail = macSoundStillOnTheDAC(output)
+    return tail.isEmpty ? "Output: \(musicTUIOutputName)" : "Output: \(musicTUIOutputName)." + tail
+}

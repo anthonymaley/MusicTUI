@@ -917,7 +917,8 @@ final class SpeakersScene: Scene {
                 self.publishStopProblem(nil)
             case .stopped:
                 self.publishStopProblem(nil)
-                self.status.post(backToMusicTUIData)
+                let output = self.routing.mode == .musicApp ? Self.readMacStatus(client).output : nil
+                self.status.post(backToMusicTUIData + macSoundStillOnTheDAC(output))
             case .outputStillBlocked(let why):
                 self.publishStopProblem(why)
                 // The output did not switch: it stays.
@@ -1005,7 +1006,7 @@ final class SpeakersScene: Scene {
                 case .musicApp:
                     let (readiness, data, output) = Self.readMacStatus(client)
                     self.publishReadiness(readiness, data: data, output: output)
-                    self.status.post("Output: \(musicTUIOutputName)")
+                    self.status.post(musicTUIOutputLine(output))
                 }
             }
         }
