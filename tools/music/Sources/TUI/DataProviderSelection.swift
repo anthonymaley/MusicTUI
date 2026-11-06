@@ -148,30 +148,27 @@ let pickASpanDACOutput = "Pick a SpanDAC output to play this."
 /// code comments may keep it).
 let musicTUIOutputName = "MusicTUI"
 
-/// " The Mac's sound is still on <DAC>; ..." when SpanDAC reports its DAC as the
-/// Mac's sound output, else "". Switching back to MusicTUI does not move the
-/// Mac's output off the DAC SpanDAC chose (seen live 2026-11-03), so the line
-/// says where the sound goes and how to change it. Read-only: nothing here
-/// writes an output (Anthony 2026-11-06 11:30; automatic restore is Backlog).
-func macSoundStillOnTheDAC(_ output: SourceOutputInfo?) -> String {
-    guard let output, output.dac == .connected else { return "" }
-    let name = output.name.map { $0.isEmpty ? "your DAC" : $0 } ?? "your DAC"
-    // The remedy comes before the variable-length name, so a cut footer keeps it
-    // (Codex 721aa7a5).
-    return " Check Sound settings: Mac sound is still on \(name)."
+/// The line when SpanDAC reports its DAC as the Mac's sound output, else nil.
+/// Switching back to MusicTUI does not move the Mac's output off the DAC
+/// SpanDAC chose (seen live 2026-11-03), so this REPLACES the usual "Output:
+/// MusicTUI" / back-on-our-data line: the fact and the remedy come first and
+/// fit a 50-column footer (cut at width - 4, `Shell.swift`); the device name is
+/// last, where a cut costs nothing (Codex 2cb5eca0, 721aa7a5, 8e20a6ed).
+/// Read-only: nothing here writes an output (Anthony 2026-11-06 11:30;
+/// automatic restore is Backlog).
+func macSoundStillOnTheDAC(_ output: SourceOutputInfo?) -> String? {
+    guard let output, output.dac == .connected else { return nil }
+    let core = "Mac sound still on DAC; check Sound settings"
+    guard let name = output.name, !name.isEmpty else { return core + "." }
+    return core + " (\(name))."
+}
+
+/// The status line after the Output tab switches to MusicTUI.
+func musicTUIOutputLine(_ output: SourceOutputInfo?) -> String {
+    macSoundStillOnTheDAC(output) ?? "Output: \(musicTUIOutputName)"
 }
 
 /// How long the line naming the Mac's sound output stays: longer than an
 /// ordinary toast, since it carries an instruction (Codex 2cb5eca0).
 let macSoundNoticeSeconds: TimeInterval = 10
 
-/// `backToMusicTUIData` shortened for when the Mac's sound line follows it, so
-/// the whole instruction fits the footer at 80 columns (the toast is cut at
-/// width - 4, `Shell.swift`).
-let backToMusicTUIDataShort = "Back on MusicTUI data."
-
-/// The status line after the Output tab switches to MusicTUI.
-func musicTUIOutputLine(_ output: SourceOutputInfo?) -> String {
-    let tail = macSoundStillOnTheDAC(output)
-    return tail.isEmpty ? "Output: \(musicTUIOutputName)" : "Output: \(musicTUIOutputName)." + tail
-}

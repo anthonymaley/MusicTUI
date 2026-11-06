@@ -981,7 +981,7 @@ final class SpanDACOutputTabTests: XCTestCase {
             XCTAssertTrue(waitFor(finished, count: 1))
             XCTAssertEqual(modeOnDisk(), .musicApp)
             XCTAssertEqual(status.current()?.text,
-                           "Output: MusicTUI. Check Sound settings: Mac sound is still on SSL 2+.", reply)
+                           "Mac sound still on DAC; check Sound settings (SSL 2+).", reply)
         }
     }
 
@@ -989,21 +989,20 @@ final class SpanDACOutputTabTests: XCTestCase {
         XCTAssertEqual(musicTUIOutputLine(nil), "Output: MusicTUI")
         XCTAssertEqual(musicTUIOutputLine(SourceOutputInfo(dac: .notConnected, name: nil, maxRateHz: nil)), "Output: MusicTUI")
         XCTAssertEqual(musicTUIOutputLine(SourceOutputInfo(dac: .connected, name: nil, maxRateHz: nil)),
-                       "Output: MusicTUI. Check Sound settings: Mac sound is still on your DAC.")
-        // The toast is cut at width - 4 (Shell.swift): 76 at 80 columns.
+                       "Mac sound still on DAC; check Sound settings.")
+        // As the footer renders it (cut at width - 4, Shell.swift): the fact
+        // and the remedy survive a long device name at 50 columns; the name
+        // shows when there is room.
         let ssl = SourceOutputInfo(dac: .connected, name: "SSL 2+", maxRateHz: 192_000)
-        XCTAssertLessThanOrEqual(musicTUIOutputLine(ssl).count, 76)
-        XCTAssertLessThanOrEqual((backToMusicTUIDataShort + macSoundStillOnTheDAC(ssl)).count, 76)
-        XCTAssertGreaterThan(macSoundNoticeSeconds, 3, "it carries an instruction, so it outlasts an ordinary toast")
-        // As the footer renders it (cut at width - 4, Shell.swift): the remedy
-        // survives a long device name and a narrow terminal.
         let long = SourceOutputInfo(dac: .connected, name: "External USB Audio Device With A Long Name", maxRateHz: nil)
         for width in [50, 60, 80] {
-            for line in [musicTUIOutputLine(long), backToMusicTUIDataShort + macSoundStillOnTheDAC(long),
-                         musicTUIOutputLine(ssl)] {
-                XCTAssertTrue(truncText(line, to: width - 4).contains("Check Sound settings"), "\(width): \(line)")
+            for out in [ssl, long] {
+                XCTAssertTrue(truncText(musicTUIOutputLine(out), to: width - 4)
+                                .hasPrefix("Mac sound still on DAC; check Sound settings"), "\(width)")
             }
         }
+        XCTAssertEqual(truncText(musicTUIOutputLine(ssl), to: 76), "Mac sound still on DAC; check Sound settings (SSL 2+).")
+        XCTAssertGreaterThan(macSoundNoticeSeconds, 3, "it carries an instruction, so it outlasts an ordinary toast")
     }
 
     func testEnterOnASpeakerInMusicAppTogglesItAsBefore() {

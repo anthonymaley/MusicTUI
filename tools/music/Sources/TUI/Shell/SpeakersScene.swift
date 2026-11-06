@@ -928,9 +928,11 @@ final class SpeakersScene: Scene {
             case .stopped:
                 self.publishStopProblem(nil)
                 let output = self.routing.mode == .musicApp ? Self.readMacStatusWithMacOutput(client).macOutput : nil
-                let tail = macSoundStillOnTheDAC(output)
-                if tail.isEmpty { self.status.post(backToMusicTUIData) }
-                else { self.status.post(backToMusicTUIDataShort + tail, ttl: macSoundNoticeSeconds) }
+                if let notice = macSoundStillOnTheDAC(output) {
+                    self.status.post(notice, ttl: macSoundNoticeSeconds)
+                } else {
+                    self.status.post(backToMusicTUIData)
+                }
             case .outputStillBlocked(let why):
                 self.publishStopProblem(why)
                 // The output did not switch: it stays.
@@ -1018,8 +1020,8 @@ final class SpeakersScene: Scene {
                 case .musicApp:
                     let read = Self.readMacStatusWithMacOutput(client)
                     self.publishReadiness(read.readiness, data: read.data, output: read.output)
-                    let line = musicTUIOutputLine(read.macOutput)
-                    self.status.post(line, ttl: line == "Output: \(musicTUIOutputName)" ? 3 : macSoundNoticeSeconds)
+                    let notice = macSoundStillOnTheDAC(read.macOutput)
+                    self.status.post(musicTUIOutputLine(read.macOutput), ttl: notice == nil ? 3 : macSoundNoticeSeconds)
                 }
             }
         }
