@@ -104,6 +104,10 @@ struct DiscoverItem: Equatable {
     /// The row's length as SpanDAC's `slice.containerTracks` gave it (W2).
     /// `.absent` for every row that did not come from that op.
     var length: RowLength = .absent
+    /// A song's own album (Apple's `albumName`, SpanDAC's optional `album`),
+    /// so Now draws the album line for a playlist or rail song. nil for every
+    /// other kind, and for a song from a SpanDAC that does not send it.
+    var album: String? = nil
 
     var kind: DiscoverItemKind { detail.kind }
 }
@@ -556,13 +560,15 @@ final class DiscoverFeed: DiscoverFeedReading {
                   let name = a["name"] as? String,
                   let detail = DiscoverItemDetail(apiType: type, attributes: a)
             else { return nil }
-            return DiscoverItem(
+            var item = DiscoverItem(
                 id: id,
                 name: name,
                 subtitle: (a["artistName"] as? String) ?? (a["curatorName"] as? String),
                 url: a["url"] as? String,
                 artworkURL: (a["artwork"] as? [String: Any])?["url"] as? String,
                 detail: detail)
+            if case .song = detail { item.album = a["albumName"] as? String }
+            return item
         }
     }
 

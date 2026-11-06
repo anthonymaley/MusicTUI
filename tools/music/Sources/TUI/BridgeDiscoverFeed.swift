@@ -97,13 +97,16 @@ struct BridgeDiscoverFeed: DiscoverFeedReading {
             case "song":     detail = .song
             default:         return nil
             }
-            return DiscoverItem(id: id, name: name, subtitle: row["subtitle"] as? String,
+            var item = DiscoverItem(id: id, name: name, subtitle: row["subtitle"] as? String,
                                 // `artwork_url` is the WIRE's spelling (the app's
                                 // CodingKeys), not the Swift property's.
                                 url: nil, artworkURL: row["artwork_url"] as? String, detail: detail,
                                 // Only a track row carries `duration_ms` (W2); every
                                 // other kind stays `.absent`.
                                 length: kind == "song" ? rowLength(inWireRow: row) : .absent)
+            // Optional and song-only: an older SpanDAC sends no `album`.
+            if kind == "song" { item.album = row["album"] as? String }
+            return item
         }
     }
 }

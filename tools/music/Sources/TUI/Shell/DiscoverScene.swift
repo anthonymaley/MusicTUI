@@ -737,7 +737,7 @@ final class DiscoverScene: Scene {
     }
 
     static func nowRows(_ items: [DiscoverItem], album: String?) -> [MusicRow] {
-        items.map { MusicRow(id: $0.id, title: $0.name, artist: $0.subtitle ?? "", album: album, kind: .song) }
+        items.map { MusicRow(id: $0.id, title: $0.name, artist: $0.subtitle ?? "", album: $0.album ?? album, kind: .song) }
     }
 
     /// The container's title when it is a Discover (catalogue) album, else nil.
