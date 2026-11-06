@@ -598,18 +598,21 @@ final class SpanDACSwitchOutputTabTests: XCTestCase {
     /// still the Mac's sound output the line says so (Anthony 2026-11-06 11:30).
     func testStopUsingSpanDACSaysTheMacsSoundIsStillOnTheDAC() {
         let status = StatusStore()
-        let withDAC: () throws -> String = {
-            #"{"ok":true,"status":{"playback":"idle","authorization":"authorized","contract":3,"capabilities":[],"output":{"dac":"connected","name":"SSL 2+","max_rate_hz":192000}}}"#
+        let serving = #"{"ok":true,"status":{"playback":"idle","authorization":"authorized","contract":3,"capabilities":[],"output":{"dac":"connected","name":"SSL 2+","max_rate_hz":192000}}}"#
+        let notServing = #"{"ok":true,"status":{"playback":"idle","authorization":"authorized","contract":3,"capabilities":[],"licence":{"serving":false,"state":"none","text":"Licence text."},"output":{"dac":"connected","name":"SSL 2+","max_rate_hz":192000}}}"#
+        for reply in [serving, notServing] {
+            tearDown(); setUp()
+            let status = StatusStore()
+            let s = scene(mode: .source, data: .accepted, answer: MacAnswer({ reply }), status: status)
+            let finished = watchData(s)
+            put(s, on: .stopUsingSpanDAC)
+            XCTAssertEqual(s.handle(.enter), .redraw)
+            XCTAssertEqual(s.handle(.char("y")), .redraw)
+            XCTAssertTrue(wait { finished.count == 1 }, reply)
+            XCTAssertEqual(modeOnDisk(), .musicApp, reply)
+            XCTAssertEqual(status.current()?.text,
+                           "Back on MusicTUI data. Mac sound still on SSL 2+; change in Sound settings.", reply)
         }
-        let s = scene(mode: .source, data: .accepted, answer: MacAnswer(withDAC), status: status)
-        let finished = watchData(s)
-        put(s, on: .stopUsingSpanDAC)
-        XCTAssertEqual(s.handle(.enter), .redraw)
-        XCTAssertEqual(s.handle(.char("y")), .redraw)
-        XCTAssertTrue(wait { finished.count == 1 })
-        XCTAssertEqual(modeOnDisk(), .musicApp)
-        XCTAssertEqual(status.current()?.text,
-                       "MusicTUI is using its own music data again. The Mac's sound is still on SSL 2+; change it in Sound settings for other speakers.")
     }
 
     /// C-REPAIR's pause rule on the way back: SpanDAC on this Mac that is

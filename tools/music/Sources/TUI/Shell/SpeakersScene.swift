@@ -737,15 +737,25 @@ final class SpeakersScene: Scene {
     /// status is read once so the DAC comes from the same answer.
     private static func readMacStatus(_ client: SourceAppClient)
         -> (readiness: SourceReadiness, data: SourceReadiness, output: SourceOutputInfo?) {
+        let read = readMacStatusWithMacOutput(client)
+        return (read.readiness, read.data, read.output)
+    }
+
+    /// `readMacStatus` plus `macOutput`: the Mac's sound output as the reply
+    /// states it, whatever the licence. A not-serving SpanDAC still reports
+    /// where the Mac's sound goes, and that fact is what the MusicTUI line
+    /// after a switch needs (Codex 2cb5eca0).
+    private static func readMacStatusWithMacOutput(_ client: SourceAppClient)
+        -> (readiness: SourceReadiness, data: SourceReadiness, output: SourceOutputInfo?, macOutput: SourceOutputInfo?) {
         do {
             let status = try client.control.status()
             // Not serving: the licence line is the whole story. Its DAC says
             // nothing a person can use while SpanDAC will not play.
             return (status.readiness, status.dataReadiness,
-                    status.licence?.serving == false ? nil : status.output)
+                    status.licence?.serving == false ? nil : status.output, status.output)
         } catch {
             let readiness = SourceReadiness.from(error)
-            return (readiness, readiness, nil)
+            return (readiness, readiness, nil, nil)
         }
     }
 
@@ -917,8 +927,10 @@ final class SpeakersScene: Scene {
                 self.publishStopProblem(nil)
             case .stopped:
                 self.publishStopProblem(nil)
-                let output = self.routing.mode == .musicApp ? Self.readMacStatus(client).output : nil
-                self.status.post(backToMusicTUIData + macSoundStillOnTheDAC(output))
+                let output = self.routing.mode == .musicApp ? Self.readMacStatusWithMacOutput(client).macOutput : nil
+                let tail = macSoundStillOnTheDAC(output)
+                if tail.isEmpty { self.status.post(backToMusicTUIData) }
+                else { self.status.post(backToMusicTUIDataShort + tail, ttl: macSoundNoticeSeconds) }
             case .outputStillBlocked(let why):
                 self.publishStopProblem(why)
                 // The output did not switch: it stays.
@@ -1004,9 +1016,10 @@ final class SpeakersScene: Scene {
                     self.makeMacOutputTheDAC(client)
                     self.status.post("Output: SpanDAC · \(self.macName)")
                 case .musicApp:
-                    let (readiness, data, output) = Self.readMacStatus(client)
-                    self.publishReadiness(readiness, data: data, output: output)
-                    self.status.post(musicTUIOutputLine(output))
+                    let read = Self.readMacStatusWithMacOutput(client)
+                    self.publishReadiness(read.readiness, data: read.data, output: read.output)
+                    let line = musicTUIOutputLine(read.macOutput)
+                    self.status.post(line, ttl: line == "Output: \(musicTUIOutputName)" ? 3 : macSoundNoticeSeconds)
                 }
             }
         }

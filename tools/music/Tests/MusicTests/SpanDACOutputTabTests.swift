@@ -966,26 +966,35 @@ final class SpanDACOutputTabTests: XCTestCase {
     /// The Mac's sound output stays where SpanDAC put it when MusicTUI is picked
     /// again (seen live 2026-11-03). Nothing restores it yet, so the line says
     /// where the sound is going and how to change it (Anthony 2026-11-06 11:30).
+    /// Also when SpanDAC's licence is not serving: the output fact still holds
+    /// (Codex 2cb5eca0).
     func testSwitchingBackToMusicTUISaysTheMacsSoundIsStillOnTheDAC() {
-        let status = StatusStore()
-        let s = scene(mode: .source, outputs: FakeSpanDACOutputs(), status: status,
-                      speakers: [["name": "Kitchen", "selected": false, "volume": 40]],
-                      macReply: { self.readyWithDAC })
-        let finished = watch(s)
-        put(s, at: 2)
-        XCTAssertEqual(s.handle(.enter), .redraw)
-        XCTAssertTrue(waitFor(finished, count: 1))
-        XCTAssertEqual(modeOnDisk(), .musicApp)
-        XCTAssertEqual(status.current()?.text, musicTUIOutputLine(SourceOutputInfo(dac: .connected, name: "SSL 2+", maxRateHz: 192_000)))
-        XCTAssertEqual(status.current()?.text,
-                       "Output: MusicTUI. The Mac's sound is still on SSL 2+; change it in Sound settings for other speakers.")
+        let notServing = #"{"ok":true,"status":{"playback":"idle","authorization":"authorized","contract":3,"capabilities":[],"licence":{"serving":false,"state":"none","text":"Licence text."},"output":{"dac":"connected","name":"SSL 2+","max_rate_hz":192000}}}"#
+        for reply in [readyWithDAC, notServing] {
+            let status = StatusStore()
+            let s = scene(mode: .source, outputs: FakeSpanDACOutputs(), status: status,
+                          speakers: [["name": "Kitchen", "selected": false, "volume": 40]],
+                          macReply: { reply })
+            let finished = watch(s)
+            put(s, at: 2)
+            XCTAssertEqual(s.handle(.enter), .redraw)
+            XCTAssertTrue(waitFor(finished, count: 1))
+            XCTAssertEqual(modeOnDisk(), .musicApp)
+            XCTAssertEqual(status.current()?.text,
+                           "Output: MusicTUI. Mac sound still on SSL 2+; change in Sound settings.", reply)
+        }
     }
 
-    func testSwitchingBackToMusicTUIWithoutTheDACAsOutputSaysOnlyTheOutput() {
+    func testTheMacSoundLineFitsTheFooterAt80Columns() {
         XCTAssertEqual(musicTUIOutputLine(nil), "Output: MusicTUI")
         XCTAssertEqual(musicTUIOutputLine(SourceOutputInfo(dac: .notConnected, name: nil, maxRateHz: nil)), "Output: MusicTUI")
         XCTAssertEqual(musicTUIOutputLine(SourceOutputInfo(dac: .connected, name: nil, maxRateHz: nil)),
-                       "Output: MusicTUI. The Mac's sound is still on your DAC; change it in Sound settings for other speakers.")
+                       "Output: MusicTUI. Mac sound still on your DAC; change in Sound settings.")
+        // The toast is cut at width - 4 (Shell.swift): 76 at 80 columns.
+        let ssl = SourceOutputInfo(dac: .connected, name: "SSL 2+", maxRateHz: 192_000)
+        XCTAssertLessThanOrEqual(musicTUIOutputLine(ssl).count, 76)
+        XCTAssertLessThanOrEqual((backToMusicTUIDataShort + macSoundStillOnTheDAC(ssl)).count, 76)
+        XCTAssertGreaterThan(macSoundNoticeSeconds, 3, "it carries an instruction, so it outlasts an ordinary toast")
     }
 
     func testEnterOnASpeakerInMusicAppTogglesItAsBefore() {
