@@ -156,7 +156,9 @@ let musicTUIOutputName = "MusicTUI"
 func macSoundStillOnTheDAC(_ output: SourceOutputInfo?) -> String {
     guard let output, output.dac == .connected else { return "" }
     let name = output.name.map { $0.isEmpty ? "your DAC" : $0 } ?? "your DAC"
-    return " Mac sound still on \(name); change in Sound settings."
+    // The remedy comes before the variable-length name, so a cut footer keeps it
+    // (Codex 721aa7a5).
+    return " Check Sound settings: Mac sound is still on \(name)."
 }
 
 /// How long the line naming the Mac's sound output stays: longer than an

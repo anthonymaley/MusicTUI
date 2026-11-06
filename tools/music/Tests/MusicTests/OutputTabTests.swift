@@ -611,7 +611,7 @@ final class SpanDACSwitchOutputTabTests: XCTestCase {
             XCTAssertTrue(wait { finished.count == 1 }, reply)
             XCTAssertEqual(modeOnDisk(), .musicApp, reply)
             XCTAssertEqual(status.current()?.text,
-                           "Back on MusicTUI data. Mac sound still on SSL 2+; change in Sound settings.", reply)
+                           "Back on MusicTUI data. Check Sound settings: Mac sound is still on SSL 2+.", reply)
         }
     }
 
