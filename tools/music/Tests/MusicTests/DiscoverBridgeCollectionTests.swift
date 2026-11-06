@@ -282,6 +282,14 @@ final class DiscoverBridgeCollectionTests: XCTestCase {
         XCTAssertTrue(try XCTUnwrap(routing?.spanDACPlay()).shuffled)
     }
 
+    /// A search song carries its album (the search row shows it), so Now's
+    /// album line is drawn for it too (Codex f4ca0e40). A rail song has none.
+    func testASearchSongsRowCarriesItsAlbum() {
+        let hit = CatalogueHit(kind: .song, id: "901", title: "Andromeda", subtitle: "Gorillaz", album: "Humanz (Deluxe)")
+        XCTAssertEqual(DiscoverScene.nowRows(forSearchSong: hit),
+                       [MusicRow(id: "901", title: "Andromeda", artist: "Gorillaz", album: "Humanz (Deluxe)", kind: .song)])
+    }
+
     func testARefusedDiscoverPlayRecordsNoRows() {
         let wire = Wire()
         wire.reply = #"{"ok":false,"op":"slice.queue","error":{"kind":"bad_request","detail":"nope"}}"#
