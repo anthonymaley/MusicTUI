@@ -71,12 +71,13 @@ final class SpanDACQueueJumpRoutingTests: XCTestCase {
         var jumps: [String] { rig.sent.map(\.line).filter { LicenceRig.op($0) == "slice.queueJump" } }
     }
 
-    private func harness(output: PlaybackMode = .source, play: Bool = true) -> Harness {
+    private func harness(output: PlaybackMode = .source, play: Bool = true,
+                         catalogue: Bool = false, shuffled: Bool = false) -> Harness {
         let rig = LicenceRig(output: output, accepted: true)
         let c = rig.coordinator()
         let fixture = Fixture()
         rig.reply = { _, line in fixture.answer(line) }
-        if play { c.recordSpanDACPlay((0..<5).map(song), token: "tok-1") }
+        if play { c.recordSpanDACPlay((0..<5).map(song), token: "tok-1", shuffled: shuffled, catalogue: catalogue) }
         let counter = AppleScriptCallCounter()
         let status = StatusStore()
         let actions = ActionRunner(status: status)
@@ -141,7 +142,7 @@ final class SpanDACQueueJumpRoutingTests: XCTestCase {
         XCTAssertNil(h.status.current(), "a success posts no refusal")
     }
 
-    // MARK: a catalogue queue's rows are shown, not jumpable
+    // MARK: a catalogue queue jumps only where SpanDAC says it can (2026-11-06)
 
     func testEnterOnACatalogueUpNextRowSendsNothingAndSaysSo() {
         let h = harness()
@@ -150,12 +151,53 @@ final class SpanDACQueueJumpRoutingTests: XCTestCase {
         let before = h.counter.callCount, sentBefore = h.rig.sent.count
         pressEnterOnSong2(h, snap)
         XCTAssertEqual(h.jumps, [], "no queue.jump left the client")
-        XCTAssertEqual(h.rig.sent.count, sentBefore, "nothing at all was sent")
+        XCTAssertLessThanOrEqual(h.rig.sent.count - sentBefore, 1,
+                                 "at most the capability read (asked at the action, 2026-11-06)")
         XCTAssertEqual(h.counter.callCount, before)
         // A catalogue queue is a DJ mix or any Discover play on SpanDAC (Codex f4ca0e40):
         // the words name neither.
         XCTAssertEqual(h.status.current()?.text, "Jumping to a song isn't available in this queue yet.")
         XCTAssertEqual(h.status.current()?.isError, false)
+    }
+
+    /// 2026-11-06: a SpanDAC that advertises `queue.jump.catalogue` jumps
+    /// within a catalogue queue (Discover plays, DJ mixes) like any other.
+    func testACatalogueUpNextRowJumpsWhenSpanDACAdvertisesIt() {
+        let h = harness(catalogue: true)
+        h.fixture.capabilities = ["slice.status", "queue.jump", "queue.jump.catalogue"]
+        var snap = poll(h)
+        snap.spanDACQueueIsCatalogue = true
+        let before = h.counter.callCount
+        pressEnterOnSong2(h, snap)
+        XCTAssertEqual(h.jumps.count, 1)
+        let sent = try? JSONSerialization.jsonObject(with: Data(h.jumps[0].utf8)) as? [String: Any]
+        XCTAssertEqual(sent?["queue_token"] as? String, "tok-1")
+        XCTAssertEqual(sent?["row"] as? Int, 2)
+        XCTAssertEqual(h.counter.callCount, before, "nothing ran against Apple's Music app")
+    }
+
+    /// The play on record decides, not only the screen's flag.
+    func testACatalogueRecordedPlayWithoutTheCapabilitySaysSoAndSendsNothing() {
+        let h = harness(catalogue: true)
+        let snap = poll(h)
+        let sentBefore = h.rig.sent.count
+        pressEnterOnSong2(h, snap)
+        XCTAssertEqual(h.jumps, [])
+        XCTAssertEqual(h.status.current()?.text, "Jumping to a song isn't available in this queue yet.")
+        XCTAssertEqual(h.status.current()?.isError, false)
+        XCTAssertLessThanOrEqual(h.rig.sent.count - sentBefore, 1, "at most the capability read")
+    }
+
+    /// A catalogue play SpanDAC skipped songs in is kept unordered: its rows do
+    /// not line up with SpanDAC's, so no jump is sent.
+    func testAnUnorderedCataloguePlaySendsNothingEvenWithTheCapability() {
+        let h = harness(catalogue: true, shuffled: true)
+        h.fixture.capabilities = ["slice.status", "queue.jump", "queue.jump.catalogue"]
+        var snap = poll(h)
+        snap.spanDACQueueIsCatalogue = true
+        pressEnterOnSong2(h, snap)
+        XCTAssertEqual(h.jumps, [])
+        XCTAssertEqual(h.status.current()?.text, "Jumping to a song isn't available in this queue yet.")
     }
 
     func testALibraryQueueControlStillJumps() {

@@ -27,19 +27,41 @@ import Foundation
 ///
 /// A reply for any other token, or one that is not playing, is a refusal: the
 /// kept rows are the queue that was asked about, and are never re-bound.
+/// A catalogue queue's rows are shown and, since 2026-11-06, jumpable where
+/// SpanDAC advertises `queue.jump.catalogue`. Elsewhere the line stays this,
+/// posted plainly, not as an error: it names neither a DJ mix nor Discover
+/// (Codex f4ca0e40).
+let catalogueQueueJumpUnavailable = "Jumping to a song isn't available in this queue yet."
+let sourceQueueJumpCatalogueCapability = "queue.jump.catalogue"
+
+/// Thrown by `jumpSpanDACQueue` when the queue is a catalogue queue SpanDAC
+/// cannot jump within: the caller posts `catalogueQueueJumpUnavailable`.
+struct CatalogueQueueJumpUnavailable: Error {}
+
+/// A catalogue queue (the play on record, or the screen's flag) needs
+/// `queue.jump.catalogue` as asked NOW, and an ordered play: one SpanDAC
+/// skipped songs in is kept unordered, so its rows do not line up with
+/// SpanDAC's request order and nothing is sent.
 func jumpSpanDACQueue(routing: RoutingCoordinator, client: SourceAppClient,
-                      displayedToken: String?, entryIndex: Int) throws -> SpanDACQueueJumpResult {
+                      displayedToken: String?, entryIndex: Int,
+                      catalogue displayedCatalogue: Bool = false) throws -> SpanDACQueueJumpResult {
     guard routing.mode == .source,
           let token = displayedToken,
           let row = SourceAppControl.queueJumpRow(forEntryIndex: entryIndex) else {
         throw ActionError(message: queueJumpRefusal)
     }
-    guard routing.spanDACPlay()?.token == token else {
+    guard let play = routing.spanDACPlay(), play.token == token else {
         throw ActionError(message: sourceChangedNothingPlayed)
     }
+    let catalogue = displayedCatalogue || play.catalogue
+    if catalogue, play.shuffled { throw CatalogueQueueJumpUnavailable() }
     do {
-        guard try client.control.capabilities().contains(sourceQueueJumpCapability) else {
+        let capabilities = try client.control.capabilities()
+        guard capabilities.contains(sourceQueueJumpCapability) else {
             throw ActionError(message: queueJumpRefusal)
+        }
+        if catalogue, !capabilities.contains(sourceQueueJumpCatalogueCapability) {
+            throw CatalogueQueueJumpUnavailable()
         }
         let result = try client.control.queueJump(token: token, row: row)
         return result
