@@ -653,7 +653,8 @@ final class DiscoverScene: Scene {
 
     /// `read` is where the song's row was read (the rails, or a search);
     /// `searchOrigin` marks a search result for the coordinator.
-    private func playRailSong(_ item: DiscoverItem, read: RowsRead?, searchOrigin: Bool) -> SceneAction {
+    private func playRailSong(_ item: DiscoverItem, read: RowsRead?, searchOrigin: Bool,
+                              nowRows: [MusicRow]? = nil) -> SceneAction {
         // See `playFromHere` for why this door reads the selection.
         guard api != nil || !shippedPathNeedsTheSignIn else {
             status.post(Self.signInToPlay, error: true, untilStateChange: true)
@@ -661,7 +662,7 @@ final class DiscoverScene: Scene {
         }
         playCatalogSlice(catalogIDs: [item.id], containerTitle: item.name,
                          trackName: item.name, trackArtist: item.subtitle, read: read,
-                         searchOrigin: searchOrigin, nowRows: Self.nowRows([item], album: nil))
+                         searchOrigin: searchOrigin, nowRows: nowRows ?? Self.nowRows([item], album: nil))
         return .push(.nowPlaying)
     }
 
@@ -730,6 +731,11 @@ final class DiscoverScene: Scene {
     /// come from them (a catalogue queue, as the DJ's artist mix). `album` is
     /// the container's title when it is an album; a playlist or a lone song
     /// carries none.
+    /// A search song: its own album, which the search row already shows.
+    static func nowRows(forSearchSong hit: CatalogueHit) -> [MusicRow] {
+        [MusicRow(id: hit.id, title: hit.title, artist: hit.subtitle ?? "", album: hit.album, kind: .song)]
+    }
+
     static func nowRows(_ items: [DiscoverItem], album: String?) -> [MusicRow] {
         items.map { MusicRow(id: $0.id, title: $0.name, artist: $0.subtitle ?? "", album: album, kind: .song) }
     }
@@ -1627,7 +1633,8 @@ extension DiscoverScene: CatalogueSearchHost {
             searchIntentAction = .push(.nowPlaying)
         case .playSong(let hit):
             guard let item = Self.discoverItem(for: hit) else { return }
-            searchIntentAction = playRailSong(item, read: searchReadOnScreen, searchOrigin: true)
+            searchIntentAction = playRailSong(item, read: searchReadOnScreen, searchOrigin: true,
+                                              nowRows: Self.nowRows(forSearchSong: hit))
         case .close:
             closeSearch()
             searchIntentAction = .redraw

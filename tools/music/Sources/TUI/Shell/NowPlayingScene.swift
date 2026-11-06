@@ -120,7 +120,7 @@ final class NowPlayingScene: Scene {
     private var contextNameNow = ""          // cleaned context name from the latest snapshot
     /// The `queue_token` of the SpanDAC queue `rows` draws: what Enter's jump names.
     private var displayedQueueToken: String? = nil
-    /// The displayed rows are a catalogue queue (a DJ mix): shown, not jumpable.
+    /// The displayed rows are a catalogue queue (a DJ mix or a Discover play on SpanDAC): shown, not jumpable.
     private var displayedQueueIsCatalogue = false
     /// A queue jump's reply, drawn at the next tick instead of waiting a poll for
     /// SpanDAC's status to say the same: the entries it describes and its token.
@@ -1355,7 +1355,7 @@ final class NowPlayingScene: Scene {
             // SpanDAC cannot jump within a catalogue queue (`unbound_row`): say
             // so plainly and send nothing.
             if displayedQueueIsCatalogue {
-                status.post("Jumping to a song isn't available in a DJ mix yet.")
+                status.post("Jumping to a song isn't available in this queue yet.")
                 return .redraw
             }
             guard askMatrix(.queueJump) else { return .redraw }
