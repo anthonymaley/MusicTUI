@@ -963,6 +963,48 @@ final class SpanDACOutputTabTests: XCTestCase {
         XCTAssertEqual(s.speakerRowsForTest.map(\.active), [false], "the speaker was not toggled too")
     }
 
+    /// The Mac's sound output stays where SpanDAC put it when MusicTUI is picked
+    /// again (seen live 2026-11-03). Nothing restores it yet, so the line says
+    /// where the sound is going and how to change it (Anthony 2026-11-06 11:30).
+    /// Also when SpanDAC's licence is not serving: the output fact still holds
+    /// (Codex 2cb5eca0).
+    func testSwitchingBackToMusicTUISaysTheMacsSoundIsStillOnTheDAC() {
+        let notServing = #"{"ok":true,"status":{"playback":"idle","authorization":"authorized","contract":3,"capabilities":[],"licence":{"serving":false,"state":"none","text":"Licence text."},"output":{"dac":"connected","name":"SSL 2+","max_rate_hz":192000}}}"#
+        for reply in [readyWithDAC, notServing] {
+            let status = StatusStore()
+            let s = scene(mode: .source, outputs: FakeSpanDACOutputs(), status: status,
+                          speakers: [["name": "Kitchen", "selected": false, "volume": 40]],
+                          macReply: { reply })
+            let finished = watch(s)
+            put(s, at: 2)
+            XCTAssertEqual(s.handle(.enter), .redraw)
+            XCTAssertTrue(waitFor(finished, count: 1))
+            XCTAssertEqual(modeOnDisk(), .musicApp)
+            XCTAssertEqual(status.current()?.text,
+                           "Mac sound still on DAC; check Sound settings (SSL 2+).", reply)
+        }
+    }
+
+    func testTheMacSoundLineFitsTheFooterAt80Columns() {
+        XCTAssertEqual(musicTUIOutputLine(nil), "Output: MusicTUI")
+        XCTAssertEqual(musicTUIOutputLine(SourceOutputInfo(dac: .notConnected, name: nil, maxRateHz: nil)), "Output: MusicTUI")
+        XCTAssertEqual(musicTUIOutputLine(SourceOutputInfo(dac: .connected, name: nil, maxRateHz: nil)),
+                       "Mac sound still on DAC; check Sound settings.")
+        // As the footer renders it (cut at width - 4, Shell.swift): the fact
+        // and the remedy survive a long device name at 50 columns; the name
+        // shows when there is room.
+        let ssl = SourceOutputInfo(dac: .connected, name: "SSL 2+", maxRateHz: 192_000)
+        let long = SourceOutputInfo(dac: .connected, name: "External USB Audio Device With A Long Name", maxRateHz: nil)
+        for width in [50, 60, 80] {
+            for out in [ssl, long] {
+                XCTAssertTrue(truncText(musicTUIOutputLine(out), to: width - 4)
+                                .hasPrefix("Mac sound still on DAC; check Sound settings"), "\(width)")
+            }
+        }
+        XCTAssertEqual(truncText(musicTUIOutputLine(ssl), to: 76), "Mac sound still on DAC; check Sound settings (SSL 2+).")
+        XCTAssertGreaterThan(macSoundNoticeSeconds, 3, "it carries an instruction, so it outlasts an ordinary toast")
+    }
+
     func testEnterOnASpeakerInMusicAppTogglesItAsBefore() {
         let s = scene(mode: .musicApp, outputs: FakeSpanDACOutputs(),
                       speakers: [["name": "Kitchen", "selected": false, "volume": 40]])
