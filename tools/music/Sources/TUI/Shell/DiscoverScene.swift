@@ -768,7 +768,7 @@ final class DiscoverScene: Scene {
     func playCatalogSlice(catalogIDs: [String], containerTitle: String, trackName: String,
                           trackArtist: String? = nil, read: RowsRead? = nil,
                           copy: DiscoverCopyRequest? = nil, albumTitle: String? = nil,
-                          searchOrigin: Bool = false) {
+                          searchOrigin: Bool = false, nowRows: [MusicRow]? = nil) {
         let expecting = read.map { (epoch: routing.epoch, dataEpoch: $0.dataEpoch) }
         let origin = read.map { Self.origin(of: $0, singleTrack: copy == nil && catalogIDs.count == 1) }
         actions.run("Play") {
