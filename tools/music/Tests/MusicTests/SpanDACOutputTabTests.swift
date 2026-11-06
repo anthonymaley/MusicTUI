@@ -963,6 +963,31 @@ final class SpanDACOutputTabTests: XCTestCase {
         XCTAssertEqual(s.speakerRowsForTest.map(\.active), [false], "the speaker was not toggled too")
     }
 
+    /// The Mac's sound output stays where SpanDAC put it when MusicTUI is picked
+    /// again (seen live 2026-11-03). Nothing restores it yet, so the line says
+    /// where the sound is going and how to change it (Anthony 2026-11-06 11:30).
+    func testSwitchingBackToMusicTUISaysTheMacsSoundIsStillOnTheDAC() {
+        let status = StatusStore()
+        let s = scene(mode: .source, outputs: FakeSpanDACOutputs(), status: status,
+                      speakers: [["name": "Kitchen", "selected": false, "volume": 40]],
+                      macReply: { self.readyWithDAC })
+        let finished = watch(s)
+        put(s, at: 2)
+        XCTAssertEqual(s.handle(.enter), .redraw)
+        XCTAssertTrue(waitFor(finished, count: 1))
+        XCTAssertEqual(modeOnDisk(), .musicApp)
+        XCTAssertEqual(status.current()?.text, musicTUIOutputLine(SourceOutputInfo(dac: .connected, name: "SSL 2+", maxRateHz: 192_000)))
+        XCTAssertEqual(status.current()?.text,
+                       "Output: MusicTUI. The Mac's sound is still on SSL 2+; change it in Sound settings for other speakers.")
+    }
+
+    func testSwitchingBackToMusicTUIWithoutTheDACAsOutputSaysOnlyTheOutput() {
+        XCTAssertEqual(musicTUIOutputLine(nil), "Output: MusicTUI")
+        XCTAssertEqual(musicTUIOutputLine(SourceOutputInfo(dac: .notConnected, name: nil, maxRateHz: nil)), "Output: MusicTUI")
+        XCTAssertEqual(musicTUIOutputLine(SourceOutputInfo(dac: .connected, name: nil, maxRateHz: nil)),
+                       "Output: MusicTUI. The Mac's sound is still on your DAC; change it in Sound settings for other speakers.")
+    }
+
     func testEnterOnASpeakerInMusicAppTogglesItAsBefore() {
         let s = scene(mode: .musicApp, outputs: FakeSpanDACOutputs(),
                       speakers: [["name": "Kitchen", "selected": false, "volume": 40]])

@@ -594,6 +594,24 @@ final class SpanDACSwitchOutputTabTests: XCTestCase {
         XCTAssertEqual(status.current()?.text, "MusicTUI is using its own music data again.")
     }
 
+    /// Leaving SpanDAC data also leaves the SpanDAC output; when the DAC is
+    /// still the Mac's sound output the line says so (Anthony 2026-11-06 11:30).
+    func testStopUsingSpanDACSaysTheMacsSoundIsStillOnTheDAC() {
+        let status = StatusStore()
+        let withDAC: () throws -> String = {
+            #"{"ok":true,"status":{"playback":"idle","authorization":"authorized","contract":3,"capabilities":[],"output":{"dac":"connected","name":"SSL 2+","max_rate_hz":192000}}}"#
+        }
+        let s = scene(mode: .source, data: .accepted, answer: MacAnswer(withDAC), status: status)
+        let finished = watchData(s)
+        put(s, on: .stopUsingSpanDAC)
+        XCTAssertEqual(s.handle(.enter), .redraw)
+        XCTAssertEqual(s.handle(.char("y")), .redraw)
+        XCTAssertTrue(wait { finished.count == 1 })
+        XCTAssertEqual(modeOnDisk(), .musicApp)
+        XCTAssertEqual(status.current()?.text,
+                       "MusicTUI is using its own music data again. The Mac's sound is still on SSL 2+; change it in Sound settings for other speakers.")
+    }
+
     /// C-REPAIR's pause rule on the way back: SpanDAC on this Mac that is
     /// not running AND has no socket counts as paused; one that may still be
     /// running does not, and the output stays blocked with the reason shown.
