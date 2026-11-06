@@ -152,7 +152,9 @@ final class SpanDACQueueJumpRoutingTests: XCTestCase {
         XCTAssertEqual(h.jumps, [], "no queue.jump left the client")
         XCTAssertEqual(h.rig.sent.count, sentBefore, "nothing at all was sent")
         XCTAssertEqual(h.counter.callCount, before)
-        XCTAssertEqual(h.status.current()?.text, "Jumping to a song isn't available in a DJ mix yet.")
+        // A catalogue queue is a DJ mix or any Discover play on SpanDAC (Codex f4ca0e40):
+        // the words name neither.
+        XCTAssertEqual(h.status.current()?.text, "Jumping to a song isn't available in this queue yet.")
         XCTAssertEqual(h.status.current()?.isError, false)
     }
 

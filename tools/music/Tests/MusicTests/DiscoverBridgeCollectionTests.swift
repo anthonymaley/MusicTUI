@@ -90,12 +90,14 @@ final class DiscoverBridgeCollectionTests: XCTestCase {
 
     private func scene(mode: PlaybackMode, wire: Wire, status: StatusStore,
                        lifecycle: DiscoverLifecycleCoordinator,
-                       feed: DiscoverFeed? = nil) -> DiscoverScene {
+                       feed: DiscoverFeed? = nil,
+                       routingOut: ((RoutingCoordinator) -> Void)? = nil) -> DiscoverScene {
         let store = PlaybackModeStore(path: NSTemporaryDirectory() + "mode-\(UUID().uuidString).json")
         store.set(mode)
         let routing = RoutingCoordinator(store: store, surface: .tui,
                                          makeSource: { SourceAppClient(path: "/nonexistent",
                                                                        transport: wire.transport) })
+        routingOut?(routing)
         return DiscoverScene(feed: feed ?? self.feed(), status: status,
                              actions: ActionRunner(status: status),
                              api: RESTAPIBackend(developerToken: "d", userToken: "u", storefront: "us"),
@@ -220,6 +222,86 @@ final class DiscoverBridgeCollectionTests: XCTestCase {
             XCTAssertEqual(created.ids, [], "the web-service playlist was made (row \(downs))")
             XCTAssertTrue(wire.queued.isEmpty)
         }
+    }
+
+    // MARK: - Now Playing: the rows a Discover play queued (2026-11-06)
+
+    /// A Discover play on the SpanDAC output is a catalogue queue, like the DJ's
+    /// artist mix: Now draws the cover, the album line and Up Next only from rows
+    /// the play recorded with the reply's `queue_token` (Anthony 2026-11-06 08:44:
+    /// every Discover play, not only search).
+    func testPlayAllFromRailRecordsTheQueuedRowsWithTheQueueToken() throws {
+        let wire = Wire()
+        wire.reply = #"{"ok":true,"op":"slice.queue","queue_token":"qd-1","status":{"playback":"playing","title":"S1","artist":"A"}}"#
+        var routing: RoutingCoordinator?
+        let s = scene(mode: .source, wire: wire, status: StatusStore(),
+                      lifecycle: lifecycle(playsRecorded: { _ in }), routingOut: { routing = $0 })
+
+        s.playAllFromRail(albumRow)
+        settle { routing?.spanDACPlay() != nil }
+
+        let play = try XCTUnwrap(routing?.spanDACPlay(), "the Discover play recorded no rows")
+        XCTAssertEqual(play.rows.map(\.id), wire.queuedIDs, "the kept rows are the ids on the wire, in order")
+        XCTAssertEqual(play.rows.map(\.title), ["S1", "S2", "S3"])
+        XCTAssertTrue(play.rows.allSatisfy { $0.artist == "A" && $0.album == "An Album" && $0.kind == .song })
+        XCTAssertEqual(play.token, "qd-1")
+        XCTAssertTrue(play.catalogue)
+        XCTAssertFalse(play.shuffled)
+    }
+
+    /// Enter on a row (a drill-in, a search song, a rail song): the slice's rows.
+    func testASelectedSliceRecordsItsRowsWithTheQueueToken() throws {
+        let wire = Wire()
+        wire.reply = #"{"ok":true,"op":"slice.queue","queue_token":"qd-2","status":{"playback":"playing","title":"S2","artist":"A"}}"#
+        var routing: RoutingCoordinator?
+        let s = scene(mode: .source, wire: wire, status: StatusStore(),
+                      lifecycle: lifecycle(playsRecorded: { _ in }), routingOut: { routing = $0 })
+        let rows = [MusicRow(id: "802", title: "S2", artist: "A", album: nil, kind: .song),
+                    MusicRow(id: "803", title: "S3", artist: "A", album: nil, kind: .song)]
+
+        s.playCatalogSlice(catalogIDs: ["802", "803"], containerTitle: "A Playlist", trackName: "S2", nowRows: rows)
+        settle { routing?.spanDACPlay() != nil }
+
+        let play = try XCTUnwrap(routing?.spanDACPlay(), "the Discover play recorded no rows")
+        XCTAssertEqual(play.rows, rows)
+        XCTAssertEqual(play.token, "qd-2")
+        XCTAssertTrue(play.catalogue)
+    }
+
+    /// SpanDAC dropped songs without saying which: the rows are kept unordered.
+    func testADiscoverPlayThatLostSongsKeepsItsRowsAsUnordered() throws {
+        let wire = Wire()
+        wire.reply = #"{"ok":true,"op":"slice.queue","queue_token":"qd-3","skipped_unavailable":1,"status":{"playback":"playing","title":"S1","artist":"A"}}"#
+        var routing: RoutingCoordinator?
+        let s = scene(mode: .source, wire: wire, status: StatusStore(),
+                      lifecycle: lifecycle(playsRecorded: { _ in }), routingOut: { routing = $0 })
+
+        s.playAllFromRail(albumRow)
+        settle { routing?.spanDACPlay() != nil }
+
+        XCTAssertTrue(try XCTUnwrap(routing?.spanDACPlay()).shuffled)
+    }
+
+    /// A search song carries its album (the search row shows it), so Now's
+    /// album line is drawn for it too (Codex f4ca0e40). A rail song has none.
+    func testASearchSongsRowCarriesItsAlbum() {
+        let hit = CatalogueHit(kind: .song, id: "901", title: "Andromeda", subtitle: "Gorillaz", album: "Humanz (Deluxe)")
+        XCTAssertEqual(DiscoverScene.nowRows(forSearchSong: hit),
+                       [MusicRow(id: "901", title: "Andromeda", artist: "Gorillaz", album: "Humanz (Deluxe)", kind: .song)])
+    }
+
+    func testARefusedDiscoverPlayRecordsNoRows() {
+        let wire = Wire()
+        wire.reply = #"{"ok":false,"op":"slice.queue","error":{"kind":"bad_request","detail":"nope"}}"#
+        var routing: RoutingCoordinator?
+        let status = StatusStore()
+        let s = scene(mode: .source, wire: wire, status: status,
+                      lifecycle: lifecycle(playsRecorded: { _ in }), routingOut: { routing = $0 })
+
+        s.playAllFromRail(albumRow)
+        settle { status.current() != nil }
+
+        XCTAssertNil(routing?.spanDACPlay(), "a play that did not start recorded rows")
     }
 
     // MARK: - Enter on a track row

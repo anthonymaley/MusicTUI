@@ -638,7 +638,9 @@ final class DiscoverScene: Scene {
                          copy: discoverCopyRequest(container: container, rows: trackRows, selected: cursorIndex)
                              ?? discoverAlbumRequest(container: container, rows: trackRows, selected: cursorIndex),
                          albumTitle: Self.catalogueAlbumTitle(container),
-                         searchOrigin: current.searchOrigin)
+                         searchOrigin: current.searchOrigin,
+                         nowRows: Self.nowRows(Array(trackRows[cursorIndex...]),
+                                               album: Self.catalogueAlbumTitle(container)))
         return .push(.nowPlaying)
     }
 
@@ -651,7 +653,8 @@ final class DiscoverScene: Scene {
 
     /// `read` is where the song's row was read (the rails, or a search);
     /// `searchOrigin` marks a search result for the coordinator.
-    private func playRailSong(_ item: DiscoverItem, read: RowsRead?, searchOrigin: Bool) -> SceneAction {
+    private func playRailSong(_ item: DiscoverItem, read: RowsRead?, searchOrigin: Bool,
+                              nowRows: [MusicRow]? = nil) -> SceneAction {
         // See `playFromHere` for why this door reads the selection.
         guard api != nil || !shippedPathNeedsTheSignIn else {
             status.post(Self.signInToPlay, error: true, untilStateChange: true)
@@ -659,7 +662,7 @@ final class DiscoverScene: Scene {
         }
         playCatalogSlice(catalogIDs: [item.id], containerTitle: item.name,
                          trackName: item.name, trackArtist: item.subtitle, read: read,
-                         searchOrigin: searchOrigin)
+                         searchOrigin: searchOrigin, nowRows: nowRows ?? Self.nowRows([item], album: nil))
         return .push(.nowPlaying)
     }
 
@@ -718,8 +721,23 @@ final class DiscoverScene: Scene {
                        origin: Self.origin(of: read, singleTrack: false),
                        copy: discoverCopyRequest(container: item, rows: tracks, selected: 0)
                            ?? discoverAlbumRequest(container: item, rows: tracks, selected: 0),
-                       albumTitle: Self.catalogueAlbumTitle(item), searchOrigin: searchOrigin)
+                       albumTitle: Self.catalogueAlbumTitle(item), searchOrigin: searchOrigin,
+                       nowRows: Self.nowRows(tracks, album: Self.catalogueAlbumTitle(item)))
         }
+    }
+
+    /// The rows a Discover play hands Now on a SpanDAC output, one per queued
+    /// song, in order: Up Next, the album line and the playing song's place
+    /// come from them (a catalogue queue, as the DJ's artist mix). `album` is
+    /// the container's title when it is an album; a playlist or a lone song
+    /// carries none.
+    /// A search song: its own album, which the search row already shows.
+    static func nowRows(forSearchSong hit: CatalogueHit) -> [MusicRow] {
+        [MusicRow(id: hit.id, title: hit.title, artist: hit.subtitle ?? "", album: hit.album, kind: .song)]
+    }
+
+    static func nowRows(_ items: [DiscoverItem], album: String?) -> [MusicRow] {
+        items.map { MusicRow(id: $0.id, title: $0.name, artist: $0.subtitle ?? "", album: album, kind: .song) }
     }
 
     /// The container's title when it is a Discover (catalogue) album, else nil.
@@ -768,7 +786,7 @@ final class DiscoverScene: Scene {
     func playCatalogSlice(catalogIDs: [String], containerTitle: String, trackName: String,
                           trackArtist: String? = nil, read: RowsRead? = nil,
                           copy: DiscoverCopyRequest? = nil, albumTitle: String? = nil,
-                          searchOrigin: Bool = false) {
+                          searchOrigin: Bool = false, nowRows: [MusicRow]? = nil) {
         let expecting = read.map { (epoch: routing.epoch, dataEpoch: $0.dataEpoch) }
         let origin = read.map { Self.origin(of: $0, singleTrack: copy == nil && catalogIDs.count == 1) }
         actions.run("Play") {
@@ -779,7 +797,7 @@ final class DiscoverScene: Scene {
                            : "Playing \(trackName) on SpanDAC — \(catalogIDs.count) tracks.",
                        expecting: expecting, origin: origin,
                        track: (title: trackName, artist: trackArtist), copy: copy,
-                       albumTitle: albumTitle, searchOrigin: searchOrigin)
+                       albumTitle: albumTitle, searchOrigin: searchOrigin, nowRows: nowRows)
         }
     }
 
@@ -817,7 +835,7 @@ final class DiscoverScene: Scene {
                        expecting: (epoch: Int, dataEpoch: Int)?, origin: PlayOrigin?,
                        track: (title: String, artist: String?)? = nil,
                        copy: DiscoverCopyRequest? = nil, albumTitle: String? = nil,
-                       searchOrigin: Bool = false) throws {
+                       searchOrigin: Bool = false, nowRows: [MusicRow]? = nil) throws {
         let lifecycle = self.lifecycle
         let routing = self.routing
         let status = self.status
@@ -892,7 +910,16 @@ final class DiscoverScene: Scene {
                 },
                 source: {
                     // The skip count is not shown here: the toast is today's.
-                    _ = try BridgeMusicProvider(control: $0.control).playCatalogue(ids: catalogIDs)
+                    let played = try BridgeMusicProvider(control: $0.control).playCatalogueRetainingToken(ids: catalogIDs)
+                    // The rows behind the ids, with the reply's token: Now draws
+                    // the cover, the album line and Up Next from them, as for the
+                    // DJ's artist mix. Kept only when they are exactly the ids
+                    // sent. SpanDAC drops songs it cannot queue without saying
+                    // which, so a play that lost any keeps them unordered.
+                    if let nowRows, nowRows.map(\.id) == catalogIDs {
+                        routing.recordSpanDACPlay(nowRows, token: played.queueToken,
+                                                  shuffled: played.skippedUnavailable > 0, catalogue: true)
+                    }
                     status.post(bridgeToast)
                 },
                 unaffected: {})
@@ -1606,7 +1633,8 @@ extension DiscoverScene: CatalogueSearchHost {
             searchIntentAction = .push(.nowPlaying)
         case .playSong(let hit):
             guard let item = Self.discoverItem(for: hit) else { return }
-            searchIntentAction = playRailSong(item, read: searchReadOnScreen, searchOrigin: true)
+            searchIntentAction = playRailSong(item, read: searchReadOnScreen, searchOrigin: true,
+                                              nowRows: Self.nowRows(forSearchSong: hit))
         case .close:
             closeSearch()
             searchIntentAction = .redraw
