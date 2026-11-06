@@ -25,6 +25,10 @@ struct NowPlayingSnapshot {
     /// are shown, or the play recorded no token (an older SpanDAC): Enter on an
     /// Up Next row has nothing to name then, and does not send.
     var spanDACQueueToken: String? = nil
+    /// True when the rows above are a catalogue-id queue (the DJ's artist mix):
+    /// SpanDAC cannot jump within one (`unbound_row`), so Now shows the rows and
+    /// Enter on one says so without sending.
+    var spanDACQueueIsCatalogue: Bool = false
 }
 
 extension NowPlayingSnapshot: Equatable {
@@ -44,6 +48,7 @@ extension NowPlayingSnapshot: Equatable {
             && a.endedArtLines == b.endedArtLines
             && a.bridge == b.bridge
             && a.spanDACQueueToken == b.spanDACQueueToken
+            && a.spanDACQueueIsCatalogue == b.spanDACQueueIsCatalogue
     }
 }
 

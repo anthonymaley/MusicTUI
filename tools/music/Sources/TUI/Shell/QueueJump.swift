@@ -56,5 +56,5 @@ func spanDACQueueJumpEntries(routing: RoutingCoordinator,
                              result: SpanDACQueueJumpResult) -> [TrackListEntry] {
     guard let play = routing.spanDACPlay() else { return [] }
     return spanDACQueueWindow(sent: play.rows, token: play.token, shuffled: play.shuffled,
-                              status: result.status).entries
+                              catalogue: play.catalogue, status: result.status).entries
 }

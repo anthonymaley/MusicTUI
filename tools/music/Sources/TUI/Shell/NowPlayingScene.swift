@@ -120,6 +120,8 @@ final class NowPlayingScene: Scene {
     private var contextNameNow = ""          // cleaned context name from the latest snapshot
     /// The `queue_token` of the SpanDAC queue `rows` draws: what Enter's jump names.
     private var displayedQueueToken: String? = nil
+    /// The displayed rows are a catalogue queue (a DJ mix): shown, not jumpable.
+    private var displayedQueueIsCatalogue = false
     /// A queue jump's reply, drawn at the next tick instead of waiting a poll for
     /// SpanDAC's status to say the same: the entries it describes and its token.
     /// Written from the action queue, taken on the tick, under `jumpLock`.
@@ -432,6 +434,7 @@ final class NowPlayingScene: Scene {
         }
         rows = snapshot.surrounding
         displayedQueueToken = snapshot.spanDACQueueToken
+        displayedQueueIsCatalogue = snapshot.spanDACQueueIsCatalogue
         contextNameNow = cleanContextName(snapshot.contextName)
         // Snap the cursor to the current track when the track changes; leave it
         // alone otherwise so the user can browse Up Next. Consume the change
@@ -1349,6 +1352,12 @@ final class NowPlayingScene: Scene {
             cursor = rows.count - 1; return .redraw
         case .enter:
             guard cursor < rows.count else { return .none }
+            // SpanDAC cannot jump within a catalogue queue (`unbound_row`): say
+            // so plainly and send nothing.
+            if displayedQueueIsCatalogue {
+                status.post("Jumping to a song isn't available in a DJ mix yet.")
+                return .redraw
+            }
             guard askMatrix(.queueJump) else { return .redraw }
             // The play itself goes through the coordinator, which decides when
             // the action RUNS: the one play-out gate refuses it while a

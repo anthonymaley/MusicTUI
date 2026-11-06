@@ -82,6 +82,9 @@ struct DJArtistMix: Equatable {
     /// Songs dropped because an earlier one had the exact same title (SpanDAC
     /// refuses a queue holding two).
     var repeatedTitles: Int = 0
+    /// The songs behind `ids`, in the same order: what Now's Up Next and album
+    /// line are drawn from once the play is kept with its queue token.
+    var rows: [MusicRow] = []
 
     /// "Radiohead · 50 songs from 9 albums (3 unavailable skipped)", with
     /// "first 25 albums" when the artist has more.
@@ -153,7 +156,7 @@ func djBuildArtistMix(artist: CatalogueHit, catalogue: DJCatalogue, shuffler: DJ
     }
 
     var seen = Set<String>()
-    var songs: [(id: String, album: String, title: String)] = []
+    var songs: [(id: String, album: String, albumTitle: String, artist: String, title: String)] = []
     var unavailable = 0
     for album in page.albums {
         guard isCurrent() else { throw DJArtistMixError.cancelled }
@@ -167,7 +170,7 @@ func djBuildArtistMix(artist: CatalogueHit, catalogue: DJCatalogue, shuffler: DJ
         }
         for track in tracks where seen.insert(track.id).inserted {
             if track.length == .null { unavailable += 1; continue }
-            songs.append((track.id, album.id, track.name))
+            songs.append((track.id, album.id, album.title, track.subtitle ?? artist.title, track.name))
         }
     }
     guard isCurrent() else { throw DJArtistMixError.cancelled }
@@ -180,5 +183,7 @@ func djBuildArtistMix(artist: CatalogueHit, catalogue: DJCatalogue, shuffler: DJ
     let chosen = Array(shuffler.shuffled(distinct).prefix(DJArtistMix.songLimit))
     return DJArtistMix(artistName: artist.title, artistID: artist.id, ids: chosen.map(\.id),
                        albumCount: Set(chosen.map(\.album)).count, moreAlbums: page.more,
-                       unavailable: unavailable, repeatedTitles: repeated)
+                       unavailable: unavailable, repeatedTitles: repeated,
+                       rows: chosen.map { MusicRow(id: $0.id, title: $0.title, artist: $0.artist,
+                                                   album: $0.albumTitle, kind: .song) })
 }

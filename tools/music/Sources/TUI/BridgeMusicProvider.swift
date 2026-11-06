@@ -253,6 +253,12 @@ struct BridgeMusicProvider: MusicDataProvider {
         try control.queueReportingSkips(catalogIDs: ids)
     }
 
+    /// The same play, also returning the reply's `queue_token`, for the caller
+    /// that keeps the rows it sent (the DJ's artist mix).
+    func playCatalogueRetainingToken(ids: [String]) throws -> (skippedUnavailable: Int, queueToken: String?) {
+        try control.queueRetainingToken(catalogIDs: ids)
+    }
+
     /// D5, translated.
     func liveStations() throws -> [Station] {
         do { return try control.liveStations() }

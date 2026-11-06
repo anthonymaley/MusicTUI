@@ -192,9 +192,22 @@ func bridgePositionLine(_ b: BridgeNow) -> String? {
 /// records none.
 ///
 /// `shuffled` is true when the play was a shuffle SpanDAC made itself.
-func spanDACQueueWindow(sent: [MusicRow]?, token: String? = nil, shuffled: Bool = false,
+///
+/// `catalogue` is true for a play queued by catalogue id (the DJ's artist mix).
+/// SpanDAC's `row` and `next_rows` come from the library roster only, so such a
+/// status carries neither; the playing song is then the ONE sent row whose
+/// title is exactly the status's (SpanDAC refuses a queue holding two songs
+/// with one title, and the mix keeps the first of each), and none when that is
+/// not exactly one. A status `row`, when it does come, wins. The rows listed after it are only
+/// those the status's queue phase and `present` prove are in the player.
+func spanDACQueueWindow(sent: [MusicRow]?, token: String? = nil, shuffled: Bool = false, catalogue: Bool = false,
                         status: SourceStatus) -> (current: MusicRow?, entries: [TrackListEntry]) {
-    guard let sent, let at = status.row, sent.indices.contains(at) else { return (nil, []) }
+    guard let sent else { return (nil, []) }
+    let placed: Int?
+    if let row = status.row { placed = row }
+    else if catalogue { placed = uniqueRow(titled: status.title, in: sent) }
+    else { placed = nil }
+    guard let at = placed, sent.indices.contains(at) else { return (nil, []) }
     // The play recorded a token: these rows describe that assignment and no
     // other. A status that echoes a different token (another process replaced
     // the queue) or none (the player was unloaded) shows its own data only.
@@ -213,10 +226,34 @@ func spanDACQueueWindow(sent: [MusicRow]?, token: String? = nil, shuffled: Bool 
     // has no order the sent rows could stand in for, and SpanDAC may leave
     // `next_rows` out then: no Up Next list, never an error and never a guess.
     let unorderedWithoutNextRows = shuffled || status.shuffle == true
+    // A catalogue queue's successors are inserted by SpanDAC asynchronously and
+    // the build can fail, so only rows the status proves are in the player are
+    // listed: `complete` all remaining (up to `present` when SpanDAC queued
+    // fewer), `building` the rows below `present`, `invalid` or unknown none.
+    let remaining: [Int]
+    if catalogue {
+        let limit: Int
+        switch status.queuePhase {
+        case "complete": limit = min(sent.count, status.queuePresent.map { max(0, $0) } ?? sent.count)
+        case "building": limit = min(sent.count, status.queuePresent.map { max(0, $0) } ?? 0)
+        default: limit = 0
+        }
+        remaining = at + 1 < limit ? Array((at + 1)..<limit) : []
+    } else {
+        remaining = Array((at + 1)..<sent.count)
+    }
     let next = status.nextRows.map { $0.filter { sent.indices.contains($0) } }
-        ?? (unorderedWithoutNextRows ? [] : Array((at + 1)..<sent.count))
+        ?? (unorderedWithoutNextRows ? [] : remaining)
     func entry(_ i: Int, current: Bool) -> TrackListEntry {
         TrackListEntry(index: i + 1, name: sent[i].title, artist: sent[i].artist, isCurrent: current, album: sent[i].album)
     }
     return (current, [entry(at, current: true)] + next.map { entry($0, current: false) })
+}
+
+/// The index of the one row whose title equals `title` (trimmed, case-folded),
+/// nil when there is none, two or more, or no title to look for.
+private func uniqueRow(titled title: String?, in rows: [MusicRow]) -> Int? {
+    guard let wanted = title?.trimmingCharacters(in: .whitespaces).lowercased(), !wanted.isEmpty else { return nil }
+    let hits = rows.indices.filter { rows[$0].title.trimmingCharacters(in: .whitespaces).lowercased() == wanted }
+    return hits.count == 1 ? hits[0] : nil
 }

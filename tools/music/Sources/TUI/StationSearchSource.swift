@@ -934,6 +934,9 @@ protocol SourceControlling {
     /// returning `skipped_unavailable` (0 from a Bridge that predates it).
     /// `queue(catalogIDs:)` itself is untouched.
     func queueReportingSkips(catalogIDs: [String]) throws -> Int
+    /// The same request again, also returning the reply's `queue_token`, for
+    /// the caller that keeps the rows it sent (the DJ's artist mix).
+    func queueRetainingToken(catalogIDs: [String]) throws -> (skippedUnavailable: Int, queueToken: String?)
 
     // Discover's self-named sections under SpanDAC data
     // (`BridgeDiscoverSections.swift`). Each is sent only when `capabilities()`
@@ -1009,6 +1012,9 @@ extension SourceControlling {
     func recentTracks(limit: Int) throws -> [HistoryItem] { throw SourceAppError.unsupported("slice.recentTracks") }
     func heavyRotation(limit: Int) throws -> [HistoryItem] { throw SourceAppError.unsupported("slice.heavyRotation") }
     func queueReportingSkips(catalogIDs: [String]) throws -> Int { throw SourceAppError.unsupported("slice.queue") }
+    func queueRetainingToken(catalogIDs: [String]) throws -> (skippedUnavailable: Int, queueToken: String?) {
+        throw SourceAppError.unsupported("slice.queue")
+    }
     func capabilities() throws -> [String] { throw SourceAppError.unsupported("slice.status") }
     func setShuffle(_ on: Bool) throws { throw SourceAppError.unsupported(sourceShuffleOp) }
     func setRepeat(_ mode: RepeatMode) throws { throw SourceAppError.unsupported(sourceRepeatOp) }
@@ -1490,8 +1496,15 @@ struct SourceAppControl: SourceControlling {
     /// Part 2, P1: `queue(catalogIDs:)`'s exact request, with the skip count
     /// read by the same rule the library queue reads it.
     func queueReportingSkips(catalogIDs: [String]) throws -> Int {
+        try queueRetainingToken(catalogIDs: catalogIDs).skippedUnavailable
+    }
+
+    /// The one implementation of the catalogue-id queue request;
+    /// `queueReportingSkips(catalogIDs:)` is this without the token.
+    func queueRetainingToken(catalogIDs: [String]) throws -> (skippedUnavailable: Int, queueToken: String?) {
         let reply = try send(Self.catalogueQueueBody(catalogIDs), over: libraryTransport)
-        return try Self.skippedUnavailable(in: reply, sent: catalogIDs.count)
+        return (try Self.skippedUnavailable(in: reply, sent: catalogIDs.count),
+                Self.queueToken(reply["queue_token"]))
     }
 
     /// `skipped_unavailable` from a successful queue reply: absent (an older
