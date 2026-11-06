@@ -1352,12 +1352,14 @@ final class NowPlayingScene: Scene {
             cursor = rows.count - 1; return .redraw
         case .enter:
             guard cursor < rows.count else { return .none }
-            // SpanDAC cannot jump within a catalogue queue (`unbound_row`): say
-            // so plainly and send nothing.
-            if displayedQueueIsCatalogue {
-                status.post("Jumping to a song isn't available in this queue yet.")
+            // A catalogue queue exists only on a SpanDAC output; on any other the
+            // row means nothing to Apple's Music app, so say so and send nothing.
+            // On SpanDAC the source body decides (`queue.jump.catalogue`).
+            if displayedQueueIsCatalogue, routing.mode != .source {
+                status.post(catalogueQueueJumpUnavailable)
                 return .redraw
             }
+            let catalogue = displayedQueueIsCatalogue
             guard askMatrix(.queueJump) else { return .redraw }
             // The play itself goes through the coordinator, which decides when
             // the action RUNS: the one play-out gate refuses it while a
@@ -1408,8 +1410,15 @@ final class NowPlayingScene: Scene {
                     // row's place in the list the play sent. A SpanDAC that
                     // cannot jump refuses visibly; the body above never runs.
                     source: { client in
-                        let jumped = try jumpSpanDACQueue(routing: routing, client: client,
-                                                          displayedToken: queueToken, entryIndex: row.index)
+                        let jumped: SpanDACQueueJumpResult
+                        do {
+                            jumped = try jumpSpanDACQueue(routing: routing, client: client,
+                                                          displayedToken: queueToken, entryIndex: row.index,
+                                                          catalogue: catalogue)
+                        } catch is CatalogueQueueJumpUnavailable {
+                            self.status.post(catalogueQueueJumpUnavailable)
+                            return
+                        }
                         let entries = spanDACQueueJumpEntries(routing: routing, result: jumped)
                         if !entries.isEmpty {
                             self.jumpLock.lock()
