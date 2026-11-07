@@ -665,12 +665,14 @@ func bridgeUnavailableSongsNotice(_ n: Int) -> String {
 }
 
 /// The playlist songs SpanDAC left out because they are not in the library
-/// (Anthony, 2026-11-07): "3 songs aren't in your library, so SpanDAC skipped
-/// them." Shared by every SpanDAC playlist play footer. Empty when `n` is 0.
-func bridgeNotInLibrarySongsNotice(_ n: Int) -> String {
+/// (Anthony, 2026-11-07), said FIRST on the footer line and short:
+/// "Skipped 3 not in your library \u{00B7} " / "Skipped 1 not in your library \u{00B7} ",
+/// followed by the line the play already says. First, because the footer is cut at
+/// its width and a long playlist name could otherwise push this off the screen.
+/// Shared by every SpanDAC playlist play footer. Empty when `n` is 0.
+func bridgeNotInLibraryPrefix(_ n: Int) -> String {
     guard n > 0 else { return "" }
-    return n == 1 ? "1 song isn't in your library, so SpanDAC skipped it."
-                  : "\(n) songs aren't in your library, so SpanDAC skipped them."
+    return "Skipped \(n) not in your library \u{00B7} "
 }
 
 /// A count a person reads, grouped in threes: 15646 → "15,646".

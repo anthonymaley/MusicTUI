@@ -100,7 +100,8 @@ func shellFooterGlobals(for routing: RoutingCoordinator) -> String {
 /// a switch of data source is honoured mid-session. Module-internal so a
 /// test can prove the composition itself.
 func spanDACDataProvider(routing: RoutingCoordinator) -> MusicDataProvider? {
-    routing.data == .spandacMac ? BridgeMusicProvider(control: routing.dataClient().control) : nil
+    routing.data == .spandacMac
+        ? BridgeMusicProvider(control: routing.dataClient().control, skipsNotInLibrary: true) : nil
 }
 
 /// The first notice when SpanDAC stops serving and the person had accepted it

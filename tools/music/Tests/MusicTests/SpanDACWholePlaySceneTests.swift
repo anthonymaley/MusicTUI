@@ -656,10 +656,12 @@ final class SpanDACWholePlaySceneTests: XCTestCase {
         let s = playlistScene(wire, status: status)
         _ = s.handle(.char("p"))
         XCTAssertTrue(settlePlayed(wire))
-        XCTAssertTrue(settleScene(s) { status.current()?.text.hasPrefix("Playing") == true })
+        XCTAssertTrue(settleScene(s) { status.current()?.text.hasPrefix("Skipped") == true })
+        XCTAssertEqual(wire.sent("slice.playLibrary").first?["skip_not_in_library"] as? Bool, true,
+                       "the play asked SpanDAC to skip the songs it then says it skipped")
         XCTAssertEqual(status.current()?.text,
-                       "Playing 'Chill' on SpanDAC \u{2014} 37 queued. 2 videos in this playlist skipped. "
-                       + "3 songs aren't in your library, so SpanDAC skipped them. 1 song isn't available to SpanDAC.")
+                       "Skipped 3 not in your library \u{00B7} Playing 'Chill' on SpanDAC \u{2014} 37 queued. "
+                       + "2 videos in this playlist skipped. 1 song isn't available to SpanDAC.")
         XCTAssertEqual(status.current(now: Date().addingTimeInterval(3600))?.staysUntilStateChange, true)
     }
 
@@ -671,9 +673,9 @@ final class SpanDACWholePlaySceneTests: XCTestCase {
         let s = playlistScene(wire, status: status)
         _ = s.handle(.char("p"))
         XCTAssertTrue(settlePlayed(wire))
-        XCTAssertTrue(settleScene(s) { status.current()?.text.hasPrefix("Playing") == true })
+        XCTAssertTrue(settleScene(s) { status.current()?.text.hasPrefix("Skipped") == true })
         XCTAssertEqual(status.current()?.text,
-                       "Playing 'Chill' on SpanDAC \u{2014} 40 queued. 1 song isn't in your library, so SpanDAC skipped it.")
+                       "Skipped 1 not in your library \u{00B7} Playing 'Chill' on SpanDAC \u{2014} 40 queued.")
         XCTAssertEqual(status.current(now: Date().addingTimeInterval(3600))?.staysUntilStateChange, true)
     }
 

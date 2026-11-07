@@ -252,7 +252,7 @@ final class PlayConfirmer {
     /// takes the warning's place if a late confirmation withdraws it while it
     /// still shows. Returns at once; the reads run on `schedule`.
     func confirm(_ ticket: Ticket, requested: RequestedTrack?, title: String, notice: String? = nil,
-                 restore: String? = nil) {
+                 restore: String? = nil, lead: String? = nil) {
         lock.lock()
         guard ticket.serial == serial, var r = current, r.serial == ticket.serial else { lock.unlock(); return }
         r.scriptDone = true
@@ -261,7 +261,9 @@ final class PlayConfirmer {
         current = r
         let stamp = r.fence
         lock.unlock()
-        let text = [playNotStartedWarning(title), notice].compactMap { $0 }.joined(separator: " ")
+        // `lead` (already ending in its separator) leads the whole line, so what the
+        // play skipped is the first thing the footer shows, warning or not.
+        let text = (lead ?? "") + [playNotStartedWarning(title), notice].compactMap { $0 }.joined(separator: " ")
         schedule { [self] in self.runWindow(ticket, requested: requested, fence: stamp, text: text) }
     }
 

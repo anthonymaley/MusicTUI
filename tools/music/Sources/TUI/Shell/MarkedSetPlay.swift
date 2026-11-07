@@ -604,7 +604,8 @@ private func playMarkedSetFromSpanDAC(_ items: [MarkedItem], shuffle: Bool, stam
                     handedOff = try playThroughHandoff(spanDAC.handoff, rows: rows, startAt: 1,
                                                        startRequired: false, shuffle: shuffle, title: name,
                                                        skippedVideos: read.skippedVideos,
-                                                       repeatedSongs: repeatedSongs)
+                                                       repeatedSongs: repeatedSongs,
+                                                       skippedNotInLibrary: read.skippedNotInLibrary)
                 },
                 source: { client in
                     let played = try spanDACOutputPlayer(client).playRetainingToken(ids: ids, startRequired: false)
@@ -620,11 +621,9 @@ private func playMarkedSetFromSpanDAC(_ items: [MarkedItem], shuffle: Bool, stam
                 },
                 unaffected: {})
         }
-        if var handedOff {
-            // The rows came from SpanDAC's reads, which left these out.
-            handedOff.skippedNotInLibrary = read.skippedNotInLibrary
+        if let handedOff {
             status.post(LibraryProvenance.playingOnMusicTUI(name, report: handedOff),
-                        untilStateChange: handedOff.notice != nil)
+                        untilStateChange: handedOff.saysAnything)
             return
         }
         // The single SpanDAC playlist play's own sentence: the videos apart

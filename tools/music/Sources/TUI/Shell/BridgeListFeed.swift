@@ -31,6 +31,10 @@ final class BridgeListFeed<Row> {
         /// landed. Albums and Artists never set this above 0 (their pages
         /// default it); C3's playlist-tracks feed is what actually reads it.
         var skippedVideos: Int?
+        /// The latest page's `skipped_not_in_library` (2026-11-07), level state like
+        /// `skippedVideos`: the songs SpanDAC left out of these rows because they
+        /// are not in the library. nil until a page has landed.
+        var skippedNotInLibrary: Int?
         /// The `list_rev` of the read these rows came from: level state like
         /// `total`. nil until a page has landed, when SpanDAC sent none, and
         /// once two pages of one attempt disagree (they describe different lists).
@@ -108,6 +112,7 @@ final class BridgeListFeed<Row> {
     private var pendingWarming = false
     private var pendingDone = false
     private var pendingSkippedVideos: Int? = nil
+    private var pendingSkippedNotInLibrary: Int? = nil
     private var pendingListRev: String? = nil
     private var pendingGeneration: Int? = nil
     private var pendingLibraryInstance: String? = nil
@@ -172,6 +177,7 @@ final class BridgeListFeed<Row> {
                 }
                 if let total = page.total { self.pendingTotal = total }
                 self.pendingSkippedVideos = page.skippedVideos
+                self.pendingSkippedNotInLibrary = page.skippedNotInLibrary
                 if firstPage { self.pendingListRev = page.listRev }
                 else if page.listRev != self.pendingListRev { self.pendingListRev = nil }
                 self.pendingGeneration = page.generation
@@ -193,6 +199,7 @@ final class BridgeListFeed<Row> {
                 self.pendingAppend = []
                 self.pendingTotal = nil
                 self.pendingSkippedVideos = nil
+                self.pendingSkippedNotInLibrary = nil
                 self.pendingListRev = nil
                 self.pendingGeneration = nil
                 self.pendingLibraryInstance = nil
@@ -287,6 +294,7 @@ final class BridgeListFeed<Row> {
         var rows: [Row] = []
         var total: Int? = nil
         var skipped: Int? = nil
+        var notInLibrary: Int? = nil
         var listRev: String? = nil
         var generation: Int? = nil
         var libraryInstance: String? = nil
@@ -299,6 +307,7 @@ final class BridgeListFeed<Row> {
             if LibraryReask.flagged(page) { flagged = true }
             if let t = page.total { total = t }
             skipped = page.skippedVideos
+            notInLibrary = page.skippedNotInLibrary
             if firstPage { listRev = page.listRev } else if page.listRev != listRev { listRev = nil }
             generation = page.generation
             if firstPage { libraryInstance = page.libraryInstance }
@@ -306,7 +315,7 @@ final class BridgeListFeed<Row> {
             firstPage = false
             return true
         }, onRestart: {
-            rows = []; total = nil; skipped = nil; listRev = nil; generation = nil; libraryInstance = nil
+            rows = []; total = nil; skipped = nil; notInLibrary = nil; listRev = nil; generation = nil; libraryInstance = nil
             firstPage = true; flagged = false
         }, sleep: sleep)
         // A failed re-read leaves the list as it was, and ends the re-ask.
@@ -319,6 +328,7 @@ final class BridgeListFeed<Row> {
         feed.pendingAppend = []
         feed.pendingTotal = total
         feed.pendingSkippedVideos = skipped
+        feed.pendingSkippedNotInLibrary = notInLibrary
         feed.pendingListRev = listRev
         feed.pendingGeneration = generation
         feed.pendingLibraryInstance = libraryInstance
@@ -571,6 +581,7 @@ final class BridgeListFeed<Row> {
         pendingWarming = false
         pendingDone = false
         pendingSkippedVideos = nil
+        pendingSkippedNotInLibrary = nil
         pendingListRev = nil
         pendingGeneration = nil
         pendingLibraryInstance = nil
@@ -597,7 +608,8 @@ final class BridgeListFeed<Row> {
         lock.lock()
         let out = Drained(replace: pendingReplace, append: pendingAppend, total: pendingTotal,
                           failure: pendingFailure, warming: pendingWarming, done: pendingDone,
-                          skippedVideos: pendingSkippedVideos, listRev: pendingListRev,
+                          skippedVideos: pendingSkippedVideos, skippedNotInLibrary: pendingSkippedNotInLibrary,
+                          listRev: pendingListRev,
                           generation: pendingGeneration, libraryInstance: pendingLibraryInstance,
                           reasked: pendingReasked)
         pendingReasked = false

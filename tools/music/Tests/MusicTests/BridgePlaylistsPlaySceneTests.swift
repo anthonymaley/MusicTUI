@@ -598,50 +598,75 @@ final class BridgePlaylistsPlaySceneTests: XCTestCase {
     /// never replacing them. `queued` is the ids SENT; the displayed count
     /// is reduced by `skippedUnavailable` in every form.
     /// The songs SpanDAC left out because they are not in the library
-    /// (2026-11-07): the exact wording, both numbers, and where it sits among the
-    /// other notices (right after the base, ahead of the unavailable songs).
-    func testNotInLibraryNoticeWordingAndComposition() {
-        XCTAssertEqual(bridgeNotInLibrarySongsNotice(0), "")
-        XCTAssertEqual(bridgeNotInLibrarySongsNotice(1), "1 song isn't in your library, so SpanDAC skipped it.")
-        XCTAssertEqual(bridgeNotInLibrarySongsNotice(2), "2 songs aren't in your library, so SpanDAC skipped them.")
+    /// (2026-11-07) lead the line, short: the exact wording, both numbers, and
+    /// what follows (the existing line, untouched).
+    func testNotInLibraryPrefixWordingAndComposition() {
+        XCTAssertEqual(bridgeNotInLibraryPrefix(0), "")
+        XCTAssertEqual(bridgeNotInLibraryPrefix(1), "Skipped 1 not in your library \u{00B7} ")
+        XCTAssertEqual(bridgeNotInLibraryPrefix(3), "Skipped 3 not in your library \u{00B7} ")
         XCTAssertEqual(
             bridgePlaylistPlayMessage(name: "X", queued: 24, skippedVideos: 0, skippedUnavailable: 0, skippedNotInLibrary: 3,
                                       startAt: 1, shuffle: false),
-            "Playing 'X' on SpanDAC \u{2014} 24 tracks. 3 songs aren't in your library, so SpanDAC skipped them.")
+            "Skipped 3 not in your library \u{00B7} Playing 'X' on SpanDAC \u{2014} 24 tracks.")
         XCTAssertEqual(
             bridgePlaylistPlayMessage(name: "X", queued: 24, skippedVideos: 2, skippedUnavailable: 1, skippedNotInLibrary: 1,
                                       startAt: 1, shuffle: false),
-            "Playing 23 of 26 from 'X' on SpanDAC: 2 videos skipped. 1 song isn't in your library, so SpanDAC skipped it. "
+            "Skipped 1 not in your library \u{00B7} Playing 23 of 26 from 'X' on SpanDAC: 2 videos skipped. "
             + "1 song isn't available to SpanDAC.")
         XCTAssertEqual(
             bridgePlaylistPlayMessage(name: "X", queued: 24, skippedVideos: 0, skippedUnavailable: 0, startAt: 1, shuffle: false),
-            "Playing 'X' on SpanDAC \u{2014} 24 tracks.", "no skip, no notice: the old sentence byte for byte")
-        // The handoff report words it the same way, after the videos.
+            "Playing 'X' on SpanDAC \u{2014} 24 tracks.", "no skip, no prefix: the old sentence byte for byte")
+        // The hand-off report leads every line with it, ahead of "Playing ...".
         var report = HandoffPlayReport()
         report.skippedVideos = 1
         report.skippedNotInLibrary = 2
         report.skippedUnavailable = 1
         report.repeatedSongs = 1
-        XCTAssertEqual(report.notice,
-                       "1 video skipped. 2 songs aren't in your library, so SpanDAC skipped them. "
-                       + "1 song isn't available to SpanDAC. 1 repeated song plays once.")
+        XCTAssertEqual(report.skipPrefix, "Skipped 2 not in your library \u{00B7} ")
+        XCTAssertEqual(report.notice, "1 video skipped. 1 song isn't available to SpanDAC. 1 repeated song plays once.",
+                       "the trailing notice no longer carries it")
+        XCTAssertEqual(LibraryProvenance.playingOnMusicTUI("X", report: report),
+                       "Skipped 2 not in your library \u{00B7} Playing 'X' on MusicTUI. "
+                       + "1 video skipped. 1 song isn't available to SpanDAC. 1 repeated song plays once.")
         XCTAssertNil(HandoffPlayReport().notice)
+        XCTAssertNil(HandoffPlayReport().skipPrefix)
+        XCTAssertFalse(HandoffPlayReport().saysAnything)
+        var only = HandoffPlayReport()
+        only.skippedNotInLibrary = 1
+        XCTAssertNil(only.notice)
+        XCTAssertTrue(only.saysAnything, "a skip alone keeps the line until something changes")
     }
 
-    /// The footer is cut at `width - 4` (Shell.swift). At 50 columns the line
-    /// begins with what played and the cut falls inside a notice, never inside
-    /// the base sentence; the count that matters leads the notice.
-    func testNotInLibraryNoticeLeadsWithItsCountWhereTheFooterCutsIt() {
-        let notice = bridgeNotInLibrarySongsNotice(3)
-        for width in [50, 60, 80] {
-            let line = bridgePlaylistPlayMessage(name: "X", queued: 24, skippedVideos: 0, skippedUnavailable: 1,
-                                                 skippedNotInLibrary: 3, startAt: 1, shuffle: false)
-            let shown = truncText(line, to: width - 4)
-            XCTAssertTrue(shown.hasPrefix("Playing 'X' on SpanDAC \u{2014} 23 tracks."), "\(width)")
-            XCTAssertTrue(line.contains(notice), "\(width)")
-            let noticeStart = line.range(of: notice)!.lowerBound
-            XCTAssertLessThan(line.distance(from: line.startIndex, to: noticeStart), 50,
-                              "the notice follows the base directly, so a narrow footer shows its start")
+    /// The footer is cut at `width - 4` (Shell.swift) and the playlist name is
+    /// unbounded, so the skip must come FIRST: at 50 and 80 columns, with a long
+    /// name and with videos and unavailable songs beside it, the cut footer still
+    /// begins with it, and so does every other line the play posts.
+    func testTheSkipSurvivesTheFooterCutAt50And80ColumnsWithALongName() {
+        let longName = String(repeating: "A very long playlist name ", count: 6)
+        let prefix = "Skipped 12 not in your library \u{00B7} "
+        var lines: [(String, String)] = []
+        lines.append(("playlist play", bridgePlaylistPlayMessage(name: longName, queued: 240, skippedVideos: 3,
+                                                                  skippedUnavailable: 2, skippedNotInLibrary: 12,
+                                                                  startAt: 1, shuffle: false)))
+        lines.append(("whole play", bridgeWholePlayMessage(
+            name: longName,
+            result: SpanDACPlayResult(queue: .complete(requested: 240, present: nil), skippedUnavailable: 2,
+                                      skippedVideos: 3, skippedNotInLibrary: 12, queued: 240, requested: 240,
+                                      queueToken: "t"))))
+        var report = HandoffPlayReport()
+        report.skippedVideos = 3
+        report.skippedUnavailable = 2
+        report.skippedNotInLibrary = 12
+        lines.append(("hand-off", LibraryProvenance.playingOnMusicTUI(longName, report: report)))
+        lines.append(("unconfirmed warning", (report.skipPrefix ?? "")
+                      + [playNotStartedWarning(longName), report.notice].compactMap { $0 }.joined(separator: " ")))
+        for width in [50, 80] {
+            let frame = shellLayout(width: width, height: 30)
+            for (label, line) in lines {
+                let shown = truncText(line, to: max(1, frame.width - 4))
+                XCTAssertTrue(shown.hasPrefix(prefix), "\(label) at \(width) columns showed \(shown)")
+                XCTAssertEqual(line.hasPrefix(prefix), true, label)
+            }
         }
     }
 

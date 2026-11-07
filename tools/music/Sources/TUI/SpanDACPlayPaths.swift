@@ -30,6 +30,14 @@ protocol MusicTUIHandoff {
     @discardableResult
     func playLibrary(rows: [MusicRow], startAt: Int, startRequired: Bool, shuffle: Bool,
                      title: String, skippedVideos: Int, repeatedSongs: Int) throws -> HandoffPlayReport
+    /// The same play, for rows from which SpanDAC left `skippedNotInLibrary`
+    /// playlist songs out because they are not in the library (2026-11-07): the
+    /// count is in the report BEFORE the play starts, so the line it posts, its
+    /// unconfirmed warning and a late confirmation's restored line all lead with it.
+    @discardableResult
+    func playLibrary(rows: [MusicRow], startAt: Int, startRequired: Bool, shuffle: Bool,
+                     title: String, skippedVideos: Int, repeatedSongs: Int,
+                     skippedNotInLibrary: Int) throws -> HandoffPlayReport
 }
 
 extension MusicTUIHandoff {
@@ -52,6 +60,18 @@ extension MusicTUIHandoff {
         var report = try playLibrary(rows: rows, startAt: startAt, startRequired: startRequired, shuffle: shuffle,
                                      title: title, skippedVideos: skippedVideos)
         report.repeatedSongs = repeatedSongs
+        return report
+    }
+
+    /// A hand-off with no confirmation of its own: the songs SpanDAC skipped join
+    /// the report it returns.
+    @discardableResult
+    func playLibrary(rows: [MusicRow], startAt: Int, startRequired: Bool, shuffle: Bool,
+                     title: String, skippedVideos: Int, repeatedSongs: Int,
+                     skippedNotInLibrary: Int) throws -> HandoffPlayReport {
+        var report = try playLibrary(rows: rows, startAt: startAt, startRequired: startRequired, shuffle: shuffle,
+                                     title: title, skippedVideos: skippedVideos, repeatedSongs: repeatedSongs)
+        report.skippedNotInLibrary = skippedNotInLibrary
         return report
     }
 

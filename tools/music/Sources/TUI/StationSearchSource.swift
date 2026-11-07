@@ -849,8 +849,18 @@ protocol SourceControlling {
     /// `capabilities()` lists `play.library`.
     func playLibrary(kind: LibraryPlayKind, id: String?, start: LibraryPlayStart?, listRev: String?,
                      shuffle: Bool) throws -> SpanDACPlayResult
+    /// The same, saying whether the client wants a playlist's songs that are not
+    /// in the library SKIPPED (`skip_not_in_library`, 2026-11-07). Sent as
+    /// `true` only for a playlist and only when true, never as an explicit
+    /// `false`: absent is the older request, and SpanDAC then refuses such a
+    /// playlist whole, as it always did. Only a client that shows the notice asks.
+    func playLibrary(kind: LibraryPlayKind, id: String?, start: LibraryPlayStart?, listRev: String?,
+                     shuffle: Bool, skipNotInLibrary: Bool) throws -> SpanDACPlayResult
     /// `slice.listRev`: a container's complete-list revision without its rows.
     func listRev(kind: LibraryPlayKind, id: String?) throws -> SpanDACListRev
+    /// `slice.listRev` for a client that skips playlist songs that are not in
+    /// the library: the revision must describe the list it reads and plays.
+    func listRev(kind: LibraryPlayKind, id: String?, skipNotInLibrary: Bool) throws -> SpanDACListRev
     /// `slice.queueJump`: jump the player to one row of the queue being shown,
     /// named by its `queue_token` and 0-based `row`. Sent only when
     /// `capabilities()` lists `queue.jump`.
@@ -897,6 +907,10 @@ protocol SourceControlling {
     /// Bridge (whose synthesized `Decodable` drops unknown keys) sees exactly
     /// the request it always has.
     func libraryPlaylistTracks(playlistID: String, cursor: String?, limit: Int, forQueue: Bool) throws -> MusicPage
+    /// The same, for a client that wants songs that are not in the library
+    /// SKIPPED and counted (`skip_not_in_library`, sent only when true).
+    func libraryPlaylistTracks(playlistID: String, cursor: String?, limit: Int, forQueue: Bool,
+                               skipNotInLibrary: Bool) throws -> MusicPage
 
     // Slice 3, Part 2, P1: the members the provider surfaces read through
     // (`ProviderSurfaces.swift`, D1). Each has a default below throwing
@@ -970,6 +984,19 @@ extension SourceControlling {
     }
     func listRev(kind: LibraryPlayKind, id: String?) throws -> SpanDACListRev {
         throw SourceAppError.unsupported(sourceListRevOp)
+    }
+    /// A conformer written before the opt-in answers as it always did: the flag
+    /// has nowhere to go, so the request is the older one.
+    func playLibrary(kind: LibraryPlayKind, id: String?, start: LibraryPlayStart?, listRev: String?,
+                     shuffle: Bool, skipNotInLibrary: Bool) throws -> SpanDACPlayResult {
+        try playLibrary(kind: kind, id: id, start: start, listRev: listRev, shuffle: shuffle)
+    }
+    func listRev(kind: LibraryPlayKind, id: String?, skipNotInLibrary: Bool) throws -> SpanDACListRev {
+        try listRev(kind: kind, id: id)
+    }
+    func libraryPlaylistTracks(playlistID: String, cursor: String?, limit: Int, forQueue: Bool,
+                               skipNotInLibrary: Bool) throws -> MusicPage {
+        try libraryPlaylistTracks(playlistID: playlistID, cursor: cursor, limit: limit, forQueue: forQueue)
     }
     func queueJump(token: String, row: Int) throws -> SpanDACQueueJumpResult {
         throw SourceAppError.unsupported(sourceQueueJumpOp)
@@ -1241,9 +1268,18 @@ struct SourceAppControl: SourceControlling {
     /// today's request unchanged.
     func libraryPlaylistTracks(playlistID: String, cursor: String?, limit: Int = 500,
                                forQueue: Bool = false) throws -> MusicPage {
+        try libraryPlaylistTracks(playlistID: playlistID, cursor: cursor, limit: limit, forQueue: forQueue,
+                                  skipNotInLibrary: false)
+    }
+
+    /// `skipNotInLibrary` (2026-11-07): sent as `"skip_not_in_library": true`
+    /// only when true — never an explicit `false` — so SpanDAC sees the request
+    /// it always has unless the caller shows the notice for what it skips.
+    func libraryPlaylistTracks(playlistID: String, cursor: String?, limit: Int, forQueue: Bool,
+                               skipNotInLibrary: Bool) throws -> MusicPage {
         try libraryPage(op: "slice.libraryPlaylistTracks", opName: "playlist tracks", limit: limit,
                         cursor: cursor, id: playlistID, rows: .exactly(.song),
-                        readsSkippedVideos: true, forQueue: forQueue)
+                        readsSkippedVideos: true, forQueue: forQueue, skipNotInLibrary: skipNotInLibrary)
     }
 
     /// Which row kinds a paged list or a container read accepts, and what it
@@ -1305,6 +1341,7 @@ struct SourceAppControl: SourceControlling {
     private func libraryPage(op: String, opName: String, limit: Int, cursor: String?,
                              id: String? = nil, rows policy: LibraryRowPolicy,
                              readsSkippedVideos: Bool = false, forQueue: Bool = false,
+                             skipNotInLibrary: Bool = false,
                              readsLibraryInstance: Bool = false) throws -> MusicPage {
         var body: [String: Any] = ["op": op, "limit": limit]
         if let cursor { body["cursor"] = cursor }
@@ -1314,6 +1351,7 @@ struct SourceAppControl: SourceControlling {
         // omitting it entirely keeps today's request byte-for-byte for every
         // OTHER caller of this shared helper.
         if forQueue { body["for_queue"] = true }
+        if skipNotInLibrary { body["skip_not_in_library"] = true }
         let reply = try send(body, over: libraryTransport)
 
         guard let items = reply["items"] as? [[String: Any]] else {

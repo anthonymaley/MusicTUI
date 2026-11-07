@@ -85,11 +85,16 @@ extension SourceAppControl {
     /// list not worth reading to play) can still be proven. Its value equals the
     /// list read's `list_rev` for the same list.
     func listRev(kind: LibraryPlayKind, id: String?) throws -> SpanDACListRev {
+        try listRev(kind: kind, id: id, skipNotInLibrary: false)
+    }
+
+    func listRev(kind: LibraryPlayKind, id: String?, skipNotInLibrary: Bool) throws -> SpanDACListRev {
         if (id ?? "").trimmingCharacters(in: .whitespaces).isEmpty {
             throw SourceAppError.refused("a revision of a \(kind.rawValue) needs its id")
         }
         var body: [String: Any] = ["op": sourceListRevOp, "kind": kind.rawValue]
         if let id { body["id"] = id }
+        if skipNotInLibrary && kind == .playlist { body["skip_not_in_library"] = true }
         let reply = try send(body, over: libraryTransport)
         // Fail closed: a revision that is missing, blank or for another kind of
         // list would prove nothing about the list the play names.
@@ -110,8 +115,11 @@ extension SourceAppControl {
     /// started from came from a read that carried one; `shuffle` always,
     /// explicitly.
     static func playLibraryBody(kind: LibraryPlayKind, id: String?, start: LibraryPlayStart?,
-                                listRev: String?, shuffle: Bool) -> [String: Any] {
+                                listRev: String?, shuffle: Bool, skipNotInLibrary: Bool = false) -> [String: Any] {
         var body: [String: Any] = ["op": sourcePlayLibraryOp, "kind": kind.rawValue, "shuffle": shuffle]
+        // Sent only as true and only for a playlist (the one container with songs
+        // that may not be in the library); absent is the older request.
+        if skipNotInLibrary && kind == .playlist { body["skip_not_in_library"] = true }
         if let id { body["id"] = id }
         if let listRev { body["list_rev"] = listRev }
         if let start {
@@ -132,13 +140,20 @@ extension SourceAppControl {
     /// transport commands' 10 s.
     func playLibrary(kind: LibraryPlayKind, id: String?, start: LibraryPlayStart?, listRev: String?,
                      shuffle: Bool) throws -> SpanDACPlayResult {
+        try playLibrary(kind: kind, id: id, start: start, listRev: listRev, shuffle: shuffle,
+                        skipNotInLibrary: false)
+    }
+
+    func playLibrary(kind: LibraryPlayKind, id: String?, start: LibraryPlayStart?, listRev: String?,
+                     shuffle: Bool, skipNotInLibrary: Bool) throws -> SpanDACPlayResult {
         if shuffle && start != nil {
             throw SourceAppError.refused("a shuffled play starts at the first song of the shuffle, so it takes no start row")
         }
         if (id ?? "").trimmingCharacters(in: .whitespaces).isEmpty {
             throw SourceAppError.refused("a play of a \(kind.rawValue) needs its id")
         }
-        let reply = try send(Self.playLibraryBody(kind: kind, id: id, start: start, listRev: listRev, shuffle: shuffle),
+        let reply = try send(Self.playLibraryBody(kind: kind, id: id, start: start, listRev: listRev, shuffle: shuffle,
+                                                  skipNotInLibrary: skipNotInLibrary),
                              over: libraryTransport)
         return try Self.playLibraryResult(from: reply, readingWith: self)
     }

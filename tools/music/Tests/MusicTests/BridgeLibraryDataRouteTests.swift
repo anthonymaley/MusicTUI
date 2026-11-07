@@ -74,6 +74,19 @@ final class BridgeLibraryDataRouteTests: XCTestCase {
         var calls: [Call] { lock.lock(); defer { lock.unlock() }; return recorded }
         /// What every play reports back (nothing skipped unless a test says so).
         var report = HandoffPlayReport()
+        /// The `skippedNotInLibrary` each play was handed BEFORE it started, as the
+        /// real hand-off receives it (it goes into the report the play confirms under).
+        private var handedNotInLibrary: [Int] = []
+        var notInLibraryHandedIn: [Int] { lock.lock(); defer { lock.unlock() }; return handedNotInLibrary }
+        func playLibrary(rows: [MusicRow], startAt: Int, startRequired: Bool, shuffle: Bool,
+                         title: String, skippedVideos: Int, repeatedSongs: Int,
+                         skippedNotInLibrary: Int) throws -> HandoffPlayReport {
+            lock.lock(); handedNotInLibrary.append(skippedNotInLibrary); lock.unlock()
+            var out = try playLibrary(rows: rows, startAt: startAt, startRequired: startRequired, shuffle: shuffle,
+                                      title: title)
+            out.skippedNotInLibrary = skippedNotInLibrary
+            return out
+        }
         func playLibrary(rows: [MusicRow], startAt: Int, startRequired: Bool, shuffle: Bool,
                          title: String) throws -> HandoffPlayReport {
             lock.lock()
@@ -270,6 +283,70 @@ final class BridgeLibraryDataRouteTests: XCTestCase {
                        "a skipped song will not play: the notice stays")
         XCTAssertTrue(r.data.sent("slice.queue").isEmpty)
         XCTAssertEqual(r.built.outputModes, [])
+    }
+
+    private let playlistTracksWithMissingSongs = """
+    {"ok":true,"op":"slice.libraryPlaylistTracks","generation":3,"total":2,
+     "items":[{"id":"p1","title":"One","artist":"A","kind":"song"},{"id":"p2","title":"Two","artist":"A","kind":"song"}],
+     "next_cursor":null,"skipped_videos":0,"skipped_not_in_library":3,"list_rev":"rev-1"}
+    """
+
+    private func playlistsScene(_ r: Rig) -> PlaylistsScene {
+        let routing = r.routing
+        return PlaylistsScene(backend: r.counter.backend, routing: routing, playlists: [], sources: .empty,
+                              appQueue: AppQueueStore(), status: r.status, actions: ActionRunner(status: r.status),
+                              metaCache: temporaryPlaylistMetaCache().cache,
+                              makeProvider: { spanDACDataProvider(routing: routing) },
+                              handoff: r.handoff, warmUpSleep: { _ in },
+                              screenWidth: { 120 })
+    }
+
+    /// Songs SpanDAC skipped because they are not in the library, on a FRESH read
+    /// for a hand-off: the count is handed to the hand-off before it starts (so its
+    /// confirmation lines carry it), the posted line leads with it and stays, and
+    /// every read asked for the skip.
+    func testAFreshPlaylistHandOffCarriesTheNotInLibraryCountIntoTheHandoff() {
+        let r = rig(output: .musicApp, data: .accepted)
+        r.data.script("slice.libraryPlaylists", [playlistPage])
+        r.data.script("slice.libraryPlaylistTracks", [playlistTracksWithMissingSongs])
+        let s = playlistsScene(r)
+        XCTAssertTrue(settleScene(s) { s.railNamesForTest == ["Chill"] })
+        _ = s.handle(.char("p"))
+        XCTAssertTrue(wait { !r.handoff.calls.isEmpty }, "the playlist never reached the hand-off")
+        XCTAssertEqual(r.handoff.notInLibraryHandedIn, [3], "the count was not in the hand-off's report")
+        let expected = "Skipped 3 not in your library \u{00B7} " + LibraryProvenance.playingOnMusicTUI("Chill")
+        XCTAssertTrue(settleScene(s) { r.status.current()?.text == expected },
+                      "got: \(String(describing: r.status.current()?.text))")
+        XCTAssertEqual(r.status.current(now: Date().addingTimeInterval(3600))?.staysUntilStateChange, true)
+        let reads = r.data.sent("slice.libraryPlaylistTracks")
+        XCTAssertFalse(reads.isEmpty)
+        XCTAssertTrue(reads.allSatisfy { $0["skip_not_in_library"] as? Bool == true },
+                      "a TUI playlist read did not ask to skip")
+    }
+
+    /// The rows already on screen (the drill-in's own read) keep the count they were
+    /// read with, so `p` at the tracks pane plays them with no second read and still
+    /// says what was skipped.
+    func testADisplayedPlaylistKeepsItsNotInLibraryCountForTheHandoff() {
+        let r = rig(output: .musicApp, data: .accepted)
+        r.data.script("slice.libraryPlaylists", [playlistPage])
+        r.data.script("slice.libraryPlaylistTracks", [playlistTracksWithMissingSongs])
+        let s = playlistsScene(r)
+        XCTAssertTrue(settleScene(s) { s.railNamesForTest == ["Chill"] })
+        _ = s.handle(.enter)   // drill in: the feed reads the tracks
+        let idleSnapshot = NowPlayingSnapshot(outcome: .stopped, history: [], surrounding: [])
+        XCTAssertTrue(settleScene(s) {
+            s.render(frame: shellLayout(width: 160, height: 30), snapshot: idleSnapshot).contains("Tracks 2")
+        }, "the tracks pane never showed its loaded header")
+        for _ in 0..<20 { _ = s.tick(snapshot: idleSnapshot); usleep(2_000) }
+        let readsBefore = r.data.sent("slice.libraryPlaylistTracks").count
+        _ = s.handle(.char("p"))
+        XCTAssertTrue(wait { !r.handoff.calls.isEmpty }, "the displayed playlist never reached the hand-off")
+        XCTAssertEqual(r.handoff.notInLibraryHandedIn, [3], "the displayed rows lost the count they were read with")
+        XCTAssertEqual(r.data.sent("slice.libraryPlaylistTracks").count, readsBefore, "a second read was sent")
+        let expected = "Skipped 3 not in your library \u{00B7} " + LibraryProvenance.playingOnMusicTUI("Chill")
+        XCTAssertTrue(settleScene(s) { r.status.current()?.text == expected },
+                      "got: \(String(describing: r.status.current()?.text))")
     }
 
     /// An owned song on the MusicTUI output with SpanDAC data and no DAC on
