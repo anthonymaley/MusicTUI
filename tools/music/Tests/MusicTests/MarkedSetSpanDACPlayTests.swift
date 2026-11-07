@@ -320,7 +320,7 @@ final class MarkedSetSpanDACPlayTests: XCTestCase {
 
         XCTAssertEqual(r.output.sent("slice.queue").count, 1)
         XCTAssertEqual(r.status.current()?.text,
-                       "Skipped 3 not in your library \u{00B7} Playing '\(mixedName)' on SpanDAC \u{2014} 4 tracks. "
+                       "Skipped 3 songs not in your library \u{00B7} Playing '\(mixedName)' on SpanDAC \u{2014} 4 tracks. "
                        + "1 song isn't available to SpanDAC.")
         XCTAssertEqual(r.status.current(now: Date().addingTimeInterval(3600))?.staysUntilStateChange, true)
     }
@@ -334,7 +334,7 @@ final class MarkedSetSpanDACPlayTests: XCTestCase {
         r.output.script("slice.queue", [queued()])
         play([chill, other], r)
         XCTAssertEqual(r.status.current()?.text,
-                       "Skipped 3 not in your library \u{00B7} Playing '2 playlists' on SpanDAC \u{2014} 2 tracks.")
+                       "Skipped 3 songs not in your library \u{00B7} Playing '2 playlists' on SpanDAC \u{2014} 2 tracks.")
     }
 
     // MARK: - The MusicTUI output: the hand-off
@@ -1011,7 +1011,7 @@ final class MarkedSetSpanDACPlayTests: XCTestCase {
                       spanDAC: MarkedSetSpanDAC(makeProvider: { spanDACDataProvider(routing: routing) },
                                                 handoff: handoff, sleep: { _ in }))
         r.actions.waitUntilIdle()
-        let lead = "Skipped 2 not in your library \u{00B7} "
+        let lead = "Skipped 2 songs not in your library \u{00B7} "
         let line = lead + "Playing '\(mixedName)' on MusicTUI."
         XCTAssertEqual(r.status.current()?.text, line, "the play's own line")
         XCTAssertEqual(store.read()?.tracks.count, 5)
@@ -1021,8 +1021,13 @@ final class MarkedSetSpanDACPlayTests: XCTestCase {
                       "the closing revision read must describe the same (skipped) list")
 
         confirm.runJobs()
-        XCTAssertEqual(confirm.posts, [lead + playNotStartedWarning(mixedName)],
-                       "the unconfirmed warning dropped the skip, or did not lead with it")
+        XCTAssertEqual(confirm.posts,
+                       [playNotStartedWarning(mixedName) + " \u{00B7} skipped 2 songs not in your library"],
+                       "the unconfirmed warning keeps its own words first and the skip follows")
+        for width in [50, 80] {
+            XCTAssertTrue(truncText(confirm.posts.first ?? "", to: width - 4)
+                            .hasPrefix("Play was requested, but Music didn't confirm"), "\(width)")
+        }
         XCTAssertNil(confirm.confirmer.currentTicket(), "the late playing read confirmed it")
         XCTAssertEqual(r.status.current()?.text, line, "the late confirmation dropped the skip")
     }

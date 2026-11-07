@@ -291,14 +291,77 @@ final class BridgeLibraryDataRouteTests: XCTestCase {
      "next_cursor":null,"skipped_videos":0,"skipped_not_in_library":3,"list_rev":"rev-1"}
     """
 
-    private func playlistsScene(_ r: Rig) -> PlaylistsScene {
+    private func playlistsScene(_ r: Rig, width: Int = 120) -> PlaylistsScene {
         let routing = r.routing
         return PlaylistsScene(backend: r.counter.backend, routing: routing, playlists: [], sources: .empty,
                               appQueue: AppQueueStore(), status: r.status, actions: ActionRunner(status: r.status),
                               metaCache: temporaryPlaylistMetaCache().cache,
                               makeProvider: { spanDACDataProvider(routing: routing) },
                               handoff: r.handoff, warmUpSleep: { _ in },
-                              screenWidth: { 120 })
+                              screenWidth: { width })
+    }
+
+    private func missingSongsPage(_ missing: Int) -> String {
+        """
+        {"ok":true,"op":"slice.libraryPlaylistTracks","generation":3,"total":2,
+         "items":[{"id":"p1","title":"One","artist":"A","kind":"song"},{"id":"p2","title":"Two","artist":"A","kind":"song"}],
+         "next_cursor":null,"skipped_videos":0,"skipped_not_in_library":\(missing),"list_rev":"rev-1"}
+        """
+    }
+
+    /// The count belongs to the read that produced the rows. A preview of the same
+    /// playlist (three-zone) that reports a DIFFERENT count must not change what a
+    /// play of the displayed drill-in rows announces, whichever lands last.
+    private func playDisplayedRowsAfterAPreviewAndADrillIn(previewLandsLast: Bool,
+                                                           file: StaticString = #filePath, line: UInt = #line) {
+        let r = rig(output: .musicApp, data: .accepted)
+        r.data.script("slice.libraryPlaylists", [playlistPage])
+        // Arrival order: the preview's read is the first, the drill-in's the second.
+        r.data.script("slice.libraryPlaylistTracks", [missingSongsPage(7), missingSongsPage(3)])
+        let held = previewLandsLast ? 0 : 1
+        r.data.gate(op: "slice.libraryPlaylistTracks", at: held)
+        let s = playlistsScene(r, width: 160)
+        let idleSnapshot = NowPlayingSnapshot(outcome: .stopped, history: [], surrounding: [])
+        let wide = shellLayout(width: 160, height: 30)
+        XCTAssertTrue(settleScene(s) { s.railNamesForTest == ["Chill"] }, file: file, line: line)
+        // The preview's read is issued first, by the focused rail row.
+        XCTAssertTrue(settleScene(s) { r.data.reached(op: "slice.libraryPlaylistTracks", at: 0) },
+                      "the preview never asked", file: file, line: line)
+        if !previewLandsLast {
+            XCTAssertTrue(settleScene(s) { s.previewTitlesForTest("pl1") != nil },
+                          "the preview never landed", file: file, line: line)
+        }
+        _ = s.handle(.enter)   // drill in: the second read
+        if previewLandsLast {
+            XCTAssertTrue(settleScene(s) { s.render(frame: wide, snapshot: idleSnapshot).contains("Tracks 2") },
+                          "the drill-in rows never showed", file: file, line: line)
+            r.data.release(op: "slice.libraryPlaylistTracks", at: held)
+            XCTAssertTrue(settleScene(s) { s.previewTitlesForTest("pl1") != nil },
+                          "the delayed preview never landed", file: file, line: line)
+        } else {
+            XCTAssertTrue(settleScene(s) { r.data.reached(op: "slice.libraryPlaylistTracks", at: 1) },
+                          "the drill-in never asked", file: file, line: line)
+            r.data.release(op: "slice.libraryPlaylistTracks", at: held)
+            XCTAssertTrue(settleScene(s) { s.render(frame: wide, snapshot: idleSnapshot).contains("Tracks 2") },
+                          "the drill-in rows never showed", file: file, line: line)
+        }
+        for _ in 0..<30 { _ = s.tick(snapshot: idleSnapshot); usleep(2_000) }
+        _ = s.handle(.char("p"))
+        XCTAssertTrue(wait { !r.handoff.calls.isEmpty }, "the displayed rows never reached the hand-off",
+                      file: file, line: line)
+        XCTAssertEqual(r.handoff.notInLibraryHandedIn, [3],
+                       "the play announced a count that is not the displayed rows' own", file: file, line: line)
+        let expected = "Skipped 3 songs not in your library \u{00B7} " + LibraryProvenance.playingOnMusicTUI("Chill")
+        XCTAssertTrue(settleScene(s) { r.status.current()?.text == expected },
+                      "got: \(String(describing: r.status.current()?.text))", file: file, line: line)
+    }
+
+    func testADelayedPreviewWithADifferentCountDoesNotChangeTheDisplayedRowsCount() {
+        playDisplayedRowsAfterAPreviewAndADrillIn(previewLandsLast: true)
+    }
+
+    func testAPreviewThatLandedFirstDoesNotChangeTheDisplayedRowsCount() {
+        playDisplayedRowsAfterAPreviewAndADrillIn(previewLandsLast: false)
     }
 
     /// Songs SpanDAC skipped because they are not in the library, on a FRESH read
@@ -314,7 +377,7 @@ final class BridgeLibraryDataRouteTests: XCTestCase {
         _ = s.handle(.char("p"))
         XCTAssertTrue(wait { !r.handoff.calls.isEmpty }, "the playlist never reached the hand-off")
         XCTAssertEqual(r.handoff.notInLibraryHandedIn, [3], "the count was not in the hand-off's report")
-        let expected = "Skipped 3 not in your library \u{00B7} " + LibraryProvenance.playingOnMusicTUI("Chill")
+        let expected = "Skipped 3 songs not in your library \u{00B7} " + LibraryProvenance.playingOnMusicTUI("Chill")
         XCTAssertTrue(settleScene(s) { r.status.current()?.text == expected },
                       "got: \(String(describing: r.status.current()?.text))")
         XCTAssertEqual(r.status.current(now: Date().addingTimeInterval(3600))?.staysUntilStateChange, true)
@@ -344,7 +407,7 @@ final class BridgeLibraryDataRouteTests: XCTestCase {
         XCTAssertTrue(wait { !r.handoff.calls.isEmpty }, "the displayed playlist never reached the hand-off")
         XCTAssertEqual(r.handoff.notInLibraryHandedIn, [3], "the displayed rows lost the count they were read with")
         XCTAssertEqual(r.data.sent("slice.libraryPlaylistTracks").count, readsBefore, "a second read was sent")
-        let expected = "Skipped 3 not in your library \u{00B7} " + LibraryProvenance.playingOnMusicTUI("Chill")
+        let expected = "Skipped 3 songs not in your library \u{00B7} " + LibraryProvenance.playingOnMusicTUI("Chill")
         XCTAssertTrue(settleScene(s) { r.status.current()?.text == expected },
                       "got: \(String(describing: r.status.current()?.text))")
     }

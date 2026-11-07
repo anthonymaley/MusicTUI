@@ -322,9 +322,6 @@ final class PlaylistsScene: Scene {
     // read, a count stays good until the library itself changes.
     private var trackCounts: [String: Int] = [:]
     private var skippedVideoCounts: [String: Int] = [:]
-    /// The same, for songs SpanDAC left out because they are not in the library
-    /// (2026-11-07): kept with the rows so a play of rows already read still says it.
-    private var skippedNotInLibraryCounts: [String: Int] = [:]
 
     // C3 item 1: the preview — one small read per focused playlist,
     // decoration only (D2), keyed by playlist id.
@@ -380,8 +377,7 @@ final class PlaylistsScene: Scene {
     /// preview worth asking for again (`syncPreviewReask`). A walked play's
     /// landing is a complete, just-read list and carries none.
     private enum BridgePreviewOutcome {
-        case success(rows: [MusicRow], total: Int, skippedVideos: Int, flagged: Bool = false,
-                     skippedNotInLibrary: Int = 0)
+        case success(rows: [MusicRow], total: Int, skippedVideos: Int, flagged: Bool = false)
         case failure(String)
     }
     /// Preview re-ask state, all under `previewInboxLock`. A stale-flagged
@@ -429,6 +425,12 @@ final class PlaylistsScene: Scene {
     /// The `list_rev` of the read `bridgeTracksRows` came from, when SpanDAC sent
     /// one (the walk's pages all agreed): a whole-playlist play sends it back.
     private var bridgeTracksListRev: String? = nil
+    /// The songs SpanDAC left out of `bridgeTracksRows` because they are not in the
+    /// library (2026-11-07), from the SAME read as the rows and `bridgeTracksListRev`
+    /// and set and cleared with them. A preview or any other read of the same
+    /// playlist never touches it, so a play of the displayed rows announces the
+    /// count of the read that produced them.
+    private var bridgeTracksSkippedNotInLibrary = 0
     private var bridgeTracksDone = false
     private var bridgeTracksTotal: Int? = nil
     private var bridgeTracksFailure: String? = nil
@@ -763,7 +765,6 @@ final class PlaylistsScene: Scene {
         playlistsFeed.reset()
         trackCounts = [:]
         skippedVideoCounts = [:]
-        skippedNotInLibraryCounts = [:]
         bridgePreview = [:]
         bridgePreviewFailure = [:]
         bridgePreviewInFlight = []
@@ -771,6 +772,7 @@ final class PlaylistsScene: Scene {
         bridgeTracksFeed = nil
         bridgeTracksRows = []
         bridgeTracksListRev = nil
+        bridgeTracksSkippedNotInLibrary = 0
         bridgeTracksDone = false
         bridgeTracksTotal = nil
         bridgeTracksFailure = nil
@@ -1022,11 +1024,10 @@ final class PlaylistsScene: Scene {
             bridgePreviewInFlight.remove(pid)
             guard epoch == railEpoch else { continue }   // rule 10: outlived a provenance switch
             switch outcome {
-            case .success(let rows, let total, let skippedVideos, let flagged, let skippedNotInLibrary):
+            case .success(let rows, let total, let skippedVideos, let flagged):
                 bridgePreview[pid] = rows
                 trackCounts[pid] = total
                 skippedVideoCounts[pid] = skippedVideos
-                skippedNotInLibraryCounts[pid] = skippedNotInLibrary
                 previewInboxLock.lock()
                 if flagged { previewReaskStale.insert(pid) } else { previewReaskStale.remove(pid) }
                 previewInboxLock.unlock()
@@ -1113,12 +1114,16 @@ final class PlaylistsScene: Scene {
                 changed = true
             }
             if bridgeTracksListRev != drain.listRev { bridgeTracksListRev = drain.listRev }
+            bridgeTracksSkippedNotInLibrary = drain.skippedNotInLibrary ?? 0
             if bridgeTracksTotal != drain.total { bridgeTracksTotal = drain.total; changed = true }
             if bridgeTracksFailure != drain.failure {
                 bridgeTracksFailure = drain.failure
                 // D4: a failure clears the rows and keeps the sentence — a
                 // walk that failed never shows a partial list.
-                if drain.failure != nil { bridgeTracksRows = []; bridgeTracksListRev = nil; clampBridgeTracksCursor() }
+                if drain.failure != nil {
+                    bridgeTracksRows = []; bridgeTracksListRev = nil; bridgeTracksSkippedNotInLibrary = 0
+                    clampBridgeTracksCursor()
+                }
                 changed = true
             }
             if bridgeTracksWarming != drain.warming { bridgeTracksWarming = drain.warming; changed = true }
@@ -1126,7 +1131,6 @@ final class PlaylistsScene: Scene {
             if let pid = bridgeTracksPlaylistID {
                 if let total = drain.total { trackCounts[pid] = total }
                 if let skippedVideos = drain.skippedVideos { skippedVideoCounts[pid] = skippedVideos }
-                if let missing = drain.skippedNotInLibrary { skippedNotInLibraryCounts[pid] = missing }
             }
         }
 
@@ -1193,8 +1197,7 @@ final class PlaylistsScene: Scene {
                             self.bridgePreviewInbox.append(
                                 (pid, epoch, .success(rows: page.rows, total: page.total ?? page.rows.count,
                                                       skippedVideos: page.skippedVideos,
-                                                      flagged: LibraryReask.flagged(page),
-                                                      skippedNotInLibrary: page.skippedNotInLibrary)))
+                                                      flagged: LibraryReask.flagged(page))))
                             self.previewInboxLock.unlock()
                         } catch {
                             let sentence = (error as? MusicProviderError)?.errorDescription
@@ -1332,8 +1335,7 @@ final class PlaylistsScene: Scene {
                     if post {
                         scene.bridgePreviewInbox.append(
                             (pid, epoch, .success(rows: page.rows, total: page.total ?? page.rows.count,
-                                                  skippedVideos: page.skippedVideos, flagged: flagged,
-                                                  skippedNotInLibrary: page.skippedNotInLibrary)))
+                                                  skippedVideos: page.skippedVideos, flagged: flagged)))
                         // Not stale any more from this moment, so a tick that
                         // runs before the landing drains cannot start another worker.
                         if !flagged { scene.previewReaskStale.remove(pid) }
@@ -1486,7 +1488,7 @@ final class PlaylistsScene: Scene {
                     playBridgePlaylist(playlistID: pid, name: name, shuffle: false, startAt: trCursor + 1,
                                        startRequired: true, rows: bridgeTracksRows,
                                        skippedVideos: skippedVideoCounts[pid] ?? 0,
-                                       skippedNotInLibrary: skippedNotInLibraryCounts[pid] ?? 0,
+                                       skippedNotInLibrary: bridgeTracksSkippedNotInLibrary,
                                        listRev: bridgeTracksListRev)
                     return .push(.nowPlaying)
                 }
@@ -1579,7 +1581,7 @@ final class PlaylistsScene: Scene {
                 playBridgePlaylist(playlistID: row.id, name: row.title, shuffle: false, startAt: 1,
                                    startRequired: false, rows: cached ? bridgeTracksRows : nil,
                                    skippedVideos: cached ? skippedVideoCounts[row.id] : nil,
-                                   skippedNotInLibrary: cached ? skippedNotInLibraryCounts[row.id] ?? 0 : 0,
+                                   skippedNotInLibrary: cached ? bridgeTracksSkippedNotInLibrary : 0,
                                    listRev: cached ? bridgeTracksListRev : nil)
                 return .push(.nowPlaying)
             }
@@ -1595,7 +1597,7 @@ final class PlaylistsScene: Scene {
                 playBridgePlaylist(playlistID: row.id, name: row.title, shuffle: true, startAt: 1,
                                    startRequired: false, rows: cached ? bridgeTracksRows : nil,
                                    skippedVideos: cached ? skippedVideoCounts[row.id] : nil,
-                                   skippedNotInLibrary: cached ? skippedNotInLibraryCounts[row.id] ?? 0 : 0,
+                                   skippedNotInLibrary: cached ? bridgeTracksSkippedNotInLibrary : 0,
                                    listRev: cached ? bridgeTracksListRev : nil)
                 return .push(.nowPlaying)
             }
@@ -1675,6 +1677,7 @@ final class PlaylistsScene: Scene {
         bridgeTracksFeed = nil
         bridgeTracksRows = []
         bridgeTracksListRev = nil
+        bridgeTracksSkippedNotInLibrary = 0
         bridgeTracksDone = false
         bridgeTracksTotal = nil
         bridgeTracksFailure = nil
@@ -1698,6 +1701,7 @@ final class PlaylistsScene: Scene {
         bridgeTracksFeed?.reset()
         bridgeTracksRows = []
         bridgeTracksListRev = nil
+        bridgeTracksSkippedNotInLibrary = 0
         bridgeTracksDone = false
         bridgeTracksTotal = nil
         bridgeTracksFailure = nil
@@ -1900,8 +1904,7 @@ final class PlaylistsScene: Scene {
         if let proceed, !proceed() { throw UpNextFillStopped() }
         previewInboxLock.lock()
         bridgePreviewInbox.append(
-            (playlistID, epoch, .success(rows: collected, total: collected.count, skippedVideos: lastSkipped,
-                                         skippedNotInLibrary: lastNotInLibrary)))
+            (playlistID, epoch, .success(rows: collected, total: collected.count, skippedVideos: lastSkipped)))
         previewInboxLock.unlock()
         return (collected, lastSkipped, lastNotInLibrary, walkedRev)
     }

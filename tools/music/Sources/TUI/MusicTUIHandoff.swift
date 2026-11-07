@@ -98,12 +98,20 @@ struct HandoffPlayReport: Equatable {
 }
 
 extension HandoffPlayReport {
-    /// What leads every line this play posts when SpanDAC skipped songs that are
-    /// not in the library, "Skipped 3 not in your library \u{00B7} ", or nil. Not part of
+    /// What leads an ordinary line this play posts (the play's own line and a late
+    /// confirmation's restored line) when SpanDAC skipped songs that are not in
+    /// the library, "Skipped 3 songs not in your library \u{00B7} ", or nil. Not part of
     /// `notice`, which trails the line: a long title could push a trailing
     /// sentence off the footer.
     var skipPrefix: String? {
         skippedNotInLibrary > 0 ? bridgeNotInLibraryPrefix(skippedNotInLibrary) : nil
+    }
+
+    /// The trailing form, for the unconfirmed-play warning only: that line keeps
+    /// its own first words ("Play was requested, but Music didn't confirm ...")
+    /// and the fact follows them.
+    var skipTrailer: String? {
+        skippedNotInLibrary > 0 ? bridgeNotInLibraryTrailer(skippedNotInLibrary) : nil
     }
 
     /// Whether the play has anything to say beyond "Playing ...": a notice or a

@@ -660,7 +660,7 @@ final class SpanDACWholePlaySceneTests: XCTestCase {
         XCTAssertEqual(wire.sent("slice.playLibrary").first?["skip_not_in_library"] as? Bool, true,
                        "the play asked SpanDAC to skip the songs it then says it skipped")
         XCTAssertEqual(status.current()?.text,
-                       "Skipped 3 not in your library \u{00B7} Playing 'Chill' on SpanDAC \u{2014} 37 queued. "
+                       "Skipped 3 songs not in your library \u{00B7} Playing 'Chill' on SpanDAC \u{2014} 37 queued. "
                        + "2 videos in this playlist skipped. 1 song isn't available to SpanDAC.")
         XCTAssertEqual(status.current(now: Date().addingTimeInterval(3600))?.staysUntilStateChange, true)
     }
@@ -675,7 +675,7 @@ final class SpanDACWholePlaySceneTests: XCTestCase {
         XCTAssertTrue(settlePlayed(wire))
         XCTAssertTrue(settleScene(s) { status.current()?.text.hasPrefix("Skipped") == true })
         XCTAssertEqual(status.current()?.text,
-                       "Skipped 1 not in your library \u{00B7} Playing 'Chill' on SpanDAC \u{2014} 40 queued.")
+                       "Skipped 1 song not in your library \u{00B7} Playing 'Chill' on SpanDAC \u{2014} 40 queued.")
         XCTAssertEqual(status.current(now: Date().addingTimeInterval(3600))?.staysUntilStateChange, true)
     }
 

@@ -665,14 +665,23 @@ func bridgeUnavailableSongsNotice(_ n: Int) -> String {
 }
 
 /// The playlist songs SpanDAC left out because they are not in the library
-/// (Anthony, 2026-11-07), said FIRST on the footer line and short:
-/// "Skipped 3 not in your library \u{00B7} " / "Skipped 1 not in your library \u{00B7} ",
+/// (Anthony, 2026-11-07), said FIRST on an ordinary footer line and short:
+/// "Skipped 3 songs not in your library \u{00B7} " / "Skipped 1 song not in your library \u{00B7} ",
 /// followed by the line the play already says. First, because the footer is cut at
 /// its width and a long playlist name could otherwise push this off the screen.
 /// Shared by every SpanDAC playlist play footer. Empty when `n` is 0.
 func bridgeNotInLibraryPrefix(_ n: Int) -> String {
     guard n > 0 else { return "" }
-    return "Skipped \(n) not in your library \u{00B7} "
+    return "Skipped \(n) song\(n == 1 ? "" : "s") not in your library \u{00B7} "
+}
+
+/// The same fact in its trailing form, for the one line that must keep its own
+/// first words: the unconfirmed-play warning, whose "Music didn't confirm" a
+/// narrow footer must not cut off. " \u{00B7} skipped 3 songs not in your library".
+/// Empty when `n` is 0.
+func bridgeNotInLibraryTrailer(_ n: Int) -> String {
+    guard n > 0 else { return "" }
+    return " \u{00B7} skipped \(n) song\(n == 1 ? "" : "s") not in your library"
 }
 
 /// A count a person reads, grouped in threes: 15646 → "15,646".
