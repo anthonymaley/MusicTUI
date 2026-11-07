@@ -133,7 +133,7 @@ func playQueueTrack(backend: AppleScriptBackend, playlist: String, position: Int
 @discardableResult
 func playRequestedQueueTrack(backend: AppleScriptBackend, appQueue: AppQueueStore, playlist: String,
                              position: Int, title: String, notice: String? = nil,
-                             restore: String? = nil) -> Bool {
+                             restore: String? = nil, trailer: String? = nil) -> Bool {
     guard let confirmer = appQueue.confirmer else {
         return playQueueTrack(backend: backend, playlist: playlist, position: position)
     }
@@ -145,7 +145,7 @@ func playRequestedQueueTrack(backend: AppleScriptBackend, appQueue: AppQueueStor
     let requested: RequestedTrack = playlist == persistentIDQueueSource
         ? .persistentID(persistentIDOfQueueEntry(position))
         : .position(playlist: playlist, index: position)
-    confirmer.confirm(ticket, requested: requested, title: title, notice: notice, restore: restore)
+    confirmer.confirm(ticket, requested: requested, title: title, notice: notice, restore: restore, trailer: trailer)
     return true
 }
 
@@ -160,9 +160,9 @@ func requestedHandoffPlayFirst(backend: AppleScriptBackend,
         let title = queue.contextLabel
         return playRequestedQueueTrack(backend: backend, appQueue: appQueue, playlist: queue.playlistName,
                                        position: queue.currentSourcePosition, title: title, notice: report.notice,
-                                       restore: report.notice.map { _ in
-                                           LibraryProvenance.playingOnMusicTUI(title, report: report)
-                                       })
+                                       restore: report.saysAnything
+                                           ? LibraryProvenance.playingOnMusicTUI(title, report: report) : nil,
+                                       trailer: report.skipTrailer)
     }
 }
 

@@ -56,7 +56,8 @@ enum LibraryProvenance {
     /// The same, followed by what the hand-off skipped as no longer
     /// available, when it skipped anything (ruling, 2026-09-24).
     static func playingOnMusicTUI(_ title: String, report: HandoffPlayReport) -> String {
-        [playingOnMusicTUI(title), report.notice].compactMap { $0 }.joined(separator: " ")
+        (report.skipPrefix ?? "")
+            + [playingOnMusicTUI(title), report.notice].compactMap { $0 }.joined(separator: " ")
     }
 }
 
@@ -87,7 +88,9 @@ func refuseOpenDataPlayBeforeReading(_ action: MusicTUIAction, routing: RoutingC
 /// iPhone's, when that is the output), never the data client the list was
 /// read through.
 func spanDACOutputPlayer(_ client: SourceAppClient) -> MusicDataProvider {
-    BridgeMusicProvider(control: client.control)
+    // The output's play of a playlist asks to skip the songs that are not in the
+    // library, and its footer says how many it skipped (2026-11-07).
+    BridgeMusicProvider(control: client.control, skipsNotInLibrary: true)
 }
 
 /// Runs the hand-off (C-HANDOFF) for a SpanDAC library play on the MusicTUI
@@ -99,11 +102,11 @@ func spanDACOutputPlayer(_ client: SourceAppClient) -> MusicDataProvider {
 @discardableResult
 func playThroughHandoff(_ handoff: MusicTUIHandoff, rows: [MusicRow], startAt: Int, startRequired: Bool,
                         shuffle: Bool, title: String, skippedVideos: Int = 0,
-                        repeatedSongs: Int = 0) throws -> HandoffPlayReport {
+                        repeatedSongs: Int = 0, skippedNotInLibrary: Int = 0) throws -> HandoffPlayReport {
     do {
         return try handoff.playLibrary(rows: rows, startAt: startAt, startRequired: startRequired,
                                        shuffle: shuffle, title: title, skippedVideos: skippedVideos,
-                                       repeatedSongs: repeatedSongs)
+                                       repeatedSongs: repeatedSongs, skippedNotInLibrary: skippedNotInLibrary)
     } catch let error as ActionError {
         throw error
     } catch {

@@ -170,6 +170,48 @@ final class SpanDACPlayLibraryTests: XCTestCase {
         XCTAssertEqual(result.queue, .complete(requested: 796, present: nil))
     }
 
+    /// `skip_not_in_library` rides on a PLAYLIST play and revision read only, only
+    /// as true, never as an explicit false; every other request is unchanged.
+    func testTheOptInIsSentOnlyAsTrueAndOnlyForAPlaylist() throws {
+        let skip = Canned(playReply())
+        _ = try control(skip).playLibrary(kind: .playlist, id: "p", start: nil, listRev: "r", shuffle: false,
+                                          skipNotInLibrary: true)
+        XCTAssertEqual(skip.bodies.first?["skip_not_in_library"] as? Bool, true)
+        for (kind, flag) in [(LibraryPlayKind.playlist, false), (.album, true), (.artist, true)] {
+            let canned = Canned(playReply())
+            _ = try control(canned).playLibrary(kind: kind, id: "x", start: nil, listRev: "r", shuffle: false,
+                                                skipNotInLibrary: flag)
+            XCTAssertNil(canned.bodies.first?["skip_not_in_library"], "\(kind) \(flag)")
+        }
+        let plain = Canned(playReply())
+        _ = try control(plain).playLibrary(kind: .playlist, id: "p", start: nil, listRev: "r", shuffle: false)
+        XCTAssertNil(plain.bodies.first?["skip_not_in_library"], "the older call sends the older request")
+
+        let rev = #"{"ok":true,"op":"slice.listRev","kind":"playlist","list_rev":"p1","count":3}"#
+        let asked = Canned(rev)
+        _ = try control(asked).listRev(kind: .playlist, id: "p", skipNotInLibrary: true)
+        XCTAssertEqual(asked.bodies.first?["skip_not_in_library"] as? Bool, true)
+        let notAsked = Canned(rev)
+        _ = try control(notAsked).listRev(kind: .playlist, id: "p")
+        XCTAssertNil(notAsked.bodies.first?["skip_not_in_library"])
+    }
+
+    func testThePlaylistOnlySongsSpanDACSkippedAreReadFromThePlayReply() throws {
+        let some = try control(Canned(playReply(extra: #","skipped_not_in_library":3"#)))
+            .playLibrary(kind: .playlist, id: "p", start: nil, listRev: "r", shuffle: false)
+        XCTAssertEqual(some.skippedNotInLibrary, 3)
+        // Sent only when more than 0, and never by an older SpanDAC.
+        let none = try control(Canned(playReply()))
+            .playLibrary(kind: .playlist, id: "p", start: nil, listRev: "r", shuffle: false)
+        XCTAssertEqual(none.skippedNotInLibrary, 0)
+        for bad in ["-1", "\"3\"", "null", "2.5"] {
+            XCTAssertThrowsError(try control(Canned(playReply(extra: #","skipped_not_in_library":\#(bad)"#)))
+                .playLibrary(kind: .playlist, id: "p", start: nil, listRev: "r", shuffle: false), bad) { error in
+                guard case SourceAppError.malformedReply = error else { return XCTFail("\(bad): \(error)") }
+            }
+        }
+    }
+
     func testAReplyWithoutTheCountsItMustCarryIsMalformedNotZero() {
         let missingQueued = #"{"ok":true,"op":"slice.playLibrary","status":{"playback":"playing","contract":3,"authorization":"authorized"},"skipped_unavailable":0,"skipped_videos":0}"#
         XCTAssertThrowsError(try control(Canned(missingQueued))

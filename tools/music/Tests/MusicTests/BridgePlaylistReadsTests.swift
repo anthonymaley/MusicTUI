@@ -244,6 +244,86 @@ final class BridgePlaylistReadsTests: XCTestCase {
         }
     }
 
+    // MARK: - skip_not_in_library: the opt-in request field (2026-11-07)
+
+    private let emptyTracksPage = """
+    {"ok":true,"op":"slice.libraryPlaylistTracks","generation":3,"total":0,
+     "items":[],"next_cursor":null,"skipped_videos":0}
+    """
+
+    /// ABSENT unless a client that shows the notice asks: the request is the one
+    /// older SpanDAC and every other caller (the CLI) always sent.
+    func testThePlaylistTracksRequestCarriesTheOptInOnlyWhenAsked() throws {
+        let plain = Wire([emptyTracksPage])
+        _ = try control(plain).libraryPlaylistTracks(playlistID: "pl1", cursor: nil, limit: 500)
+        XCTAssertNil(plain.firstLibraryRequest["skip_not_in_library"], "never an explicit false")
+        let asked = Wire([emptyTracksPage])
+        _ = try control(asked).libraryPlaylistTracks(playlistID: "pl1", cursor: nil, limit: 500, forQueue: true,
+                                                     skipNotInLibrary: true)
+        XCTAssertEqual(asked.firstLibraryRequest["skip_not_in_library"] as? Bool, true)
+        XCTAssertEqual(asked.firstLibraryRequest["for_queue"] as? Bool, true)
+        let off = Wire([emptyTracksPage])
+        _ = try control(off).libraryPlaylistTracks(playlistID: "pl1", cursor: nil, limit: 500, forQueue: false,
+                                                   skipNotInLibrary: false)
+        XCTAssertNil(off.firstLibraryRequest["skip_not_in_library"])
+    }
+
+    /// The provider the TUI builds asks (pages and queue walks); the one the CLI
+    /// builds, `BridgeMusicProvider(control:)`, never does, so `music bridge play`
+    /// keeps its whole-playlist refusal.
+    func testOnlyTheTUIsProviderAsksToSkip() throws {
+        let cli = Wire([emptyTracksPage, emptyTracksPage])
+        _ = try provider(cli).playlistTracks(playlistID: "pl1", cursor: nil, limit: 500)
+        _ = try provider(cli).playlistTracksForQueue(playlistID: "pl1", cursor: nil, limit: 500)
+        XCTAssertTrue(cli.sentOnLibrary.allSatisfy { cli.decoded($0)["skip_not_in_library"] == nil },
+                      "the CLI's provider sent the opt-in")
+        let tui = Wire([emptyTracksPage, emptyTracksPage])
+        let skipping = BridgeMusicProvider(control: control(tui), skipsNotInLibrary: true)
+        _ = try skipping.playlistTracks(playlistID: "pl1", cursor: nil, limit: 500)
+        _ = try skipping.playlistTracksForQueue(playlistID: "pl1", cursor: nil, limit: 500)
+        XCTAssertEqual(tui.sentOnLibrary.count, 2)
+        XCTAssertTrue(tui.sentOnLibrary.allSatisfy { tui.decoded($0)["skip_not_in_library"] as? Bool == true },
+                      "a TUI page or queue walk did not carry the opt-in")
+    }
+
+    // MARK: - skipped_not_in_library (2026-11-07)
+
+    func testAPageNamesThePlaylistOnlySongsSpanDACSkipped() throws {
+        let wire = Wire(["""
+        {"ok":true,"op":"slice.libraryPlaylistTracks","generation":3,"total":22,
+         "items":[],"next_cursor":null,"skipped_videos":1,"skipped_not_in_library":3}
+        """])
+        let page = try control(wire).libraryPlaylistTracks(playlistID: "pl1", cursor: nil, limit: 500)
+        XCTAssertEqual(page.skippedNotInLibrary, 3)
+        XCTAssertEqual(page.skippedVideos, 1, "the video count is read as before")
+    }
+
+    func testAPageWithoutTheKeyIsZeroSkippedNotInLibrary() throws {
+        // Sent only when more than 0, and never by an older SpanDAC.
+        let wire = Wire(["""
+        {"ok":true,"op":"slice.libraryPlaylistTracks","generation":3,"total":25,
+         "items":[],"next_cursor":null,"skipped_videos":0}
+        """])
+        let page = try control(wire).libraryPlaylistTracks(playlistID: "pl1", cursor: nil, limit: 500)
+        XCTAssertEqual(page.skippedNotInLibrary, 0)
+    }
+
+    func testASkippedNotInLibraryThatIsNotACountIsUnreadable() {
+        for (label, value) in [("-1", "-1"), ("\"2\"", "\"2\""), ("null", "null"), ("1.5", "1.5")] {
+            let wire = Wire(["""
+            {"ok":true,"op":"slice.libraryPlaylistTracks","generation":3,"total":0,
+             "items":[],"next_cursor":null,"skipped_videos":0,"skipped_not_in_library":\(value)}
+            """])
+            XCTAssertThrowsError(try control(wire).libraryPlaylistTracks(playlistID: "pl1", cursor: nil, limit: 500),
+                                 "skipped_not_in_library \(label) was read as a page") { error in
+                guard case SourceAppError.malformedReply(let what) = error else {
+                    return XCTFail("expected malformedReply for \(label), got \(error)")
+                }
+                XCTAssertTrue(what.contains("skipped_not_in_library"), "did not name the fault: \(what)")
+            }
+        }
+    }
+
     /// Only `libraryPlaylistTracks` requires the field: an albums page with no
     /// `skipped_videos` at all still decodes, exactly as it did before C1a.
     func testAnAlbumsPageWithNoSkippedVideosStillDecodes() throws {

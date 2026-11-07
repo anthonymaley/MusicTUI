@@ -188,7 +188,9 @@ func outputPlaysLibraryWhole(routing: RoutingCoordinator, expecting stamp: (epoc
 /// playlist videos left out and any songs SpanDAC cannot play.
 func bridgeWholePlayMessage(name: String, result: SpanDACPlayResult) -> String {
     let queued = result.queued ?? 0
-    var message = "Playing '\(name)' on SpanDAC \u{2014} "
+    // Songs not in the library lead the line, short, so a long name cannot push
+    // the fact off a narrow footer (2026-11-07).
+    var message = bridgeNotInLibraryPrefix(result.skippedNotInLibrary) + "Playing '\(name)' on SpanDAC \u{2014} "
     if let requested = result.requested, queued < requested {
         message += "\(groupedCount(queued)) of \(groupedCount(requested)) queued."
     } else {
@@ -203,7 +205,7 @@ func bridgeWholePlayMessage(name: String, result: SpanDACPlayResult) -> String {
 /// Whether that footer stays until something changes: something was left out or
 /// the queue came up short.
 func bridgeWholePlayNeedsAttention(_ result: SpanDACPlayResult) -> Bool {
-    if result.skippedUnavailable > 0 || result.skippedVideos > 0 { return true }
+    if result.skippedUnavailable > 0 || result.skippedVideos > 0 || result.skippedNotInLibrary > 0 { return true }
     if let requested = result.requested, let queued = result.queued, queued < requested { return true }
     return false
 }

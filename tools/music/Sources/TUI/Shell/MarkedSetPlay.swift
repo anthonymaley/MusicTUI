@@ -225,6 +225,9 @@ struct MarkedSetSpanDAC {
 struct MarkedSetSpanDACRows: Equatable {
     var rows: [MusicRow] = []
     var skippedVideos = 0
+    /// Songs SpanDAC left out of the playlists' rows because they are not in
+    /// the library (2026-11-07), summed over the marked playlists.
+    var skippedNotInLibrary = 0
 }
 
 /// A marked item SpanDAC could not read: the whole play fails, naming it, in
@@ -275,7 +278,8 @@ func markedSetTooLargeForSpanDACLine(_ songs: Int) -> String {
 /// as themselves: they are the whole set's, not one item's.
 func markedSetSpanDACRows(_ items: [MarkedItem],
                           albumTracks: (_ albumID: String) throws -> [MusicRow],
-                          playlistTracks: (_ playlistID: String) throws -> (rows: [MusicRow], skippedVideos: Int))
+                          playlistTracks: (_ playlistID: String) throws
+                              -> (rows: [MusicRow], skippedVideos: Int, skippedNotInLibrary: Int))
     throws -> MarkedSetSpanDACRows {
     guard !items.isEmpty else { throw ActionError(message: "Nothing is marked.") }
     let setName = markedSetDisplayName(items)
@@ -287,12 +291,12 @@ func markedSetSpanDACRows(_ items: [MarkedItem],
     var out = MarkedSetSpanDACRows()
     for item in items {
         let name: String
-        let read: (rows: [MusicRow], skippedVideos: Int)
+        let read: (rows: [MusicRow], skippedVideos: Int, skippedNotInLibrary: Int)
         switch item {
         case .album(let title, _, let id):
             name = title
             guard !id.isEmpty else { throw ActionError(message: "Couldn't find the album '\(title)', so nothing played.") }
-            read = try namingFailure(name) { (try albumTracks(id), 0) }
+            read = try namingFailure(name) { (try albumTracks(id), 0, 0) }
         case .playlist(let id, let playlistName):
             name = playlistName
             read = try namingFailure(name) { try playlistTracks(id) }
@@ -300,6 +304,7 @@ func markedSetSpanDACRows(_ items: [MarkedItem],
         guard !read.rows.isEmpty else { throw ActionError(message: markedSpanDACEmptyLine(name)) }
         out.rows += read.rows
         out.skippedVideos += read.skippedVideos
+        out.skippedNotInLibrary += read.skippedNotInLibrary
     }
     return out
 }
@@ -509,6 +514,7 @@ private func playMarkedSetFromSpanDAC(_ items: [MarkedItem], shuffle: Bool, stam
                 // each page request (and each warming retry of it) fenced.
                 var rows: [MusicRow] = []
                 var skippedVideos = 0
+                var skippedNotInLibrary = 0
                 var crossedSwitch = false
                 var crossedSnapshot = false
                 var unrevisionedPage = false
@@ -538,9 +544,10 @@ private func playMarkedSetFromSpanDAC(_ items: [MarkedItem], shuffle: Bool, stam
                         walkRev = rev
                         rows += page.rows
                         skippedVideos = page.skippedVideos
+                        skippedNotInLibrary = page.skippedNotInLibrary
                         return true
                     },
-                    onRestart: { crossedSnapshot = true; rows = []; skippedVideos = 0 },
+                    onRestart: { crossedSnapshot = true; rows = []; skippedVideos = 0; skippedNotInLibrary = 0 },
                     onWarming: onWarming, sleep: sleep, budget: budget)
                 if crossedSwitch { throw switched }
                 if crossedSnapshot { throw changed }
@@ -548,7 +555,7 @@ private func playMarkedSetFromSpanDAC(_ items: [MarkedItem], shuffle: Bool, stam
                 if let failed { throw failed }
                 guard let walkRev else { throw unrevisioned }
                 walkedRevisions.append((playlistID, walkRev))
-                return (rows, skippedVideos)
+                return (rows, skippedVideos, skippedNotInLibrary)
             })
         // One entry per library ID, the first, before any shuffle: SpanDAC
         // refuses a queue that repeats one, and the hand-off plays the same set.
@@ -597,7 +604,8 @@ private func playMarkedSetFromSpanDAC(_ items: [MarkedItem], shuffle: Bool, stam
                     handedOff = try playThroughHandoff(spanDAC.handoff, rows: rows, startAt: 1,
                                                        startRequired: false, shuffle: shuffle, title: name,
                                                        skippedVideos: read.skippedVideos,
-                                                       repeatedSongs: repeatedSongs)
+                                                       repeatedSongs: repeatedSongs,
+                                                       skippedNotInLibrary: read.skippedNotInLibrary)
                 },
                 source: { client in
                     let played = try spanDACOutputPlayer(client).playRetainingToken(ids: ids, startRequired: false)
@@ -615,15 +623,18 @@ private func playMarkedSetFromSpanDAC(_ items: [MarkedItem], shuffle: Bool, stam
         }
         if let handedOff {
             status.post(LibraryProvenance.playingOnMusicTUI(name, report: handedOff),
-                        untilStateChange: handedOff.notice != nil)
+                        untilStateChange: handedOff.saysAnything)
             return
         }
         // The single SpanDAC playlist play's own sentence: the videos apart
         // from the songs SpanDAC could not play.
         let line = [bridgePlaylistPlayMessage(name: name, queued: ids.count, skippedVideos: read.skippedVideos,
-                                              skippedUnavailable: skippedUnavailable, startAt: 1, shuffle: shuffle),
+                                              skippedUnavailable: skippedUnavailable,
+                                              skippedNotInLibrary: read.skippedNotInLibrary,
+                                              startAt: 1, shuffle: shuffle),
                     repeatedSongsNotice(repeatedSongs)].compactMap { $0 }.joined(separator: " ")
-        status.post(line, untilStateChange: skippedUnavailable > 0 || read.skippedVideos > 0 || repeatedSongs > 0)
+        status.post(line, untilStateChange: skippedUnavailable > 0 || read.skippedVideos > 0
+                        || read.skippedNotInLibrary > 0 || repeatedSongs > 0)
     } catch let error as MusicProviderError {
         throw ActionError(message: error.errorDescription ?? "Couldn't play '\(name)' on SpanDAC.")
     } catch let error as SourceAppError {

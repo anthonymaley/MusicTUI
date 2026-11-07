@@ -19,9 +19,18 @@ struct BridgeMusicProvider: MusicDataProvider {
     /// The sections' one shared deadline (`DiscoverFeed.defaultSectionDeadline`).
     private let sectionDeadline: TimeInterval
 
-    init(control: SourceControlling, sectionDeadline: TimeInterval = DiscoverFeed.defaultSectionDeadline) {
+    /// The TUI's playlist reads and plays show a notice for the songs SpanDAC
+    /// skips because they are not in the library, so they ask for the skip
+    /// (`skip_not_in_library`, 2026-11-07). Every other client of this provider
+    /// (the CLI's `bridge play`, Discover, DJ, Radio) does not, and SpanDAC then
+    /// refuses such a playlist whole, as before.
+    private let skipsNotInLibrary: Bool
+
+    init(control: SourceControlling, sectionDeadline: TimeInterval = DiscoverFeed.defaultSectionDeadline,
+         skipsNotInLibrary: Bool = false) {
         self.control = control
         self.sectionDeadline = sectionDeadline
+        self.skipsNotInLibrary = skipsNotInLibrary
     }
 
     func librarySongs(cursor: String?, limit: Int = 100) throws -> MusicPage {
@@ -70,7 +79,7 @@ struct BridgeMusicProvider: MusicDataProvider {
     /// playlist, so a `stale_generation` can come back on any page.
     func playlistTracks(playlistID: String, cursor: String?, limit: Int = 500) throws -> MusicPage {
         do { return try control.libraryPlaylistTracks(playlistID: playlistID, cursor: cursor, limit: limit,
-                                                       forQueue: false) }
+                                                       forQueue: false, skipNotInLibrary: skipsNotInLibrary) }
         catch let error as SourceAppError { throw Self.translate(error) }
     }
 
@@ -84,7 +93,7 @@ struct BridgeMusicProvider: MusicDataProvider {
     /// does not act on it.
     func playlistTracksForQueue(playlistID: String, cursor: String?, limit: Int = 500) throws -> MusicPage {
         do { return try control.libraryPlaylistTracks(playlistID: playlistID, cursor: cursor, limit: limit,
-                                                       forQueue: true) }
+                                                       forQueue: true, skipNotInLibrary: skipsNotInLibrary) }
         catch let error as SourceAppError { throw Self.translate(error) }
     }
 
@@ -167,12 +176,13 @@ struct BridgeMusicProvider: MusicDataProvider {
 
     func playLibrary(kind: LibraryPlayKind, id: String?, start: LibraryPlayStart?, listRev: String?,
                      shuffle: Bool) throws -> SpanDACPlayResult {
-        do { return try control.playLibrary(kind: kind, id: id, start: start, listRev: listRev, shuffle: shuffle) }
+        do { return try control.playLibrary(kind: kind, id: id, start: start, listRev: listRev, shuffle: shuffle,
+                                            skipNotInLibrary: skipsNotInLibrary) }
         catch let error as SourceAppError { throw Self.translate(error) }
     }
 
     func listRev(kind: LibraryPlayKind, id: String?) throws -> SpanDACListRev {
-        do { return try control.listRev(kind: kind, id: id) }
+        do { return try control.listRev(kind: kind, id: id, skipNotInLibrary: skipsNotInLibrary) }
         catch let error as SourceAppError { throw Self.translate(error) }
     }
 

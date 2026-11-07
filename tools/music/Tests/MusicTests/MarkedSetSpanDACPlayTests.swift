@@ -55,12 +55,14 @@ final class MarkedSetSpanDACPlayTests: XCTestCase {
     }
     /// `listRev`: the playlist's `list_rev`, the same on every page of one read
     /// ("pr1" unless a test moves it); nil is a SpanDAC that sends none.
-    private func playlistTracks(_ ids: [String], skippedVideos: Int = 0, aliases: [String: String] = [:],
-                                listRev: String? = "pr1") -> String {
+    private func playlistTracks(_ ids: [String], skippedVideos: Int = 0, skippedNotInLibrary: Int = 0,
+                                aliases: [String: String] = [:], listRev: String? = "pr1") -> String {
         let items = ids.map { song($0, alias: aliases[$0]) }.joined(separator: ",")
         let rev = listRev.map { ",\"list_rev\":\"\($0)\"" } ?? ""
+        // Sent only when more than 0, as SpanDAC sends it (2026-11-07).
+        let missing = skippedNotInLibrary > 0 ? ",\"skipped_not_in_library\":\(skippedNotInLibrary)" : ""
         return "{\"ok\":true,\"op\":\"slice.libraryPlaylistTracks\",\"generation\":3,\"total\":\(ids.count),"
-            + "\"items\":[\(items)],\"next_cursor\":null,\"skipped_videos\":\(skippedVideos)\(rev)}"
+            + "\"items\":[\(items)],\"next_cursor\":null,\"skipped_videos\":\(skippedVideos)\(missing)\(rev)}"
     }
     /// `slice.listRev`'s answer for a playlist: its revision, no rows.
     private func revision(_ rev: String = "pr1", count: Int = 2) -> String {
@@ -304,6 +306,35 @@ final class MarkedSetSpanDACPlayTests: XCTestCase {
         XCTAssertEqual(r.status.current()?.text,
                        "Playing 4 of 7 from '\(mixedName)' on SpanDAC: 2 videos skipped. 1 song isn't available to SpanDAC.")
         XCTAssertEqual(r.status.current(now: Date().addingTimeInterval(3600))?.staysUntilStateChange, true)
+    }
+
+    /// Playlist-only songs (Anthony, 2026-11-07): SpanDAC leaves them out of the
+    /// playlist's rows and says how many. They are never sent, and the play line
+    /// says they were skipped, ahead of the songs SpanDAC cannot play.
+    func testPlaylistOnlySongsSpanDACSkippedAreSaidInTheMarkedPlayLine() {
+        let r = rig(output: .source)
+        r.data.script("slice.libraryAlbumTracks", [albumTracks(["t1", "t2"]), albumTracks(["t3"])])
+        r.data.script("slice.libraryPlaylistTracks", [playlistTracks(["p1", "p2"], skippedNotInLibrary: 3)])
+        r.output.script("slice.queue", [queued(skippedUnavailable: 1)])
+        play(mixed, r)
+
+        XCTAssertEqual(r.output.sent("slice.queue").count, 1)
+        XCTAssertEqual(r.status.current()?.text,
+                       "Skipped 3 songs not in your library \u{00B7} Playing '\(mixedName)' on SpanDAC \u{2014} 4 tracks. "
+                       + "1 song isn't available to SpanDAC.")
+        XCTAssertEqual(r.status.current(now: Date().addingTimeInterval(3600))?.staysUntilStateChange, true)
+    }
+
+    func testTwoMarkedPlaylistsAddTheirPlaylistOnlySongs() {
+        let r = rig(output: .source)
+        let other = MarkedItem.playlist(id: "pl2", name: "Other")
+        r.data.script("slice.libraryPlaylistTracks", [playlistTracks(["p1"], skippedNotInLibrary: 1),
+                                                      playlistTracks(["p2"], skippedNotInLibrary: 2)])
+        r.data.script("slice.listRev", [revision(), revision()])
+        r.output.script("slice.queue", [queued()])
+        play([chill, other], r)
+        XCTAssertEqual(r.status.current()?.text,
+                       "Skipped 3 songs not in your library \u{00B7} Playing '2 playlists' on SpanDAC \u{2014} 2 tracks.")
     }
 
     // MARK: - The MusicTUI output: the hand-off
@@ -773,7 +804,10 @@ final class MarkedSetSpanDACPlayTests: XCTestCase {
         XCTAssertEqual(asked.first?["op"] as? String, "slice.listRev")
         XCTAssertEqual(asked.first?["kind"] as? String, "playlist")
         XCTAssertEqual(asked.first?["id"] as? String, "pl1")
-        XCTAssertEqual(asked.first.map { Set($0.keys) }, ["op", "kind", "id"])
+        // The marked playlist's revision describes the list the set read (the TUI
+        // asks SpanDAC to skip songs that are not in the library), so it says so.
+        XCTAssertEqual(asked.first.map { Set($0.keys) }, ["op", "kind", "id", "skip_not_in_library"])
+        XCTAssertEqual(asked.first?["skip_not_in_library"] as? Bool, true)
         XCTAssertTrue(r.opsSent.isSubset(of: readAndPlayOps))
     }
 
@@ -941,6 +975,61 @@ final class MarkedSetSpanDACPlayTests: XCTestCase {
                        "the unconfirmed warning dropped part of the set's notice")
         XCTAssertNil(confirm.confirmer.currentTicket(), "the late playing read confirmed it")
         XCTAssertEqual(r.status.current()?.text, line, "the late confirmation dropped part of the set's notice")
+    }
+
+    /// Songs SpanDAC skipped because they are not in the library lead EVERY line of a
+    /// marked-set hand-off: the play's own, the unconfirmed warning and the late
+    /// confirmation's restored line.
+    func testTheSkippedNotInLibraryLeadSurvivesAnUnconfirmedAndALateConfirmedHandoff() throws {
+        let r = rig(output: .musicApp)
+        let some = aliases
+        r.data.script("slice.libraryAlbumTracks", [albumTracks(["t1", "t2"], aliases: some),
+                                                   albumTracks(["t3"], aliases: some)])
+        r.data.script("slice.libraryPlaylistTracks", [playlistTracks(["p1", "p2"], skippedNotInLibrary: 2, aliases: some)])
+        r.library.hits = handoffHits(allRows)
+        let first = hex("1")
+        let confirm = HonestPlayingTests.ConfirmRig([PlayerIdentityReading(state: "paused", persistentID: "00000000000000A1",
+                                                                           requestedID: nil)],
+                                                    status: r.status)
+        confirm.onRead = { n in
+            if n == 9 { confirm.setReadings([PlayerIdentityReading(state: "playing", persistentID: first, requestedID: nil)]) }
+        }
+        let store = AppQueueStore()
+        store.confirmer = confirm.confirmer
+        let routing = r.routing
+        let handoff = PersistentIDHandoff(
+            library: r.library,
+            player: AppQueueHandoffPlayer(store: store,
+                                          playFirst: requestedHandoffPlayFirst(backend: r.counter.backend, appQueue: store)),
+            selfCheck: LibraryAliasSelfCheck(), currentStamp: { routing.musicTUISpanDACStamp })
+        let marks = MarkedSetStore()
+        for item in mixed { marks.toggle(item, source: .bridge) }
+        playMarkedSet(marks.snapshot, shuffle: false, backend: r.counter.backend, appQueue: store,
+                      routing: routing, actions: r.actions, status: r.status,
+                      spanDACData: { spanDACDataProvider(routing: routing) != nil },
+                      readers: refusingReaders(Counter()),
+                      spanDAC: MarkedSetSpanDAC(makeProvider: { spanDACDataProvider(routing: routing) },
+                                                handoff: handoff, sleep: { _ in }))
+        r.actions.waitUntilIdle()
+        let lead = "Skipped 2 songs not in your library \u{00B7} "
+        let line = lead + "Playing '\(mixedName)' on MusicTUI."
+        XCTAssertEqual(r.status.current()?.text, line, "the play's own line")
+        XCTAssertEqual(store.read()?.tracks.count, 5)
+        XCTAssertTrue(r.data.sent("slice.libraryPlaylistTracks").allSatisfy { $0["skip_not_in_library"] as? Bool == true },
+                      "a marked playlist read did not ask to skip")
+        XCTAssertTrue(r.data.sent("slice.listRev").allSatisfy { $0["skip_not_in_library"] as? Bool == true },
+                      "the closing revision read must describe the same (skipped) list")
+
+        confirm.runJobs()
+        XCTAssertEqual(confirm.posts,
+                       [playNotStartedWarning(mixedName) + " \u{00B7} skipped 2 songs not in your library"],
+                       "the unconfirmed warning keeps its own words first and the skip follows")
+        for width in [50, 80] {
+            XCTAssertTrue(truncText(confirm.posts.first ?? "", to: width - 4)
+                            .hasPrefix("Play was requested, but Music didn't confirm"), "\(width)")
+        }
+        XCTAssertNil(confirm.confirmer.currentTicket(), "the late playing read confirmed it")
+        XCTAssertEqual(r.status.current()?.text, line, "the late confirmation dropped the skip")
     }
 
     // MARK: - A song in two marked items plays once, at its first position

@@ -72,6 +72,12 @@ struct HandoffPlayReport: Equatable {
     /// Playlist videos SpanDAC left out of the rows handed over. Set only by a
     /// caller that says so (`playLibrary(...skippedVideos:)`); 0 otherwise.
     var skippedVideos = 0
+    /// Playlist songs SpanDAC left out of the rows because they are not in the
+    /// library (2026-11-07). Set only by a caller that read them from SpanDAC,
+    /// BEFORE the hand-off starts, so every line the play posts (the immediate
+    /// one, the unconfirmed warning, a late confirmation's restored line) leads
+    /// with it (`skipPrefix`).
+    var skippedNotInLibrary = 0
     /// Entries the caller removed because the song was already in the set
     /// (`firstOccurrences`): not skipped, not unavailable, but said. Set only by
     /// a caller that says so (`playLibrary(...repeatedSongs:)`); 0 otherwise.
@@ -89,6 +95,29 @@ struct HandoffPlayReport: Equatable {
         let said = parts.compactMap { $0 }
         return said.isEmpty ? nil : said.joined(separator: " ")
     }
+}
+
+extension HandoffPlayReport {
+    /// What leads an ordinary line this play posts (the play's own line and a late
+    /// confirmation's restored line) when SpanDAC skipped songs that are not in
+    /// the library, "Skipped 3 songs not in your library \u{00B7} ", or nil. Not part of
+    /// `notice`, which trails the line: a long title could push a trailing
+    /// sentence off the footer.
+    var skipPrefix: String? {
+        skippedNotInLibrary > 0 ? bridgeNotInLibraryPrefix(skippedNotInLibrary) : nil
+    }
+
+    /// The trailing form, for the unconfirmed-play warning only: that line keeps
+    /// its own first words ("Play was requested, but Music didn't confirm ...")
+    /// and the fact follows them.
+    var skipTrailer: String? {
+        skippedNotInLibrary > 0 ? bridgeNotInLibraryTrailer(skippedNotInLibrary) : nil
+    }
+
+    /// Whether the play has anything to say beyond "Playing ...": a notice or a
+    /// leading skip. The lines that stay until something changes, and the late
+    /// confirmation's restored line, key on this.
+    var saysAnything: Bool { skipPrefix != nil || notice != nil }
 }
 
 /// The videos a play left out, worded as the single SpanDAC playlist play's
@@ -399,6 +428,15 @@ struct PersistentIDHandoff: MusicTUIHandoff {
     @discardableResult
     func playLibrary(rows: [MusicRow], startAt: Int, startRequired: Bool, shuffle: Bool,
                      title: String, skippedVideos: Int, repeatedSongs: Int) throws -> HandoffPlayReport {
+        try playLibrary(rows: rows, startAt: startAt, startRequired: startRequired, shuffle: shuffle,
+                        title: title, skippedVideos: skippedVideos, repeatedSongs: repeatedSongs,
+                        skippedNotInLibrary: 0)
+    }
+
+    @discardableResult
+    func playLibrary(rows: [MusicRow], startAt: Int, startRequired: Bool, shuffle: Bool,
+                     title: String, skippedVideos: Int, repeatedSongs: Int,
+                     skippedNotInLibrary: Int) throws -> HandoffPlayReport {
         guard let entry = currentStamp() else { throw ActionError(message: sourceChangedNothingPlayed) }
         // The self-check speaks first: a macOS that reports no identities
         // at all is not a playlist of unavailable songs.
@@ -420,6 +458,7 @@ struct PersistentIDHandoff: MusicTUIHandoff {
         var report = available.report
         report.skippedVideos = skippedVideos
         report.repeatedSongs = repeatedSongs
+        report.skippedNotInLibrary = skippedNotInLibrary
         try player.play(AppQueue(playlistName: persistentIDQueueSource, tracks: ordered, currentIndex: current,
                                  displayName: title), report: report)
         return report

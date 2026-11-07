@@ -131,6 +131,14 @@ func playNotStartedWarning(_ title: String) -> String {
     "Play was requested, but Music didn't confirm '\(title)' started. If nothing plays, quitting and reopening Music fixed this before."
 }
 
+/// The footer line for an unconfirmed play: the warning FIRST and unchanged (a
+/// narrow footer cuts the line at its width, and "Music didn't confirm" must
+/// survive), then what the play skipped (`trailer`, which carries its own
+/// separator), then the rest of the play's notice.
+func unconfirmedPlayLine(title: String, trailer: String?, notice: String?) -> String {
+    playNotStartedWarning(title) + (trailer ?? "") + (notice.map { " " + $0 } ?? "")
+}
+
 /// What must not have moved between a request and its late result: both
 /// routing epochs (a committed output or data-source switch) and the routing
 /// play serial (any chosen-music play admitted since).
@@ -252,7 +260,7 @@ final class PlayConfirmer {
     /// takes the warning's place if a late confirmation withdraws it while it
     /// still shows. Returns at once; the reads run on `schedule`.
     func confirm(_ ticket: Ticket, requested: RequestedTrack?, title: String, notice: String? = nil,
-                 restore: String? = nil) {
+                 restore: String? = nil, trailer: String? = nil) {
         lock.lock()
         guard ticket.serial == serial, var r = current, r.serial == ticket.serial else { lock.unlock(); return }
         r.scriptDone = true
@@ -261,7 +269,11 @@ final class PlayConfirmer {
         current = r
         let stamp = r.fence
         lock.unlock()
-        let text = [playNotStartedWarning(title), notice].compactMap { $0 }.joined(separator: " ")
+        // The warning keeps its own first words, unchanged: a narrow footer cuts the
+        // line at its width, and "Music didn't confirm" must survive it. What the
+        // play skipped (`trailer`, with its own separator) follows the warning, then
+        // the rest of the notice.
+        let text = unconfirmedPlayLine(title: title, trailer: trailer, notice: notice)
         schedule { [self] in self.runWindow(ticket, requested: requested, fence: stamp, text: text) }
     }
 
