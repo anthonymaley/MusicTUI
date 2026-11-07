@@ -597,6 +597,54 @@ final class BridgePlaylistsPlaySceneTests: XCTestCase {
     /// whatever the video-skip form already produced — for all three forms,
     /// never replacing them. `queued` is the ids SENT; the displayed count
     /// is reduced by `skippedUnavailable` in every form.
+    /// The songs SpanDAC left out because they are not in the library
+    /// (2026-11-07): the exact wording, both numbers, and where it sits among the
+    /// other notices (right after the base, ahead of the unavailable songs).
+    func testNotInLibraryNoticeWordingAndComposition() {
+        XCTAssertEqual(bridgeNotInLibrarySongsNotice(0), "")
+        XCTAssertEqual(bridgeNotInLibrarySongsNotice(1), "1 song isn't in your library, so SpanDAC skipped it.")
+        XCTAssertEqual(bridgeNotInLibrarySongsNotice(2), "2 songs aren't in your library, so SpanDAC skipped them.")
+        XCTAssertEqual(
+            bridgePlaylistPlayMessage(name: "X", queued: 24, skippedVideos: 0, skippedUnavailable: 0, skippedNotInLibrary: 3,
+                                      startAt: 1, shuffle: false),
+            "Playing 'X' on SpanDAC \u{2014} 24 tracks. 3 songs aren't in your library, so SpanDAC skipped them.")
+        XCTAssertEqual(
+            bridgePlaylistPlayMessage(name: "X", queued: 24, skippedVideos: 2, skippedUnavailable: 1, skippedNotInLibrary: 1,
+                                      startAt: 1, shuffle: false),
+            "Playing 23 of 26 from 'X' on SpanDAC: 2 videos skipped. 1 song isn't in your library, so SpanDAC skipped it. "
+            + "1 song isn't available to SpanDAC.")
+        XCTAssertEqual(
+            bridgePlaylistPlayMessage(name: "X", queued: 24, skippedVideos: 0, skippedUnavailable: 0, startAt: 1, shuffle: false),
+            "Playing 'X' on SpanDAC \u{2014} 24 tracks.", "no skip, no notice: the old sentence byte for byte")
+        // The handoff report words it the same way, after the videos.
+        var report = HandoffPlayReport()
+        report.skippedVideos = 1
+        report.skippedNotInLibrary = 2
+        report.skippedUnavailable = 1
+        report.repeatedSongs = 1
+        XCTAssertEqual(report.notice,
+                       "1 video skipped. 2 songs aren't in your library, so SpanDAC skipped them. "
+                       + "1 song isn't available to SpanDAC. 1 repeated song plays once.")
+        XCTAssertNil(HandoffPlayReport().notice)
+    }
+
+    /// The footer is cut at `width - 4` (Shell.swift). At 50 columns the line
+    /// begins with what played and the cut falls inside a notice, never inside
+    /// the base sentence; the count that matters leads the notice.
+    func testNotInLibraryNoticeLeadsWithItsCountWhereTheFooterCutsIt() {
+        let notice = bridgeNotInLibrarySongsNotice(3)
+        for width in [50, 60, 80] {
+            let line = bridgePlaylistPlayMessage(name: "X", queued: 24, skippedVideos: 0, skippedUnavailable: 1,
+                                                 skippedNotInLibrary: 3, startAt: 1, shuffle: false)
+            let shown = truncText(line, to: width - 4)
+            XCTAssertTrue(shown.hasPrefix("Playing 'X' on SpanDAC \u{2014} 23 tracks."), "\(width)")
+            XCTAssertTrue(line.contains(notice), "\(width)")
+            let noticeStart = line.range(of: notice)!.lowerBound
+            XCTAssertLessThan(line.distance(from: line.startIndex, to: noticeStart), 50,
+                              "the notice follows the base directly, so a narrow footer shows its start")
+        }
+    }
+
     func testBridgePlaylistPlayMessageComposesWithEveryVideoSkipForm() {
         // v == 0: the plain form, with the notice trailing it.
         XCTAssertEqual(

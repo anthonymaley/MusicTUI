@@ -23,10 +23,12 @@ final class SpanDACWholePlaySceneTests: XCTestCase {
     private static let capable = #"{"ok":true,"op":"slice.status","status":{"playback":"idle","contract":3,"authorization":"authorized","capabilities":["slice.shuffle","play.library"]}}"#
     private static let incapable = #"{"ok":true,"op":"slice.status","status":{"playback":"idle","contract":3,"authorization":"authorized","capabilities":["slice.shuffle"]}}"#
 
+    /// `notInLibrary`: sent only when more than 0, as SpanDAC sends it (2026-11-07).
     private static func playReply(queued: Int, requested: Int? = nil, unavailable: Int = 0, videos: Int = 0,
-                                  token: String = "qa-1") -> String {
-        #"""
-        {"ok":true,"op":"slice.playLibrary","status":{"playback":"playing","title":"T","artist":"A","contract":3,"authorization":"authorized","queue":{"phase":"complete","requested":\#(requested ?? queued),"present":\#(queued),"index":0},"queue_token":"\#(token)"},"queued":\#(queued),"skipped_unavailable":\#(unavailable),"skipped_videos":\#(videos),"queue_token":"\#(token)"}
+                                  notInLibrary: Int = 0, token: String = "qa-1") -> String {
+        let missing = notInLibrary > 0 ? #","skipped_not_in_library":\#(notInLibrary)"# : ""
+        return #"""
+        {"ok":true,"op":"slice.playLibrary","status":{"playback":"playing","title":"T","artist":"A","contract":3,"authorization":"authorized","queue":{"phase":"complete","requested":\#(requested ?? queued),"present":\#(queued),"index":0},"queue_token":"\#(token)"},"queued":\#(queued),"skipped_unavailable":\#(unavailable),"skipped_videos":\#(videos)\#(missing),"queue_token":"\#(token)"}
         """#
     }
 
@@ -640,6 +642,38 @@ final class SpanDACWholePlaySceneTests: XCTestCase {
         XCTAssertTrue(settleScene(s) { status.current()?.text.hasPrefix("Playing") == true })
         XCTAssertEqual(status.current()?.text,
                        "Playing 'Chill' on SpanDAC \u{2014} 40 queued. 2 videos in this playlist skipped.")
+        XCTAssertEqual(status.current(now: Date().addingTimeInterval(3600))?.staysUntilStateChange, true)
+    }
+
+    /// Playlist-only songs (Anthony, 2026-11-07): SpanDAC skipped them, said so in
+    /// the reply, and the footer words it after the videos and before the songs it
+    /// cannot play, and stays until something changes.
+    func testAPlaylistPlayThatSkippedSongsNotInTheLibrarySaysSo() {
+        let wire = stickyWire(["slice.libraryPlaylists": [onePlaylistPage], "slice.status": [Self.capable],
+                               "slice.listRev": [Self.revReply("playlist", "rev-pl1", count: 37)],
+                               "slice.playLibrary": [Self.playReply(queued: 37, unavailable: 1, videos: 2, notInLibrary: 3)]])
+        let status = StatusStore()
+        let s = playlistScene(wire, status: status)
+        _ = s.handle(.char("p"))
+        XCTAssertTrue(settlePlayed(wire))
+        XCTAssertTrue(settleScene(s) { status.current()?.text.hasPrefix("Playing") == true })
+        XCTAssertEqual(status.current()?.text,
+                       "Playing 'Chill' on SpanDAC \u{2014} 37 queued. 2 videos in this playlist skipped. "
+                       + "3 songs aren't in your library, so SpanDAC skipped them. 1 song isn't available to SpanDAC.")
+        XCTAssertEqual(status.current(now: Date().addingTimeInterval(3600))?.staysUntilStateChange, true)
+    }
+
+    func testAPlaylistPlayThatSkippedOneSongNotInTheLibraryUsesTheSingular() {
+        let wire = stickyWire(["slice.libraryPlaylists": [onePlaylistPage], "slice.status": [Self.capable],
+                               "slice.listRev": [Self.revReply("playlist", "rev-pl1", count: 40)],
+                               "slice.playLibrary": [Self.playReply(queued: 40, notInLibrary: 1)]])
+        let status = StatusStore()
+        let s = playlistScene(wire, status: status)
+        _ = s.handle(.char("p"))
+        XCTAssertTrue(settlePlayed(wire))
+        XCTAssertTrue(settleScene(s) { status.current()?.text.hasPrefix("Playing") == true })
+        XCTAssertEqual(status.current()?.text,
+                       "Playing 'Chill' on SpanDAC \u{2014} 40 queued. 1 song isn't in your library, so SpanDAC skipped it.")
         XCTAssertEqual(status.current(now: Date().addingTimeInterval(3600))?.staysUntilStateChange, true)
     }
 

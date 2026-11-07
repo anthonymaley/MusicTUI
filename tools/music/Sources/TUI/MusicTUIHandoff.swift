@@ -72,6 +72,9 @@ struct HandoffPlayReport: Equatable {
     /// Playlist videos SpanDAC left out of the rows handed over. Set only by a
     /// caller that says so (`playLibrary(...skippedVideos:)`); 0 otherwise.
     var skippedVideos = 0
+    /// Playlist songs SpanDAC left out of the rows because they are not in the
+    /// library (2026-11-07). Set only by a caller that read them from SpanDAC.
+    var skippedNotInLibrary = 0
     /// Entries the caller removed because the song was already in the set
     /// (`firstOccurrences`): not skipped, not unavailable, but said. Set only by
     /// a caller that says so (`playLibrary(...repeatedSongs:)`); 0 otherwise.
@@ -84,6 +87,7 @@ struct HandoffPlayReport: Equatable {
     /// line that holds it.
     var notice: String? {
         let parts = [skippedVideos > 0 ? bridgeSkippedVideosNotice(skippedVideos) : nil,
+                     skippedNotInLibrary > 0 ? bridgeNotInLibrarySongsNotice(skippedNotInLibrary) : nil,
                      skippedUnavailable > 0 ? bridgeUnavailableSongsNotice(skippedUnavailable) : nil,
                      repeatedSongsNotice(repeatedSongs)]
         let said = parts.compactMap { $0 }

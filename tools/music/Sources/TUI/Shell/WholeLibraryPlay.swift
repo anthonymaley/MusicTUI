@@ -196,6 +196,7 @@ func bridgeWholePlayMessage(name: String, result: SpanDACPlayResult) -> String {
     }
     let v = result.skippedVideos
     if v > 0 { message += " \(v) video\(v == 1 ? "" : "s") in this playlist skipped." }
+    if result.skippedNotInLibrary > 0 { message += " " + bridgeNotInLibrarySongsNotice(result.skippedNotInLibrary) }
     if result.skippedUnavailable > 0 { message += " " + bridgeUnavailableSongsNotice(result.skippedUnavailable) }
     return message
 }
@@ -203,7 +204,7 @@ func bridgeWholePlayMessage(name: String, result: SpanDACPlayResult) -> String {
 /// Whether that footer stays until something changes: something was left out or
 /// the queue came up short.
 func bridgeWholePlayNeedsAttention(_ result: SpanDACPlayResult) -> Bool {
-    if result.skippedUnavailable > 0 || result.skippedVideos > 0 { return true }
+    if result.skippedUnavailable > 0 || result.skippedVideos > 0 || result.skippedNotInLibrary > 0 { return true }
     if let requested = result.requested, let queued = result.queued, queued < requested { return true }
     return false
 }

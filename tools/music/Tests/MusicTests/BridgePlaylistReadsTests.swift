@@ -244,6 +244,44 @@ final class BridgePlaylistReadsTests: XCTestCase {
         }
     }
 
+    // MARK: - skipped_not_in_library (2026-11-07)
+
+    func testAPageNamesThePlaylistOnlySongsSpanDACSkipped() throws {
+        let wire = Wire(["""
+        {"ok":true,"op":"slice.libraryPlaylistTracks","generation":3,"total":22,
+         "items":[],"next_cursor":null,"skipped_videos":1,"skipped_not_in_library":3}
+        """])
+        let page = try control(wire).libraryPlaylistTracks(playlistID: "pl1", cursor: nil, limit: 500)
+        XCTAssertEqual(page.skippedNotInLibrary, 3)
+        XCTAssertEqual(page.skippedVideos, 1, "the video count is read as before")
+    }
+
+    func testAPageWithoutTheKeyIsZeroSkippedNotInLibrary() throws {
+        // Sent only when more than 0, and never by an older SpanDAC.
+        let wire = Wire(["""
+        {"ok":true,"op":"slice.libraryPlaylistTracks","generation":3,"total":25,
+         "items":[],"next_cursor":null,"skipped_videos":0}
+        """])
+        let page = try control(wire).libraryPlaylistTracks(playlistID: "pl1", cursor: nil, limit: 500)
+        XCTAssertEqual(page.skippedNotInLibrary, 0)
+    }
+
+    func testASkippedNotInLibraryThatIsNotACountIsUnreadable() {
+        for (label, value) in [("-1", "-1"), ("\"2\"", "\"2\""), ("null", "null"), ("1.5", "1.5")] {
+            let wire = Wire(["""
+            {"ok":true,"op":"slice.libraryPlaylistTracks","generation":3,"total":0,
+             "items":[],"next_cursor":null,"skipped_videos":0,"skipped_not_in_library":\(value)}
+            """])
+            XCTAssertThrowsError(try control(wire).libraryPlaylistTracks(playlistID: "pl1", cursor: nil, limit: 500),
+                                 "skipped_not_in_library \(label) was read as a page") { error in
+                guard case SourceAppError.malformedReply(let what) = error else {
+                    return XCTFail("expected malformedReply for \(label), got \(error)")
+                }
+                XCTAssertTrue(what.contains("skipped_not_in_library"), "did not name the fault: \(what)")
+            }
+        }
+    }
+
     /// Only `libraryPlaylistTracks` requires the field: an albums page with no
     /// `skipped_videos` at all still decodes, exactly as it did before C1a.
     func testAnAlbumsPageWithNoSkippedVideosStillDecodes() throws {

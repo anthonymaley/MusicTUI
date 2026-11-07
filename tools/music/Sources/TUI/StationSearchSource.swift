@@ -1366,6 +1366,17 @@ struct SourceAppControl: SourceControlling {
             }
             skippedVideos = skipped
         }
+        // Additive and OPTIONAL (2026-11-07): sent only when more than 0, and
+        // never by an older SpanDAC, so absent is 0. A value that is not a
+        // positive count is a malformed reply, as `skipped_videos` is.
+        var skippedNotInLibrary = 0
+        if readsSkippedVideos, let raw = reply["skipped_not_in_library"] {
+            guard let skipped = raw as? Int, skipped >= 0 else {
+                throw SourceAppError.malformedReply(
+                    "SpanDAC's \(opName) page has a skipped_not_in_library that is not a count")
+            }
+            skippedNotInLibrary = skipped
+        }
 
         // Additive, and only on the two lists whose rows can ask for a cover:
         // absent is nil (an older SpanDAC), a value that is not text or is blank
@@ -1388,6 +1399,7 @@ struct SourceAppControl: SourceControlling {
                          stale: reply["stale"] as? Bool ?? false,
                          refreshing: reply["refreshing"] as? Bool ?? false,
                          skippedVideos: skippedVideos,
+                         skippedNotInLibrary: skippedNotInLibrary,
                          listRev: Self.listRev(reply["list_rev"]),
                          libraryInstance: libraryInstance)
     }

@@ -55,12 +55,14 @@ final class MarkedSetSpanDACPlayTests: XCTestCase {
     }
     /// `listRev`: the playlist's `list_rev`, the same on every page of one read
     /// ("pr1" unless a test moves it); nil is a SpanDAC that sends none.
-    private func playlistTracks(_ ids: [String], skippedVideos: Int = 0, aliases: [String: String] = [:],
-                                listRev: String? = "pr1") -> String {
+    private func playlistTracks(_ ids: [String], skippedVideos: Int = 0, skippedNotInLibrary: Int = 0,
+                                aliases: [String: String] = [:], listRev: String? = "pr1") -> String {
         let items = ids.map { song($0, alias: aliases[$0]) }.joined(separator: ",")
         let rev = listRev.map { ",\"list_rev\":\"\($0)\"" } ?? ""
+        // Sent only when more than 0, as SpanDAC sends it (2026-11-07).
+        let missing = skippedNotInLibrary > 0 ? ",\"skipped_not_in_library\":\(skippedNotInLibrary)" : ""
         return "{\"ok\":true,\"op\":\"slice.libraryPlaylistTracks\",\"generation\":3,\"total\":\(ids.count),"
-            + "\"items\":[\(items)],\"next_cursor\":null,\"skipped_videos\":\(skippedVideos)\(rev)}"
+            + "\"items\":[\(items)],\"next_cursor\":null,\"skipped_videos\":\(skippedVideos)\(missing)\(rev)}"
     }
     /// `slice.listRev`'s answer for a playlist: its revision, no rows.
     private func revision(_ rev: String = "pr1", count: Int = 2) -> String {
@@ -304,6 +306,35 @@ final class MarkedSetSpanDACPlayTests: XCTestCase {
         XCTAssertEqual(r.status.current()?.text,
                        "Playing 4 of 7 from '\(mixedName)' on SpanDAC: 2 videos skipped. 1 song isn't available to SpanDAC.")
         XCTAssertEqual(r.status.current(now: Date().addingTimeInterval(3600))?.staysUntilStateChange, true)
+    }
+
+    /// Playlist-only songs (Anthony, 2026-11-07): SpanDAC leaves them out of the
+    /// playlist's rows and says how many. They are never sent, and the play line
+    /// says they were skipped, ahead of the songs SpanDAC cannot play.
+    func testPlaylistOnlySongsSpanDACSkippedAreSaidInTheMarkedPlayLine() {
+        let r = rig(output: .source)
+        r.data.script("slice.libraryAlbumTracks", [albumTracks(["t1", "t2"]), albumTracks(["t3"])])
+        r.data.script("slice.libraryPlaylistTracks", [playlistTracks(["p1", "p2"], skippedNotInLibrary: 3)])
+        r.output.script("slice.queue", [queued(skippedUnavailable: 1)])
+        play(mixed, r)
+
+        XCTAssertEqual(r.output.sent("slice.queue").count, 1)
+        XCTAssertEqual(r.status.current()?.text,
+                       "Playing '\(mixedName)' on SpanDAC \u{2014} 4 tracks. "
+                       + "3 songs aren't in your library, so SpanDAC skipped them. 1 song isn't available to SpanDAC.")
+        XCTAssertEqual(r.status.current(now: Date().addingTimeInterval(3600))?.staysUntilStateChange, true)
+    }
+
+    func testTwoMarkedPlaylistsAddTheirPlaylistOnlySongs() {
+        let r = rig(output: .source)
+        let other = MarkedItem.playlist(id: "pl2", name: "Other")
+        r.data.script("slice.libraryPlaylistTracks", [playlistTracks(["p1"], skippedNotInLibrary: 1),
+                                                      playlistTracks(["p2"], skippedNotInLibrary: 2)])
+        r.data.script("slice.listRev", [revision(), revision()])
+        r.output.script("slice.queue", [queued()])
+        play([chill, other], r)
+        XCTAssertEqual(r.status.current()?.text,
+                       "Playing '2 playlists' on SpanDAC \u{2014} 2 tracks. 3 songs aren't in your library, so SpanDAC skipped them.")
     }
 
     // MARK: - The MusicTUI output: the hand-off

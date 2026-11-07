@@ -84,6 +84,11 @@ struct MusicPage: Equatable {
     /// exactly as a video. Defaulted to 0 so every op besides playlist tracks
     /// keeps constructing a `MusicPage` unchanged.
     let skippedVideos: Int
+    /// `slice.libraryPlaylistTracks` only: how many of the playlist's song
+    /// members are not in the library ("playlist-only" songs), which SpanDAC
+    /// left out of the rows (2026-11-07). 0 from a SpanDAC that predates it,
+    /// which refused such a playlist whole instead.
+    let skippedNotInLibrary: Int
     /// `list_rev`, on a page of a playable list (Songs, a playlist's tracks):
     /// the fingerprint of the complete ordered list (for Songs, the snapshot
     /// generation), the same on every page of one read. Nil from a SpanDAC that
@@ -96,7 +101,7 @@ struct MusicPage: Equatable {
     let libraryInstance: String?
 
     init(rows: [MusicRow], nextCursor: String?, total: Int?, generation: Int?,
-         stale: Bool = false, refreshing: Bool = false, skippedVideos: Int = 0, listRev: String? = nil,
+         stale: Bool = false, refreshing: Bool = false, skippedVideos: Int = 0, skippedNotInLibrary: Int = 0, listRev: String? = nil,
          libraryInstance: String? = nil) {
         self.listRev = listRev
         self.libraryInstance = libraryInstance
@@ -107,6 +112,7 @@ struct MusicPage: Equatable {
         self.stale = stale
         self.refreshing = refreshing
         self.skippedVideos = skippedVideos
+        self.skippedNotInLibrary = skippedNotInLibrary
     }
 }
 
@@ -656,6 +662,15 @@ func bridgeQueueRows(_ rows: [MusicRow], shuffle: Bool, startAt: Int) -> [MusicR
 func bridgeUnavailableSongsNotice(_ n: Int) -> String {
     guard n > 0 else { return "" }
     return n == 1 ? "1 song isn't available to SpanDAC." : "\(n) songs aren't available to SpanDAC."
+}
+
+/// The playlist songs SpanDAC left out because they are not in the library
+/// (Anthony, 2026-11-07): "3 songs aren't in your library, so SpanDAC skipped
+/// them." Shared by every SpanDAC playlist play footer. Empty when `n` is 0.
+func bridgeNotInLibrarySongsNotice(_ n: Int) -> String {
+    guard n > 0 else { return "" }
+    return n == 1 ? "1 song isn't in your library, so SpanDAC skipped it."
+                  : "\(n) songs aren't in your library, so SpanDAC skipped them."
 }
 
 /// A count a person reads, grouped in threes: 15646 → "15,646".

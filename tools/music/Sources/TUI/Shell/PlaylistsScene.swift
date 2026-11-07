@@ -27,10 +27,13 @@ func bridgePlaylistHeaderCount(shown: Int, wireTotal: Int?) -> Int {
 /// `queued` is the number of ids SENT (`bridgeQueueIDs`'s count); the
 /// displayed "N tracks"/"N of N+V" figure is `queued - skippedUnavailable`
 /// (Addendum U), because that many of what was sent never actually played.
+/// `skippedNotInLibrary` (default 0) is the playlist's songs SpanDAC left out
+/// because they are not in the library; it is not part of `queued`, which is
+/// what was sent.
 /// `skippedUnavailable` composes as U-R6's own trailing sentence — added
 /// after whatever the video-skip form already produced, never replacing it.
 func bridgePlaylistPlayMessage(name: String, queued: Int, skippedVideos: Int, skippedUnavailable: Int,
-                               startAt: Int, shuffle: Bool) -> String {
+                               skippedNotInLibrary: Int = 0, startAt: Int, shuffle: Bool) -> String {
     _ = shuffle
     // The numerator is what actually played; the "of M" denominator (only in
     // the whole-playlist video-skip form) is the ORIGINAL whole-playlist
@@ -51,8 +54,13 @@ func bridgePlaylistPlayMessage(name: String, queued: Int, skippedVideos: Int, sk
         base = "Playing '\(name)' on SpanDAC from track \(startAt) \u{2014} \(n) track\(n == 1 ? "" : "s"); "
              + "\(v) video\(v == 1 ? "" : "s") in this playlist skipped."
     }
-    guard skippedUnavailable > 0 else { return base }
-    return base + " " + bridgeUnavailableSongsNotice(skippedUnavailable)
+    // The songs SpanDAC left out because they are not in the library come right
+    // after the base (2026-11-07), ahead of the unavailable ones: the footer is
+    // cut at its width, and the newer, rarer fact is the one to keep.
+    var message = base
+    if skippedNotInLibrary > 0 { message += " " + bridgeNotInLibrarySongsNotice(skippedNotInLibrary) }
+    if skippedUnavailable > 0 { message += " " + bridgeUnavailableSongsNotice(skippedUnavailable) }
+    return message
 }
 
 final class PlaylistsScene: Scene {
@@ -1737,6 +1745,10 @@ final class PlaylistsScene: Scene {
                 // the rev that came with the rows on screen, else `slice.listRev`
                 // (no row read at all, not even a one-row page). See `planLibraryPlay`.
                 var finalSkipped = skippedVideos ?? 0
+                // Songs SpanDAC left out of a FRESH walk because they are not in the
+                // library (2026-11-07). A play of rows already on screen reports
+                // it from SpanDAC's own reply instead (`slice.playLibrary`).
+                var finalNotInLibrary = 0
                 let planned = try planLibraryPlay(
                     routing: routing, stamp: stamp, provider: provider,
                     rows: skippedVideos == nil ? nil : rows, listRev: listRev,
@@ -1756,6 +1768,7 @@ final class PlaylistsScene: Scene {
                             provider: provider, playlistID: playlistID, epoch: epoch,
                             budget: budget, onWarming: onWarming, sleep: warmUpSleep)
                         finalSkipped = read.skippedVideos
+                        finalNotInLibrary = read.skippedNotInLibrary
                         return (read.rows, read.listRev)
                     })
                 let plan = planned.plan
@@ -1819,8 +1832,9 @@ final class PlaylistsScene: Scene {
                 // play: the sentence saying so stays until the next change.
                 status.post(bridgePlaylistPlayMessage(name: name, queued: ids?.count ?? 0, skippedVideos: finalSkipped,
                                                        skippedUnavailable: skippedUnavailable,
+                                                       skippedNotInLibrary: finalNotInLibrary,
                                                        startAt: startAt, shuffle: shuffle),
-                            untilStateChange: skippedUnavailable > 0 || finalSkipped > 0)
+                            untilStateChange: skippedUnavailable > 0 || finalSkipped > 0 || finalNotInLibrary > 0)
             } catch let e as MusicProviderError {
                 // Bridge's own words reach the footer — the over-100 bound,
                 // the repeated-title refusal, and every other refusal alike.
@@ -1839,9 +1853,10 @@ final class PlaylistsScene: Scene {
                                       budget: WarmUpBudget, onWarming: @escaping (TimeInterval) -> Void,
                                       sleep: @escaping (TimeInterval) -> Void,
                                       proceed: (() -> Bool)? = nil) throws
-        -> (rows: [MusicRow], skippedVideos: Int, listRev: String?) {
+        -> (rows: [MusicRow], skippedVideos: Int, skippedNotInLibrary: Int, listRev: String?) {
         var collected: [MusicRow] = []
         var lastSkipped = 0
+        var lastNotInLibrary = 0
         var walkedRev: String?
         var firstPage = true
         let walkError = walkLibraryPages(
@@ -1854,11 +1869,12 @@ final class PlaylistsScene: Scene {
             onPage: { page in
                 collected.append(contentsOf: page.rows)
                 lastSkipped = page.skippedVideos
+                lastNotInLibrary = page.skippedNotInLibrary
                 if firstPage { walkedRev = page.listRev; firstPage = false }
                 else if page.listRev != walkedRev { walkedRev = nil }
                 return true
             },
-            onRestart: { collected = []; lastSkipped = 0; walkedRev = nil; firstPage = true },
+            onRestart: { collected = []; lastSkipped = 0; lastNotInLibrary = 0; walkedRev = nil; firstPage = true },
             onWarming: onWarming, sleep: sleep, budget: budget)
         if let walkError {
             throw ActionError(message: walkError.errorDescription ?? "Couldn't read that playlist from your library.")
@@ -1870,7 +1886,7 @@ final class PlaylistsScene: Scene {
         bridgePreviewInbox.append(
             (playlistID, epoch, .success(rows: collected, total: collected.count, skippedVideos: lastSkipped)))
         previewInboxLock.unlock()
-        return (collected, lastSkipped, walkedRev)
+        return (collected, lastSkipped, lastNotInLibrary, walkedRev)
     }
 
     /// The playlist under the rail cursor, in Bridge's own indexing. `nil`

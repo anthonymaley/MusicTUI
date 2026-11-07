@@ -50,6 +50,10 @@ struct SpanDACPlayResult: Equatable {
     var skippedUnavailable: Int
     /// A playlist's videos, which a queue never holds. `slice.playLibrary` only.
     var skippedVideos: Int = 0
+    /// A playlist's songs that are not in the library, which SpanDAC left out
+    /// (2026-11-07). `slice.playLibrary` only, and 0 when the reply omits the
+    /// key (it is sent only when more than 0, and never by an older SpanDAC).
+    var skippedNotInLibrary: Int = 0
     /// `slice.playLibrary` only: the entries the player was OBSERVED to hold,
     /// not the number asked for.
     var queued: Int? = nil
@@ -157,6 +161,7 @@ extension SourceAppControl {
         let queued = try count("queued")
         let unavailable = try count("skipped_unavailable")
         let videos = try count("skipped_videos")
+        let notInLibrary = reply["skipped_not_in_library"] == nil ? 0 : try count("skipped_not_in_library")
         guard let wireStatus = reply["status"] as? [String: Any],
               let status = decodeStatus(wireStatus, readingWith: control) else {
             throw SourceAppError.malformedReply("SpanDAC's \(sourcePlayLibraryOp) reply has no status")
@@ -167,6 +172,7 @@ extension SourceAppControl {
         }
         return SpanDACPlayResult(queue: bridgeNow(from: status).queue,
                                  skippedUnavailable: unavailable, skippedVideos: videos,
+                                 skippedNotInLibrary: notInLibrary,
                                  queued: queued, requested: status.queueRequested,
                                  queueToken: token)
     }
