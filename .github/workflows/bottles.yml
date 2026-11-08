@@ -182,6 +182,16 @@ jobs:
           set -euo pipefail
           brew install --build-bottle "$SCRATCH_TAP/musictui"
 
+      # Homebrew prints only the last 15 lines of a failed build, which can be all
+      # warnings (v3.26.0 on Xcode 26.6). Show the errors and what led to them.
+      - name: Show the build's errors (on failure)
+        if: failure()
+        run: |
+          for f in "$HOME"/Library/Logs/Homebrew/musictui/*.log; do
+            echo "== $f"
+            grep -n -B4 -A8 -E "error:|fatal|Stack dump|signal|Assertion" "$f" | head -200 || true
+          done
+
       - name: Assert the keg carries no Cellar or prefix references
         run: |
           set -euo pipefail
