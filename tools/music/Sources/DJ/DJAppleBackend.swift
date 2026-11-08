@@ -9,25 +9,30 @@
 import Foundation
 import FoundationModels
 
+// The card schema is built at runtime (DynamicGenerationSchema), not with the
+// `@Generable` / `@Guide` macros: Homebrew's `swift build` on a Tahoe runner
+// (Xcode 26.6) could not load the FoundationModelsMacros plugin, so the macro
+// form failed to compile there (v3.26.0's arm64_tahoe bottle). Same fields,
+// same choices and descriptions as the macro version it replaces.
 @available(macOS 26, *)
-@Generable
-enum DJModelKind {
-    case artistMix
-    case genreUnheard
-    case unsupported
-}
+enum DJModelSchema {
+    static let kinds = ["artistMix", "genreUnheard", "unsupported"]
 
-@available(macOS 26, *)
-@Generable
-struct DJModelCard {
-    @Guide(description: "artistMix: the user asks to play a mix of one named artist's albums. genreUnheard: the user asks for music of one genre that they have not heard or played in a while. unsupported: anything else, including music similar to or like an artist, anything excluded or negated, and anything not about those two.")
-    var kind: DJModelKind
-
-    @Guide(description: "The one artist named by the user, spelled as the artist is normally known. Only for artistMix; otherwise leave empty.")
-    var artist: String?
-
-    @Guide(description: "The one genre named by the user, as a short common genre name such as Jazz. Only for genreUnheard; otherwise leave empty.")
-    var genre: String?
+    static func make() throws -> GenerationSchema {
+        let kind = DynamicGenerationSchema(name: "DJModelKind", anyOf: kinds)
+        let card = DynamicGenerationSchema(name: "DJModelCard", properties: [
+            .init(name: "kind",
+                  description: "artistMix: the user asks to play a mix of one named artist's albums. genreUnheard: the user asks for music of one genre that they have not heard or played in a while. unsupported: anything else, including music similar to or like an artist, anything excluded or negated, and anything not about those two.",
+                  schema: kind),
+            .init(name: "artist",
+                  description: "The one artist named by the user, spelled as the artist is normally known. Only for artistMix; otherwise leave empty.",
+                  schema: DynamicGenerationSchema(type: String.self), isOptional: true),
+            .init(name: "genre",
+                  description: "The one genre named by the user, as a short common genre name such as Jazz. Only for genreUnheard; otherwise leave empty.",
+                  schema: DynamicGenerationSchema(type: String.self), isOptional: true),
+        ])
+        return try GenerationSchema(root: card, dependencies: [])
+    }
 }
 
 @available(macOS 26, *)
@@ -61,9 +66,11 @@ struct DJAppleBackend: DJModelBackend {
     func classify(_ prompt: String) async throws -> DJRawCard {
         let session = LanguageModelSession(model: SystemLanguageModel.default, instructions: Self.instructions)
         do {
-            let response = try await session.respond(to: prompt, generating: DJModelCard.self)
+            let response = try await session.respond(to: prompt, schema: try DJModelSchema.make())
             let card = response.content
-            return DJRawCard(kind: String(describing: card.kind), artist: card.artist, genre: card.genre)
+            return DJRawCard(kind: try card.value(String.self, forProperty: "kind"),
+                             artist: try card.value(String?.self, forProperty: "artist"),
+                             genre: try card.value(String?.self, forProperty: "genre"))
         } catch let error as LanguageModelSession.GenerationError {
             switch error {
             case .unsupportedLanguageOrLocale: throw DJBackendError.unavailable(.unsupportedLanguage)
