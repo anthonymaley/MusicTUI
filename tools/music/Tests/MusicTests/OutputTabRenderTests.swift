@@ -168,7 +168,8 @@ func makeOutputTabScene(dir: String, mode: PlaybackMode, spandac: SpanDACOutputs
                             EQSnapshot(enabled: false, current: nil, presets: [])
                         },
                         routePlaying: @escaping (AppleScriptBackend) -> Bool = playerIsPlaying,
-                        makeRouteVerifier: @escaping () -> RouteVerifier = { RouteVerifier() }) -> SpeakersScene {
+                        makeRouteVerifier: @escaping () -> RouteVerifier = { RouteVerifier() },
+                        outputLock: OutputLock? = nil) -> SpeakersScene {
     let store = PlaybackModeStore(path: dir + "/mode.json")
     store.set(mode)
     let dataStore = DataProviderStore(path: dir + "/data.json")
@@ -180,7 +181,7 @@ func makeOutputTabScene(dir: String, mode: PlaybackMode, spandac: SpanDACOutputs
     let local = { SourceAppClient(path: "/nonexistent", transport: { _, line in
         try macLine.map { try $0(line) } ?? macReply()
     }) }
-    let routing = RoutingCoordinator(store: store, surface: .tui, dataStore: dataStore,
+    let routing = RoutingCoordinator(store: store, surface: .tui, outputLock: outputLock, dataStore: dataStore,
                                      makeSourceFor: { m in m.networkSourceID.map(network) ?? local() },
                                      makeDataClient: {
                                          dataClients.bump()
