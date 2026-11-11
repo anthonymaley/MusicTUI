@@ -1,8 +1,9 @@
 // tools/music/Tests/MusicTests/StrandedOutputTests.swift
 //
 // An iPhone or iPad SpanDAC that cannot be reached must not strand the Output
-// tab: the first Enter says so and refuses, a second Enter on the same target
-// leaves it. Only for a SpanDAC on the network; the Mac's own SpanDAC keeps the
+// tab. Enter on another output refuses and the tab ASKS "Can't reach <device>.
+// It may still be playing. Leave it and use <target>?"; y leaves, n or Esc
+// stays. Only for a SpanDAC on the network; the Mac's own SpanDAC keeps the
 // strict rule. Injected fakes only: no socket, no keychain, no ~/.config/music.
 import XCTest
 @testable import music
@@ -11,33 +12,40 @@ final class StrandedOutputTests: XCTestCase {
 
     private let ipad = "D2C4A6E8-1B3D-4F5A-8C7E-9A0B2C4D6E8F"
     private let other = "6B1F3C2E-8D4A-4F0B-9C7E-2A5D1E0F3B91"
+    private let third = "A1B2C3D4-0000-4000-8000-000000000003"
     private var dir: String!
 
     override func setUp() {
         dir = NSTemporaryDirectory() + "stranded-" + UUID().uuidString
         try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
     }
-    override func tearDown() { try? FileManager.default.removeItem(atPath: dir) }
+    override func tearDown() {
+        chmod(dir, 0o755)
+        try? FileManager.default.removeItem(atPath: dir)
+    }
 
     private enum Device { case noAnswer(SpanDACLinkFailure), playing, paused }
 
-    /// What the outgoing device (and the Mac) does, changeable between Enters.
+    /// What the outgoing device does, changeable between presses.
     private final class Wire {
         private let lock = NSLock()
         private var _device: Device = .noAnswer(.noAnswer)
-        private var _other: Device = .paused
         private var _stop: Device?
+        private var _hold = false
         private var _macDown = false
-        /// The second iPad's answer (paused unless a test says otherwise).
-        var otherDevice: Device { get { lock.lock(); defer { lock.unlock() }; return _other }
-                                  set { lock.lock(); _other = newValue; lock.unlock() } }
-        /// When set, `slice.stop` answers this instead of `device`.
-        var stopAnswer: Device? { get { lock.lock(); defer { lock.unlock() }; return _stop }
-                                  set { lock.lock(); _stop = newValue; lock.unlock() } }
+        private var _macReply: String?
         var device: Device { get { lock.lock(); defer { lock.unlock() }; return _device }
                              set { lock.lock(); _device = newValue; lock.unlock() } }
+        /// When set, `slice.stop` answers this (a refusal, unless silent) instead of `device`.
+        var stopAnswer: Device? { get { lock.lock(); defer { lock.unlock() }; return _stop }
+                                  set { lock.lock(); _stop = newValue; lock.unlock() } }
+        /// While true every request to the iPhone waits: a response in flight.
+        var hold: Bool { get { lock.lock(); defer { lock.unlock() }; return _hold }
+                         set { lock.lock(); _hold = newValue; lock.unlock() } }
         var macDown: Bool { get { lock.lock(); defer { lock.unlock() }; return _macDown }
                             set { lock.lock(); _macDown = newValue; lock.unlock() } }
+        var macReply: String? { get { lock.lock(); defer { lock.unlock() }; return _macReply }
+                                set { lock.lock(); _macReply = newValue; lock.unlock() } }
     }
 
     private final class Finished {
@@ -51,18 +59,6 @@ final class StrandedOutputTests: XCTestCase {
         #"{"ok":true,"status":{"playback":"\#(playback)","authorization":"authorized","contract":3,"capabilities":[]}}"#
     }
 
-    /// A clock a test moves by hand: the wall clock plus an offset.
-    private final class Offset {
-        private let lock = NSLock()
-        private var _seconds: TimeInterval = 0
-        func advance(_ s: TimeInterval) { lock.lock(); _seconds += s; lock.unlock() }
-        func now() -> Date { lock.lock(); defer { lock.unlock() }; return Date().addingTimeInterval(_seconds) }
-    }
-
-    private let third = "A1B2C3D4-0000-4000-8000-000000000003"
-    private var fake: FakeSpanDACOutputs!
-    private let offset = Offset()
-
     private func respond(_ d: Device) throws -> String {
         switch d {
         case .noAnswer(let why): throw SourceAppError.link(why)
@@ -71,17 +67,23 @@ final class StrandedOutputTests: XCTestCase {
         }
     }
 
-    private func rig(mode: PlaybackMode, wire: Wire) -> (SpeakersScene, StatusStore, Finished) {
+    private var fake: FakeSpanDACOutputs!
+
+    private func rig(mode: PlaybackMode, wire: Wire, phone: String = "iPhone",
+                     width: Int = 100) -> (SpeakersScene, StatusStore, Finished) {
         let status = StatusStore()
-        fake = FakeSpanDACOutputs([spandacRow(ipad, "iPhone", .ready), spandacRow(other, "Kitchen iPad", .ready),
+        fake = FakeSpanDACOutputs([spandacRow(ipad, phone, .ready), spandacRow(other, "Kitchen iPad", .ready),
                                    spandacRow(third, "New iPad", .notPaired(pairable: true), paired: false)])
-        let offset = self.offset
         let s = makeOutputTabScene(
             dir: dir, mode: mode, spandac: fake, status: status,
-            macReply: { if wire.macDown { throw SourceAppError.notRunning }; return self.reply("idle") },
+            macReply: { [self] in
+                if wire.macDown { throw SourceAppError.notRunning }
+                return wire.macReply ?? reply("idle")
+            },
             network: { [self] id in
                 SourceAppClient(path: "/fake", transport: { [self] _, line in
-                    if id != ipad { return try respond(wire.otherDevice) }
+                    if id != ipad { return reply("paused") }
+                    while wire.hold { usleep(1_000) }
                     if line.contains("slice.stop"), let stop = wire.stopAnswer {
                         if case .noAnswer = stop { return try respond(stop) }
                         return #"{"ok":false,"error":"nope","detail":"stop refused"}"#
@@ -89,7 +91,6 @@ final class StrandedOutputTests: XCTestCase {
                     return try respond(wire.device)
                 })
             },
-            clock: { offset.now() },
             outputLock: OutputLock(path: dir + "/mode.json.lock"))
         settleOutputTab(s, speakers: 0)
         let finished = Finished()
@@ -97,255 +98,279 @@ final class StrandedOutputTests: XCTestCase {
         return (s, status, finished)
     }
 
-    /// Enter on a row, waiting on the finished hook rather than a sleep.
-    private func enter(_ s: SpeakersScene, on row: OutputTabRow, _ finished: Finished) {
-        let before = finished.count
+    private func wait(_ finished: Finished, count: Int) {
+        let deadline = Date().addingTimeInterval(10)
+        while finished.count < count && Date() < deadline { usleep(5_000) }
+        XCTAssertGreaterThanOrEqual(finished.count, count, "the switch never finished")
+    }
+
+    private func move(_ s: SpeakersScene, to row: OutputTabRow) {
         _ = s.handle(.home)
         guard let i = s.displayRowsForTest.firstIndex(of: row) else { return XCTFail("no row \(row)") }
         for _ in 0..<i { _ = s.handle(.down) }
-        _ = s.handle(.enter)
-        let deadline = Date().addingTimeInterval(10)
-        while finished.count == before && Date() < deadline { usleep(5_000) }
-        XCTAssertGreaterThan(finished.count, before, "the switch never finished")
     }
 
-    /// A second Enter with the cursor where it was: no move, so nothing but
-    /// the press itself reaches the scene.
-    private func again(_ s: SpeakersScene, _ finished: Finished) {
+    /// Enter on a row, and the wait for its switch attempt to finish.
+    private func enter(_ s: SpeakersScene, on row: OutputTabRow, _ finished: Finished) {
         let before = finished.count
+        move(s, to: row)
         _ = s.handle(.enter)
-        let deadline = Date().addingTimeInterval(10)
-        while finished.count == before && Date() < deadline { usleep(5_000) }
-        XCTAssertGreaterThan(finished.count, before, "the switch never finished")
+        wait(finished, count: before + 1)
+    }
+
+    /// Main-loop ticks until the condition holds (the inbox drains in `tick`).
+    @discardableResult
+    private func tick(_ s: SpeakersScene, until condition: () -> Bool = { true }) -> Bool {
+        let deadline = Date().addingTimeInterval(3)
+        repeat {
+            _ = s.tick(snapshot: outputTabSnapshot())
+            if condition() { return true }
+            usleep(5_000)
+        } while Date() < deadline
+        return false
+    }
+
+    /// Enter on a row; the attempt finishes; the question arrives.
+    private func ask(_ s: SpeakersScene, on row: OutputTabRow, _ finished: Finished) {
+        enter(s, on: row, finished)
+        XCTAssertTrue(tick(s) { s.askingLeaveForTest }, "the question never arrived")
+    }
+
+    private func answer(_ s: SpeakersScene, _ key: KeyPress, _ finished: Finished) {
+        let before = finished.count
+        _ = s.handle(key)
+        wait(finished, count: before + 1)
     }
 
     private func mode() -> PlaybackMode { PlaybackModeStore(path: dir + "/mode.json").mode() }
     private func said(_ status: StatusStore) -> String? { status.current()?.text }
-
-    private let cantReach = "Can't reach iPhone; it may still play. Enter again to leave it."
+    private func screen(_ s: SpeakersScene, width: Int = 100) -> [String] {
+        screenText(s.render(frame: shellLayout(width: width, height: 30), snapshot: outputTabSnapshot()),
+                   width: width, height: 30)
+    }
 
     private let today = "Couldn't confirm SpanDAC paused; still using it"
     private let strictMac = "Couldn't confirm SpanDAC on this Mac paused; still using it"
+    private let reminder = "Now using SpanDAC on Kitchen iPad. SpanDAC on iPhone may still be playing."
+    private let keys = "y Yes  n No"
 
-    func testUnreachableNetworkOutputFirstEnterRefusesAndSaysSo() {
-        let wire = Wire()
-        let (s, status, finished) = rig(mode: .networkSource(ipad), wire: wire)
+    // MARK: - The question
+
+    func testASilentNetworkOutputAsksInsteadOfSwitchingOrToasting() {
+        let (s, status, finished) = rig(mode: .networkSource(ipad), wire: Wire())
         let epoch = s.routingForTest.epoch
-        enter(s, on: .spandac(other), finished)
+        ask(s, on: .spandac(other), finished)
         XCTAssertEqual(mode(), .networkSource(ipad))
         XCTAssertEqual(s.routingForTest.epoch, epoch)
-        XCTAssertEqual(said(status), cantReach)
+        XCTAssertNil(status.current(), "a toast would claim something the question does not")
+        XCTAssertEqual(s.footerHint, keys)
+        let shown = screen(s).joined(separator: " ").split(separator: " ").joined(separator: " ")
+        XCTAssertTrue(shown.contains("Can't reach iPhone. It may still be playing. Leave it and use Kitchen iPad? y Yes n No"), shown)
     }
 
-    func testEveryNoAnswerFailureOffersTheSameLeave() {
-        for why in [SpanDACLinkFailure.noAnswer, .asleep, .notFound] {
-            let wire = Wire(); wire.device = .noAnswer(why)
-            let (s, status, finished) = rig(mode: .networkSource(ipad), wire: wire)
-            enter(s, on: .spandac(other), finished)
-            XCTAssertEqual(said(status), cantReach, "\(why)")
-            again(s, finished)
-            XCTAssertEqual(mode(), .networkSource(other), "\(why)")
-            try? FileManager.default.removeItem(atPath: dir + "/mode.json")
-        }
-    }
-
-    func testSecondEnterOnTheSameTargetLeaves() {
-        let wire = Wire()
-        let (s, _, finished) = rig(mode: .networkSource(ipad), wire: wire)
+    func testYLeavesAndTheStatusLineKeepsTheReminder() {
+        let (s, status, finished) = rig(mode: .networkSource(ipad), wire: Wire())
         let epoch = s.routingForTest.epoch
-        enter(s, on: .spandac(other), finished)
-        again(s, finished)
+        ask(s, on: .spandac(other), finished)
+        answer(s, .char("y"), finished)
         XCTAssertEqual(mode(), .networkSource(other))
         XCTAssertEqual(s.routingForTest.epoch, epoch + 1)
+        XCTAssertEqual(said(status), reminder)
+        XCTAssertFalse(s.askingLeaveForTest)
     }
 
-    func testAnEnterOnADifferentTargetWarnsAgainAndArmsThatTarget() {
-        let wire = Wire()
-        let (s, status, finished) = rig(mode: .networkSource(ipad), wire: wire)
-        enter(s, on: .spandac(other), finished)
-        enter(s, on: .spandacMac, finished)     // moving the cursor drops the first arm
-        XCTAssertEqual(mode(), .networkSource(ipad))
-        XCTAssertEqual(said(status), cantReach)
-        again(s, finished)                      // armed for the Mac now
-        XCTAssertEqual(mode(), .source)
-    }
-
-    func testMovingTheSelectionDropsTheArm() {
-        let wire = Wire()
-        let (s, status, finished) = rig(mode: .networkSource(ipad), wire: wire)
-        enter(s, on: .spandac(other), finished)
-        _ = s.handle(.down); _ = s.handle(.up)
-        again(s, finished)
-        XCTAssertEqual(mode(), .networkSource(ipad), "a moved selection is a fresh first Enter")
-        XCTAssertEqual(said(status), cantReach)
-    }
-
-    func testADeviceThatAnswersPlayingOnTheSecondEnterIsStillRefused() {
-        let wire = Wire()
-        let (s, status, finished) = rig(mode: .networkSource(ipad), wire: wire)
-        enter(s, on: .spandac(other), finished)
-        wire.device = .playing
-        again(s, finished)
-        XCTAssertEqual(mode(), .networkSource(ipad))
-        XCTAssertEqual(said(status), today)
-        // The arm is spent: it does not come back when the device goes silent again.
-        wire.device = .noAnswer(.noAnswer)
-        again(s, finished)
-        XCTAssertEqual(mode(), .networkSource(ipad))
-        XCTAssertEqual(said(status), cantReach)
-    }
-
-    func testADeviceThatAnswersARefusalNeverGetsTheLeave() {
-        for why in [SpanDACLinkFailure.refused(-9858), .notPaired, .forgotten] {
-            let wire = Wire(); wire.device = .noAnswer(why)
-            let (s, status, finished) = rig(mode: .networkSource(ipad), wire: wire)
-            enter(s, on: .spandac(other), finished)
-            again(s, finished)
-            XCTAssertEqual(mode(), .networkSource(ipad), "\(why)")
-            XCTAssertEqual(said(status), today, "\(why)")
+    func testNAndEscapeStayAndCloseTheQuestion() {
+        for key in [KeyPress.char("n"), .char("N"), .escape] {
+            let (s, _, finished) = rig(mode: .networkSource(ipad), wire: Wire())
+            ask(s, on: .spandac(other), finished)
+            let before = finished.count
+            XCTAssertEqual(s.handle(key), .redraw)
+            XCTAssertFalse(s.askingLeaveForTest)
+            XCTAssertEqual(finished.count, before, "no switch attempt")
+            XCTAssertEqual(mode(), .networkSource(ipad))
         }
     }
 
-    func testADevicePausedOnTheFirstEnterSwitchesAsToday() {
-        let wire = Wire(); wire.device = .paused
-        let (s, _, finished) = rig(mode: .networkSource(ipad), wire: wire)
-        enter(s, on: .spandac(other), finished)
-        XCTAssertEqual(mode(), .networkSource(other))
-    }
-
-    func testAnUnreachableMacSpanDACKeepsTheStrictRule() {
-        let wire = Wire()
-        let (s, status, finished) = rig(mode: .source, wire: wire)
-        wire.macDown = true
-        enter(s, on: .spandac(other), finished)
-        XCTAssertEqual(mode(), .source)
-        XCTAssertEqual(said(status), strictMac)
-        again(s, finished)
-        XCTAssertEqual(mode(), .source, "never leaves on a second Enter")
-        XCTAssertEqual(said(status), strictMac)
-    }
-
-    // MARK: - The arm expires with its warning
-
-    func testAnExpiredArmWarnsAgainAndDoesNotSwitch() {
-        let wire = Wire()
-        let (s, status, finished) = rig(mode: .networkSource(ipad), wire: wire)
-        enter(s, on: .spandac(other), finished)
-        offset.advance(SpeakersScene.leaveAnywayWarningSeconds + 1)
-        again(s, finished)
-        XCTAssertEqual(mode(), .networkSource(ipad), "a late Enter is a fresh first Enter")
-        XCTAssertEqual(said(status), cantReach)
-        again(s, finished)                      // and that warning re-armed it
-        XCTAssertEqual(mode(), .networkSource(other))
-    }
-
-    func testAStaleOnlyIfEpochReturnDropsTheArm() {
-        let wire = Wire()
-        let (s, status, finished) = rig(mode: .networkSource(ipad), wire: wire)
-        // A pairing started at epoch e0 ...
-        _ = s.handle(.home)
-        guard let third = s.displayRowsForTest.firstIndex(of: .spandac(self.third)) else { return XCTFail("no row") }
-        for _ in 0..<third { _ = s.handle(.down) }
-        _ = s.handle(.enter)
-        XCTAssertEqual(fake.pairCalls, [self.third])
-        // ... a switch moves the epoch (the iPhone is paused) ...
-        wire.device = .paused
-        enter(s, on: .spandac(other), finished)
-        XCTAssertEqual(mode(), .networkSource(other))
-        // ... the Kitchen iPad goes silent and a warning arms a leave ...
-        wire.otherDevice = .noAnswer(.noAnswer)
-        enter(s, on: .spandac(ipad), finished)
-        XCTAssertEqual(said(status), "Can't reach Kitchen iPad; it may still play. Enter again to leave it.")
-        // ... and the stale pairing result returns through the early-return path.
+    func testEveryOtherKeyIsIgnoredWhileAsking() {
+        let (s, _, finished) = rig(mode: .networkSource(ipad), wire: Wire())
+        ask(s, on: .spandac(other), finished)
         let before = finished.count
-        fake.onPairedAndReady?(self.third, "New iPad")
-        let deadline = Date().addingTimeInterval(10)
-        while finished.count == before && Date() < deadline { usleep(5_000) }
-        XCTAssertTrue(said(status)?.hasPrefix("Paired with New iPad") == true, said(status) ?? "nil")
-        wire.device = .paused
-        again(s, finished)
-        XCTAssertEqual(mode(), .networkSource(other), "the stale return dropped the arm")
+        for key in [KeyPress.enter, .down, .up, .char("e"), .space] {
+            XCTAssertEqual(s.handle(key), .none, "\(key)")
+        }
+        XCTAssertTrue(s.askingLeaveForTest)
+        XCTAssertEqual(finished.count, before)
+        XCTAssertEqual(mode(), .networkSource(ipad))
     }
 
-    func testAnEpochChangeBetweenTheEntersDropsTheArm() throws {
+    func testTwoQueuedEntersNeverSwitchWithoutAY() {
         let wire = Wire()
-        let (s, status, finished) = rig(mode: .networkSource(ipad), wire: wire)
-        enter(s, on: .spandac(other), finished)
+        let (s, _, finished) = rig(mode: .networkSource(ipad), wire: wire)
+        wire.hold = true
+        move(s, to: .spandac(other))
+        _ = s.handle(.enter)
+        _ = s.handle(.enter)
+        wire.hold = false
+        wait(finished, count: 2)
+        XCTAssertEqual(mode(), .networkSource(ipad))
+        XCTAssertTrue(tick(s) { s.askingLeaveForTest })
+    }
+
+    func testAKeyPressedWhileTheFirstAttemptIsPendingDropsItsQuestion() {
+        let wire = Wire()
+        let (s, _, finished) = rig(mode: .networkSource(ipad), wire: wire)
+        wire.hold = true
+        move(s, to: .spandac(other))
+        _ = s.handle(.enter)
+        _ = s.handle(.char("z"))
+        wire.hold = false
+        wait(finished, count: 1)
+        tick(s)
+        XCTAssertFalse(s.askingLeaveForTest, "the person did something since that Enter")
+        XCTAssertEqual(mode(), .networkSource(ipad))
+    }
+
+    func testAQuestionForATabThatIsNoLongerShowingIsDropped() {
+        let wire = Wire()
+        let (s, _, finished) = rig(mode: .networkSource(ipad), wire: wire)
+        wire.hold = true
+        move(s, to: .spandac(other))
+        _ = s.handle(.enter)
+        s.resignedActive()
+        wire.hold = false
+        wait(finished, count: 1)
+        tick(s)
+        XCTAssertFalse(s.askingLeaveForTest)
+    }
+
+    // MARK: - The y attempt is strict about anything that changed
+
+    func testAnEpochChangeBetweenTheQuestionAndYIsTheStrictResult() throws {
+        let (s, status, finished) = rig(mode: .networkSource(ipad), wire: Wire())
+        ask(s, on: .spandac(other), finished)
         // Away and back: the same mode, two epochs later.
         _ = try s.routingForTest.switchMode(to: .networkSource(other), readiness: { .ready },
                                             pauseOutgoing: { _ in true }, dropQueue: { _ in })
         _ = try s.routingForTest.switchMode(to: .networkSource(ipad), readiness: { .ready },
                                             pauseOutgoing: { _ in true }, dropQueue: { _ in })
-        again(s, finished)
-        XCTAssertEqual(mode(), .networkSource(ipad))
-        XCTAssertEqual(said(status), cantReach)
+        answer(s, .char("y"), finished)
+        XCTAssertEqual(mode(), .networkSource(ipad), "no unconfirmed leave")
+        XCTAssertNotEqual(said(status), reminder)
     }
 
-    func testAModeChangedByAnotherProcessBetweenTheEntersRefusesAndDoesNotLeave() {
-        let wire = Wire()
-        let (s, status, finished) = rig(mode: .networkSource(ipad), wire: wire)
-        enter(s, on: .spandac(other), finished)
+    func testAModeChangedByAnotherProcessBetweenTheQuestionAndYDoesNotLeave() {
+        let (s, status, finished) = rig(mode: .networkSource(ipad), wire: Wire())
+        ask(s, on: .spandac(other), finished)
         PlaybackModeStore(path: dir + "/mode.json").set(.musicApp)
-        again(s, finished)
+        answer(s, .char("y"), finished)
         XCTAssertEqual(said(status), "Output was changed by another MusicTUI process; nothing was switched.")
         XCTAssertEqual(mode(), .musicApp, "we did not write over the other process's choice")
     }
 
-    // MARK: - An unconfirmed leave
-
-    func testStopAnsweringARefusalAfterASilentPauseIsTodaysQueueRefusal() {
+    func testADeviceThatAnswersPlayingOnTheYAttemptIsRefusedAsToday() {
         let wire = Wire()
         let (s, status, finished) = rig(mode: .networkSource(ipad), wire: wire)
-        enter(s, on: .spandac(other), finished)
-        wire.stopAnswer = .paused      // any answer that is a refusal, not silence
-        again(s, finished)
+        ask(s, on: .spandac(other), finished)
+        wire.device = .playing
+        answer(s, .char("y"), finished)
         XCTAssertEqual(mode(), .networkSource(ipad))
-        XCTAssertEqual(said(status), "Couldn't clear SpanDAC's queue; still using it")
+        XCTAssertEqual(said(status), today)
+        XCTAssertFalse(s.askingLeaveForTest)
     }
+
+    func testADeviceThatAnswersPausedOnTheYAttemptSwitchesNormally() {
+        let wire = Wire()
+        let (s, status, finished) = rig(mode: .networkSource(ipad), wire: wire)
+        ask(s, on: .spandac(other), finished)
+        wire.device = .paused
+        answer(s, .char("y"), finished)
+        XCTAssertEqual(mode(), .networkSource(other))
+        XCTAssertEqual(said(status), "Output: SpanDAC \u{00B7} Kitchen iPad")
+    }
+
+    // MARK: - What counts as no answer
+
+    func testEveryNoAnswerKindAsksAndARefusalNeverDoes() {
+        for why in [SpanDACLinkFailure.noAnswer, .asleep, .notFound] {
+            let wire = Wire(); wire.device = .noAnswer(why)
+            let (s, _, finished) = rig(mode: .networkSource(ipad), wire: wire)
+            ask(s, on: .spandac(other), finished)
+            XCTAssertEqual(mode(), .networkSource(ipad), "\(why)")
+            try? FileManager.default.removeItem(atPath: dir + "/mode.json")
+        }
+        for why in [SpanDACLinkFailure.refused(-9858), .notPaired, .forgotten, .unsafeCipher] {
+            let wire = Wire(); wire.device = .noAnswer(why)
+            let (s, status, finished) = rig(mode: .networkSource(ipad), wire: wire)
+            enter(s, on: .spandac(other), finished)
+            tick(s)
+            XCTAssertFalse(s.askingLeaveForTest, "\(why)")
+            XCTAssertEqual(said(status), today, "\(why)")
+            XCTAssertEqual(mode(), .networkSource(ipad), "\(why)")
+        }
+    }
+
+    func testASilentMacSpanDACKeepsTheStrictRuleAndNeverAsks() {
+        let wire = Wire()
+        let (s, status, finished) = rig(mode: .source, wire: wire)
+        wire.macDown = true
+        enter(s, on: .spandac(other), finished)
+        tick(s)
+        XCTAssertFalse(s.askingLeaveForTest)
+        XCTAssertEqual(mode(), .source)
+        XCTAssertEqual(said(status), strictMac)
+    }
+
+    // MARK: - An unconfirmed leave
 
     func testASilentStopAfterASilentPauseIsIgnored() {
         let wire = Wire(); wire.stopAnswer = .noAnswer(.asleep)
         let (s, _, finished) = rig(mode: .networkSource(ipad), wire: wire)
-        enter(s, on: .spandac(other), finished)
-        again(s, finished)
+        ask(s, on: .spandac(other), finished)
+        answer(s, .char("y"), finished)
         XCTAssertEqual(mode(), .networkSource(other))
     }
 
-    func testAnUnconfirmedLeaveKeepsTheReminderOnTheStatusLine() {
+    func testAStopThatAnswersARefusalIsTodaysQueueRefusal() {
         let wire = Wire()
         let (s, status, finished) = rig(mode: .networkSource(ipad), wire: wire)
-        enter(s, on: .spandac(other), finished)
-        again(s, finished)
-        XCTAssertEqual(said(status), "Now using SpanDAC on Kitchen iPad. SpanDAC on iPhone may still be playing.")
-    }
-
-    func testAConfirmedSwitchKeepsTheNormalLine() {
-        let wire = Wire(); wire.device = .paused
-        let (s, status, finished) = rig(mode: .networkSource(ipad), wire: wire)
-        enter(s, on: .spandac(other), finished)
-        XCTAssertEqual(said(status), "Output: SpanDAC \u{00B7} Kitchen iPad")
+        ask(s, on: .spandac(other), finished)
+        wire.stopAnswer = .paused      // any answer that is a refusal, not silence
+        answer(s, .char("y"), finished)
+        XCTAssertEqual(mode(), .networkSource(ipad))
+        XCTAssertEqual(said(status), "Couldn't clear SpanDAC's queue; still using it")
     }
 
     func testASaveFailureAfterAnUnconfirmedLeaveDoesNotClaimTheQueueWasCleared() {
-        let wire = Wire()
-        let (s, status, finished) = rig(mode: .networkSource(ipad), wire: wire)
-        enter(s, on: .spandac(other), finished)
-        // The directory goes read-only: the atomic write of mode.json fails.
-        chmod(dir, 0o555)
-        defer { chmod(dir, 0o755) }
-        again(s, finished)
+        let (s, status, finished) = rig(mode: .networkSource(ipad), wire: Wire())
+        ask(s, on: .spandac(other), finished)
+        chmod(dir, 0o555)      // the atomic write of mode.json fails
+        answer(s, .char("y"), finished)
         XCTAssertEqual(said(status),
                        "Couldn't save the playback mode; still using SpanDAC on iPhone, which could not be reached.")
         XCTAssertEqual(mode(), .networkSource(ipad))
     }
 
-    /// The footer cuts a status line at the terminal width less four and never
-    /// wraps (Shell.swift), so the whole warning, its instruction included,
-    /// must fit an 80-column terminal even with a long device name.
-    func testTheWarningFitsAnEightyColumnFooter() {
-        let longName = "Anthony's iPhone"
-        let warning = cantReach.replacingOccurrences(of: "iPhone", with: longName)
-        XCTAssertTrue(warning.hasSuffix("Enter again to leave it."))
-        XCTAssertLessThanOrEqual(warning.count, 80 - 4)
+    func testLeavingForMusicTUIKeepsBothTheReminderAndTheMacSoundNotice() {
+        let wire = Wire()
+        wire.macReply = #"{"ok":true,"status":{"playback":"idle","authorization":"authorized","contract":3,"capabilities":[],"output":{"dac":"connected","name":"SSL 2+"}}}"#
+        let (s, status, finished) = rig(mode: .networkSource(ipad), wire: wire)
+        ask(s, on: .musicApp, finished)
+        answer(s, .char("y"), finished)
+        XCTAssertEqual(mode(), .musicApp)
+        XCTAssertEqual(said(status), "Now using \(musicTUIOutputName). SpanDAC on iPhone may still be playing. "
+                       + "Mac sound still on DAC; check Sound settings (SSL 2+).")
+    }
+
+    // MARK: - Drawn at the narrowest width, wrapped, nothing cut
+
+    func testTheQuestionWrapsAtANarrowWidthKeepingTheRiskAndTheKeys() {
+        let (s, _, finished) = rig(mode: .networkSource(ipad), wire: Wire(),
+                                   phone: "Anthony's long-named iPhone 17 Pro Max in the studio")
+        ask(s, on: .spandac(other), finished)
+        let lines = screen(s, width: 40)
+        let shown = lines.joined(separator: " ").split(separator: " ").joined(separator: " ")
+        XCTAssertTrue(shown.contains("may still be playing"), lines.joined(separator: "\n"))
+        XCTAssertTrue(shown.contains("y Yes n No"), lines.joined(separator: "\n"))
+        XCTAssertTrue(shown.contains("Kitchen iPad?"), lines.joined(separator: "\n"))
     }
 }

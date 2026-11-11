@@ -370,7 +370,7 @@ final class SpeakersScene: Scene {
     /// playback globals and `q Quit` around this.
     var footerHint: String {
         if showingSwitchScreen { return SpanDACSwitchCopy.keys }
-        if askingStopUsing { return stopUsingSpanDACKeys }
+        if askingStopUsing || askingLeave != nil { return stopUsingSpanDACKeys }
         if spandac?.awaitingAnswer == true { return "y Yes  n No  Esc Cancel" }
         if spandac?.isPairing == true { return "Esc Cancel pairing" }
         let move = "\u{2191}\u{2193} Move"
@@ -947,29 +947,61 @@ final class SpeakersScene: Scene {
         readinessLock.unlock()
     }
 
-    /// An armed "leave anyway" (see `selectMode`). Touched only on the action
-    /// queue, where every switch this tab makes runs.
-    private struct LeaveAnyway: Equatable {
+    /// The question "can't reach <device>; leave it?", and what it was asked
+    /// about. It is shown only while all of this is still true (see
+    /// `drainLeaveQuestion`).
+    struct LeaveQuestion: Equatable {
         let outgoing: PlaybackMode
         let target: PlaybackMode
+        let targetName: String?
+        let device: String
         let epoch: Int
-        /// When its warning leaves the status line.
-        let deadline: Date
+        /// `keyCount` when the Enter that started the switch was handled.
+        let keyCount: Int
     }
-    private var leaveAnyway: LeaveAnyway?
-    private let leaveLock = NSLock()   // the main loop clears it, the action queue sets and takes it
+    /// The open question. Main loop only; modal like `askingStopUsing`.
+    private var askingLeave: LeaveQuestion? = nil
+    private var inboxLeaveQuestion: LeaveQuestion? = nil          // guarded by readinessLock
+    /// Keys this scene has handled. A question is dropped when any key was
+    /// handled after the Enter it answers. Guarded by `readinessLock`.
+    private var handledKeys = 0
+    /// Whether this tab is the one showing. The shell tells us
+    /// (`becameActive`/`resignedActive`); a scene never told is active.
+    private var isActive = true
 
-    /// How long the "can't reach" warning stays on the status line, and so how
-    /// long the second Enter that leaves is offered.
-    static let leaveAnywayWarningSeconds: TimeInterval = 8
+    var askingLeaveForTest: Bool { askingLeave != nil }
 
-    private func takeLeaveAnyway() -> LeaveAnyway? {
-        leaveLock.lock(); defer { leaveLock.unlock() }
-        let taken = leaveAnyway; leaveAnyway = nil
-        return taken
+    func becameActive() { isActive = true }
+    func resignedActive() { isActive = false; askingLeave = nil }
+
+    static func leaveQuestionText(_ q: LeaveQuestion) -> String {
+        "Can't reach \(q.device). It may still be playing. Leave it and use \(q.targetName ?? "SpanDAC")?"
     }
-    private func setLeaveAnyway(_ arm: LeaveAnyway?) {
-        leaveLock.lock(); leaveAnyway = arm; leaveLock.unlock()
+
+    private func currentKeyCount() -> Int {
+        readinessLock.lock(); defer { readinessLock.unlock() }
+        return handledKeys
+    }
+
+    /// Main loop only: opens a delivered question if it is still current, and
+    /// closes an open one that no longer is. A question that went stale is
+    /// dropped silently; the person can press Enter again.
+    private func drainLeaveQuestion() -> Bool {
+        readinessLock.lock()
+        let delivered = inboxLeaveQuestion; inboxLeaveQuestion = nil
+        let keys = handledKeys
+        readinessLock.unlock()
+        var changed = false
+        if let open = askingLeave, open.epoch != routing.epoch || open.outgoing != routing.mode {
+            askingLeave = nil
+            changed = true
+        }
+        if let q = delivered, isActive, q.epoch == routing.epoch, q.outgoing == routing.mode,
+           q.keyCount == keys {
+            askingLeave = q
+            changed = true
+        }
+        return changed
     }
 
     /// Whether a failed request to a SpanDAC on the network means NOTHING CAME
@@ -999,31 +1031,31 @@ final class SpeakersScene: Scene {
     ///
     /// **One person-chosen exception to "only positive evidence":** when the
     /// outgoing output is a SpanDAC on an iPhone or iPad and it gives NO ANSWER
-    /// (`isNoAnswer`), the first Enter refuses and says so, and a second Enter
-    /// on the same target (same outgoing, same epoch) leaves it, and the status
-    /// line then says the device may still be playing. The arm lasts exactly as
-    /// long as its warning (`leaveAnywayWarningSeconds`) and is dropped by any
-    /// other key, by a stale `onlyIfEpoch` return and by every switch attempt.
-    /// A device that answers, or any other output, keeps the strict rule.
-    private func selectMode(_ target: PlaybackMode, name targetName: String? = nil, onlyIfEpoch: Int? = nil) {
+    /// (`isNoAnswer`), the switch is refused and the tab ASKS, in its body, "Can't
+    /// reach <device>. It may still be playing. Leave it and use <target>?"
+    /// (`askingLeave`, delivered through the inbox and shown only while it is
+    /// still current). The person's y comes back here as `leaveUnreached`: if
+    /// that output is still the current one and still silent, its pause counts
+    /// as confirmed and the status line says it may still be playing. A device
+    /// that answers, and every other output, keeps the strict rule.
+    private func selectMode(_ target: PlaybackMode, name targetName: String? = nil, onlyIfEpoch: Int? = nil,
+                            leaveUnreached: PlaybackMode? = nil) {
         // Device names by id, read here on the caller's thread (the rows belong
         // to it, not to the action queue); the refusal looks up the id of the
         // output actually being left.
         let deviceNames = Dictionary(spandacRows.map { ($0.sourceID, $0.name) }, uniquingKeysWith: { first, _ in first })
+        let keysAtEnter = currentKeyCount()
+        let targetLabel = targetName ?? (target == .musicApp ? musicTUIOutputName : "SpanDAC")
+        let epochAtCall = routing.epoch
         actions.run("Output") { [weak self] in
             guard let self else { return }
             // Fires on every exit from this closure — including a thrown
             // error from switchMode — so a test waiting on it can never be
             // stranded by the exceptional path.
             defer { self.selectModeFinishedForTest?() }
-            // The one-shot "leave anyway": taken and cleared on every switch
-            // attempt, the stale-pairing return below included, so it never
-            // survives into another one. A fresh no-answer refusal arms it again.
             let outgoingNow = self.routing.mode, epochNow = self.routing.epoch
-            let armed = self.takeLeaveAnyway()
-            let leaving = armed == LeaveAnyway(outgoing: outgoingNow, target: target, epoch: epochNow,
-                                               deadline: armed?.deadline ?? .distantPast)
-                && self.clock() < (armed?.deadline ?? .distantPast)
+            // The person's y holds only for the output and epoch they were asked about.
+            let leaving = leaveUnreached == outgoingNow && epochNow == epochAtCall
             let outgoingDevice = outgoingNow.networkSourceID.flatMap { deviceNames[$0] } ?? "that device"
             if let expected = onlyIfEpoch, self.routing.epoch != expected {
                 self.status.post("Paired with \(targetName ?? "SpanDAC"). Press Enter to play there.")
@@ -1042,8 +1074,8 @@ final class SpeakersScene: Scene {
                 return self.makeNetworkClient?(id) ?? .failing(.notPaired)
             }
             let incoming = clientFor(target)
-            var noAnswerRefused = false    // the outgoing network SpanDAC did not answer, and we did not leave
-            var leftUnanswered = false     // it did not answer, and we are leaving it anyway
+            var noAnswerRefused = false    // the outgoing network SpanDAC did not answer, and the person has not said to leave it
+            var leftUnanswered = false     // it did not answer, and the person said to leave it
             let result: RoutingCoordinator.SwitchResult
             do {
                 result = try self.routing.switchMode(
@@ -1076,13 +1108,11 @@ final class SpeakersScene: Scene {
                     })
             } catch {
                 if noAnswerRefused {
-                    // Posted here, not thrown, so the warning has its own
-                    // lifetime and the arm can end with it.
-                    let ttl = Self.leaveAnywayWarningSeconds
-                    self.setLeaveAnyway(LeaveAnyway(outgoing: outgoingNow, target: target, epoch: epochNow,
-                                                    deadline: self.clock().addingTimeInterval(ttl)))
-                    self.status.post("Can't reach \(outgoingDevice); it may still play. Enter again to leave it.",
-                                     error: true, ttl: ttl)
+                    // No toast: a question, through the inbox, to the main loop.
+                    self.readinessLock.lock()
+                    self.inboxLeaveQuestion = LeaveQuestion(outgoing: outgoingNow, target: target, targetName: targetLabel,
+                                                            device: outgoingDevice, epoch: epochNow, keyCount: keysAtEnter)
+                    self.readinessLock.unlock()
                     return
                 }
                 // The coordinator's save-failure sentence says the queue was
@@ -1128,9 +1158,11 @@ final class SpeakersScene: Scene {
                     let read = Self.readMacStatusWithMacOutput(client)
                     self.publishReadiness(read.readiness, data: read.data, output: read.output)
                     let notice = macSoundStillOnTheDAC(read.macOutput)
-                    // A Mac-sound notice outranks the reminder: it is about audio
-                    // still going to the DAC.
-                    if notice != nil || !reminder(musicTUIOutputName) {
+                    if leftUnanswered {
+                        // Both facts, the reminder first.
+                        let head = "Now using \(musicTUIOutputName). SpanDAC on \(outgoingDevice) may still be playing."
+                        self.status.post(notice.map { head + " " + $0 } ?? head, ttl: macSoundNoticeSeconds)
+                    } else {
                         self.status.post(musicTUIOutputLine(read.macOutput), ttl: notice == nil ? 3 : macSoundNoticeSeconds)
                     }
                 }
@@ -1229,6 +1261,7 @@ final class SpeakersScene: Scene {
             }
         }
         if drainDataInbox() { changed = true }
+        if drainLeaveQuestion() { changed = true }
         // The switch screen shows itself ONCE, the first time SpanDAC on this
         // Mac reads ready for music data while the person has never been
         // asked (every install from before the data route included: no
@@ -1366,7 +1399,7 @@ final class SpeakersScene: Scene {
             || clock().timeIntervalSince(lastReadinessKick) >= Self.macReprobeInterval {
             kickReadinessProbe()
         }
-        if reentered { spandac?.activated(); setLeaveAnyway(nil) }
+        if reentered { spandac?.activated() }
         // A pairing countdown redraws once a second on its own.
         if spandacRows.contains(where: { if case .waitingForAllow = $0.state { return true }; return false }) {
             let second = Int(clock().timeIntervalSinceReferenceDate)
@@ -1586,6 +1619,23 @@ final class SpeakersScene: Scene {
             }
             out += ANSICode.moveTo(row: y, col: 3) + line
             y += 2
+        }
+
+        // "Can't reach <device>. Leave it?", under the line that says where
+        // the sound is, wrapped so nothing is cut.
+        if let question = askingLeave {
+            let width = max(1, frame.width - 4)
+            var ask = wrapForOutputTab(Self.leaveQuestionText(question), width: width)
+            if let last = ask.last, last.count + 2 + stopUsingSpanDACKeys.count <= width {
+                ask[ask.count - 1] = last + "  " + stopUsingSpanDACKeys
+            } else {
+                ask.append(stopUsingSpanDACKeys)
+            }
+            for line in ask where y <= bottom {
+                out += ANSICode.moveTo(row: y, col: 3) + "\(ANSICode.bold)\(ANSICode.brightWhite)\(line)\(ANSICode.reset)"
+                y += 1
+            }
+            y += 1
         }
 
         let display = displayRows
@@ -1922,9 +1972,7 @@ final class SpeakersScene: Scene {
     }
 
     func handle(_ key: KeyPress) -> SceneAction {
-        // Anything but Enter is the person doing something else: a pending
-        // "press Enter again to leave it" no longer means this Enter.
-        if key != .enter { setLeaveAnyway(nil) }
+        readinessLock.lock(); handledKeys += 1; readinessLock.unlock()
         // The switch screen and the stop-using question come before
         // everything, before the vim aliases: they answer only their keys.
         if showingSwitchScreen {
@@ -1949,6 +1997,25 @@ final class SpeakersScene: Scene {
                 return .redraw
             case .char("n"), .char("N"), .escape:
                 askingStopUsing = false
+                return .redraw
+            default:
+                return .none
+            }
+        }
+        // "Leave it?" is modal like the question above: y, n and Esc answer it
+        // and every other key, a second Enter included, is ignored.
+        if let question = askingLeave {
+            switch key {
+            case .char("y"), .char("Y"):
+                askingLeave = nil
+                // Only while it is still the output and epoch asked about;
+                // otherwise this is an ordinary, strict attempt.
+                let current = routing.epoch == question.epoch && routing.mode == question.outgoing
+                selectMode(question.target, name: question.targetName,
+                           leaveUnreached: current ? question.outgoing : nil)
+                return .redraw
+            case .char("n"), .char("N"), .escape:
+                askingLeave = nil
                 return .redraw
             default:
                 return .none
