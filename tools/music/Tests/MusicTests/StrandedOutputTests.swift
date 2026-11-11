@@ -122,7 +122,7 @@ final class StrandedOutputTests: XCTestCase {
     private func mode() -> PlaybackMode { PlaybackModeStore(path: dir + "/mode.json").mode() }
     private func said(_ status: StatusStore) -> String? { status.current()?.text }
 
-    private let cantReach = "Can't reach SpanDAC on iPhone; it may still be playing. Open it there, or press Enter again to leave it."
+    private let cantReach = "Can't reach iPhone; it may still play. Enter again to leave it."
 
     private let today = "Couldn't confirm SpanDAC paused; still using it"
     private let strictMac = "Couldn't confirm SpanDAC on this Mac paused; still using it"
@@ -255,7 +255,7 @@ final class StrandedOutputTests: XCTestCase {
         // ... the Kitchen iPad goes silent and a warning arms a leave ...
         wire.otherDevice = .noAnswer(.noAnswer)
         enter(s, on: .spandac(ipad), finished)
-        XCTAssertEqual(said(status), "Can't reach SpanDAC on Kitchen iPad; it may still be playing. Open it there, or press Enter again to leave it.")
+        XCTAssertEqual(said(status), "Can't reach Kitchen iPad; it may still play. Enter again to leave it.")
         // ... and the stale pairing result returns through the early-return path.
         let before = finished.count
         fake.onPairedAndReady?(self.third, "New iPad")
@@ -337,5 +337,15 @@ final class StrandedOutputTests: XCTestCase {
         XCTAssertEqual(said(status),
                        "Couldn't save the playback mode; still using SpanDAC on iPhone, which could not be reached.")
         XCTAssertEqual(mode(), .networkSource(ipad))
+    }
+
+    /// The footer cuts a status line at the terminal width less four and never
+    /// wraps (Shell.swift), so the whole warning, its instruction included,
+    /// must fit an 80-column terminal even with a long device name.
+    func testTheWarningFitsAnEightyColumnFooter() {
+        let longName = "Anthony's iPhone"
+        let warning = cantReach.replacingOccurrences(of: "iPhone", with: longName)
+        XCTAssertTrue(warning.hasSuffix("Enter again to leave it."))
+        XCTAssertLessThanOrEqual(warning.count, 80 - 4)
     }
 }

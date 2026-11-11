@@ -1081,7 +1081,7 @@ final class SpeakersScene: Scene {
                     let ttl = Self.leaveAnywayWarningSeconds
                     self.setLeaveAnyway(LeaveAnyway(outgoing: outgoingNow, target: target, epoch: epochNow,
                                                     deadline: self.clock().addingTimeInterval(ttl)))
-                    self.status.post("Can't reach SpanDAC on \(outgoingDevice); it may still be playing. Open it there, or press Enter again to leave it.",
+                    self.status.post("Can't reach \(outgoingDevice); it may still play. Enter again to leave it.",
                                      error: true, ttl: ttl)
                     return
                 }
