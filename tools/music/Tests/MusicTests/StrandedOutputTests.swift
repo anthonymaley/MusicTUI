@@ -70,12 +70,14 @@ final class StrandedOutputTests: XCTestCase {
     private var fake: FakeSpanDACOutputs!
 
     private func rig(mode: PlaybackMode, wire: Wire, phone: String = "iPhone",
-                     width: Int = 100) -> (SpeakersScene, StatusStore, Finished) {
+                     speakers: Int = 0) -> (SpeakersScene, StatusStore, Finished) {
         let status = StatusStore()
         fake = FakeSpanDACOutputs([spandacRow(ipad, phone, .ready), spandacRow(other, "Kitchen iPad", .ready),
                                    spandacRow(third, "New iPad", .notPaired(pairable: true), paired: false)])
         let s = makeOutputTabScene(
-            dir: dir, mode: mode, spandac: fake, status: status,
+            dir: dir, mode: mode, spandac: fake,
+            speakers: (0..<speakers).map { ["name": "Speaker \($0)", "selected": false, "volume": 50] },
+            status: status,
             macReply: { [self] in
                 if wire.macDown { throw SourceAppError.notRunning }
                 return wire.macReply ?? reply("idle")
@@ -92,7 +94,7 @@ final class StrandedOutputTests: XCTestCase {
                 })
             },
             outputLock: OutputLock(path: dir + "/mode.json.lock"))
-        settleOutputTab(s, speakers: 0)
+        settleOutputTab(s, speakers: speakers)
         let finished = Finished()
         s.selectModeFinishedForTest = { finished.bump() }
         return (s, status, finished)
@@ -228,6 +230,31 @@ final class StrandedOutputTests: XCTestCase {
         tick(s)
         XCTAssertFalse(s.askingLeaveForTest, "the person did something since that Enter")
         XCTAssertEqual(mode(), .networkSource(ipad))
+    }
+
+    func testALeaveAndReEntryBeforeTheReplyDropsTheQuestion() {
+        let wire = Wire()
+        let (s, _, finished) = rig(mode: .networkSource(ipad), wire: wire)
+        wire.hold = true
+        move(s, to: .spandac(other))
+        _ = s.handle(.enter)
+        s.resignedActive()
+        s.becameActive()
+        wire.hold = false
+        wait(finished, count: 1)
+        tick(s)
+        XCTAssertFalse(s.askingLeaveForTest, "a different visit to the tab")
+        XCTAssertEqual(mode(), .networkSource(ipad))
+    }
+
+    func testTheQuestionStaysInViewWithTheCursorOnTheBottomRow() {
+        let (s, _, finished) = rig(mode: .networkSource(ipad), wire: Wire(), speakers: 8)
+        ask(s, on: .speaker(7), finished)
+        let frame = shellLayout(width: 100, height: 14)
+        let lines = screenText(s.render(frame: frame, snapshot: outputTabSnapshot()), width: 100, height: 14)
+        let shown = lines.joined(separator: " ").split(separator: " ").joined(separator: " ")
+        XCTAssertTrue(shown.contains("may still be playing"), lines.joined(separator: "\n"))
+        XCTAssertTrue(shown.contains("y Yes n No"), lines.joined(separator: "\n"))
     }
 
     func testAQuestionForATabThatIsNoLongerShowingIsDropped() {

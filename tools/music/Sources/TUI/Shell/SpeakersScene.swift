@@ -958,6 +958,9 @@ final class SpeakersScene: Scene {
         let epoch: Int
         /// `keyCount` when the Enter that started the switch was handled.
         let keyCount: Int
+        /// `activationGeneration` at that Enter: leaving and re-entering the tab
+        /// in between makes the question stale.
+        let activation: Int
     }
     /// The open question. Main loop only; modal like `askingStopUsing`.
     private var askingLeave: LeaveQuestion? = nil
@@ -965,22 +968,32 @@ final class SpeakersScene: Scene {
     /// Keys this scene has handled. A question is dropped when any key was
     /// handled after the Enter it answers. Guarded by `readinessLock`.
     private var handledKeys = 0
+    /// Moves every time the tab is left or entered. Guarded by `readinessLock`.
+    private var activationGeneration = 0
     /// Whether this tab is the one showing. The shell tells us
     /// (`becameActive`/`resignedActive`); a scene never told is active.
     private var isActive = true
 
     var askingLeaveForTest: Bool { askingLeave != nil }
 
-    func becameActive() { isActive = true }
-    func resignedActive() { isActive = false; askingLeave = nil }
+    func becameActive() {
+        isActive = true
+        readinessLock.lock(); activationGeneration += 1; readinessLock.unlock()
+    }
+    func resignedActive() {
+        isActive = false
+        askingLeave = nil
+        // A question already delivered but not yet drained goes too.
+        readinessLock.lock(); activationGeneration += 1; inboxLeaveQuestion = nil; readinessLock.unlock()
+    }
 
     static func leaveQuestionText(_ q: LeaveQuestion) -> String {
         "Can't reach \(q.device). It may still be playing. Leave it and use \(q.targetName ?? "SpanDAC")?"
     }
 
-    private func currentKeyCount() -> Int {
+    private func currentKeyAndActivation() -> (keys: Int, activation: Int) {
         readinessLock.lock(); defer { readinessLock.unlock() }
-        return handledKeys
+        return (handledKeys, activationGeneration)
     }
 
     /// Main loop only: opens a delivered question if it is still current, and
@@ -989,7 +1002,7 @@ final class SpeakersScene: Scene {
     private func drainLeaveQuestion() -> Bool {
         readinessLock.lock()
         let delivered = inboxLeaveQuestion; inboxLeaveQuestion = nil
-        let keys = handledKeys
+        let keys = handledKeys, activation = activationGeneration
         readinessLock.unlock()
         var changed = false
         if let open = askingLeave, open.epoch != routing.epoch || open.outgoing != routing.mode {
@@ -997,7 +1010,7 @@ final class SpeakersScene: Scene {
             changed = true
         }
         if let q = delivered, isActive, q.epoch == routing.epoch, q.outgoing == routing.mode,
-           q.keyCount == keys {
+           q.keyCount == keys, q.activation == activation {
             askingLeave = q
             changed = true
         }
@@ -1035,18 +1048,17 @@ final class SpeakersScene: Scene {
     /// reach <device>. It may still be playing. Leave it and use <target>?"
     /// (`askingLeave`, delivered through the inbox and shown only while it is
     /// still current). The person's y comes back here as `leaveUnreached`: if
-    /// that output is still the current one and still silent, its pause counts
+    /// that output and epoch are still current and it is still silent, its pause counts
     /// as confirmed and the status line says it may still be playing. A device
     /// that answers, and every other output, keeps the strict rule.
     private func selectMode(_ target: PlaybackMode, name targetName: String? = nil, onlyIfEpoch: Int? = nil,
-                            leaveUnreached: PlaybackMode? = nil) {
+                            leaveUnreached: (outgoing: PlaybackMode, epoch: Int)? = nil) {
         // Device names by id, read here on the caller's thread (the rows belong
         // to it, not to the action queue); the refusal looks up the id of the
         // output actually being left.
         let deviceNames = Dictionary(spandacRows.map { ($0.sourceID, $0.name) }, uniquingKeysWith: { first, _ in first })
-        let keysAtEnter = currentKeyCount()
+        let (keysAtEnter, activationAtEnter) = currentKeyAndActivation()
         let targetLabel = targetName ?? (target == .musicApp ? musicTUIOutputName : "SpanDAC")
-        let epochAtCall = routing.epoch
         actions.run("Output") { [weak self] in
             guard let self else { return }
             // Fires on every exit from this closure — including a thrown
@@ -1054,8 +1066,9 @@ final class SpeakersScene: Scene {
             // stranded by the exceptional path.
             defer { self.selectModeFinishedForTest?() }
             let outgoingNow = self.routing.mode, epochNow = self.routing.epoch
-            // The person's y holds only for the output and epoch they were asked about.
-            let leaving = leaveUnreached == outgoingNow && epochNow == epochAtCall
+            // The person's y holds only for the output and epoch they were ASKED about
+            // (recorded with the question, not re-read at the y).
+            let leaving = leaveUnreached.map { $0.outgoing == outgoingNow && $0.epoch == epochNow } ?? false
             let outgoingDevice = outgoingNow.networkSourceID.flatMap { deviceNames[$0] } ?? "that device"
             if let expected = onlyIfEpoch, self.routing.epoch != expected {
                 self.status.post("Paired with \(targetName ?? "SpanDAC"). Press Enter to play there.")
@@ -1111,7 +1124,8 @@ final class SpeakersScene: Scene {
                     // No toast: a question, through the inbox, to the main loop.
                     self.readinessLock.lock()
                     self.inboxLeaveQuestion = LeaveQuestion(outgoing: outgoingNow, target: target, targetName: targetLabel,
-                                                            device: outgoingDevice, epoch: epochNow, keyCount: keysAtEnter)
+                                                            device: outgoingDevice, epoch: epochNow, keyCount: keysAtEnter,
+                                                            activation: activationAtEnter)
                     self.readinessLock.unlock()
                     return
                 }
@@ -1621,23 +1635,6 @@ final class SpeakersScene: Scene {
             y += 2
         }
 
-        // "Can't reach <device>. Leave it?", under the line that says where
-        // the sound is, wrapped so nothing is cut.
-        if let question = askingLeave {
-            let width = max(1, frame.width - 4)
-            var ask = wrapForOutputTab(Self.leaveQuestionText(question), width: width)
-            if let last = ask.last, last.count + 2 + stopUsingSpanDACKeys.count <= width {
-                ask[ask.count - 1] = last + "  " + stopUsingSpanDACKeys
-            } else {
-                ask.append(stopUsingSpanDACKeys)
-            }
-            for line in ask where y <= bottom {
-                out += ANSICode.moveTo(row: y, col: 3) + "\(ANSICode.bold)\(ANSICode.brightWhite)\(line)\(ANSICode.reset)"
-                y += 1
-            }
-            y += 1
-        }
-
         let display = displayRows
         let placement = stopUsingPlacement
 
@@ -1961,6 +1958,29 @@ final class SpeakersScene: Scene {
         // A stale list is said on a pinned top line that no scroll position or
         // long group name can hide, and that never touches the status line
         // (Codex turns 33-34).
+        // "Can't reach <device>. Leave it?" is PINNED to the top of the body,
+        // outside the scrolling list, so no cursor position can scroll it out
+        // of view while it swallows the keys. Wrapped, never cut; a body too
+        // short for it shows the question and no list.
+        if let question = askingLeave {
+            let width = max(1, frame.width - 4)
+            var ask = wrapForOutputTab(Self.leaveQuestionText(question), width: width)
+            if let last = ask.last, last.count + 2 + stopUsingSpanDACKeys.count <= width {
+                ask[ask.count - 1] = last + "  " + stopUsingSpanDACKeys
+            } else {
+                ask.append(stopUsingSpanDACKeys)
+            }
+            let shown = Array(ask.prefix(frame.bodyHeight))
+            var pinned = ""
+            for (i, line) in shown.enumerated() {
+                pinned += ANSICode.moveTo(row: frame.bodyY + i, col: 3)
+                    + "\(ANSICode.bold)\(ANSICode.brightWhite)\(line)\(ANSICode.reset)"
+            }
+            let inset = shown.count + 1      // a blank line under it
+            guard inset < frame.bodyHeight else { return clear + pinned }
+            return clear + pinned + outputViewport(out, bodyY: frame.bodyY, height: frame.bodyHeight,
+                                                   focusY: focusY, inset: inset)
+        }
         if speakerFetchFailed, frame.bodyHeight > 1 {
             let said = everLoaded ? "AirPlay speaker list unavailable; retrying \u{00B7} showing the last list"
                                   : "AirPlay speaker list unavailable; retrying"
@@ -2008,11 +2028,10 @@ final class SpeakersScene: Scene {
             switch key {
             case .char("y"), .char("Y"):
                 askingLeave = nil
-                // Only while it is still the output and epoch asked about;
-                // otherwise this is an ordinary, strict attempt.
-                let current = routing.epoch == question.epoch && routing.mode == question.outgoing
+                // The action decides whether the question's output and epoch
+                // still hold; otherwise this is an ordinary, strict attempt.
                 selectMode(question.target, name: question.targetName,
-                           leaveUnreached: current ? question.outgoing : nil)
+                           leaveUnreached: (question.outgoing, question.epoch))
                 return .redraw
             case .char("n"), .char("N"), .escape:
                 askingLeave = nil
