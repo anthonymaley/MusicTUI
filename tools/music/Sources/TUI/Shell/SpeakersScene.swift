@@ -947,6 +947,32 @@ final class SpeakersScene: Scene {
         readinessLock.unlock()
     }
 
+    /// An armed "leave anyway" (see `selectMode`). Touched only on the action
+    /// queue, where every switch this tab makes runs.
+    private struct LeaveAnyway: Equatable {
+        let outgoing: PlaybackMode
+        let target: PlaybackMode
+        let epoch: Int
+    }
+    private var leaveAnyway: LeaveAnyway?
+
+    /// Whether a failed request to a SpanDAC on the network means NOTHING CAME
+    /// BACK. The network client (`SpanDACTLSTransport`, SpanDACLink.swift) throws
+    /// only `SourceAppError.link(...)`: `.notFound` (Bonjour did not resolve,
+    /// :347), `.asleep` (connect failed or the handshake timed out, :400/:453/
+    /// :463) and `.noAnswer` (connected, no reply, :402/:441/:491) are silence.
+    /// `.notRunning` and `.timedOut` are the Mac's Unix-socket errors and never
+    /// come from it. Everything else is a device or this Mac saying something
+    /// (`.notPaired`, `.refused`, `.unsafeCipher`, `.forgotten`, `.unreadable`,
+    /// `.notAuthorized`) and keeps the strict rule.
+    static func isNoAnswer(_ error: Error) -> Bool {
+        guard case SourceAppError.link(let failure) = error else { return false }
+        switch failure {
+        case .notFound, .asleep, .noAnswer: return true
+        default: return false
+        }
+    }
+
     /// Choosing a row. Ruling 12.3's transaction lives in the coordinator:
     /// pause the outgoing player, drop its queue, save, commit — and refuse the
     /// whole switch if any step cannot be confirmed.
@@ -954,7 +980,18 @@ final class SpeakersScene: Scene {
     /// `onlyIfEpoch`: switch only if no other switch committed since that
     /// epoch. Checked on the action queue, where every switch this tab makes
     /// is ordered, so a switch queued before this one is seen.
+    ///
+    /// **One person-chosen exception to "only positive evidence":** when the
+    /// outgoing output is a SpanDAC on an iPhone or iPad and it gives NO ANSWER
+    /// (`isNoAnswer`), the first Enter refuses and says so, and a second Enter
+    /// on the same target (same outgoing, same epoch) leaves it. A device that
+    /// answers, or any other output, keeps the strict rule.
     private func selectMode(_ target: PlaybackMode, name targetName: String? = nil, onlyIfEpoch: Int? = nil) {
+        // The outgoing device's name, read here on the caller's thread: the
+        // rows belong to it, not to the action queue.
+        let outgoingDevice = routing.mode.networkSourceID.flatMap { id in
+            spandacRows.first(where: { $0.sourceID == id })?.name
+        } ?? "that device"
         actions.run("Output") { [weak self] in
             guard let self else { return }
             // Fires on every exit from this closure — including a thrown
@@ -978,25 +1015,49 @@ final class SpeakersScene: Scene {
                 return self.makeNetworkClient?(id) ?? .failing(.notPaired)
             }
             let incoming = clientFor(target)
-            let result = try self.routing.switchMode(
-                to: target,
-                readiness: { incoming.readiness() },
-                pauseOutgoing: { outgoing in
-                    switch outgoing {
-                    case .musicApp:
-                        return try self.confirmMusicAppPaused()
-                    case .source:
-                        return try confirmBridgeNotPlaying(clientFor(outgoing).control)
-                    case .networkSource:
-                        return try confirmBridgeNotPlaying(clientFor(outgoing).control)
-                    }
-                },
-                dropQueue: { outgoing in
-                    switch outgoing {
-                    case .musicApp: break   // MusicTUI's own queue, cleared below
-                    case .source, .networkSource: try clientFor(outgoing).control.stop()
-                    }
-                })
+            // The one-shot "leave anyway": taken and cleared on every switch,
+            // so it never survives into another one. It is set again below
+            // only by a fresh no-answer refusal.
+            let outgoingNow = self.routing.mode, epochNow = self.routing.epoch
+            let leaving = self.leaveAnyway == LeaveAnyway(outgoing: outgoingNow, target: target, epoch: epochNow)
+            self.leaveAnyway = nil
+            var noAnswerRefused = false    // the outgoing network SpanDAC did not answer, and we did not leave
+            var leftUnanswered = false     // it did not answer, and we are leaving it anyway
+            let result: RoutingCoordinator.SwitchResult
+            do {
+                result = try self.routing.switchMode(
+                    to: target,
+                    readiness: { incoming.readiness() },
+                    pauseOutgoing: { outgoing in
+                        switch outgoing {
+                        case .musicApp:
+                            return try self.confirmMusicAppPaused()
+                        case .source:
+                            return try confirmBridgeNotPlaying(clientFor(outgoing).control)
+                        case .networkSource:
+                            do {
+                                return try confirmBridgeNotPlaying(clientFor(outgoing).control)
+                            } catch where Self.isNoAnswer(error) {
+                                if leaving { leftUnanswered = true; return true }
+                                noAnswerRefused = true
+                                return false
+                            }
+                        }
+                    },
+                    dropQueue: { outgoing in
+                        switch outgoing {
+                        case .musicApp: break   // MusicTUI's own queue, cleared below
+                        case .source: try clientFor(outgoing).control.stop()
+                        case .networkSource:
+                            do { try clientFor(outgoing).control.stop() }
+                            catch where leftUnanswered && Self.isNoAnswer(error) { break }
+                        }
+                    })
+            } catch {
+                guard noAnswerRefused else { throw error }
+                self.leaveAnyway = LeaveAnyway(outgoing: outgoingNow, target: target, epoch: epochNow)
+                throw ActionError(message: "Can't reach SpanDAC on \(outgoingDevice). Open it there, or press Enter again to leave it.")
+            }
             switch result {
             case .alreadyInMode:
                 // Enter on the SpanDAC row that is already the output: when its
