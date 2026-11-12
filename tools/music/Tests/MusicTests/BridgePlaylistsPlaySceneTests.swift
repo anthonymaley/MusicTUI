@@ -592,6 +592,117 @@ final class BridgePlaylistsPlaySceneTests: XCTestCase {
                       "got: \(String(describing: status.current()?.text))")
     }
 
+    // MARK: - a song the output would refuse as a repeat is asked for once (2026-11-11)
+    //
+    // The output SpanDAC refuses a list in which one id appears twice, or two
+    // different ids share a title (exact, case-sensitive; the artist does not
+    // count). The play leaves out the later copy and says so, as the marked play
+    // does (`repeatedSongsNotice`): a repeated song plays once.
+
+    /// Plays `rows` from the rail (`p`), or from track `fromTrack` (Enter), and
+    /// returns what was sent, the recorded rows and the footer.
+    private func playForRepeats(rows: [(id: String, title: String, artist: String)], fromTrack: Int? = nil,
+                                skipped: Int = 0, outputNotInLibrary: Int? = nil,
+                                file: StaticString = #filePath, line: UInt = #line)
+        -> (request: [String: Any]?, recorded: [String], footer: String?, stays: Bool?, sentCount: Int) {
+        let wire = BridgeLibraryReadsWire(["slice.libraryPlaylists": [onePlaylistPage],
+                                           "slice.queue": [queueReply(skippedNotInLibrary: outputNotInLibrary)],
+                                           "slice.status": [statusOK]])
+        wire.stickyStatus = true
+        wire.script("slice.libraryPlaylistTracks", [tracksPage(rows, total: rows.count, skipped: skipped)])
+        let status = StatusStore()
+        let store = PlaybackModeStore(path: NSTemporaryDirectory() + "mode-\(UUID().uuidString).json")
+        store.set(.source)
+        let routing = RoutingCoordinator(store: store, surface: .tui,
+                                         makeSource: { SourceAppClient(path: "/nonexistent", transport: wire.transport) })
+        let s = playlistsTestScene(flag: BridgeSelectedFlag(true), wire: wire, spy: PlaylistAppleScriptSpy(),
+                                   status: status, width: 120, routing: routing)
+        XCTAssertTrue(settleScene(s) { s.render(frame: frame, snapshot: idle).contains("Chill") }, file: file, line: line)
+        if let fromTrack {
+            _ = s.handle(.enter)
+            XCTAssertTrue(settleScene(s) { s.render(frame: threeZoneFrame, snapshot: idle).contains("Tracks \(rows.count)") },
+                          file: file, line: line)
+            flushTicks(s)
+            for _ in 1..<fromTrack { _ = s.handle(.down) }
+            _ = s.handle(.enter)
+        } else {
+            _ = s.handle(.char("p"))
+        }
+        XCTAssertTrue(settleScene(s) { !wire.sent("slice.queue").isEmpty }, file: file, line: line)
+        // Let the footer land.
+        _ = settleScene(s) { status.current()?.text.contains("Playing") == true }
+        let recorded = routing.spanDACPlay()?.rows.map(\.id) ?? []
+        let sentIDs = wire.sent("slice.queue").first?["library_ids"] as? [String]
+        return (wire.sent("slice.queue").first, recorded, status.current()?.text,
+                status.current(now: Date().addingTimeInterval(3600))?.staysUntilStateChange, sentIDs?.count ?? 0)
+    }
+
+    func testTwoIdsWithOneTitleAreAskedForOnceAndTheFooterSaysSo() {
+        let r = playForRepeats(rows: [("i.1", "Slow Fade", "Daniel Avery"), ("i.2", "B", "Art"),
+                                      ("i.3", "Slow Fade", "Daniel Avery")])
+        XCTAssertEqual(r.request?["library_ids"] as? [String], ["i.1", "i.2"])
+        XCTAssertEqual(r.recorded, ["i.1", "i.2"], "Up Next is recorded from what was sent")
+        XCTAssertEqual(r.footer, "Playing 'Chill' on SpanDAC \u{2014} 2 tracks. 1 repeated song plays once.")
+        XCTAssertEqual(r.stays, true)
+    }
+
+    func testTheArtistDoesNotMakeATitleDifferent() {
+        let r = playForRepeats(rows: [("i.1", "Slow Fade", "Daniel Avery"), ("i.2", "Slow Fade", "Someone Else")])
+        XCTAssertEqual(r.request?["library_ids"] as? [String], ["i.1"])
+    }
+
+    func testTitlesThatDifferOnlyInCaseAreNotRepeatsBecauseTheDeviceComparesExactly() {
+        let r = playForRepeats(rows: [("i.1", "Slow Fade", "A"), ("i.2", "Slow fade", "A")])
+        XCTAssertEqual(r.request?["library_ids"] as? [String], ["i.1", "i.2"])
+        XCTAssertEqual(r.footer, "Playing 'Chill' on SpanDAC \u{2014} 2 tracks.")
+    }
+
+    func testTheSameIdTwiceIsAskedForOnce() {
+        let r = playForRepeats(rows: [("i.a", "A", "Art"), ("i.b", "B", "Art"), ("i.a", "A", "Art"), ("i.a", "A", "Art")])
+        XCTAssertEqual(r.request?["library_ids"] as? [String], ["i.a", "i.b"])
+        XCTAssertEqual(r.recorded, ["i.a", "i.b"])
+        XCTAssertEqual(r.footer, "Playing 'Chill' on SpanDAC \u{2014} 2 tracks. 1 repeated song plays once.")
+    }
+
+    func testTwoDifferentRepeatedSongsAreCountedAsTwo() {
+        let r = playForRepeats(rows: [("i.1", "X", "A"), ("i.2", "Y", "A"), ("i.3", "X", "A"), ("i.4", "Y", "A"), ("i.5", "Z", "A")])
+        XCTAssertEqual(r.request?["library_ids"] as? [String], ["i.1", "i.2", "i.5"])
+        XCTAssertEqual(r.footer, "Playing 'Chill' on SpanDAC \u{2014} 3 tracks. 2 repeated songs play once.")
+    }
+
+    func testAFromRowPlayKeepsThePickedRowWhenItRepeatsALaterOne() {
+        let r = playForRepeats(rows: [("i.1", "P", "A"), ("i.2", "X", "A"), ("i.3", "Z", "A"), ("i.4", "X", "A")], fromTrack: 2)
+        XCTAssertEqual(r.request?["library_ids"] as? [String], ["i.2", "i.3"])
+        XCTAssertEqual(r.request?["start_required"] as? Bool, true)
+        XCTAssertEqual(r.recorded, ["i.2", "i.3"])
+        XCTAssertEqual(r.footer, "Playing 'Chill' on SpanDAC \u{2014} 2 tracks. 1 repeated song plays once.")
+    }
+
+    func testARepeatOnlyBeforeTheStartRowIsNeitherSentNorCounted() {
+        let r = playForRepeats(rows: [("i.1", "X", "A"), ("i.2", "X", "A"), ("i.3", "Z", "A")], fromTrack: 2)
+        XCTAssertEqual(r.request?["library_ids"] as? [String], ["i.2", "i.3"])
+        XCTAssertEqual(r.footer, "Playing 'Chill' on SpanDAC \u{2014} 2 tracks.")
+    }
+
+    func testAListWithNoRepeatsSendsAndSaysWhatItDidBefore() {
+        let rows = (1...5).map { ("i.\($0)", "Track \($0)", "Art") }
+        let r = playForRepeats(rows: rows)
+        XCTAssertEqual(r.request?["library_ids"] as? [String], rows.map(\.0))
+        XCTAssertEqual(r.recorded, rows.map(\.0))
+        XCTAssertEqual(r.footer, "Playing 'Chill' on SpanDAC \u{2014} 5 tracks.")
+        XCTAssertNotEqual(r.stays, true, "nothing was left out: the line expires as it did")
+    }
+
+    func testRepeatsComposeWithThePhonesSkipCountAndVideosOnOneLine() {
+        let r = playForRepeats(rows: [("i.1", "X", "A"), ("i.2", "Y", "A"), ("i.3", "X", "A"), ("i.4", "Z", "A"),
+                                      ("i.5", "Z", "A"), ("i.6", "W", "A")],
+                               skipped: 1, outputNotInLibrary: 1)
+        XCTAssertEqual(r.request?["library_ids"] as? [String], ["i.1", "i.2", "i.4", "i.6"])
+        XCTAssertEqual(r.footer, "Skipped 1 song not in your library \u{00B7} Playing 3 of 5 from 'Chill' on SpanDAC: "
+                                 + "1 video skipped. 2 repeated songs play once.")
+        XCTAssertEqual(r.recorded, ["i.1", "i.2", "i.4", "i.6"])
+    }
+
     // MARK: - Addendum U: unavailable songs, end to end (U-R5/U-R6)
 
     private func queueReply(skippedUnavailable: Int) -> String {

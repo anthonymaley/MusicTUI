@@ -1793,7 +1793,13 @@ final class PlaylistsScene: Scene {
                     })
                 let plan = planned.plan
                 let finalRows = planned.rows
-                let sent = finalRows.map { bridgeQueueRows($0, shuffle: shuffle, startAt: startAt) }
+                // The output refuses a list that repeats an id or a title, so a repeat
+                // is asked for once (the first, in the order sent): a repeated song
+                // plays once, and the line says so. Only the legacy ids play; the
+                // whole-play and hand-off paths below read `finalRows` unchanged.
+                let deduped = finalRows.map { bridgeQueueRowsWithoutRepeats(bridgeQueueRows($0, shuffle: shuffle, startAt: startAt)) }
+                let sent = deduped?.rows
+                let repeatedSongs = deduped?.repeatedSongs ?? 0
                 let ids = sent?.map(\.id)
 
                 // Addendum U: set only on the attempt that actually succeeds.
@@ -1867,13 +1873,17 @@ final class PlaylistsScene: Scene {
                 // read's were never sent), and what the output dropped was sent but did not
                 // play, so it leaves the played count and never the total.
                 let notInLibrary = finalNotInLibrary + outputNotInLibrary
-                status.post(bridgePlaylistPlayMessage(name: name, queued: ids?.count ?? 0,
-                                                       skippedVideos: finalSkipped,
-                                                       skippedUnavailable: skippedUnavailable,
-                                                       skippedNotInLibrary: notInLibrary,
-                                                       skippedByOutput: outputNotInLibrary,
-                                                       startAt: startAt, shuffle: shuffle),
-                            untilStateChange: skippedUnavailable > 0 || finalSkipped > 0 || notInLibrary > 0)
+                // The repeats were never sent, so they are in neither number on the
+                // line (as on the marked play); their sentence goes last.
+                let line = [bridgePlaylistPlayMessage(name: name, queued: ids?.count ?? 0,
+                                                      skippedVideos: finalSkipped,
+                                                      skippedUnavailable: skippedUnavailable,
+                                                      skippedNotInLibrary: notInLibrary,
+                                                      skippedByOutput: outputNotInLibrary,
+                                                      startAt: startAt, shuffle: shuffle),
+                            repeatedSongsNotice(repeatedSongs)].compactMap { $0 }.joined(separator: " ")
+                status.post(line, untilStateChange: skippedUnavailable > 0 || finalSkipped > 0
+                                || notInLibrary > 0 || repeatedSongs > 0)
             } catch let e as MusicProviderError {
                 // Bridge's own words reach the footer — the over-100 bound,
                 // the repeated-title refusal, and every other refusal alike.

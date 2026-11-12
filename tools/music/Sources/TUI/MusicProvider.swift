@@ -662,6 +662,29 @@ func bridgeQueueRows(_ rows: [MusicRow], shuffle: Bool, startAt: Int) -> [MusicR
     return Array(rows[(start - 1)...])
 }
 
+/// The rows a SpanDAC output's list-of-ids queue would accept from `rows`, in
+/// order, and how many songs were left out as repeats. The output refuses a list
+/// in which one id appears twice or two DIFFERENT ids share a title, compared
+/// exactly (no case folding, the artist does not count); the first occurrence is
+/// kept. The count is of distinct songs repeated, as `repeatedSongsNotice` counts
+/// them for the marked play ("2 repeated songs play once.").
+func bridgeQueueRowsWithoutRepeats(_ rows: [MusicRow]) -> (rows: [MusicRow], repeatedSongs: Int) {
+    var keptByID: [String: String] = [:]      // id seen -> id of the row kept for it
+    var keptByTitle: [String: String] = [:]   // title seen -> id of the row kept for it
+    var kept: [MusicRow] = []
+    var repeated = Set<String>()
+    for row in rows {
+        if let first = keptByID[row.id] ?? keptByTitle[row.title] {
+            repeated.insert(first)
+            continue
+        }
+        keptByID[row.id] = row.id
+        keptByTitle[row.title] = row.id
+        kept.append(row)
+    }
+    return (kept, repeated.count)
+}
+
 /// Addendum U (U-R6): the unavailable-song notice, appended to any
 /// successful Bridge play's footer when `n` is greater than 0 — never
 /// replacing whatever that footer already said (D11's video-skip sentence,
