@@ -493,6 +493,105 @@ final class BridgePlaylistsPlaySceneTests: XCTestCase {
         }, "got: \(String(describing: status.current()?.text))")
     }
 
+    // MARK: - songs the output's library does not hold (2026-11-11)
+    //
+    // The output SpanDAC may be a phone whose library lacks songs the Mac's has.
+    // The playlist play asks it to leave those out, and says how many it did.
+
+    private func queueReply(skippedNotInLibrary: Int?) -> String {
+        let field = skippedNotInLibrary.map { ",\"skipped_not_in_library\":\($0)" } ?? ""
+        return "{\"ok\":true,\"op\":\"slice.queue\",\"skipped_unavailable\":0\(field)}"
+    }
+
+    func testPOnAPlaylistAsksTheOutputToSkipSongsNotInItsLibraryAndLeadsTheFooterWithTheCount() {
+        let songs = (1...40).map { ("i.\($0)", "Track \($0)", "Art") }
+        let wire = BridgeLibraryReadsWire(["slice.libraryPlaylists": [onePlaylistPage],
+                                           "slice.queue": [queueReply(skippedNotInLibrary: 12)], "slice.status": [statusOK]])
+        wire.stickyStatus = true   // a play reads SpanDAC's capabilities before it queues
+        wire.script("slice.libraryPlaylistTracks", [tracksPage(songs, total: 40)])
+        let status = StatusStore()
+        let s = playlistsTestScene(flag: BridgeSelectedFlag(true), wire: wire, spy: PlaylistAppleScriptSpy(),
+                                   status: status, width: 120)
+        XCTAssertTrue(settleScene(s) { s.render(frame: frame, snapshot: idle).contains("Chill") })
+        _ = s.handle(.char("p"))
+        XCTAssertTrue(settleScene(s) { !wire.sent("slice.queue").isEmpty })
+        let req = wire.sent("slice.queue").first!
+        XCTAssertEqual(req["skip_not_in_library"] as? Bool, true)
+        XCTAssertEqual(req["start_required"] as? Bool, false)
+        XCTAssertEqual((req["library_ids"] as? [String])?.count, 40, "every id is still sent: the output decides")
+        XCTAssertTrue(settleScene(s) {
+            status.current()?.text == "Skipped 12 songs not in your library \u{00B7} Playing 'Chill' on SpanDAC \u{2014} 28 tracks."
+        }, "got: \(String(describing: status.current()?.text))")
+        XCTAssertEqual(status.current(now: Date().addingTimeInterval(3600))?.staysUntilStateChange, true,
+                       "something was left out: the line stays")
+    }
+
+    func testEnterOnATrackAsksToSkipToo_StartRequiredStaysAsComputed() {
+        let songs = (1...40).map { ("i.\($0)", "Track \($0)", "Art") }
+        let wire = BridgeLibraryReadsWire(["slice.libraryPlaylists": [onePlaylistPage],
+                                           "slice.queue": [queueReply(skippedNotInLibrary: 1)], "slice.status": [statusOK]])
+        wire.stickyStatus = true
+        wire.script("slice.libraryPlaylistTracks", [tracksPage(songs, total: 40)])
+        let status = StatusStore()
+        let s = playlistsTestScene(flag: BridgeSelectedFlag(true), wire: wire, spy: PlaylistAppleScriptSpy(),
+                                   status: status, width: 120)
+        XCTAssertTrue(settleScene(s) { s.render(frame: frame, snapshot: idle).contains("Chill") })
+        _ = s.handle(.enter)
+        XCTAssertTrue(settleScene(s) { s.render(frame: threeZoneFrame, snapshot: idle).contains("Tracks 40") })
+        flushTicks(s)
+        for _ in 0..<4 { _ = s.handle(.down) }
+        _ = s.handle(.enter)
+        XCTAssertTrue(settleScene(s) { !wire.sent("slice.queue").isEmpty })
+        let req = wire.sent("slice.queue").first!
+        XCTAssertEqual(req["skip_not_in_library"] as? Bool, true)
+        XCTAssertEqual(req["start_required"] as? Bool, true)
+        XCTAssertEqual(req["library_ids"] as? [String], songs[4...].map(\.0))
+        XCTAssertTrue(settleScene(s) {
+            status.current()?.text == "Skipped 1 song not in your library \u{00B7} Playing 'Chill' on SpanDAC \u{2014} 35 tracks."
+        }, "got: \(String(describing: status.current()?.text))")
+    }
+
+    /// The Mac's own read already left some out (its count rides with the rows);
+    /// the output leaves out more. They are different songs, so the line adds them.
+    func testTheOutputsCountAddsToTheOnesTheReadAlreadySkipped() {
+        let songs = (1...10).map { ("i.\($0)", "Track \($0)", "Art") }
+        let page = """
+        {"ok":true,"op":"slice.libraryPlaylistTracks","generation":3,"total":10,
+         "items":[\(songs.map { "{\"id\":\"\($0.0)\",\"title\":\"\($0.1)\",\"artist\":\"Art\",\"kind\":\"song\"}" }.joined(separator: ","))],
+         "next_cursor":null,"skipped_videos":0,"skipped_not_in_library":2}
+        """
+        let wire = BridgeLibraryReadsWire(["slice.libraryPlaylists": [onePlaylistPage],
+                                           "slice.queue": [queueReply(skippedNotInLibrary: 3)], "slice.status": [statusOK]])
+        wire.stickyStatus = true
+        wire.script("slice.libraryPlaylistTracks", [page])
+        let status = StatusStore()
+        let s = playlistsTestScene(flag: BridgeSelectedFlag(true), wire: wire, spy: PlaylistAppleScriptSpy(),
+                                   status: status, width: 120)
+        XCTAssertTrue(settleScene(s) { s.render(frame: frame, snapshot: idle).contains("Chill") })
+        _ = s.handle(.char("p"))
+        XCTAssertTrue(settleScene(s) { !wire.sent("slice.queue").isEmpty })
+        XCTAssertTrue(settleScene(s) {
+            status.current()?.text == "Skipped 5 songs not in your library \u{00B7} Playing 'Chill' on SpanDAC \u{2014} 7 tracks."
+        }, "got: \(String(describing: status.current()?.text))")
+    }
+
+    /// An older SpanDAC ignores the field and sends no count: today's line.
+    func testAReplyWithoutTheCountLeavesTodaysLine() {
+        let songs = (1...10).map { ("i.\($0)", "Track \($0)", "Art") }
+        let wire = BridgeLibraryReadsWire(["slice.libraryPlaylists": [onePlaylistPage],
+                                           "slice.queue": [queueReply(skippedNotInLibrary: nil)], "slice.status": [statusOK]])
+        wire.stickyStatus = true
+        wire.script("slice.libraryPlaylistTracks", [tracksPage(songs, total: 10)])
+        let status = StatusStore()
+        let s = playlistsTestScene(flag: BridgeSelectedFlag(true), wire: wire, spy: PlaylistAppleScriptSpy(),
+                                   status: status, width: 120)
+        XCTAssertTrue(settleScene(s) { s.render(frame: frame, snapshot: idle).contains("Chill") })
+        _ = s.handle(.char("p"))
+        XCTAssertTrue(settleScene(s) { !wire.sent("slice.queue").isEmpty })
+        XCTAssertTrue(settleScene(s) { status.current()?.text == "Playing 'Chill' on SpanDAC \u{2014} 10 tracks." },
+                      "got: \(String(describing: status.current()?.text))")
+    }
+
     // MARK: - Addendum U: unavailable songs, end to end (U-R5/U-R6)
 
     private func queueReply(skippedUnavailable: Int) -> String {

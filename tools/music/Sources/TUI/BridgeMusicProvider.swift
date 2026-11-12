@@ -124,12 +124,21 @@ struct BridgeMusicProvider: MusicDataProvider {
 
     /// The same play as `playReportingSkips`, with the reply's `queue_token`.
     func playRetainingToken(ids: [String], startRequired: Bool) throws -> SpanDACPlayResult {
-        let sent: (skippedUnavailable: Int, queueToken: String?)
-        do { sent = try control.queueRetainingToken(libraryIDs: ids, startRequired: startRequired) }
+        try playRetainingToken(ids: ids, startRequired: startRequired, skipNotInLibrary: false)
+    }
+
+    /// Asks the SpanDAC to leave out ids its library does not hold only when the
+    /// CALLER says so. Deliberately not `skipsNotInLibrary`, which is the
+    /// playlist READS' opt-in: the output player carries it for every caller, and
+    /// a marked set, an album or a Songs play must not inherit it.
+    func playRetainingToken(ids: [String], startRequired: Bool, skipNotInLibrary: Bool) throws -> SpanDACPlayResult {
+        let sent: (skippedUnavailable: Int, queueToken: String?, skippedNotInLibrary: Int)
+        do { sent = try control.queueRetainingToken(libraryIDs: ids, startRequired: startRequired,
+                                                    skipNotInLibrary: skipNotInLibrary) }
         catch let error as SourceAppError { throw Self.translate(error) }
         let queue = try bridgeNow(from: nowPlaying()).queue
         return SpanDACPlayResult(queue: queue, skippedUnavailable: sent.skippedUnavailable,
-                                 queueToken: sent.queueToken)
+                                 skippedNotInLibrary: sent.skippedNotInLibrary, queueToken: sent.queueToken)
     }
 
     /// True only when SpanDAC's own `capabilities` list `play.library`. A status

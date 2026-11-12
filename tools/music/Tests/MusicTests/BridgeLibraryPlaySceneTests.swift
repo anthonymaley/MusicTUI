@@ -155,6 +155,8 @@ final class BridgeLibraryPlaySceneTests: XCTestCase {
         // happens on Bridge, not here) — the client only reduces the COUNT
         // it displays and appends the notice.
         XCTAssertEqual(wire.sent("slice.queue").first?["library_ids"] as? [String], ["t1", "t2", "t3"])
+        XCTAssertNil(wire.sent("slice.queue").first?["skip_not_in_library"],
+                     "a Library album play does not ask the output to skip songs")
         XCTAssertTrue(settleScene(s) {
             status.current()?.text == "Playing 'In Rainbows' on SpanDAC \u{2014} 2 tracks. 1 song isn't available to SpanDAC."
         }, "got: \(String(describing: status.current()?.text))")

@@ -210,6 +210,12 @@ protocol MusicDataProvider: DiscoverProviding, StationProviding, CataloguePlayin
     /// the caller that keeps the rows it sent (Codex 106, finding 6). The
     /// default is `playReportingSkips` with no token.
     func playRetainingToken(ids: [String], startRequired: Bool) throws -> SpanDACPlayResult
+    /// The same play, asking the output SpanDAC to leave out ids its library does
+    /// not hold (`skip_not_in_library`, 2026-11-11) and reporting how many it did
+    /// (`SpanDACPlayResult.skippedNotInLibrary`). Only the Playlists scene's
+    /// playlist play passes true; the two-argument form never asks. A provider
+    /// without the opt-in plays as `playRetainingToken(ids:startRequired:)` does.
+    func playRetainingToken(ids: [String], startRequired: Bool, skipNotInLibrary: Bool) throws -> SpanDACPlayResult
     /// Whether this provider can play a library container whole
     /// (`slice.playLibrary`): SpanDAC lists `play.library`. False by default,
     /// and false when the capability cannot be read, which keeps today's path.
@@ -295,6 +301,9 @@ extension MusicDataProvider {
     func playRetainingToken(ids: [String], startRequired: Bool) throws -> SpanDACPlayResult {
         let played = try playReportingSkips(ids: ids, startRequired: startRequired)
         return SpanDACPlayResult(queue: played.queue, skippedUnavailable: played.skippedUnavailable)
+    }
+    func playRetainingToken(ids: [String], startRequired: Bool, skipNotInLibrary: Bool) throws -> SpanDACPlayResult {
+        try playRetainingToken(ids: ids, startRequired: startRequired)
     }
     func supportsPlayLibrary() -> Bool { false }
     func supportsLibraryRefresh() -> Bool { false }

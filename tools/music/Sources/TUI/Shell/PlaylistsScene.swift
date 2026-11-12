@@ -1794,6 +1794,10 @@ final class PlaylistsScene: Scene {
 
                 // Addendum U: set only on the attempt that actually succeeds.
                 var skippedUnavailable = 0
+                // Songs the OUTPUT SpanDAC left out of the id list because ITS library
+                // does not hold them (a phone's lacks playlist-only songs the Mac's
+                // has): `skipped_not_in_library` on the queue reply (2026-11-11).
+                var outputNotInLibrary = 0
                 var handedOff: HandoffPlayReport?
                 var wholeResult: SpanDACPlayResult?
                 var wholeSerial: Int?
@@ -1820,9 +1824,14 @@ final class PlaylistsScene: Scene {
                             return
                         }
                         guard let ids, let sent else { throw ActionError(message: sourceChangedNothingPlayed) }
+                        // This playlist play, and only this one, asks the output to leave
+                        // out songs its library does not hold instead of refusing the
+                        // whole queue. Every id is still sent and recorded for Up Next:
+                        // SpanDAC numbers its `row` / `next_rows` by the request.
                         let played = try spanDACOutputPlayer(client).playRetainingToken(
-                            ids: ids, startRequired: startRequired)
+                            ids: ids, startRequired: startRequired, skipNotInLibrary: true)
                         skippedUnavailable = played.skippedUnavailable
+                        outputNotInLibrary = played.skippedNotInLibrary
                         routing.recordSpanDACPlay(sent, token: played.queueToken)
                     }, unaffected: {})
                 }
@@ -1850,11 +1859,16 @@ final class PlaylistsScene: Scene {
                 }
                 // Songs skipped as unavailable, or videos skipped, will not
                 // play: the sentence saying so stays until the next change.
-                status.post(bridgePlaylistPlayMessage(name: name, queued: ids?.count ?? 0, skippedVideos: finalSkipped,
+                // The read's own count and the output's are different songs (the
+                // read's were never sent), and what the output dropped was never
+                // queued, so it leaves the count the footer says was queued.
+                let notInLibrary = finalNotInLibrary + outputNotInLibrary
+                status.post(bridgePlaylistPlayMessage(name: name, queued: (ids?.count ?? 0) - outputNotInLibrary,
+                                                       skippedVideos: finalSkipped,
                                                        skippedUnavailable: skippedUnavailable,
-                                                       skippedNotInLibrary: finalNotInLibrary,
+                                                       skippedNotInLibrary: notInLibrary,
                                                        startAt: startAt, shuffle: shuffle),
-                            untilStateChange: skippedUnavailable > 0 || finalSkipped > 0 || finalNotInLibrary > 0)
+                            untilStateChange: skippedUnavailable > 0 || finalSkipped > 0 || notInLibrary > 0)
             } catch let e as MusicProviderError {
                 // Bridge's own words reach the footer — the over-100 bound,
                 // the repeated-title refusal, and every other refusal alike.
