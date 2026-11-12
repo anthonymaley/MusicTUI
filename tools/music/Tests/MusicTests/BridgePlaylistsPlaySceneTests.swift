@@ -792,6 +792,38 @@ final class BridgePlaylistsPlaySceneTests: XCTestCase {
             "Playing 'X' on SpanDAC from track 5 \u{2014} 36 tracks; 2 videos in this playlist skipped. 2 songs aren't available to SpanDAC.")
     }
 
+    /// The songs the OUTPUT left out (`skippedByOutput`) were sent, so they stay in
+    /// the whole-playlist denominator; they only leave the played count.
+    func testSongsTheOutputSkippedLeaveTheCountButNeverTheTotal() {
+        // 53 sent, 30 missing on the phone, 2 videos: 23 played of 55.
+        XCTAssertEqual(
+            bridgePlaylistPlayMessage(name: "X", queued: 53, skippedVideos: 2, skippedUnavailable: 0,
+                                      skippedNotInLibrary: 30, skippedByOutput: 30, startAt: 1, shuffle: false),
+            "Skipped 30 songs not in your library \u{00B7} Playing 23 of 55 from 'X' on SpanDAC: 2 videos skipped.")
+        // Plus one unavailable: 22 played, still of 55.
+        XCTAssertEqual(
+            bridgePlaylistPlayMessage(name: "X", queued: 53, skippedVideos: 2, skippedUnavailable: 1,
+                                      skippedNotInLibrary: 30, skippedByOutput: 30, startAt: 1, shuffle: false),
+            "Skipped 30 songs not in your library \u{00B7} Playing 22 of 55 from 'X' on SpanDAC: 2 videos skipped. "
+            + "1 song isn't available to SpanDAC.")
+        // No videos: the plain line, 23 tracks.
+        XCTAssertEqual(
+            bridgePlaylistPlayMessage(name: "X", queued: 53, skippedVideos: 0, skippedUnavailable: 0,
+                                      skippedNotInLibrary: 30, skippedByOutput: 30, startAt: 1, shuffle: false),
+            "Skipped 30 songs not in your library \u{00B7} Playing 'X' on SpanDAC \u{2014} 23 tracks.")
+        // From a row: the from-track form counts what played.
+        XCTAssertEqual(
+            bridgePlaylistPlayMessage(name: "X", queued: 40, skippedVideos: 2, skippedUnavailable: 0,
+                                      skippedNotInLibrary: 17, skippedByOutput: 17, startAt: 5, shuffle: false),
+            "Skipped 17 songs not in your library \u{00B7} Playing 'X' on SpanDAC from track 5 \u{2014} 23 tracks; "
+            + "2 videos in this playlist skipped.")
+        // The Mac's own read skips (in skippedNotInLibrary, not skippedByOutput) change nothing but the prefix.
+        XCTAssertEqual(
+            bridgePlaylistPlayMessage(name: "X", queued: 53, skippedVideos: 2, skippedUnavailable: 0,
+                                      skippedNotInLibrary: 35, skippedByOutput: 30, startAt: 1, shuffle: false),
+            "Skipped 35 songs not in your library \u{00B7} Playing 23 of 55 from 'X' on SpanDAC: 2 videos skipped.")
+    }
+
     // MARK: - Warming (two-zone: keeps the scripted warming sequence exclusive to the read under test)
 
     func testAColdReadWaitsOnTheHintThenPlays() {

@@ -30,10 +30,14 @@ func bridgePlaylistHeaderCount(shown: Int, wireTotal: Int?) -> Int {
 /// `skippedNotInLibrary` (default 0) is the playlist's songs SpanDAC left out
 /// because they are not in the library; it is not part of `queued`, which is
 /// what was sent, and it leads the line (`bridgeNotInLibraryPrefix`).
+/// `skippedByOutput` (default 0) is how many of the `queued` ids the OUTPUT left
+/// out because its own library does not hold them: they were sent, so they stay
+/// in the "of M" total, but they did not play. It is also counted inside
+/// `skippedNotInLibrary` (which only feeds the leading sentence).
 /// `skippedUnavailable` composes as U-R6's own trailing sentence — added
 /// after whatever the video-skip form already produced, never replacing it.
 func bridgePlaylistPlayMessage(name: String, queued: Int, skippedVideos: Int, skippedUnavailable: Int,
-                               skippedNotInLibrary: Int = 0, startAt: Int, shuffle: Bool) -> String {
+                               skippedNotInLibrary: Int = 0, skippedByOutput: Int = 0, startAt: Int, shuffle: Bool) -> String {
     _ = shuffle
     // The numerator is what actually played; the "of M" denominator (only in
     // the whole-playlist video-skip form) is the ORIGINAL whole-playlist
@@ -42,7 +46,7 @@ func bridgePlaylistPlayMessage(name: String, queued: Int, skippedVideos: Int, sk
     // songs + 2 videos + 1 unavailable must read "Playing 39 of 42 …", not
     // "39 of 41" — subtracting the unavailable count from BOTH numbers would
     // silently shrink the whole-playlist total it's supposed to be against.
-    let n = queued - skippedUnavailable
+    let n = queued - skippedUnavailable - skippedByOutput
     let v = skippedVideos
     let base: String
     if v == 0 {
@@ -1860,13 +1864,14 @@ final class PlaylistsScene: Scene {
                 // Songs skipped as unavailable, or videos skipped, will not
                 // play: the sentence saying so stays until the next change.
                 // The read's own count and the output's are different songs (the
-                // read's were never sent), and what the output dropped was never
-                // queued, so it leaves the count the footer says was queued.
+                // read's were never sent), and what the output dropped was sent but did not
+                // play, so it leaves the played count and never the total.
                 let notInLibrary = finalNotInLibrary + outputNotInLibrary
-                status.post(bridgePlaylistPlayMessage(name: name, queued: (ids?.count ?? 0) - outputNotInLibrary,
+                status.post(bridgePlaylistPlayMessage(name: name, queued: ids?.count ?? 0,
                                                        skippedVideos: finalSkipped,
                                                        skippedUnavailable: skippedUnavailable,
                                                        skippedNotInLibrary: notInLibrary,
+                                                       skippedByOutput: outputNotInLibrary,
                                                        startAt: startAt, shuffle: shuffle),
                             untilStateChange: skippedUnavailable > 0 || finalSkipped > 0 || notInLibrary > 0)
             } catch let e as MusicProviderError {
