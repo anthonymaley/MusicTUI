@@ -1549,9 +1549,15 @@ struct SourceAppControl: SourceControlling {
         let body = Self.libraryQueueBody(libraryIDs: libraryIDs, startRequired: startRequired,
                                          skipNotInLibrary: skipNotInLibrary)
         let reply = try send(body, over: libraryTransport)
-        return (try Self.skippedUnavailable(in: reply, sent: libraryIDs.count),
-                Self.queueToken(reply["queue_token"]),
-                try Self.skippedNotInLibrary(in: reply, sent: libraryIDs.count))
+        let unavailable = try Self.skippedUnavailable(in: reply, sent: libraryIDs.count)
+        let notInLibrary = try Self.skippedNotInLibrary(in: reply, sent: libraryIDs.count)
+        // A successful queue keeps at least one song, so the two counts together
+        // are below the ids sent; equal or more is not a reply SpanDAC could have
+        // honestly made (and would read as zero or negative tracks).
+        guard unavailable + notInLibrary < libraryIDs.count else {
+            throw SourceAppError.malformedReply("SpanDAC's queue reply has a skipped_not_in_library that is not a count")
+        }
+        return (unavailable, Self.queueToken(reply["queue_token"]), notInLibrary)
     }
 
     /// The library-id queue request, exactly as `queueRetainingToken` sends it.

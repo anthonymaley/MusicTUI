@@ -723,6 +723,36 @@ final class BridgePlaylistReadsTests: XCTestCase {
         }
     }
 
+    func testTheTwoSkipCountsTogetherMustLeaveASurvivingSong() throws {
+        let ids = ["i.a", "i.b", "i.c", "i.d"]
+        // Together equal to, or above, the ids sent: nothing could have played.
+        for (u, n) in [(2, 2), (1, 3), (3, 1), (3, 3)] {
+            let wire = Wire([queueReply(skippedUnavailable: u, skippedNotInLibrary: n)])
+            XCTAssertThrowsError(try control(wire).queueRetainingToken(libraryIDs: ids, startRequired: false,
+                                                                       skipNotInLibrary: true),
+                                 "\(u)+\(n) of 4 was read") { error in
+                guard case SourceAppError.malformedReply = error else {
+                    return XCTFail("expected malformedReply for \(u)+\(n), got \(error)")
+                }
+            }
+        }
+        // Together below the ids sent: both counts come back.
+        let ok = Wire([queueReply(skippedUnavailable: 1, skippedNotInLibrary: 2)])
+        let sent = try control(ok).queueRetainingToken(libraryIDs: ids, startRequired: false, skipNotInLibrary: true)
+        XCTAssertEqual(sent.skippedUnavailable, 1)
+        XCTAssertEqual(sent.skippedNotInLibrary, 2)
+        // Each alone is still checked against the ids sent.
+        for (u, n) in [(4, 0), (0, 4), (-1, 0), (0, -1)] {
+            let wire = Wire([queueReply(skippedUnavailable: u, skippedNotInLibrary: n)])
+            XCTAssertThrowsError(try control(wire).queueRetainingToken(libraryIDs: ids, startRequired: false,
+                                                                       skipNotInLibrary: true), "\(u),\(n)")
+        }
+        // A single count one short of the ids sent is still fine.
+        let alone = Wire([queueReply(skippedUnavailable: 3, skippedNotInLibrary: nil)])
+        XCTAssertEqual(try control(alone).queueRetainingToken(libraryIDs: ids, startRequired: false,
+                                                              skipNotInLibrary: true).skippedUnavailable, 3)
+    }
+
     func testTheProviderSendsTheFlagOnlyWhenTheCallerAsksEvenIfItSkipsPlaylistReads() throws {
         let wire = Wire([queueReply(skippedUnavailable: 0, skippedNotInLibrary: 2), """
         {"ok":true,"op":"slice.status","status":{"playback":"playing"}}
