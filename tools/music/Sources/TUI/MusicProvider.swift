@@ -216,6 +216,13 @@ protocol MusicDataProvider: DiscoverProviding, StationProviding, CataloguePlayin
     /// playlist play passes true; the two-argument form never asks. A provider
     /// without the opt-in plays as `playRetainingToken(ids:startRequired:)` does.
     func playRetainingToken(ids: [String], startRequired: Bool, skipNotInLibrary: Bool) throws -> SpanDACPlayResult
+    /// The same, also asking the output to play a repeated song once
+    /// (`skip_repeated`, 2026-11-12) and reporting how many it dropped
+    /// (`SpanDACPlayResult.skippedRepeated`). Only the Playlists scene's playlist
+    /// play passes true. A provider without the opt-in plays as the
+    /// `skipNotInLibrary` form does.
+    func playRetainingToken(ids: [String], startRequired: Bool, skipNotInLibrary: Bool,
+                            skipRepeated: Bool) throws -> SpanDACPlayResult
     /// Whether this provider can play a library container whole
     /// (`slice.playLibrary`): SpanDAC lists `play.library`. False by default,
     /// and false when the capability cannot be read, which keeps today's path.
@@ -304,6 +311,10 @@ extension MusicDataProvider {
     }
     func playRetainingToken(ids: [String], startRequired: Bool, skipNotInLibrary: Bool) throws -> SpanDACPlayResult {
         try playRetainingToken(ids: ids, startRequired: startRequired)
+    }
+    func playRetainingToken(ids: [String], startRequired: Bool, skipNotInLibrary: Bool,
+                            skipRepeated: Bool) throws -> SpanDACPlayResult {
+        try playRetainingToken(ids: ids, startRequired: startRequired, skipNotInLibrary: skipNotInLibrary)
     }
     func supportsPlayLibrary() -> Bool { false }
     func supportsLibraryRefresh() -> Bool { false }
@@ -662,29 +673,6 @@ func bridgeQueueRows(_ rows: [MusicRow], shuffle: Bool, startAt: Int) -> [MusicR
     return Array(rows[(start - 1)...])
 }
 
-/// The rows a SpanDAC output's list-of-ids queue would accept from `rows`, in
-/// order, and how many songs were left out as repeats. The output refuses a list
-/// in which one id appears twice or two DIFFERENT ids share a title, compared
-/// exactly (no case folding, the artist does not count); the first occurrence is
-/// kept. The count is of distinct songs repeated, as `repeatedSongsNotice` counts
-/// them for the marked play ("2 repeated songs play once.").
-func bridgeQueueRowsWithoutRepeats(_ rows: [MusicRow]) -> (rows: [MusicRow], repeatedSongs: Int) {
-    var keptByID: [String: String] = [:]      // id seen -> id of the row kept for it
-    var keptByTitle: [String: String] = [:]   // title seen -> id of the row kept for it
-    var kept: [MusicRow] = []
-    var repeated = Set<String>()
-    for row in rows {
-        if let first = keptByID[row.id] ?? keptByTitle[row.title] {
-            repeated.insert(first)
-            continue
-        }
-        keptByID[row.id] = row.id
-        keptByTitle[row.title] = row.id
-        kept.append(row)
-    }
-    return (kept, repeated.count)
-}
-
 /// Addendum U (U-R6): the unavailable-song notice, appended to any
 /// successful Bridge play's footer when `n` is greater than 0 — never
 /// replacing whatever that footer already said (D11's video-skip sentence,
@@ -705,6 +693,16 @@ func bridgeUnavailableSongsNotice(_ n: Int) -> String {
 func bridgeNotInLibraryPrefix(_ n: Int) -> String {
     guard n > 0 else { return "" }
     return "Skipped \(n) song\(n == 1 ? "" : "s") not in your library \u{00B7} "
+}
+
+/// The repeats a SpanDAC output dropped from a playlist play (`skip_repeated`,
+/// 2026-11-12), said in the protected lead after the not-in-library sentence:
+/// `repeatedSongsNotice`'s wording, its closing full stop replaced by the
+/// separator: "1 repeated song plays once \u{00B7} " / "2 repeated songs play once \u{00B7} ".
+/// Empty when `n` is 0.
+func bridgeRepeatedSongsPrefix(_ n: Int) -> String {
+    guard let notice = repeatedSongsNotice(n) else { return "" }
+    return String(notice.dropLast()) + " \u{00B7} "
 }
 
 /// The same fact in its trailing form, for the one line that must keep its own

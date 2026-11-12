@@ -188,6 +188,7 @@ final class MarkedSetSpanDACPlayTests: XCTestCase {
         XCTAssertEqual(queues.first?["library_ids"] as? [String], ["t1", "t2", "p1", "p2", "t3"], "mark order")
         XCTAssertEqual(queues.first?["start_required"] as? Bool, false, "a whole-set play names no start row")
         XCTAssertNil(queues.first?["skip_not_in_library"], "a marked-set play does not ask the output to skip songs")
+        XCTAssertNil(queues.first?["skip_repeated"], "a marked-set play does not ask the output to drop repeats")
         XCTAssertTrue(r.data.sent("slice.queue").isEmpty, "the play went to the data client, not the output")
         // Read in mark order, each by the ID its mark recorded, between the two brackets.
         XCTAssertEqual(r.data.opsInOrder(), ["slice.libraryAlbums", "slice.libraryAlbumTracks",

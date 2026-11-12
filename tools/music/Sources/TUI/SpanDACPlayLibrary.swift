@@ -54,6 +54,12 @@ struct SpanDACPlayResult: Equatable {
     /// (2026-11-07). `slice.playLibrary` only, and 0 when the reply omits the
     /// key (it is sent only when more than 0, and never by an older SpanDAC).
     var skippedNotInLibrary: Int = 0
+    /// A library-id queue's repeated entries (an id twice, or two ids with an
+    /// exactly equal title) that SpanDAC dropped because the request said
+    /// `skip_repeated: true` (2026-11-12): the first copy that survived plays.
+    /// 0 when the reply omits the key (sent only when more than 0, and never by
+    /// an older SpanDAC, which refuses such a queue instead).
+    var skippedRepeated: Int = 0
     /// `slice.playLibrary` only: the entries the player was OBSERVED to hold,
     /// not the number asked for.
     var queued: Int? = nil
