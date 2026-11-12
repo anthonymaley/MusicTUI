@@ -684,25 +684,24 @@ func bridgeUnavailableSongsNotice(_ n: Int) -> String {
     return n == 1 ? "1 song isn't available to SpanDAC." : "\(n) songs aren't available to SpanDAC."
 }
 
-/// The playlist songs SpanDAC left out because they are not in the library
-/// (Anthony, 2026-11-07), said FIRST on an ordinary footer line and short:
-/// "Skipped 3 songs not in your library \u{00B7} " / "Skipped 1 song not in your library \u{00B7} ",
-/// followed by the line the play already says. First, because the footer is cut at
-/// its width and a long playlist name could otherwise push this off the screen.
-/// Shared by every SpanDAC playlist play footer. Empty when `n` is 0.
-func bridgeNotInLibraryPrefix(_ n: Int) -> String {
-    guard n > 0 else { return "" }
-    return "Skipped \(n) song\(n == 1 ? "" : "s") not in your library \u{00B7} "
+/// The lead of a SpanDAC play footer when the output left entries out (Anthony,
+/// 2026-11-07, reworded 2026-11-12): short, said FIRST because the footer is cut at
+/// its width and a long playlist name could otherwise push it off the screen.
+/// It counts ENTRIES and claims nothing about "plays once" (three copies of one
+/// song are two repeats; two songs sharing a title are not one song):
+/// "Skipped 30 not in your library, 1 repeat \u{00B7} ", "Skipped 30 not in your library \u{00B7} ",
+/// "Skipped 2 repeats \u{00B7} ". Empty when both counts are 0.
+func bridgeSkipLead(notInLibrary: Int, repeated: Int) -> String {
+    var parts: [String] = []
+    if notInLibrary > 0 { parts.append("\(notInLibrary) not in your library") }
+    if repeated > 0 { parts.append("\(repeated) repeat\(repeated == 1 ? "" : "s")") }
+    guard !parts.isEmpty else { return "" }
+    return "Skipped " + parts.joined(separator: ", ") + " \u{00B7} "
 }
 
-/// The repeats a SpanDAC output dropped from a playlist play (`skip_repeated`,
-/// 2026-11-12), said in the protected lead after the not-in-library sentence:
-/// `repeatedSongsNotice`'s wording, its closing full stop replaced by the
-/// separator: "1 repeated song plays once \u{00B7} " / "2 repeated songs play once \u{00B7} ".
-/// Empty when `n` is 0.
-func bridgeRepeatedSongsPrefix(_ n: Int) -> String {
-    guard let notice = repeatedSongsNotice(n) else { return "" }
-    return String(notice.dropLast()) + " \u{00B7} "
+/// The not-in-library part alone, for the plays that have no device repeat count.
+func bridgeNotInLibraryPrefix(_ n: Int) -> String {
+    bridgeSkipLead(notInLibrary: n, repeated: 0)
 }
 
 /// The same fact in its trailing form, for the one line that must keep its own

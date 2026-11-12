@@ -36,9 +36,9 @@ func bridgePlaylistHeaderCount(shown: Int, wireTotal: Int?) -> Int {
 /// `skippedNotInLibrary` (which only feeds the leading sentence).
 /// `skippedRepeated` (default 0) is how many of the `queued` ids the OUTPUT dropped
 /// as repeats of an earlier id or an exactly equal title (`skip_repeated`,
-/// 2026-11-12): sent, so in the "of M" total, but not played. It is said as
-/// `repeatedSongsNotice`'s sentence, in the protected lead, right after the
-/// not-in-library one and before the play line, so the footer's cut never takes it.
+/// 2026-11-12): sent, so in the "of M" total, but not played. It is counted as
+/// entries ("2 repeats") in the one protected lead with the not-in-library count
+/// (`bridgeSkipLead`), before the play line, so the footer's cut never takes it.
 /// `skippedUnavailable` composes as U-R6's own trailing sentence — added
 /// after whatever the video-skip form already produced, never replacing it.
 func bridgePlaylistPlayMessage(name: String, queued: Int, skippedVideos: Int, skippedUnavailable: Int,
@@ -67,9 +67,8 @@ func bridgePlaylistPlayMessage(name: String, queued: Int, skippedVideos: Int, sk
     // The songs SpanDAC left out because they are not in the library lead the
     // line, short (2026-11-07): the footer is cut at its width, and the playlist
     // name in the base is unbounded.
-    // The repeat sentence leads too, for the same reason, with its own wording and
-    // " \u{00B7} " in place of its closing full stop.
-    var message = bridgeNotInLibraryPrefix(skippedNotInLibrary) + bridgeRepeatedSongsPrefix(skippedRepeated) + base
+    // The repeat count joins that lead (`bridgeSkipLead`).
+    var message = bridgeSkipLead(notInLibrary: skippedNotInLibrary, repeated: skippedRepeated) + base
     if skippedUnavailable > 0 { message += " " + bridgeUnavailableSongsNotice(skippedUnavailable) }
     return message
 }
