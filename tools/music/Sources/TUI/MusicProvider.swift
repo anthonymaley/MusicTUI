@@ -210,6 +210,19 @@ protocol MusicDataProvider: DiscoverProviding, StationProviding, CataloguePlayin
     /// the caller that keeps the rows it sent (Codex 106, finding 6). The
     /// default is `playReportingSkips` with no token.
     func playRetainingToken(ids: [String], startRequired: Bool) throws -> SpanDACPlayResult
+    /// The same play, asking the output SpanDAC to leave out ids its library does
+    /// not hold (`skip_not_in_library`, 2026-11-11) and reporting how many it did
+    /// (`SpanDACPlayResult.skippedNotInLibrary`). Only the Playlists scene's
+    /// playlist play passes true; the two-argument form never asks. A provider
+    /// without the opt-in plays as `playRetainingToken(ids:startRequired:)` does.
+    func playRetainingToken(ids: [String], startRequired: Bool, skipNotInLibrary: Bool) throws -> SpanDACPlayResult
+    /// The same, also asking the output to play a repeated song once
+    /// (`skip_repeated`, 2026-11-12) and reporting how many it dropped
+    /// (`SpanDACPlayResult.skippedRepeated`). Only the Playlists scene's playlist
+    /// play passes true. A provider without the opt-in plays as the
+    /// `skipNotInLibrary` form does.
+    func playRetainingToken(ids: [String], startRequired: Bool, skipNotInLibrary: Bool,
+                            skipRepeated: Bool) throws -> SpanDACPlayResult
     /// Whether this provider can play a library container whole
     /// (`slice.playLibrary`): SpanDAC lists `play.library`. False by default,
     /// and false when the capability cannot be read, which keeps today's path.
@@ -295,6 +308,13 @@ extension MusicDataProvider {
     func playRetainingToken(ids: [String], startRequired: Bool) throws -> SpanDACPlayResult {
         let played = try playReportingSkips(ids: ids, startRequired: startRequired)
         return SpanDACPlayResult(queue: played.queue, skippedUnavailable: played.skippedUnavailable)
+    }
+    func playRetainingToken(ids: [String], startRequired: Bool, skipNotInLibrary: Bool) throws -> SpanDACPlayResult {
+        try playRetainingToken(ids: ids, startRequired: startRequired)
+    }
+    func playRetainingToken(ids: [String], startRequired: Bool, skipNotInLibrary: Bool,
+                            skipRepeated: Bool) throws -> SpanDACPlayResult {
+        try playRetainingToken(ids: ids, startRequired: startRequired, skipNotInLibrary: skipNotInLibrary)
     }
     func supportsPlayLibrary() -> Bool { false }
     func supportsLibraryRefresh() -> Bool { false }
@@ -664,15 +684,24 @@ func bridgeUnavailableSongsNotice(_ n: Int) -> String {
     return n == 1 ? "1 song isn't available to SpanDAC." : "\(n) songs aren't available to SpanDAC."
 }
 
-/// The playlist songs SpanDAC left out because they are not in the library
-/// (Anthony, 2026-11-07), said FIRST on an ordinary footer line and short:
-/// "Skipped 3 songs not in your library \u{00B7} " / "Skipped 1 song not in your library \u{00B7} ",
-/// followed by the line the play already says. First, because the footer is cut at
-/// its width and a long playlist name could otherwise push this off the screen.
-/// Shared by every SpanDAC playlist play footer. Empty when `n` is 0.
+/// The lead of a SpanDAC play footer when the output left entries out (Anthony,
+/// 2026-11-07, reworded 2026-11-12): short, said FIRST because the footer is cut at
+/// its width and a long playlist name could otherwise push it off the screen.
+/// It counts ENTRIES and claims nothing about "plays once" (three copies of one
+/// song are two repeats; two songs sharing a title are not one song):
+/// "Skipped 30 not in your library, 1 repeat \u{00B7} ", "Skipped 30 not in your library \u{00B7} ",
+/// "Skipped 2 repeats \u{00B7} ". Empty when both counts are 0.
+func bridgeSkipLead(notInLibrary: Int, repeated: Int) -> String {
+    var parts: [String] = []
+    if notInLibrary > 0 { parts.append("\(notInLibrary) not in your library") }
+    if repeated > 0 { parts.append("\(repeated) repeat\(repeated == 1 ? "" : "s")") }
+    guard !parts.isEmpty else { return "" }
+    return "Skipped " + parts.joined(separator: ", ") + " \u{00B7} "
+}
+
+/// The not-in-library part alone, for the plays that have no device repeat count.
 func bridgeNotInLibraryPrefix(_ n: Int) -> String {
-    guard n > 0 else { return "" }
-    return "Skipped \(n) song\(n == 1 ? "" : "s") not in your library \u{00B7} "
+    bridgeSkipLead(notInLibrary: n, repeated: 0)
 }
 
 /// The same fact in its trailing form, for the one line that must keep its own

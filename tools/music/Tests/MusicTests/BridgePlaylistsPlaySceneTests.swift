@@ -493,6 +493,297 @@ final class BridgePlaylistsPlaySceneTests: XCTestCase {
         }, "got: \(String(describing: status.current()?.text))")
     }
 
+    // MARK: - songs the output's library does not hold (2026-11-11)
+    //
+    // The output SpanDAC may be a phone whose library lacks songs the Mac's has.
+    // The playlist play asks it to leave those out, and says how many it did.
+
+    private func queueReply(skippedNotInLibrary: Int?) -> String {
+        let field = skippedNotInLibrary.map { ",\"skipped_not_in_library\":\($0)" } ?? ""
+        return "{\"ok\":true,\"op\":\"slice.queue\",\"skipped_unavailable\":0\(field)}"
+    }
+
+    func testPOnAPlaylistAsksTheOutputToSkipSongsNotInItsLibraryAndLeadsTheFooterWithTheCount() {
+        let songs = (1...40).map { ("i.\($0)", "Track \($0)", "Art") }
+        let wire = BridgeLibraryReadsWire(["slice.libraryPlaylists": [onePlaylistPage],
+                                           "slice.queue": [queueReply(skippedNotInLibrary: 12)], "slice.status": [statusOK]])
+        wire.stickyStatus = true   // a play reads SpanDAC's capabilities before it queues
+        wire.script("slice.libraryPlaylistTracks", [tracksPage(songs, total: 40)])
+        let status = StatusStore()
+        let s = playlistsTestScene(flag: BridgeSelectedFlag(true), wire: wire, spy: PlaylistAppleScriptSpy(),
+                                   status: status, width: 120)
+        XCTAssertTrue(settleScene(s) { s.render(frame: frame, snapshot: idle).contains("Chill") })
+        _ = s.handle(.char("p"))
+        XCTAssertTrue(settleScene(s) { !wire.sent("slice.queue").isEmpty })
+        let req = wire.sent("slice.queue").first!
+        XCTAssertEqual(req["skip_not_in_library"] as? Bool, true)
+        XCTAssertEqual(req["start_required"] as? Bool, false)
+        XCTAssertEqual((req["library_ids"] as? [String])?.count, 40, "every id is still sent: the output decides")
+        XCTAssertTrue(settleScene(s) {
+            status.current()?.text == "Skipped 12 not in your library \u{00B7} Playing 'Chill' on SpanDAC \u{2014} 28 tracks."
+        }, "got: \(String(describing: status.current()?.text))")
+        XCTAssertEqual(status.current(now: Date().addingTimeInterval(3600))?.staysUntilStateChange, true,
+                       "something was left out: the line stays")
+    }
+
+    func testEnterOnATrackAsksToSkipToo_StartRequiredStaysAsComputed() {
+        let songs = (1...40).map { ("i.\($0)", "Track \($0)", "Art") }
+        let wire = BridgeLibraryReadsWire(["slice.libraryPlaylists": [onePlaylistPage],
+                                           "slice.queue": [queueReply(skippedNotInLibrary: 1)], "slice.status": [statusOK]])
+        wire.stickyStatus = true
+        wire.script("slice.libraryPlaylistTracks", [tracksPage(songs, total: 40)])
+        let status = StatusStore()
+        let s = playlistsTestScene(flag: BridgeSelectedFlag(true), wire: wire, spy: PlaylistAppleScriptSpy(),
+                                   status: status, width: 120)
+        XCTAssertTrue(settleScene(s) { s.render(frame: frame, snapshot: idle).contains("Chill") })
+        _ = s.handle(.enter)
+        XCTAssertTrue(settleScene(s) { s.render(frame: threeZoneFrame, snapshot: idle).contains("Tracks 40") })
+        flushTicks(s)
+        for _ in 0..<4 { _ = s.handle(.down) }
+        _ = s.handle(.enter)
+        XCTAssertTrue(settleScene(s) { !wire.sent("slice.queue").isEmpty })
+        let req = wire.sent("slice.queue").first!
+        XCTAssertEqual(req["skip_not_in_library"] as? Bool, true)
+        XCTAssertEqual(req["start_required"] as? Bool, true)
+        XCTAssertEqual(req["library_ids"] as? [String], songs[4...].map(\.0))
+        XCTAssertTrue(settleScene(s) {
+            status.current()?.text == "Skipped 1 not in your library \u{00B7} Playing 'Chill' on SpanDAC \u{2014} 35 tracks."
+        }, "got: \(String(describing: status.current()?.text))")
+    }
+
+    /// The Mac's own read already left some out (its count rides with the rows);
+    /// the output leaves out more. They are different songs, so the line adds them.
+    func testTheOutputsCountAddsToTheOnesTheReadAlreadySkipped() {
+        let songs = (1...10).map { ("i.\($0)", "Track \($0)", "Art") }
+        let page = """
+        {"ok":true,"op":"slice.libraryPlaylistTracks","generation":3,"total":10,
+         "items":[\(songs.map { "{\"id\":\"\($0.0)\",\"title\":\"\($0.1)\",\"artist\":\"Art\",\"kind\":\"song\"}" }.joined(separator: ","))],
+         "next_cursor":null,"skipped_videos":0,"skipped_not_in_library":2}
+        """
+        let wire = BridgeLibraryReadsWire(["slice.libraryPlaylists": [onePlaylistPage],
+                                           "slice.queue": [queueReply(skippedNotInLibrary: 3)], "slice.status": [statusOK]])
+        wire.stickyStatus = true
+        wire.script("slice.libraryPlaylistTracks", [page])
+        let status = StatusStore()
+        let s = playlistsTestScene(flag: BridgeSelectedFlag(true), wire: wire, spy: PlaylistAppleScriptSpy(),
+                                   status: status, width: 120)
+        XCTAssertTrue(settleScene(s) { s.render(frame: frame, snapshot: idle).contains("Chill") })
+        _ = s.handle(.char("p"))
+        XCTAssertTrue(settleScene(s) { !wire.sent("slice.queue").isEmpty })
+        XCTAssertTrue(settleScene(s) {
+            status.current()?.text == "Skipped 5 not in your library \u{00B7} Playing 'Chill' on SpanDAC \u{2014} 7 tracks."
+        }, "got: \(String(describing: status.current()?.text))")
+    }
+
+    /// An older SpanDAC ignores the field and sends no count: today's line.
+    func testAReplyWithoutTheCountLeavesTodaysLine() {
+        let songs = (1...10).map { ("i.\($0)", "Track \($0)", "Art") }
+        let wire = BridgeLibraryReadsWire(["slice.libraryPlaylists": [onePlaylistPage],
+                                           "slice.queue": [queueReply(skippedNotInLibrary: nil)], "slice.status": [statusOK]])
+        wire.stickyStatus = true
+        wire.script("slice.libraryPlaylistTracks", [tracksPage(songs, total: 10)])
+        let status = StatusStore()
+        let s = playlistsTestScene(flag: BridgeSelectedFlag(true), wire: wire, spy: PlaylistAppleScriptSpy(),
+                                   status: status, width: 120)
+        XCTAssertTrue(settleScene(s) { s.render(frame: frame, snapshot: idle).contains("Chill") })
+        _ = s.handle(.char("p"))
+        XCTAssertTrue(settleScene(s) { !wire.sent("slice.queue").isEmpty })
+        XCTAssertTrue(settleScene(s) { status.current()?.text == "Playing 'Chill' on SpanDAC \u{2014} 10 tracks." },
+                      "got: \(String(describing: status.current()?.text))")
+    }
+
+    // MARK: - a repeated song is asked for once BY THE OUTPUT (2026-11-12)
+    //
+    // The output SpanDAC refuses a list in which one id appears twice, or two
+    // different ids share a title (exact, case-sensitive; the artist does not
+    // count). Only the device knows which copy it can resolve and play, so the
+    // client sends EVERY row and asks (`skip_repeated: true`); the device keeps
+    // the first copy that survived everything else and says how many it dropped
+    // (`skipped_repeated`). The footer says it as `repeatedSongsNotice` does.
+
+    private func queueReply(skippedNotInLibrary: Int?, skippedRepeated: Int?) -> String {
+        let a = skippedNotInLibrary.map { ",\"skipped_not_in_library\":\($0)" } ?? ""
+        let b = skippedRepeated.map { ",\"skipped_repeated\":\($0)" } ?? ""
+        return "{\"ok\":true,\"op\":\"slice.queue\",\"skipped_unavailable\":0\(a)\(b)}"
+    }
+
+    /// Plays `rows` from the rail (`p`), or from track `fromTrack` (Enter), with
+    /// the output's reply saying it left out `outputNotInLibrary` and
+    /// `outputRepeated`; returns what was sent, the recorded rows and the footer.
+    private func playForRepeats(rows: [(id: String, title: String, artist: String)], fromTrack: Int? = nil,
+                                skipped: Int = 0, outputNotInLibrary: Int? = nil, outputRepeated: Int? = nil,
+                                file: StaticString = #filePath, line: UInt = #line)
+        -> (request: [String: Any]?, recorded: [String], footer: String?, stays: Bool?, sentCount: Int) {
+        let wire = BridgeLibraryReadsWire(["slice.libraryPlaylists": [onePlaylistPage],
+                                           "slice.queue": [queueReply(skippedNotInLibrary: outputNotInLibrary,
+                                                                      skippedRepeated: outputRepeated)],
+                                           "slice.status": [statusOK]])
+        wire.stickyStatus = true
+        wire.script("slice.libraryPlaylistTracks", [tracksPage(rows, total: rows.count, skipped: skipped)])
+        let status = StatusStore()
+        let store = PlaybackModeStore(path: NSTemporaryDirectory() + "mode-\(UUID().uuidString).json")
+        store.set(.source)
+        let routing = RoutingCoordinator(store: store, surface: .tui,
+                                         makeSource: { SourceAppClient(path: "/nonexistent", transport: wire.transport) })
+        let s = playlistsTestScene(flag: BridgeSelectedFlag(true), wire: wire, spy: PlaylistAppleScriptSpy(),
+                                   status: status, width: 120, routing: routing)
+        XCTAssertTrue(settleScene(s) { s.render(frame: frame, snapshot: idle).contains("Chill") }, file: file, line: line)
+        if let fromTrack {
+            _ = s.handle(.enter)
+            XCTAssertTrue(settleScene(s) { s.render(frame: threeZoneFrame, snapshot: idle).contains("Tracks \(rows.count)") },
+                          file: file, line: line)
+            flushTicks(s)
+            for _ in 1..<fromTrack { _ = s.handle(.down) }
+            _ = s.handle(.enter)
+        } else {
+            _ = s.handle(.char("p"))
+        }
+        XCTAssertTrue(settleScene(s) { !wire.sent("slice.queue").isEmpty }, file: file, line: line)
+        // Let the footer land.
+        _ = settleScene(s) { status.current()?.text.contains("Playing") == true }
+        let recorded = routing.spanDACPlay()?.rows.map(\.id) ?? []
+        let sentIDs = wire.sent("slice.queue").first?["library_ids"] as? [String]
+        return (wire.sent("slice.queue").first, recorded, status.current()?.text,
+                status.current(now: Date().addingTimeInterval(3600))?.staysUntilStateChange, sentIDs?.count ?? 0)
+    }
+
+    func testEveryRowIsSentAndBothFlagsRideOnThePlaylistPlayAndTheFooterSaysTheDevicesCount() {
+        let rows = [("i.1", "Slow Fade", "Daniel Avery"), ("i.2", "B", "Art"),
+                    ("i.3", "Slow Fade", "Daniel Avery"), ("i.1", "Slow Fade", "Daniel Avery")]
+        let r = playForRepeats(rows: rows, outputRepeated: 2)
+        XCTAssertEqual(r.request?["library_ids"] as? [String], ["i.1", "i.2", "i.3", "i.1"],
+                       "the client never drops a repeat: the device knows which copy it can play")
+        XCTAssertEqual(r.request?["skip_repeated"] as? Bool, true)
+        XCTAssertEqual(r.request?["skip_not_in_library"] as? Bool, true)
+        XCTAssertEqual(r.recorded, ["i.1", "i.2", "i.3", "i.1"],
+                       "Up Next is recorded from the rows sent; the device numbers by request position")
+        XCTAssertEqual(r.footer, "Skipped 2 repeats \u{00B7} Playing 'Chill' on SpanDAC \u{2014} 2 tracks.")
+        XCTAssertEqual(r.stays, true)
+    }
+
+    func testAListWithNoRepeatsSendsAndSaysWhatItDidBeforeAndAnOlderDeviceSendsNoCount() {
+        let rows = (1...5).map { ("i.\($0)", "Track \($0)", "Art") }
+        let r = playForRepeats(rows: rows)
+        XCTAssertEqual(r.request?["library_ids"] as? [String], rows.map(\.0))
+        XCTAssertEqual(r.recorded, rows.map(\.0))
+        XCTAssertEqual(r.footer, "Playing 'Chill' on SpanDAC \u{2014} 5 tracks.")
+        XCTAssertNotEqual(r.stays, true, "nothing was left out: the line expires as it did")
+    }
+
+    /// Six song rows and one video: the playlist has 7 members. The device left out
+    /// 1 not in its library and 2 repeats; 3 played, of 7, never of 5.
+    func testTheVideoFormTotalKeepsEverySongSentAndEveryVideo() {
+        let rows = [("i.1", "X", "A"), ("i.2", "Y", "A"), ("i.3", "X", "A"), ("i.4", "Z", "A"),
+                    ("i.5", "Z", "A"), ("i.6", "W", "A")]
+        let r = playForRepeats(rows: rows, skipped: 1, outputNotInLibrary: 1, outputRepeated: 2)
+        XCTAssertEqual(r.sentCount, 6)
+        XCTAssertEqual(r.footer, "Skipped 1 not in your library, 2 repeats \u{00B7} "
+                                 + "Playing 3 of 7 from 'Chill' on SpanDAC: 1 video skipped.")
+        XCTAssertEqual(r.recorded, rows.map(\.0))
+    }
+
+    func testAFromRowPlaySendsFromThePickedRowOnAndKeepsStartRequired() {
+        let r = playForRepeats(rows: [("i.1", "P", "A"), ("i.2", "X", "A"), ("i.3", "Z", "A"), ("i.4", "X", "A")],
+                               fromTrack: 2, outputRepeated: 1)
+        XCTAssertEqual(r.request?["library_ids"] as? [String], ["i.2", "i.3", "i.4"])
+        XCTAssertEqual(r.request?["start_required"] as? Bool, true)
+        XCTAssertEqual(r.request?["skip_repeated"] as? Bool, true)
+        XCTAssertEqual(r.recorded, ["i.2", "i.3", "i.4"])
+        XCTAssertEqual(r.footer, "Skipped 1 repeat \u{00B7} Playing 'Chill' on SpanDAC \u{2014} 2 tracks.")
+    }
+
+    func testBridgePlaylistPlayMessageSaysRepeatsInTheProtectedLeadAndCountsThemOutOfTheNumerator() {
+        // No repeats: byte-identical to before (the parameter defaults to 0).
+        XCTAssertEqual(
+            bridgePlaylistPlayMessage(name: "X", queued: 25, skippedVideos: 0, skippedUnavailable: 1, startAt: 1, shuffle: false),
+            bridgePlaylistPlayMessage(name: "X", queued: 25, skippedVideos: 0, skippedUnavailable: 1, skippedRepeated: 0,
+                                      startAt: 1, shuffle: false))
+        XCTAssertEqual(
+            bridgePlaylistPlayMessage(name: "X", queued: 25, skippedVideos: 0, skippedUnavailable: 1, skippedRepeated: 1,
+                                      startAt: 1, shuffle: false),
+            "Skipped 1 repeat \u{00B7} Playing 'X' on SpanDAC \u{2014} 23 tracks. 1 song isn't available to SpanDAC.")
+        XCTAssertEqual(
+            bridgePlaylistPlayMessage(name: "X", queued: 53, skippedVideos: 2, skippedUnavailable: 1,
+                                      skippedNotInLibrary: 30, skippedByOutput: 30, skippedRepeated: 3, startAt: 1, shuffle: false),
+            "Skipped 30 not in your library, 3 repeats \u{00B7} "
+            + "Playing 19 of 55 from 'X' on SpanDAC: 2 videos skipped. 1 song isn't available to SpanDAC.")
+        XCTAssertEqual(
+            bridgePlaylistPlayMessage(name: "X", queued: 40, skippedVideos: 2, skippedUnavailable: 0, skippedRepeated: 1,
+                                      startAt: 5, shuffle: false),
+            "Skipped 1 repeat \u{00B7} Playing 'X' on SpanDAC from track 5 \u{2014} 39 tracks; "
+            + "2 videos in this playlist skipped.")
+    }
+
+    /// The footer is cut at `width - 4` and the playlist name is unbounded, so the
+    /// repeat sentence leads, after the not-in-library one, never trailing the name.
+    /// Both leads together are 68 columns, so both survive from 73 columns up; the
+    /// repeat lead alone survives at 50.
+    func testTheRepeatDisclosureSurvivesTheFooterCutWithALongPlaylistName() {
+        let longName = String(repeating: "A very long playlist name ", count: 6)
+        let both = bridgePlaylistPlayMessage(name: longName, queued: 240, skippedVideos: 3, skippedUnavailable: 2,
+                                             skippedNotInLibrary: 30, skippedByOutput: 30, skippedRepeated: 1,
+                                             startAt: 1, shuffle: false)
+        let bothLead = "Skipped 30 not in your library, 1 repeat \u{00B7} "
+        let repeatOnly = bridgePlaylistPlayMessage(name: longName, queued: 240, skippedVideos: 3, skippedUnavailable: 2,
+                                                   skippedRepeated: 1, startAt: 1, shuffle: false)
+        let repeatLead = "Skipped 1 repeat \u{00B7} "
+        XCTAssertTrue(both.hasPrefix(bothLead), both)
+        XCTAssertTrue(repeatOnly.hasPrefix(repeatLead), repeatOnly)
+        for width in [50, 73, 80, 120] {
+            let cut = max(1, shellLayout(width: width, height: 30).width - 4)
+            XCTAssertTrue(truncText(both, to: cut).hasPrefix(bothLead), "both counts at \(width) columns")
+        }
+        for width in [50, 80] {
+            let cut = max(1, shellLayout(width: width, height: 30).width - 4)
+            XCTAssertTrue(truncText(repeatOnly, to: cut).hasPrefix(repeatLead), "repeats alone at \(width) columns")
+        }
+        // At 50 columns both leads do not fit in one line; the not-in-library one,
+        // first since 2026-11-07, is the one that stays whole.
+        let cut50 = max(1, shellLayout(width: 50, height: 30).width - 4)
+        XCTAssertTrue(truncText(both, to: cut50).hasPrefix(bothLead), "the whole compact lead survives at 50 columns")
+    }
+
+    /// The footer the scene really posts with both counts from the device, cut at
+    /// the shell's footer width (`frame.width - 4`, Shell.swift) at the narrowest
+    /// width that holds both leads, with a long playlist name.
+    func testThePostedFooterWithBothCountsKeepsTheRepeatDisclosureWhenCutAtTheNarrowestWidthThatHoldsBothLeads() {
+        let rows = (1...40).map { ("i.\($0)", "Track \($0)", "Art") }
+        let r = playForRepeats(rows: rows, outputNotInLibrary: 30, outputRepeated: 1)
+        let lead = "Skipped 30 not in your library, 1 repeat \u{00B7} "
+        XCTAssertEqual(r.footer, lead + "Playing 'Chill' on SpanDAC \u{2014} 9 tracks.")
+        XCTAssertEqual(lead.count, 43)
+        let width = lead.count + 5
+        let cut = max(1, shellLayout(width: width, height: 30).width - 4)
+        XCTAssertEqual(truncText(r.footer ?? "", to: cut), String((lead + "Playing").prefix(cut - 1)) + "\u{2026}",
+                       "at \(width) columns the footer reads exactly the two leads, then an ellipsis")
+        XCTAssertTrue(truncText(r.footer ?? "", to: cut).contains("1 repeat"))
+    }
+
+    /// 2026-11-12 (Anthony 10:59): one compact lead that counts entries and claims
+    /// nothing about "plays once".
+    func testTheSkipLeadHasThreeFormsAndSingularAndPluralForBothParts() {
+        XCTAssertEqual(bridgeSkipLead(notInLibrary: 30, repeated: 1), "Skipped 30 not in your library, 1 repeat \u{00B7} ")
+        XCTAssertEqual(bridgeSkipLead(notInLibrary: 1, repeated: 2), "Skipped 1 not in your library, 2 repeats \u{00B7} ")
+        XCTAssertEqual(bridgeSkipLead(notInLibrary: 30, repeated: 0), "Skipped 30 not in your library \u{00B7} ")
+        XCTAssertEqual(bridgeSkipLead(notInLibrary: 0, repeated: 1), "Skipped 1 repeat \u{00B7} ")
+        XCTAssertEqual(bridgeSkipLead(notInLibrary: 0, repeated: 2), "Skipped 2 repeats \u{00B7} ")
+        XCTAssertEqual(bridgeSkipLead(notInLibrary: 0, repeated: 0), "")
+        XCTAssertEqual(bridgeNotInLibraryPrefix(3), "Skipped 3 not in your library \u{00B7} ")
+    }
+
+    func testThreeCopiesOfOneSongReadAsTwoRepeatsNotTwoRepeatedSongs() {
+        let rows = [("i.1", "Slow Fade", "A"), ("i.1", "Slow Fade", "A"), ("i.1", "Slow Fade", "A")]
+        let r = playForRepeats(rows: rows, outputRepeated: 2)
+        XCTAssertEqual(r.footer, "Skipped 2 repeats \u{00B7} Playing 'Chill' on SpanDAC \u{2014} 1 tracks.")
+    }
+
+    func testTheCombinedLeadWithVideos() {
+        XCTAssertEqual(
+            bridgePlaylistPlayMessage(name: "Chill", queued: 6, skippedVideos: 1, skippedUnavailable: 0,
+                                      skippedNotInLibrary: 1, skippedByOutput: 1, skippedRepeated: 2, startAt: 1, shuffle: false),
+            "Skipped 1 not in your library, 2 repeats \u{00B7} Playing 3 of 7 from 'Chill' on SpanDAC: 1 video skipped.")
+    }
+
     // MARK: - Addendum U: unavailable songs, end to end (U-R5/U-R6)
 
     private func queueReply(skippedUnavailable: Int) -> String {
@@ -602,16 +893,16 @@ final class BridgePlaylistsPlaySceneTests: XCTestCase {
     /// what follows (the existing line, untouched).
     func testNotInLibraryPrefixWordingAndComposition() {
         XCTAssertEqual(bridgeNotInLibraryPrefix(0), "")
-        XCTAssertEqual(bridgeNotInLibraryPrefix(1), "Skipped 1 song not in your library \u{00B7} ")
-        XCTAssertEqual(bridgeNotInLibraryPrefix(3), "Skipped 3 songs not in your library \u{00B7} ")
+        XCTAssertEqual(bridgeNotInLibraryPrefix(1), "Skipped 1 not in your library \u{00B7} ")
+        XCTAssertEqual(bridgeNotInLibraryPrefix(3), "Skipped 3 not in your library \u{00B7} ")
         XCTAssertEqual(
             bridgePlaylistPlayMessage(name: "X", queued: 24, skippedVideos: 0, skippedUnavailable: 0, skippedNotInLibrary: 3,
                                       startAt: 1, shuffle: false),
-            "Skipped 3 songs not in your library \u{00B7} Playing 'X' on SpanDAC \u{2014} 24 tracks.")
+            "Skipped 3 not in your library \u{00B7} Playing 'X' on SpanDAC \u{2014} 24 tracks.")
         XCTAssertEqual(
             bridgePlaylistPlayMessage(name: "X", queued: 24, skippedVideos: 2, skippedUnavailable: 1, skippedNotInLibrary: 1,
                                       startAt: 1, shuffle: false),
-            "Skipped 1 song not in your library \u{00B7} Playing 23 of 26 from 'X' on SpanDAC: 2 videos skipped. "
+            "Skipped 1 not in your library \u{00B7} Playing 23 of 26 from 'X' on SpanDAC: 2 videos skipped. "
             + "1 song isn't available to SpanDAC.")
         XCTAssertEqual(
             bridgePlaylistPlayMessage(name: "X", queued: 24, skippedVideos: 0, skippedUnavailable: 0, startAt: 1, shuffle: false),
@@ -622,11 +913,11 @@ final class BridgePlaylistsPlaySceneTests: XCTestCase {
         report.skippedNotInLibrary = 2
         report.skippedUnavailable = 1
         report.repeatedSongs = 1
-        XCTAssertEqual(report.skipPrefix, "Skipped 2 songs not in your library \u{00B7} ")
+        XCTAssertEqual(report.skipPrefix, "Skipped 2 not in your library \u{00B7} ")
         XCTAssertEqual(report.notice, "1 video skipped. 1 song isn't available to SpanDAC. 1 repeated song plays once.",
                        "the trailing notice no longer carries it")
         XCTAssertEqual(LibraryProvenance.playingOnMusicTUI("X", report: report),
-                       "Skipped 2 songs not in your library \u{00B7} Playing 'X' on MusicTUI. "
+                       "Skipped 2 not in your library \u{00B7} Playing 'X' on MusicTUI. "
                        + "1 video skipped. 1 song isn't available to SpanDAC. 1 repeated song plays once.")
         XCTAssertNil(HandoffPlayReport().notice)
         XCTAssertNil(HandoffPlayReport().skipPrefix)
@@ -644,7 +935,7 @@ final class BridgePlaylistsPlaySceneTests: XCTestCase {
     /// own first words, the skip following it.
     func testTheFooterCutAt50And80ColumnsKeepsTheSkipFirstExceptOnTheUnconfirmedWarning() {
         let longName = String(repeating: "A very long playlist name ", count: 6)
-        let prefix = "Skipped 12 songs not in your library \u{00B7} "
+        let prefix = "Skipped 12 not in your library \u{00B7} "
         var ordinary: [(String, String)] = []
         ordinary.append(("playlist play", bridgePlaylistPlayMessage(name: longName, queued: 240, skippedVideos: 3,
                                                                      skippedUnavailable: 2, skippedNotInLibrary: 12,
@@ -691,6 +982,38 @@ final class BridgePlaylistsPlaySceneTests: XCTestCase {
         XCTAssertEqual(
             bridgePlaylistPlayMessage(name: "X", queued: 38, skippedVideos: 2, skippedUnavailable: 2, startAt: 5, shuffle: false),
             "Playing 'X' on SpanDAC from track 5 \u{2014} 36 tracks; 2 videos in this playlist skipped. 2 songs aren't available to SpanDAC.")
+    }
+
+    /// The songs the OUTPUT left out (`skippedByOutput`) were sent, so they stay in
+    /// the whole-playlist denominator; they only leave the played count.
+    func testSongsTheOutputSkippedLeaveTheCountButNeverTheTotal() {
+        // 53 sent, 30 missing on the phone, 2 videos: 23 played of 55.
+        XCTAssertEqual(
+            bridgePlaylistPlayMessage(name: "X", queued: 53, skippedVideos: 2, skippedUnavailable: 0,
+                                      skippedNotInLibrary: 30, skippedByOutput: 30, startAt: 1, shuffle: false),
+            "Skipped 30 not in your library \u{00B7} Playing 23 of 55 from 'X' on SpanDAC: 2 videos skipped.")
+        // Plus one unavailable: 22 played, still of 55.
+        XCTAssertEqual(
+            bridgePlaylistPlayMessage(name: "X", queued: 53, skippedVideos: 2, skippedUnavailable: 1,
+                                      skippedNotInLibrary: 30, skippedByOutput: 30, startAt: 1, shuffle: false),
+            "Skipped 30 not in your library \u{00B7} Playing 22 of 55 from 'X' on SpanDAC: 2 videos skipped. "
+            + "1 song isn't available to SpanDAC.")
+        // No videos: the plain line, 23 tracks.
+        XCTAssertEqual(
+            bridgePlaylistPlayMessage(name: "X", queued: 53, skippedVideos: 0, skippedUnavailable: 0,
+                                      skippedNotInLibrary: 30, skippedByOutput: 30, startAt: 1, shuffle: false),
+            "Skipped 30 not in your library \u{00B7} Playing 'X' on SpanDAC \u{2014} 23 tracks.")
+        // From a row: the from-track form counts what played.
+        XCTAssertEqual(
+            bridgePlaylistPlayMessage(name: "X", queued: 40, skippedVideos: 2, skippedUnavailable: 0,
+                                      skippedNotInLibrary: 17, skippedByOutput: 17, startAt: 5, shuffle: false),
+            "Skipped 17 not in your library \u{00B7} Playing 'X' on SpanDAC from track 5 \u{2014} 23 tracks; "
+            + "2 videos in this playlist skipped.")
+        // The Mac's own read skips (in skippedNotInLibrary, not skippedByOutput) change nothing but the prefix.
+        XCTAssertEqual(
+            bridgePlaylistPlayMessage(name: "X", queued: 53, skippedVideos: 2, skippedUnavailable: 0,
+                                      skippedNotInLibrary: 35, skippedByOutput: 30, startAt: 1, shuffle: false),
+            "Skipped 35 not in your library \u{00B7} Playing 23 of 55 from 'X' on SpanDAC: 2 videos skipped.")
     }
 
     // MARK: - Warming (two-zone: keeps the scripted warming sequence exclusive to the read under test)

@@ -844,6 +844,21 @@ protocol SourceControlling {
     /// the rows the client kept for this play can be tied to the assignment it
     /// made (Codex 106, finding 6).
     func queueRetainingToken(libraryIDs: [String], startRequired: Bool) throws -> (skippedUnavailable: Int, queueToken: String?)
+    /// The same request with the output's optional `skip_not_in_library: true`
+    /// (2026-11-11): songs its library does not hold are left out and counted
+    /// (`skippedNotInLibrary`, 0 from an older SpanDAC, which ignores the field
+    /// and refuses such a queue whole). Sent ONLY when `skipNotInLibrary` is
+    /// true; false is the request every other caller has always sent.
+    func queueRetainingToken(libraryIDs: [String], startRequired: Bool, skipNotInLibrary: Bool) throws
+        -> (skippedUnavailable: Int, queueToken: String?, skippedNotInLibrary: Int)
+    /// The same request with the output's second optional opt-in,
+    /// `skip_repeated: true` (2026-11-12): a repeated id or an exactly equal
+    /// title is asked for once, the first surviving copy kept, and counted
+    /// (`skippedRepeated`, 0 from an older SpanDAC, which ignores the field and
+    /// refuses such a queue). Sent ONLY when `skipRepeated` is true.
+    func queueRetainingToken(libraryIDs: [String], startRequired: Bool, skipNotInLibrary: Bool,
+                             skipRepeated: Bool) throws
+        -> (skippedUnavailable: Int, queueToken: String?, skippedNotInLibrary: Int, skippedRepeated: Int)
     /// `slice.playLibrary`: play one library container whole, named by kind, id
     /// and start row, with no id list and no page walk. Sent only when
     /// `capabilities()` lists `play.library`.
@@ -977,6 +992,21 @@ extension SourceControlling {
     /// older SpanDAC: today's title-checked rows.
     func queueRetainingToken(libraryIDs: [String], startRequired: Bool) throws -> (skippedUnavailable: Int, queueToken: String?) {
         (try queue(libraryIDs: libraryIDs, startRequired: startRequired), nil)
+    }
+    /// A conformer written before the opt-in has nowhere to put the flag: the
+    /// request is the older one and it reports no count.
+    func queueRetainingToken(libraryIDs: [String], startRequired: Bool, skipNotInLibrary: Bool) throws
+        -> (skippedUnavailable: Int, queueToken: String?, skippedNotInLibrary: Int) {
+        let sent = try queueRetainingToken(libraryIDs: libraryIDs, startRequired: startRequired)
+        return (sent.skippedUnavailable, sent.queueToken, 0)
+    }
+    /// A conformer written before this opt-in has nowhere to put the flag.
+    func queueRetainingToken(libraryIDs: [String], startRequired: Bool, skipNotInLibrary: Bool,
+                             skipRepeated: Bool) throws
+        -> (skippedUnavailable: Int, queueToken: String?, skippedNotInLibrary: Int, skippedRepeated: Int) {
+        let sent = try queueRetainingToken(libraryIDs: libraryIDs, startRequired: startRequired,
+                                           skipNotInLibrary: skipNotInLibrary)
+        return (sent.skippedUnavailable, sent.queueToken, sent.skippedNotInLibrary, 0)
     }
     func playLibrary(kind: LibraryPlayKind, id: String?, start: LibraryPlayStart?, listRev: String?,
                      shuffle: Bool) throws -> SpanDACPlayResult {
@@ -1523,15 +1553,48 @@ struct SourceAppControl: SourceControlling {
     /// is this without the token.
     func queueRetainingToken(libraryIDs: [String], startRequired: Bool = false) throws
         -> (skippedUnavailable: Int, queueToken: String?) {
-        let body = Self.libraryQueueBody(libraryIDs: libraryIDs, startRequired: startRequired)
+        let sent = try queueRetainingToken(libraryIDs: libraryIDs, startRequired: startRequired, skipNotInLibrary: false)
+        return (sent.skippedUnavailable, sent.queueToken)
+    }
+
+    /// The three-argument form: `skip_not_in_library` alone, never `skip_repeated`.
+    func queueRetainingToken(libraryIDs: [String], startRequired: Bool, skipNotInLibrary: Bool) throws
+        -> (skippedUnavailable: Int, queueToken: String?, skippedNotInLibrary: Int) {
+        let sent = try queueRetainingToken(libraryIDs: libraryIDs, startRequired: startRequired,
+                                           skipNotInLibrary: skipNotInLibrary, skipRepeated: false)
+        return (sent.skippedUnavailable, sent.queueToken, sent.skippedNotInLibrary)
+    }
+
+    /// `skipNotInLibrary` true sends `"skip_not_in_library": true` and reads
+    /// `skipped_not_in_library` (absent is 0); `skipRepeated` true sends
+    /// `"skip_repeated": true` and reads `skipped_repeated` (absent is 0). Both are
+    /// bare opt-ins: false sends no key at all, so every other caller's bytes are
+    /// exactly what they were.
+    func queueRetainingToken(libraryIDs: [String], startRequired: Bool, skipNotInLibrary: Bool,
+                             skipRepeated: Bool) throws
+        -> (skippedUnavailable: Int, queueToken: String?, skippedNotInLibrary: Int, skippedRepeated: Int) {
+        let body = Self.libraryQueueBody(libraryIDs: libraryIDs, startRequired: startRequired,
+                                         skipNotInLibrary: skipNotInLibrary, skipRepeated: skipRepeated)
         let reply = try send(body, over: libraryTransport)
-        return (try Self.skippedUnavailable(in: reply, sent: libraryIDs.count),
-                Self.queueToken(reply["queue_token"]))
+        let unavailable = try Self.skippedUnavailable(in: reply, sent: libraryIDs.count)
+        let notInLibrary = try Self.skippedNotInLibrary(in: reply, sent: libraryIDs.count)
+        let repeated = try Self.skippedRepeated(in: reply, sent: libraryIDs.count)
+        // A successful queue keeps at least one song, so the three counts together
+        // are below the ids sent; equal or more is not a reply SpanDAC could have
+        // honestly made (and would read as zero or negative tracks).
+        guard unavailable + notInLibrary + repeated < libraryIDs.count else {
+            throw SourceAppError.malformedReply("SpanDAC's queue reply has skip counts that leave no song")
+        }
+        return (unavailable, Self.queueToken(reply["queue_token"]), notInLibrary, repeated)
     }
 
     /// The library-id queue request, exactly as `queueRetainingToken` sends it.
-    static func libraryQueueBody(libraryIDs: [String], startRequired: Bool) -> [String: Any] {
-        ["op": "slice.queue", "library_ids": libraryIDs, "start_required": startRequired]
+    static func libraryQueueBody(libraryIDs: [String], startRequired: Bool,
+                                 skipNotInLibrary: Bool = false, skipRepeated: Bool = false) -> [String: Any] {
+        var body: [String: Any] = ["op": "slice.queue", "library_ids": libraryIDs, "start_required": startRequired]
+        if skipNotInLibrary { body["skip_not_in_library"] = true }
+        if skipRepeated { body["skip_repeated"] = true }
+        return body
     }
 
     /// The size in bytes of that request's line, measured by the same
@@ -1565,6 +1628,31 @@ struct SourceAppControl: SourceControlling {
         guard CFGetTypeID(raw as CFTypeRef) != CFBooleanGetTypeID(),
               let skipped = raw as? Int, skipped >= 0, skipped < sent else {
             throw SourceAppError.malformedReply("SpanDAC's queue reply has a skipped_unavailable that is not a count")
+        }
+        return skipped
+    }
+
+    /// `skipped_not_in_library` from a successful queue reply: absent (an older
+    /// SpanDAC, or nothing left out) is 0; anything but a non-negative integer
+    /// smaller than the number of ids sent is malformed, by the same rule as
+    /// `skipped_unavailable` (a queue that keeps nothing is refused instead).
+    private static func skippedNotInLibrary(in reply: [String: Any], sent: Int) throws -> Int {
+        guard let raw = reply["skipped_not_in_library"] else { return 0 }
+        guard CFGetTypeID(raw as CFTypeRef) != CFBooleanGetTypeID(),
+              let skipped = raw as? Int, skipped >= 0, skipped < sent else {
+            throw SourceAppError.malformedReply("SpanDAC's queue reply has a skipped_not_in_library that is not a count")
+        }
+        return skipped
+    }
+
+    /// `skipped_repeated` from a successful queue reply, read by the same rule:
+    /// absent (an older SpanDAC, or nothing dropped) is 0, and anything but a
+    /// non-negative integer smaller than the ids sent is malformed.
+    private static func skippedRepeated(in reply: [String: Any], sent: Int) throws -> Int {
+        guard let raw = reply["skipped_repeated"] else { return 0 }
+        guard CFGetTypeID(raw as CFTypeRef) != CFBooleanGetTypeID(),
+              let skipped = raw as? Int, skipped >= 0, skipped < sent else {
+            throw SourceAppError.malformedReply("SpanDAC's queue reply has a skipped_repeated that is not a count")
         }
         return skipped
     }

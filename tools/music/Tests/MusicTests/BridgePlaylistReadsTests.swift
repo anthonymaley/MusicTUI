@@ -659,4 +659,229 @@ final class BridgePlaylistReadsTests: XCTestCase {
             XCTAssertEqual(req["start_required"] as? Bool, want)
         }
     }
+
+    // MARK: - `skip_not_in_library` on `slice.queue` (2026-11-11)
+    //
+    // A phone's library lacks playlist-only songs the Mac's holds, so a playlist
+    // play's whole id list was refused. The Playlists scene's play asks the output
+    // SpanDAC to leave those ids out; nothing else does.
+
+    private func queueReply(skippedUnavailable: Int?, skippedNotInLibrary: Int?) -> String {
+        let a = skippedUnavailable.map { ",\"skipped_unavailable\":\($0)" } ?? ""
+        let b = skippedNotInLibrary.map { ",\"skipped_not_in_library\":\($0)" } ?? ""
+        return "{\"ok\":true,\"op\":\"slice.queue\"\(a)\(b)}"
+    }
+
+    func testTheLibraryQueueBodyCarriesTheFlagOnlyWhenAskedAndNeverChangesTheRest() {
+        let plain = SourceAppControl.libraryQueueBody(libraryIDs: ["i.a"], startRequired: false)
+        XCTAssertNil(plain["skip_not_in_library"], "absent unless asked: an older request's bytes are unchanged")
+        XCTAssertEqual(Set(plain.keys), ["op", "library_ids", "start_required"])
+        let skipping = SourceAppControl.libraryQueueBody(libraryIDs: ["i.a"], startRequired: true, skipNotInLibrary: true)
+        XCTAssertEqual(skipping["skip_not_in_library"] as? Bool, true)
+        XCTAssertEqual(skipping["start_required"] as? Bool, true, "start_required stays as computed")
+        XCTAssertEqual(skipping["library_ids"] as? [String], ["i.a"])
+        XCTAssertNil(SourceAppControl.libraryQueueBody(libraryIDs: ["i.a"], startRequired: false,
+                                                       skipNotInLibrary: false)["skip_not_in_library"],
+                     "false is never sent: absent is the older request")
+    }
+
+    func testAskingToSkipSendsTheFlagAndReadsTheCountBack() throws {
+        let wire = Wire([queueReply(skippedUnavailable: 1, skippedNotInLibrary: 30)])
+        let sent = try control(wire).queueRetainingToken(libraryIDs: (0..<53).map { "i.\($0)" }, startRequired: false,
+                                                         skipNotInLibrary: true)
+        XCTAssertEqual(wire.decoded(wire.sentOnLibrary.first)["skip_not_in_library"] as? Bool, true)
+        XCTAssertEqual(sent.skippedNotInLibrary, 30)
+        XCTAssertEqual(sent.skippedUnavailable, 1)
+    }
+
+    func testAReplyWithoutTheCountReadsZeroAndNotAskingNeverSendsTheFlag() throws {
+        let asked = Wire([queueReply(skippedUnavailable: 0, skippedNotInLibrary: nil)])
+        XCTAssertEqual(try control(asked).queueRetainingToken(libraryIDs: ["i.a", "i.b"], startRequired: false,
+                                                              skipNotInLibrary: true).skippedNotInLibrary, 0,
+                       "an older SpanDAC ignores the flag and sends no count")
+        let plain = Wire([queueReply(skippedUnavailable: 0, skippedNotInLibrary: nil)])
+        _ = try control(plain).queueRetainingToken(libraryIDs: ["i.a"], startRequired: false)
+        XCTAssertNil(plain.decoded(plain.sentOnLibrary.first)["skip_not_in_library"])
+        let plainQueue = Wire([queueReply(skippedUnavailable: 0, skippedNotInLibrary: nil)])
+        _ = try control(plainQueue).queue(libraryIDs: ["i.a"], startRequired: true)
+        XCTAssertNil(plainQueue.decoded(plainQueue.sentOnLibrary.first)["skip_not_in_library"])
+    }
+
+    func testAMalformedNotInLibraryCountIsRefusedLikeEveryOtherCount() {
+        // 3 ids sent: a count of 3 or more is not one SpanDAC could have sent (an
+        // all-missing request is refused instead), and a boolean is not a count.
+        for bad in ["-1", "3", "7", "1.5", "true", "false", "\"2\""] {
+            let wire = Wire(["{\"ok\":true,\"op\":\"slice.queue\",\"skipped_not_in_library\":\(bad)}"])
+            XCTAssertThrowsError(try control(wire).queueRetainingToken(libraryIDs: ["i.a", "i.b", "i.c"], startRequired: false,
+                                                                       skipNotInLibrary: true),
+                                 "skipped_not_in_library \(bad) was read") { error in
+                guard case SourceAppError.malformedReply(let what) = error else {
+                    return XCTFail("expected malformedReply for \(bad), got \(error)")
+                }
+                XCTAssertTrue(what.contains("skipped_not_in_library"), "did not name the fault: \(what)")
+            }
+        }
+    }
+
+    func testTheTwoSkipCountsTogetherMustLeaveASurvivingSong() throws {
+        let ids = ["i.a", "i.b", "i.c", "i.d"]
+        // Together equal to, or above, the ids sent: nothing could have played.
+        for (u, n) in [(2, 2), (1, 3), (3, 1), (3, 3)] {
+            let wire = Wire([queueReply(skippedUnavailable: u, skippedNotInLibrary: n)])
+            XCTAssertThrowsError(try control(wire).queueRetainingToken(libraryIDs: ids, startRequired: false,
+                                                                       skipNotInLibrary: true),
+                                 "\(u)+\(n) of 4 was read") { error in
+                guard case SourceAppError.malformedReply = error else {
+                    return XCTFail("expected malformedReply for \(u)+\(n), got \(error)")
+                }
+            }
+        }
+        // Together below the ids sent: both counts come back.
+        let ok = Wire([queueReply(skippedUnavailable: 1, skippedNotInLibrary: 2)])
+        let sent = try control(ok).queueRetainingToken(libraryIDs: ids, startRequired: false, skipNotInLibrary: true)
+        XCTAssertEqual(sent.skippedUnavailable, 1)
+        XCTAssertEqual(sent.skippedNotInLibrary, 2)
+        // Each alone is still checked against the ids sent.
+        for (u, n) in [(4, 0), (0, 4), (-1, 0), (0, -1)] {
+            let wire = Wire([queueReply(skippedUnavailable: u, skippedNotInLibrary: n)])
+            XCTAssertThrowsError(try control(wire).queueRetainingToken(libraryIDs: ids, startRequired: false,
+                                                                       skipNotInLibrary: true), "\(u),\(n)")
+        }
+        // A single count one short of the ids sent is still fine.
+        let alone = Wire([queueReply(skippedUnavailable: 3, skippedNotInLibrary: nil)])
+        XCTAssertEqual(try control(alone).queueRetainingToken(libraryIDs: ids, startRequired: false,
+                                                              skipNotInLibrary: true).skippedUnavailable, 3)
+    }
+
+    // MARK: - skip_repeated on slice.queue(library_ids:) (2026-11-12)
+    //
+    // The device refuses a list that repeats an id or an exact title. The
+    // Playlists scene's play asks it to keep the first copy of each instead;
+    // nothing else does.
+
+    private func queueReply(skippedUnavailable: Int?, skippedNotInLibrary: Int?, skippedRepeated: Int?) -> String {
+        let a = skippedUnavailable.map { ",\"skipped_unavailable\":\($0)" } ?? ""
+        let b = skippedNotInLibrary.map { ",\"skipped_not_in_library\":\($0)" } ?? ""
+        let c = skippedRepeated.map { ",\"skipped_repeated\":\($0)" } ?? ""
+        return "{\"ok\":true,\"op\":\"slice.queue\"\(a)\(b)\(c)}"
+    }
+
+    func testTheLibraryQueueBodyCarriesSkipRepeatedOnlyWhenAsked() {
+        let plain = SourceAppControl.libraryQueueBody(libraryIDs: ["i.a"], startRequired: false)
+        XCTAssertNil(plain["skip_repeated"])
+        XCTAssertEqual(Set(plain.keys), ["op", "library_ids", "start_required"])
+        let notInLibraryOnly = SourceAppControl.libraryQueueBody(libraryIDs: ["i.a"], startRequired: false,
+                                                                 skipNotInLibrary: true)
+        XCTAssertNil(notInLibraryOnly["skip_repeated"], "the two opt-ins are independent")
+        let both = SourceAppControl.libraryQueueBody(libraryIDs: ["i.a"], startRequired: true,
+                                                     skipNotInLibrary: true, skipRepeated: true)
+        XCTAssertEqual(both["skip_repeated"] as? Bool, true)
+        XCTAssertEqual(both["skip_not_in_library"] as? Bool, true)
+        XCTAssertEqual(both["start_required"] as? Bool, true)
+        XCTAssertNil(SourceAppControl.libraryQueueBody(libraryIDs: ["i.a"], startRequired: false,
+                                                       skipRepeated: false)["skip_repeated"],
+                     "false is never sent: absent is the older request")
+    }
+
+    func testAskingToSkipRepeatsSendsTheFlagAndReadsTheCountBack() throws {
+        let wire = Wire([queueReply(skippedUnavailable: 1, skippedNotInLibrary: 30, skippedRepeated: 2)])
+        let sent = try control(wire).queueRetainingToken(libraryIDs: (0..<53).map { "i.\($0)" }, startRequired: false,
+                                                         skipNotInLibrary: true, skipRepeated: true)
+        let body = wire.decoded(wire.sentOnLibrary.first)
+        XCTAssertEqual(body["skip_repeated"] as? Bool, true)
+        XCTAssertEqual(body["skip_not_in_library"] as? Bool, true)
+        XCTAssertEqual(sent.skippedRepeated, 2)
+        XCTAssertEqual(sent.skippedNotInLibrary, 30)
+        XCTAssertEqual(sent.skippedUnavailable, 1)
+    }
+
+    func testAnOlderDeviceThatIgnoresTheFlagSendsNoCountAndItReadsZero() throws {
+        let wire = Wire([queueReply(skippedUnavailable: 0, skippedNotInLibrary: nil, skippedRepeated: nil)])
+        XCTAssertEqual(try control(wire).queueRetainingToken(libraryIDs: ["i.a", "i.b"], startRequired: false,
+                                                             skipNotInLibrary: true, skipRepeated: true).skippedRepeated, 0)
+        let plain = Wire([queueReply(skippedUnavailable: 0, skippedNotInLibrary: nil, skippedRepeated: nil)])
+        _ = try control(plain).queueRetainingToken(libraryIDs: ["i.a"], startRequired: false, skipNotInLibrary: true)
+        XCTAssertNil(plain.decoded(plain.sentOnLibrary.first)["skip_repeated"], "the three-argument form never asks")
+        let plainQueue = Wire([queueReply(skippedUnavailable: 0, skippedNotInLibrary: nil, skippedRepeated: nil)])
+        _ = try control(plainQueue).queue(libraryIDs: ["i.a"], startRequired: true)
+        XCTAssertNil(plainQueue.decoded(plainQueue.sentOnLibrary.first)["skip_repeated"])
+    }
+
+    func testAMalformedRepeatedCountIsRefusedLikeEveryOtherCount() {
+        for bad in ["-1", "3", "7", "1.5", "true", "false", "\"2\""] {
+            let wire = Wire(["{\"ok\":true,\"op\":\"slice.queue\",\"skipped_repeated\":\(bad)}"])
+            XCTAssertThrowsError(try control(wire).queueRetainingToken(libraryIDs: ["i.a", "i.b", "i.c"], startRequired: false,
+                                                                       skipNotInLibrary: true, skipRepeated: true),
+                                 "\(bad) of 3 was read") { error in
+                guard case SourceAppError.malformedReply = error else {
+                    return XCTFail("expected malformedReply for \(bad), got \(error)")
+                }
+            }
+        }
+    }
+
+    /// All three counts together must leave a surviving song (6057a18's rule,
+    /// extended): a queue keeps at least the first song of the effective queue.
+    func testTheThreeSkipCountsTogetherMustLeaveASurvivingSong() throws {
+        let ids = ["i.a", "i.b", "i.c", "i.d", "i.e"]
+        for (u, n, r) in [(1, 1, 3), (0, 2, 3), (2, 0, 3), (1, 1, 5), (0, 0, 5), (2, 2, 1), (4, 0, 1)] {
+            let wire = Wire([queueReply(skippedUnavailable: u, skippedNotInLibrary: n, skippedRepeated: r)])
+            XCTAssertThrowsError(try control(wire).queueRetainingToken(libraryIDs: ids, startRequired: false,
+                                                                       skipNotInLibrary: true, skipRepeated: true),
+                                 "\(u)+\(n)+\(r) of 5 was read") { error in
+                guard case SourceAppError.malformedReply = error else {
+                    return XCTFail("expected malformedReply for \(u)+\(n)+\(r), got \(error)")
+                }
+            }
+        }
+        // Together one short of the ids sent: every count comes back.
+        let ok = Wire([queueReply(skippedUnavailable: 1, skippedNotInLibrary: 1, skippedRepeated: 2)])
+        let sent = try control(ok).queueRetainingToken(libraryIDs: ids, startRequired: false,
+                                                       skipNotInLibrary: true, skipRepeated: true)
+        XCTAssertEqual([sent.skippedUnavailable, sent.skippedNotInLibrary, sent.skippedRepeated], [1, 1, 2])
+        // Repeats alone, one short of the ids sent, are fine.
+        let alone = Wire([queueReply(skippedUnavailable: nil, skippedNotInLibrary: nil, skippedRepeated: 4)])
+        XCTAssertEqual(try control(alone).queueRetainingToken(libraryIDs: ids, startRequired: false,
+                                                              skipNotInLibrary: true, skipRepeated: true).skippedRepeated, 4)
+    }
+
+    func testTheProviderSendsSkipRepeatedOnlyWhenTheCallerAsks() throws {
+        let wire = Wire([queueReply(skippedUnavailable: 0, skippedNotInLibrary: 1, skippedRepeated: 1), """
+        {"ok":true,"op":"slice.status","status":{"playback":"playing"}}
+        """, queueReply(skippedUnavailable: 0, skippedNotInLibrary: 1, skippedRepeated: nil), """
+        {"ok":true,"op":"slice.status","status":{"playback":"playing"}}
+        """, queueReply(skippedUnavailable: 0, skippedNotInLibrary: nil, skippedRepeated: nil), """
+        {"ok":true,"op":"slice.status","status":{"playback":"playing"}}
+        """])
+        let provider = BridgeMusicProvider(control: control(wire), skipsNotInLibrary: true)
+        let asked = try provider.playRetainingToken(ids: ["i.a", "i.b", "i.c"], startRequired: false,
+                                                    skipNotInLibrary: true, skipRepeated: true)
+        XCTAssertEqual(wire.decoded(wire.sentOnLibrary[0])["skip_repeated"] as? Bool, true)
+        XCTAssertEqual(asked.skippedRepeated, 1)
+        XCTAssertEqual(asked.skippedNotInLibrary, 1)
+        let notInLibraryOnly = try provider.playRetainingToken(ids: ["i.a", "i.b", "i.c"], startRequired: false,
+                                                               skipNotInLibrary: true)
+        XCTAssertNil(wire.decoded(wire.sentOnLibrary[1])["skip_repeated"])
+        XCTAssertEqual(notInLibraryOnly.skippedRepeated, 0)
+        let plain = try provider.playRetainingToken(ids: ["i.a"], startRequired: true)
+        XCTAssertNil(wire.decoded(wire.sentOnLibrary[2])["skip_repeated"])
+        XCTAssertEqual(plain.skippedRepeated, 0)
+    }
+
+    func testTheProviderSendsTheFlagOnlyWhenTheCallerAsksEvenIfItSkipsPlaylistReads() throws {
+        let wire = Wire([queueReply(skippedUnavailable: 0, skippedNotInLibrary: 2), """
+        {"ok":true,"op":"slice.status","status":{"playback":"playing"}}
+        """, queueReply(skippedUnavailable: 0, skippedNotInLibrary: nil), """
+        {"ok":true,"op":"slice.status","status":{"playback":"playing"}}
+        """])
+        // The TUI's output player skips playlist-only songs on its READS; that
+        // must not leak into every library-id queue (marked sets, albums, Songs).
+        let skipsReads = BridgeMusicProvider(control: control(wire), skipsNotInLibrary: true)
+        let asked = try skipsReads.playRetainingToken(ids: ["i.a", "i.b", "i.c"], startRequired: false, skipNotInLibrary: true)
+        XCTAssertEqual(wire.decoded(wire.sentOnLibrary[0])["skip_not_in_library"] as? Bool, true)
+        XCTAssertEqual(asked.skippedNotInLibrary, 2)
+        let plain = try skipsReads.playRetainingToken(ids: ["i.a"], startRequired: true)
+        XCTAssertNil(wire.decoded(wire.sentOnLibrary[1])["skip_not_in_library"])
+        XCTAssertEqual(plain.skippedNotInLibrary, 0)
+    }
 }

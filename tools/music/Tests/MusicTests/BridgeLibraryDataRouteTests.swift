@@ -351,7 +351,7 @@ final class BridgeLibraryDataRouteTests: XCTestCase {
                       file: file, line: line)
         XCTAssertEqual(r.handoff.notInLibraryHandedIn, [3],
                        "the play announced a count that is not the displayed rows' own", file: file, line: line)
-        let expected = "Skipped 3 songs not in your library \u{00B7} " + LibraryProvenance.playingOnMusicTUI("Chill")
+        let expected = "Skipped 3 not in your library \u{00B7} " + LibraryProvenance.playingOnMusicTUI("Chill")
         XCTAssertTrue(settleScene(s) { r.status.current()?.text == expected },
                       "got: \(String(describing: r.status.current()?.text))", file: file, line: line)
     }
@@ -377,7 +377,7 @@ final class BridgeLibraryDataRouteTests: XCTestCase {
         _ = s.handle(.char("p"))
         XCTAssertTrue(wait { !r.handoff.calls.isEmpty }, "the playlist never reached the hand-off")
         XCTAssertEqual(r.handoff.notInLibraryHandedIn, [3], "the count was not in the hand-off's report")
-        let expected = "Skipped 3 songs not in your library \u{00B7} " + LibraryProvenance.playingOnMusicTUI("Chill")
+        let expected = "Skipped 3 not in your library \u{00B7} " + LibraryProvenance.playingOnMusicTUI("Chill")
         XCTAssertTrue(settleScene(s) { r.status.current()?.text == expected },
                       "got: \(String(describing: r.status.current()?.text))")
         XCTAssertEqual(r.status.current(now: Date().addingTimeInterval(3600))?.staysUntilStateChange, true)
@@ -407,7 +407,7 @@ final class BridgeLibraryDataRouteTests: XCTestCase {
         XCTAssertTrue(wait { !r.handoff.calls.isEmpty }, "the displayed playlist never reached the hand-off")
         XCTAssertEqual(r.handoff.notInLibraryHandedIn, [3], "the displayed rows lost the count they were read with")
         XCTAssertEqual(r.data.sent("slice.libraryPlaylistTracks").count, readsBefore, "a second read was sent")
-        let expected = "Skipped 3 songs not in your library \u{00B7} " + LibraryProvenance.playingOnMusicTUI("Chill")
+        let expected = "Skipped 3 not in your library \u{00B7} " + LibraryProvenance.playingOnMusicTUI("Chill")
         XCTAssertTrue(settleScene(s) { r.status.current()?.text == expected },
                       "got: \(String(describing: r.status.current()?.text))")
     }
