@@ -132,6 +132,110 @@ final class SpanDACLinkTests: XCTestCase {
         XCTAssertEqual(got?.note, "asleep or closed · open SpanDAC on the device")
     }
 
+    // MARK: - macOS Local Network privacy
+
+    /// Measured 2026-11-14: with Local Network access refused, Network.framework
+    /// sits in `.waiting` for as long as it is allowed, the path `unsatisfied
+    /// (Local network prohibited)`. That is not an iPhone that is asleep.
+    func testAWaitOnADeniedLocalNetworkPathIsNamedAsSuch() {
+        XCTAssertEqual(SpanDACLinkFailure.denied(waiting: .posix(.EHOSTUNREACH), reason: .localNetworkDenied),
+                       .localNetworkDenied)
+        XCTAssertEqual(SpanDACLinkFailure.denied(waiting: .posix(.ENETDOWN), reason: .localNetworkDenied),
+                       .localNetworkDenied)
+        // The DNS-SD policy denial (kDNSServiceErr_PolicyDenied) is the same refusal.
+        XCTAssertEqual(SpanDACLinkFailure.denied(waiting: .dns(-65570), reason: nil), .localNetworkDenied)
+    }
+
+    func testOtherWaitsAreNotReadAsLocalNetworkDenied() {
+        XCTAssertNil(SpanDACLinkFailure.denied(waiting: .posix(.EHOSTUNREACH), reason: nil))
+        XCTAssertNil(SpanDACLinkFailure.denied(waiting: .posix(.ENETDOWN), reason: .notAvailable))
+        XCTAssertNil(SpanDACLinkFailure.denied(waiting: .posix(.ENETDOWN), reason: .wifiDenied))
+        XCTAssertNil(SpanDACLinkFailure.denied(waiting: .posix(.ECONNREFUSED), reason: nil))
+        XCTAssertNil(SpanDACLinkFailure.denied(waiting: .dns(-65537), reason: nil))
+        // A TLS refusal is final and stays its own thing even on a denied path.
+        XCTAssertNil(SpanDACLinkFailure.denied(waiting: .tls(-9864), reason: .localNetworkDenied))
+    }
+
+    /// ready -> waiting: once the device has been contacted, a later wait (a
+    /// dropped route, a path that turned unsatisfied) is not a Local Network
+    /// refusal, whatever reason the path carries.
+    func testAWaitAfterReadyIsNeverLocalNetworkDenied() {
+        typealias F = SpanDACLinkFailure
+        XCTAssertNil(F.denied(waiting: .posix(.EHOSTUNREACH), reason: .localNetworkDenied, ready: true))
+        XCTAssertNil(F.denied(waiting: .dns(-65570), reason: nil, ready: true))
+        XCTAssertEqual(F.denied(waiting: .posix(.EHOSTUNREACH), reason: .localNetworkDenied, ready: false),
+                       .localNetworkDenied)
+        XCTAssertEqual(F.denied(waiting: .dns(-65570), reason: nil, ready: false), .localNetworkDenied)
+    }
+
+    /// A path update is a second witness, not a veto: it counts only before the
+    /// connection is ready and never over a TLS wait already seen.
+    func testAPathUpdateConcludesDeniedOnlyBeforeReadyAndNeverOverATLSWait() {
+        typealias F = SpanDACLinkFailure
+        XCTAssertEqual(F.denied(byPath: .unsatisfied, reason: .localNetworkDenied, ready: false, lastWait: nil),
+                       .localNetworkDenied)
+        XCTAssertEqual(F.denied(byPath: .unsatisfied, reason: .localNetworkDenied, ready: false,
+                                lastWait: .posix(.EHOSTUNREACH)), .localNetworkDenied)
+        XCTAssertNil(F.denied(byPath: .unsatisfied, reason: .localNetworkDenied, ready: true, lastWait: nil),
+                     "after .ready a path change is not a refusal to connect")
+        XCTAssertNil(F.denied(byPath: .unsatisfied, reason: .localNetworkDenied, ready: false, lastWait: .tls(-9864)))
+        XCTAssertNil(F.denied(byPath: .satisfied, reason: .localNetworkDenied, ready: false, lastWait: nil))
+        XCTAssertNil(F.denied(byPath: .unsatisfied, reason: .notAvailable, ready: false, lastWait: nil))
+    }
+
+    // MARK: - A policy denial while resolving the service
+
+    private struct FakeResolver: SpanDACResolving {
+        var located: SpanDACResolution<SpanDACServiceLocation>
+        var addressed: SpanDACResolution<[String]> = .found(["127.0.0.1"])
+        func resolve(serviceName: String, timeout: TimeInterval) -> SpanDACResolution<SpanDACServiceLocation> { located }
+        func resolveAddresses(of location: SpanDACServiceLocation, timeout: TimeInterval) -> SpanDACResolution<[String]> { addressed }
+    }
+
+    private let place = SpanDACServiceLocation(hostName: "iPhone.local.", port: 9, txt: [:], interfaceIndex: 0)
+
+    private func resolving(_ resolver: FakeResolver) -> SpanDACTLSTransport {
+        var t = SpanDACTLSTransport(record: record())
+        t.resolver = resolver
+        t.registry = SpanDACLinkRegistry()
+        return t
+    }
+
+    func testAPolicyDenialResolvingTheServiceIsLocalNetworkDeniedNotNotFound() {
+        XCTAssertEqual(failure { try resolving(FakeResolver(located: .policyDenied)).exchange("x", timeout: 3) },
+                       .localNetworkDenied)
+        XCTAssertEqual(failure { try resolving(FakeResolver(located: .found(place), addressed: .policyDenied))
+            .exchange("x", timeout: 3) }, .localNetworkDenied)
+    }
+
+    func testAServiceThatIsNotThereIsStillNotFound() {
+        XCTAssertEqual(failure { try resolving(FakeResolver(located: .notFound)).exchange("x", timeout: 3) }, .notFound)
+        XCTAssertEqual(failure { try resolving(FakeResolver(located: .found(place), addressed: .notFound))
+            .exchange("x", timeout: 3) }, .notFound)
+        XCTAssertEqual(failure { try resolving(FakeResolver(located: .found(place), addressed: .found([])))
+            .exchange("x", timeout: 3) }, .notFound)
+    }
+
+    func testTheOptionalResolverViewsStillAnswerAsBefore() {
+        let denied = FakeResolver(located: .policyDenied)
+        XCTAssertNil(denied.locate(serviceName: "x", timeout: 1))
+        XCTAssertEqual(FakeResolver(located: .found(place)).locate(serviceName: "x", timeout: 1), place)
+        XCTAssertEqual(FakeResolver(located: .found(place)).addresses(of: place, timeout: 1), ["127.0.0.1"])
+        XCTAssertEqual(FakeResolver(located: .found(place), addressed: .policyDenied).addresses(of: place, timeout: 1), [])
+    }
+
+    func testLocalNetworkDeniedWordsNameTheTerminalNotTheDevice() {
+        let f = SpanDACLinkFailure.localNetworkDenied
+        XCTAssertEqual(f.note, "blocked  allow Local Network for your terminal in System Settings")
+        XCTAssertTrue(f.sentence.contains("Local Network"), f.sentence)
+        for text in [f.note, f.sentence] {
+            XCTAssertFalse(text.contains("Music.app"), text)
+            XCTAssertFalse(text.lowercased().contains("asleep"), text)
+            XCTAssertFalse(text.lowercased().contains("open spandac"), text)
+        }
+        XCTAssertEqual(SourceAppError.link(f).message, f.sentence)
+    }
+
     func testAPeerThatClosesWithoutAReplyIsNoAnswer() throws {
         let server = try LoopbackPSKServer(identity: identity, key: key, reply: nil, closeAfterRequest: true)
         defer { server.stop() }

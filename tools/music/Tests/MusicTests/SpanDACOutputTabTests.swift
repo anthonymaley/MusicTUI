@@ -196,7 +196,7 @@ final class SpanDACOutputTabTests: XCTestCase {
 
     /// `ready` is exactly `state == .ready`, for every state a row can take.
     func testReadyIsExactlyTheReadyState() {
-        let probes: [SpanDACOutputs.Probe] = [.checking, .ready, .unavailable("x"), .unreachable("y"),
+        let probes: [SpanDACOutputs.Probe] = [.checking, .ready, .unavailable("x"), .unreachable("y"), .localNetworkDenied,
                                               .forgotten, .needsRepair("pairing broken  Enter to pair again")]
         for probe in probes {
             let row = spandacOutputRows(paired: [record(ipad, name: "Studio iPad")], seen: [], probes: [ipad: probe],
@@ -312,6 +312,27 @@ final class SpanDACOutputTabTests: XCTestCase {
             XCTAssertEqual(row(o, ipad)?.note, "pairing broken  Enter to pair again")
             XCTAssertEqual(pairs.pairs().map(\.sourceID), [ipad], "the pair is kept")
         }
+    }
+
+    /// A Local Network refusal is its own row, not "not seen  open SpanDAC on it";
+    /// a plain timeout (asleep, or no answer) keeps its own words.
+    func testLocalNetworkDeniedIsItsOwnRowAndATimeoutKeepsItsWords() {
+        let pairs = store()
+        try! pairs.save(record(ipad, name: "Studio iPad"))
+        let denied = outputsAnswering(pairs: pairs, answer: { _ in throw SourceAppError.link(.localNetworkDenied) })
+        denied.activated()
+        waitUntil { self.row(denied, self.ipad)?.state != .checking }
+        XCTAssertEqual(row(denied, ipad)?.state, .localNetworkBlocked)
+        XCTAssertEqual(row(denied, ipad)?.note, "blocked  allow Local Network for your terminal in System Settings")
+        XCTAssertEqual(row(denied, ipad)?.ready, false)
+        XCTAssertEqual(pairs.pairs().map(\.sourceID), [ipad], "the pair is kept")
+
+        let asleep = outputsAnswering(pairs: pairs, answer: { _ in throw SourceAppError.link(.asleep) })
+        asleep.activated()
+        waitUntil { self.row(asleep, self.ipad)?.state != .checking }
+        XCTAssertEqual(row(asleep, ipad)?.state, .unreachable("asleep or closed · open SpanDAC on the device"))
+        XCTAssertEqual(SpanDACOutputs.probe(for: .localNetworkDenied), .localNetworkDenied)
+        XCTAssertEqual(SpanDACOutputs.probe(for: .asleep), .unreachable("asleep or closed · open SpanDAC on the device"))
     }
 
     /// A reply that never comes (or a close mid-request) stays "did not
@@ -619,7 +640,7 @@ final class SpanDACOutputTabTests: XCTestCase {
                                               .broken("x"), .disconnected, .notSaved("x"), .cancelled]
         let links: [SpanDACLinkFailure] = [.notPaired, .pairingsUnavailable("x"), .notFound, .asleep,
                                            .refused(-9864), .refused(-9820), .refused(-9846), .refused(-9858),
-                                           .refused(-1), .unsafeCipher, .noAnswer, .forgotten]
+                                           .refused(-1), .unsafeCipher, .noAnswer, .forgotten, .localNetworkDenied]
         var texts = failures.map(\.sentence) + links.map(\.sentence) + links.map(\.note)
         texts.append(SpanDACPairingController.failure(forSourceAbort: "too_many").sentence)
         let states = [SpanDACOutputs.PairingState(sourceID: other, name: "Kitchen iPad", phase: .connecting),
@@ -820,7 +841,7 @@ final class SpanDACOutputTabTests: XCTestCase {
         let finished = watch(s)
         let states: [SpanDACRowState] = [
             .checking, .notReady("plug in your DAC"), .unreachable("asleep"), .connecting,
-            .notPaired(pairable: false),
+            .notPaired(pairable: false), .localNetworkBlocked,
             .waitingForAllow(deadline: Date().addingTimeInterval(100)), .forgetPrompt,
         ]
         let before = modeBytes()
