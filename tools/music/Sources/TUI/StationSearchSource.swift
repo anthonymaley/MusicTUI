@@ -1334,9 +1334,15 @@ struct SourceAppControl: SourceControlling {
     /// only from a song and only as text; absent, or on any other kind of row,
     /// it is nil, and a play that needs it refuses rather than guesses.
     private static func withAlias(_ row: MusicRow, from item: [String: Any]) -> MusicRow {
-        guard row.kind == .song, let alias = item["alias"] as? String else { return row }
+        guard row.kind == .song else { return row }
         var carried = row
-        carried.alias = alias
+        carried.alias = item["alias"] as? String
+        // Groundwork, read by nothing yet: `catalog_id` is optional and only
+        // usable as a non-empty ASCII digit string; anything else is absent.
+        if let catalogID = item["catalog_id"] as? String,
+           !catalogID.isEmpty, catalogID.utf8.allSatisfy({ $0 >= 0x30 && $0 <= 0x39 }) {
+            carried.catalogID = catalogID
+        }
         return carried
     }
 

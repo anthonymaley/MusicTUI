@@ -36,6 +36,11 @@ struct MusicRow: Equatable {
     /// identity the MusicTUI output plays a SpanDAC library row by
     /// (`MusicTUIHandoff.swift`); nothing compares it to `id`.
     var alias: String? = nil
+    /// The song's Apple Music CATALOGUE id (`catalog_id`), a digit string, when
+    /// SpanDAC sent one on a library song row (today only `slice.libraryPlaylistTracks`
+    /// does). Groundwork: no play path reads it yet. nil when absent or not a
+    /// digit string. Not a library id; never compared to `id`.
+    var catalogID: String? = nil
 }
 
 /// One container's rows: complete, or refused — never paged and never partial

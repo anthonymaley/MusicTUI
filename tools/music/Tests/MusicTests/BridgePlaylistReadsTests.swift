@@ -184,6 +184,44 @@ final class BridgePlaylistReadsTests: XCTestCase {
         }
     }
 
+    /// Groundwork, not yet used by any play path: a playlist track row may carry
+    /// `catalog_id` (the song's Apple Music catalogue id). It is read onto
+    /// `MusicRow.catalogID`; a row without it, or with a value that is not a
+    /// digit string, reads exactly as before with `catalogID` nil.
+    func testPlaylistTrackRowsDecodeAnOptionalCatalogueID() throws {
+        let wire = Wire(["""
+        {"ok":true,"op":"slice.libraryPlaylistTracks","generation":3,"total":5,"skipped_videos":0,
+         "items":[
+          {"id":"i.a","title":"A","artist":"X","album":"Al","kind":"song","alias":"-1","catalog_id":"1097861387"},
+          {"id":"i.b","title":"B","artist":"X","album":"Al","kind":"song","alias":"-2"},
+          {"id":"i.c","title":"C","artist":"X","album":"Al","kind":"song","catalog_id":""},
+          {"id":"i.d","title":"D","artist":"X","album":"Al","kind":"song","catalog_id":"12ab"},
+          {"id":"i.e","title":"E","artist":"X","album":"Al","kind":"song","catalog_id":42}],
+         "next_cursor":null}
+        """])
+        let page = try control(wire).libraryPlaylistTracks(playlistID: "pl1", cursor: nil, limit: 500)
+        XCTAssertEqual(page.rows.map(\.id), ["i.a", "i.b", "i.c", "i.d", "i.e"])
+        XCTAssertEqual(page.rows.map(\.catalogID), ["1097861387", nil, nil, nil, nil])
+        // Nothing else about a row moved: alias still rides, and a row with no
+        // catalogue id equals the row this client has always built.
+        XCTAssertEqual(page.rows.map(\.alias), ["-1", "-2", nil, nil, nil])
+        XCTAssertEqual(page.rows[1], MusicRow(id: "i.b", title: "B", artist: "X", album: "Al",
+                                              kind: .song, alias: "-2"))
+    }
+
+    /// `catalog_id` is read on the SpanDAC library path only for song rows of
+    /// this op; the songs list's rows (which never carry one) are unchanged.
+    func testSongsListRowsHaveNoCatalogueID() throws {
+        let wire = Wire(["""
+        {"ok":true,"op":"slice.librarySongs","generation":3,"total":1,
+         "items":[{"id":"i.a","title":"A","artist":"X","album":"Al","kind":"song","alias":"-1"}],
+         "next_cursor":null}
+        """])
+        let page = try control(wire).librarySongs(cursor: nil, limit: 100)
+        XCTAssertEqual(page.rows.first?.catalogID, nil)
+        XCTAssertEqual(page.rows.first?.alias, "-1")
+    }
+
     func testRepeatedIdsInATracksPageAreAllKeptInOrder() throws {
         let wire = Wire(["""
         {"ok":true,"op":"slice.libraryPlaylistTracks","generation":3,"total":3,
