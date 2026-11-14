@@ -1230,6 +1230,33 @@ final class BridgePlaylistsPlaySceneTests: XCTestCase {
         XCTAssertEqual(truncFooterText("skipped 1234 songs", to: 14), "skipped 1234 \u{2026}")
     }
 
+    /// Codex (2026-11-14): a decimal and a non-ASCII number are numbers too, and a width the
+    /// footer cannot exceed holds at 1.
+    func testTruncFooterTextNeverEndsInsideADecimalOrANonASCIINumber() {
+        XCTAssertEqual(truncFooterText("12.5", to: 3), "\u{2026}")
+        XCTAssertEqual(truncFooterText("skipped 12.5 songs", to: 12), "skipped \u{2026}")
+        XCTAssertEqual(truncFooterText("skipped 12.5 songs", to: 11), "skipped \u{2026}")
+        XCTAssertEqual(truncFooterText("skipped 1,234.5 songs", to: 13), "skipped \u{2026}")
+        XCTAssertEqual(truncFooterText("\u{0661}\u{0662}\u{0663}\u{0664}", to: 3), "\u{2026}")
+        XCTAssertEqual(truncFooterText("skipped \u{0661}\u{0662}\u{0663}\u{0664} songs", to: 11), "skipped \u{2026}")
+        // A separator that is not between digits ends the number: the sentence's own
+        // full stop and a list comma are not part of "12".
+        XCTAssertEqual(truncFooterText("skipped 12. Next song", to: 11), "skipped 12\u{2026}")
+        XCTAssertEqual(truncFooterText("skipped 12, then", to: 11), "skipped 12\u{2026}")
+        // Whole numbers at the cut are kept.
+        XCTAssertEqual(truncFooterText("skipped 12.5 songs", to: 13), "skipped 12.5\u{2026}")
+    }
+
+    func testTruncFooterTextNeverReturnsMoreThanTheWidth() {
+        XCTAssertEqual(truncFooterText("skipped 12 songs", to: 1), "\u{2026}")
+        XCTAssertEqual(truncFooterText("1234", to: 1), "\u{2026}")
+        XCTAssertEqual(truncFooterText("x", to: 1), "x")
+        XCTAssertEqual(truncFooterText("skipped", to: 0), "")
+        for width in 0...12 {
+            XCTAssertLessThanOrEqual(truncFooterText("skipped 12.5 songs \u{0661}\u{0662}", to: width).count, width, "\(width)")
+        }
+    }
+
     func testTheSkipTrailerHasFourFormsAndKeepsTheMusicAppFormByteForByte() {
         XCTAssertEqual(bridgeSkipTrailer(notInLibrary: 1, repeated: 0), " \u{00B7} skipped 1 song not in your library")
         XCTAssertEqual(bridgeSkipTrailer(notInLibrary: 12, repeated: 0), " \u{00B7} skipped 12 songs not in your library")
