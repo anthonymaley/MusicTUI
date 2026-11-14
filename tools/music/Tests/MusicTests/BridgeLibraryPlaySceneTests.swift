@@ -276,6 +276,47 @@ final class BridgeLibraryPlaySceneTests: XCTestCase {
         XCTAssertEqual(r.routing.spanDACPlay()?.token, "tok-1")
     }
 
+    // MARK: - Up Next after SpanDAC left a song out of a Library play
+
+    /// SpanDAC's `row` indexes the request sent, so a skipped song shifts nothing; but a
+    /// status WITHOUT `next_rows` would have the sent order stand in for the player's and
+    /// list the skipped song. The play records its sent order as unreliable, so only the
+    /// playing row shows.
+    private func upNextAfterASkip(_ play: UnconfirmedPlay) throws -> (sentOrderUnreliable: Bool, names: [String]) {
+        let r = playWithStatusFailingAfterTheQueue(play, statusAfterQueue: readableStatus, unavailable: 1)
+        let noNextRows = """
+        {"ok":true,"op":"slice.status","status":{"playback":"playing","title":"Tt1","artist":"Radiohead","contract":3,
+         "authorization":"authorized","row":0,"queue_token":"tok-1",
+         "queue":{"phase":"complete","requested":4,"present":3,"index":0}}}
+        """
+        r.wire.handler = { op, _ in op == "slice.status" ? noNextRows : nil }
+        let status = try SourceAppClient(path: "/nonexistent", transport: r.wire.transport).control.status()
+        let recorded = try XCTUnwrap(r.routing.spanDACPlay())
+        let window = spanDACQueueWindow(sent: recorded.rows, token: recorded.token,
+                                        sentOrderUnreliable: recorded.sentOrderUnreliable, status: status)
+        return (recorded.sentOrderUnreliable, window.entries.map(\.name))
+    }
+
+    func testAnAlbumPlayThatSpanDACSkippedASongOfListsNoSkippedSongWhenTheStatusHasNoNextRows() throws {
+        let r = try upNextAfterASkip(.album)
+        XCTAssertTrue(r.sentOrderUnreliable)
+        XCTAssertEqual(r.names, ["Tt1"], "a song SpanDAC may have skipped was listed as queued")
+    }
+
+    func testAnArtistPlayThatSpanDACSkippedASongOfListsNoSkippedSongWhenTheStatusHasNoNextRows() throws {
+        let r = try upNextAfterASkip(.artist)
+        XCTAssertTrue(r.sentOrderUnreliable)
+        XCTAssertEqual(r.names, ["Tt1"])
+    }
+
+    // A one-song queue SpanDAC skips the song of is refused, not accepted (a queue that keeps
+    // nothing), so a song play never carries a skip and records its order as it always did.
+
+    func testAnAlbumPlayNothingWasSkippedFromKeepsItsInOrderUpNext() throws {
+        let r = playWithStatusFailingAfterTheQueue(.album, statusAfterQueue: readableStatus, unavailable: 0)
+        XCTAssertEqual(r.routing.spanDACPlay()?.sentOrderUnreliable, false)
+    }
+
     func testAReadableStatusAfterTheAlbumQueueStillPostsTheOrdinaryLine() {
         let r = playWithStatusFailingAfterTheQueue(.album, statusAfterQueue: readableStatus, unavailable: 1)
         XCTAssertEqual(r.footer, "Playing 'In Rainbows' on SpanDAC \u{2014} 3 tracks. 1 song isn't available to SpanDAC.")

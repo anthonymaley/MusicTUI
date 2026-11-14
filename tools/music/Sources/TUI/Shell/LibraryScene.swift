@@ -3107,7 +3107,11 @@ final class LibraryScene: Scene {
                                 ids: ids, startRequired: startRequired)
                             skippedUnavailable = played.skippedUnavailable
                             unconfirmedPlay = played.statusUnconfirmed != nil
-                            routing.recordSpanDACPlay(sent, token: played.queueToken)
+                            // SpanDAC's `row` / `next_rows` index the request sent, but a status
+                            // without `next_rows` would list a song it left out: an order the
+                            // sent rows cannot stand in for when it left any out.
+                            routing.recordSpanDACPlay(sent, token: played.queueToken,
+                                                      sentOrderUnreliable: played.skippedUnavailable > 0)
                         },
                         unaffected: {})
                 }
@@ -3227,7 +3231,11 @@ final class LibraryScene: Scene {
                                 ids: ids, startRequired: false)
                             skippedUnavailable = played.skippedUnavailable
                             unconfirmedPlay = played.statusUnconfirmed != nil
-                            routing.recordSpanDACPlay(sent, token: played.queueToken)
+                            // SpanDAC's `row` / `next_rows` index the request sent, but a status
+                            // without `next_rows` would list a song it left out: an order the
+                            // sent rows cannot stand in for when it left any out.
+                            routing.recordSpanDACPlay(sent, token: played.queueToken,
+                                                      sentOrderUnreliable: played.skippedUnavailable > 0)
                         },
                         unaffected: {})
                 }
