@@ -242,7 +242,8 @@ func runShell() {
     let volumeDelta = DeltaAccumulator()
 
     let poller = PlaybackPoller(store: store, backend: backend, appQueue: appQueue, queueStore: queueStore,
-                                routing: routing)
+                                routing: routing,
+                                onBuildNotice: { text, claim in status.post(text, error: true, untilStateChange: true, claiming: claim) })
     // One owner for Discover containers: admission after the launch sweep,
     // protection at exit, confirmation of ownership in between
     // (docs/plans/2026-09-03-discover-lifecycle-design.md).

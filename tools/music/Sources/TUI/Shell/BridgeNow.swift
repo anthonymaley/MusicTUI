@@ -120,6 +120,10 @@ struct BridgeLinkTracker {
     }
 }
 
+/// The words SpanDAC ends a failed build's `reason` with when its unload was not
+/// witnessed (`status.queue.reason`).
+let spanDACPlaybackNotStoppedSentence = "playback could not be stopped"
+
 /// The one line of queue or link state, plain text with no ANSI, or nil when
 /// there is nothing to say. Precedence is the order of the checks: the link
 /// first (nothing else is trustworthy without it), then a failed queue, then
@@ -134,8 +138,11 @@ func bridgeStatusLine(_ b: BridgeNow) -> String? {
     if case .invalid(let reason, let built, let requested) = b.queue {
         // A reason carrying a system error's own text can already end in a stop.
         let said = reason.hasSuffix(".") ? String(reason.dropLast()) : reason
-        guard let built else { return "Stopped: \(said)." }
-        return "Stopped: \(said). \(built) of \(requested) built."
+        // A failed unload is on the reason (SpanDAC's `playbackNotStopped`): the queue
+        // is invalid but playback may still be going, which "Stopped" would deny.
+        let lead = reason.hasSuffix(spanDACPlaybackNotStoppedSentence) ? "Failed" : "Stopped"
+        guard let built else { return "\(lead): \(said)." }
+        return "\(lead): \(said). \(built) of \(requested) built."
     }
     if b.playback == "loading" { return "Loading\u{2026}" }
     if case .building(let ready, let requested) = b.queue {

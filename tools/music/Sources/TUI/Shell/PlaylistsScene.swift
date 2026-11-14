@@ -41,8 +41,16 @@ func bridgePlaylistHeaderCount(shown: Int, wireTotal: Int?) -> Int {
 /// (`bridgeSkipLead`), before the play line, so the footer's cut never takes it.
 /// `skippedUnavailable` composes as U-R6's own trailing sentence — added
 /// after whatever the video-skip form already produced, never replacing it.
+///
+/// `filledFromCatalogue` (concert/catalogue-play, 2026-11-13; the wording is a
+/// DEFAULT for the owner to change): songs the device's library lacks that it
+/// played from Apple's catalogue. They are part of the tracks that play, so the
+/// numerator is unchanged, and the line says how many: "50 tracks, 28 from Apple
+/// Music." Absent (0) is byte-identical to before. The skip lead stays first and
+/// protected; this clause rides in the play line.
 func bridgePlaylistPlayMessage(name: String, queued: Int, skippedVideos: Int, skippedUnavailable: Int,
                                skippedNotInLibrary: Int = 0, skippedByOutput: Int = 0, skippedRepeated: Int = 0,
+                               filledFromCatalogue: Int = 0,
                                startAt: Int, shuffle: Bool) -> String {
     _ = shuffle
     // The numerator is what actually played; the "of M" denominator (only in
@@ -55,14 +63,18 @@ func bridgePlaylistPlayMessage(name: String, queued: Int, skippedVideos: Int, sk
     let n = queued - skippedUnavailable - skippedByOutput - skippedRepeated
     let v = skippedVideos
     let base: String
+    let fromAppleMusic = filledFromCatalogue > 0 ? "\(filledFromCatalogue) from Apple Music" : ""
     if v == 0 {
         // Byte-identical to Part A's shipped album sentence: never singular.
-        base = "Playing '\(name)' on SpanDAC \u{2014} \(n) tracks."
+        base = "Playing '\(name)' on SpanDAC \u{2014} \(n) tracks"
+            + (fromAppleMusic.isEmpty ? "." : ", \(fromAppleMusic).")
     } else if startAt <= 1 {
         base = "Playing \(n) of \(queued + v) from '\(name)' on SpanDAC: \(v) video\(v == 1 ? "" : "s") skipped."
+            + (fromAppleMusic.isEmpty ? "" : " \(fromAppleMusic).")
     } else {
         base = "Playing '\(name)' on SpanDAC from track \(startAt) \u{2014} \(n) track\(n == 1 ? "" : "s"); "
              + "\(v) video\(v == 1 ? "" : "s") in this playlist skipped."
+             + (fromAppleMusic.isEmpty ? "" : " \(fromAppleMusic).")
     }
     // The songs SpanDAC left out because they are not in the library lead the
     // line, short (2026-11-07): the footer is cut at its width, and the playlist
@@ -91,6 +103,23 @@ func bridgePlaylistPlayUnconfirmedMessage(name: String, skippedVideos: Int, skip
     return unconfirmedPlayLine(warning: spanDACPlayNotConfirmedWarning(name),
                                trailer: bridgeSkipTrailer(notInLibrary: skippedNotInLibrary, repeated: skippedRepeated),
                                notice: notices.isEmpty ? nil : notices.joined(separator: " "))
+}
+
+/// The footer's correction for a filled play whose build failed after the reply
+/// (concert/catalogue-play). The reply's counts are the plan's, said before the
+/// build; SpanDAC's status then reports what was built: `invalid`, with
+/// `built_before_failure` and a `reason`. nil unless that status is `invalid`; WHOSE queue
+/// it is, is the caller's to have matched (`failed_queue_token` against the reply's
+/// `queue_token`: the queue's size is not an identity). `expected` is the footer's
+/// planned count. A failed unload is not called a stop.
+func filledPlayBuildFailureMessage(name: String, expected: Int, status: SourceStatus) -> String? {
+    guard status.queuePhase == "invalid" else { return nil }
+    let reason = status.queueReason ?? "the queue could not be built"
+    let said = reason.hasSuffix(".") ? String(reason.dropLast()) : reason
+    let lead = reason.hasSuffix(spanDACPlaybackNotStoppedSentence)
+        ? "'\(name)' did not finish building" : "'\(name)' stopped"
+    guard let built = status.queueBuiltBeforeFailure else { return "\(lead): \(said)." }
+    return "\(lead) after \(built) of \(expected) tracks: \(said)."
 }
 
 final class PlaylistsScene: Scene {
@@ -1837,6 +1866,11 @@ final class PlaylistsScene: Scene {
                 // Set when the output accepted the queue and the status read after it
                 // failed: the play started, unconfirmed (never an error, never replayed).
                 var unconfirmedPlay = false
+                // Songs the output's library lacks that it played from Apple's catalogue
+                // (`filled_from_catalogue`): played, so in the tracks count, and said.
+                var outputFilled = 0
+                // The serial of the play the output filled from the catalogue, once recorded.
+                var fillSerial: Int?
                 var handedOff: HandoffPlayReport?
                 var wholeResult: SpanDACPlayResult?
                 var wholeSerial: Int?
@@ -1868,8 +1902,20 @@ final class PlaylistsScene: Scene {
                         // once, instead of refusing the whole queue. Every id is still sent
                         // and recorded for Up Next: SpanDAC numbers its `row` / `next_rows`
                         // by the request.
-                        let played = try spanDACOutputPlayer(client).playRetainingToken(
-                            ids: ids, startRequired: startRequired, skipNotInLibrary: true, skipRepeated: true)
+                        //
+                        // And, for an output that advertises `queue.catalogue_fill`, the rows'
+                        // catalogue ids, so a song its library lacks plays from Apple's
+                        // catalogue in its place (concert/catalogue-play). Any other output,
+                        // or a list with no catalogue id in it, gets the request it always got.
+                        let output = spanDACOutputPlayer(client)
+                        let catalogIDs: [String?]? = sent.contains(where: { $0.catalogID != nil })
+                            && output.supportsCatalogueFill() ? sent.map(\.catalogID) : nil
+                        let played = catalogIDs == nil
+                            ? try output.playRetainingToken(ids: ids, startRequired: startRequired,
+                                                            skipNotInLibrary: true, skipRepeated: true)
+                            : try output.playRetainingToken(ids: ids, startRequired: startRequired,
+                                                            skipNotInLibrary: true, skipRepeated: true,
+                                                            catalogIDs: catalogIDs)
                         skippedUnavailable = played.skippedUnavailable
                         outputNotInLibrary = played.skippedNotInLibrary
                         outputRepeated = played.skippedRepeated
@@ -1882,7 +1928,19 @@ final class PlaylistsScene: Scene {
                         // status names.
                         let outputSkipped = played.skippedUnavailable + played.skippedNotInLibrary
                             + played.skippedRepeated > 0
-                        routing.recordSpanDACPlay(sent, token: played.queueToken, sentOrderUnreliable: outputSkipped)
+                        let serial = routing.recordSpanDACPlay(sent, token: played.queueToken, sentOrderUnreliable: outputSkipped)
+                        outputFilled = played.filledFromCatalogue
+                        // The reply's counts are the plan's: watch for a build failure, by
+                        // the reply's own queue token. A reply with none names nothing a
+                        // failure could be matched to, so that play is not watched.
+                        if played.filledFromCatalogue > 0, let token = played.queueToken {
+                            fillSerial = serial
+                            routing.recordSpanDACFill(
+                                serial: serial, name: name,
+                                expected: sent.count - played.skippedUnavailable - played.skippedNotInLibrary
+                                    - played.skippedRepeated,
+                                token: token)
+                        }
                     }, unaffected: {})
                 }
                 if let handedOff {
@@ -1928,9 +1986,13 @@ final class PlaylistsScene: Scene {
                                                        skippedNotInLibrary: notInLibrary,
                                                        skippedByOutput: outputNotInLibrary,
                                                        skippedRepeated: outputRepeated,
+                                                       filledFromCatalogue: outputFilled,
                                                        startAt: startAt, shuffle: shuffle),
                             untilStateChange: skippedUnavailable > 0 || finalSkipped > 0 || notInLibrary > 0
                                 || outputRepeated > 0)
+                // Only now may a build failure correct the line above: a correction that
+                // landed before this post would have been overwritten by it.
+                if let fillSerial { routing.filledFooterPosted(serial: fillSerial) }
             } catch let e as MusicProviderError {
                 // Bridge's own words reach the footer — the over-100 bound,
                 // the repeated-title refusal, and every other refusal alike.
