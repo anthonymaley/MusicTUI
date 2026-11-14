@@ -1870,7 +1870,15 @@ final class PlaylistsScene: Scene {
                         outputNotInLibrary = played.skippedNotInLibrary
                         outputRepeated = played.skippedRepeated
                         unconfirmedPlay = played.statusUnconfirmed != nil
-                        routing.recordSpanDACPlay(sent, token: played.queueToken)
+                        // Every sent row is kept (SpanDAC's indices are the request's), but
+                        // when the output left songs out, the sent order is not the player's:
+                        // recorded as an order the sent rows cannot stand in for, so a status
+                        // without `next_rows` (and a play whose status read failed has only
+                        // such later ones) lists no skipped song as queued, only what a
+                        // status names.
+                        let outputSkipped = played.skippedUnavailable + played.skippedNotInLibrary
+                            + played.skippedRepeated > 0
+                        routing.recordSpanDACPlay(sent, token: played.queueToken, shuffled: outputSkipped)
                     }, unaffected: {})
                 }
                 if let handedOff {
