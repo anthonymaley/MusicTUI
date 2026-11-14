@@ -156,6 +156,18 @@ final class SpanDACLinkTests: XCTestCase {
         XCTAssertNil(SpanDACLinkFailure.denied(waiting: .tls(-9864), reason: .localNetworkDenied))
     }
 
+    /// ready -> waiting: once the device has been contacted, a later wait (a
+    /// dropped route, a path that turned unsatisfied) is not a Local Network
+    /// refusal, whatever reason the path carries.
+    func testAWaitAfterReadyIsNeverLocalNetworkDenied() {
+        typealias F = SpanDACLinkFailure
+        XCTAssertNil(F.denied(waiting: .posix(.EHOSTUNREACH), reason: .localNetworkDenied, ready: true))
+        XCTAssertNil(F.denied(waiting: .dns(-65570), reason: nil, ready: true))
+        XCTAssertEqual(F.denied(waiting: .posix(.EHOSTUNREACH), reason: .localNetworkDenied, ready: false),
+                       .localNetworkDenied)
+        XCTAssertEqual(F.denied(waiting: .dns(-65570), reason: nil, ready: false), .localNetworkDenied)
+    }
+
     /// A path update is a second witness, not a veto: it counts only before the
     /// connection is ready and never over a TLS wait already seen.
     func testAPathUpdateConcludesDeniedOnlyBeforeReadyAndNeverOverATLSWait() {

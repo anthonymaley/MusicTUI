@@ -94,7 +94,11 @@ enum SpanDACLinkFailure: Error, Equatable {
     /// (`.localNetworkDenied`, macOS 11+); the DNS-SD policy denial
     /// (`kDNSServiceErr_PolicyDenied`, -65570) is the same refusal reported on
     /// the Bonjour side. A TLS wait is a handshake refusal and never this.
-    static func denied(waiting error: NWError?, reason: NWPath.UnsatisfiedReason?) -> SpanDACLinkFailure? {
+    /// Only before the connection reached `.ready`: once the device has been
+    /// contacted, a later wait is not a refusal to connect.
+    static func denied(waiting error: NWError?, reason: NWPath.UnsatisfiedReason?,
+                       ready: Bool = false) -> SpanDACLinkFailure? {
+        if ready { return nil }
         if case .tls? = error { return nil }
         if reason == .localNetworkDenied { return .localNetworkDenied }
         if case .dns(let code)? = error, code == -65570 { return .localNetworkDenied }
@@ -523,13 +527,14 @@ struct SpanDACTLSTransport {
                 })
                 receive()
             case .waiting(let error):
-                lock.lock(); lastWait = error; lock.unlock()
+                lock.lock(); lastWait = error; let wasReady = ready; lock.unlock()
                 // Local Network privacy first: it holds a connection in
                 // `.waiting` for as long as it is allowed (331 times in 3
                 // minutes, measured), so it is reported at once, not after
                 // the handshake timeout, and never as an absent device.
                 if let denied = SpanDACLinkFailure.denied(waiting: error,
-                                                         reason: connection.currentPath?.unsatisfiedReason) {
+                                                         reason: connection.currentPath?.unsatisfiedReason,
+                                                         ready: wasReady) {
                     finish(.failure(.link(denied)))
                     return
                 }
