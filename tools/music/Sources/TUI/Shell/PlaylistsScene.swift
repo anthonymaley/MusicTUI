@@ -118,10 +118,19 @@ func bridgePlaylistPlayUnconfirmedMessage(name: String, skippedVideos: Int, skip
 /// it is, is the caller's to have matched (`failed_queue_token` against the reply's
 /// `queue_token`: the queue's size is not an identity). `expected` is the footer's
 /// planned count. A failed unload is not called a stop.
-func filledPlayBuildFailureMessage(name: String, expected: Int, status: SourceStatus) -> String? {
+///
+/// `unconfirmed` (integration-1114): the play's own status read failed, so nothing showed that
+/// it started. `built_before_failure` counts tracks put in the QUEUE, not played, so that
+/// footer does not say the play "stopped"; it says the build failed and how many were queued.
+func filledPlayBuildFailureMessage(name: String, expected: Int, status: SourceStatus,
+                                   unconfirmed: Bool = false) -> String? {
     guard status.queuePhase == "invalid" else { return nil }
     let reason = status.queueReason ?? "the queue could not be built"
     let said = reason.hasSuffix(".") ? String(reason.dropLast()) : reason
+    if unconfirmed {
+        guard let built = status.queueBuiltBeforeFailure else { return "Couldn't finish '\(name)': \(said)." }
+        return "Couldn't finish '\(name)': \(said) (\(built) of \(expected) tracks were queued)."
+    }
     let lead = reason.hasSuffix(spanDACPlaybackNotStoppedSentence)
         ? "'\(name)' did not finish building" : "'\(name)' stopped"
     guard let built = status.queueBuiltBeforeFailure else { return "\(lead): \(said)." }
@@ -1945,7 +1954,7 @@ final class PlaylistsScene: Scene {
                                 serial: serial, name: name,
                                 expected: sent.count - played.skippedUnavailable - played.skippedNotInLibrary
                                     - played.skippedRepeated,
-                                token: token)
+                                token: token, unconfirmed: unconfirmedPlay)
                         }
                     }, unaffected: {})
                 }

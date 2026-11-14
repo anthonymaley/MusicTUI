@@ -767,15 +767,17 @@ final class RoutingCoordinator {
     /// its own "Playing" footer (`filledFooterPosted`): a correction posted earlier would be
     /// overwritten by it. `reported` is true once the correction was claimed.
     private var _spanDACFill: (serial: Int, name: String, expected: Int, token: String,
-                               footerPosted: Bool, reported: Bool)?
+                               footerPosted: Bool, reported: Bool, unconfirmed: Bool)?
 
     /// Called after `recordSpanDACPlay` for a play the device filled from the
     /// catalogue. `expected` is the entries it planned: the footer's track count.
     /// `token` is the play's reply `queue_token`; a reply with none has no identity to
     /// match a failure to, so the caller records nothing and the play is not watched.
-    func recordSpanDACFill(serial: Int, name: String, expected: Int, token: String) {
+    /// `unconfirmed`: the play's status read failed, so a later failure's correction must not
+    /// claim the play started (`filledPlayBuildFailureMessage`).
+    func recordSpanDACFill(serial: Int, name: String, expected: Int, token: String, unconfirmed: Bool = false) {
         state.lock(); defer { state.unlock() }
-        _spanDACFill = (serial, name, expected, token, false, false)
+        _spanDACFill = (serial, name, expected, token, false, false, unconfirmed)
     }
 
     /// The filled play recorded under `serial` has now posted its own footer. From here a
@@ -784,7 +786,7 @@ final class RoutingCoordinator {
     func filledFooterPosted(serial: Int) {
         state.lock(); defer { state.unlock() }
         guard let fill = _spanDACFill, fill.serial == serial else { return }
-        _spanDACFill = (fill.serial, fill.name, fill.expected, fill.token, true, fill.reported)
+        _spanDACFill = (fill.serial, fill.name, fill.expected, fill.token, true, fill.reported, fill.unconfirmed)
     }
 
     /// A build failure waiting to correct a filled play's footer: its words, and the
@@ -803,7 +805,8 @@ final class RoutingCoordinator {
         state.lock(); defer { state.unlock() }
         guard let fill = _spanDACFill, fill.footerPosted, !fill.reported, fill.serial == _playSerial,
               status.queueFailedToken == fill.token,
-              let message = filledPlayBuildFailureMessage(name: fill.name, expected: fill.expected, status: status)
+              let message = filledPlayBuildFailureMessage(name: fill.name, expected: fill.expected, status: status,
+                                                  unconfirmed: fill.unconfirmed)
         else { return nil }
         return FilledBuildFailure(message: message, serial: fill.serial, token: fill.token)
     }
@@ -817,7 +820,7 @@ final class RoutingCoordinator {
         state.lock(); defer { state.unlock() }
         guard let fill = _spanDACFill, fill.serial == failure.serial, fill.token == failure.token,
               fill.serial == _playSerial, !fill.reported else { return false }
-        _spanDACFill = (fill.serial, fill.name, fill.expected, fill.token, fill.footerPosted, true)
+        _spanDACFill = (fill.serial, fill.name, fill.expected, fill.token, fill.footerPosted, true, fill.unconfirmed)
         return true
     }
 

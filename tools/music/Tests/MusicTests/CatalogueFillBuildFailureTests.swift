@@ -166,8 +166,34 @@ final class CatalogueFillBuildFailureTests: XCTestCase {
         let p = poller(routing: r.routing, status: r.status)
         later.current = invalid(reason: "insert 2 of 3 failed: boom")
         p.tick()
-        XCTAssertEqual(r.status.current()?.text, "'2018' stopped after 1 of 3 tracks: insert 2 of 3 failed: boom.")
+        // Nothing confirmed that the play started, so "stopped" would claim playback: the
+        // correction says the build failed and how many tracks were queued, no more.
+        XCTAssertEqual(r.status.current()?.text, "Couldn't finish '2018': insert 2 of 3 failed: boom (1 of 3 tracks were queued).")
+        XCTAssertFalse(r.status.current()?.text.contains("stopped") == true)
         XCTAssertEqual(r.status.current()?.isError, true)
+    }
+
+    /// The unconfirmed path through the newer-play interleaving check (the scene's own
+    /// recorded fill, not a hand-recorded one): a play admitted between the poller's check and
+    /// its post is never overwritten by this play's later failure.
+    func testANewerPlayStartingBetweenTheCheckAndThePostIsNotOverwrittenByAnUnconfirmedPlaysFailure() {
+        let later = StatusSource("")
+        let r = unconfirmedRig(queueReply: queueReply(filled: 2), later: later)
+        later.current = invalid(reason: "insert 2 of 3 failed: boom")
+        var newerStarted = false
+        let serialBefore = r.routing.playSerial
+        let p = poller(routing: r.routing, status: r.status) {
+            try? r.routing.perform(.playlistPlay, expecting: r.routing.stamp, origin: .spandacLibrary,
+                                   musicApp: { _ in }, source: { _ in }, unaffected: {})
+            r.status.post("Playing 'Newer' on SpanDAC \u{2014} 5 tracks.", untilStateChange: true)
+            newerStarted = true
+        }
+        p.tick()
+        XCTAssertTrue(newerStarted)
+        XCTAssertEqual(r.routing.playSerial, serialBefore + 1)
+        XCTAssertEqual(r.status.current()?.text, "Playing 'Newer' on SpanDAC \u{2014} 5 tracks.")
+        p.tick()
+        XCTAssertEqual(r.status.current()?.text, "Playing 'Newer' on SpanDAC \u{2014} 5 tracks.")
     }
 
     func testAnUnconfirmedFilledPlayIsNotCorrectedByAnotherTokensFailure() {
