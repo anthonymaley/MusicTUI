@@ -37,8 +37,12 @@ final class CatalogueFillBuildFailureTests: XCTestCase {
 
     private let building = "{\"phase\":\"building\",\"requested\":3,\"present\":1,\"index\":0}"
 
-    private func invalid(reason: String, requested: Int = 3, built: Int = 1) -> String {
-        "{\"phase\":\"invalid\",\"requested\":\(requested),\"built_before_failure\":\(built),\"reason\":\"\(reason)\"}"
+    /// `token` is the failed build's own `queue_token` (`failed_queue_token`): the identity
+    /// the client matches its play on. The reply below carries "T-1".
+    private func invalid(reason: String, requested: Int = 3, built: Int = 1, token: String? = "T-1") -> String {
+        let named = token.map { ",\"failed_queue_token\":\"\($0)\"" } ?? ""
+        return "{\"phase\":\"invalid\",\"requested\":\(requested),\"built_before_failure\":\(built),"
+            + "\"reason\":\"\(reason)\"\(named)}"
     }
 
     /// The wire answers `slice.status` from `statusQueue`, which a test changes after the play.
@@ -74,16 +78,41 @@ final class CatalogueFillBuildFailureTests: XCTestCase {
         return (wire, routing, status)
     }
 
-    private func poller(routing: RoutingCoordinator, status: StatusStore) -> PlaybackPoller {
+    /// `beforePost` runs between the poller deciding to post and the post itself: the window an
+    /// interleaving play can start in.
+    private func poller(routing: RoutingCoordinator, status: StatusStore,
+                        beforePost: @escaping () -> Void = {}) -> PlaybackPoller {
         PlaybackPoller(store: NowPlayingStore(), backend: AppleScriptCallCounter().backend, appQueue: AppQueueStore(),
                        queueStore: QueueStore(path: NSTemporaryDirectory() + "q-\(UUID().uuidString).json"),
                        routing: routing,
-                       onBuildNotice: { status.post($0, error: true, untilStateChange: true) })
+                       onBuildNotice: { text, claim in
+                           beforePost()
+                           status.post(text, error: true, untilStateChange: true, claiming: claim)
+                       })
     }
 
-    private func queueReply(filled: Int?) -> String {
+    /// A coordinator and footer with a play recorded the way the scene records a filled one, but
+    /// the footer NOT yet posted: for the interleavings the scene's own timing makes hard to hit.
+    private func recordedFill(source: StatusSource, token: String = "T-1")
+        -> (routing: RoutingCoordinator, status: StatusStore, serial: Int) {
+        let wire = BridgeLibraryReadsWire([:])
+        wire.handler = { op, _ in
+            op == "slice.status" ? self.status(queue: source.current) : nil
+        }
+        let status = StatusStore()
+        let store = PlaybackModeStore(path: NSTemporaryDirectory() + "mode-\(UUID().uuidString).json")
+        store.set(.source)
+        let routing = RoutingCoordinator(store: store, surface: .tui,
+                                         makeSource: { SourceAppClient(path: "/nonexistent", transport: wire.transport) })
+        let serial = routing.recordSpanDACPlay([], token: token)
+        routing.recordSpanDACFill(serial: serial, name: "2018", expected: 3, token: token)
+        return (routing, status, serial)
+    }
+
+    private func queueReply(filled: Int?, token: String? = "T-1") -> String {
         "{\"ok\":true,\"op\":\"slice.queue\",\"skipped_unavailable\":0,\"skipped_not_in_library\":1"
-            + (filled.map { ",\"filled_from_catalogue\":\($0)" } ?? "") + "}"
+            + (filled.map { ",\"filled_from_catalogue\":\($0)" } ?? "")
+            + (token.map { ",\"queue_token\":\"\($0)\"" } ?? "") + "}"
     }
 
     // MARK: - the footer is corrected from the status, once
@@ -146,13 +175,35 @@ final class CatalogueFillBuildFailureTests: XCTestCase {
         XCTAssertEqual(r.status.current()?.text, before)
     }
 
-    func testAnInvalidStatusForADifferentQueueSizeIsNotThisPlays() {
+    /// Codex 258728fe B1: the queue SIZE does not identify a play. Another process's queue
+    /// that failed at the same requested size, under its own token, is not this footer's.
+    func testAnInvalidStatusForADifferentPlayAtTheSameSizeIsNotThisPlays() {
         let source = StatusSource(building)
         let r = playedRig(queueReply: queueReply(filled: 2), source: source)
         let before = r.status.current()?.text
-        source.current = invalid(reason: "insert 9 of 40 failed", requested: 40, built: 8)
+        source.current = invalid(reason: "insert 2 of 3 failed: somebody else's", requested: 3, built: 1, token: "T-OTHER")
         poller(routing: r.routing, status: r.status).tick()
-        XCTAssertEqual(r.status.current()?.text, before, "another process's queue is not this play's footer")
+        XCTAssertEqual(r.status.current()?.text, before, "same size, another play's token: not this play's footer")
+        // A failure that names no build at all (an older device, or a failure before any
+        // assignment) cannot be matched either, and is never guessed to be this play's.
+        source.current = invalid(reason: "insert 2 of 3 failed: unnamed", token: nil)
+        poller(routing: r.routing, status: r.status).tick()
+        XCTAssertEqual(r.status.current()?.text, before, "no token: not matched")
+        // And this play's own failure, still on the status afterwards, is still found.
+        source.current = invalid(reason: "insert 2 of 3 failed: boom")
+        poller(routing: r.routing, status: r.status).tick()
+        XCTAssertEqual(r.status.current()?.text, "'2018' stopped after 1 of 3 tracks: insert 2 of 3 failed: boom.")
+    }
+
+    /// A filled play whose reply carried no `queue_token` has no identity to match: it
+    /// watches nothing, and says what it said.
+    func testAFilledPlayWhoseReplyCarriedNoTokenIsNotWatched() {
+        let source = StatusSource(building)
+        let r = playedRig(queueReply: queueReply(filled: 2, token: nil), source: source)
+        let before = r.status.current()?.text
+        source.current = invalid(reason: "insert 2 of 3 failed: boom")
+        poller(routing: r.routing, status: r.status).tick()
+        XCTAssertEqual(r.status.current()?.text, before)
     }
 
     func testALaterPlayRetiresTheWatch() {
@@ -164,5 +215,66 @@ final class CatalogueFillBuildFailureTests: XCTestCase {
         let before = r.status.current()?.text
         poller(routing: r.routing, status: r.status).tick()
         XCTAssertEqual(r.status.current()?.text, before)
+    }
+
+    // MARK: - one play's footer is never overwritten by another's, in either order (Codex 258728fe B3)
+
+    /// The failure arrives while the play has not yet posted its own "Playing" footer (the
+    /// poller runs on its own thread): the correction waits for it, instead of being the older
+    /// post and overwritten. The invalid status stays on the wire, so the next poll finds it.
+    func testAFailureSeenBeforeThePlaysOwnFooterWaitsForItAndThenCorrectsIt() {
+        let source = StatusSource(invalid(reason: "insert 2 of 3 failed: boom"))
+        let r = recordedFill(source: source)
+        let p = poller(routing: r.routing, status: r.status)
+        p.tick()
+        XCTAssertNil(r.status.current(), "nothing posted: the play has not posted its footer")
+        // The scene posts the play's line, then says so.
+        r.status.post("Playing '2018' on SpanDAC \u{2014} 3 tracks, 2 from Apple Music.", untilStateChange: true)
+        p.tick()
+        XCTAssertEqual(r.status.current()?.text, "Playing '2018' on SpanDAC \u{2014} 3 tracks, 2 from Apple Music.",
+                       "the footer is not marked posted until the scene says so: still waiting")
+        r.routing.filledFooterPosted(serial: r.serial)
+        p.tick()
+        XCTAssertEqual(r.status.current()?.text, "'2018' stopped after 1 of 3 tracks: insert 2 of 3 failed: boom.",
+                       "the correction is the newer post, and it stays")
+    }
+
+    /// A newer play starts between the poller deciding to correct and the post: its serial moved
+    /// first, so the older play's failure claims nothing and the newer footer is left alone.
+    func testANewerPlayThatStartsBetweenTheCheckAndThePostIsNotOverwritten() {
+        let source = StatusSource(invalid(reason: "insert 2 of 3 failed: boom"))
+        let r = recordedFill(source: source)
+        r.routing.filledFooterPosted(serial: r.serial)
+        var newerStarted = false
+        let serialBefore = r.routing.playSerial
+        let p = poller(routing: r.routing, status: r.status) {
+            // Another chosen-music play reaches a branch (its serial moves; it has recorded
+            // nothing yet, so the fill is still on record), then posts its own footer.
+            try? r.routing.perform(.playlistPlay, expecting: r.routing.stamp, origin: .spandacLibrary,
+                                   musicApp: { _ in }, source: { _ in }, unaffected: {})
+            r.status.post("Playing 'Newer' on SpanDAC \u{2014} 5 tracks.", untilStateChange: true)
+            newerStarted = true
+        }
+        p.tick()
+        XCTAssertTrue(newerStarted)
+        XCTAssertEqual(r.routing.playSerial, serialBefore + 1, "the newer play was admitted")
+        XCTAssertEqual(r.status.current()?.text, "Playing 'Newer' on SpanDAC \u{2014} 5 tracks.",
+                       "the older play's failure did not overwrite the newer play's footer")
+        // And it is not delivered later either.
+        p.tick()
+        XCTAssertEqual(r.status.current()?.text, "Playing 'Newer' on SpanDAC \u{2014} 5 tracks.")
+    }
+
+    /// A failure is claimed once, at the moment it posts, so two polls of the same status say it once.
+    func testAClaimedFailureIsNotClaimedAgain() {
+        let source = StatusSource(invalid(reason: "insert 2 of 3 failed: boom"))
+        let r = recordedFill(source: source)
+        r.routing.filledFooterPosted(serial: r.serial)
+        let failure = r.routing.filledBuildFailure(status: SourceStatus(
+            playback: "idle", title: nil, artist: nil, readiness: .ready, queuePhase: "invalid", queueRequested: 3,
+            queuePresent: nil, queueReason: "x", queueBuiltBeforeFailure: 1, queueFailedToken: "T-1"))
+        let f = try! XCTUnwrap(failure)
+        XCTAssertTrue(r.routing.claim(f))
+        XCTAssertFalse(r.routing.claim(f))
     }
 }

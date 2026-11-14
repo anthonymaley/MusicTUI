@@ -88,10 +88,12 @@ func bridgePlaylistPlayMessage(name: String, queued: Int, skippedVideos: Int, sk
 /// The footer's correction for a filled play whose build failed after the reply
 /// (concert/catalogue-play). The reply's counts are the plan's, said before the
 /// build; SpanDAC's status then reports what was built: `invalid`, with
-/// `built_before_failure` and a `reason`. nil unless that status is for a queue
-/// of the `expected` size the play planned. A failed unload is not called a stop.
+/// `built_before_failure` and a `reason`. nil unless that status is `invalid`; WHOSE queue
+/// it is, is the caller's to have matched (`failed_queue_token` against the reply's
+/// `queue_token`: the queue's size is not an identity). `expected` is the footer's
+/// planned count. A failed unload is not called a stop.
 func filledPlayBuildFailureMessage(name: String, expected: Int, status: SourceStatus) -> String? {
-    guard status.queuePhase == "invalid", status.queueRequested == expected else { return nil }
+    guard status.queuePhase == "invalid" else { return nil }
     let reason = status.queueReason ?? "the queue could not be built"
     let said = reason.hasSuffix(".") ? String(reason.dropLast()) : reason
     let lead = reason.hasSuffix(spanDACPlaybackNotStoppedSentence)
@@ -1844,6 +1846,8 @@ final class PlaylistsScene: Scene {
                 // Songs the output's library lacks that it played from Apple's catalogue
                 // (`filled_from_catalogue`): played, so in the tracks count, and said.
                 var outputFilled = 0
+                // The serial of the play the output filled from the catalogue, once recorded.
+                var fillSerial: Int?
                 var handedOff: HandoffPlayReport?
                 var wholeResult: SpanDACPlayResult?
                 var wholeSerial: Int?
@@ -1894,12 +1898,16 @@ final class PlaylistsScene: Scene {
                         outputRepeated = played.skippedRepeated
                         outputFilled = played.filledFromCatalogue
                         let serial = routing.recordSpanDACPlay(sent, token: played.queueToken)
-                        // The reply's counts are the plan's: watch for a build failure.
-                        if played.filledFromCatalogue > 0 {
+                        // The reply's counts are the plan's: watch for a build failure, by
+                        // the reply's own queue token. A reply with none names nothing a
+                        // failure could be matched to, so that play is not watched.
+                        if played.filledFromCatalogue > 0, let token = played.queueToken {
+                            fillSerial = serial
                             routing.recordSpanDACFill(
                                 serial: serial, name: name,
                                 expected: sent.count - played.skippedUnavailable - played.skippedNotInLibrary
-                                    - played.skippedRepeated)
+                                    - played.skippedRepeated,
+                                token: token)
                         }
                     }, unaffected: {})
                 }
@@ -1943,6 +1951,9 @@ final class PlaylistsScene: Scene {
                                                        startAt: startAt, shuffle: shuffle),
                             untilStateChange: skippedUnavailable > 0 || finalSkipped > 0 || notInLibrary > 0
                                 || outputRepeated > 0)
+                // Only now may a build failure correct the line above: a correction that
+                // landed before this post would have been overwritten by it.
+                if let fillSerial { routing.filledFooterPosted(serial: fillSerial) }
             } catch let e as MusicProviderError {
                 // Bridge's own words reach the footer — the over-100 bound,
                 // the repeated-title refusal, and every other refusal alike.

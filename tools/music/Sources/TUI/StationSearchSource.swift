@@ -612,6 +612,11 @@ struct SourceStatus: Equatable {
     /// `queuePresent`:** on invalid the app sends `present` as nil, and this is
     /// the history that remains.
     var queueBuiltBeforeFailure: Int? = nil
+    /// An `invalid` queue's own `queue_token`: the token its play's reply carried
+    /// (`failed_queue_token`), the one durable identity that says WHICH queue
+    /// failed. nil from a SpanDAC that predates it, or for a build that failed before
+    /// any assignment.
+    var queueFailedToken: String? = nil
     /// Playback position, 0-based within the PRESENT entries. A different
     /// quantity from `queuePresent`, which counts songs ready while building.
     var queueIndex: Int? = nil
@@ -1200,6 +1205,7 @@ struct SourceAppControl: SourceControlling {
                             queuePresent: queue?["present"] as? Int,
                             queueReason: queue?["reason"] as? String,
                             queueBuiltBeforeFailure: queue?["built_before_failure"] as? Int,
+                            queueFailedToken: Self.queueToken(queue?["failed_queue_token"]),
                             queueIndex: queue?["index"] as? Int,
                             output: Self.outputInfo(from: status),
                             positionSeconds: Self.seconds(status["position_s"]),

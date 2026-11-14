@@ -206,14 +206,16 @@ final class PlaybackPoller {
     /// bare `SourceAppClient()` here would read the same status past it.
     private let makeSourceClient: (() -> SourceAppClient)?
     /// Told, once, that a catalogue-filled play's build failed after the reply
-    /// that counted it (`RoutingCoordinator.filledBuildFailure`): the footer's text.
-    private let onBuildNotice: ((String) -> Void)?
+    /// that counted it (`RoutingCoordinator.filledBuildFailure`): the footer's text, and the
+    /// claim that must hold at the moment it posts (`StatusStore.post(_:claiming:)`), so a
+    /// play that began since is never overwritten by this one's failure.
+    private let onBuildNotice: ((String, () -> Bool) -> Void)?
 
     init(store: NowPlayingStore, backend: AppleScriptBackend, appQueue: AppQueueStore,
          queueStore: QueueStore = QueueStore(), intervalMs: UInt32 = 1000,
          routing: RoutingCoordinator? = nil,
          makeSourceClient: (() -> SourceAppClient)? = nil,
-         onBuildNotice: ((String) -> Void)? = nil) {
+         onBuildNotice: ((String, () -> Bool) -> Void)? = nil) {
         self.onBuildNotice = onBuildNotice
         self.routing = routing
         self.makeSourceClient = makeSourceClient
@@ -259,7 +261,9 @@ final class PlaybackPoller {
         // alias fills a missing persistent ID BEFORE the tracker keeps the
         // reply, so a missed poll keeps the cover as well as the list.
         if case .success(var status) = result {
-            if let notice = routing?.filledBuildFailure(status: status) { onBuildNotice?(notice) }
+            if let routing, let failure = routing.filledBuildFailure(status: status) {
+                onBuildNotice?(failure.message) { routing.claim(failure) }
+            }
             let played = routing?.spanDACPlay()
             let window = spanDACQueueWindow(sent: played?.rows, token: played?.token,
                                             shuffled: played?.shuffled ?? false,

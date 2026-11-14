@@ -756,27 +756,67 @@ final class RoutingCoordinator {
 
     /// The one SpanDAC play whose reply carried `filled_from_catalogue`: its counts
     /// were the PLAN's (the reply comes before the build), so a build failure the
-    /// status later reports corrects the footer (`filledBuildFailure`). Guarded by `state`.
-    private var _spanDACFill: (serial: Int, name: String, expected: Int, reported: Bool)?
+    /// status later reports corrects the footer. Guarded by `state`.
+    ///
+    /// `token` is the `queue_token` of that reply: the identity of the play. A failed
+    /// queue's own token rides on `status.queue.failed_queue_token`, and only a failure
+    /// that names THIS token is this play's (the queue's size is not an identity: another
+    /// play can fail at the same size). `footerPosted` is false until the play has posted
+    /// its own "Playing" footer (`filledFooterPosted`): a correction posted earlier would be
+    /// overwritten by it. `reported` is true once the correction was claimed.
+    private var _spanDACFill: (serial: Int, name: String, expected: Int, token: String,
+                               footerPosted: Bool, reported: Bool)?
 
     /// Called after `recordSpanDACPlay` for a play the device filled from the
     /// catalogue. `expected` is the entries it planned: the footer's track count.
-    func recordSpanDACFill(serial: Int, name: String, expected: Int) {
+    /// `token` is the play's reply `queue_token`; a reply with none has no identity to
+    /// match a failure to, so the caller records nothing and the play is not watched.
+    func recordSpanDACFill(serial: Int, name: String, expected: Int, token: String) {
         state.lock(); defer { state.unlock() }
-        _spanDACFill = (serial, name, expected, false)
+        _spanDACFill = (serial, name, expected, token, false, false)
     }
 
-    /// The correction for the footer, once, when `status` says the filled play's queue
-    /// is `invalid`. Only while that play is still the current one and the status is
-    /// about a queue of the size it planned, so another queue's failure is never
-    /// read as this play's.
-    func filledBuildFailure(status: SourceStatus) -> String? {
+    /// The filled play recorded under `serial` has now posted its own footer. From here a
+    /// build failure may correct it. Call AFTER the post, so the correction can never be
+    /// the older of the two.
+    func filledFooterPosted(serial: Int) {
         state.lock(); defer { state.unlock() }
-        guard let fill = _spanDACFill, !fill.reported, fill.serial == _playSerial,
+        guard let fill = _spanDACFill, fill.serial == serial else { return }
+        _spanDACFill = (fill.serial, fill.name, fill.expected, fill.token, true, fill.reported)
+    }
+
+    /// A build failure waiting to correct a filled play's footer: its words, and the
+    /// play it belongs to. Made by `filledBuildFailure`, spent by `claim`.
+    struct FilledBuildFailure {
+        let message: String
+        fileprivate let serial: Int
+        fileprivate let token: String
+    }
+
+    /// The correction for the footer, when `status` says THIS filled play's queue is
+    /// `invalid`: the current play, its footer already posted, not yet corrected, and a
+    /// `failed_queue_token` equal to the token its reply carried. Reads only; the post
+    /// claims it (`claim`).
+    func filledBuildFailure(status: SourceStatus) -> FilledBuildFailure? {
+        state.lock(); defer { state.unlock() }
+        guard let fill = _spanDACFill, fill.footerPosted, !fill.reported, fill.serial == _playSerial,
+              status.queueFailedToken == fill.token,
               let message = filledPlayBuildFailureMessage(name: fill.name, expected: fill.expected, status: status)
         else { return nil }
-        _spanDACFill = (fill.serial, fill.name, fill.expected, true)
-        return message
+        return FilledBuildFailure(message: message, serial: fill.serial, token: fill.token)
+    }
+
+    /// Spends the correction, and says whether it is still due: still the current play,
+    /// still this fill, still not corrected. The poster calls it at the moment it posts,
+    /// under the footer store's lock (`StatusStore.post(_:claiming:)`), so a play that
+    /// began after `filledBuildFailure` looked is never overwritten by the older play's
+    /// failure: its serial moved before its own footer could post.
+    func claim(_ failure: FilledBuildFailure) -> Bool {
+        state.lock(); defer { state.unlock() }
+        guard let fill = _spanDACFill, fill.serial == failure.serial, fill.token == failure.token,
+              fill.serial == _playSerial, !fill.reported else { return false }
+        _spanDACFill = (fill.serial, fill.name, fill.expected, fill.token, fill.footerPosted, true)
+        return true
     }
 
     /// The one worker that reads the rows of whole plays for Up Next, one at a time

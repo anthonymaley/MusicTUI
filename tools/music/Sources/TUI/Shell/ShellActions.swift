@@ -86,6 +86,34 @@ final class StatusStore {
         return toastID
     }
 
+    /// Posts `text` only if `claim()` says it is still due, decided under the store's own lock.
+    /// Every other post takes that lock too, so the claim and the post are one step relative
+    /// to any other message: a play that began after the caller looked has already moved the
+    /// state `claim` reads, and its own footer cannot post before it did. Returns whether
+    /// it posted.
+    ///
+    /// `claim` is called with the store's lock held: it may take its own lock, but nothing
+    /// may call back into this store from it. The coordinator it reads never does.
+    @discardableResult
+    func post(_ text: String, error: Bool = false, ttl: TimeInterval = 3,
+              untilStateChange: Bool = false, now: Date = Date(),
+              claiming claim: () -> Bool) -> Bool {
+        // Read before taking the lock: the coordinator has a lock of its own.
+        let stamp = untilStateChange ? switchStamp() : nil
+        lock.lock(); defer { lock.unlock() }
+        guard claim() else { return false }
+        lastID += 1
+        toastID = lastID
+        if let stamp {
+            toast = StatusToast(text: text, isError: error, expiresAt: nil)
+            lasting = Lasting(postedAt: now, stamp: stamp, track: lastTrack)
+        } else {
+            toast = StatusToast(text: text, isError: error, expiresAt: now.addingTimeInterval(ttl))
+            lasting = nil
+        }
+        return true
+    }
+
     /// Takes back the post `id` while it is still the one showing; any other
     /// message, later or earlier, is left alone. `replacingWith` shows in its
     /// place, as a message that stays until the next state change (what the
