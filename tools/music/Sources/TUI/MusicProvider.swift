@@ -321,6 +321,14 @@ extension MusicDataProvider {
                             skipRepeated: Bool) throws -> SpanDACPlayResult {
         try playRetainingToken(ids: ids, startRequired: startRequired, skipNotInLibrary: skipNotInLibrary)
     }
+    /// The plain play (no opt-ins sent) for a caller that handles an ACCEPTED queue whose
+    /// status read then failed: the result comes back with `statusUnconfirmed` set and the
+    /// queue reply's count and token instead of an error that hides a play that started
+    /// (and, for a `warming` status, a retry that would send the accepted queue again).
+    /// A provider that does not read a status after its queue plays as the two-argument form.
+    func playReportingUnconfirmedStatus(ids: [String], startRequired: Bool) throws -> SpanDACPlayResult {
+        try playRetainingToken(ids: ids, startRequired: startRequired, skipNotInLibrary: false, skipRepeated: false)
+    }
     func supportsPlayLibrary() -> Bool { false }
     func supportsLibraryRefresh() -> Bool { false }
     func libraryRefresh() throws -> SpanDACLibraryRefreshOutcome {

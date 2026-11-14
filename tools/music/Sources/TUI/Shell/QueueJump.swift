@@ -54,7 +54,7 @@ func jumpSpanDACQueue(routing: RoutingCoordinator, client: SourceAppClient,
         throw ActionError(message: sourceChangedNothingPlayed)
     }
     let catalogue = displayedCatalogue || play.catalogue
-    if catalogue, play.shuffled { throw CatalogueQueueJumpUnavailable() }
+    if catalogue, play.sentOrderUnreliable { throw CatalogueQueueJumpUnavailable() }
     do {
         let capabilities = try client.control.capabilities()
         guard capabilities.contains(sourceQueueJumpCapability) else {
@@ -77,6 +77,6 @@ func jumpSpanDACQueue(routing: RoutingCoordinator, client: SourceAppClient,
 func spanDACQueueJumpEntries(routing: RoutingCoordinator,
                              result: SpanDACQueueJumpResult) -> [TrackListEntry] {
     guard let play = routing.spanDACPlay() else { return [] }
-    return spanDACQueueWindow(sent: play.rows, token: play.token, shuffled: play.shuffled,
+    return spanDACQueueWindow(sent: play.rows, token: play.token, sentOrderUnreliable: play.sentOrderUnreliable,
                               catalogue: play.catalogue, status: result.status).entries
 }

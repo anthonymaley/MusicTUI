@@ -1043,12 +1043,12 @@ final class BridgePlaylistsPlaySceneTests: XCTestCase {
         let play = try XCTUnwrap(r.routing.spanDACPlay())
         XCTAssertEqual(play.rows.count, 10, "request indices are preserved")
         let status = try laterStatus(title: "Track 1", row: 0, token: "tok-1")
-        let window = spanDACQueueWindow(sent: play.rows, token: play.token, shuffled: play.shuffled,
+        let window = spanDACQueueWindow(sent: play.rows, token: play.token, sentOrderUnreliable: play.sentOrderUnreliable,
                                         catalogue: play.catalogue, status: status)
         XCTAssertEqual(window.entries.map(\.name), ["Track 1"], "the playing row only: its successors are unknown")
         // What a later status DOES name is still listed, by request index.
         let named = try laterStatus(title: "Track 1", row: 0, token: "tok-1", nextRows: ",\"next_rows\":[2,5]")
-        XCTAssertEqual(spanDACQueueWindow(sent: play.rows, token: play.token, shuffled: play.shuffled,
+        XCTAssertEqual(spanDACQueueWindow(sent: play.rows, token: play.token, sentOrderUnreliable: play.sentOrderUnreliable,
                                           catalogue: play.catalogue, status: named).entries.map(\.name),
                        ["Track 1", "Track 3", "Track 6"])
     }
@@ -1059,7 +1059,7 @@ final class BridgePlaylistsPlaySceneTests: XCTestCase {
         let r = playWithStatusFailingAfterTheQueue(statusAfterQueue: statusOK, notInLibrary: 3, repeated: nil)
         let play = try XCTUnwrap(r.routing.spanDACPlay())
         let status = try laterStatus(title: "Track 1", row: 0, token: "tok-1")
-        XCTAssertEqual(spanDACQueueWindow(sent: play.rows, token: play.token, shuffled: play.shuffled,
+        XCTAssertEqual(spanDACQueueWindow(sent: play.rows, token: play.token, sentOrderUnreliable: play.sentOrderUnreliable,
                                           catalogue: play.catalogue, status: status).entries.map(\.name), ["Track 1"])
     }
 
@@ -1068,7 +1068,7 @@ final class BridgePlaylistsPlaySceneTests: XCTestCase {
         let r = playWithStatusFailingAfterTheQueue(statusAfterQueue: statusRefused, notInLibrary: nil, repeated: nil)
         let play = try XCTUnwrap(r.routing.spanDACPlay())
         let status = try laterStatus(title: "Track 1", row: 0, token: "tok-1")
-        XCTAssertEqual(spanDACQueueWindow(sent: play.rows, token: play.token, shuffled: play.shuffled,
+        XCTAssertEqual(spanDACQueueWindow(sent: play.rows, token: play.token, sentOrderUnreliable: play.sentOrderUnreliable,
                                           catalogue: play.catalogue, status: status).entries.count, 10)
     }
 
@@ -1095,8 +1095,46 @@ final class BridgePlaylistsPlaySceneTests: XCTestCase {
                        "no skipped song shown as queued after the jump either")
         // A status for another queue is not this play's.
         let other = try laterStatus(title: "Track 1", row: 0, token: "tok-other")
-        XCTAssertTrue(spanDACQueueWindow(sent: play.rows, token: play.token, shuffled: play.shuffled,
+        XCTAssertTrue(spanDACQueueWindow(sent: play.rows, token: play.token, sentOrderUnreliable: play.sentOrderUnreliable,
                                          catalogue: play.catalogue, status: other).entries.isEmpty)
+    }
+
+    /// Codex for-later (2026-11-13): the token kept from an unconfirmed play must still
+    /// work for what a person does next. A queue jump to an Up Next row asks SpanDAC for
+    /// that song's request index under the kept token (skipped songs shift nothing), and
+    /// a later status naming the token and its `next_rows` lists exactly those rows.
+    func testTheRetainedTokenSurvivesALaterQueueJumpAfterAnUnconfirmedPlay() throws {
+        let r = playWithStatusFailingAfterTheQueue(statusAfterQueue: statusRefused, notInLibrary: 3, repeated: 1)
+        XCTAssertTrue(r.footer?.hasPrefix("Play was requested, but SpanDAC didn't confirm") ?? false, "\(String(describing: r.footer))")
+        let play = try XCTUnwrap(r.routing.spanDACPlay())
+        XCTAssertEqual(play.token, "tok-1", "the unconfirmed play kept the queue reply's token")
+        XCTAssertTrue(play.sentOrderUnreliable, "and the sent order is recorded as one that cannot stand in for the queue")
+
+        // SpanDAC answers again: it is playing request row 0 and says which rows follow.
+        let playing = """
+        {"ok":true,"op":"slice.status","status":{"playback":"playing","title":"Track 1","artist":"Art","contract":3,
+         "authorization":"authorized","capabilities":["slice.status","queue.jump"],"row":0,"next_rows":[2,4,6],
+         "queue_token":"tok-1","queue":{"phase":"complete","requested":10,"present":6,"index":0}}}
+        """
+        r.wire.handler = { op, _ in op == "slice.status" ? playing : nil }
+        r.wire.script("slice.queueJump", [
+            #"{"ok":true,"op":"slice.queueJump","status":{"playback":"playing","title":"Track 5","artist":"Art","contract":3,"authorization":"authorized","row":4,"next_rows":[6],"queue_token":"tok-1"},"queue_token":"tok-1"}"#,
+        ])
+        let client = SourceAppClient(path: "/nonexistent", transport: r.wire.transport)
+        let status = try client.control.status()
+        let entries = spanDACQueueWindow(sent: play.rows, token: play.token, sentOrderUnreliable: play.sentOrderUnreliable, status: status).entries
+        XCTAssertEqual(entries.map(\.name), ["Track 1", "Track 3", "Track 5", "Track 7"],
+                       "the window lists the rows SpanDAC vouched for, by the retained token")
+        let target = try XCTUnwrap(entries.first { $0.name == "Track 5" })
+        _ = try jumpSpanDACQueue(routing: r.routing, client: client, displayedToken: "tok-1", entryIndex: target.index)
+        let jump = try XCTUnwrap(r.wire.sent("slice.queueJump").first)
+        XCTAssertEqual(jump["queue_token"] as? String, "tok-1")
+        XCTAssertEqual(play.rows[try XCTUnwrap(jump["row"] as? Int)].id, "i.5", "the jump asked for another song than the one shown")
+        // A token that is not the kept one is the other queue's, refused and never sent.
+        XCTAssertThrowsError(try jumpSpanDACQueue(routing: r.routing, client: client, displayedToken: "tok-other", entryIndex: 2)) {
+            XCTAssertEqual(($0 as? ActionError)?.message, sourceChangedNothingPlayed)
+        }
+        XCTAssertEqual(r.wire.sent("slice.queueJump").count, 1)
     }
 
     func testTheUnavailableCountSurvivesAFailedStatusReadToo() {
@@ -1136,6 +1174,87 @@ final class BridgePlaylistsPlaySceneTests: XCTestCase {
         XCTAssertFalse(truncText(line, to: 46).contains("repeat"))
         XCTAssertFalse(truncText(line, to: 76).contains("repeat"))
         XCTAssertTrue(truncText(line, to: 116).contains("1 repeat"))
+    }
+
+    // MARK: - Large counts in the footer at 50 and 80 columns (2026-11-14)
+    //
+    // The accepted limit (ruling 2026-11-07 10:45) is that a count may be cut off at 50 and
+    // 80 columns. What must not happen is a count cut INSIDE its digits, which reads as a
+    // smaller number ("skipped 1" for 1,234).
+
+    /// The footer as the shell draws it: cut at `width - 4` (Shell.swift).
+    private func shownFooter(_ line: String, atColumns width: Int) -> String {
+        truncFooterText(line, to: max(1, shellLayout(width: width, height: 30).width - 4))
+    }
+
+    func testTheLeadWithLargeCountsStaysWholeAt50And80Columns() {
+        let line = bridgePlaylistPlayMessage(name: "Chill", queued: 9000, skippedVideos: 0, skippedUnavailable: 0,
+                                             skippedNotInLibrary: 1234, skippedRepeated: 56, startAt: 1, shuffle: false)
+        let lead = "Skipped 1234 not in your library, 56 repeats \u{00B7} "
+        XCTAssertTrue(line.hasPrefix(lead), line)
+        for width in [50, 80] {
+            XCTAssertTrue(shownFooter(line, atColumns: width).hasPrefix("Skipped 1234 not in your library, 56 repeats"),
+                          "\(width): \(shownFooter(line, atColumns: width))")
+        }
+    }
+
+    func testAnUnconfirmedLineNeverShowsACountCutInsideItsDigits() {
+        for name in ["Chill", "Chills", "Chillz", "Chillzz", "Mix", "Roadtrip!"] {
+            let line = bridgePlaylistPlayUnconfirmedMessage(name: name, skippedVideos: 0, skippedUnavailable: 0,
+                                                            skippedNotInLibrary: 1234, skippedRepeated: 56)
+            for width in 50...100 {
+                let shown = shownFooter(line, atColumns: width)
+                // A digit just before the ellipsis is a number cut short, unless the whole
+                // number is there (the cut fell at its end, so it was not cut).
+                guard shown.hasSuffix("\u{2026}"), let before = shown.dropLast().last, before.isNumber else { continue }
+                let digits = shown.dropLast().reversed().prefix { $0.isNumber }.reversed()
+                XCTAssertTrue(["1234", "56"].contains(String(digits)),
+                              "\(name) at \(width): \(shown)")
+            }
+        }
+        // The case that was cut inside "1234": five-letter name at 80 columns.
+        let line = bridgePlaylistPlayUnconfirmedMessage(name: "Chill", skippedVideos: 0, skippedUnavailable: 0,
+                                                        skippedNotInLibrary: 1234, skippedRepeated: 56)
+        XCTAssertEqual(shownFooter(line, atColumns: 80),
+                       "Play was requested, but SpanDAC didn't confirm 'Chill' started. \u{00B7} skipped \u{2026}")
+    }
+
+    func testTruncFooterTextIsTruncTextExceptThatItNeverEndsInsideANumber() {
+        XCTAssertEqual(truncFooterText("short", to: 20), "short")
+        XCTAssertEqual(truncFooterText("Playing 'Chill' on SpanDAC", to: 12), truncText("Playing 'Chill' on SpanDAC", to: 12))
+        XCTAssertEqual(truncFooterText("skipped 1234 songs", to: 11), "skipped \u{2026}")
+        XCTAssertEqual(truncFooterText("skipped 1,234 songs", to: 11), "skipped \u{2026}")
+        XCTAssertEqual(truncFooterText("skipped 1,234 songs", to: 12), "skipped \u{2026}")
+        // At the number's end it is whole, and kept.
+        XCTAssertEqual(truncFooterText("skipped 1234 songs", to: 13), "skipped 1234\u{2026}")
+        XCTAssertEqual(truncFooterText("skipped 1234 songs", to: 14), "skipped 1234 \u{2026}")
+    }
+
+    /// Codex (2026-11-14): a decimal and a non-ASCII number are numbers too, and a width the
+    /// footer cannot exceed holds at 1.
+    func testTruncFooterTextNeverEndsInsideADecimalOrANonASCIINumber() {
+        XCTAssertEqual(truncFooterText("12.5", to: 3), "\u{2026}")
+        XCTAssertEqual(truncFooterText("skipped 12.5 songs", to: 12), "skipped \u{2026}")
+        XCTAssertEqual(truncFooterText("skipped 12.5 songs", to: 11), "skipped \u{2026}")
+        XCTAssertEqual(truncFooterText("skipped 1,234.5 songs", to: 13), "skipped \u{2026}")
+        XCTAssertEqual(truncFooterText("\u{0661}\u{0662}\u{0663}\u{0664}", to: 3), "\u{2026}")
+        XCTAssertEqual(truncFooterText("skipped \u{0661}\u{0662}\u{0663}\u{0664} songs", to: 11), "skipped \u{2026}")
+        // A separator that is not between digits ends the number: the sentence's own
+        // full stop and a list comma are not part of "12".
+        XCTAssertEqual(truncFooterText("skipped 12. Next song", to: 11), "skipped 12\u{2026}")
+        XCTAssertEqual(truncFooterText("skipped 12, then", to: 11), "skipped 12\u{2026}")
+        // Whole numbers at the cut are kept.
+        XCTAssertEqual(truncFooterText("skipped 12.5 songs", to: 13), "skipped 12.5\u{2026}")
+    }
+
+    func testTruncFooterTextNeverReturnsMoreThanTheWidth() {
+        XCTAssertEqual(truncFooterText("skipped 12 songs", to: 1), "\u{2026}")
+        XCTAssertEqual(truncFooterText("1234", to: 1), "\u{2026}")
+        XCTAssertEqual(truncFooterText("x", to: 1), "x")
+        XCTAssertEqual(truncFooterText("skipped", to: 0), "")
+        for width in 0...12 {
+            XCTAssertLessThanOrEqual(truncFooterText("skipped 12.5 songs \u{0661}\u{0662}", to: width).count, width, "\(width)")
+        }
     }
 
     func testTheSkipTrailerHasFourFormsAndKeepsTheMusicAppFormByteForByte() {

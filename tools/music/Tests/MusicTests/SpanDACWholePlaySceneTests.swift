@@ -754,7 +754,7 @@ final class SpanDACWholePlaySceneTests: XCTestCase {
         XCTAssertEqual(r.spanDACPlay()?.token, "qpl-7")
         XCTAssertEqual(r.spanDACPlay()?.listRev, "rev-pl1")
         let played = r.spanDACPlay()
-        let window = spanDACQueueWindow(sent: played?.rows, token: played?.token, shuffled: played?.shuffled ?? false,
+        let window = spanDACQueueWindow(sent: played?.rows, token: played?.token, sentOrderUnreliable: played?.sentOrderUnreliable ?? false,
                                         status: try nowStatus(title: "Pi.a", row: 0, next: [1, 2], token: "qpl-7"))
         XCTAssertEqual(window.entries.map(\.name), ["Pi.a", "Pi.b", "Pi.c"], "Up Next comes from next_rows")
     }

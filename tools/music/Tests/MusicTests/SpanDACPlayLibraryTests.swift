@@ -413,11 +413,11 @@ final class SpanDACPlayLibraryTests: XCTestCase {
             .replacingOccurrences(of: #""title":"T""#, with: #""title":"Song 2""#)
         let bare = try control(Canned(reply)).status()
         XCTAssertNil(bare.nextRows)
-        let shuffled = spanDACQueueWindow(sent: rows, token: "qA-1", shuffled: true, status: bare)
+        let shuffled = spanDACQueueWindow(sent: rows, token: "qA-1", sentOrderUnreliable: true, status: bare)
         XCTAssertEqual(shuffled.current?.id, "i2", "the playing row still gives the cover and album")
         XCTAssertEqual(shuffled.entries.map(\.name), ["Song 2"], "and no list after it")
         // The same status for an unshuffled play keeps today's in-order fallback.
-        XCTAssertEqual(spanDACQueueWindow(sent: rows, token: "qA-1", shuffled: false, status: bare).entries.map(\.name),
+        XCTAssertEqual(spanDACQueueWindow(sent: rows, token: "qA-1", sentOrderUnreliable: false, status: bare).entries.map(\.name),
                        ["Song 2", "Song 3"])
         // SpanDAC's own shuffle state says the same.
         let modeShuffle = try control(Canned(statusReply(capabilities: "[]", extra: #","row":2,"shuffle":true"#)
@@ -443,9 +443,9 @@ final class SpanDACPlayLibraryTests: XCTestCase {
         XCTAssertEqual(r.spanDACPlayedRows()?.map(\.id), ["i0"])
         r.recordSpanDACPlay([song(1)])
         XCTAssertNil(r.spanDACPlay()?.token, "a play with no token records none")
-        r.recordSpanDACPlay([song(2)], token: "qB-2", listRev: "rev-3", shuffled: true)
+        r.recordSpanDACPlay([song(2)], token: "qB-2", listRev: "rev-3", sentOrderUnreliable: true)
         XCTAssertEqual(r.spanDACPlay()?.listRev, "rev-3", "the list_rev is kept with the rows")
-        XCTAssertEqual(r.spanDACPlay()?.shuffled, true)
+        XCTAssertEqual(r.spanDACPlay()?.sentOrderUnreliable, true)
         try r.perform(.radioStationPlay, expecting: nil, musicApp: { _ in }, source: { _ in }, unaffected: {})
         XCTAssertNil(r.spanDACPlay())
     }

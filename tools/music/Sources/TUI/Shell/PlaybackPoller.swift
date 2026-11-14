@@ -256,7 +256,7 @@ final class PlaybackPoller {
         if case .success(var status) = result {
             let played = routing?.spanDACPlay()
             let window = spanDACQueueWindow(sent: played?.rows, token: played?.token,
-                                            shuffled: played?.shuffled ?? false,
+                                            sentOrderUnreliable: played?.sentOrderUnreliable ?? false,
                                             catalogue: played?.catalogue ?? false, status: status)
             if status.persistentID == nil, let alias = window.current?.alias, !alias.isEmpty {
                 status.persistentID = alias

@@ -103,6 +103,36 @@ func truncText(_ text: String, to maxWidth: Int) -> String {
     return String(text.prefix(maxWidth - 1)) + "\u{2026}"
 }
 
+/// The footer's cut (`truncText`), except that it never ends inside a number: a count cut
+/// to its first digits ("skipped 1" for 1,234) reads as a smaller number, so the partial
+/// number is dropped and the ellipsis follows what came before it. A number is a run of
+/// digits of any script (`Character.isNumber`), with "." and "," inside it only BETWEEN
+/// digits (12.5, 1,234), never a full stop or comma that ends a sentence. Never wider than
+/// `maxWidth` (a width of 1 is the ellipsis alone, 0 is empty). Words are cut as
+/// `truncText` cuts them (the accepted limit, ruling 2026-11-07 10:45), and width is
+/// counted in characters, as it always was (ANSI and wide characters are inherited limits).
+func truncFooterText(_ text: String, to maxWidth: Int) -> String {
+    guard maxWidth > 0 else { return "" }
+    let chars = Array(text)
+    guard chars.count > maxWidth else { return text }
+    func digit(_ i: Int) -> Bool { chars.indices.contains(i) && chars[i].isNumber }
+    func separator(_ i: Int) -> Bool { chars.indices.contains(i) && (chars[i] == "." || chars[i] == ",") }
+    let cut = maxWidth - 1
+    var kept = Array(chars.prefix(cut))
+    // The cut falls inside a number when the character before it and the one after it belong
+    // to one: two digits, or a digit and a digit across a separator on either side of the cut.
+    let inside = (digit(cut - 1) && digit(cut))
+        || (digit(cut - 1) && separator(cut) && digit(cut + 1))
+        || (separator(cut - 1) && digit(cut - 2) && digit(cut))
+    if inside {
+        while let last = kept.last {
+            let i = kept.count - 1
+            if last.isNumber || (separator(i) && digit(i - 1)) { kept.removeLast() } else { break }
+        }
+    }
+    return String(kept) + "\u{2026}"
+}
+
 /// Render a horizontal meter bar for volume/progress.
 /// Returns a colored string of the given width.
 func meterBar(value: Int, width: Int) -> String {

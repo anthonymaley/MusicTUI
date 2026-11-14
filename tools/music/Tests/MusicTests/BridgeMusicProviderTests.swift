@@ -349,6 +349,20 @@ final class BridgeMusicProviderTests: XCTestCase {
         }
     }
 
+    /// The plain play for the callers that report an unconfirmed play (album, artist, song,
+    /// marked set, DJ genre): no opt-in is sent, the count and token are kept, and a status
+    /// that is warming is not an error that would have the queue sent again.
+    func testThePlainReportingFormSendsNoOptInAndKeepsTheCountsWhenTheStatusReadFails() throws {
+        let wire = Wire([acceptedQueue, statusFailure])
+        let played = try provider(wire).playReportingUnconfirmedStatus(ids: tenIDs, startRequired: false)
+        XCTAssertEqual(played.statusUnconfirmed, "the player stopped answering")
+        XCTAssertEqual(played.skippedUnavailable, 2)
+        XCTAssertEqual(played.queueToken, "tok-9")
+        XCTAssertEqual(wire.sent.count, 2, "one queue, one status read, nothing re-sent")
+        XCTAssertNil(wire.firstRequest["skip_not_in_library"])
+        XCTAssertNil(wire.firstRequest["skip_repeated"])
+    }
+
     func testAnAcceptedQueueWithAReadableStatusLeavesTheFlagNil() throws {
         let wire = Wire([acceptedQueue, statusReady])
         let played = try provider(wire).playRetainingToken(ids: tenIDs, startRequired: false,

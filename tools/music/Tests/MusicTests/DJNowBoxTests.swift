@@ -753,7 +753,7 @@ final class DJNowBoxTests: XCTestCase {
         XCTAssertEqual(play.rows.map(\.id), sent, "the kept rows are the ids on the wire, in order")
         XCTAssertEqual(play.token, "qmix-1")
         XCTAssertEqual(play.catalogue, true)
-        XCTAssertFalse(play.shuffled)
+        XCTAssertFalse(play.sentOrderUnreliable)
         XCTAssertTrue(play.rows.allSatisfy { $0.kind == .song && $0.artist == "A" && $0.title == "Track \($0.id)" },
                       "a row is the song the id names")
         XCTAssertTrue(play.rows.allSatisfy { $0.album?.hasPrefix("Title alb") == true }, "the album line comes from the album it was read in")
@@ -770,7 +770,7 @@ final class DJNowBoxTests: XCTestCase {
         askAndPlay(f, "mix")
         let play = try XCTUnwrap(f.routing.spanDACPlay())
         XCTAssertEqual(play.token, "qmix-2")
-        XCTAssertTrue(play.shuffled, "an order SpanDAC may have changed is not an order to list")
+        XCTAssertTrue(play.sentOrderUnreliable, "an order SpanDAC may have changed is not an order to list")
     }
 
     func testARefusedArtistMixKeepsNoRows() {
@@ -1333,6 +1333,46 @@ final class DJNowBoxTests: XCTestCase {
             MusicRow(id: "lib\(i)", title: (i == 2 || i == 5) ? "Autumn Leaves" : "Song \(i)", artist: "A",
                      album: "B", kind: .song, alias: String(i))
         }
+    }
+
+    /// An accepted genre queue whose follow-up status read fails: the play started and is
+    /// unconfirmed, so the footer says so and keeps the queue reply's count; the queue is
+    /// sent once, a `warming` status included.
+    private func genreQueueWithStatusFailingAfterTheQueue(_ statusAfterQueue: String) -> Fixture {
+        let source = DJFakeGenreSource(.success(spandacPick(aliasRows(50), total: 312)))
+        let f = fixture(output: .source, genreSource: source)
+        var queueServed = false
+        f.rig.during["slice.queue"] = { queueServed = true }
+        f.rig.responders["slice.queue"] = { _ in
+            #"{"ok":true,"op":"slice.queue","queue_token":"qg-1","skipped_unavailable":2}"#
+        }
+        f.rig.responders["slice.status"] = { _ in
+            queueServed ? statusAfterQueue
+                : #"{"ok":true,"op":"slice.status","status":{"playback":"playing","title":"T","artist":"A","authorization":"authorized","contract":3,"capabilities":[]}}"#
+        }
+        f.reader.answer("jazz", with: genreReading("Jazz"))
+        askAndPlay(f, "jazz")
+        return f
+    }
+
+    func testAnAcceptedGenreQueueWhoseStatusReadFailsKeepsItsCountAndSendsTheQueueOnce() throws {
+        let f = genreQueueWithStatusFailingAfterTheQueue(
+            #"{"ok":false,"op":"slice.status","error":{"kind":"player_disconnected","detail":"the player stopped answering"}}"#)
+        XCTAssertEqual(f.rig.sent("slice.queue").count, 1, "an accepted queue is never sent again")
+        XCTAssertEqual(f.status.current()?.text,
+                       "Play was requested, but SpanDAC didn't confirm 'Jazz you haven't played' started."
+                       + " 2 songs aren't available to SpanDAC.")
+        let play = try XCTUnwrap(f.routing.spanDACPlay())
+        XCTAssertEqual(play.token, "qg-1")
+        XCTAssertEqual(play.rows.count, 50)
+    }
+
+    func testAnAcceptedGenreQueueWhoseStatusIsWarmingIsNotSentAgain() {
+        let f = genreQueueWithStatusFailingAfterTheQueue(
+            #"{"ok":false,"op":"slice.status","error":{"kind":"warming","detail":"preparing your library","retry_after":0}}"#)
+        XCTAssertEqual(f.rig.sent("slice.queue").count, 1)
+        XCTAssertTrue(f.status.current()?.text.hasPrefix("Play was requested, but SpanDAC didn't confirm") ?? false,
+                      "\(String(describing: f.status.current()?.text))")
     }
 
     func testGenreOnSpanDACOutputKeepsTheOldestOfARepeatedTitleAndSaysSo() throws {

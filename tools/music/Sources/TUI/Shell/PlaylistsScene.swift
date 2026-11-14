@@ -78,11 +78,15 @@ func bridgePlaylistPlayMessage(name: String, queued: Int, skippedVideos: Int, sk
 /// keeps its own first words (a narrow footer cuts the line at its width), then what
 /// the queue reply said was left out, in the trailing form, then the videos and
 /// unavailable songs. Known limit (ruling 2026-11-07 10:45): at narrow widths the
-/// warning fills the footer and the counts are cut.
+/// warning fills the footer and the counts are cut. Every other SpanDAC collection play
+/// (an album, an artist, a song, a marked set, a DJ genre) words its unconfirmed play
+/// with this too; `lastNotice` is the marked set's repeated-songs sentence.
 func bridgePlaylistPlayUnconfirmedMessage(name: String, skippedVideos: Int, skippedUnavailable: Int,
-                                          skippedNotInLibrary: Int, skippedRepeated: Int) -> String {
+                                          skippedNotInLibrary: Int, skippedRepeated: Int,
+                                          lastNotice: String? = nil) -> String {
     let notices = [skippedVideos > 0 ? bridgeSkippedVideosNotice(skippedVideos) : nil,
-                   skippedUnavailable > 0 ? bridgeUnavailableSongsNotice(skippedUnavailable) : nil]
+                   skippedUnavailable > 0 ? bridgeUnavailableSongsNotice(skippedUnavailable) : nil,
+                   lastNotice]
         .compactMap { $0 }
     return unconfirmedPlayLine(warning: spanDACPlayNotConfirmedWarning(name),
                                trailer: bridgeSkipTrailer(notInLibrary: skippedNotInLibrary, repeated: skippedRepeated),
@@ -1855,7 +1859,7 @@ final class PlaylistsScene: Scene {
                                 kind: .playlist, id: playlistID, start: start, listRev: rev, shuffle: shuffle)
                             wholeResult = result
                             wholeSerial = routing.recordSpanDACPlay(finalRows ?? [], token: result.queueToken,
-                                                                    listRev: rev, shuffled: shuffle)
+                                                                    listRev: rev, sentOrderUnreliable: shuffle)
                             return
                         }
                         guard let ids, let sent else { throw ActionError(message: sourceChangedNothingPlayed) }
@@ -1878,7 +1882,7 @@ final class PlaylistsScene: Scene {
                         // status names.
                         let outputSkipped = played.skippedUnavailable + played.skippedNotInLibrary
                             + played.skippedRepeated > 0
-                        routing.recordSpanDACPlay(sent, token: played.queueToken, shuffled: outputSkipped)
+                        routing.recordSpanDACPlay(sent, token: played.queueToken, sentOrderUnreliable: outputSkipped)
                     }, unaffected: {})
                 }
                 if let handedOff {
