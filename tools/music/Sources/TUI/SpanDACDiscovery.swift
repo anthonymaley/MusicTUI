@@ -181,8 +181,8 @@ final class SpanDACOutputs {
         case unavailable(String)
         /// Not found, asleep, no answer: the reason, in words.
         case unreachable(String)
-        /// macOS Local Network privacy refuses this binary; the device was
-        /// never asked. The pair is kept.
+        /// macOS Local Network privacy refuses this binary; no connection to the
+        /// device was allowed. The pair is kept.
         case localNetworkDenied
         /// TLS -9864: the SpanDAC no longer knows this Mac. The pair is kept.
         case forgotten

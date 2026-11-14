@@ -51,8 +51,9 @@ enum SpanDACLinkFailure: Error, Equatable {
     /// This process forgot the SpanDAC while the request was open.
     case forgotten
     /// macOS Local Network privacy refuses this binary: the path is
-    /// `unsatisfied (Local network prohibited)` and no device was ever asked.
-    /// Not the device's fault, so never "asleep" or "not seen".
+    /// `unsatisfied (Local network prohibited)` (or the DNS-SD lookup is
+    /// refused), so no connection to the device was allowed. Not the device's
+    /// fault, so never "asleep" or "not seen".
     case localNetworkDenied
 
     /// The sentence a person reads (CLI output, the footer, the Output tab's
@@ -93,11 +94,20 @@ enum SpanDACLinkFailure: Error, Equatable {
     /// (`.localNetworkDenied`, macOS 11+); the DNS-SD policy denial
     /// (`kDNSServiceErr_PolicyDenied`, -65570) is the same refusal reported on
     /// the Bonjour side. A TLS wait is a handshake refusal and never this.
-    static func denied(waiting error: NWError, reason: NWPath.UnsatisfiedReason?) -> SpanDACLinkFailure? {
-        if case .tls = error { return nil }
+    static func denied(waiting error: NWError?, reason: NWPath.UnsatisfiedReason?) -> SpanDACLinkFailure? {
+        if case .tls? = error { return nil }
         if reason == .localNetworkDenied { return .localNetworkDenied }
-        if case .dns(let code) = error, code == -65570 { return .localNetworkDenied }
+        if case .dns(let code)? = error, code == -65570 { return .localNetworkDenied }
         return nil
+    }
+
+    /// The same verdict from a path update, which carries no error: only
+    /// while the connection has not reached `.ready`, on an unsatisfied path,
+    /// and under the same TLS rule (`lastWait` is the last `.waiting` error).
+    static func denied(byPath status: NWPath.Status, reason: NWPath.UnsatisfiedReason?,
+                       ready: Bool, lastWait: NWError?) -> SpanDACLinkFailure? {
+        guard !ready, status == .unsatisfied else { return nil }
+        return denied(waiting: lastWait, reason: reason)
     }
 
     /// Section 3.3 item 9: the three refusals the handshake can end in, each
@@ -203,11 +213,34 @@ struct SpanDACServiceLocation: Equatable {
     let interfaceIndex: UInt32
 }
 
+/// What a resolve step found. `policyDenied` is DNS-SD's
+/// `kDNSServiceErr_PolicyDenied` (-65570): macOS Local Network privacy refused
+/// the lookup, which says nothing about whether the device is on the network.
+enum SpanDACResolution<Value: Equatable>: Equatable {
+    case found(Value)
+    case notFound
+    case policyDenied
+}
+
 protocol SpanDACResolving {
     /// Resolves a `_spandac._tcp` service instance to its host and port.
-    func locate(serviceName: String, timeout: TimeInterval) -> SpanDACServiceLocation?
+    func resolve(serviceName: String, timeout: TimeInterval) -> SpanDACResolution<SpanDACServiceLocation>
     /// The host's numeric addresses, IPv4 first.
-    func addresses(of location: SpanDACServiceLocation, timeout: TimeInterval) -> [String]
+    func resolveAddresses(of location: SpanDACServiceLocation, timeout: TimeInterval) -> SpanDACResolution<[String]>
+}
+
+extension SpanDACResolving {
+    /// The location, or nil for anything but a find (the pairing path does not
+    /// tell a denial from an absence).
+    func locate(serviceName: String, timeout: TimeInterval) -> SpanDACServiceLocation? {
+        if case .found(let location) = resolve(serviceName: serviceName, timeout: timeout) { return location }
+        return nil
+    }
+
+    func addresses(of location: SpanDACServiceLocation, timeout: TimeInterval) -> [String] {
+        if case .found(let list) = resolveAddresses(of: location, timeout: timeout) { return list }
+        return []
+    }
 }
 
 /// DNS-SD (`dns_sd.h`), synchronously, with a deadline: resolve the service,
@@ -218,27 +251,31 @@ struct SpanDACBonjourResolver: SpanDACResolving {
     static let serviceType = "_spandac._tcp."
     static let domain = "local."
 
-    func locate(serviceName: String, timeout: TimeInterval) -> SpanDACServiceLocation? {
-        final class Box { var location: SpanDACServiceLocation? }
+    func resolve(serviceName: String, timeout: TimeInterval) -> SpanDACResolution<SpanDACServiceLocation> {
+        final class Box { var location: SpanDACServiceLocation?; var denied = false }
         let box = Box()
         var ref: DNSServiceRef?
         let context = Unmanaged.passUnretained(box).toOpaque()
         let status = DNSServiceResolve(&ref, 0, 0, serviceName, Self.serviceType, Self.domain, { _, _, interface, error, _, host, port, txtLength, txt, context in
-            guard error == kDNSServiceErr_NoError, let host, let context else { return }
+            guard let context else { return }
             let box = Unmanaged<Box>.fromOpaque(context).takeUnretainedValue()
+            if error == kDNSServiceErr_PolicyDenied { box.denied = true; return }
+            guard error == kDNSServiceErr_NoError, let host else { return }
             guard box.location == nil else { return }
             let bytes = txt.map { Data(bytes: $0, count: Int(txtLength)) } ?? Data()
             box.location = SpanDACServiceLocation(hostName: String(cString: host), port: UInt16(bigEndian: port),
                                                   txt: SpanDACTXT.decode(bytes), interfaceIndex: interface)
         }, context)
-        guard status == kDNSServiceErr_NoError, let ref else { return nil }
+        if status == kDNSServiceErr_PolicyDenied { return .policyDenied }
+        guard status == kDNSServiceErr_NoError, let ref else { return .notFound }
         defer { DNSServiceRefDeallocate(ref) }
-        Self.process(ref, timeout: timeout) { box.location != nil }
-        return box.location
+        Self.process(ref, timeout: timeout) { box.location != nil || box.denied }
+        if let location = box.location { return .found(location) }
+        return box.denied ? .policyDenied : .notFound
     }
 
-    func addresses(of location: SpanDACServiceLocation, timeout: TimeInterval) -> [String] {
-        final class Box { var v4: [String] = []; var v6: [String] = []; var complete = false }
+    func resolveAddresses(of location: SpanDACServiceLocation, timeout: TimeInterval) -> SpanDACResolution<[String]> {
+        final class Box { var v4: [String] = []; var v6: [String] = []; var complete = false; var denied = false }
         let box = Box()
         var ref: DNSServiceRef?
         let context = Unmanaged.passUnretained(box).toOpaque()
@@ -247,17 +284,21 @@ struct SpanDACBonjourResolver: SpanDACResolving {
                                            location.hostName, { _, flags, _, error, _, address, _, context in
             guard let context else { return }
             let box = Unmanaged<Box>.fromOpaque(context).takeUnretainedValue()
+            if error == kDNSServiceErr_PolicyDenied { box.denied = true }
             if error == kDNSServiceErr_NoError, let address, flags & DNSServiceFlags(kDNSServiceFlagsAdd) != 0,
                let text = SpanDACBonjourResolver.numericHost(address) {
                 if address.pointee.sa_family == sa_family_t(AF_INET) { box.v4.append(text) } else { box.v6.append(text) }
             }
             if flags & DNSServiceFlags(kDNSServiceFlagsMoreComing) == 0 { box.complete = true }
         }, context)
-        guard status == kDNSServiceErr_NoError, let ref else { return [] }
+        if status == kDNSServiceErr_PolicyDenied { return .policyDenied }
+        guard status == kDNSServiceErr_NoError, let ref else { return .notFound }
         defer { DNSServiceRefDeallocate(ref) }
         // An IPv4 answer is enough; otherwise wait for the batch to finish.
-        Self.process(ref, timeout: timeout) { !box.v4.isEmpty || (box.complete && !box.v6.isEmpty) }
-        return box.v4 + box.v6
+        Self.process(ref, timeout: timeout) { !box.v4.isEmpty || (box.complete && !box.v6.isEmpty) || box.denied }
+        let found = box.v4 + box.v6
+        if !found.isEmpty { return .found(found) }
+        return box.denied ? .policyDenied : .notFound
     }
 
     /// Runs the DNS-SD reply loop until `done` or the deadline.
@@ -360,12 +401,21 @@ struct SpanDACTLSTransport {
         if let fixed = fixedEndpoint {
             (host, port) = fixed
         } else {
-            guard let location = resolver.locate(serviceName: record.serviceName,
-                                                 timeout: min(resolveTimeout, max(0.1, deadline.timeIntervalSinceNow))),
-                  let address = resolver.addresses(of: location,
-                                                   timeout: min(resolveTimeout, max(0.1, deadline.timeIntervalSinceNow))).first
-            else { throw SourceAppError.link(.notFound) }
-            (host, port) = (address, location.port)
+            let location: SpanDACServiceLocation
+            switch resolver.resolve(serviceName: record.serviceName,
+                                    timeout: min(resolveTimeout, max(0.1, deadline.timeIntervalSinceNow))) {
+            case .found(let found): location = found
+            case .policyDenied: throw SourceAppError.link(.localNetworkDenied)
+            case .notFound: throw SourceAppError.link(.notFound)
+            }
+            switch resolver.resolveAddresses(of: location,
+                                             timeout: min(resolveTimeout, max(0.1, deadline.timeIntervalSinceNow))) {
+            case .found(let list):
+                guard let address = list.first else { throw SourceAppError.link(.notFound) }
+                (host, port) = (address, location.port)
+            case .policyDenied: throw SourceAppError.link(.localNetworkDenied)
+            case .notFound: throw SourceAppError.link(.notFound)
+            }
         }
         guard let nwPort = NWEndpoint.Port(rawValue: port) else { throw SourceAppError.link(.notFound) }
 
@@ -397,6 +447,7 @@ struct SpanDACTLSTransport {
         private let lock = NSLock()
         private var outcome: Result<String, Failure>?
         private var ready = false
+        private var lastWait: NWError?
         private var received = Data()
 
         init(connection: NWConnection, line: String) {
@@ -414,8 +465,11 @@ struct SpanDACTLSTransport {
             // The path can turn unsatisfied after the `.waiting` callback read
             // it as still nil; a denied one is final either way.
             connection.pathUpdateHandler = { [weak self] path in
-                if path.status == .unsatisfied, path.unsatisfiedReason == .localNetworkDenied {
-                    self?.finish(.failure(.link(.localNetworkDenied)))
+                guard let self else { return }
+                self.lock.lock(); let wait = self.lastWait, ready = self.ready; self.lock.unlock()
+                if let denied = SpanDACLinkFailure.denied(byPath: path.status, reason: path.unsatisfiedReason,
+                                                          ready: ready, lastWait: wait) {
+                    self.finish(.failure(.link(denied)))
                 }
             }
             connection.start(queue: queue)
@@ -469,6 +523,7 @@ struct SpanDACTLSTransport {
                 })
                 receive()
             case .waiting(let error):
+                lock.lock(); lastWait = error; lock.unlock()
                 // Local Network privacy first: it holds a connection in
                 // `.waiting` for as long as it is allowed (331 times in 3
                 // minutes, measured), so it is reported at once, not after
