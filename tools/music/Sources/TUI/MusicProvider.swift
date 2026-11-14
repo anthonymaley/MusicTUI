@@ -228,6 +228,18 @@ protocol MusicDataProvider: DiscoverProviding, StationProviding, CataloguePlayin
     /// `skipNotInLibrary` form does.
     func playRetainingToken(ids: [String], startRequired: Bool, skipNotInLibrary: Bool,
                             skipRepeated: Bool) throws -> SpanDACPlayResult
+    /// Whether the output lists `queue.catalogue_fill`: it will play a song its
+    /// library lacks from Apple's catalogue in its place. False by default, and
+    /// false when the capability cannot be read, which keeps today's request.
+    func supportsCatalogueFill() -> Bool
+    /// The same play with the rows' catalogue ids (`catalogIDs`, one per id, nil
+    /// where a row has none), asking the output to fill what its library lacks
+    /// from the catalogue and reporting how many it did
+    /// (`SpanDACPlayResult.filledFromCatalogue`). Only the Playlists scene's
+    /// playlist play passes them, and only for an output that advertises it. A
+    /// provider without the opt-in plays as the `skipRepeated` form does.
+    func playRetainingToken(ids: [String], startRequired: Bool, skipNotInLibrary: Bool,
+                            skipRepeated: Bool, catalogIDs: [String?]?) throws -> SpanDACPlayResult
     /// Whether this provider can play a library container whole
     /// (`slice.playLibrary`): SpanDAC lists `play.library`. False by default,
     /// and false when the capability cannot be read, which keeps today's path.
@@ -320,6 +332,12 @@ extension MusicDataProvider {
     func playRetainingToken(ids: [String], startRequired: Bool, skipNotInLibrary: Bool,
                             skipRepeated: Bool) throws -> SpanDACPlayResult {
         try playRetainingToken(ids: ids, startRequired: startRequired, skipNotInLibrary: skipNotInLibrary)
+    }
+    func supportsCatalogueFill() -> Bool { false }
+    func playRetainingToken(ids: [String], startRequired: Bool, skipNotInLibrary: Bool,
+                            skipRepeated: Bool, catalogIDs: [String?]?) throws -> SpanDACPlayResult {
+        try playRetainingToken(ids: ids, startRequired: startRequired, skipNotInLibrary: skipNotInLibrary,
+                               skipRepeated: skipRepeated)
     }
     func supportsPlayLibrary() -> Bool { false }
     func supportsLibraryRefresh() -> Bool { false }

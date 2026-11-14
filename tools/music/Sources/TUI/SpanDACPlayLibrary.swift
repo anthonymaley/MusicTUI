@@ -25,6 +25,10 @@ import Foundation
 /// `queue_token`.
 let sourcePlayLibraryOp = "slice.playLibrary"
 let sourcePlayLibraryCapability = "play.library"
+/// The capability a SpanDAC that plays a song its library lacks from Apple's
+/// catalogue in its place advertises (concert/catalogue-play). `catalog_ids` and
+/// `fill_from_catalogue` are sent only to one that lists it.
+let sourceCatalogueFillCapability = "queue.catalogue_fill"
 
 /// What a `slice.playLibrary` names.
 enum LibraryPlayKind: String, Equatable {
@@ -60,6 +64,11 @@ struct SpanDACPlayResult: Equatable {
     /// 0 when the reply omits the key (sent only when more than 0, and never by
     /// an older SpanDAC, which refuses such a queue instead).
     var skippedRepeated: Int = 0
+    /// A library-id queue's songs the device's library lacks that it queued from
+    /// Apple's catalogue instead of skipping (`fill_from_catalogue`). 0 when the
+    /// reply omits the key (sent only when more than 0, and never by a device
+    /// that does not fill). They are part of the tracks that play.
+    var filledFromCatalogue: Int = 0
     /// `slice.playLibrary` only: the entries the player was OBSERVED to hold,
     /// not the number asked for.
     var queued: Int? = nil

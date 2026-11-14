@@ -859,6 +859,16 @@ protocol SourceControlling {
     func queueRetainingToken(libraryIDs: [String], startRequired: Bool, skipNotInLibrary: Bool,
                              skipRepeated: Bool) throws
         -> (skippedUnavailable: Int, queueToken: String?, skippedNotInLibrary: Int, skippedRepeated: Int)
+    /// The same request with the third opt-in (concert/catalogue-play): `catalogIDs`,
+    /// one per id (nil where a row has none), and `fill_from_catalogue: true`, so
+    /// a song the output's library lacks plays from Apple's catalogue in its place
+    /// (`filledFromCatalogue`, 0 from a device that does not fill). Sent ONLY for a
+    /// device that advertises `queue.catalogue_fill` (`MusicProvider.supportsCatalogueFill`);
+    /// nil, all-nil or a misaligned array is the request above, byte for byte.
+    func queueRetainingToken(libraryIDs: [String], startRequired: Bool, skipNotInLibrary: Bool,
+                             skipRepeated: Bool, catalogIDs: [String?]?) throws
+        -> (skippedUnavailable: Int, queueToken: String?, skippedNotInLibrary: Int, skippedRepeated: Int,
+            filledFromCatalogue: Int)
     /// `slice.playLibrary`: play one library container whole, named by kind, id
     /// and start row, with no id list and no page walk. Sent only when
     /// `capabilities()` lists `play.library`.
@@ -1007,6 +1017,15 @@ extension SourceControlling {
         let sent = try queueRetainingToken(libraryIDs: libraryIDs, startRequired: startRequired,
                                            skipNotInLibrary: skipNotInLibrary)
         return (sent.skippedUnavailable, sent.queueToken, sent.skippedNotInLibrary, 0)
+    }
+    /// A conformer written before the third opt-in has nowhere to put the ids.
+    func queueRetainingToken(libraryIDs: [String], startRequired: Bool, skipNotInLibrary: Bool,
+                             skipRepeated: Bool, catalogIDs: [String?]?) throws
+        -> (skippedUnavailable: Int, queueToken: String?, skippedNotInLibrary: Int, skippedRepeated: Int,
+            filledFromCatalogue: Int) {
+        let sent = try queueRetainingToken(libraryIDs: libraryIDs, startRequired: startRequired,
+                                           skipNotInLibrary: skipNotInLibrary, skipRepeated: skipRepeated)
+        return (sent.skippedUnavailable, sent.queueToken, sent.skippedNotInLibrary, sent.skippedRepeated, 0)
     }
     func playLibrary(kind: LibraryPlayKind, id: String?, start: LibraryPlayStart?, listRev: String?,
                      shuffle: Bool) throws -> SpanDACPlayResult {
@@ -1579,8 +1598,28 @@ struct SourceAppControl: SourceControlling {
     func queueRetainingToken(libraryIDs: [String], startRequired: Bool, skipNotInLibrary: Bool,
                              skipRepeated: Bool) throws
         -> (skippedUnavailable: Int, queueToken: String?, skippedNotInLibrary: Int, skippedRepeated: Int) {
-        let body = Self.libraryQueueBody(libraryIDs: libraryIDs, startRequired: startRequired,
+        let sent = try queueRetainingToken(libraryIDs: libraryIDs, startRequired: startRequired,
+                                           skipNotInLibrary: skipNotInLibrary, skipRepeated: skipRepeated,
+                                           catalogIDs: nil)
+        return (sent.skippedUnavailable, sent.queueToken, sent.skippedNotInLibrary, sent.skippedRepeated)
+    }
+
+    /// With `catalogIDs` the request also says `catalog_ids` and `fill_from_catalogue`
+    /// (`libraryQueueBody`). Were that request too large for one frame, the same
+    /// request WITHOUT them is sent instead: today's play, never a refusal that
+    /// today's request would not have met.
+    func queueRetainingToken(libraryIDs: [String], startRequired: Bool, skipNotInLibrary: Bool,
+                             skipRepeated: Bool, catalogIDs: [String?]?) throws
+        -> (skippedUnavailable: Int, queueToken: String?, skippedNotInLibrary: Int, skippedRepeated: Int,
+            filledFromCatalogue: Int) {
+        var body = Self.libraryQueueBody(libraryIDs: libraryIDs, startRequired: startRequired,
+                                         skipNotInLibrary: skipNotInLibrary, skipRepeated: skipRepeated,
+                                         catalogIDs: catalogIDs)
+        if body["fill_from_catalogue"] != nil,
+           ((try? JSONSerialization.data(withJSONObject: body))?.count ?? Int.max) > Self.maximumRequestBytes {
+            body = Self.libraryQueueBody(libraryIDs: libraryIDs, startRequired: startRequired,
                                          skipNotInLibrary: skipNotInLibrary, skipRepeated: skipRepeated)
+        }
         let reply = try send(body, over: libraryTransport)
         let unavailable = try Self.skippedUnavailable(in: reply, sent: libraryIDs.count)
         let notInLibrary = try Self.skippedNotInLibrary(in: reply, sent: libraryIDs.count)
@@ -1591,15 +1630,27 @@ struct SourceAppControl: SourceControlling {
         guard unavailable + notInLibrary + repeated < libraryIDs.count else {
             throw SourceAppError.malformedReply("SpanDAC's queue reply has skip counts that leave no song")
         }
-        return (unavailable, Self.queueToken(reply["queue_token"]), notInLibrary, repeated)
+        let filled = try Self.filledFromCatalogue(in: reply, sent: libraryIDs.count,
+                                                  skipped: unavailable + notInLibrary + repeated)
+        return (unavailable, Self.queueToken(reply["queue_token"]), notInLibrary, repeated, filled)
     }
 
     /// The library-id queue request, exactly as `queueRetainingToken` sends it.
+    ///
+    /// `catalogIDs` (concert/catalogue-play) adds `catalog_ids`, parallel to
+    /// `library_ids` with JSON null where a row has none, and
+    /// `"fill_from_catalogue": true`. Neither key exists unless the array lines up
+    /// with the ids and holds at least one id: absent is the older request.
     static func libraryQueueBody(libraryIDs: [String], startRequired: Bool,
-                                 skipNotInLibrary: Bool = false, skipRepeated: Bool = false) -> [String: Any] {
+                                 skipNotInLibrary: Bool = false, skipRepeated: Bool = false,
+                                 catalogIDs: [String?]? = nil) -> [String: Any] {
         var body: [String: Any] = ["op": "slice.queue", "library_ids": libraryIDs, "start_required": startRequired]
         if skipNotInLibrary { body["skip_not_in_library"] = true }
         if skipRepeated { body["skip_repeated"] = true }
+        if let catalogIDs, catalogIDs.count == libraryIDs.count, catalogIDs.contains(where: { $0 != nil }) {
+            body["catalog_ids"] = catalogIDs.map { $0 as Any? ?? NSNull() }
+            body["fill_from_catalogue"] = true
+        }
         return body
     }
 
@@ -1661,6 +1712,20 @@ struct SourceAppControl: SourceControlling {
             throw SourceAppError.malformedReply("SpanDAC's queue reply has a skipped_repeated that is not a count")
         }
         return skipped
+    }
+
+    /// `filled_from_catalogue` from a successful queue reply: absent (an older
+    /// SpanDAC, or nothing filled) is 0. A non-negative integer no larger than the
+    /// ids sent, and with the skips no larger than them either: every song may
+    /// have been filled, but more filled and skipped than were sent is not a reply
+    /// SpanDAC could have honestly made.
+    private static func filledFromCatalogue(in reply: [String: Any], sent: Int, skipped: Int) throws -> Int {
+        guard let raw = reply["filled_from_catalogue"] else { return 0 }
+        guard CFGetTypeID(raw as CFTypeRef) != CFBooleanGetTypeID(),
+              let filled = raw as? Int, filled >= 0, filled + skipped <= sent else {
+            throw SourceAppError.malformedReply("SpanDAC's queue reply has a filled_from_catalogue that is not a count")
+        }
+        return filled
     }
 
     private static func catalogueQueueBody(_ catalogIDs: [String]) -> [String: Any] {

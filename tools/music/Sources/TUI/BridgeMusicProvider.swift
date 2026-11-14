@@ -139,15 +139,31 @@ struct BridgeMusicProvider: MusicDataProvider {
     /// Likewise `skip_repeated` (2026-11-12), only when the CALLER says so.
     func playRetainingToken(ids: [String], startRequired: Bool, skipNotInLibrary: Bool,
                             skipRepeated: Bool) throws -> SpanDACPlayResult {
-        let sent: (skippedUnavailable: Int, queueToken: String?, skippedNotInLibrary: Int, skippedRepeated: Int)
+        try playRetainingToken(ids: ids, startRequired: startRequired, skipNotInLibrary: skipNotInLibrary,
+                               skipRepeated: skipRepeated, catalogIDs: nil)
+    }
+
+    /// True only when SpanDAC's own `capabilities` list `queue.catalogue_fill`; a
+    /// status that cannot be read is "no".
+    func supportsCatalogueFill() -> Bool {
+        (try? control.capabilities())?.contains(sourceCatalogueFillCapability) ?? false
+    }
+
+    /// The catalogue ids ride only when the CALLER passes them (the Playlists scene,
+    /// for an output that advertises the capability).
+    func playRetainingToken(ids: [String], startRequired: Bool, skipNotInLibrary: Bool,
+                            skipRepeated: Bool, catalogIDs: [String?]?) throws -> SpanDACPlayResult {
+        let sent: (skippedUnavailable: Int, queueToken: String?, skippedNotInLibrary: Int, skippedRepeated: Int,
+                   filledFromCatalogue: Int)
         do { sent = try control.queueRetainingToken(libraryIDs: ids, startRequired: startRequired,
                                                     skipNotInLibrary: skipNotInLibrary,
-                                                    skipRepeated: skipRepeated) }
+                                                    skipRepeated: skipRepeated, catalogIDs: catalogIDs) }
         catch let error as SourceAppError { throw Self.translate(error) }
         let queue = try bridgeNow(from: nowPlaying()).queue
         return SpanDACPlayResult(queue: queue, skippedUnavailable: sent.skippedUnavailable,
                                  skippedNotInLibrary: sent.skippedNotInLibrary,
-                                 skippedRepeated: sent.skippedRepeated, queueToken: sent.queueToken)
+                                 skippedRepeated: sent.skippedRepeated,
+                                 filledFromCatalogue: sent.filledFromCatalogue, queueToken: sent.queueToken)
     }
 
     /// True only when SpanDAC's own `capabilities` list `play.library`. A status

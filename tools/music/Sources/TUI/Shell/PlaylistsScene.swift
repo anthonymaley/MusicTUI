@@ -41,8 +41,16 @@ func bridgePlaylistHeaderCount(shown: Int, wireTotal: Int?) -> Int {
 /// (`bridgeSkipLead`), before the play line, so the footer's cut never takes it.
 /// `skippedUnavailable` composes as U-R6's own trailing sentence — added
 /// after whatever the video-skip form already produced, never replacing it.
+///
+/// `filledFromCatalogue` (concert/catalogue-play, 2026-11-13; the wording is a
+/// DEFAULT for the owner to change): songs the device's library lacks that it
+/// played from Apple's catalogue. They are part of the tracks that play, so the
+/// numerator is unchanged, and the line says how many: "50 tracks, 28 from Apple
+/// Music." Absent (0) is byte-identical to before. The skip lead stays first and
+/// protected; this clause rides in the play line.
 func bridgePlaylistPlayMessage(name: String, queued: Int, skippedVideos: Int, skippedUnavailable: Int,
                                skippedNotInLibrary: Int = 0, skippedByOutput: Int = 0, skippedRepeated: Int = 0,
+                               filledFromCatalogue: Int = 0,
                                startAt: Int, shuffle: Bool) -> String {
     _ = shuffle
     // The numerator is what actually played; the "of M" denominator (only in
@@ -55,14 +63,18 @@ func bridgePlaylistPlayMessage(name: String, queued: Int, skippedVideos: Int, sk
     let n = queued - skippedUnavailable - skippedByOutput - skippedRepeated
     let v = skippedVideos
     let base: String
+    let fromAppleMusic = filledFromCatalogue > 0 ? "\(filledFromCatalogue) from Apple Music" : ""
     if v == 0 {
         // Byte-identical to Part A's shipped album sentence: never singular.
-        base = "Playing '\(name)' on SpanDAC \u{2014} \(n) tracks."
+        base = "Playing '\(name)' on SpanDAC \u{2014} \(n) tracks"
+            + (fromAppleMusic.isEmpty ? "." : ", \(fromAppleMusic).")
     } else if startAt <= 1 {
         base = "Playing \(n) of \(queued + v) from '\(name)' on SpanDAC: \(v) video\(v == 1 ? "" : "s") skipped."
+            + (fromAppleMusic.isEmpty ? "" : " \(fromAppleMusic).")
     } else {
         base = "Playing '\(name)' on SpanDAC from track \(startAt) \u{2014} \(n) track\(n == 1 ? "" : "s"); "
              + "\(v) video\(v == 1 ? "" : "s") in this playlist skipped."
+             + (fromAppleMusic.isEmpty ? "" : " \(fromAppleMusic).")
     }
     // The songs SpanDAC left out because they are not in the library lead the
     // line, short (2026-11-07): the footer is cut at its width, and the playlist
@@ -1814,6 +1826,9 @@ final class PlaylistsScene: Scene {
                 // copy it can play, so every row is sent and the device keeps the first
                 // that survives.
                 var outputRepeated = 0
+                // Songs the output's library lacks that it played from Apple's catalogue
+                // (`filled_from_catalogue`): played, so in the tracks count, and said.
+                var outputFilled = 0
                 var handedOff: HandoffPlayReport?
                 var wholeResult: SpanDACPlayResult?
                 var wholeSerial: Int?
@@ -1845,11 +1860,24 @@ final class PlaylistsScene: Scene {
                         // once, instead of refusing the whole queue. Every id is still sent
                         // and recorded for Up Next: SpanDAC numbers its `row` / `next_rows`
                         // by the request.
-                        let played = try spanDACOutputPlayer(client).playRetainingToken(
-                            ids: ids, startRequired: startRequired, skipNotInLibrary: true, skipRepeated: true)
+                        //
+                        // And, for an output that advertises `queue.catalogue_fill`, the rows'
+                        // catalogue ids, so a song its library lacks plays from Apple's
+                        // catalogue in its place (concert/catalogue-play). Any other output,
+                        // or a list with no catalogue id in it, gets the request it always got.
+                        let output = spanDACOutputPlayer(client)
+                        let catalogIDs: [String?]? = sent.contains(where: { $0.catalogID != nil })
+                            && output.supportsCatalogueFill() ? sent.map(\.catalogID) : nil
+                        let played = catalogIDs == nil
+                            ? try output.playRetainingToken(ids: ids, startRequired: startRequired,
+                                                            skipNotInLibrary: true, skipRepeated: true)
+                            : try output.playRetainingToken(ids: ids, startRequired: startRequired,
+                                                            skipNotInLibrary: true, skipRepeated: true,
+                                                            catalogIDs: catalogIDs)
                         skippedUnavailable = played.skippedUnavailable
                         outputNotInLibrary = played.skippedNotInLibrary
                         outputRepeated = played.skippedRepeated
+                        outputFilled = played.filledFromCatalogue
                         routing.recordSpanDACPlay(sent, token: played.queueToken)
                     }, unaffected: {})
                 }
@@ -1889,6 +1917,7 @@ final class PlaylistsScene: Scene {
                                                        skippedNotInLibrary: notInLibrary,
                                                        skippedByOutput: outputNotInLibrary,
                                                        skippedRepeated: outputRepeated,
+                                                       filledFromCatalogue: outputFilled,
                                                        startAt: startAt, shuffle: shuffle),
                             untilStateChange: skippedUnavailable > 0 || finalSkipped > 0 || notInLibrary > 0
                                 || outputRepeated > 0)
