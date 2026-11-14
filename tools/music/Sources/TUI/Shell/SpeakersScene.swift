@@ -296,6 +296,8 @@ func spandacRowDetail(state: SpanDACRowState, output: SourceOutputInfo?, device:
     case .unreachable(let why):
         return SpanDACRowDetail(text: isThisMac ? "\(why)  open it on this Mac" : "not seen  open SpanDAC on it",
                                 tone: .warning)
+    case .localNetworkBlocked:
+        return SpanDACRowDetail(text: SpanDACLinkFailure.localNetworkDenied.note, tone: .warning)
     case .forgetPrompt:
         return SpanDACRowDetail(text: "forget? y / n", tone: .warning)
     case .needsMacSpanDAC:
@@ -1021,7 +1023,8 @@ final class SpeakersScene: Scene {
     /// BACK. The network client (`SpanDACTLSTransport`, SpanDACLink.swift) throws
     /// only `SourceAppError.link(...)`: `.notFound` (Bonjour did not resolve,
     /// :347), `.asleep` (connect failed or the handshake timed out, :400/:453/
-    /// :463) and `.noAnswer` (connected, no reply, :402/:441/:491) are silence.
+    /// :463) and `.noAnswer` (connected, no reply, :402/:441/:491) and `.localNetworkDenied`
+    /// (this Mac's own privacy setting stopped the connection) are silence.
     /// `.notRunning` and `.timedOut` are the Mac's Unix-socket errors and never
     /// come from it. Everything else is a device or this Mac saying something
     /// (`.notPaired`, `.refused`, `.unsafeCipher`, `.forgotten`, `.unreadable`,
@@ -1029,7 +1032,7 @@ final class SpeakersScene: Scene {
     static func isNoAnswer(_ error: Error) -> Bool {
         guard case SourceAppError.link(let failure) = error else { return false }
         switch failure {
-        case .notFound, .asleep, .noAnswer: return true
+        case .notFound, .asleep, .noAnswer, .localNetworkDenied: return true
         default: return false
         }
     }

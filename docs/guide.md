@@ -378,6 +378,7 @@ All three are written owner-only: files `0600` in a `0700` directory (since 3.7.
 | `play track N of playlist X` silently broken | macOS 26 scripting regression | App-owned queue drives playback track-by-track (Autoplay ∞ off) |
 | `loved` property errors | macOS 26 renamed it `favorited` | `music love`/`unlove` write `favorited` |
 | `current track` reads throw -1728 on streamed tracks | macOS 26 scripting bug (filed FB19908171) | Queue resume anchors by name+artist when the persistent-id read throws |
+| An iPhone or iPad SpanDAC row says "blocked  allow Local Network for your terminal in System Settings" | macOS Local Network privacy refuses the `music` binary, and an upgrade installs a new binary that macOS asks about again; over SSH or tmux it cannot ask and refuses silently | Run `music` once in a terminal on the Mac itself and allow Local Network when asked, or switch it on for that terminal in System Settings > Privacy & Security > Local Network |
 
 ## Version
 

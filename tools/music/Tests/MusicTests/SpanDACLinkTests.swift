@@ -132,6 +132,42 @@ final class SpanDACLinkTests: XCTestCase {
         XCTAssertEqual(got?.note, "asleep or closed · open SpanDAC on the device")
     }
 
+    // MARK: - macOS Local Network privacy
+
+    /// Measured 2026-11-14: with Local Network access refused, Network.framework
+    /// sits in `.waiting` for as long as it is allowed, the path `unsatisfied
+    /// (Local network prohibited)`. That is not an iPhone that is asleep.
+    func testAWaitOnADeniedLocalNetworkPathIsNamedAsSuch() {
+        XCTAssertEqual(SpanDACLinkFailure.denied(waiting: .posix(.EHOSTUNREACH), reason: .localNetworkDenied),
+                       .localNetworkDenied)
+        XCTAssertEqual(SpanDACLinkFailure.denied(waiting: .posix(.ENETDOWN), reason: .localNetworkDenied),
+                       .localNetworkDenied)
+        // The DNS-SD policy denial (kDNSServiceErr_PolicyDenied) is the same refusal.
+        XCTAssertEqual(SpanDACLinkFailure.denied(waiting: .dns(-65570), reason: nil), .localNetworkDenied)
+    }
+
+    func testOtherWaitsAreNotReadAsLocalNetworkDenied() {
+        XCTAssertNil(SpanDACLinkFailure.denied(waiting: .posix(.EHOSTUNREACH), reason: nil))
+        XCTAssertNil(SpanDACLinkFailure.denied(waiting: .posix(.ENETDOWN), reason: .notAvailable))
+        XCTAssertNil(SpanDACLinkFailure.denied(waiting: .posix(.ENETDOWN), reason: .wifiDenied))
+        XCTAssertNil(SpanDACLinkFailure.denied(waiting: .posix(.ECONNREFUSED), reason: nil))
+        XCTAssertNil(SpanDACLinkFailure.denied(waiting: .dns(-65537), reason: nil))
+        // A TLS refusal is final and stays its own thing even on a denied path.
+        XCTAssertNil(SpanDACLinkFailure.denied(waiting: .tls(-9864), reason: .localNetworkDenied))
+    }
+
+    func testLocalNetworkDeniedWordsNameTheTerminalNotTheDevice() {
+        let f = SpanDACLinkFailure.localNetworkDenied
+        XCTAssertEqual(f.note, "blocked  allow Local Network for your terminal in System Settings")
+        XCTAssertTrue(f.sentence.contains("Local Network"), f.sentence)
+        for text in [f.note, f.sentence] {
+            XCTAssertFalse(text.contains("Music.app"), text)
+            XCTAssertFalse(text.lowercased().contains("asleep"), text)
+            XCTAssertFalse(text.lowercased().contains("open spandac"), text)
+        }
+        XCTAssertEqual(SourceAppError.link(f).message, f.sentence)
+    }
+
     func testAPeerThatClosesWithoutAReplyIsNoAnswer() throws {
         let server = try LoopbackPSKServer(identity: identity, key: key, reply: nil, closeAfterRequest: true)
         defer { server.stop() }

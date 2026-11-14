@@ -48,6 +48,9 @@ enum SpanDACRowState: Equatable {
     case notReady(String)
     /// Not seen, asleep, or no answer.
     case unreachable(String)
+    /// macOS Local Network privacy refuses this binary: the device is fine and
+    /// was never asked. The pair is kept.
+    case localNetworkBlocked
     case forgetPrompt
     /// This row needs the Mac SpanDAC app set up first (C-SEED-ROW). Wording
     /// and every other behaviour belong to a later step; this step only adds

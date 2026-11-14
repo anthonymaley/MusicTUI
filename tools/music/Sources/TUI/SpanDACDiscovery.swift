@@ -136,6 +136,7 @@ func spandacOutputRows(paired: [SpanDACPairRecord], seen: [SpanDACSighting],
         case .ready?: return (.ready, "ready")
         case .unavailable(let why)?: return (.notReady(why), why)
         case .unreachable(let why)?: return (.unreachable(why), why)
+        case .localNetworkDenied?: return (.localNetworkBlocked, SpanDACLinkFailure.localNetworkDenied.note)
         case .forgotten?: return (.forgotten, "forgot this Mac  Enter to pair again")
         case .needsRepair(let why)?: return (.needsRepair(why), why)
         case .checking?, nil: return (.checking, "checking…")
@@ -180,6 +181,9 @@ final class SpanDACOutputs {
         case unavailable(String)
         /// Not found, asleep, no answer: the reason, in words.
         case unreachable(String)
+        /// macOS Local Network privacy refuses this binary; the device was
+        /// never asked. The pair is kept.
+        case localNetworkDenied
         /// TLS -9864: the SpanDAC no longer knows this Mac. The pair is kept.
         case forgotten
         /// TLS -9820 / -9846: the secret does not match. The pair is kept.
@@ -409,6 +413,7 @@ final class SpanDACOutputs {
         switch failure {
         case .refused(-9864): return .forgotten
         case .refused(-9820), .refused(-9846): return .needsRepair(needsRepairReason)
+        case .localNetworkDenied: return .localNetworkDenied
         default: return .unreachable(failure.note)
         }
     }

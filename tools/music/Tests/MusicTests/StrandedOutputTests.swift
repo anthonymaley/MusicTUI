@@ -318,7 +318,7 @@ final class StrandedOutputTests: XCTestCase {
     // MARK: - What counts as no answer
 
     func testEveryNoAnswerKindAsksAndARefusalNeverDoes() {
-        for why in [SpanDACLinkFailure.noAnswer, .asleep, .notFound] {
+        for why in [SpanDACLinkFailure.noAnswer, .asleep, .notFound, .localNetworkDenied] {
             let wire = Wire(); wire.device = .noAnswer(why)
             let (s, _, finished) = rig(mode: .networkSource(ipad), wire: wire)
             ask(s, on: .spandac(other), finished)

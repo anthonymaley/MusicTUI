@@ -50,6 +50,10 @@ enum SpanDACLinkFailure: Error, Equatable {
     case noAnswer
     /// This process forgot the SpanDAC while the request was open.
     case forgotten
+    /// macOS Local Network privacy refuses this binary: the path is
+    /// `unsatisfied (Local network prohibited)` and no device was ever asked.
+    /// Not the device's fault, so never "asleep" or "not seen".
+    case localNetworkDenied
 
     /// The sentence a person reads (CLI output, the footer, the Output tab's
     /// selection refusal).
@@ -63,6 +67,8 @@ enum SpanDACLinkFailure: Error, Equatable {
         case .unsafeCipher: return "SpanDAC negotiated an unsafe cipher; update it"
         case .noAnswer: return "SpanDAC did not answer in time."
         case .forgotten: return "SpanDAC was forgotten on this Mac."
+        case .localNetworkDenied:
+            return "macOS is blocking Local Network access; allow it for your terminal in System Settings."
         }
     }
 
@@ -77,7 +83,21 @@ enum SpanDACLinkFailure: Error, Equatable {
         case .unsafeCipher: return "unsafe cipher · update SpanDAC"
         case .noAnswer: return "did not answer in time"
         case .forgotten: return "forgotten"
+        case .localNetworkDenied: return "blocked  allow Local Network for your terminal in System Settings"
         }
+    }
+
+    /// Whether a connection's `.waiting(error)` is macOS Local Network privacy
+    /// refusing this binary, rather than a device that is slow or away.
+    /// `reason` is the connection's `currentPath?.unsatisfiedReason`
+    /// (`.localNetworkDenied`, macOS 11+); the DNS-SD policy denial
+    /// (`kDNSServiceErr_PolicyDenied`, -65570) is the same refusal reported on
+    /// the Bonjour side. A TLS wait is a handshake refusal and never this.
+    static func denied(waiting error: NWError, reason: NWPath.UnsatisfiedReason?) -> SpanDACLinkFailure? {
+        if case .tls = error { return nil }
+        if reason == .localNetworkDenied { return .localNetworkDenied }
+        if case .dns(let code) = error, code == -65570 { return .localNetworkDenied }
+        return nil
     }
 
     /// Section 3.3 item 9: the three refusals the handshake can end in, each
@@ -391,6 +411,13 @@ struct SpanDACTLSTransport {
 
         func run(handshakeDeadline: Date, deadline: Date) throws -> String {
             connection.stateUpdateHandler = { [weak self] state in self?.handle(state) }
+            // The path can turn unsatisfied after the `.waiting` callback read
+            // it as still nil; a denied one is final either way.
+            connection.pathUpdateHandler = { [weak self] path in
+                if path.status == .unsatisfied, path.unsatisfiedReason == .localNetworkDenied {
+                    self?.finish(.failure(.link(.localNetworkDenied)))
+                }
+            }
             connection.start(queue: queue)
             // First bound: the handshake. A peer that never completes one is
             // reported like one that refused the connection. Second bound: the
@@ -442,6 +469,15 @@ struct SpanDACTLSTransport {
                 })
                 receive()
             case .waiting(let error):
+                // Local Network privacy first: it holds a connection in
+                // `.waiting` for as long as it is allowed (331 times in 3
+                // minutes, measured), so it is reported at once, not after
+                // the handshake timeout, and never as an absent device.
+                if let denied = SpanDACLinkFailure.denied(waiting: error,
+                                                         reason: connection.currentPath?.unsatisfiedReason) {
+                    finish(.failure(.link(denied)))
+                    return
+                }
                 switch error {
                 case .tls(let status):
                     // Final: a refused handshake never turns into a success by

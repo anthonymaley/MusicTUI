@@ -608,6 +608,7 @@ final class OutputTabRenderTests: XCTestCase {
                        "plug in your DAC  no DAC on iPhone's cable")
         XCTAssertEqual(text(.notReady("plug in your DAC"), mac: true), "plug in your DAC  no DAC on this Mac")
         XCTAssertEqual(text(.unreachable("asleep")), "not seen  open SpanDAC on it")
+        XCTAssertEqual(text(.localNetworkBlocked), "blocked  allow Local Network for your terminal in System Settings")
         XCTAssertEqual(text(.checking, SourceOutputInfo(dac: .unknown, name: nil, maxRateHz: nil)), "checking the DAC")
         XCTAssertEqual(text(.forgetPrompt), "forget? y / n")
     }
