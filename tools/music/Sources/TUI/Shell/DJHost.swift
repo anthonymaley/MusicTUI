@@ -515,7 +515,7 @@ final class DJHost {
                 // album line on Now are drawn from them. SpanDAC drops songs it
                 // cannot queue without saying which, so a play that lost any keeps
                 // them unordered (no Up Next after the playing song).
-                routing.recordSpanDACPlay(mix.rows, token: played.queueToken, shuffled: skipped > 0, catalogue: true)
+                routing.recordSpanDACPlay(mix.rows, token: played.queueToken, sentOrderUnreliable: skipped > 0, catalogue: true)
                 let base = "Playing \(mix.artistName) mix on SpanDAC \u{2014} \(djCount(mix.ids.count, "song"))."
                 status.post(skipped > 0 ? base + " " + bridgeUnavailableSongsNotice(skipped) : base,
                             untilStateChange: skipped > 0)
@@ -576,7 +576,7 @@ final class DJHost {
             source: { client in
                 let played = try spanDACOutputPlayer(client).playReportingUnconfirmedStatus(
                     ids: rows.map(\.id), startRequired: false)
-                routing.recordSpanDACPlay(rows, token: played.queueToken, shuffled: played.skippedUnavailable > 0)
+                routing.recordSpanDACPlay(rows, token: played.queueToken, sentOrderUnreliable: played.skippedUnavailable > 0)
                 // The queue was accepted and the status read after it failed: the play
                 // started, unconfirmed, and the queue's count is kept (never an error).
                 if played.statusUnconfirmed != nil {

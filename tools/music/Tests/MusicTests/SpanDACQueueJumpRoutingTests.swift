@@ -72,12 +72,12 @@ final class SpanDACQueueJumpRoutingTests: XCTestCase {
     }
 
     private func harness(output: PlaybackMode = .source, play: Bool = true,
-                         catalogue: Bool = false, shuffled: Bool = false) -> Harness {
+                         catalogue: Bool = false, sentOrderUnreliable: Bool = false) -> Harness {
         let rig = LicenceRig(output: output, accepted: true)
         let c = rig.coordinator()
         let fixture = Fixture()
         rig.reply = { _, line in fixture.answer(line) }
-        if play { c.recordSpanDACPlay((0..<5).map(song), token: "tok-1", shuffled: shuffled, catalogue: catalogue) }
+        if play { c.recordSpanDACPlay((0..<5).map(song), token: "tok-1", sentOrderUnreliable: sentOrderUnreliable, catalogue: catalogue) }
         let counter = AppleScriptCallCounter()
         let status = StatusStore()
         let actions = ActionRunner(status: status)
@@ -191,7 +191,7 @@ final class SpanDACQueueJumpRoutingTests: XCTestCase {
     /// A catalogue play SpanDAC skipped songs in is kept unordered: its rows do
     /// not line up with SpanDAC's, so no jump is sent.
     func testAnUnorderedCataloguePlaySendsNothingEvenWithTheCapability() {
-        let h = harness(catalogue: true, shuffled: true)
+        let h = harness(catalogue: true, sentOrderUnreliable: true)
         h.fixture.capabilities = ["slice.status", "queue.jump", "queue.jump.catalogue"]
         var snap = poll(h)
         snap.spanDACQueueIsCatalogue = true

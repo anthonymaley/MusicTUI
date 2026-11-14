@@ -1043,12 +1043,12 @@ final class BridgePlaylistsPlaySceneTests: XCTestCase {
         let play = try XCTUnwrap(r.routing.spanDACPlay())
         XCTAssertEqual(play.rows.count, 10, "request indices are preserved")
         let status = try laterStatus(title: "Track 1", row: 0, token: "tok-1")
-        let window = spanDACQueueWindow(sent: play.rows, token: play.token, shuffled: play.shuffled,
+        let window = spanDACQueueWindow(sent: play.rows, token: play.token, sentOrderUnreliable: play.sentOrderUnreliable,
                                         catalogue: play.catalogue, status: status)
         XCTAssertEqual(window.entries.map(\.name), ["Track 1"], "the playing row only: its successors are unknown")
         // What a later status DOES name is still listed, by request index.
         let named = try laterStatus(title: "Track 1", row: 0, token: "tok-1", nextRows: ",\"next_rows\":[2,5]")
-        XCTAssertEqual(spanDACQueueWindow(sent: play.rows, token: play.token, shuffled: play.shuffled,
+        XCTAssertEqual(spanDACQueueWindow(sent: play.rows, token: play.token, sentOrderUnreliable: play.sentOrderUnreliable,
                                           catalogue: play.catalogue, status: named).entries.map(\.name),
                        ["Track 1", "Track 3", "Track 6"])
     }
@@ -1059,7 +1059,7 @@ final class BridgePlaylistsPlaySceneTests: XCTestCase {
         let r = playWithStatusFailingAfterTheQueue(statusAfterQueue: statusOK, notInLibrary: 3, repeated: nil)
         let play = try XCTUnwrap(r.routing.spanDACPlay())
         let status = try laterStatus(title: "Track 1", row: 0, token: "tok-1")
-        XCTAssertEqual(spanDACQueueWindow(sent: play.rows, token: play.token, shuffled: play.shuffled,
+        XCTAssertEqual(spanDACQueueWindow(sent: play.rows, token: play.token, sentOrderUnreliable: play.sentOrderUnreliable,
                                           catalogue: play.catalogue, status: status).entries.map(\.name), ["Track 1"])
     }
 
@@ -1068,7 +1068,7 @@ final class BridgePlaylistsPlaySceneTests: XCTestCase {
         let r = playWithStatusFailingAfterTheQueue(statusAfterQueue: statusRefused, notInLibrary: nil, repeated: nil)
         let play = try XCTUnwrap(r.routing.spanDACPlay())
         let status = try laterStatus(title: "Track 1", row: 0, token: "tok-1")
-        XCTAssertEqual(spanDACQueueWindow(sent: play.rows, token: play.token, shuffled: play.shuffled,
+        XCTAssertEqual(spanDACQueueWindow(sent: play.rows, token: play.token, sentOrderUnreliable: play.sentOrderUnreliable,
                                           catalogue: play.catalogue, status: status).entries.count, 10)
     }
 
@@ -1095,7 +1095,7 @@ final class BridgePlaylistsPlaySceneTests: XCTestCase {
                        "no skipped song shown as queued after the jump either")
         // A status for another queue is not this play's.
         let other = try laterStatus(title: "Track 1", row: 0, token: "tok-other")
-        XCTAssertTrue(spanDACQueueWindow(sent: play.rows, token: play.token, shuffled: play.shuffled,
+        XCTAssertTrue(spanDACQueueWindow(sent: play.rows, token: play.token, sentOrderUnreliable: play.sentOrderUnreliable,
                                          catalogue: play.catalogue, status: other).entries.isEmpty)
     }
 
@@ -1108,7 +1108,7 @@ final class BridgePlaylistsPlaySceneTests: XCTestCase {
         XCTAssertTrue(r.footer?.hasPrefix("Play was requested, but SpanDAC didn't confirm") ?? false, "\(String(describing: r.footer))")
         let play = try XCTUnwrap(r.routing.spanDACPlay())
         XCTAssertEqual(play.token, "tok-1", "the unconfirmed play kept the queue reply's token")
-        XCTAssertTrue(play.shuffled, "and the sent order is recorded as one that cannot stand in for the queue")
+        XCTAssertTrue(play.sentOrderUnreliable, "and the sent order is recorded as one that cannot stand in for the queue")
 
         // SpanDAC answers again: it is playing request row 0 and says which rows follow.
         let playing = """
@@ -1122,7 +1122,7 @@ final class BridgePlaylistsPlaySceneTests: XCTestCase {
         ])
         let client = SourceAppClient(path: "/nonexistent", transport: r.wire.transport)
         let status = try client.control.status()
-        let entries = spanDACQueueWindow(sent: play.rows, token: play.token, shuffled: play.shuffled, status: status).entries
+        let entries = spanDACQueueWindow(sent: play.rows, token: play.token, sentOrderUnreliable: play.sentOrderUnreliable, status: status).entries
         XCTAssertEqual(entries.map(\.name), ["Track 1", "Track 3", "Track 5", "Track 7"],
                        "the window lists the rows SpanDAC vouched for, by the retained token")
         let target = try XCTUnwrap(entries.first { $0.name == "Track 5" })

@@ -1859,7 +1859,7 @@ final class PlaylistsScene: Scene {
                                 kind: .playlist, id: playlistID, start: start, listRev: rev, shuffle: shuffle)
                             wholeResult = result
                             wholeSerial = routing.recordSpanDACPlay(finalRows ?? [], token: result.queueToken,
-                                                                    listRev: rev, shuffled: shuffle)
+                                                                    listRev: rev, sentOrderUnreliable: shuffle)
                             return
                         }
                         guard let ids, let sent else { throw ActionError(message: sourceChangedNothingPlayed) }
@@ -1882,7 +1882,7 @@ final class PlaylistsScene: Scene {
                         // status names.
                         let outputSkipped = played.skippedUnavailable + played.skippedNotInLibrary
                             + played.skippedRepeated > 0
-                        routing.recordSpanDACPlay(sent, token: played.queueToken, shuffled: outputSkipped)
+                        routing.recordSpanDACPlay(sent, token: played.queueToken, sentOrderUnreliable: outputSkipped)
                     }, unaffected: {})
                 }
                 if let handedOff {

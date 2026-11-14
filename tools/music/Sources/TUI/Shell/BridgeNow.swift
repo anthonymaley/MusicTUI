@@ -191,7 +191,9 @@ func bridgePositionLine(_ b: BridgeNow) -> String? {
 /// `slice.playLibrary` reply without its token is refused, so a whole play never
 /// records none.
 ///
-/// `shuffled` is true when the play was a shuffle SpanDAC made itself.
+/// `sentOrderUnreliable` is true when the sent order cannot stand in for the player's: a
+/// shuffle SpanDAC made itself, or a play from which SpanDAC left songs out (a skipped
+/// song shifts nothing in `row` / `next_rows`, but a status without them would list it).
 ///
 /// `catalogue` is true for a play queued by catalogue id (the DJ's artist mix).
 /// SpanDAC's `row` and `next_rows` come from the library roster only, so such a
@@ -200,7 +202,7 @@ func bridgePositionLine(_ b: BridgeNow) -> String? {
 /// with one title, and the mix keeps the first of each), and none when that is
 /// not exactly one. A status `row`, when it does come, wins. The rows listed after it are only
 /// those the status's queue phase and `present` prove are in the player.
-func spanDACQueueWindow(sent: [MusicRow]?, token: String? = nil, shuffled: Bool = false, catalogue: Bool = false,
+func spanDACQueueWindow(sent: [MusicRow]?, token: String? = nil, sentOrderUnreliable: Bool = false, catalogue: Bool = false,
                         status: SourceStatus) -> (current: MusicRow?, entries: [TrackListEntry]) {
     guard let sent else { return (nil, []) }
     let placed: Int?
@@ -225,7 +227,7 @@ func spanDACQueueWindow(sent: [MusicRow]?, token: String? = nil, shuffled: Bool 
     // But a play SpanDAC shuffled itself, or a status that says shuffle is on,
     // has no order the sent rows could stand in for, and SpanDAC may leave
     // `next_rows` out then: no Up Next list, never an error and never a guess.
-    let unorderedWithoutNextRows = shuffled || status.shuffle == true
+    let unorderedWithoutNextRows = sentOrderUnreliable || status.shuffle == true
     // A catalogue queue's successors are inserted by SpanDAC asynchronously and
     // the build can fail, so only rows the status proves are in the player are
     // listed: `complete` all remaining (up to `present` when SpanDAC queued

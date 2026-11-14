@@ -246,7 +246,7 @@ final class DiscoverBridgeCollectionTests: XCTestCase {
         XCTAssertTrue(play.rows.allSatisfy { $0.artist == "A" && $0.album == "An Album" && $0.kind == .song })
         XCTAssertEqual(play.token, "qd-1")
         XCTAssertTrue(play.catalogue)
-        XCTAssertFalse(play.shuffled)
+        XCTAssertFalse(play.sentOrderUnreliable)
     }
 
     /// Enter on a row (a drill-in, a search song, a rail song): the slice's rows.
@@ -279,7 +279,7 @@ final class DiscoverBridgeCollectionTests: XCTestCase {
         s.playAllFromRail(albumRow)
         settle { routing?.spanDACPlay() != nil }
 
-        XCTAssertTrue(try XCTUnwrap(routing?.spanDACPlay()).shuffled)
+        XCTAssertTrue(try XCTUnwrap(routing?.spanDACPlay()).sentOrderUnreliable)
     }
 
     /// A search song carries its album (the search row shows it), so Now's

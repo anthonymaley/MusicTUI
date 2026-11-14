@@ -87,7 +87,7 @@ final class SpanDACCatalogueUpNextTests: XCTestCase {
 
     func testAShuffledOrLostSongsCatalogueQueueListsOnlyTheCurrentSong() throws {
         let sent = (0..<5).map { song($0) }
-        let window = spanDACQueueWindow(sent: sent, token: "tok-1", shuffled: true, catalogue: true,
+        let window = spanDACQueueWindow(sent: sent, token: "tok-1", sentOrderUnreliable: true, catalogue: true,
                                         status: try status(title: "Song 2"))
         XCTAssertEqual(window.current?.id, "1002", "the playing song is still known, so the album line and its place stand")
         XCTAssertEqual(window.entries.map(\.name), ["Song 2"], "no Up Next after it: the order is not the sent order")

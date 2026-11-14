@@ -753,7 +753,7 @@ final class DJNowBoxTests: XCTestCase {
         XCTAssertEqual(play.rows.map(\.id), sent, "the kept rows are the ids on the wire, in order")
         XCTAssertEqual(play.token, "qmix-1")
         XCTAssertEqual(play.catalogue, true)
-        XCTAssertFalse(play.shuffled)
+        XCTAssertFalse(play.sentOrderUnreliable)
         XCTAssertTrue(play.rows.allSatisfy { $0.kind == .song && $0.artist == "A" && $0.title == "Track \($0.id)" },
                       "a row is the song the id names")
         XCTAssertTrue(play.rows.allSatisfy { $0.album?.hasPrefix("Title alb") == true }, "the album line comes from the album it was read in")
@@ -770,7 +770,7 @@ final class DJNowBoxTests: XCTestCase {
         askAndPlay(f, "mix")
         let play = try XCTUnwrap(f.routing.spanDACPlay())
         XCTAssertEqual(play.token, "qmix-2")
-        XCTAssertTrue(play.shuffled, "an order SpanDAC may have changed is not an order to list")
+        XCTAssertTrue(play.sentOrderUnreliable, "an order SpanDAC may have changed is not an order to list")
     }
 
     func testARefusedArtistMixKeepsNoRows() {

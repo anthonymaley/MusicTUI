@@ -918,7 +918,7 @@ final class DiscoverScene: Scene {
                     // which, so a play that lost any keeps them unordered.
                     if let nowRows, nowRows.map(\.id) == catalogIDs {
                         routing.recordSpanDACPlay(nowRows, token: played.queueToken,
-                                                  shuffled: played.skippedUnavailable > 0, catalogue: true)
+                                                  sentOrderUnreliable: played.skippedUnavailable > 0, catalogue: true)
                     }
                     status.post(bridgeToast)
                 },

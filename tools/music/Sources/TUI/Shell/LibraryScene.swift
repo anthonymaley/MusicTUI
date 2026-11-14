@@ -3099,7 +3099,7 @@ final class LibraryScene: Scene {
                                     kind: .album, id: albumID, start: start, listRev: rev, shuffle: shuffle)
                                 wholeResult = result
                                 wholeSerial = routing.recordSpanDACPlay(trackRows ?? [], token: result.queueToken,
-                                                                        listRev: rev, shuffled: shuffle)
+                                                                        listRev: rev, sentOrderUnreliable: shuffle)
                                 return
                             }
                             guard let ids, let sent else { throw ActionError(message: sourceChangedNothingPlayed) }

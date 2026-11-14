@@ -945,7 +945,7 @@ final class MarkedSetSpanDACPlayTests: XCTestCase {
         r.output.script("slice.status", [playingStatus(row: 0, title: "Tt1", nextRows: [1, 3, 4], token: "tok-1")])
         let status = try client.control.status()
         let play = try XCTUnwrap(r.routing.spanDACPlay())
-        let entries = spanDACQueueWindow(sent: play.rows, token: play.token, shuffled: play.shuffled,
+        let entries = spanDACQueueWindow(sent: play.rows, token: play.token, sentOrderUnreliable: play.sentOrderUnreliable,
                                          status: status).entries
         XCTAssertEqual(entries.map(\.name), ["Tt1", "Tt2", "Tp2", "Tt3"], "the skipped song is listed")
         let target = try XCTUnwrap(entries.first { $0.name == "Tp2" })
@@ -965,7 +965,7 @@ final class MarkedSetSpanDACPlayTests: XCTestCase {
         r.output.script("slice.status", [playingStatus(row: 0, title: "Tt1", nextRows: nil, token: "tok-1")])
         let status = try client.control.status()
         let play = try XCTUnwrap(r.routing.spanDACPlay())
-        let entries = spanDACQueueWindow(sent: play.rows, token: play.token, shuffled: play.shuffled,
+        let entries = spanDACQueueWindow(sent: play.rows, token: play.token, sentOrderUnreliable: play.sentOrderUnreliable,
                                          status: status).entries
         XCTAssertEqual(entries.map(\.name), ["Tt1"], "rows SpanDAC did not vouch for were listed")
     }

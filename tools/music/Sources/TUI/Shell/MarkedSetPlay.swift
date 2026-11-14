@@ -621,7 +621,7 @@ private func playMarkedSetFromSpanDAC(_ items: [MarkedItem], shuffle: Bool, stam
                     // out: recorded as an order the sent rows cannot stand in
                     // for, so Up Next lists only what SpanDAC vouches for.
                     routing.recordSpanDACPlay(sent, token: played.queueToken,
-                                              shuffled: played.skippedUnavailable > 0)
+                                              sentOrderUnreliable: played.skippedUnavailable > 0)
                 },
                 unaffected: {})
         }
