@@ -1176,6 +1176,60 @@ final class BridgePlaylistsPlaySceneTests: XCTestCase {
         XCTAssertTrue(truncText(line, to: 116).contains("1 repeat"))
     }
 
+    // MARK: - Large counts in the footer at 50 and 80 columns (2026-11-14)
+    //
+    // The accepted limit (ruling 2026-11-07 10:45) is that a count may be cut off at 50 and
+    // 80 columns. What must not happen is a count cut INSIDE its digits, which reads as a
+    // smaller number ("skipped 1" for 1,234).
+
+    /// The footer as the shell draws it: cut at `width - 4` (Shell.swift).
+    private func shownFooter(_ line: String, atColumns width: Int) -> String {
+        truncFooterText(line, to: max(1, shellLayout(width: width, height: 30).width - 4))
+    }
+
+    func testTheLeadWithLargeCountsStaysWholeAt50And80Columns() {
+        let line = bridgePlaylistPlayMessage(name: "Chill", queued: 9000, skippedVideos: 0, skippedUnavailable: 0,
+                                             skippedNotInLibrary: 1234, skippedRepeated: 56, startAt: 1, shuffle: false)
+        let lead = "Skipped 1234 not in your library, 56 repeats \u{00B7} "
+        XCTAssertTrue(line.hasPrefix(lead), line)
+        for width in [50, 80] {
+            XCTAssertTrue(shownFooter(line, atColumns: width).hasPrefix("Skipped 1234 not in your library, 56 repeats"),
+                          "\(width): \(shownFooter(line, atColumns: width))")
+        }
+    }
+
+    func testAnUnconfirmedLineNeverShowsACountCutInsideItsDigits() {
+        for name in ["Chill", "Chills", "Chillz", "Chillzz", "Mix", "Roadtrip!"] {
+            let line = bridgePlaylistPlayUnconfirmedMessage(name: name, skippedVideos: 0, skippedUnavailable: 0,
+                                                            skippedNotInLibrary: 1234, skippedRepeated: 56)
+            for width in 50...100 {
+                let shown = shownFooter(line, atColumns: width)
+                // A digit just before the ellipsis is a number cut short, unless the whole
+                // number is there (the cut fell at its end, so it was not cut).
+                guard shown.hasSuffix("\u{2026}"), let before = shown.dropLast().last, before.isNumber else { continue }
+                let digits = shown.dropLast().reversed().prefix { $0.isNumber }.reversed()
+                XCTAssertTrue(["1234", "56"].contains(String(digits)),
+                              "\(name) at \(width): \(shown)")
+            }
+        }
+        // The case that was cut inside "1234": five-letter name at 80 columns.
+        let line = bridgePlaylistPlayUnconfirmedMessage(name: "Chill", skippedVideos: 0, skippedUnavailable: 0,
+                                                        skippedNotInLibrary: 1234, skippedRepeated: 56)
+        XCTAssertEqual(shownFooter(line, atColumns: 80),
+                       "Play was requested, but SpanDAC didn't confirm 'Chill' started. \u{00B7} skipped \u{2026}")
+    }
+
+    func testTruncFooterTextIsTruncTextExceptThatItNeverEndsInsideANumber() {
+        XCTAssertEqual(truncFooterText("short", to: 20), "short")
+        XCTAssertEqual(truncFooterText("Playing 'Chill' on SpanDAC", to: 12), truncText("Playing 'Chill' on SpanDAC", to: 12))
+        XCTAssertEqual(truncFooterText("skipped 1234 songs", to: 11), "skipped \u{2026}")
+        XCTAssertEqual(truncFooterText("skipped 1,234 songs", to: 11), "skipped \u{2026}")
+        XCTAssertEqual(truncFooterText("skipped 1,234 songs", to: 12), "skipped \u{2026}")
+        // At the number's end it is whole, and kept.
+        XCTAssertEqual(truncFooterText("skipped 1234 songs", to: 13), "skipped 1234\u{2026}")
+        XCTAssertEqual(truncFooterText("skipped 1234 songs", to: 14), "skipped 1234 \u{2026}")
+    }
+
     func testTheSkipTrailerHasFourFormsAndKeepsTheMusicAppFormByteForByte() {
         XCTAssertEqual(bridgeSkipTrailer(notInLibrary: 1, repeated: 0), " \u{00B7} skipped 1 song not in your library")
         XCTAssertEqual(bridgeSkipTrailer(notInLibrary: 12, repeated: 0), " \u{00B7} skipped 12 songs not in your library")

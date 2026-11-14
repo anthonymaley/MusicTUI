@@ -103,6 +103,22 @@ func truncText(_ text: String, to maxWidth: Int) -> String {
     return String(text.prefix(maxWidth - 1)) + "\u{2026}"
 }
 
+/// The footer's cut (`truncText`), except that it never ends inside a number: a count cut
+/// to its first digits ("skipped 1" for 1,234) reads as a smaller number, so the partial
+/// number is dropped and the ellipsis follows what came before it. Words are cut as
+/// `truncText` cuts them (the accepted limit, ruling 2026-11-07 10:45).
+func truncFooterText(_ text: String, to maxWidth: Int) -> String {
+    guard text.count > maxWidth, maxWidth > 1 else { return text }
+    func inNumber(_ c: Character) -> Bool { c.isASCII && c.isNumber || c == "," }
+    var kept = Array(text.prefix(maxWidth - 1))
+    // Cut inside a number: a number character kept, and the next one a number
+    // character too (the number goes on past the cut).
+    if let last = kept.last, inNumber(last), let next = text.dropFirst(maxWidth - 1).first, inNumber(next) {
+        while let l = kept.last, inNumber(l) { kept.removeLast() }
+    }
+    return String(kept) + "\u{2026}"
+}
+
 /// Render a horizontal meter bar for volume/progress.
 /// Returns a colored string of the given width.
 func meterBar(value: Int, width: Int) -> String {

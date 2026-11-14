@@ -583,7 +583,7 @@ func runShell() {
             if let t = toast {
                 // The toast borrows the footer line until it expires.
                 let color = t.isError ? ANSICode.red : ANSICode.amber
-                out += "\(color)\(truncText(t.text, to: max(1, frame.width - 4)))\(ANSICode.reset)"
+                out += "\(color)\(truncFooterText(t.text, to: max(1, frame.width - 4)))\(ANSICode.reset)"
             } else {
                 let globals = shellFooterGlobals(for: routing)
                 out += "\(ANSICode.dim)1-\(tabs.count) Tabs   \(scene.footerHint)   \(globals)  q Quit\(ANSICode.reset)"
