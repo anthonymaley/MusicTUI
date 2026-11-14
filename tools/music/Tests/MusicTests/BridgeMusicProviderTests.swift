@@ -342,6 +342,20 @@ final class BridgeMusicProviderTests: XCTestCase {
         XCTAssertEqual(wire.sent.count, 2, "one queue, one status read, nothing re-sent")
     }
 
+    /// integration-1114 (Codex 9ec73798): the fill count is part of what the queue reply
+    /// said, and survives a status read that fails.
+    func testAnAcceptedFilledQueueWithAFailingStatusReadKeepsItsFillCount() throws {
+        let queue = """
+        {"ok":true,"op":"slice.queue","queue_token":"tok-9","skipped_unavailable":0,"skipped_not_in_library":3,"skipped_repeated":1,"filled_from_catalogue":4}
+        """
+        let wire = Wire([queue, statusFailure])
+        let played = try provider(wire).playRetainingToken(ids: tenIDs, startRequired: false,
+                                                           skipNotInLibrary: true, skipRepeated: true)
+        XCTAssertEqual(played.statusUnconfirmed, "the player stopped answering")
+        XCTAssertEqual(played.filledFromCatalogue, 4)
+        XCTAssertEqual(played.queueToken, "tok-9")
+    }
+
     func testTheOtherPlayFormsStillThrowWhenTheStatusReadFailsAfterAnAcceptedQueue() {
         let wire = Wire([acceptedQueue, statusFailure])
         XCTAssertThrowsError(try provider(wire).playRetainingToken(ids: tenIDs, startRequired: false)) {

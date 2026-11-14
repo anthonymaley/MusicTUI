@@ -115,6 +115,103 @@ final class CatalogueFillBuildFailureTests: XCTestCase {
             + (token.map { ",\"queue_token\":\"\($0)\"" } ?? "") + "}"
     }
 
+    // MARK: - an accepted filled play whose status read then fails (integration-1114, Codex 9ec73798)
+
+    private let statusRefused = """
+    {"ok":false,"op":"slice.status","error":{"kind":"player_disconnected","detail":"the player stopped answering"}}
+    """
+
+    /// Plays the playlist with a status that answers until the queue is served and then
+    /// refuses, until `later` is set (the queue object a later poll reads). Returns once the
+    /// footer says SpanDAC "didn't confirm".
+    private func unconfirmedRig(queueReply: String, later: StatusSource,
+                                file: StaticString = #filePath, line: UInt = #line)
+        -> (wire: BridgeLibraryReadsWire, routing: RoutingCoordinator, status: StatusStore) {
+        let wire = BridgeLibraryReadsWire(["slice.libraryPlaylists": [onePlaylistPage],
+                                           "slice.queue": [queueReply]])
+        wire.script("slice.libraryPlaylistTracks", [tracksPage()])
+        var queueServed = false
+        wire.handler = { op, _ in
+            if op == "slice.queue" { queueServed = true; return nil }
+            guard op == "slice.status" else { return nil }
+            guard queueServed else { return self.status(queue: self.building) }
+            return later.current.isEmpty ? self.statusRefused : self.status(queue: later.current)
+        }
+        let status = StatusStore()
+        let store = PlaybackModeStore(path: NSTemporaryDirectory() + "mode-\(UUID().uuidString).json")
+        store.set(.source)
+        let routing = RoutingCoordinator(store: store, surface: .tui,
+                                         makeSource: { SourceAppClient(path: "/nonexistent", transport: wire.transport) })
+        let s = playlistsTestScene(flag: BridgeSelectedFlag(true), wire: wire, spy: PlaylistAppleScriptSpy(),
+                                   status: status, width: 120, routing: routing)
+        XCTAssertTrue(settleScene(s) { s.render(frame: frame, snapshot: idle).contains("2018") }, file: file, line: line)
+        _ = s.handle(.char("p"))
+        XCTAssertTrue(settleScene(s) { !wire.sent("slice.queue").isEmpty }, file: file, line: line)
+        XCTAssertTrue(settleScene(s) { status.current()?.text.contains("didn't confirm") == true }, file: file, line: line)
+        return (wire, routing, status)
+    }
+
+    private let unconfirmedFilledLine = "Play was requested, but SpanDAC didn't confirm '2018' started."
+        + " \u{00B7} skipped 1 song not in your library \u{00B7} 2 from Apple Music"
+
+    func testAnUnconfirmedFilledPlayKeepsTheFillCountInItsFooter() {
+        let r = unconfirmedRig(queueReply: queueReply(filled: 2), later: StatusSource(""))
+        XCTAssertEqual(r.status.current()?.text, unconfirmedFilledLine)
+        XCTAssertEqual(r.status.current(now: Date().addingTimeInterval(3600))?.staysUntilStateChange, true)
+    }
+
+    func testAnUnconfirmedFilledPlayIsCorrectedByALaterBuildFailureForItsOwnToken() {
+        let later = StatusSource("")
+        let r = unconfirmedRig(queueReply: queueReply(filled: 2), later: later)
+        let p = poller(routing: r.routing, status: r.status)
+        later.current = invalid(reason: "insert 2 of 3 failed: boom")
+        p.tick()
+        XCTAssertEqual(r.status.current()?.text, "'2018' stopped after 1 of 3 tracks: insert 2 of 3 failed: boom.")
+        XCTAssertEqual(r.status.current()?.isError, true)
+    }
+
+    func testAnUnconfirmedFilledPlayIsNotCorrectedByAnotherTokensFailure() {
+        let later = StatusSource("")
+        let r = unconfirmedRig(queueReply: queueReply(filled: 2), later: later)
+        later.current = invalid(reason: "insert 2 of 3 failed: somebody else's", token: "T-OTHER")
+        poller(routing: r.routing, status: r.status).tick()
+        XCTAssertEqual(r.status.current()?.text, unconfirmedFilledLine)
+    }
+
+    /// A play that filled nothing and could not be confirmed is today's footer, unwatched.
+    func testAnUnconfirmedPlayThatFilledNothingIsUnchangedAndUnwatched() {
+        let later = StatusSource("")
+        let r = unconfirmedRig(queueReply: queueReply(filled: nil), later: later)
+        let expected = "Play was requested, but SpanDAC didn't confirm '2018' started. \u{00B7} skipped 1 song not in your library"
+        XCTAssertEqual(r.status.current()?.text, expected)
+        later.current = invalid(reason: "insert 2 of 3 failed: boom")
+        poller(routing: r.routing, status: r.status).tick()
+        XCTAssertEqual(r.status.current()?.text, expected)
+    }
+
+    /// The clause rides after the skip trailer, so the ruled warning-first shape and the
+    /// 11-07 limit (counts may be cut at narrow widths) hold, and no count is cut inside its digits.
+    func testTheUnconfirmedLineWithAFillClauseKeepsItsFirstWordsAndNeverCutsADigit() {
+        let line = bridgePlaylistPlayUnconfirmedMessage(name: "2018", skippedVideos: 0, skippedUnavailable: 0,
+                                                        skippedNotInLibrary: 2, skippedRepeated: 1,
+                                                        filledFromCatalogue: 28)
+        XCTAssertEqual(line, "Play was requested, but SpanDAC didn't confirm '2018' started."
+                       + " \u{00B7} skipped 2 not in your library, 1 repeat \u{00B7} 28 from Apple Music")
+        for width in 50...130 {
+            let shown = truncFooterText(line, to: max(1, shellLayout(width: width, height: 30).width - 4))
+            XCTAssertTrue(shown.hasPrefix("Play was requested, but SpanDAC didn't conf"), "\(width): \(shown)")
+            // A cut that ends on a digit must fall at its number's end, never inside it.
+            guard shown.hasSuffix("\u{2026}"), shown.dropLast().last?.isNumber == true else { continue }
+            let kept = String(shown.dropLast())
+            XCTAssertTrue(line.hasPrefix(kept), "\(width): \(shown)")
+            let next = line.dropFirst(kept.count).first
+            XCTAssertFalse(next?.isNumber == true, "\(width): cut inside a number: \(shown)")
+        }
+        XCTAssertEqual(bridgePlaylistPlayUnconfirmedMessage(name: "2018", skippedVideos: 0, skippedUnavailable: 0,
+                                                            skippedNotInLibrary: 0, skippedRepeated: 0),
+                       "Play was requested, but SpanDAC didn't confirm '2018' started.")
+    }
+
     // MARK: - the footer is corrected from the status, once
 
     func testAFilledPlaySaysThePlannedCountsAndABuildFailureCorrectsThemFromTheStatus() {

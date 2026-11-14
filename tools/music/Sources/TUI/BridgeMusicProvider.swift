@@ -178,7 +178,8 @@ struct BridgeMusicProvider: MusicDataProvider {
         catch let error as MusicProviderError where reportsUnreadStatus {
             return SpanDACPlayResult(queue: .none, skippedUnavailable: sent.skippedUnavailable,
                                      skippedNotInLibrary: sent.skippedNotInLibrary,
-                                     skippedRepeated: sent.skippedRepeated, queueToken: sent.queueToken,
+                                     skippedRepeated: sent.skippedRepeated,
+                                     filledFromCatalogue: sent.filledFromCatalogue, queueToken: sent.queueToken,
                                      statusUnconfirmed: error.errorDescription ?? "SpanDAC's status could not be read")
         }
         return SpanDACPlayResult(queue: queue, skippedUnavailable: sent.skippedUnavailable,

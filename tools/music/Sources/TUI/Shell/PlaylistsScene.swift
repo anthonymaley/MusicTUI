@@ -93,15 +93,21 @@ func bridgePlaylistPlayMessage(name: String, queued: Int, skippedVideos: Int, sk
 /// warning fills the footer and the counts are cut. Every other SpanDAC collection play
 /// (an album, an artist, a song, a marked set, a DJ genre) words its unconfirmed play
 /// with this too; `lastNotice` is the marked set's repeated-songs sentence.
+///
+/// `filledFromCatalogue` (integration-1114): a filled playlist play keeps its count here
+/// too, "\u{00B7} 28 from Apple Music", after the skip trailer and in the same trailing
+/// form, so a narrow footer cuts it (never inside its digits) before the warning's words.
 func bridgePlaylistPlayUnconfirmedMessage(name: String, skippedVideos: Int, skippedUnavailable: Int,
                                           skippedNotInLibrary: Int, skippedRepeated: Int,
+                                          filledFromCatalogue: Int = 0,
                                           lastNotice: String? = nil) -> String {
     let notices = [skippedVideos > 0 ? bridgeSkippedVideosNotice(skippedVideos) : nil,
                    skippedUnavailable > 0 ? bridgeUnavailableSongsNotice(skippedUnavailable) : nil,
                    lastNotice]
         .compactMap { $0 }
     return unconfirmedPlayLine(warning: spanDACPlayNotConfirmedWarning(name),
-                               trailer: bridgeSkipTrailer(notInLibrary: skippedNotInLibrary, repeated: skippedRepeated),
+                               trailer: bridgeSkipTrailer(notInLibrary: skippedNotInLibrary, repeated: skippedRepeated)
+                                   + (filledFromCatalogue > 0 ? " \u{00B7} \(filledFromCatalogue) from Apple Music" : ""),
                                notice: notices.isEmpty ? nil : notices.joined(separator: " "))
 }
 
@@ -1974,8 +1980,12 @@ final class PlaylistsScene: Scene {
                 if unconfirmedPlay {
                     status.post(bridgePlaylistPlayUnconfirmedMessage(
                                     name: name, skippedVideos: finalSkipped, skippedUnavailable: skippedUnavailable,
-                                    skippedNotInLibrary: notInLibrary, skippedRepeated: outputRepeated),
+                                    skippedNotInLibrary: notInLibrary, skippedRepeated: outputRepeated,
+                                    filledFromCatalogue: outputFilled),
                                 untilStateChange: true)
+                    // The same gate as the confirmed line: a build failure may correct this
+                    // footer only after it has posted.
+                    if let fillSerial { routing.filledFooterPosted(serial: fillSerial) }
                     return
                 }
                 // The repeats the output dropped were sent too: out of the played count,
