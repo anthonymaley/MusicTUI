@@ -132,19 +132,39 @@ struct BridgeMusicProvider: MusicDataProvider {
     /// playlist READS' opt-in: the output player carries it for every caller, and
     /// a marked set, an album or a Songs play must not inherit it.
     func playRetainingToken(ids: [String], startRequired: Bool, skipNotInLibrary: Bool) throws -> SpanDACPlayResult {
-        try playRetainingToken(ids: ids, startRequired: startRequired, skipNotInLibrary: skipNotInLibrary,
-                               skipRepeated: false)
+        try acceptedPlay(ids: ids, startRequired: startRequired, skipNotInLibrary: skipNotInLibrary,
+                         skipRepeated: false, reportsUnreadStatus: false)
     }
 
-    /// Likewise `skip_repeated` (2026-11-12), only when the CALLER says so.
+    /// Likewise `skip_repeated` (2026-11-12), only when the CALLER says so. This is the
+    /// PLAYLIST form (the one caller that sends both opt-ins): when SpanDAC accepts the
+    /// queue and the status read after it fails, the play has started, so the result
+    /// comes back with `statusUnconfirmed` set and the queue reply's counts and token,
+    /// instead of an error that hides a play that happened and loses the counts. The
+    /// queue is never sent again.
     func playRetainingToken(ids: [String], startRequired: Bool, skipNotInLibrary: Bool,
                             skipRepeated: Bool) throws -> SpanDACPlayResult {
+        try acceptedPlay(ids: ids, startRequired: startRequired, skipNotInLibrary: skipNotInLibrary,
+                         skipRepeated: skipRepeated, reportsUnreadStatus: true)
+    }
+
+    /// The shared body. `reportsUnreadStatus` false keeps every other caller's contract:
+    /// a status that cannot be read after the queue is that call's error, as it was.
+    private func acceptedPlay(ids: [String], startRequired: Bool, skipNotInLibrary: Bool, skipRepeated: Bool,
+                              reportsUnreadStatus: Bool) throws -> SpanDACPlayResult {
         let sent: (skippedUnavailable: Int, queueToken: String?, skippedNotInLibrary: Int, skippedRepeated: Int)
         do { sent = try control.queueRetainingToken(libraryIDs: ids, startRequired: startRequired,
                                                     skipNotInLibrary: skipNotInLibrary,
                                                     skipRepeated: skipRepeated) }
         catch let error as SourceAppError { throw Self.translate(error) }
-        let queue = try bridgeNow(from: nowPlaying()).queue
+        let queue: BridgeNow.Queue
+        do { queue = try bridgeNow(from: nowPlaying()).queue }
+        catch let error as MusicProviderError where reportsUnreadStatus {
+            return SpanDACPlayResult(queue: .none, skippedUnavailable: sent.skippedUnavailable,
+                                     skippedNotInLibrary: sent.skippedNotInLibrary,
+                                     skippedRepeated: sent.skippedRepeated, queueToken: sent.queueToken,
+                                     statusUnconfirmed: error.errorDescription ?? "SpanDAC's status could not be read")
+        }
         return SpanDACPlayResult(queue: queue, skippedUnavailable: sent.skippedUnavailable,
                                  skippedNotInLibrary: sent.skippedNotInLibrary,
                                  skippedRepeated: sent.skippedRepeated, queueToken: sent.queueToken)

@@ -71,6 +71,12 @@ struct SpanDACPlayResult: Equatable {
     /// Up Next and cover kept for this play are trusted only while
     /// `slice.status` echoes it. Nil from a SpanDAC that predates it.
     var queueToken: String? = nil
+    /// Set only when SpanDAC ACCEPTED the queue and the status read after it failed
+    /// (the reason, in the provider's own words): the play started but was not
+    /// confirmed, and `queue` is then `.none`, not an observation. Every count above is
+    /// the queue reply's own and is carried, never dropped. Only the playlist form of
+    /// `playRetainingToken` returns a result this way; the other forms throw as before.
+    var statusUnconfirmed: String? = nil
 }
 
 /// `slice.listRev`'s answer: the revision of the complete ordered list, and its

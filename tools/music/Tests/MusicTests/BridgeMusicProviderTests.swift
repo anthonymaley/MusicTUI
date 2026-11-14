@@ -316,6 +316,45 @@ final class BridgeMusicProviderTests: XCTestCase {
             }
         }
     }
+
+    // MARK: - an accepted queue whose status read fails (Codex, 2026-11-11)
+
+    private let acceptedQueue = """
+    {"ok":true,"op":"slice.queue","queue_token":"tok-9","skipped_unavailable":2,"skipped_not_in_library":3,"skipped_repeated":1}
+    """
+    private let statusReady = "{\"ok\":true,\"op\":\"slice.status\",\"status\":{\"playback\":\"playing\"}}"
+    private let tenIDs = (1...10).map { "i.\($0)" }
+    private let statusFailure = """
+    {"ok":false,"op":"slice.status","error":{"kind":"player_disconnected","detail":"the player stopped answering"}}
+    """
+
+    /// The playlist form (both opt-ins) reports the play as accepted-but-unconfirmed and
+    /// keeps every count and the token; the other forms throw as they always did.
+    func testAnAcceptedQueueWithAFailingStatusReadCarriesItsCountsOnThePlaylistForm() throws {
+        let wire = Wire([acceptedQueue, statusFailure])
+        let played = try provider(wire).playRetainingToken(ids: tenIDs, startRequired: false,
+                                                           skipNotInLibrary: true, skipRepeated: true)
+        XCTAssertEqual(played.statusUnconfirmed, "the player stopped answering")
+        XCTAssertEqual(played.skippedUnavailable, 2)
+        XCTAssertEqual(played.skippedNotInLibrary, 3)
+        XCTAssertEqual(played.skippedRepeated, 1)
+        XCTAssertEqual(played.queueToken, "tok-9")
+        XCTAssertEqual(wire.sent.count, 2, "one queue, one status read, nothing re-sent")
+    }
+
+    func testTheOtherPlayFormsStillThrowWhenTheStatusReadFailsAfterAnAcceptedQueue() {
+        let wire = Wire([acceptedQueue, statusFailure])
+        XCTAssertThrowsError(try provider(wire).playRetainingToken(ids: tenIDs, startRequired: false)) {
+            XCTAssertEqual($0 as? MusicProviderError, .unavailable("the player stopped answering"))
+        }
+    }
+
+    func testAnAcceptedQueueWithAReadableStatusLeavesTheFlagNil() throws {
+        let wire = Wire([acceptedQueue, statusReady])
+        let played = try provider(wire).playRetainingToken(ids: tenIDs, startRequired: false,
+                                                           skipNotInLibrary: true, skipRepeated: true)
+        XCTAssertNil(played.statusUnconfirmed)
+    }
 }
 
 /// Playing what you just browsed: the reason the seam exists.

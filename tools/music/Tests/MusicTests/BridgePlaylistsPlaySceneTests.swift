@@ -967,6 +967,187 @@ final class BridgePlaylistsPlaySceneTests: XCTestCase {
         }
     }
 
+    // MARK: - an accepted queue whose follow-up status read fails (Codex, 2026-11-11)
+    //
+    // The queue reply is the only place the output's skip counts live. When SpanDAC
+    // ACCEPTS the queue and the status read after it fails, the play was started and
+    // is unconfirmed: the footer says so (warning first, unchanged in shape) and the
+    // counts follow it, instead of an error that hides a play that happened.
+
+    /// Plays `p` on "Chill" with a queue reply carrying the counts and a status that
+    /// answers until the queue is served and fails after it. Returns the wire, the
+    /// footer and whether it stays.
+    private func playWithStatusFailingAfterTheQueue(
+        statusAfterQueue: String, rows: [(id: String, title: String, artist: String)]? = nil,
+        notInLibrary: Int?, repeated: Int?, unavailable: Int = 0, width: Int = 120,
+        file: StaticString = #filePath, line: UInt = #line)
+        -> (wire: BridgeLibraryReadsWire, footer: String?, stays: Bool?, recorded: [String], routing: RoutingCoordinator) {
+        let songs = rows ?? (1...10).map { ("i.\($0)", "Track \($0)", "Art") }
+        let a = notInLibrary.map { ",\"skipped_not_in_library\":\($0)" } ?? ""
+        let b = repeated.map { ",\"skipped_repeated\":\($0)" } ?? ""
+        let queue = "{\"ok\":true,\"op\":\"slice.queue\",\"queue_token\":\"tok-1\",\"skipped_unavailable\":\(unavailable)\(a)\(b)}"
+        let wire = BridgeLibraryReadsWire(["slice.libraryPlaylists": [onePlaylistPage], "slice.queue": [queue]])
+        wire.script("slice.libraryPlaylistTracks", [tracksPage(songs, total: songs.count)])
+        // The handler runs under the wire's own lock, so it keeps its own flag instead of
+        // asking the wire what it has sent.
+        var queueServed = false
+        wire.handler = { op, _ in
+            if op == "slice.queue" { queueServed = true; return nil }
+            guard op == "slice.status" else { return nil }
+            // OK until the queue has been served (the play's capability read), failing after.
+            return queueServed ? statusAfterQueue : self.statusOK
+        }
+        let status = StatusStore()
+        let store = PlaybackModeStore(path: NSTemporaryDirectory() + "mode-\(UUID().uuidString).json")
+        store.set(.source)
+        let routing = RoutingCoordinator(store: store, surface: .tui,
+                                         makeSource: { SourceAppClient(path: "/nonexistent", transport: wire.transport) })
+        let s = playlistsTestScene(flag: BridgeSelectedFlag(true), wire: wire, spy: PlaylistAppleScriptSpy(),
+                                   status: status, width: width, routing: routing)
+        XCTAssertTrue(settleScene(s) { s.render(frame: frame, snapshot: idle).contains("Chill") }, file: file, line: line)
+        _ = s.handle(.char("p"))
+        XCTAssertTrue(settleScene(s) { !wire.sent("slice.queue").isEmpty }, file: file, line: line)
+        _ = settleScene(s) { status.current()?.text.contains("SpanDAC") == true }
+        return (wire, status.current()?.text,
+                status.current(now: Date().addingTimeInterval(3600))?.staysUntilStateChange,
+                routing.spanDACPlay()?.rows.map(\.id) ?? [], routing)
+    }
+
+    private let statusRefused = """
+    {"ok":false,"op":"slice.status","error":{"kind":"player_disconnected","detail":"the player stopped answering"}}
+    """
+
+    func testAnAcceptedQueueWhoseStatusReadFailsKeepsBothCountsInAnUnconfirmedFooterAndSendsTheQueueOnce() {
+        let r = playWithStatusFailingAfterTheQueue(statusAfterQueue: statusRefused, notInLibrary: 3, repeated: 1)
+        XCTAssertEqual(r.wire.sent("slice.queue").count, 1, "an accepted queue is never sent again")
+        XCTAssertEqual(r.footer, "Play was requested, but SpanDAC didn't confirm 'Chill' started."
+                       + " \u{00B7} skipped 3 not in your library, 1 repeat")
+        XCTAssertEqual(r.stays, true, "an unconfirmed play's line stays until something changes")
+        XCTAssertEqual(r.recorded.count, 10, "the rows sent are still kept for Up Next")
+    }
+
+    /// A status as SpanDAC answers it later: the playing row by request index, the token, and NO
+    /// `next_rows` (an older device, or one that leaves them out).
+    private func laterStatus(title: String, row: Int, token: String?, nextRows: String = "") throws -> SourceStatus {
+        let t = token.map { ",\"queue_token\":\"\($0)\"" } ?? ""
+        let reply = "{\"ok\":true,\"op\":\"slice.status\",\"status\":{\"playback\":\"playing\",\"contract\":3,"
+            + "\"authorization\":\"authorized\",\"title\":\"\(title)\",\"artist\":\"Art\",\"row\":\(row)\(nextRows)\(t)}}"
+        return try SourceAppControl(path: "/nonexistent", transport: { _, _ in reply }).status()
+    }
+
+    /// Review of 6c6aaba: the rows are kept in REQUEST order so SpanDAC's indices still
+    /// land, but when the device skipped songs the sent order is not the player's, and a
+    /// later status without `next_rows` must not fall back to "every sent row after this".
+    func testAfterAnAcceptedQueueWithSkipsAStatusWithoutNextRowsListsNoSkippedSongAsQueued() throws {
+        let r = playWithStatusFailingAfterTheQueue(statusAfterQueue: statusRefused, notInLibrary: 3, repeated: 1)
+        let play = try XCTUnwrap(r.routing.spanDACPlay())
+        XCTAssertEqual(play.rows.count, 10, "request indices are preserved")
+        let status = try laterStatus(title: "Track 1", row: 0, token: "tok-1")
+        let window = spanDACQueueWindow(sent: play.rows, token: play.token, shuffled: play.shuffled,
+                                        catalogue: play.catalogue, status: status)
+        XCTAssertEqual(window.entries.map(\.name), ["Track 1"], "the playing row only: its successors are unknown")
+        // What a later status DOES name is still listed, by request index.
+        let named = try laterStatus(title: "Track 1", row: 0, token: "tok-1", nextRows: ",\"next_rows\":[2,5]")
+        XCTAssertEqual(spanDACQueueWindow(sent: play.rows, token: play.token, shuffled: play.shuffled,
+                                          catalogue: play.catalogue, status: named).entries.map(\.name),
+                       ["Track 1", "Track 3", "Track 6"])
+    }
+
+    /// The same fallback on the CONFIRMED path (a readable status after the queue): the
+    /// output's own skip counts make the sent order unreliable there too.
+    func testAConfirmedPlayWithOutputSkipsAlsoListsNothingFromAStatusWithoutNextRows() throws {
+        let r = playWithStatusFailingAfterTheQueue(statusAfterQueue: statusOK, notInLibrary: 3, repeated: nil)
+        let play = try XCTUnwrap(r.routing.spanDACPlay())
+        let status = try laterStatus(title: "Track 1", row: 0, token: "tok-1")
+        XCTAssertEqual(spanDACQueueWindow(sent: play.rows, token: play.token, shuffled: play.shuffled,
+                                          catalogue: play.catalogue, status: status).entries.map(\.name), ["Track 1"])
+    }
+
+    /// No skips: the sent order IS the player's, so the fallback stays (nothing regresses).
+    func testAPlayWithNoSkipsStillFallsBackToTheSentOrder() throws {
+        let r = playWithStatusFailingAfterTheQueue(statusAfterQueue: statusRefused, notInLibrary: nil, repeated: nil)
+        let play = try XCTUnwrap(r.routing.spanDACPlay())
+        let status = try laterStatus(title: "Track 1", row: 0, token: "tok-1")
+        XCTAssertEqual(spanDACQueueWindow(sent: play.rows, token: play.token, shuffled: play.shuffled,
+                                          catalogue: play.catalogue, status: status).entries.count, 10)
+    }
+
+    /// The token kept from the unconfirmed play is the one a later jump sends, and the
+    /// window the jump's reply draws is gated by it.
+    func testTheTokenKeptFromAnUnconfirmedPlayDrivesALaterJumpAndStatus() throws {
+        let r = playWithStatusFailingAfterTheQueue(statusAfterQueue: statusRefused, notInLibrary: 3, repeated: 1)
+        let play = try XCTUnwrap(r.routing.spanDACPlay())
+        XCTAssertEqual(play.token, "tok-1", "kept although the status read failed")
+        let jumpStatus = "{\"playback\":\"playing\",\"contract\":3,\"authorization\":\"authorized\","
+            + "\"title\":\"Track 3\",\"artist\":\"Art\",\"row\":2,\"capabilities\":[\"slice.status\",\"queue.jump\"],"
+            + "\"queue_token\":\"tok-1\"}"
+        let wire = BridgeLibraryReadsWire(["slice.queueJump": [
+            "{\"ok\":true,\"op\":\"slice.queueJump\",\"status\":\(jumpStatus),\"queue_token\":\"tok-1\"}"]])
+        wire.handler = { op, _ in
+            op == "slice.status" ? "{\"ok\":true,\"op\":\"slice.status\",\"status\":\(jumpStatus)}" : nil
+        }
+        let client = SourceAppClient(path: "/nonexistent", transport: wire.transport)
+        let result = try jumpSpanDACQueue(routing: r.routing, client: client, displayedToken: "tok-1", entryIndex: 3)
+        let sent = wire.sent("slice.queueJump").first
+        XCTAssertEqual(sent?["queue_token"] as? String, "tok-1")
+        XCTAssertEqual(sent?["row"] as? Int, 2, "the request index, whatever the device skipped")
+        XCTAssertEqual(spanDACQueueJumpEntries(routing: r.routing, result: result).map(\.name), ["Track 3"],
+                       "no skipped song shown as queued after the jump either")
+        // A status for another queue is not this play's.
+        let other = try laterStatus(title: "Track 1", row: 0, token: "tok-other")
+        XCTAssertTrue(spanDACQueueWindow(sent: play.rows, token: play.token, shuffled: play.shuffled,
+                                         catalogue: play.catalogue, status: other).entries.isEmpty)
+    }
+
+    func testTheUnavailableCountSurvivesAFailedStatusReadToo() {
+        let r = playWithStatusFailingAfterTheQueue(statusAfterQueue: statusRefused, notInLibrary: nil,
+                                                   repeated: nil, unavailable: 2)
+        XCTAssertEqual(r.footer, "Play was requested, but SpanDAC didn't confirm 'Chill' started."
+                       + " 2 songs aren't available to SpanDAC.")
+        XCTAssertEqual(r.stays, true)
+    }
+
+    func testAWarmingStatusAfterAnAcceptedQueueDoesNotReplayTheQueue() {
+        let warming = """
+        {"ok":false,"op":"slice.status","error":{"kind":"warming","detail":"preparing your library","retry_after":0.5}}
+        """
+        let r = playWithStatusFailingAfterTheQueue(statusAfterQueue: warming, notInLibrary: 3, repeated: nil)
+        XCTAssertEqual(r.wire.sent("slice.queue").count, 1, "a status that is warming must not re-send an accepted queue")
+        XCTAssertEqual(r.footer, "Play was requested, but SpanDAC didn't confirm 'Chill' started."
+                       + " \u{00B7} skipped 3 songs not in your library")
+    }
+
+    func testAReadableStatusAfterTheQueueStillPostsTheOrdinaryLine() {
+        let r = playWithStatusFailingAfterTheQueue(statusAfterQueue: statusOK, notInLibrary: 3, repeated: 1)
+        XCTAssertEqual(r.footer, "Skipped 3 not in your library, 1 repeat \u{00B7} Playing 'Chill' on SpanDAC \u{2014} 6 tracks.")
+    }
+
+    func testTheUnconfirmedSpanDACWarningKeepsItsFirstWordsAndWhatTheSkipSaysFollowsAt50And80And120Columns() {
+        let line = bridgePlaylistPlayUnconfirmedMessage(name: "Chill", skippedVideos: 0, skippedUnavailable: 0,
+                                                        skippedNotInLibrary: 3, skippedRepeated: 1)
+        for width in [50, 80, 120] {
+            let cut = max(1, shellLayout(width: width, height: 30).width - 4)
+            let shown = truncText(line, to: cut)
+            XCTAssertTrue(shown.hasPrefix("Play was requested, but SpanDAC didn't conf"), "\(width): \(shown)")
+            XCTAssertFalse(shown.hasPrefix("Skipped"), "\(width): the skip must not push the warning off")
+        }
+        // The known limit (ruling 2026-11-07 10:45): the warning fills the footer, so
+        // the trailing counts show only where the width holds them.
+        XCTAssertFalse(truncText(line, to: 46).contains("repeat"))
+        XCTAssertFalse(truncText(line, to: 76).contains("repeat"))
+        XCTAssertTrue(truncText(line, to: 116).contains("1 repeat"))
+    }
+
+    func testTheSkipTrailerHasFourFormsAndKeepsTheMusicAppFormByteForByte() {
+        XCTAssertEqual(bridgeSkipTrailer(notInLibrary: 1, repeated: 0), " \u{00B7} skipped 1 song not in your library")
+        XCTAssertEqual(bridgeSkipTrailer(notInLibrary: 12, repeated: 0), " \u{00B7} skipped 12 songs not in your library")
+        XCTAssertEqual(bridgeSkipTrailer(notInLibrary: 0, repeated: 2), " \u{00B7} skipped 2 repeats")
+        XCTAssertEqual(bridgeSkipTrailer(notInLibrary: 12, repeated: 1),
+                       " \u{00B7} skipped 12 not in your library, 1 repeat")
+        XCTAssertEqual(bridgeSkipTrailer(notInLibrary: 0, repeated: 0), "")
+        XCTAssertEqual(bridgeNotInLibraryTrailer(12), bridgeSkipTrailer(notInLibrary: 12, repeated: 0))
+    }
+
     func testBridgePlaylistPlayMessageComposesWithEveryVideoSkipForm() {
         // v == 0: the plain form, with the notice trailing it.
         XCTAssertEqual(
