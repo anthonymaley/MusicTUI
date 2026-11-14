@@ -205,11 +205,16 @@ final class PlaybackPoller {
     /// coordinator, whose client tells its licence cache what SpanDAC says; a
     /// bare `SourceAppClient()` here would read the same status past it.
     private let makeSourceClient: (() -> SourceAppClient)?
+    /// Told, once, that a catalogue-filled play's build failed after the reply
+    /// that counted it (`RoutingCoordinator.filledBuildFailure`): the footer's text.
+    private let onBuildNotice: ((String) -> Void)?
 
     init(store: NowPlayingStore, backend: AppleScriptBackend, appQueue: AppQueueStore,
          queueStore: QueueStore = QueueStore(), intervalMs: UInt32 = 1000,
          routing: RoutingCoordinator? = nil,
-         makeSourceClient: (() -> SourceAppClient)? = nil) {
+         makeSourceClient: (() -> SourceAppClient)? = nil,
+         onBuildNotice: ((String) -> Void)? = nil) {
+        self.onBuildNotice = onBuildNotice
         self.routing = routing
         self.makeSourceClient = makeSourceClient
         self.store = store
@@ -254,6 +259,7 @@ final class PlaybackPoller {
         // alias fills a missing persistent ID BEFORE the tracker keeps the
         // reply, so a missed poll keeps the cover as well as the list.
         if case .success(var status) = result {
+            if let notice = routing?.filledBuildFailure(status: status) { onBuildNotice?(notice) }
             let played = routing?.spanDACPlay()
             let window = spanDACQueueWindow(sent: played?.rows, token: played?.token,
                                             shuffled: played?.shuffled ?? false,

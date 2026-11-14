@@ -85,6 +85,21 @@ func bridgePlaylistPlayMessage(name: String, queued: Int, skippedVideos: Int, sk
     return message
 }
 
+/// The footer's correction for a filled play whose build failed after the reply
+/// (concert/catalogue-play). The reply's counts are the plan's, said before the
+/// build; SpanDAC's status then reports what was built: `invalid`, with
+/// `built_before_failure` and a `reason`. nil unless that status is for a queue
+/// of the `expected` size the play planned. A failed unload is not called a stop.
+func filledPlayBuildFailureMessage(name: String, expected: Int, status: SourceStatus) -> String? {
+    guard status.queuePhase == "invalid", status.queueRequested == expected else { return nil }
+    let reason = status.queueReason ?? "the queue could not be built"
+    let said = reason.hasSuffix(".") ? String(reason.dropLast()) : reason
+    let lead = reason.hasSuffix(spanDACPlaybackNotStoppedSentence)
+        ? "'\(name)' did not finish building" : "'\(name)' stopped"
+    guard let built = status.queueBuiltBeforeFailure else { return "\(lead): \(said)." }
+    return "\(lead) after \(built) of \(expected) tracks: \(said)."
+}
+
 final class PlaylistsScene: Scene {
     let id: SceneID = .playlists
     let tabTitle = "Playlists"
@@ -1878,7 +1893,14 @@ final class PlaylistsScene: Scene {
                         outputNotInLibrary = played.skippedNotInLibrary
                         outputRepeated = played.skippedRepeated
                         outputFilled = played.filledFromCatalogue
-                        routing.recordSpanDACPlay(sent, token: played.queueToken)
+                        let serial = routing.recordSpanDACPlay(sent, token: played.queueToken)
+                        // The reply's counts are the plan's: watch for a build failure.
+                        if played.filledFromCatalogue > 0 {
+                            routing.recordSpanDACFill(
+                                serial: serial, name: name,
+                                expected: sent.count - played.skippedUnavailable - played.skippedNotInLibrary
+                                    - played.skippedRepeated)
+                        }
                     }, unaffected: {})
                 }
                 if let handedOff {

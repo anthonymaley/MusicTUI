@@ -749,7 +749,34 @@ final class RoutingCoordinator {
                            shuffled: Bool = false, catalogue: Bool = false) -> Int {
         state.lock(); defer { state.unlock() }
         _spanDACSent = (_playSerial, rows, token, listRev, shuffled, catalogue)
+        // A newer recorded play is not the filled one a build failure would correct.
+        _spanDACFill = nil
         return _playSerial
+    }
+
+    /// The one SpanDAC play whose reply carried `filled_from_catalogue`: its counts
+    /// were the PLAN's (the reply comes before the build), so a build failure the
+    /// status later reports corrects the footer (`filledBuildFailure`). Guarded by `state`.
+    private var _spanDACFill: (serial: Int, name: String, expected: Int, reported: Bool)?
+
+    /// Called after `recordSpanDACPlay` for a play the device filled from the
+    /// catalogue. `expected` is the entries it planned: the footer's track count.
+    func recordSpanDACFill(serial: Int, name: String, expected: Int) {
+        state.lock(); defer { state.unlock() }
+        _spanDACFill = (serial, name, expected, false)
+    }
+
+    /// The correction for the footer, once, when `status` says the filled play's queue
+    /// is `invalid`. Only while that play is still the current one and the status is
+    /// about a queue of the size it planned, so another queue's failure is never
+    /// read as this play's.
+    func filledBuildFailure(status: SourceStatus) -> String? {
+        state.lock(); defer { state.unlock() }
+        guard let fill = _spanDACFill, !fill.reported, fill.serial == _playSerial,
+              let message = filledPlayBuildFailureMessage(name: fill.name, expected: fill.expected, status: status)
+        else { return nil }
+        _spanDACFill = (fill.serial, fill.name, fill.expected, true)
+        return message
     }
 
     /// The one worker that reads the rows of whole plays for Up Next, one at a time
