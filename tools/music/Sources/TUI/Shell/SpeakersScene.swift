@@ -370,7 +370,7 @@ final class SpeakersScene: Scene {
     /// playback globals and `q Quit` around this.
     var footerHint: String {
         if showingSwitchScreen { return SpanDACSwitchCopy.keys }
-        if askingStopUsing { return stopUsingSpanDACKeys }
+        if askingStopUsing || askingLeave != nil { return stopUsingSpanDACKeys }
         if spandac?.awaitingAnswer == true { return "y Yes  n No  Esc Cancel" }
         if spandac?.isPairing == true { return "Esc Cancel pairing" }
         let move = "\u{2191}\u{2193} Move"
@@ -947,6 +947,93 @@ final class SpeakersScene: Scene {
         readinessLock.unlock()
     }
 
+    /// The question "can't reach <device>; leave it?", and what it was asked
+    /// about. It is shown only while all of this is still true (see
+    /// `drainLeaveQuestion`).
+    struct LeaveQuestion: Equatable {
+        let outgoing: PlaybackMode
+        let target: PlaybackMode
+        let targetName: String?
+        let device: String
+        let epoch: Int
+        /// `keyCount` when the Enter that started the switch was handled.
+        let keyCount: Int
+        /// `activationGeneration` at that Enter: leaving and re-entering the tab
+        /// in between makes the question stale.
+        let activation: Int
+    }
+    /// The open question. Main loop only; modal like `askingStopUsing`.
+    private var askingLeave: LeaveQuestion? = nil
+    private var inboxLeaveQuestion: LeaveQuestion? = nil          // guarded by readinessLock
+    /// Keys this scene has handled. A question is dropped when any key was
+    /// handled after the Enter it answers. Guarded by `readinessLock`.
+    private var handledKeys = 0
+    /// Moves every time the tab is left or entered. Guarded by `readinessLock`.
+    private var activationGeneration = 0
+    /// Whether this tab is the one showing. The shell tells us
+    /// (`becameActive`/`resignedActive`); a scene never told is active.
+    private var isActive = true
+
+    var askingLeaveForTest: Bool { askingLeave != nil }
+
+    func becameActive() {
+        isActive = true
+        readinessLock.lock(); activationGeneration += 1; readinessLock.unlock()
+    }
+    func resignedActive() {
+        isActive = false
+        askingLeave = nil
+        // A question already delivered but not yet drained goes too.
+        readinessLock.lock(); activationGeneration += 1; inboxLeaveQuestion = nil; readinessLock.unlock()
+    }
+
+    static func leaveQuestionText(_ q: LeaveQuestion) -> String {
+        "Can't reach \(q.device). It may still be playing. Leave it and use \(q.targetName ?? "SpanDAC")?"
+    }
+
+    private func currentKeyAndActivation() -> (keys: Int, activation: Int) {
+        readinessLock.lock(); defer { readinessLock.unlock() }
+        return (handledKeys, activationGeneration)
+    }
+
+    /// Main loop only: opens a delivered question if it is still current, and
+    /// closes an open one that no longer is. A question that went stale is
+    /// dropped silently; the person can press Enter again.
+    private func drainLeaveQuestion() -> Bool {
+        readinessLock.lock()
+        let delivered = inboxLeaveQuestion; inboxLeaveQuestion = nil
+        let keys = handledKeys, activation = activationGeneration
+        readinessLock.unlock()
+        var changed = false
+        if let open = askingLeave, open.epoch != routing.epoch || open.outgoing != routing.mode {
+            askingLeave = nil
+            changed = true
+        }
+        if let q = delivered, isActive, q.epoch == routing.epoch, q.outgoing == routing.mode,
+           q.keyCount == keys, q.activation == activation {
+            askingLeave = q
+            changed = true
+        }
+        return changed
+    }
+
+    /// Whether a failed request to a SpanDAC on the network means NOTHING CAME
+    /// BACK. The network client (`SpanDACTLSTransport`, SpanDACLink.swift) throws
+    /// only `SourceAppError.link(...)`: `.notFound` (Bonjour did not resolve,
+    /// :347), `.asleep` (connect failed or the handshake timed out, :400/:453/
+    /// :463) and `.noAnswer` (connected, no reply, :402/:441/:491) are silence.
+    /// `.notRunning` and `.timedOut` are the Mac's Unix-socket errors and never
+    /// come from it. Everything else is a device or this Mac saying something
+    /// (`.notPaired`, `.refused`, `.unsafeCipher`, `.forgotten`, `.unreadable`,
+    /// `.notAuthorized`) and keeps the strict rule.
+    static func isNoAnswer(_ error: Error) -> Bool {
+        guard case SourceAppError.link(let failure) = error else { return false }
+        switch failure {
+        case .notFound, .asleep, .noAnswer: return true
+        default: return false
+        }
+    }
+
     /// Choosing a row. Ruling 12.3's transaction lives in the coordinator:
     /// pause the outgoing player, drop its queue, save, commit — and refuse the
     /// whole switch if any step cannot be confirmed.
@@ -954,13 +1041,35 @@ final class SpeakersScene: Scene {
     /// `onlyIfEpoch`: switch only if no other switch committed since that
     /// epoch. Checked on the action queue, where every switch this tab makes
     /// is ordered, so a switch queued before this one is seen.
-    private func selectMode(_ target: PlaybackMode, name targetName: String? = nil, onlyIfEpoch: Int? = nil) {
+    ///
+    /// **One person-chosen exception to "only positive evidence":** when the
+    /// outgoing output is a SpanDAC on an iPhone or iPad and it gives NO ANSWER
+    /// (`isNoAnswer`), the switch is refused and the tab ASKS, in its body, "Can't
+    /// reach <device>. It may still be playing. Leave it and use <target>?"
+    /// (`askingLeave`, delivered through the inbox and shown only while it is
+    /// still current). The person's y comes back here as `leaveUnreached`: if
+    /// that output and epoch are still current and it is still silent, its pause counts
+    /// as confirmed and the status line says it may still be playing. A device
+    /// that answers, and every other output, keeps the strict rule.
+    private func selectMode(_ target: PlaybackMode, name targetName: String? = nil, onlyIfEpoch: Int? = nil,
+                            leaveUnreached: (outgoing: PlaybackMode, epoch: Int)? = nil) {
+        // Device names by id, read here on the caller's thread (the rows belong
+        // to it, not to the action queue); the refusal looks up the id of the
+        // output actually being left.
+        let deviceNames = Dictionary(spandacRows.map { ($0.sourceID, $0.name) }, uniquingKeysWith: { first, _ in first })
+        let (keysAtEnter, activationAtEnter) = currentKeyAndActivation()
+        let targetLabel = targetName ?? (target == .musicApp ? musicTUIOutputName : "SpanDAC")
         actions.run("Output") { [weak self] in
             guard let self else { return }
             // Fires on every exit from this closure — including a thrown
             // error from switchMode — so a test waiting on it can never be
             // stranded by the exceptional path.
             defer { self.selectModeFinishedForTest?() }
+            let outgoingNow = self.routing.mode, epochNow = self.routing.epoch
+            // The person's y holds only for the output and epoch they were ASKED about
+            // (recorded with the question, not re-read at the y).
+            let leaving = leaveUnreached.map { $0.outgoing == outgoingNow && $0.epoch == epochNow } ?? false
+            let outgoingDevice = outgoingNow.networkSourceID.flatMap { deviceNames[$0] } ?? "that device"
             if let expected = onlyIfEpoch, self.routing.epoch != expected {
                 self.status.post("Paired with \(targetName ?? "SpanDAC"). Press Enter to play there.")
                 return
@@ -978,25 +1087,63 @@ final class SpeakersScene: Scene {
                 return self.makeNetworkClient?(id) ?? .failing(.notPaired)
             }
             let incoming = clientFor(target)
-            let result = try self.routing.switchMode(
-                to: target,
-                readiness: { incoming.readiness() },
-                pauseOutgoing: { outgoing in
-                    switch outgoing {
-                    case .musicApp:
-                        return try self.confirmMusicAppPaused()
-                    case .source:
-                        return try confirmBridgeNotPlaying(clientFor(outgoing).control)
-                    case .networkSource:
-                        return try confirmBridgeNotPlaying(clientFor(outgoing).control)
-                    }
-                },
-                dropQueue: { outgoing in
-                    switch outgoing {
-                    case .musicApp: break   // MusicTUI's own queue, cleared below
-                    case .source, .networkSource: try clientFor(outgoing).control.stop()
-                    }
-                })
+            var noAnswerRefused = false    // the outgoing network SpanDAC did not answer, and the person has not said to leave it
+            var leftUnanswered = false     // it did not answer, and the person said to leave it
+            let result: RoutingCoordinator.SwitchResult
+            do {
+                result = try self.routing.switchMode(
+                    to: target,
+                    readiness: { incoming.readiness() },
+                    pauseOutgoing: { outgoing in
+                        switch outgoing {
+                        case .musicApp:
+                            return try self.confirmMusicAppPaused()
+                        case .source:
+                            return try confirmBridgeNotPlaying(clientFor(outgoing).control)
+                        case .networkSource:
+                            do {
+                                return try confirmBridgeNotPlaying(clientFor(outgoing).control)
+                            } catch where Self.isNoAnswer(error) {
+                                if leaving { leftUnanswered = true; return true }
+                                noAnswerRefused = true
+                                return false
+                            }
+                        }
+                    },
+                    dropQueue: { outgoing in
+                        switch outgoing {
+                        case .musicApp: break   // MusicTUI's own queue, cleared below
+                        case .source: try clientFor(outgoing).control.stop()
+                        case .networkSource:
+                            do { try clientFor(outgoing).control.stop() }
+                            catch where leftUnanswered && Self.isNoAnswer(error) { break }
+                        }
+                    })
+            } catch {
+                if noAnswerRefused {
+                    // No toast: a question, through the inbox, to the main loop.
+                    self.readinessLock.lock()
+                    self.inboxLeaveQuestion = LeaveQuestion(outgoing: outgoingNow, target: target, targetName: targetLabel,
+                                                            device: outgoingDevice, epoch: epochNow, keyCount: keysAtEnter,
+                                                            activation: activationAtEnter)
+                    self.readinessLock.unlock()
+                    return
+                }
+                // The coordinator's save-failure sentence says the queue was
+                // cleared; after an unconfirmed leave it was not.
+                if leftUnanswered, let refusal = error as? ActionError,
+                   refusal.message.hasPrefix("Couldn't save the playback mode") {
+                    throw ActionError(message: "Couldn't save the playback mode; still using SpanDAC on \(outgoingDevice), which could not be reached.")
+                }
+                throw error
+            }
+            // After an unconfirmed leave the success line carries the reminder.
+            let reminder: (String) -> Bool = { newOutput in
+                guard leftUnanswered else { return false }
+                self.status.post("Now using \(newOutput). SpanDAC on \(outgoingDevice) may still be playing.",
+                                 ttl: macSoundNoticeSeconds)
+                return true
+            }
             switch result {
             case .alreadyInMode:
                 // Enter on the SpanDAC row that is already the output: when its
@@ -1010,18 +1157,28 @@ final class SpeakersScene: Scene {
                 switch mode {
                 case .networkSource(let id):
                     self.spandac?.probe(id)
-                    self.status.post("Output: SpanDAC · \(targetName ?? "on the network")")
+                    if !reminder("SpanDAC on \(targetName ?? "the network")") {
+                        self.status.post("Output: SpanDAC · \(targetName ?? "on the network")")
+                    }
                 case .source:
                     // The selection is committed and the outgoing player is
                     // paused and cleared (inside `switchMode`): only now may
                     // SpanDAC move the Mac's sound output to its DAC.
                     self.makeMacOutputTheDAC(client)
-                    self.status.post("Output: SpanDAC · \(self.macName)")
+                    if !reminder("SpanDAC on \(self.macName)") {
+                        self.status.post("Output: SpanDAC · \(self.macName)")
+                    }
                 case .musicApp:
                     let read = Self.readMacStatusWithMacOutput(client)
                     self.publishReadiness(read.readiness, data: read.data, output: read.output)
                     let notice = macSoundStillOnTheDAC(read.macOutput)
-                    self.status.post(musicTUIOutputLine(read.macOutput), ttl: notice == nil ? 3 : macSoundNoticeSeconds)
+                    if leftUnanswered {
+                        // Both facts, the reminder first.
+                        let head = "Now using \(musicTUIOutputName). SpanDAC on \(outgoingDevice) may still be playing."
+                        self.status.post(notice.map { head + " " + $0 } ?? head, ttl: macSoundNoticeSeconds)
+                    } else {
+                        self.status.post(musicTUIOutputLine(read.macOutput), ttl: notice == nil ? 3 : macSoundNoticeSeconds)
+                    }
                 }
             }
         }
@@ -1118,6 +1275,7 @@ final class SpeakersScene: Scene {
             }
         }
         if drainDataInbox() { changed = true }
+        if drainLeaveQuestion() { changed = true }
         // The switch screen shows itself ONCE, the first time SpanDAC on this
         // Mac reads ready for music data while the person has never been
         // asked (every install from before the data route included: no
@@ -1800,6 +1958,29 @@ final class SpeakersScene: Scene {
         // A stale list is said on a pinned top line that no scroll position or
         // long group name can hide, and that never touches the status line
         // (Codex turns 33-34).
+        // "Can't reach <device>. Leave it?" is PINNED to the top of the body,
+        // outside the scrolling list, so no cursor position can scroll it out
+        // of view while it swallows the keys. Wrapped, never cut; a body too
+        // short for it shows the question and no list.
+        if let question = askingLeave {
+            let width = max(1, frame.width - 4)
+            var ask = wrapForOutputTab(Self.leaveQuestionText(question), width: width)
+            if let last = ask.last, last.count + 2 + stopUsingSpanDACKeys.count <= width {
+                ask[ask.count - 1] = last + "  " + stopUsingSpanDACKeys
+            } else {
+                ask.append(stopUsingSpanDACKeys)
+            }
+            let shown = Array(ask.prefix(frame.bodyHeight))
+            var pinned = ""
+            for (i, line) in shown.enumerated() {
+                pinned += ANSICode.moveTo(row: frame.bodyY + i, col: 3)
+                    + "\(ANSICode.bold)\(ANSICode.brightWhite)\(line)\(ANSICode.reset)"
+            }
+            let inset = shown.count + 1      // a blank line under it
+            guard inset < frame.bodyHeight else { return clear + pinned }
+            return clear + pinned + outputViewport(out, bodyY: frame.bodyY, height: frame.bodyHeight,
+                                                   focusY: focusY, inset: inset)
+        }
         if speakerFetchFailed, frame.bodyHeight > 1 {
             let said = everLoaded ? "AirPlay speaker list unavailable; retrying \u{00B7} showing the last list"
                                   : "AirPlay speaker list unavailable; retrying"
@@ -1811,6 +1992,7 @@ final class SpeakersScene: Scene {
     }
 
     func handle(_ key: KeyPress) -> SceneAction {
+        readinessLock.lock(); handledKeys += 1; readinessLock.unlock()
         // The switch screen and the stop-using question come before
         // everything, before the vim aliases: they answer only their keys.
         if showingSwitchScreen {
@@ -1835,6 +2017,24 @@ final class SpeakersScene: Scene {
                 return .redraw
             case .char("n"), .char("N"), .escape:
                 askingStopUsing = false
+                return .redraw
+            default:
+                return .none
+            }
+        }
+        // "Leave it?" is modal like the question above: y, n and Esc answer it
+        // and every other key, a second Enter included, is ignored.
+        if let question = askingLeave {
+            switch key {
+            case .char("y"), .char("Y"):
+                askingLeave = nil
+                // The action decides whether the question's output and epoch
+                // still hold; otherwise this is an ordinary, strict attempt.
+                selectMode(question.target, name: question.targetName,
+                           leaveUnreached: (question.outgoing, question.epoch))
+                return .redraw
+            case .char("n"), .char("N"), .escape:
+                askingLeave = nil
                 return .redraw
             default:
                 return .none
