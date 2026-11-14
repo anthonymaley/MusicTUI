@@ -709,8 +709,20 @@ func bridgeNotInLibraryPrefix(_ n: Int) -> String {
 /// narrow footer must not cut off. " \u{00B7} skipped 3 songs not in your library".
 /// Empty when `n` is 0.
 func bridgeNotInLibraryTrailer(_ n: Int) -> String {
-    guard n > 0 else { return "" }
-    return " \u{00B7} skipped \(n) song\(n == 1 ? "" : "s") not in your library"
+    bridgeSkipTrailer(notInLibrary: n, repeated: 0)
+}
+
+/// The trailing form of the whole skip lead (`bridgeSkipLead`), for an unconfirmed
+/// SpanDAC play, whose warning keeps its own first words: " \u{00B7} skipped 3 songs not in
+/// your library" (the not-in-library count alone, byte for byte as above),
+/// " \u{00B7} skipped 2 repeats", " \u{00B7} skipped 12 not in your library, 1 repeat". Empty when both are 0.
+func bridgeSkipTrailer(notInLibrary: Int, repeated: Int) -> String {
+    guard notInLibrary > 0 || repeated > 0 else { return "" }
+    if repeated == 0 { return " \u{00B7} skipped \(notInLibrary) song\(notInLibrary == 1 ? "" : "s") not in your library" }
+    var parts: [String] = []
+    if notInLibrary > 0 { parts.append("\(notInLibrary) not in your library") }
+    parts.append("\(repeated) repeat\(repeated == 1 ? "" : "s")")
+    return " \u{00B7} skipped " + parts.joined(separator: ", ")
 }
 
 /// A count a person reads, grouped in threes: 15646 → "15,646".

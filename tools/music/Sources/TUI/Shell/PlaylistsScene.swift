@@ -73,6 +73,22 @@ func bridgePlaylistPlayMessage(name: String, queued: Int, skippedVideos: Int, sk
     return message
 }
 
+/// The footer for a playlist play whose queue SpanDAC accepted and whose status read
+/// then failed (Codex, 2026-11-11): the play started and is unconfirmed. The warning
+/// keeps its own first words (a narrow footer cuts the line at its width), then what
+/// the queue reply said was left out, in the trailing form, then the videos and
+/// unavailable songs. Known limit (ruling 2026-11-07 10:45): at narrow widths the
+/// warning fills the footer and the counts are cut.
+func bridgePlaylistPlayUnconfirmedMessage(name: String, skippedVideos: Int, skippedUnavailable: Int,
+                                          skippedNotInLibrary: Int, skippedRepeated: Int) -> String {
+    let notices = [skippedVideos > 0 ? bridgeSkippedVideosNotice(skippedVideos) : nil,
+                   skippedUnavailable > 0 ? bridgeUnavailableSongsNotice(skippedUnavailable) : nil]
+        .compactMap { $0 }
+    return unconfirmedPlayLine(warning: spanDACPlayNotConfirmedWarning(name),
+                               trailer: bridgeSkipTrailer(notInLibrary: skippedNotInLibrary, repeated: skippedRepeated),
+                               notice: notices.isEmpty ? nil : notices.joined(separator: " "))
+}
+
 final class PlaylistsScene: Scene {
     let id: SceneID = .playlists
     let tabTitle = "Playlists"
@@ -1814,6 +1830,9 @@ final class PlaylistsScene: Scene {
                 // copy it can play, so every row is sent and the device keeps the first
                 // that survives.
                 var outputRepeated = 0
+                // Set when the output accepted the queue and the status read after it
+                // failed: the play started, unconfirmed (never an error, never replayed).
+                var unconfirmedPlay = false
                 var handedOff: HandoffPlayReport?
                 var wholeResult: SpanDACPlayResult?
                 var wholeSerial: Int?
@@ -1850,6 +1869,7 @@ final class PlaylistsScene: Scene {
                         skippedUnavailable = played.skippedUnavailable
                         outputNotInLibrary = played.skippedNotInLibrary
                         outputRepeated = played.skippedRepeated
+                        unconfirmedPlay = played.statusUnconfirmed != nil
                         routing.recordSpanDACPlay(sent, token: played.queueToken)
                     }, unaffected: {})
                 }
@@ -1881,6 +1901,13 @@ final class PlaylistsScene: Scene {
                 // read's were never sent), and what the output dropped was sent but did not
                 // play, so it leaves the played count and never the total.
                 let notInLibrary = finalNotInLibrary + outputNotInLibrary
+                if unconfirmedPlay {
+                    status.post(bridgePlaylistPlayUnconfirmedMessage(
+                                    name: name, skippedVideos: finalSkipped, skippedUnavailable: skippedUnavailable,
+                                    skippedNotInLibrary: notInLibrary, skippedRepeated: outputRepeated),
+                                untilStateChange: true)
+                    return
+                }
                 // The repeats the output dropped were sent too: out of the played count,
                 // never the total, and said in the line's protected lead.
                 status.post(bridgePlaylistPlayMessage(name: name, queued: ids?.count ?? 0,

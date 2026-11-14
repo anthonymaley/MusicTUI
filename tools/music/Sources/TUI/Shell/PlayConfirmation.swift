@@ -136,7 +136,20 @@ func playNotStartedWarning(_ title: String) -> String {
 /// survive), then what the play skipped (`trailer`, which carries its own
 /// separator), then the rest of the play's notice.
 func unconfirmedPlayLine(title: String, trailer: String?, notice: String?) -> String {
-    playNotStartedWarning(title) + (trailer ?? "") + (notice.map { " " + $0 } ?? "")
+    unconfirmedPlayLine(warning: playNotStartedWarning(title), trailer: trailer, notice: notice)
+}
+
+/// The same line for a warning worded by the caller (a SpanDAC output's, which has no
+/// Music to quit and reopen).
+func unconfirmedPlayLine(warning: String, trailer: String?, notice: String?) -> String {
+    warning + (trailer ?? "") + (notice.map { " " + $0 } ?? "")
+}
+
+/// The footer line for a SpanDAC play whose queue SpanDAC accepted and whose status read
+/// then failed: the same shape and first words as `playNotStartedWarning`, naming the
+/// output, without its Music-specific advice.
+func spanDACPlayNotConfirmedWarning(_ title: String) -> String {
+    "Play was requested, but SpanDAC didn't confirm '\(title)' started."
 }
 
 /// What must not have moved between a request and its late result: both
