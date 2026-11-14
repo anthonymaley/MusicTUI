@@ -166,6 +166,121 @@ final class BridgeLibraryPlaySceneTests: XCTestCase {
         XCTAssertEqual(status.current(now: Date().addingTimeInterval(3600))?.staysUntilStateChange, true)
     }
 
+    // MARK: - An accepted queue whose follow-up status read fails
+    //
+    // The queue reply is where the output's skip count lives. When SpanDAC ACCEPTS the queue
+    // and the status read after it fails, the play started and is unconfirmed: the footer
+    // says so (the playlist play's own words), the count follows it, the accepted queue is
+    // never sent again (a status that is `warming` included), and the rows and token stay.
+
+    private let statusRefusedAfterQueue = """
+    {"ok":false,"op":"slice.status","error":{"kind":"player_disconnected","detail":"the player stopped answering"}}
+    """
+    private let statusWarmingAfterQueue = """
+    {"ok":false,"op":"slice.status","error":{"kind":"warming","detail":"preparing your library","retry_after":0.5}}
+    """
+    private let readableStatus = """
+    {"ok":true,"op":"slice.status","status":{"playback":"playing","title":"T","artist":"A","contract":3,
+     "authorization":"authorized","queue":{"phase":"complete","requested":1,"present":1,"index":0}}}
+    """
+    private let artistsPage = """
+    {"ok":true,"op":"slice.libraryArtists","generation":3,"total":1,
+     "items":[{"id":"ar1","title":"Radiohead","kind":"artist"}],"next_cursor":null}
+    """
+    private let artistAlbumsPage = #"{"ok":true,"op":"slice.libraryArtistAlbums","generation":3,"library_instance":"inst-A","items":[{"id":"al1","title":"In Rainbows","artist":"Radiohead","track_count":4,"kind":"album"}],"stale":false,"refreshing":false}"#
+    private let songsListPage = """
+    {"ok":true,"op":"slice.librarySongs","generation":3,"total":1,
+     "items":[{"id":"s1","title":"Nude","artist":"Radiohead","album":"In Rainbows","kind":"song"}],
+     "next_cursor":null}
+    """
+
+    private enum UnconfirmedPlay { case album, artist, song }
+
+    /// Plays on a wire whose `slice.status` answers until the queue is served and
+    /// `statusAfterQueue` after it. Returns the wire, the footer text, whether it stays,
+    /// and the routing coordinator.
+    private func playWithStatusFailingAfterTheQueue(
+        _ play: UnconfirmedPlay, statusAfterQueue: String, unavailable: Int = 0, file: StaticString = #filePath,
+        line: UInt = #line) -> (wire: BridgeLibraryReadsWire, footer: String?, stays: Bool?, routing: RoutingCoordinator) {
+        let queueReply = "{\"ok\":true,\"op\":\"slice.queue\",\"queue_token\":\"tok-1\",\"skipped_unavailable\":\(unavailable)}"
+        let wire = BridgeLibraryReadsWire(["slice.libraryAlbums": [albumPage],
+                                          "slice.libraryArtists": [artistsPage],
+                                          "slice.libraryArtistAlbums": [artistAlbumsPage, artistAlbumsPage],
+                                          "slice.librarySongs": [songsListPage],
+                                          "slice.libraryAlbumTracks": [trackReply(["t1", "t2", "t3", "t4"])],
+                                          "slice.queue": [queueReply]])
+        var queueServed = false
+        wire.handler = { op, _ in
+            if op == "slice.queue" { queueServed = true; return nil }
+            guard op == "slice.status" else { return nil }
+            return queueServed ? statusAfterQueue : self.readableStatus
+        }
+        let status = StatusStore()
+        let store = PlaybackModeStore(path: NSTemporaryDirectory() + "mode-\(UUID().uuidString).json")
+        store.set(.source)
+        let routing = RoutingCoordinator(store: store, surface: .tui,
+                                         makeSource: { SourceAppClient(path: "/nonexistent", transport: wire.transport) })
+        let s = libraryTestScene(flag: BridgeSelectedFlag(true), wire: wire, spy: LibraryAppleScriptSpy(),
+                                 status: status, routing: routing)
+        switch play {
+        case .album:
+            goToSubView(s, .albums)
+            XCTAssertTrue(settleScene(s) { s.render(frame: frame, snapshot: idle).contains("In Rainbows") }, file: file, line: line)
+            _ = s.handle(.char("p"))
+        case .artist:
+            goToSubView(s, .artists)
+            XCTAssertTrue(settleScene(s) { s.render(frame: frame, snapshot: idle).contains("Radiohead") }, file: file, line: line)
+            _ = s.handle(.char("p"))
+        case .song:
+            goToSubView(s, .songs)
+            XCTAssertTrue(settleScene(s) { s.render(frame: frame, snapshot: idle).contains("Nude") }, file: file, line: line)
+            _ = s.handle(.enter)
+        }
+        XCTAssertTrue(settleQueued(wire), file: file, line: line)
+        _ = settleScene(s) { status.current()?.text.contains("SpanDAC") == true }
+        return (wire, status.current()?.text,
+                status.current(now: Date().addingTimeInterval(3600))?.staysUntilStateChange, routing)
+    }
+
+    func testAnAlbumQueueAcceptedWhoseStatusReadFailsKeepsItsUnavailableCountAndSendsTheQueueOnce() {
+        let r = playWithStatusFailingAfterTheQueue(.album, statusAfterQueue: statusRefusedAfterQueue, unavailable: 1)
+        XCTAssertEqual(r.wire.sent("slice.queue").count, 1, "an accepted queue is never sent again")
+        XCTAssertEqual(r.footer, "Play was requested, but SpanDAC didn't confirm 'In Rainbows' started."
+                       + " 1 song isn't available to SpanDAC.")
+        XCTAssertEqual(r.stays, true, "an unconfirmed play's line stays until something changes")
+        XCTAssertEqual(r.routing.spanDACPlay()?.token, "tok-1", "the accepted queue's token is kept")
+        XCTAssertEqual(r.routing.spanDACPlay()?.rows.map(\.id), ["t1", "t2", "t3", "t4"], "the rows sent are kept")
+    }
+
+    func testAnAlbumQueueAcceptedWhoseStatusIsWarmingDoesNotReplayTheQueue() {
+        let r = playWithStatusFailingAfterTheQueue(.album, statusAfterQueue: statusWarmingAfterQueue, unavailable: 2)
+        XCTAssertEqual(r.wire.sent("slice.queue").count, 1, "a status that is warming must not re-send an accepted queue")
+        XCTAssertEqual(r.footer, "Play was requested, but SpanDAC didn't confirm 'In Rainbows' started."
+                       + " 2 songs aren't available to SpanDAC.")
+    }
+
+    func testAnArtistQueueAcceptedWhoseStatusReadFailsKeepsItsUnavailableCountAndSendsTheQueueOnce() {
+        let r = playWithStatusFailingAfterTheQueue(.artist, statusAfterQueue: statusWarmingAfterQueue, unavailable: 2)
+        XCTAssertEqual(r.wire.sent("slice.queue").count, 1, "an accepted queue is never sent again")
+        XCTAssertEqual(r.footer, "Play was requested, but SpanDAC didn't confirm 'Radiohead' started."
+                       + " 2 songs aren't available to SpanDAC.")
+        XCTAssertEqual(r.stays, true)
+        XCTAssertEqual(r.routing.spanDACPlay()?.token, "tok-1")
+    }
+
+    func testASongQueueAcceptedWhoseStatusIsWarmingSaysItWasRequestedAndSendsTheQueueOnce() {
+        let r = playWithStatusFailingAfterTheQueue(.song, statusAfterQueue: statusWarmingAfterQueue)
+        XCTAssertEqual(r.wire.sent("slice.queue").count, 1, "a status that is warming must not re-send an accepted queue")
+        XCTAssertEqual(r.footer, "Play was requested, but SpanDAC didn't confirm 'Nude' started.")
+        XCTAssertEqual(r.stays, true)
+        XCTAssertEqual(r.routing.spanDACPlay()?.token, "tok-1")
+    }
+
+    func testAReadableStatusAfterTheAlbumQueueStillPostsTheOrdinaryLine() {
+        let r = playWithStatusFailingAfterTheQueue(.album, statusAfterQueue: readableStatus, unavailable: 1)
+        XCTAssertEqual(r.footer, "Playing 'In Rainbows' on SpanDAC \u{2014} 3 tracks. 1 song isn't available to SpanDAC.")
+    }
+
     func testPOnAnArtistWithTwoUnavailableSongsAppendsThePluralNotice() {
         let artistPage = """
         {"ok":true,"op":"slice.libraryArtists","generation":3,"total":1,

@@ -75,7 +75,7 @@ struct SpanDACPlayResult: Equatable {
     /// (the reason, in the provider's own words): the play started but was not
     /// confirmed, and `queue` is then `.none`, not an observation. Every count above is
     /// the queue reply's own and is carried, never dropped. Only the playlist form of
-    /// `playRetainingToken` returns a result this way; the other forms throw as before.
+    /// `playRetainingToken` (and so `playReportingUnconfirmedStatus`, which sends neither opt-in) returns a result this way; the other forms throw as before.
     var statusUnconfirmed: String? = nil
 }
 

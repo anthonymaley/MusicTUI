@@ -310,6 +310,47 @@ final class MarkedSetSpanDACPlayTests: XCTestCase {
         XCTAssertEqual(r.status.current(now: Date().addingTimeInterval(3600))?.staysUntilStateChange, true)
     }
 
+    // MARK: - An accepted queue whose follow-up status read fails
+
+    /// Plays the mixed set on a SpanDAC output whose `slice.status` answers until the queue is
+    /// served and `statusAfterQueue` after it.
+    private func playMixedWithStatusFailingAfterTheQueue(_ statusAfterQueue: String, skippedVideos: Int = 0,
+                                                         skippedNotInLibrary: Int = 0) -> Rig {
+        let r = rig(output: .source)
+        r.data.script("slice.libraryAlbumTracks", [albumTracks(["t1", "t2"]), albumTracks(["t3"])])
+        r.data.script("slice.libraryPlaylistTracks", [playlistTracks(["p1", "p2"], skippedVideos: skippedVideos,
+                                                                     skippedNotInLibrary: skippedNotInLibrary)])
+        r.output.script("slice.queue", [queued(skippedUnavailable: 1, token: "tok-1")])
+        var queueServed = false
+        r.output.handler = { op, _ in
+            if op == "slice.queue" { queueServed = true; return nil }
+            return op == "slice.status" && queueServed ? statusAfterQueue : nil
+        }
+        play(mixed, r)
+        return r
+    }
+
+    func testAnAcceptedMarkedQueueWhoseStatusReadFailsKeepsItsCountsAndSendsTheQueueOnce() {
+        let r = playMixedWithStatusFailingAfterTheQueue(
+            #"{"ok":false,"op":"slice.status","error":{"kind":"player_disconnected","detail":"the player stopped answering"}}"#,
+            skippedVideos: 2, skippedNotInLibrary: 3)
+        XCTAssertEqual(r.output.sent("slice.queue").count, 1, "an accepted queue is never sent again")
+        XCTAssertEqual(r.status.current()?.text,
+                       "Play was requested, but SpanDAC didn't confirm '\(mixedName)' started."
+                       + " \u{00B7} skipped 3 songs not in your library 2 videos skipped. 1 song isn't available to SpanDAC.")
+        XCTAssertEqual(r.status.current(now: Date().addingTimeInterval(3600))?.staysUntilStateChange, true)
+        XCTAssertEqual(r.routing.spanDACPlay()?.token, "tok-1")
+        XCTAssertEqual(r.routing.spanDACPlay()?.rows.count, 5)
+    }
+
+    func testAnAcceptedMarkedQueueWhoseStatusIsWarmingIsNotSentAgain() {
+        let r = playMixedWithStatusFailingAfterTheQueue(
+            #"{"ok":false,"op":"slice.status","error":{"kind":"warming","detail":"preparing your library","retry_after":0}}"#)
+        XCTAssertEqual(r.output.sent("slice.queue").count, 1, "a status that is warming must not re-send an accepted queue")
+        XCTAssertEqual(r.status.current()?.text,
+                       "Play was requested, but SpanDAC didn't confirm '\(mixedName)' started. 1 song isn't available to SpanDAC.")
+    }
+
     /// Playlist-only songs (Anthony, 2026-11-07): SpanDAC leaves them out of the
     /// playlist's rows and says how many. They are never sent, and the play line
     /// says they were skipped, ahead of the songs SpanDAC cannot play.

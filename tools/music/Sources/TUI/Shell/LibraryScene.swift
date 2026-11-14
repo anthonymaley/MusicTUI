@@ -2885,6 +2885,10 @@ final class LibraryScene: Scene {
                     // playback action and mode switch behind it. Taking the lock
                     // per attempt also means the route is re-decided each time,
                     // which is the rule that lock exists for.
+                    // Set when the output accepted the queue and the status read after it
+                    // failed: the play started, unconfirmed. It is never replayed (a
+                    // `warming` status after an ACCEPTED queue is not the warming above).
+                    var unconfirmedPlay = false
                     try retryingWhileWarming(
                         onWarming: { _ in
                             status.post("Preparing your library \u{2014} '\(title)' will play when it's ready\u{2026}")
@@ -2908,12 +2912,20 @@ final class LibraryScene: Scene {
                                                        shuffle: shuffle, title: title)
                             },
                             source: { client in
-                                let played = try spanDACOutputPlayer(client).playRetainingToken(ids: [id], startRequired: true)
+                                let played = try spanDACOutputPlayer(client).playReportingUnconfirmedStatus(
+                                    ids: [id], startRequired: true)
+                                unconfirmedPlay = played.statusUnconfirmed != nil
                                 routing.recordSpanDACPlay(
                                     [songRow ?? MusicRow(id: id, title: title, artist: artist, album: nil, kind: .song)],
                                     token: played.queueToken)
                             },
                             unaffected: {})
+                    }
+                    if unconfirmedPlay {
+                        status.post(bridgePlaylistPlayUnconfirmedMessage(
+                                        name: title, skippedVideos: 0, skippedUnavailable: 0,
+                                        skippedNotInLibrary: 0, skippedRepeated: 0),
+                                    untilStateChange: true)
                     }
                 } catch let error as MusicProviderError {
                     // Bridge's own sentence, or the footer reduces it to the
@@ -3062,6 +3074,9 @@ final class LibraryScene: Scene {
                 // Addendum U: how many of `ids` Bridge dropped as unavailable,
                 // set only on the attempt that actually succeeds (U-R5/U-R6).
                 var skippedUnavailable = 0
+                // Set when the output accepted the queue and the status read after it
+                // failed: the play started, unconfirmed (never an error, never replayed).
+                var unconfirmedPlay = false
                 var handedOff: HandoffPlayReport?
                 var wholeResult: SpanDACPlayResult?
                 var wholeSerial: Int?
@@ -3088,9 +3103,10 @@ final class LibraryScene: Scene {
                                 return
                             }
                             guard let ids, let sent else { throw ActionError(message: sourceChangedNothingPlayed) }
-                            let played = try spanDACOutputPlayer(client).playRetainingToken(
+                            let played = try spanDACOutputPlayer(client).playReportingUnconfirmedStatus(
                                 ids: ids, startRequired: startRequired)
                             skippedUnavailable = played.skippedUnavailable
+                            unconfirmedPlay = played.statusUnconfirmed != nil
                             routing.recordSpanDACPlay(sent, token: played.queueToken)
                         },
                         unaffected: {})
@@ -3114,6 +3130,13 @@ final class LibraryScene: Scene {
                     }
                     status.post(bridgeWholePlayMessage(name: title, result: wholeResult),
                                 untilStateChange: bridgeWholePlayNeedsAttention(wholeResult))
+                    return
+                }
+                if unconfirmedPlay {
+                    status.post(bridgePlaylistPlayUnconfirmedMessage(
+                                    name: title, skippedVideos: 0, skippedUnavailable: skippedUnavailable,
+                                    skippedNotInLibrary: 0, skippedRepeated: 0),
+                                untilStateChange: true)
                     return
                 }
                 let queuedCount = (ids?.count ?? 0) - skippedUnavailable
@@ -3188,6 +3211,8 @@ final class LibraryScene: Scene {
                 // always whole-collection — there is no track-level entry for
                 // an artist, so `startRequired` is always false.
                 var skippedUnavailable = 0
+                // As the album play above: an accepted queue whose status read failed.
+                var unconfirmedPlay = false
                 var handedOff: HandoffPlayReport?
                 try retryingWhileWarming(budget: budget, onWarming: onWarming, sleep: sleep) {
                     try routing.perform(.libraryPlay, expecting: stamp, origin: .spandacLibrary,
@@ -3198,9 +3223,10 @@ final class LibraryScene: Scene {
                                                                shuffle: shuffle, title: name)
                         },
                         source: { client in
-                            let played = try spanDACOutputPlayer(client).playRetainingToken(
+                            let played = try spanDACOutputPlayer(client).playReportingUnconfirmedStatus(
                                 ids: ids, startRequired: false)
                             skippedUnavailable = played.skippedUnavailable
+                            unconfirmedPlay = played.statusUnconfirmed != nil
                             routing.recordSpanDACPlay(sent, token: played.queueToken)
                         },
                         unaffected: {})
@@ -3208,6 +3234,13 @@ final class LibraryScene: Scene {
                 if let handedOff {
                     status.post(LibraryProvenance.playingOnMusicTUI(name, report: handedOff),
                                 untilStateChange: handedOff.notice != nil)
+                    return
+                }
+                if unconfirmedPlay {
+                    status.post(bridgePlaylistPlayUnconfirmedMessage(
+                                    name: name, skippedVideos: 0, skippedUnavailable: skippedUnavailable,
+                                    skippedNotInLibrary: 0, skippedRepeated: 0),
+                                untilStateChange: true)
                     return
                 }
                 let queuedCount = ids.count - skippedUnavailable

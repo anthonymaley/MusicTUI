@@ -137,7 +137,8 @@ struct BridgeMusicProvider: MusicDataProvider {
     }
 
     /// Likewise `skip_repeated` (2026-11-12), only when the CALLER says so. This is the
-    /// PLAYLIST form (the one caller that sends both opt-ins): when SpanDAC accepts the
+    /// form that reports an unread status (the playlist play sends both opt-ins; every other
+    /// collection play calls it through `playReportingUnconfirmedStatus` with neither): when SpanDAC accepts the
     /// queue and the status read after it fails, the play has started, so the result
     /// comes back with `statusUnconfirmed` set and the queue reply's counts and token,
     /// instead of an error that hides a play that happened and loses the counts. The

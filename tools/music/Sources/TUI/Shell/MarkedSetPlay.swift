@@ -596,6 +596,9 @@ private func playMarkedSetFromSpanDAC(_ items: [MarkedItem], shuffle: Bool, stam
         let closing = try bracket()
         guard closing.instance == opening.instance, closing.generation == opening.generation else { throw changed }
         var skippedUnavailable = 0
+        // Set when the output accepted the queue and the status read after it failed: the
+        // play started, unconfirmed (never an error, never replayed).
+        var unconfirmedPlay = false
         var handedOff: HandoffPlayReport?
         try retryingWhileWarming(budget: budget, onWarming: onWarming, sleep: sleep) {
             try routing.perform(.libraryPlay, expecting: stamp, origin: .spandacLibrary,
@@ -608,8 +611,9 @@ private func playMarkedSetFromSpanDAC(_ items: [MarkedItem], shuffle: Bool, stam
                                                        skippedNotInLibrary: read.skippedNotInLibrary)
                 },
                 source: { client in
-                    let played = try spanDACOutputPlayer(client).playRetainingToken(ids: ids, startRequired: false)
+                    let played = try spanDACOutputPlayer(client).playReportingUnconfirmedStatus(ids: ids, startRequired: false)
                     skippedUnavailable = played.skippedUnavailable
+                    unconfirmedPlay = played.statusUnconfirmed != nil
                     // SpanDAC's `row` / `next_rows` index the request sent, so a
                     // skipped song shifts nothing while they come. But a status
                     // without `next_rows` would have the sent order stand in for
@@ -624,6 +628,14 @@ private func playMarkedSetFromSpanDAC(_ items: [MarkedItem], shuffle: Bool, stam
         if let handedOff {
             status.post(LibraryProvenance.playingOnMusicTUI(name, report: handedOff),
                         untilStateChange: handedOff.saysAnything)
+            return
+        }
+        if unconfirmedPlay {
+            status.post(bridgePlaylistPlayUnconfirmedMessage(
+                            name: name, skippedVideos: read.skippedVideos, skippedUnavailable: skippedUnavailable,
+                            skippedNotInLibrary: read.skippedNotInLibrary, skippedRepeated: 0,
+                            lastNotice: repeatedSongsNotice(repeatedSongs)),
+                        untilStateChange: true)
             return
         }
         // The single SpanDAC playlist play's own sentence: the videos apart

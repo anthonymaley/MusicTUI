@@ -574,8 +574,18 @@ final class DJHost {
                             untilStateChange: report.notice != nil)
             },
             source: { client in
-                let played = try spanDACOutputPlayer(client).playRetainingToken(ids: rows.map(\.id), startRequired: false)
+                let played = try spanDACOutputPlayer(client).playReportingUnconfirmedStatus(
+                    ids: rows.map(\.id), startRequired: false)
                 routing.recordSpanDACPlay(rows, token: played.queueToken, shuffled: played.skippedUnavailable > 0)
+                // The queue was accepted and the status read after it failed: the play
+                // started, unconfirmed, and the queue's count is kept (never an error).
+                if played.statusUnconfirmed != nil {
+                    status.post(bridgePlaylistPlayUnconfirmedMessage(
+                                    name: title, skippedVideos: 0, skippedUnavailable: played.skippedUnavailable,
+                                    skippedNotInLibrary: 0, skippedRepeated: 0),
+                                untilStateChange: true)
+                    return
+                }
                 let base = "Playing \(title) on SpanDAC \u{2014} \(djCount(rows.count, "song"))."
                 status.post(played.skippedUnavailable > 0
                                 ? base + " " + bridgeUnavailableSongsNotice(played.skippedUnavailable) : base,
