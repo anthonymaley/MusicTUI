@@ -83,8 +83,13 @@ struct SourceRateAnswer: Decodable, Equatable {
     /// An older write SpanDAC never proved: the DAC may still change by itself.
     let priorUnresolved: Bool
     let highestFence: Int?
+    /// Rate notifications SpanDAC had seen when it answered. Keep the value of
+    /// the answer sound was started on: a later status with more means the
+    /// DAC's rate changed after that decision, so the line says so.
+    let rateSeq: Int?
 
     enum CodingKeys: String, CodingKey {
+        case rateSeq = "rate_seq"
         case fence, step, outcome
         case targetHz = "target_hz"
         case dacRateHz = "dac_rate_hz"
@@ -93,7 +98,8 @@ struct SourceRateAnswer: Decodable, Equatable {
     }
 
     init(fence: Int, step: Int? = nil, outcome: Outcome, targetHz: Int? = nil, dacRateHz: Int? = nil,
-         priorUnresolved: Bool = false, highestFence: Int? = nil) {
+         priorUnresolved: Bool = false, highestFence: Int? = nil, rateSeq: Int? = nil) {
+        self.rateSeq = rateSeq
         self.fence = fence
         self.step = step
         self.outcome = outcome
@@ -112,6 +118,7 @@ struct SourceRateAnswer: Decodable, Equatable {
         dacRateHz = try c.decodeIfPresent(Int.self, forKey: .dacRateHz)
         priorUnresolved = try c.decodeIfPresent(Bool.self, forKey: .priorUnresolved) ?? false
         highestFence = try c.decodeIfPresent(Int.self, forKey: .highestFence)
+        rateSeq = try c.decodeIfPresent(Int.self, forKey: .rateSeq)
     }
 }
 
@@ -127,11 +134,14 @@ struct SourceRateFollowStatus: Decodable, Equatable {
             case lateSwitch = "late_switch"
             case outside
         }
+        /// The highest fence when it happened (the newest song that may be playing).
         let fence: Int
         let toHz: Int?
         let cause: Cause
+        /// The `rate_seq` it was counted at.
+        let seq: Int
         enum CodingKeys: String, CodingKey {
-            case fence, cause
+            case fence, cause, seq
             case toHz = "to_hz"
         }
     }
@@ -139,11 +149,15 @@ struct SourceRateFollowStatus: Decodable, Equatable {
     let dacRateHz: Int?
     let write: Write
     let startedFence: Int?
-    /// The DAC's rate changed while that song played: corrected at the next
-    /// song, and said on the line meanwhile.
+    /// Rate notifications seen so far.
+    let rateSeq: Int
+    /// The last change no settled write explains. It concerns a playing song
+    /// when its `fence` is that song's and its `seq` is above the `rate_seq`
+    /// the song started on: corrected at the next song, said on the line meanwhile.
     let moved: Moved?
 
     enum CodingKeys: String, CodingKey {
+        case rateSeq = "rate_seq"
         case fence, write, moved
         case dacRateHz = "dac_rate_hz"
         case startedFence = "started_fence"
@@ -158,7 +172,8 @@ struct SourceRateFollowStatus: Decodable, Equatable {
         self = decoded
     }
 
-    init(fence: Int?, dacRateHz: Int?, write: Write, startedFence: Int?, moved: Moved?) {
+    init(fence: Int?, dacRateHz: Int?, write: Write, startedFence: Int?, rateSeq: Int, moved: Moved?) {
+        self.rateSeq = rateSeq
         self.fence = fence
         self.dacRateHz = dacRateHz
         self.write = write

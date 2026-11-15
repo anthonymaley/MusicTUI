@@ -50,11 +50,12 @@ final class SpanDACRateFollowWireTests: XCTestCase {
     func testARateRequestSendsOneLineAndDecodesTheAnswer() throws {
         let wire = Wire()
         let answer = try control(wire, reply: {
-            #"{"ok":true,"op":"slice.prepareRate","rate":{"fence":41,"step":0,"outcome":"settled","target_hz":96000,"dac_rate_hz":96000}}"#
+            #"{"ok":true,"op":"slice.prepareRate","rate":{"fence":41,"step":0,"outcome":"settled","target_hz":96000,"dac_rate_hz":96000,"rate_seq":3}}"#
         }).rateRequest(SourceAppControl.prepareRateBody(fence: 41, dacUID: "ssl", persistentID: "1", catalogID: nil))
         XCTAssertEqual(wire.lines.count, 1)
         XCTAssertEqual(try sent(wire.lines[0])["op"] as? String, "slice.prepareRate")
-        XCTAssertEqual(answer, SourceRateAnswer(fence: 41, step: 0, outcome: .settled, targetHz: 96000, dacRateHz: 96000))
+        XCTAssertEqual(answer, SourceRateAnswer(fence: 41, step: 0, outcome: .settled, targetHz: 96000, dacRateHz: 96000,
+                                                rateSeq: 3))
         XCTAssertFalse(answer.priorUnresolved)
     }
 
@@ -102,12 +103,12 @@ final class SpanDACRateFollowWireTests: XCTestCase {
     // MARK: Status
 
     func testTheStatusRateObjectDecodes() throws {
-        let status = try object(#"{"playback":"playing","capabilities":["slice.status","output.rate_follow"],"rate":{"fence":41,"dac_rate_hz":96000,"write":"unresolved","started_fence":40,"moved":{"fence":40,"to_hz":96000,"cause":"late_switch"}}}"#)
+        let status = try object(#"{"playback":"playing","capabilities":["slice.status","output.rate_follow"],"rate":{"fence":41,"dac_rate_hz":96000,"write":"unresolved","started_fence":40,"rate_seq":7,"moved":{"fence":40,"to_hz":96000,"cause":"late_switch","seq":6}}}"#)
         let decoded = SourceAppControl.decodeStatus(status, readingWith: SourceAppControl(path: "/nonexistent"))
         XCTAssertEqual(decoded?.offersRateFollow, true)
         XCTAssertEqual(decoded?.rateFollow, SourceRateFollowStatus(
-            fence: 41, dacRateHz: 96000, write: .unresolved, startedFence: 40,
-            moved: .init(fence: 40, toHz: 96000, cause: .lateSwitch)))
+            fence: 41, dacRateHz: 96000, write: .unresolved, startedFence: 40, rateSeq: 7,
+            moved: .init(fence: 40, toHz: 96000, cause: .lateSwitch, seq: 6)))
     }
 
     func testAnUnreadableStatusRateObjectIsAbsentNotGuessed() throws {
