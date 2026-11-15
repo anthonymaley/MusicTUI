@@ -668,6 +668,9 @@ struct SourceStatus: Equatable {
     /// SpanDAC's licence object. Nil when the reply carries none, which is read
     /// as serving (an older SpanDAC, or one built without licensing).
     var licence: SpanDACLicenceInfo? = nil
+    /// Rate follow's state (`SpanDACRateFollow.swift`). Nil from an older
+    /// SpanDAC, off the Mac's socket, or when the object is not readable whole.
+    var rateFollow: SourceRateFollowStatus? = nil
 }
 
 /// The wire ops for SpanDAC's own shuffle and repeat.
@@ -1195,7 +1198,8 @@ struct SourceAppControl: SourceControlling {
                             playerDisconnected: Self.playerIsDisconnected(status),
                             readinessIgnoringPlayer: control.readiness(from: status, includingPlayer: false),
                             queueToken: Self.queueToken(status["queue_token"]),
-                            licence: SpanDACLicenceInfo(status: status))
+                            licence: SpanDACLicenceInfo(status: status),
+                            rateFollow: SourceRateFollowStatus(status: status))
     }
 
     /// True only for the exact word `disconnected`; absent, null, any other
