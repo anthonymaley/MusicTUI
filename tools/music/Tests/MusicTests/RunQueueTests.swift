@@ -140,7 +140,7 @@ final class RunQueueTests: XCTestCase {
         var player: MacRoutePlayer!
         lazy var sim = Sim(music)
 
-        init(dir: String, owner: String, makeControl: (Wire) -> SourceAppControl) {
+        init(dir: String, owner: String, withReporter: Bool = false, makeControl: (Wire) -> SourceAppControl) {
             self.dir = dir
             wire = Wire(clock)
             fence = RateFence(lock: OutputLock(path: dir + "/output.lock", pollInterval: 0.001))
@@ -155,23 +155,26 @@ final class RunQueueTests: XCTestCase {
                                      now: { clock.t }, sleep: { clock.t += $0 })
                 },
                 post: { _ in },
+                reporter: withReporter ? MacRouteFollowReporter(control: controlValue, schedule: { $0() }) : nil,
                 now: { clock.t })
             player.onTransition = { [unowned self] in self.transitions.append($0) }
         }
 
         func runner(_ queue: AppQueueStore, maxLifetime: TimeInterval = 10_000,
+                    firstToken: RateToken? = nil,
                     onSleep: @escaping () -> Void = {}) -> RunQueueRunner {
             let clock = self.clock
             return RunQueueRunner(queue: queue, player: player, route: route,
                                   routeStillChosen: { [unowned self] in self.chosen }, watcher: sim,
+                                  firstToken: firstToken,
                                   sleep: { clock.t += $0; onSleep() }, now: { clock.t },
                                   pollInterval: 1, startGracePolls: 3, maxUnreadablePolls: 3, maxNotStarted: 3,
                                   maxLifetime: maxLifetime)
         }
     }
 
-    private func rig(_ dir: String? = nil, owner: String = "runner") -> Rig {
-        let holder = Rig(dir: dir ?? OutputLockTestSupport.tempDir(), owner: owner,
+    private func rig(_ dir: String? = nil, owner: String = "runner", withReporter: Bool = false) -> Rig {
+        let holder = Rig(dir: dir ?? OutputLockTestSupport.tempDir(), owner: owner, withReporter: withReporter,
                          makeControl: { [unowned self] wire in self.control(wire) })
         holder.wire.script = settlingScript()
         return holder
@@ -453,6 +456,85 @@ final class RunQueueTests: XCTestCase {
         XCTAssertEqual(r.music.state.state, .paused)
     }
 
+    // MARK: fix round 1, finding 3: the ordering is reserved by the parent
+
+    /// The parent took the fence and the lease for the runner's owner id before it
+    /// released the lock and spawned the child. A newer command that gets in
+    /// during the spawn takes the fence: the child revalidates its token before
+    /// its first play, finds it stale, and plays NOTHING.
+    func testARunnerWhoseReservedTokenWasOvertakenInTheSpawnGapPlaysNothing() throws {
+        let dir = OutputLockTestSupport.tempDir()
+        let r = rig(dir, owner: "runner-child")
+        let parent = RateFence(lock: OutputLock(path: dir + "/output.lock", pollInterval: 0.001))
+        let reserved = try parent.begin(.play, owner: "runner-child")          // under the parent's lock
+        let newer = RateFence(lock: OutputLock(path: dir + "/output.lock", pollInterval: 0.001))
+        _ = try newer.begin(.play, owner: "tui")                               // the gap
+        let runner = r.runner(queueStore(ids), firstToken: reserved)
+        XCTAssertEqual(runner.run(), .superseded)
+        XCTAssertEqual(r.music.played, [], "the delayed child overtook a newer command")
+        XCTAssertEqual(try r.fence.current(), reserved.fence + 1, "the child moved the fence over the newer command")
+        XCTAssertEqual(r.fence.leaseStatus(owner: "runner-child"), .another)
+    }
+
+    /// With nothing in the gap, the reserved token is the first play's own: the
+    /// child does not move the fence again before its first song.
+    func testARunnerUsesItsReservedTokenForTheFirstPlayOnly() throws {
+        let dir = OutputLockTestSupport.tempDir()
+        let r = rig(dir, owner: "runner-child")
+        let parent = RateFence(lock: OutputLock(path: dir + "/output.lock", pollInterval: 0.001))
+        let reserved = try parent.begin(.play, owner: "runner-child")
+        XCTAssertEqual(r.runner(queueStore(ids), firstToken: reserved).run(), .finished)
+        XCTAssertEqual(r.music.played, ids)
+        let fences = r.transitions.compactMap { result -> Int? in
+            if case .played(let p) = result { return p.token.fence } else { return nil }
+        }
+        XCTAssertEqual(fences, [reserved.fence, reserved.fence + 1, reserved.fence + 2],
+                       "first song under the parent's token, each later song under its own")
+    }
+
+    func testTheRunnerArgumentsCarryTheReservationBeforeTheQueue() throws {
+        let uuid = UUID().uuidString
+        let args = try runQueueArguments(label: "-Mix", uuid: uuid, ids: ids,
+                                         reservation: RunQueueReservation(fence: 4, owner: "123-ABCD1234"))
+        XCTAssertEqual(args, ["__run-queue", uuid, "--label=-Mix", "--fence", "4", "--owner", "123-ABCD1234",
+                              "--ids", ids.joined(separator: ",")])
+        let parsed = try RunQueue.parse(Array(args.dropFirst()))
+        XCTAssertEqual(parsed.reservation, RunQueueReservation(fence: 4, owner: "123-ABCD1234"))
+        XCTAssertNil(try RunQueue.parse([uuid, "--ids", ids[0]]).reservation, "no reservation: the child takes its own")
+        // Half a reservation, or an owner that is not a plain id, is no reservation.
+        XCTAssertNil(try RunQueue.parse([uuid, "--fence", "4", "--ids", ids[0]]).reservation)
+        XCTAssertNil(try RunQueue.parse([uuid, "--fence", "4", "--owner", "../x y", "--ids", ids[0]]).reservation)
+        XCTAssertNil(try RunQueue.parse([uuid, "--fence", "0", "--owner", "a-1", "--ids", ids[0]]).reservation)
+    }
+
+    // MARK: fix round 1, finding 8: the runner tells the Mac screen the truth
+
+    /// The runner's queue entries have no names, so the title, artist and album
+    /// come from Music itself (its own read); a pause and the end are reported as
+    /// the poller reports them, and quitting says "none".
+    func testTheRunnerReportsTheRealSongItsPauseAndItsEndToTheMacScreen() throws {
+        let r = rig(withReporter: true)
+        func look(_ state: RunQueuePlayback.State, _ position: TimeInterval) -> RunQueuePlayback {
+            RunQueuePlayback(state: state, persistentID: ids[0], position: position, duration: 200,
+                             title: "Aja", artist: "Steely Dan", album: "Aja")
+        }
+        r.sim.script["1.1"] = look(.playing, 10)
+        r.sim.script["1.2"] = look(.paused, 11)
+        r.sim.script["1.3"] = look(.playing, 11)
+        r.sim.script["1.4"] = look(.playing, 199)
+        r.sim.script["1.5"] = RunQueuePlayback(state: .stopped, persistentID: ids[0], position: 0, duration: 200)
+        XCTAssertEqual(r.runner(queueStore([ids[0]])).run(), .finished)
+        let reports = r.wire.requests.filter { $0["op"] as? String == sourceNowPlayingOp }
+        XCTAssertTrue(reports.contains { $0["title"] as? String == "Aja" && $0["artist"] as? String == "Steely Dan"
+                                         && $0["state"] as? String == "playing"
+                                         && $0["persistent_id"] as? String == ids[0] },
+                      "the report never carried the real song: \(reports)")
+        XCTAssertTrue(reports.contains { $0["state"] as? String == "paused" && $0["title"] as? String == "Aja" },
+                      "a pause in Music was not reported")
+        XCTAssertEqual(reports.suffix(2).map { $0["state"] as? String }, ["stopped", "none"],
+                       "the end, then the screen goes idle as the runner quits")
+    }
+
     // MARK: the launch and the arguments
 
     private func tempDir() -> String { OutputLockTestSupport.tempDir() }
@@ -525,6 +607,17 @@ final class RunQueueTests: XCTestCase {
         XCTAssertNil(RunQueueScripts.parsePlayback("garbage"))
     }
 
+    /// The read now also carries the song's own words (finding 8); the four-field
+    /// shape is still read, and an empty name is no name.
+    func testThePlaybackReadCarriesTheSongsOwnWords() {
+        let sep = String(asFieldSep)
+        XCTAssertEqual(RunQueueScripts.parsePlayback("paused\(sep)abc123\(sep)1050\(sep)20000\(sep)Aja\(sep)Steely Dan\(sep)Aja (Remaster)"),
+                       RunQueuePlayback(state: .paused, persistentID: "ABC123", position: 10.5, duration: 200,
+                                        title: "Aja", artist: "Steely Dan", album: "Aja (Remaster)"))
+        XCTAssertEqual(RunQueueScripts.parsePlayback("playing\(sep)abc123\(sep)1050\(sep)20000\(sep)\(sep)\(sep)")?.title, nil)
+        XCTAssertTrue(RunQueueScripts.readPlayback.contains("name of current track"))
+    }
+
     // MARK: the CLI's play
 
     private let a1 = "596357614188841472", h1 = "0846B01728D34A00"
@@ -582,6 +675,31 @@ final class RunQueueTests: XCTestCase {
         XCTAssertEqual(shown, [], "the shipped now line waits for a song Music has not been given yet")
         XCTAssertEqual(h.io.out, ["Playing \"Mezzanine\" (2 songs), following each song's sample rate."])
         XCTAssertEqual(lib.reads, [[h1, h2]], "still every song verified by persistent ID first")
+    }
+
+    /// Fix round 1, finding 3: the parent moves the fence and takes the lease for
+    /// the runner's owner id BEFORE the child is spawned, and hands the token on.
+    func testOnTheRouteTheParentReservesTheFenceAndTheLeaseForTheRunnerBeforeItSpawns() throws {
+        let h = CLIDataRouteHarness(output: .musicApp, data: .accepted, dataReplies: [:], recordSeams: false)
+        MacRouteStore(beside: h.env.modeStore).set(true)
+        let fence = RateFence(store: h.env.modeStore)
+        var atSpawn: (fence: Int, lease: String?)?
+        var launched: [String] = []
+        let play = PersistentIDCLILibraryPlay(library: library(), run: { _ in "" },
+                                              launch: { _, args in
+                                                  launched = args
+                                                  atSpawn = (try! fence.current(), try! fence.lock.withLock { try fence.readLeaseHoldingLock() })
+                                                  return true
+                                              },
+                                              selfCheck: LibraryAliasSelfCheck(), afterPlay: { _ in })
+        let r = tripwired { try play.play(request(h), env: h.env) }
+        XCTAssertNil(r.error)
+        let fenceArg = try XCTUnwrap(launched.firstIndex(of: "--fence").map { launched[$0 + 1] }.flatMap(Int.init))
+        let ownerArg = try XCTUnwrap(launched.firstIndex(of: "--owner").map { launched[$0 + 1] })
+        XCTAssertEqual(atSpawn?.fence, fenceArg, "the fence had already moved when the child was spawned")
+        XCTAssertEqual(atSpawn?.lease, ownerArg, "the lease was already the runner's when the child was spawned")
+        XCTAssertGreaterThanOrEqual(fenceArg, 1)
+        XCTAssertEqual(launched.last, [h1, h2].joined(separator: ","), "the queue stays the last argument")
     }
 
     func testOnTheRouteAShuffledPlayHandsTheRunnerTheShuffledOrderAndJSONStaysOneDocument() throws {

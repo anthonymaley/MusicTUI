@@ -63,8 +63,9 @@ final class RateAwareTransitionTests: XCTestCase {
     }
 
     private func answer(_ fence: Int, _ outcome: String, seq: Int? = 1, prior: Bool = false,
-                        step: Int? = nil, target: Int? = nil) -> String {
+                        step: Int? = nil, target: Int? = nil, dac: Int? = nil) -> String {
         var rate: [String: Any] = ["fence": fence, "outcome": outcome]
+        if let dac { rate["dac_rate_hz"] = dac }
         if let seq { rate["rate_seq"] = seq }
         if prior { rate["prior_unresolved"] = true }
         if let step { rate["step"] = step }
@@ -545,7 +546,7 @@ final class RateAwareTransitionTests: XCTestCase {
         let out = played(result)
         XCTAssertEqual(events.log, [
             "spandac:prepareRate0", "music:play", "music:readTrack", "spandac:confirmRate1",
-            "music:pause", "music:readState",
+            "music:readState", "music:pause", "music:readState",
             "spandac:prepareRate2",
             "music:readState", "music:seek0", "music:resume",
             "music:readTrack", "spandac:confirmRate1",
@@ -556,6 +557,37 @@ final class RateAwareTransitionTests: XCTestCase {
         XCTAssertEqual(p.music.state.position, 0)
         XCTAssertEqual(out?.baseline, 20, "for a correction the baseline is the correction's answer")
         XCTAssertEqual(p.wire.requests.first(where: { $0.body["step"] as? Int == 2 })?.body["rate_hz"] as? Int, 96000)
+    }
+
+    /// Fix round 1, finding 6: the second confirm (after the correction resumed)
+    /// is kept: it, not the first, says where the DAC is now.
+    func testTheSecondConfirmAfterACorrectionIsKeptAsTheEvidence() throws {
+        let events = Events()
+        let p = process(tempDir(), owner: "tui", events: events)
+        var confirms = 0
+        p.wire.script = { body in
+            let fence = body["fence"] as? Int ?? 1
+            switch (body["op"] as? String, body["step"] as? Int) {
+            case (sourcePrepareRateOp, 2): return self.answer(fence, "settled", seq: 20, step: 2, target: 96000, dac: 96000)
+            case (sourcePrepareRateOp, _): return self.answer(fence, "settled", seq: 10, step: 0, target: 96000, dac: 44100)
+            default:
+                confirms += 1
+                return confirms == 1 ? self.answer(fence, "correct", seq: 11, step: 1, target: 96000, dac: 44100)
+                                     : self.answer(fence, "own_rate", seq: 21, step: 1, target: 96000, dac: 96000)
+            }
+        }
+        let out = try XCTUnwrap(played(p.transition.run(song("AAA"))))
+        XCTAssertEqual(confirms, 2)
+        guard case .answered(let first)? = out.confirm, case .answered(let second)? = out.confirmAfterCorrection else {
+            return XCTFail("confirm \(String(describing: out.confirm)) after \(String(describing: out.confirmAfterCorrection))")
+        }
+        XCTAssertEqual(first.dacRateHz, 44100, "the first confirm is what it was")
+        XCTAssertEqual(second.outcome, .ownRate)
+        XCTAssertEqual(second.dacRateHz, 96000)
+        XCTAssertEqual(macRouteEvidenceText(for: out), "96 kHz \u{00B7} own rate \u{00B7} codec unknown")
+        let report = SourceNowPlayingReport.started(out, persistentID: "AAA", subject: nil)
+        XCTAssertEqual(report.dacRateHz, 96000, "the report kept the DAC rate from BEFORE the correction")
+        XCTAssertEqual(report.rateOutcome, "corrected")
     }
 
     /// A seek seen in Music.app during the correction cancels the resume.
@@ -615,6 +647,57 @@ final class RateAwareTransitionTests: XCTestCase {
         XCTAssertEqual(why, .newerCommand)
         XCTAssertEqual(p.music.count("resume"), 0)
         XCTAssertEqual(p.music.count("seek0"), 0)
+    }
+
+    // MARK: fix round 1, finding 1: the pause is revalidated, under the lock
+
+    /// A newer command takes the fence and starts ITS song between our confirm
+    /// and our pause. We must not pause it: the pause is revalidated (token and
+    /// the track Music is on) inside the output lock, and a stale one does nothing.
+    func testANewerCommandBetweenTheConfirmAndThePauseIsNeverPaused() throws {
+        let dir = tempDir()
+        let events = Events()
+        let p = process(dir, owner: "tui", events: events)
+        let other = RateFence(lock: OutputLock(path: dir + "/output.lock", pollInterval: 0.001))
+        p.wire.script = { body in
+            let fence = body["fence"] as? Int ?? 1
+            switch (body["op"] as? String, body["step"] as? Int) {
+            case (sourcePrepareRateOp, _): return self.answer(fence, "settled", step: 0)
+            default:
+                _ = try other.begin(.next, owner: "runner")                     // the newer command ...
+                p.music.state = RatePlayerState(state: .playing, persistentID: "NEWER", position: 0)   // ... starts its song
+                return self.answer(fence, "correct", step: 1, target: 96000)
+            }
+        }
+        let out = played(p.transition.run(song("AAA")))
+        XCTAssertEqual(p.music.count("pause"), 0, "the follower paused a newer command's song")
+        XCTAssertEqual(p.music.state.state, .playing, "the newer song was left paused")
+        XCTAssertEqual(p.music.state.persistentID, "NEWER")
+        XCTAssertFalse(p.wire.requests.contains { $0.body["step"] as? Int == 2 }, "a correction was sent with nothing paused")
+        guard case .stopped(let why, _)? = out?.correction else { return XCTFail("\(String(describing: out?.correction))") }
+        XCTAssertEqual(why, .newerCommand)
+        XCTAssertFalse(why.leavesOurPause)
+    }
+
+    /// Music was moved by someone (a skip in Music.app) between the confirm and
+    /// the pause, with no MusicTUI command: the pause still must not land on a
+    /// track that is not the transition's own.
+    func testATrackChangeBetweenTheConfirmAndThePauseIsNeverPaused() throws {
+        let events = Events()
+        let p = process(tempDir(), owner: "tui", events: events)
+        p.wire.script = { body in
+            let fence = body["fence"] as? Int ?? 1
+            switch (body["op"] as? String, body["step"] as? Int) {
+            case (sourcePrepareRateOp, _): return self.answer(fence, "settled", step: 0)
+            default:
+                p.music.state = RatePlayerState(state: .playing, persistentID: "SKIPPED-TO", position: 0)
+                return self.answer(fence, "correct", step: 1, target: 96000)
+            }
+        }
+        let out = played(p.transition.run(song("AAA")))
+        XCTAssertEqual(p.music.count("pause"), 0, "paused a track that is not ours")
+        XCTAssertEqual(p.music.state.state, .playing)
+        guard case .notAttempted? = out?.correction else { return XCTFail("\(String(describing: out?.correction))") }
     }
 
     func testTheCallersChecksChangingDuringTheCorrectionCancelTheResume() throws {

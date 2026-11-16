@@ -163,6 +163,11 @@ struct RateTransitionPlayed: Equatable {
     /// the correction's). nil: SpanDAC never answered, "DAC rate unconfirmed"
     /// stands for the whole song.
     let baseline: Int?
+    /// The answer to the second `slice.confirmRate`, sent after a correction
+    /// resumed the song: the delivered rate AFTER the correction. nil when no
+    /// correction resumed (or Music could not be read). It, not `confirm`, is
+    /// the evidence for a corrected song (fix round 1, finding 6).
+    var confirmAfterCorrection: SourceRateOutcome? = nil
 }
 
 enum RateTransitionResult: Equatable {
@@ -281,15 +286,17 @@ final class RateAwareTransition {
 
         // 5. Correct at the start.
         var correction = RateCorrection.notNeeded
+        var confirmAfter: SourceRateOutcome?
         if case .answered(let answer)? = confirm, answer.outcome == .correct,
-           allowCorrection(),
+           allowCorrection(), follow.mayWriteRate,
            let rateHz = answer.targetHz ?? delivered?.sampleRateHz {
-            correction = correct(plan, token: token, follow: follow, persistentID: persistentID, toHz: rateHz)
+            correction = correct(plan, token: token, follow: follow, persistentID: persistentID, toHz: rateHz,
+                                 confirmAfter: &confirmAfter)
         }
 
         return .played(RateTransitionPlayed(token: token, startLine: startLine, rateOutcome: rateOutcome,
                                             delivered: delivered, confirm: confirm, correction: correction,
-                                            baseline: follow.baseline))
+                                            baseline: follow.baseline, confirmAfterCorrection: confirmAfter))
     }
 
     // MARK: private
@@ -326,12 +333,43 @@ final class RateAwareTransition {
 
     /// Section 3.3 step 5: pause (ours), SpanDAC writes the rate, revalidate,
     /// position 0, play; resume only our own pause (the guarantee in the header).
+    /// `confirmAfter` receives the second confirm's outcome when the song resumed.
     private func correct(_ plan: RateTransitionPlan, token: RateToken, follow: SourceRateFollow,
-                         persistentID: String, toHz rateHz: Int) -> RateCorrection {
+                         persistentID: String, toHz rateHz: Int,
+                         confirmAfter: inout SourceRateOutcome?) -> RateCorrection {
         let pausedAt = now()
-        do { try music.pause() } catch {
+        // The pause is the first act of a correction and the one that can hurt a
+        // newer command, so it gets the same revalidation as a play (fix round 1,
+        // finding 1): inside the output lock, the token AND the track Music is on
+        // are checked together with the pause. If either has moved, nothing is
+        // paused and nothing is left for the follower to resume.
+        enum PauseRefusal { case unreadable, notOurTrack, notOurs }
+        var refusal: PauseRefusal?
+        var pauseError: Error?
+        let pauseRevalidation: RateRevalidation<Void>
+        do {
+            pauseRevalidation = try fence.playIfCurrent(token, alsoCurrent: {
+                guard plan.isCurrent() else { return false }      // a newer command (no refusal set)
+                guard let state = self.music.readPlayerState() else { refusal = .unreadable; return false }
+                guard state.persistentID == persistentID else { refusal = .notOurTrack; return false }
+                // Already paused: that pause is not ours to hold or to resume.
+                guard state.state != .paused else { refusal = .notOurs; return false }
+                return true
+            }, play: {
+                do { try self.music.pause() } catch { pauseError = error }
+            })
+        } catch {
             return .notAttempted("could not pause: \(Self.describe(error))")
         }
+        if case .invalidated = pauseRevalidation {
+            switch refusal {
+            case nil: return .stopped(.newerCommand, rateOutcome: nil)
+            case .unreadable?: return .notAttempted("Music could not be read before pausing")
+            case .notOurTrack?: return .notAttempted("Music was not on the track")
+            case .notOurs?: return .notAttempted("Music was already paused")
+            }
+        }
+        if let pauseError { return .notAttempted("could not pause: \(Self.describe(pauseError))") }
         // Our pause is held only if Music shows it, on this track.
         guard let paused = music.readPlayerState() else {
             return .stopped(.stateUnreadable, rateOutcome: nil)
@@ -372,8 +410,10 @@ final class RateAwareTransition {
         if let resumeError { return .stopped(.resumeFailed(Self.describe(resumeError)), rateOutcome: rateOutcome) }
 
         // SpanDAC records the delivered rate (section 3.3 step 5, last bullet).
+        // Its answer is the evidence of the corrected song: kept, not discarded
+        // (fix round 1, finding 6).
         if let again = identityCheckedRead(persistentID) {
-            _ = follow.confirm(persistentID: again.persistentID, deliveredHz: again.sampleRateHz)
+            confirmAfter = follow.confirm(persistentID: again.persistentID, deliveredHz: again.sampleRateHz)
         }
         return .resumed(restartedFromStart: restarted, rateOutcome: rateOutcome)
     }

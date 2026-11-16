@@ -110,6 +110,18 @@ final class RateFence {
         try lock.withLock(timeout: timeout) { try beginHoldingLock(command, owner: owner) }
     }
 
+    /// `begin` for a caller that does not know whether its thread already holds
+    /// the output lock (a CLI play reaches the spawn both ways): it takes the
+    /// lock, and if this thread already holds it, uses it.
+    func beginAnywhere(_ command: RateCommand, owner: String,
+                       timeout: TimeInterval = OutputLock.defaultTimeout) throws -> RateToken {
+        do {
+            return try begin(command, owner: owner, timeout: timeout)
+        } catch let nested as ActionError where nested.message == OutputLock.reentryMessage {
+            return try beginHoldingLock(command, owner: owner)
+        }
+    }
+
     /// `begin` for a caller that already holds the lock.
     func beginHoldingLock(_ command: RateCommand, owner: String) throws -> RateToken {
         let next = try readFence() + 1

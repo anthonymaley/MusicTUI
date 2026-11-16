@@ -93,10 +93,13 @@ struct SourceRateAnswer: Decodable, Equatable {
     /// the answer sound was started on: a later status with more means the
     /// DAC's rate changed after that decision, so the line says so.
     let rateSeq: Int?
+    /// false: this DAC's rate will not be put back (SpanDAC has no restore record
+    /// for it). nil: unknown (an older SpanDAC omits it), which changes nothing.
+    let restorable: Bool?
 
     enum CodingKeys: String, CodingKey {
         case rateSeq = "rate_seq"
-        case fence, step, outcome
+        case fence, step, outcome, restorable
         case targetHz = "target_hz"
         case dacRateHz = "dac_rate_hz"
         case priorUnresolved = "prior_unresolved"
@@ -104,8 +107,10 @@ struct SourceRateAnswer: Decodable, Equatable {
     }
 
     init(fence: Int, step: Int? = nil, outcome: Outcome, targetHz: Int? = nil, dacRateHz: Int? = nil,
-         priorUnresolved: Bool = false, highestFence: Int? = nil, rateSeq: Int? = nil) {
+         priorUnresolved: Bool = false, highestFence: Int? = nil, rateSeq: Int? = nil,
+         restorable: Bool? = nil) {
         self.rateSeq = rateSeq
+        self.restorable = restorable
         self.fence = fence
         self.step = step
         self.outcome = outcome
@@ -125,6 +130,7 @@ struct SourceRateAnswer: Decodable, Equatable {
         priorUnresolved = try c.decodeIfPresent(Bool.self, forKey: .priorUnresolved) ?? false
         highestFence = try c.decodeIfPresent(Int.self, forKey: .highestFence)
         rateSeq = try c.decodeIfPresent(Int.self, forKey: .rateSeq)
+        restorable = try c.decodeIfPresent(Bool.self, forKey: .restorable)
     }
 }
 
@@ -161,10 +167,18 @@ struct SourceRateFollowStatus: Decodable, Equatable {
     /// when its `fence` is that song's and its `seq` is above the `rate_seq`
     /// the song started on: corrected at the next song, said on the line meanwhile.
     let moved: Moved?
+    /// true only while SpanDAC holds a restore record for the followed DAC; false
+    /// after it restarted or the record failed; nil from an older SpanDAC
+    /// (unknown: change nothing).
+    let following: Bool?
+    let followedUID: String?
+    /// false: this DAC's rate will not be put back. nil: unknown.
+    let restorable: Bool?
 
     enum CodingKeys: String, CodingKey {
         case rateSeq = "rate_seq"
-        case fence, write, moved
+        case fence, write, moved, following, restorable
+        case followedUID = "followed_uid"
         case dacRateHz = "dac_rate_hz"
         case startedFence = "started_fence"
     }
@@ -178,7 +192,11 @@ struct SourceRateFollowStatus: Decodable, Equatable {
         self = decoded
     }
 
-    init(fence: Int?, dacRateHz: Int?, write: Write, startedFence: Int?, rateSeq: Int, moved: Moved?) {
+    init(fence: Int?, dacRateHz: Int?, write: Write, startedFence: Int?, rateSeq: Int, moved: Moved?,
+         following: Bool? = nil, followedUID: String? = nil, restorable: Bool? = nil) {
+        self.following = following
+        self.followedUID = followedUID
+        self.restorable = restorable
         self.rateSeq = rateSeq
         self.fence = fence
         self.dacRateHz = dacRateHz

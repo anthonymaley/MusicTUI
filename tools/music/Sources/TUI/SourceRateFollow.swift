@@ -109,6 +109,11 @@ final class SourceRateFollow {
     /// "unconfirmed" throughout. M5 compares the status's `rate_seq` with it.
     private(set) var baseline: Int?
 
+    private var writesBlocked = false
+    /// False once this transition's follow-on could not be confirmed: nothing may
+    /// be written to the DAC for it (see `wait`).
+    var mayWriteRate: Bool { !writesBlocked }
+
     /// The process's route reporter (S11), nil in every test that predates it:
     /// then a transition sends exactly the messages it always sent.
     private let routeFollow: MacRouteFollowReporter?
@@ -207,8 +212,17 @@ final class SourceRateFollow {
         guard offered else { return .notOffered }
         let started = now()
         if announcesRoute, let routeFollow {
-            routeFollow.ensureOn(fence: token.fence,
-                                 timeout: Self.replyTimeout(MacRouteFollowReporter.ensureTimeout, left: Self.cap))
+            let followOn = routeFollow.ensureOn(fence: token.fence,
+                                                timeout: Self.replyTimeout(MacRouteFollowReporter.ensureTimeout, left: Self.cap))
+            // Follow-on not confirmed: SpanDAC has no recorded rate to restore, so
+            // no rate is written for this song (no prepare, and no correction,
+            // `mayWriteRate`). The song still plays, at the DAC's rate (never
+            // refused); the reporter did not mark follow confirmed, so the next
+            // sound start asks again BEFORE its prepare.
+            if !followOn {
+                writesBlocked = true
+                if first != nil { return .unsettled(last: nil) }
+            }
         }
         var last: SourceRateAnswer?
         if let first {

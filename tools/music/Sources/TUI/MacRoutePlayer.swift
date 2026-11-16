@@ -249,10 +249,23 @@ final class MacRoutePlayer {
         DispatchQueue.global().async { [weak self] in
             let status = read()
             guard let self else { return }
-            self.evidence.noteStatus(status)
+            self.noteRateStatus(status)
             self.condition.lock(); self.statusReadInFlight = false; self.condition.unlock()
         }
     }
+
+    /// A status read's `rate` object: the evidence line's, and the follow latch's.
+    /// `following: false` while on the route means SpanDAC holds no restore record
+    /// (it restarted, or its record failed): the next sound start sends follow-on
+    /// again before its prepare. Missing (an older SpanDAC) changes nothing.
+    func noteRateStatus(_ status: SourceRateFollowStatus?) {
+        evidence.noteStatus(status)
+        if isOnRoute, status?.following == false { reporter?.followRecordLost() }
+    }
+
+    /// Waits (bounded) for the reports handed over so far; for a process that is
+    /// about to exit (a CLI station).
+    func flushReports() { reporter?.flush() }
 
     private let condition = NSCondition()
     private var inFlight = 0
@@ -367,8 +380,12 @@ final class MacRoutePlayer {
     /// One queue entry on the route. `isCurrent` is the rest of the token (the
     /// queue generation and entry), checked under the output lock with the
     /// fence and the lease. The caller has already asked `isOnRoute`.
+    ///
+    /// `token` is a fence and lease taken for this play beforehand (a detached
+    /// runner's parent reserves one); it is revalidated before the play like any
+    /// token, and nil takes one here.
     func play(playlist: String, position: Int, command: RateCommand,
-              subject: RouteSubject? = nil,
+              subject: RouteSubject? = nil, token: RateToken? = nil,
               isCurrent: @escaping () -> Bool) -> QueuePlayOutcome {
         condition.lock()
         if closing { condition.unlock(); return .notStarted("MusicTUI is closing") }
@@ -389,7 +406,8 @@ final class MacRoutePlayer {
                 self.condition.lock(); defer { self.condition.unlock() }
                 return !self.closing
             })
-        let result = transition.run(RateTransitionPlan(command: command, sound: sound, isCurrent: isCurrent))
+        let result = transition.run(RateTransitionPlan(command: command, sound: sound, isCurrent: isCurrent),
+                                    token: token)
         record(result, playlist: playlist, position: position, persistentID: persistentID)
         evidence.record(result)
         reportStarted(result, persistentID: persistentID, subject: subject)
@@ -415,7 +433,7 @@ final class MacRoutePlayer {
     /// the open waits for the DAC to be quiet, then `start` runs under the
     /// revalidation. Nothing is converted or confirmed. Throws only when the
     /// station did not start for a reason the person should read.
-    func playStation(start: @escaping () throws -> Void,
+    func playStation(start: @escaping () throws -> Void, subject: RouteSubject? = nil,
                      isCurrent: @escaping () -> Bool = { true }) throws -> StationRouteOutcome {
         condition.lock()
         if closing { condition.unlock(); throw ActionError(message: stationNotStartedLine("MusicTUI is closing")) }
@@ -429,6 +447,7 @@ final class MacRoutePlayer {
         let result = transition.run(RateTransitionPlan(command: .station, sound: .other(start: start),
                                                        isCurrent: isCurrent))
         evidence.record(result)
+        reportStarted(result, persistentID: nil, subject: subject)
         onTransition?(result)
         switch result {
         case .played(let played):
@@ -471,7 +490,15 @@ final class MacRoutePlayer {
         while inFlight > 0, condition.wait(until: deadline) {}
         let held = ourPause
         ourPause = nil
+        let reportedHere = lastStartedReport != nil || lastObserved != nil
         condition.unlock()
+        // S10: leaving, the Mac screen goes idle, but only if this process is the
+        // one it is showing: it reported something, and still holds the lease (a
+        // newer command, from the TUI or another runner, owns the screen now).
+        if reportedHere, let reporter, fence.leaseStatus(owner: owner, timeout: 0.5) == .ours,
+           let current = try? fence.current(timeout: 0.5) {
+            reporter.reportIdle(fence: current)
+        }
         guard let held else { return }
         // Release only OUR pause: no command since, and Music still shows it
         // paused on that same track.

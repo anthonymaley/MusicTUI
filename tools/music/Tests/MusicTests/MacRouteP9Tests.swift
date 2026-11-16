@@ -219,8 +219,12 @@ final class MacRouteP9Tests: XCTestCase {
         }
         func launch(_ path: String, _ args: [String]) -> Bool { launches.append(args); return launchOK }
         var builtAContainer: Bool { scripts.contains { $0.contains("make new playlist") } }
+        /// The reservation's fence, in a temp directory (never `~/.config/music`).
+        let fenceDir = OutputLockTestSupport.tempDir()
+        lazy var fence = RateFence(lock: OutputLock(path: fenceDir + "/output.lock", pollInterval: 0.001))
         func seam(on: Bool = true) -> MacRouteSongPlay {
-            .cli(isOnRoute: { on }, launch: { [unowned self] in launch($0, $1) }, json: { false })
+            .cli(isOnRoute: { on }, launch: { [unowned self] in launch($0, $1) }, json: { false },
+                 fence: { [unowned self] in fence })
         }
     }
 
@@ -256,6 +260,21 @@ final class MacRouteP9Tests: XCTestCase {
         XCTAssertEqual(rig.launches.first.flatMap(idsArgument), ids.joined(separator: ","), "in play order")
         XCTAssertEqual(MacRouteCLIStart.take(),
                        macRoutePlayingLine(label: "Moon Safari", count: 3, json: false))
+    }
+
+    /// Fix round 1, finding 3: every CLI route play reserves the ordering for its
+    /// runner before the spawn, so a newer command in the spawn gap is not overtaken.
+    func testEveryCLIRoutePlayReservesTheFenceAndTheLeaseForItsRunner() throws {
+        let rig = Rig()
+        rig.idsReply = ids.joined(separator: "\u{1F}") + "\u{1F}"
+        _ = playBoundedAlbum(title: "Moon Safari", rows: rows(3), uuid: "U", run: rig.run,
+                             launch: { _, _ in XCTFail("the watcher launched"); return true }, route: rig.seam())
+        let args = try XCTUnwrap(rig.launches.first)
+        let fenceArg = try XCTUnwrap(args.firstIndex(of: "--fence").map { args[$0 + 1] }.flatMap(Int.init))
+        let ownerArg = try XCTUnwrap(args.firstIndex(of: "--owner").map { args[$0 + 1] })
+        XCTAssertEqual(try rig.fence.current(), fenceArg)
+        XCTAssertEqual(rig.fence.leaseStatus(owner: ownerArg), .ours)
+        XCTAssertEqual(idsArgument(args), ids.joined(separator: ","))
     }
 
     func testACLIArtistOnTheRouteStartsTheRunner() {
