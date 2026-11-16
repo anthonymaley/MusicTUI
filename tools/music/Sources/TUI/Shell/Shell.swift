@@ -42,7 +42,7 @@ func musicTUISkip(_ step: Int, backend: AppleScriptBackend, appQueue: AppQueueSt
     if let (pl, pos) = appQueue.step(step) {
         let title = appQueue.read().map { $0.tracks[$0.currentIndex - 1].name } ?? ""
         guard playRequestedQueueTrack(backend: backend, appQueue: appQueue, playlist: pl, position: pos,
-                                      title: title) else {
+                                      title: title, command: step > 0 ? .next : .previous) else {
             _ = appQueue.step(-step)
             throw ActionError(message: "Couldn't play that track.")
         }
@@ -238,6 +238,13 @@ func runShell() {
             return PlayConfirmFence(epoch: stamp.epoch, dataEpoch: stamp.dataEpoch, playSerial: routing.playSerial)
         })
     appQueue.confirmer = playConfirmer
+    // The Mac DAC route (mac-route-plan.md, step P4): every queue-entry play on
+    // the route is one rate-aware transition. The Output tab's Mac row turns the
+    // route on and off through `macRouteState`; plays off the route are untouched.
+    let macRouteState = MacDACRouteState()
+    let macRoute = MacRoutePlayer.live(backend: backend, routing: routing, route: macRouteState,
+                                       post: { status.post($0, ttl: 6) })
+    appQueue.macRoute = macRoute
     let actions = ActionRunner(status: status, onSuperseding: { playConfirmer.invalidate() })
     let volumeDelta = DeltaAccumulator()
 
@@ -359,6 +366,8 @@ func runShell() {
                                       confirmMusicAppPaused: liveMusicAppPauseConfirmation,
                                       makeNetworkClient: { routing.client(for: .networkSource($0)) },
                                       spandac: spandac)
+            scene.onMacRateFollowWanted = { macRouteState.set(true) }
+            scene.onMacRouteOff = { macRouteState.set(false) }
             scenes[id] = scene
             return scene
         case .library:
@@ -483,6 +492,11 @@ func runShell() {
         // had begun is settled by the next pass.
         playSync.stop()
         poller.stop()
+        // D2: closing leaves the current song to finish and advances nothing (the
+        // poller has stopped). The route's player waits out a transition already
+        // running, so a correction is not cut off with its pause held, and
+        // releases a follower pause it still holds.
+        macRoute.shutdown()
         // Rule 2, phase 2: sweep Discover temp playlists now that the poller
         // is confirmed stopped, i.e. this is a genuine exit — never on a
         // mid-session stop event: the poller tolerates four consecutive
@@ -627,6 +641,8 @@ func runShell() {
             switch action {
             case .playPause:
                 actions.run("Play/pause") {
+                    // On the Mac DAC route a pause is a command too (M1).
+                    appQueue.macRoute?.noteCommand(.pause)
                     // The SpanDAC branch is shared with the Now tab's control row.
                     try performSourceTransport(.playPause, routing: routing,
                         musicApp: { _ = try backend.runMusicBlocking("playpause") })

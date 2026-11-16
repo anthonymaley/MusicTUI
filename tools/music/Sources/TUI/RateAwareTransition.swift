@@ -45,7 +45,8 @@ import Foundation
 // observable.
 //
 // Music.app is reached only through `RateMusicControlling`, so tests run with
-// no AppleScript. The poller and the handoff are not wired to this yet (P4).
+// no AppleScript. `MacRoutePlayer` (P4) wires every TUI play on the Mac DAC route
+// to this, with `AppleScriptRateMusic` as the real adapter.
 
 // MARK: - the Music.app seam
 
@@ -167,8 +168,13 @@ struct RateTransitionPlayed: Equatable {
 enum RateTransitionResult: Equatable {
     /// A newer command owns the player. NOTHING was played.
     case invalidated
-    /// The fence or the output lock was unavailable. Nothing was played.
+    /// The output lock stayed busy past its bound (a route switch is in
+    /// progress), or a nested lock use. Nothing was played.
     case notStarted(String)
+    /// The fence or lock files could not be used (a broken state directory).
+    /// The song PLAYED, at the DAC's current rate, with no rate follow and no
+    /// confirm or correction (2026-11-15 ruling): the caller says why.
+    case playedUnfollowed(reason: String)
     /// Music's own `play` failed. The one result that is a play failure.
     case playFailed(String)
     case played(RateTransitionPlayed)
@@ -179,7 +185,7 @@ enum RateTransitionResult: Equatable {
     /// a song.
     var playOutcome: Bool? {
         switch self {
-        case .played: return true
+        case .played, .playedUnfollowed: return true
         case .playFailed: return false
         case .invalidated, .notStarted: return nil
         }
@@ -201,18 +207,23 @@ final class RateAwareTransition {
     private let music: RateMusicControlling
     private let makeFollow: (RateToken) -> SourceRateFollow
     private let now: () -> TimeInterval
+    /// False once the process is closing: a correction would pause the song, and
+    /// a closing TUI must not start a pause it may not live to release.
+    private let allowCorrection: () -> Bool
 
     /// `makeFollow` builds the client for a token (its control, its clock): the
     /// production one is `SourceRateFollow(token:control:status:)` on
     /// `SourceAppControl.macRate()`.
     init(fence: RateFence, owner: String, music: RateMusicControlling,
          makeFollow: @escaping (RateToken) -> SourceRateFollow,
-         now: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }) {
+         now: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
+         allowCorrection: @escaping () -> Bool = { true }) {
         self.fence = fence
         self.owner = owner
         self.music = music
         self.makeFollow = makeFollow
         self.now = now
+        self.allowCorrection = allowCorrection
     }
 
     /// One sound start. `token` is the one the command already took (M1) when
@@ -224,6 +235,7 @@ final class RateAwareTransition {
         do {
             token = try given ?? fence.begin(plan.command, owner: owner)
         } catch {
+            if Self.isBrokenStateDirectory(error) { return playUnfenced(plan, reason: Self.describe(error)) }
             return .notStarted(Self.describe(error))
         }
         let follow = makeFollow(token)
@@ -246,6 +258,7 @@ final class RateAwareTransition {
                 do { try self.startSound(plan.sound) } catch { playError = error }
             }
         } catch {
+            if Self.isBrokenStateDirectory(error) { return playUnfenced(plan, reason: Self.describe(error)) }
             return .notStarted(Self.describe(error))
         }
         guard case .played = revalidation else { return .invalidated }
@@ -269,6 +282,7 @@ final class RateAwareTransition {
         // 5. Correct at the start.
         var correction = RateCorrection.notNeeded
         if case .answered(let answer)? = confirm, answer.outcome == .correct,
+           allowCorrection(),
            let rateHz = answer.targetHz ?? delivered?.sampleRateHz {
             correction = correct(plan, token: token, follow: follow, persistentID: persistentID, toHz: rateHz)
         }
@@ -279,6 +293,23 @@ final class RateAwareTransition {
     }
 
     // MARK: private
+
+    /// The fence or lock files are unusable (not busy): the file system, not
+    /// another command, is what failed.
+    private static func isBrokenStateDirectory(_ error: Error) -> Bool {
+        if case RateFenceError.unavailable = error { return true }
+        if case OutputLockError.unavailable = error { return true }
+        return false
+    }
+
+    /// 2026-11-15 ruling: with no usable fence there is no ordering to keep and
+    /// nothing to follow, but the song still plays, at the DAC's current rate.
+    /// The rest of the plan's token is still honoured.
+    private func playUnfenced(_ plan: RateTransitionPlan, reason: String) -> RateTransitionResult {
+        guard plan.isCurrent() else { return .invalidated }
+        do { try startSound(plan.sound) } catch { return .playFailed(Self.describe(error)) }
+        return .playedUnfollowed(reason: reason)
+    }
 
     private func startSound(_ sound: RateSound) throws {
         switch sound {

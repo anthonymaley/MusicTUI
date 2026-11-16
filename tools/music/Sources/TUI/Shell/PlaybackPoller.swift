@@ -575,38 +575,61 @@ final class PlaybackPoller {
             stoppedPolls += 1
             // Auto-advance only when the previous track reached its natural end.
             let naturalEnd = lastDuration > 0 && lastPosition >= max(0, lastDuration - 4)
+            // On the Mac DAC route this process advances only while it still holds
+            // the play lease and the queue's current entry is the one it started
+            // (mac-route-plan.md 3.1), and the title-based fallback never runs: an
+            // owner that lost either leaves the queue alone, and a song Music
+            // stopped is not walked past by name.
+            let onRoute = appQueue.macRoute?.isOnRoute ?? false
             // App-owned queue: the single track stopped at its end (Autoplay off) —
             // play the next track ourselves. step() returns nil at the queue's end,
             // where we clear the queue and let playback stay stopped.
             if naturalEnd, appQueue.isActive {
-                if let (pl, pos) = appQueue.step(1) {
+                if onRoute, let route = appQueue.macRoute, !route.mayAdvance(from: appQueue.read()) {
+                    // Not ours to advance (a newer owner holds the lease, or the
+                    // queue moved without us): do nothing, end nothing.
+                } else if let (pl, pos) = appQueue.step(1) {
                     // step(1) commits the index BEFORE the play attempt. If the
                     // play errors and the result is dropped, naturalEnd stays true
                     // next tick and the loop walks the whole remaining queue
                     // silently. Bounded recovery instead: roll the step back and
                     // retry this track up to the gate's cap, then keep the step
                     // (skip past it) so a permanent failure can't spin forever.
-                    if playQueueTrack(backend: backend, playlist: pl, position: pos) {
+                    //
+                    // Only Music's own play result reaches the gate. On the route a
+                    // rate failure is a played song; a play a newer command
+                    // superseded touches nothing (that command moved the queue, and
+                    // rolling it back would corrupt it); one that never started
+                    // (the output lock busy, a route switch) is rolled back and
+                    // retried next tick, with no gate.
+                    switch playQueueEntry(backend: backend, appQueue: appQueue, playlist: pl, position: pos,
+                                          command: .advance) {
+                    case .played:
                         advanceGate.playSucceeded()
-                    } else if advanceGate.playFailed() == .retry {
+                    case .failed:
+                        if advanceGate.playFailed() == .retry { _ = appQueue.step(-1) }
+                    case .superseded:
+                        break
+                    case .notStarted:
                         _ = appQueue.step(-1)
                     }
                     stoppedPolls = 0
                     return // next tick will observe the new track (or retry)
+                } else {
+                    // Reached the end of the app-owned queue — surface the continuation menu.
+                    if !qEnded {
+                        qEnded = true
+                        // Classify by source addressability: a library-sourced album/artist
+                        // queue is bounded to its own tracks and must never be shuffled by name.
+                        endedSource = appQueue.read().map(continuationSource(for:))
+                            ?? .playlist(contextName)
+                        endedTrack = lastTrack
+                        endedArtist = lastArtist
+                        endedArtLines = artLines
+                    }
+                    appQueue.clear()
                 }
-                // Reached the end of the app-owned queue — surface the continuation menu.
-                if !qEnded {
-                    qEnded = true
-                    // Classify by source addressability: a library-sourced album/artist
-                    // queue is bounded to its own tracks and must never be shuffled by name.
-                    endedSource = appQueue.read().map(continuationSource(for:))
-                        ?? .playlist(contextName)
-                    endedTrack = lastTrack
-                    endedArtist = lastArtist
-                    endedArtLines = artLines
-                }
-                appQueue.clear()
-            } else if naturalEnd,
+            } else if naturalEnd, !onRoute,
                let cur = surrounding.firstIndex(where: { $0.isCurrent }),
                cur + 1 < surrounding.count {
                 let entry = surrounding[cur + 1]

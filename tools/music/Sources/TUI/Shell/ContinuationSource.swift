@@ -84,5 +84,6 @@ func shufflePlayBounded(backend: AppleScriptBackend, appQueue: AppQueueStore,
     guard !tracks.isEmpty else { return false }
     let queue = shuffledBoundedQueue(label: label, source: source, tracks: tracks.shuffled())
     appQueue.set(queue)
-    return playQueueTrack(backend: backend, playlist: source, position: queue.currentSourcePosition)
+    return playQueueEntry(backend: backend, appQueue: appQueue, playlist: source,
+                          position: queue.currentSourcePosition, command: .shuffle).accepted
 }

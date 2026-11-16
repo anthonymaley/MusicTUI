@@ -57,6 +57,23 @@ final class AppQueueStore {
     private let lock = NSLock()
     private var queue: AppQueue?
     private var _confirmer: PlayConfirmer?
+    private var _macRoute: MacRoutePlayer?
+    private var _generation = 0
+
+    /// The Mac route's player (`MacRoutePlayer.swift`), when the shell composed
+    /// one: queue-entry plays ask it whether they are on the Mac DAC route and,
+    /// if so, go through the rate-aware transition. Nil (tests, the CLI): every
+    /// play is exactly what it was. Set once at startup.
+    var macRoute: MacRoutePlayer? {
+        get { lock.lock(); defer { lock.unlock() }; return _macRoute }
+        set { lock.lock(); _macRoute = newValue; lock.unlock() }
+    }
+
+    /// Moves on every change of the queue (set, clear, step, jump). A rate-aware
+    /// play captures it when it starts and its revalidation (under the output
+    /// lock) fails if it moved: the queue the play was for is gone, so it plays
+    /// nothing.
+    var generation: Int { lock.lock(); defer { lock.unlock() }; return _generation }
 
     /// The shell's play confirmer (`PlayConfirmation.swift`): person-started
     /// plays of this queue are confirmed through it, for the footer warning
@@ -68,7 +85,7 @@ final class AppQueueStore {
         set { lock.lock(); _confirmer = newValue; lock.unlock() }
     }
 
-    func set(_ value: AppQueue?) { lock.lock(); queue = value; lock.unlock() }
+    func set(_ value: AppQueue?) { lock.lock(); queue = value; _generation += 1; lock.unlock() }
     func clear() { set(nil) }
     func read() -> AppQueue? { lock.lock(); defer { lock.unlock() }; return queue }
     var isActive: Bool { read() != nil }
@@ -83,6 +100,7 @@ final class AppQueueStore {
         guard next >= 1, next <= q.tracks.count else { return nil }
         q.currentIndex = next
         queue = q
+        _generation += 1
         return (q.playlistName, q.currentSourcePosition)
     }
 
@@ -94,6 +112,7 @@ final class AppQueueStore {
         guard playOrderPosition >= 1, playOrderPosition <= q.tracks.count else { return nil }
         q.currentIndex = playOrderPosition
         queue = q
+        _generation += 1
         return (q.playlistName, q.currentSourcePosition)
     }
 }
@@ -108,12 +127,23 @@ final class AppQueueStore {
 /// by it, never by a position or a name (score: data route and output, C-HANDOFF).
 @discardableResult
 func playQueueTrack(backend: AppleScriptBackend, playlist: String, position: Int) -> Bool {
-    if playlist == persistentIDQueueSource {
-        let script = persistentIDPlayScript(persistentIDOfQueueEntry(position))
-        return (try? backend.runMusicBlocking(script)) != nil
+    (try? backend.runMusicBlocking(queueTrackPlayScript(playlist: playlist, position: position))) != nil
+}
+
+/// A queue entry's play, rate-aware on the Mac DAC route (mac-route-plan.md,
+/// step P4): on the route it is one `RateAwareTransition` (fence, prepare,
+/// revalidate, play, confirm, correct), anywhere else it is `playQueueTrack`
+/// unchanged. The queue generation is captured here, after the caller's own
+/// `step`/`set`, so a later change of the queue (a newer command in this
+/// process) fails the revalidation and plays nothing.
+func playQueueEntry(backend: AppleScriptBackend, appQueue: AppQueueStore, playlist: String, position: Int,
+                    command: RateCommand = .play) -> QueuePlayOutcome {
+    if let route = appQueue.macRoute, route.isOnRoute {
+        let generation = appQueue.generation
+        return route.play(playlist: playlist, position: position, command: command,
+                          isCurrent: { appQueue.generation == generation })
     }
-    let esc = escapeAppleScriptString(playlist)
-    return (try? backend.runMusicBlocking("play track \(position) of playlist \"\(esc)\"")) != nil
+    return playQueueTrack(backend: backend, playlist: playlist, position: position) ? .played : .failed
 }
 
 /// `playQueueTrack` for a play the PERSON started (honest "Playing",
@@ -133,14 +163,24 @@ func playQueueTrack(backend: AppleScriptBackend, playlist: String, position: Int
 @discardableResult
 func playRequestedQueueTrack(backend: AppleScriptBackend, appQueue: AppQueueStore, playlist: String,
                              position: Int, title: String, notice: String? = nil,
-                             restore: String? = nil, trailer: String? = nil) -> Bool {
+                             restore: String? = nil, trailer: String? = nil,
+                             command: RateCommand = .play) -> Bool {
     guard let confirmer = appQueue.confirmer else {
-        return playQueueTrack(backend: backend, playlist: playlist, position: position)
+        return playQueueEntry(backend: backend, appQueue: appQueue, playlist: playlist, position: position,
+                              command: command).accepted
     }
     let ticket = confirmer.request()
-    guard playQueueTrack(backend: backend, playlist: playlist, position: position) else {
+    let outcome = playQueueEntry(backend: backend, appQueue: appQueue, playlist: playlist, position: position,
+                                 command: command)
+    guard outcome.accepted else {
         confirmer.abandon(ticket)
         return false
+    }
+    // A play a newer command superseded played nothing: there is nothing for
+    // the confirmer to check, and the newer command confirms its own.
+    if outcome == .superseded {
+        confirmer.abandon(ticket)
+        return true
     }
     let requested: RequestedTrack = playlist == persistentIDQueueSource
         ? .persistentID(persistentIDOfQueueEntry(position))
@@ -1146,7 +1186,8 @@ func shufflePlayCurrent(backend: AppleScriptBackend, appQueue: AppQueueStore) ->
     let reordered = q.tracks.shuffled()
     appQueue.set(AppQueue(playlistName: q.playlistName, tracks: reordered, currentIndex: 1, displayName: q.displayName))
     guard let first = reordered.first else { return false }
-    return playQueueTrack(backend: backend, playlist: q.playlistName, position: first.index)
+    return playQueueEntry(backend: backend, appQueue: appQueue, playlist: q.playlistName, position: first.index,
+                          command: .shuffle).accepted
 }
 
 /// Build a fresh app queue from a playlist in shuffled order and play its first
@@ -1156,5 +1197,6 @@ func shufflePlayPlaylist(backend: AppleScriptBackend, appQueue: AppQueueStore, p
     let tracks = fetchPlaylistTracks(backend: backend, playlist: playlist).shuffled()
     guard let first = tracks.first else { return false }
     appQueue.set(AppQueue(playlistName: playlist, tracks: tracks, currentIndex: 1))
-    return playQueueTrack(backend: backend, playlist: playlist, position: first.index)
+    return playQueueEntry(backend: backend, appQueue: appQueue, playlist: playlist, position: first.index,
+                          command: .shuffle).accepted
 }

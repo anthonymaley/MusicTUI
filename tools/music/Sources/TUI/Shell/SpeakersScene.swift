@@ -1184,6 +1184,8 @@ final class SpeakersScene: Scene {
                     }
                 case .musicApp:
                     self.macDACRouteOn = false
+                    self.macRateFollowWanted = false
+                    self.onMacRouteOff?()
                     let read = Self.readMacStatusWithMacOutput(client)
                     self.publishReadiness(read.readiness, data: read.data, output: read.output)
                     let notice = macSoundStillOnTheDAC(read.macOutput)
@@ -1256,6 +1258,8 @@ final class SpeakersScene: Scene {
     private(set) var macRateFollowWanted = false
     /// Called when the Mac row turns rate follow on (later steps hook here).
     var onMacRateFollowWanted: (() -> Void)?
+    /// Called when the Mac row's route is left for the plain MusicTUI output.
+    var onMacRouteOff: (() -> Void)?
 
     /// Shown on the Mac row when `slice.useDAC` is refused without a reason.
     static let notTheMacsSoundOutput = "not the Mac's sound output"
