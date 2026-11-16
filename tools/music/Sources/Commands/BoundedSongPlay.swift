@@ -32,6 +32,8 @@ enum SongPlayOutcome: Equatable {
     case buildFailed(containerRemoved: Bool)
     case playFailed(containerRemoved: Bool)
     case watcherFailed(containerRemoved: Bool)
+    /// The Mac DAC route could not start the queue (P9). No container was built.
+    case routeNotStarted
 }
 
 /// The container name for a bounded-playback container.
@@ -68,7 +70,8 @@ func playBoundedSong(title: String,
                      readIdentifier: (Int) -> String?,
                      uuid: String = UUID().uuidString,
                      run: ScriptRunner,
-                     launch: @escaping ProcessLauncher = detachedLaunch)
+                     launch: @escaping ProcessLauncher = detachedLaunch,
+                     route: MacRouteSongPlay? = nil)
     -> SongPlayOutcome {
 
     guard !rows.isEmpty else { return .notFound }
@@ -84,7 +87,7 @@ func playBoundedSong(title: String,
     guard !identifier.isEmpty else { return .identifierUnreadable }
 
     return playBoundedSongByIdentifier(title: title, identifier: identifier,
-                                       uuid: uuid, run: run, launch: launch)
+                                       uuid: uuid, run: run, launch: launch, route: route)
 }
 
 /// Play one song whose identifier is already known.
@@ -98,8 +101,15 @@ func playBoundedSongByIdentifier(title: String,
                                  identifier: String,
                                  uuid: String = UUID().uuidString,
                                  run: ScriptRunner,
-                                 launch: @escaping ProcessLauncher = detachedLaunch)
+                                 launch: @escaping ProcessLauncher = detachedLaunch,
+                                 route: MacRouteSongPlay? = nil)
     -> SongPlayOutcome {
+
+    // The Mac DAC route (P9): no sweep, no container; the song plays through the
+    // rate-aware transition by the identifier already resolved.
+    if let routed = playContainerOnRoute(label: title, seed: .persistentID(identifier), route: route, run: run) {
+        return routed == .playing ? .playing : .routeNotStarted
+    }
 
     // Same recovery the album path gets, at the same point in the sequence:
     // collect containers a crashed or killed watcher left behind BEFORE this
@@ -144,6 +154,8 @@ func playBoundedSongByIdentifier(title: String,
         return .playFailed(containerRemoved: removed)
     case .watcherFailed(let removed):
         return .watcherFailed(containerRemoved: removed)
+    case .routeNotStarted:
+        return .routeNotStarted
     }
 }
 
@@ -181,6 +193,8 @@ func songOutcomeMessage(_ outcome: SongPlayOutcome, title: String) -> String? {
             ? "Built a temporary playlist for '\(title)' but could not play it."
             : "Built a temporary playlist for '\(title)', could not play it, and a leftover playlist may remain. "
                 + "Run: music playlist cleanup"
+    case .routeNotStarted:
+        return macRouteSongPlayNotStarted
     case .watcherFailed(let removed):
         return removed
             ? "Could not start the cleanup helper for '\(title)', so playback was stopped rather than left unbounded."
@@ -225,13 +239,14 @@ func playBoundedLocalSong(title: String,
                           readIdentifier: (Int) -> String?,
                           uuid: String = UUID().uuidString,
                           run: ScriptRunner,
-                          launch: @escaping ProcessLauncher = detachedLaunch)
+                          launch: @escaping ProcessLauncher = detachedLaunch,
+                          route: MacRouteSongPlay? = nil)
     -> SongPlayOutcome {
     guard let rows = fetchRows(localSongWhereClause(title: title, artist: artist)) else {
         return .libraryReadFailed
     }
     return playBoundedSong(title: title, rows: rows, readIdentifier: readIdentifier,
-                           uuid: uuid, run: run, launch: launch)
+                           uuid: uuid, run: run, launch: launch, route: route)
 }
 
 extension SongPlayOutcome {

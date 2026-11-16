@@ -78,6 +78,6 @@ struct SpanDACCLICataloguePlay: CLIMusicTUICataloguePlaying {
 
 /// What production uses.
 func liveCLIMusicTUICataloguePlay() -> CLIMusicTUICataloguePlaying {
-    SpanDACCLICataloguePlay(seams: .live(backend: AppleScriptBackend(), showsProgress: true),
+    SpanDACCLICataloguePlay(seams: .live(backend: AppleScriptBackend(), showsProgress: true, route: .cli()),
                             showPlaying: { json in showNowPlaying(json: json, waitForPlay: true) })
 }

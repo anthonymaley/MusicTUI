@@ -866,6 +866,23 @@ final class DiscoverScene: Scene {
                         // CH28). Refuses before anything else, albums too.
                         throw ActionError(message: Self.webDataPlayRefused(musicAppTitle))
                     case .addContainer:
+                        // The Mac DAC route (P9): an album (the one container with
+                        // an album request) is added through SpanDAC and played one
+                        // song at a time through the rate-aware transition, with no
+                        // temporary playlist. Anything else, or off the route, is
+                        // exactly what it was.
+                        if albumTitle != nil, copy != nil, let routePlay = player.seams.route, routePlay.isOn() {
+                            switch player.playAlbumOnRoute(title: musicAppTitle, catalogueIDs: catalogIDs,
+                                                           library: libraryOps(), route: routePlay) {
+                            case .playing(let title, _):
+                                status.post("Playing \(title)")
+                            case .refused(let why):
+                                throw ActionError(message: why)
+                            case .outcomeUnknown(let title):
+                                throw ActionError(message: Self.addOutcomeUnknown(title))
+                            }
+                            return
+                        }
                         if let copy {
                             // PHASE A, for a playlist's copy or an album's
                             // temporary playlist alike. No socket, no

@@ -131,9 +131,9 @@ func playViaMusicApp(args: [String], playlist: String?, album: String?, song: St
                 print(libraryReadFailedMessage(album))
                 throw ExitCode.failure
             }
-            let outcome = playBoundedAlbum(title: album, rows: rows) { script in
+            let outcome = playBoundedAlbum(title: album, rows: rows, run: { script in
                 try? backend.runMusicBlocking(script)
-            }
+            }, route: .cli())
             if let message = albumOutcomeMessage(outcome, title: album) {
                 print(message)
                 throw ExitCode.failure
@@ -179,9 +179,9 @@ func playViaMusicApp(args: [String], playlist: String?, album: String?, song: St
                     : "No tracks found by '\(artist)'")
                 throw ExitCode.failure
             }
-            let outcome = playBoundedArtist(name: artist, tracks: resolution.tracks) { script in
+            let outcome = playBoundedArtist(name: artist, tracks: resolution.tracks, run: { script in
                 try? backend.runMusicBlocking(script)
-            }
+            }, route: .cli())
             if let message = artistOutcomeMessage(outcome, name: artist) {
                 print(message)
                 throw ExitCode.failure
@@ -355,9 +355,9 @@ func playViaMusicApp(args: [String], playlist: String?, album: String?, song: St
                             // "item 1 of albumMatches" (Library index order)
                             // as the old inline script did. Intentional: this
                             // is what makes positional match `--album`.
-                            let outcome = playBoundedAlbum(title: query, rows: albumRows ?? []) { s in
+                            let outcome = playBoundedAlbum(title: query, rows: albumRows ?? [], run: { s in
                                 try? backend.runMusicBlocking(s)
-                            }
+                            }, route: .cli())
                             if let message = albumOutcomeMessage(outcome, title: query) {
                                 print(message)
                                 throw ExitCode.failure
@@ -416,7 +416,8 @@ func playViaMusicApp(args: [String], playlist: String?, album: String?, song: St
 /// The identifier read is a separate one-line script rather than a new column
 /// on `LibraryAlbumRow`: adding one would ripple into the shared bulk fetch the
 /// album path also uses, and this path needs exactly one id.
-func playBoundedSongLive(backend: AppleScriptBackend, title: String, artist: String?) -> SongPlayOutcome {
+func playBoundedSongLive(backend: AppleScriptBackend, title: String, artist: String?,
+                         route: MacRouteSongPlay? = nil) -> SongPlayOutcome {
     playBoundedLocalSong(
         title: title,
         artist: artist,
@@ -430,7 +431,8 @@ func playBoundedSongLive(backend: AppleScriptBackend, title: String, artist: Str
             let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines)
             return (trimmed?.isEmpty ?? true) ? nil : trimmed
         },
-        run: { script in try? backend.runMusicBlocking(script) })
+        run: { script in try? backend.runMusicBlocking(script) },
+        route: route)
 }
 
 /// Play a song and report whether the caller may still try the catalog.
@@ -443,7 +445,7 @@ func playBoundedSongLive(backend: AppleScriptBackend, title: String, artist: Str
 func playSongBoundedOrReportFailure(backend: AppleScriptBackend,
                                     title: String,
                                     artist: String?) throws -> Bool {
-    let outcome = playBoundedSongLive(backend: backend, title: title, artist: artist)
+    let outcome = playBoundedSongLive(backend: backend, title: title, artist: artist, route: .cli())
     if outcome == .playing { return true }
     if outcome.mayFallBackToCatalog { return false }
     if let message = songOutcomeMessage(outcome, title: title) { print(message) }
@@ -604,7 +606,7 @@ func addCatalogRowAndPlayBounded(backend: AppleScriptBackend,
     let result = playResolvedCatalogRow(
         resolution, title: title, note: { print($0) },
         run: { script in try? backend.runMusicBlocking(script) },
-        launch: detachedLaunch)
+        launch: detachedLaunch, route: .cli())
     if result == .playing { return true }
     if case .refused(let message?) = result { print(message) }
     throw ExitCode.failure
@@ -623,7 +625,8 @@ enum CatalogAddPlayResult: Equatable {
 /// decides anything new; it is the shipped tail with its printing handed in.
 func playResolvedCatalogRow(_ resolution: CatalogRowResolution, title: String,
                             note: (String) -> Void, run: ScriptRunner,
-                            launch: @escaping ProcessLauncher) -> CatalogAddPlayResult {
+                            launch: @escaping ProcessLauncher,
+                            route: MacRouteSongPlay? = nil) -> CatalogAddPlayResult {
     guard case .resolved(let identifier, let viaPreExisting) = resolution else {
         return .refused(catalogRowResolutionMessage(resolution, title: title))
     }
@@ -632,7 +635,8 @@ func playResolvedCatalogRow(_ resolution: CatalogRowResolution, title: String,
     // to know rather than ours to smooth over.
     if viaPreExisting { note(preExistingResolutionNote(title: title)) }
 
-    let outcome = playBoundedSongByIdentifier(title: title, identifier: identifier, run: run, launch: launch)
+    let outcome = playBoundedSongByIdentifier(title: title, identifier: identifier, run: run, launch: launch,
+                                              route: route)
     if outcome == .playing { return .playing }
     return .refused(songOutcomeMessage(outcome, title: title))
 }
@@ -671,12 +675,18 @@ struct CatalogAddPlaySeams {
     /// The shipped "Syncing library..." status around the resolver (CLI); the
     /// TUI passes it through unchanged, since stderr is its screen.
     var progress: (() -> CatalogRowResolution) -> CatalogRowResolution = { $0() }
+    /// The Mac DAC route's player (P9): when it is on, the added song plays by
+    /// its library identity through the rate-aware transition, never through a
+    /// temporary playlist. Nil: the shipped bounded play.
+    var route: MacRouteSongPlay? = nil
 
-    static func live(backend: AppleScriptBackend, showsProgress: Bool) -> CatalogAddPlaySeams {
+    static func live(backend: AppleScriptBackend, showsProgress: Bool,
+                     route: MacRouteSongPlay? = nil) -> CatalogAddPlaySeams {
         var seams = CatalogAddPlaySeams(
             run: { script in try? backend.runMusicBlocking(script) },
             launch: detachedLaunch,
             wait: { seconds in try? syncRun { try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000)) } })
+        seams.route = route
         if showsProgress {
             seams.progress = { (body: () -> CatalogRowResolution) -> CatalogRowResolution in
                 withStatus("Syncing library...") { body() }
@@ -804,7 +814,7 @@ final class SpanDACCataloguePlayer {
 
         var note: String?
         switch playResolvedCatalogRow(resolution, title: title, note: { note = $0 },
-                                      run: seams.run, launch: seams.launch) {
+                                      run: seams.run, launch: seams.launch, route: seams.route) {
         case .playing: return .playing(title: title, note: note)
         case .refused(let why): return .refused(why ?? "Could not play '\(title)'.")
         }
@@ -831,7 +841,7 @@ final class SpanDACCataloguePlayer {
                                 song: SpanDACCatalogueSong) -> SpanDACCataloguePlayOutcome {
         let title = song.title ?? found.name
         let outcome = playBoundedSongByIdentifier(title: title, identifier: found.hex,
-                                                  run: seams.run, launch: seams.launch)
+                                                  run: seams.run, launch: seams.launch, route: seams.route)
         if outcome == .playing { return .playing(title: title, note: nil) }
         return .refused(songOutcomeMessage(outcome, title: title) ?? "Could not play '\(title)'.")
     }
@@ -1087,6 +1097,12 @@ func nowPlayingStateGuard(waitForPlay: Bool) -> String {
 }
 
 func showNowPlaying(json: Bool = false, waitForPlay: Bool = false) {
+    // A play the Mac DAC route started (P9) has nothing for Music to show yet:
+    // its runner plays the first song after this command returns. Say so, once.
+    if let started = MacRouteCLIStart.take() {
+        print(started)
+        return
+    }
     let backend = AppleScriptBackend()
     let stateGuard = nowPlayingStateGuard(waitForPlay: waitForPlay)
     // Device enumeration happens ONCE after the track info succeeds — it used
