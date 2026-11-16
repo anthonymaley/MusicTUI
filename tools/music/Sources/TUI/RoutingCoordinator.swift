@@ -372,6 +372,13 @@ final class RoutingCoordinator {
         return current
     }
 
+    /// The one-time line for a stored "musictui_source", which now reads as the
+    /// MusicTUI output (Mac route). Nil once it has been given, and for every
+    /// other stored value. The shell posts it at launch.
+    func takeLegacyMacSourceNotice() -> String? {
+        store.takeLegacyMacSourceNotice()
+    }
+
     /// Where the sound is now (Codex review 101, blocking 1): the ONE value
     /// the shell asks whenever its decision is about sound rather than about
     /// the persisted choice, which stays `mode`. A play-out's output while one

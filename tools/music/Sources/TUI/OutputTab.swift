@@ -112,7 +112,7 @@ enum OutputDisplayRow: Equatable {
 func outputDisplayRows(speakerCount: Int,
                        mode: PlaybackMode,
                        sourceReady: SourceReadiness) -> [OutputDisplayRow] {
-    var rows: [OutputDisplayRow] = [.modeHeader, .mode(.musicApp), .mode(.source)]
+    var rows: [OutputDisplayRow] = [.modeHeader, .mode(.musicApp)]
     rows.append(.catalogHeader)
     rows.append(.catalogStatus)
     rows.append(.airplayHeader)

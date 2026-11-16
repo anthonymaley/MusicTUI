@@ -27,7 +27,7 @@ final class PersistedStateRepairTests: XCTestCase {
     /// SpanDAC and a network SpanDAC output.
     private func fixtures() -> [Fixture] {
         let modes: [(String, PlaybackMode)] = [
-            (#"{"mode":"musictui_source"}"#, .source),
+            (#"{"mode":"mac_source_retired"}"#, .source),
             (#"{"mode":"spandac_network","target":"\#(ipad)"}"#, .networkSource(ipad)),
         ]
         let data: [(String, String?)] = [
@@ -190,7 +190,7 @@ final class PersistedStateRepairTests: XCTestCase {
     /// SpanDAC output. The production composition reads data.json beside it,
     /// finds nothing accepted, and fails closed: no silent migration.
     func testADowngradedModeFileWithoutDataIsBlocked() throws {
-        for (json, stored) in [(#"{"mode":"musictui_source"}"#, PlaybackMode.source),
+        for (json, stored) in [(#"{"mode":"mac_source_retired"}"#, PlaybackMode.source),
                                (#"{"mode":"spandac_network","target":"\#(ipad)"}"#, .networkSource(ipad))] {
             let rig = Rig(modeJSON: json, dataJSON: nil)
             let live = RoutingCoordinator.live(store: rig.modes, surface: .tui, starter: NeverStartsMacSpanDAC(), licenceSocketExists: { false })

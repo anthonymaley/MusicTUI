@@ -47,6 +47,13 @@ enum PlaybackMode: Equatable, Hashable {
         }
     }
 
+    /// `.source` is RETIRED as a selectable output (Mac route, 2026-11-14): the
+    /// Mac's SpanDAC no longer plays. The case stays only until the routing
+    /// machinery behind it is deleted (S9 and its cleanup), and exists in the
+    /// store only in DEBUG builds, so the existing routing tests keep a seam
+    /// to drive that machinery. A release build never reads or writes it.
+    static let retiredMacSourceValue = "mac_source_retired"
+
     /// True for every output a SpanDAC serves over the `slice.*` wire, on this
     /// Mac or on the network: the question almost every caller means when it
     /// asks "is SpanDAC selected".
@@ -109,13 +116,43 @@ final class PlaybackModeStore {
         else { return .musicApp }
         switch stored.mode {
         case "music_app": return .musicApp
-        case "musictui_source": return .source
+        // Mac route (2026-11-14): SpanDAC's own Mac player is gone, so a stored
+        // "musictui_source" is the MusicTUI output. The Mac's DAC is chosen by
+        // the Output tab's Mac row (the MusicTUI output with the Mac's output
+        // set to the DAC), not by this value. `takeLegacyMacSourceNotice`
+        // says so once.
+        case "musictui_source": return .musicApp
+        case PlaybackMode.retiredMacSourceValue:
+            #if DEBUG
+            return .source
+            #else
+            return .musicApp
+            #endif
         case "spandac_network":
             guard let target = stored.target, SpanDACPair.isCanonicalID(target) else { return .musicApp }
             return .networkSource(target)
         default: return .musicApp
         }
     }
+
+    /// The one-time line for a stored "musictui_source": it is read as the
+    /// MusicTUI output now, and this says so. Returns it ONCE: the file is
+    /// rewritten as `music_app` in the same step (atomically, under the lock),
+    /// so the next call, here or in another process, returns nil. A missing,
+    /// corrupt or any other value returns nil and writes nothing.
+    func takeLegacyMacSourceNotice() -> String? {
+        lock.lock(); defer { lock.unlock() }
+        guard let data = FileManager.default.contents(atPath: path),
+              let stored = try? JSONDecoder().decode(Stored.self, from: data),
+              stored.mode == "musictui_source",
+              let fresh = try? JSONEncoder().encode(Stored(mode: PlaybackMode.musicApp.storedValue, target: nil)),
+              (try? fresh.write(to: URL(fileURLWithPath: path), options: .atomic)) != nil
+        else { return nil }
+        return Self.legacyMacSourceNotice
+    }
+
+    static let legacyMacSourceNotice =
+        "SpanDAC no longer plays on this Mac. Using MusicTUI; choose SpanDAC on this Mac to send it to your DAC."
 
     /// Written atomically. A bare write truncates then refills, so a crash
     /// mid-write leaves a short file that reads as corrupt; this repo has
@@ -124,9 +161,13 @@ final class PlaybackModeStore {
     @discardableResult
     func set(_ mode: PlaybackMode) -> Bool {
         lock.lock(); defer { lock.unlock() }
+        #if !DEBUG
+        if mode == .source { return false }
+        #endif
         let dir = (path as NSString).deletingLastPathComponent
         try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
-        guard let data = try? JSONEncoder().encode(Stored(mode: mode.storedValue, target: mode.networkSourceID))
+        guard let data = try? JSONEncoder().encode(Stored(mode: mode == .source ? PlaybackMode.retiredMacSourceValue : mode.storedValue,
+                                                           target: mode.networkSourceID))
         else { return false }
         do {
             try data.write(to: URL(fileURLWithPath: path), options: .atomic)
