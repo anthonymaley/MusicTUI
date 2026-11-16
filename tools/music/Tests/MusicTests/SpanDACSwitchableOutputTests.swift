@@ -347,6 +347,28 @@ final class SpanDACSwitchableOutputTests: XCTestCase {
         XCTAssertEqual(wire.log.filter { $0 == "mac:slice.play" || $0 == "mac:slice.playLibrary" }, [])
     }
 
+    /// Mac route (P4): leaving the route for the plain MusicTUI output clears
+    /// the flags and tells the route's owner (`onMacRouteOff`), so the poller
+    /// and every play stop taking the rate-aware path.
+    func testLeavingTheMacRouteForMusicTUIClearsTheFlagsAndTellsTheRoute() throws {
+        let wire = Wire(macStatus: macStatus(switchableOutput), useDAC: "{}")
+        let r = try rig(mode: .networkSource(ipad), wire: wire)
+        defer { try? FileManager.default.removeItem(atPath: r.dir) }
+        var off = 0
+        r.scene.onMacRouteOff = { off += 1 }
+        let done = DispatchSemaphore(value: 0)
+        r.scene.selectModeFinishedForTest = { done.signal() }
+        _ = r.scene.handle(.home)
+        guard let i = r.scene.displayRowsForTest.firstIndex(of: .musicApp) else { return XCTFail("no MusicTUI row") }
+        for _ in 0..<i { _ = r.scene.handle(.down) }
+        _ = r.scene.handle(.enter)
+        XCTAssertEqual(done.wait(timeout: .now() + 2), .success)
+        XCTAssertEqual(r.scene.routingForTest.mode, .musicApp)
+        XCTAssertFalse(r.scene.macDACRouteOn)
+        XCTAssertFalse(r.scene.macRateFollowWanted)
+        XCTAssertEqual(off, 1)
+    }
+
     /// Enter on the Mac row again, while MusicTUI is already the output, still
     /// applies the route (a DAC that came back).
     func testTheMacRowWhileMusicTUIIsAlreadyTheOutputStillAppliesTheRoute() throws {

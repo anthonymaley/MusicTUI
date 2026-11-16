@@ -174,6 +174,9 @@ final class RateFence {
         return n
     }
 
+    /// The lease holder, for a caller that holds the lock (`leaseStatus`).
+    func readLeaseHoldingLock() throws -> String? { try readLease() }
+
     private func readLease() throws -> String? {
         try readText(leasePath).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
     }

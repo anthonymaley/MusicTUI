@@ -813,9 +813,11 @@ final class RateAwareTransitionTests: XCTestCase {
         XCTAssertEqual(gate.playFailed(), .skip)
     }
 
-    /// A fence that cannot move plays nothing, as `RateFence` says, and touches
-    /// no gate (not a rate failure and not a Music failure).
-    func testAnUnwritableFenceFileStartsNothing() throws {
+    /// 2026-11-15 ruling ("never refuse a song"): a fence file that cannot be
+    /// written (a broken state directory) does NOT stop the song. It plays at
+    /// the DAC's current rate with no rate follow (nothing sent to SpanDAC, no
+    /// confirm), and the result says so; it is not a play failure for the gate.
+    func testAnUnwritableFenceFileStillPlaysWithoutRateFollow() throws {
         guard geteuid() != 0 else { return }
         let dir = tempDir()
         let p = process(dir, owner: "tui")
@@ -823,10 +825,55 @@ final class RateAwareTransitionTests: XCTestCase {
         XCTAssertEqual(chmod(dir + "/rate.fence", 0o444), 0)
         defer { _ = chmod(dir + "/rate.fence", 0o644) }
         let result = p.transition.run(song())
+        guard case .playedUnfollowed(let reason) = result else { return XCTFail("\(result)") }
+        XCTAssertFalse(reason.isEmpty)
+        XCTAssertEqual(result.playOutcome, true)
+        XCTAssertEqual(p.music.count("play"), 1, "the song did not play")
+        XCTAssertTrue(p.wire.requests.isEmpty, "rate follow ran with no fence")
+    }
+
+    /// The same ruling when the lock's own file cannot be opened (its parent is
+    /// a regular file).
+    func testAnUnopenableLockStillPlaysWithoutRateFollow() {
+        let dir = tempDir()
+        FileManager.default.createFile(atPath: dir + "/blocker", contents: Data())
+        let blocked = process(dir + "/blocker", owner: "tui")
+        let result = blocked.transition.run(song())
+        guard case .playedUnfollowed = result else { return XCTFail("\(result)") }
+        XCTAssertEqual(blocked.music.count("play"), 1)
+        XCTAssertTrue(blocked.wire.requests.isEmpty)
+    }
+
+    /// The rest of the token is still honoured when the files are unusable.
+    func testAnUnusableStateDirectoryStillHonoursTheRestOfTheToken() {
+        let dir = tempDir()
+        FileManager.default.createFile(atPath: dir + "/blocker", contents: Data())
+        let p = process(dir + "/blocker", owner: "tui")
+        XCTAssertEqual(p.transition.run(song(isCurrent: { false })), .invalidated)
+        XCTAssertEqual(p.music.count("play"), 0)
+    }
+
+    /// A busy lock (a route switch in progress) still plays nothing: that is
+    /// the lock's own purpose, and it is not a broken directory.
+    func testABusyLockStillStartsNothing() throws {
+        let dir = tempDir()
+        let held = OutputLock(path: dir + "/output.lock", pollInterval: 0.001)
+        var ticks = 0.0
+        let waiter = OutputLock(path: dir + "/output.lock", pollInterval: 0.001,
+                                clock: { ticks += 40; return Date(timeIntervalSince1970: ticks) }, pause: { _ in })
+        let acquired = DispatchSemaphore(value: 0), release = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async {
+            try? held.withLock { acquired.signal(); release.wait() }
+        }
+        acquired.wait()
+        defer { release.signal() }
+        let music = FakeMusic(Events())
+        let transition = RateAwareTransition(fence: RateFence(lock: waiter), owner: "tui", music: music,
+                                             makeFollow: { _ in fatalError("rate follow built with the lock busy") })
+        let result = transition.run(song())
         guard case .notStarted = result else { return XCTFail("\(result)") }
         XCTAssertNil(result.playOutcome)
-        XCTAssertEqual(p.music.count("play"), 0)
-        XCTAssertTrue(p.wire.requests.isEmpty)
+        XCTAssertEqual(music.count("play"), 0)
     }
 
     /// A token the command already took (M1 at command time) is used as given:

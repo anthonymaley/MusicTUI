@@ -1141,6 +1141,9 @@ final class NowPlayingScene: Scene {
         case .quiet:
             appQueue.clear()
             actions.run("Pause") { [routing] in
+                // On the Mac DAC route a pause is a command too (M1): it moves the
+                // fence, so a correction in flight never resumes over it.
+                self.appQueue.macRoute?.noteCommand(.pause)
                 try routing.perform(.quiet,
                     musicApp: { _ = try self.backend.runMusicBlocking("pause") },
                     // Ruling 12.7: Quiet pauses the SELECTED output, not
@@ -1381,7 +1384,7 @@ final class NowPlayingScene: Scene {
                         // Jump within the app-owned queue by the row's play-order position.
                         if let (pl, pos) = store.jump(to: row.index) {
                             try require(playRequestedQueueTrack(backend: backend, appQueue: store, playlist: pl,
-                                                                position: pos, title: row.name),
+                                                                position: pos, title: row.name, command: .jump),
                                         "Couldn't play that track.")
                             return
                         }
@@ -1399,7 +1402,7 @@ final class NowPlayingScene: Scene {
                                    == trackKey(title: row.name, artist: row.artist) {
                                 store.set(AppQueue(playlistName: context, tracks: tracks, currentIndex: row.index))
                                 try require(playRequestedQueueTrack(backend: backend, appQueue: store, playlist: context,
-                                                                    position: row.index, title: row.name),
+                                                                    position: row.index, title: row.name, command: .jump),
                                             "Couldn't play that track.")
                                 return
                             }
