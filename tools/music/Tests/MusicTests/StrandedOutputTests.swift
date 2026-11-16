@@ -388,6 +388,37 @@ final class StrandedOutputTests: XCTestCase {
                        + "Mac sound still on DAC; check Sound settings (SSL 2+).")
     }
 
+    // MARK: - The Mac row's question completes the Mac route on y (2026-11-16 live check)
+
+    /// Choosing the Mac SpanDAC row while the output is an unreachable iPhone
+    /// asks the same question; y must finish the SELECTION the person made (the
+    /// route on, useDAC, rate follow), exactly as a direct Mac-row choice does.
+    /// Live, y switched to the plain MusicTUI output and left the route off.
+    func testYOnTheMacRowQuestionTurnsTheMacRouteOnLikeADirectChoice() {
+        let (s, _, finished) = rig(mode: .networkSource(ipad), wire: Wire())
+        var followed = 0
+        s.onMacRateFollowWanted = { followed += 1 }
+        ask(s, on: .spandacMac, finished)
+        XCTAssertEqual(mode(), .networkSource(ipad), "the question must not switch anything")
+        XCTAssertFalse(s.macDACRouteOn)
+        answer(s, .char("y"), finished)
+        XCTAssertEqual(mode(), .musicApp)
+        XCTAssertTrue(s.macDACRouteOn, "y left the Mac route off")
+        XCTAssertTrue(s.macRateFollowWanted)
+        XCTAssertEqual(followed, 1)
+        XCTAssertTrue(MacRouteStore(beside: PlaybackModeStore(path: dir + "/mode.json")).isOn, "mac-route.json was not written")
+    }
+
+    /// The plain MusicTUI row's question keeps what it always did: y leaves the
+    /// route off.
+    func testYOnThePlainMusicTUIQuestionLeavesTheRouteOff() {
+        let (s, _, finished) = rig(mode: .networkSource(ipad), wire: Wire())
+        ask(s, on: .musicApp, finished)
+        answer(s, .char("y"), finished)
+        XCTAssertEqual(mode(), .musicApp)
+        XCTAssertFalse(s.macDACRouteOn)
+    }
+
     // MARK: - Drawn at the narrowest width, wrapped, nothing cut
 
     func testTheQuestionWrapsAtANarrowWidthKeepingTheRiskAndTheKeys() {

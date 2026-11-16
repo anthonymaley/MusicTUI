@@ -969,6 +969,10 @@ final class SpeakersScene: Scene {
         /// `activationGeneration` at that Enter: leaving and re-entering the tab
         /// in between makes the question stale.
         let activation: Int
+        /// The Enter was on the Mac row (the Mac DAC route): y completes THAT
+        /// selection (route on, useDAC, follow), as a direct choice of the row
+        /// does, not the plain MusicTUI output (live check 2026-11-16).
+        var macDACRoute: Bool = false
     }
     /// The open question. Main loop only; modal like `askingStopUsing`.
     private var askingLeave: LeaveQuestion? = nil
@@ -1135,7 +1139,7 @@ final class SpeakersScene: Scene {
                     self.readinessLock.lock()
                     self.inboxLeaveQuestion = LeaveQuestion(outgoing: outgoingNow, target: target, targetName: targetLabel,
                                                             device: outgoingDevice, epoch: epochNow, keyCount: keysAtEnter,
-                                                            activation: activationAtEnter)
+                                                            activation: activationAtEnter, macDACRoute: macDACRoute)
                     self.readinessLock.unlock()
                     return
                 }
@@ -2115,7 +2119,7 @@ final class SpeakersScene: Scene {
                 askingLeave = nil
                 // The action decides whether the question's output and epoch
                 // still hold; otherwise this is an ordinary, strict attempt.
-                selectMode(question.target, name: question.targetName,
+                selectMode(question.target, name: question.targetName, macDACRoute: question.macDACRoute,
                            leaveUnreached: (question.outgoing, question.epoch))
                 return .redraw
             case .char("n"), .char("N"), .escape:
