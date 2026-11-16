@@ -218,6 +218,11 @@ final class MacRoutePlayer {
     private let makeFollow: (RateToken) -> SourceRateFollow
     private let post: (String) -> Void
     private let now: () -> TimeInterval
+    private let streamWait: RateStreamWait
+    /// Runs the later re-check of a start whose stream was not up in time
+    /// (`RateAwareTransition.recheck`), off the caller's thread. A test passes
+    /// `{ $0() }` to run it in place.
+    var runFollowUp: (@escaping () -> Void) -> Void = { DispatchQueue.global().async(execute: $0) }
     /// S11: what this process tells SpanDAC about the route and what is playing.
     /// nil in every test that predates it: then nothing is sent.
     let reporter: MacRouteFollowReporter?
@@ -320,6 +325,14 @@ final class MacRoutePlayer {
     private var closing = false
     /// The queue entry this process last started on the route.
     private var lastStarted: (playlist: String, position: Int)?
+    /// The fence of the last play this process started on the route: a re-check's
+    /// answer is kept only while that is still the song it was made for.
+    private var lastStartedFence: Int?
+    /// How many songs this process has started on the route. The poller compares
+    /// it between ticks: a start in between means the position it last saw
+    /// belongs to the song before.
+    private var starts = 0
+    var startCount: Int { condition.lock(); defer { condition.unlock() }; return starts }
     /// A pause this follower may still be holding after a correction that
     /// could not resume it (`RateCorrectionStop.leavesOurPause`).
     private var ourPause: (persistentID: String, fence: Int)?
@@ -329,12 +342,14 @@ final class MacRoutePlayer {
     /// What the poller last reported, to report a change and not a tick.
     private var lastObserved: (state: SourceNowPlayingReport.State, track: String, position: TimeInterval, at: TimeInterval)?
 
-    init(route: MacDACRouteState, outputIsMusicApp: @escaping () -> Bool, fence: RateFence,
+    init(streamWait: RateStreamWait = .live,
+         route: MacDACRouteState, outputIsMusicApp: @escaping () -> Bool, fence: RateFence,
          owner: String = RateFence.newOwnerID(), makeMusic: @escaping MusicFactory,
          resolvePersistentID: @escaping (_ playlist: String, _ position: Int) -> String?,
          makeFollow: @escaping (RateToken) -> SourceRateFollow, post: @escaping (String) -> Void,
          reporter: MacRouteFollowReporter? = nil,
          now: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }) {
+        self.streamWait = streamWait
         self.reporter = reporter
         self.route = route
         self.outputIsMusicApp = outputIsMusicApp
@@ -459,13 +474,18 @@ final class MacRoutePlayer {
             allowCorrection: { [unowned self] in
                 self.condition.lock(); defer { self.condition.unlock() }
                 return !self.closing
-            })
+            },
+            streamWait: streamWait)
         let result = transition.run(RateTransitionPlan(command: command, sound: sound, isCurrent: isCurrent),
                                     token: reserved)
         record(result, playlist: playlist, position: position, persistentID: persistentID)
         evidence.record(result)
         reportStarted(result, persistentID: persistentID, subject: subject)
         onTransition?(result)
+        if case .played(let played) = result, transition.needsRecheck(played) {
+            scheduleRecheck(transition, played: played, playlist: playlist, position: position,
+                            persistentID: persistentID)
+        }
 
         switch result {
         case .played:
@@ -538,6 +558,55 @@ final class MacRoutePlayer {
     func noteCommand(_ command: RateCommand) {
         guard isOnRoute else { return }
         _ = try? fence.begin(command, owner: owner, timeout: 1)
+    }
+
+    // MARK: the re-check of a stream that was not up (2026-11-16)
+
+    /// The start's confirm gave up waiting for this song's stream (Music kept
+    /// reporting the previous stream, or refused its position), so nothing was
+    /// confirmed. Tries again off the caller's thread, bounded, counted as work in
+    /// flight so a closing TUI waits for it (and tells it to stop). Never touches
+    /// the song unless the follow-up finds the DAC is not at its rate, and then
+    /// only through `correct`'s guarantees.
+    private func scheduleRecheck(_ transition: RateAwareTransition, played: RateTransitionPlayed,
+                                 playlist: String, position: Int, persistentID: String?) {
+        condition.lock()
+        if closing { condition.unlock(); return }
+        inFlight += 1
+        condition.unlock()
+        runFollowUp { [self] in
+            defer { condition.lock(); inFlight -= 1; condition.broadcast(); condition.unlock() }
+            guard let updated = transition.recheck(played, cancelled: { [self] in self.isClosing }) else { return }
+            applyRecheck(updated, playlist: playlist, position: position, persistentID: persistentID)
+        }
+    }
+
+    /// The line and the report take the re-check's evidence, only while the song
+    /// it was made for is still the last one this process started.
+    private func applyRecheck(_ updated: RateTransitionPlayed, playlist: String, position: Int,
+                              persistentID: String?) {
+        condition.lock()
+        let current = lastStartedFence == updated.token.fence
+        condition.unlock()
+        guard current else { return }
+        record(.played(updated), playlist: playlist, position: position, persistentID: persistentID, newStart: false)
+        evidence.replace(updated)
+        // The poller's next look reports the song with the new rate: its reports
+        // of this song copy the rate fields from `lastStartedReport`, and a
+        // cleared `lastObserved` makes that next look a change.
+        condition.lock()
+        if var report = lastStartedReport, report.fence == updated.token.fence {
+            let fresh = SourceNowPlayingReport.started(updated, persistentID: persistentID, subject: nil)
+            report.databaseID = fresh.databaseID
+            report.rateOutcome = fresh.rateOutcome
+            report.targetHz = fresh.targetHz
+            report.deliveredHz = fresh.deliveredHz
+            report.dacRateHz = fresh.dacRateHz
+            report.priorUnresolved = fresh.priorUnresolved
+            lastStartedReport = report
+            lastObserved = nil
+        }
+        condition.unlock()
     }
 
     // MARK: closing (D2)
@@ -661,11 +730,14 @@ final class MacRoutePlayer {
 
     // MARK: private
 
-    private func record(_ result: RateTransitionResult, playlist: String, position: Int, persistentID: String?) {
+    private func record(_ result: RateTransitionResult, playlist: String, position: Int, persistentID: String?,
+                        newStart: Bool = true) {
         condition.lock(); defer { condition.unlock() }
+        if newStart { switch result { case .played, .playedUnfollowed: starts += 1; default: break } }
         switch result {
         case .played(let played):
             lastStarted = (playlist, position)
+            lastStartedFence = played.token.fence
             if case .stopped(let stop, _) = played.correction, stop.leavesOurPause, let persistentID {
                 ourPause = (persistentID, played.token.fence)
             } else {

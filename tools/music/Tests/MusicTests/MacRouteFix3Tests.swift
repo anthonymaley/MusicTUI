@@ -98,7 +98,15 @@ final class MacRouteFix3Tests: XCTestCase {
         }
         func seekToStart() throws {}
         func readCurrentTrack() -> RateTrackRead? { current }
-        func readPlayerState() -> RatePlayerState? { onStateRead?(); return state }
+        func readPlayerState() -> RatePlayerState? {
+            onStateRead?()
+            let shown = state
+            // A playing stream advances between reads (the stream-up proof).
+            if state.state == .playing {
+                state = RatePlayerState(state: .playing, persistentID: state.persistentID, position: state.position + 0.5)
+            }
+            return shown
+        }
     }
 
     private func fenceFor(_ dir: String) -> RateFence {
@@ -113,7 +121,7 @@ final class MacRouteFix3Tests: XCTestCase {
                             owner: String = "tui", clock: Clock = Clock()) -> MacRoutePlayer {
         let c = control(wire)
         return MacRoutePlayer(
-            route: MacDACRouteState(initial: true), outputIsMusicApp: { true }, fence: fenceFor(dir), owner: owner,
+            streamWait: .instant, route: MacDACRouteState(initial: true), outputIsMusicApp: { true }, fence: fenceFor(dir), owner: owner,
             makeMusic: { _ in music },
             resolvePersistentID: { _, position in String(format: "%016llX", UInt64(position)) },
             makeFollow: { token in
@@ -274,7 +282,7 @@ final class MacRouteFix3Tests: XCTestCase {
         let broken = RateFence(lock: OutputLock(path: "/nonexistent-dir-fix3/output.lock", pollInterval: 0.001))
         var reads = 0
         let p = MacRoutePlayer(
-            route: MacDACRouteState(initial: true), outputIsMusicApp: { true }, fence: broken, owner: "tui",
+            streamWait: .instant, route: MacDACRouteState(initial: true), outputIsMusicApp: { true }, fence: broken, owner: "tui",
             makeMusic: { _ in FakeMusic() }, resolvePersistentID: { _, _ in nil },
             makeFollow: { SourceRateFollow(token: $0, control: c, offered: true) }, post: { _ in })
         p.readRateStatus = { reads += 1; return nil }

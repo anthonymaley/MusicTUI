@@ -93,7 +93,14 @@ final class MacRouteWiringTests: XCTestCase {
         }
         func seekToStart() throws { log.append("seek0") }
         func readCurrentTrack() -> RateTrackRead? { current }
-        func readPlayerState() -> RatePlayerState? { state }
+        func readPlayerState() -> RatePlayerState? {
+            let shown = state
+            // A playing stream advances between reads (the stream-up proof).
+            if state.state == .playing {
+                state = RatePlayerState(state: .playing, persistentID: state.persistentID, position: state.position + 0.5)
+            }
+            return shown
+        }
     }
 
     /// One MusicTUI process composed for the route, over a temp state directory.
@@ -118,7 +125,7 @@ final class MacRouteWiringTests: XCTestCase {
             let clock = self.clock, wire = self.wire, music = self.music
             let controlValue = makeControl(wire)
             player = MacRoutePlayer(
-                route: route, outputIsMusicApp: { [unowned self] in self.outputIsMusicApp }, fence: fence, owner: owner,
+                streamWait: .instant, route: route, outputIsMusicApp: { [unowned self] in self.outputIsMusicApp }, fence: fence, owner: owner,
                 makeMusic: { script in music.playScript = script; return music },
                 resolvePersistentID: { [unowned self] in self.resolve($0, $1) },
                 makeFollow: { token in
@@ -386,7 +393,7 @@ final class MacRouteWiringTests: XCTestCase {
         acquired.wait()
         defer { release.signal() }
         let r = Rig(dir: dir, owner: "tui", lockPath: nil, makeControl: { self.control($0) })
-        let busy = MacRoutePlayer(route: r.route, outputIsMusicApp: { true }, fence: RateFence(lock: waiter), owner: "tui",
+        let busy = MacRoutePlayer(streamWait: .instant, route: r.route, outputIsMusicApp: { true }, fence: RateFence(lock: waiter), owner: "tui",
                                   makeMusic: { r.music.playScript = $0; return r.music },
                                   resolvePersistentID: { _, _ in "AAAAAAAAAAAAAAAA" },
                                   makeFollow: { _ in fatalError("rate follow built with the lock busy") }, post: { _ in })
@@ -584,6 +591,137 @@ final class MacRouteWiringTests: XCTestCase {
             XCTAssertEqual(store.read()?.currentIndex, 1, "Music's own failure was not retried")
             p.cleanupArtFiles()
         }
+    }
+
+    // MARK: a repeat-all wrap is the natural end (live check 2026-11-16)
+
+    /// A fake `osascript` for a song that wraps: the first player read is the song
+    /// one second from its end, every later one is the same song again from its
+    /// start, playing; the song-repeat read answers `repeatMode`; every play script
+    /// and every script that WRITES a mode is recorded.
+    private func wrappingBackend(_ dir: String, repeatMode: String)
+        throws -> (AppleScriptBackend, plays: () -> [String], writes: () -> [String]) {
+        let fake = dir + "/osascript"
+        let record = dir + "/plays.txt", writesFile = dir + "/writes.txt"
+        let sh = """
+        #!/bin/sh
+        s="$2"
+        case "$s" in
+          *"set song repeat"*|*"set shuffle"*) printf '%s\\n--END--\\n' "$s" >> '\(writesFile)' ;;
+        esac
+        case "$s" in
+          *"player state as text"*)
+            if [ -f '\(dir)/seen' ]; then printf 'Song 1\\037Artist\\037Album\\037100\\0372\\037playing'; else : > '\(dir)/seen'; printf 'Song 1\\037Artist\\037Album\\037100\\03799\\037playing'; fi ;;
+          *"song repeat as string"*) printf 'false,songs,\(repeatMode)' ;;
+          *"play track"*|*"play item 1 of"*) printf '%s\\n--END--\\n' "$s" >> '\(record)'; printf 'PLAYED' ;;
+          *) : ;;
+        esac
+        """
+        try sh.write(toFile: fake, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: fake)
+        func lines(_ path: String) -> [String] {
+            ((try? String(contentsOfFile: path, encoding: .utf8)) ?? "")
+                .components(separatedBy: "\n--END--\n").filter { !$0.isEmpty }
+        }
+        return (AppleScriptBackend(executable: fake), { lines(record) }, { lines(writesFile) })
+    }
+
+    /// Music's song repeat is "all": the one-track context loops the song, so no
+    /// stop ever comes. The wrap advances the queue through the transition, and the
+    /// person's repeat setting is never written.
+    func testARepeatAllWrapOnTheRouteIsTheNaturalEndAndAdvancesTheQueue() throws {
+        let r = rig()
+        let (backend, plays, writes) = try wrappingBackend(r.dir, repeatMode: "all")
+        let store = storeWithRoute(r, queue: queue(3))
+        let p = poller(r.dir, backend: backend, store: store)
+        p.tick(); p.tick()
+        XCTAssertEqual(store.read()?.currentIndex, 2, "the looping song was never advanced past")
+        XCTAssertEqual(r.music.count("play"), 1)
+        XCTAssertEqual(r.music.scripts, ["play track 2 of playlist \"Mixtape\""])
+        XCTAssertEqual(plays(), [], "the shipped script played on the route")
+        XCTAssertEqual(writes(), [], "the person's repeat or shuffle setting was written")
+        p.cleanupArtFiles()
+    }
+
+    /// Repeat "one" is the person asking for this song again: it loops, no advance.
+    func testARepeatOneWrapIsLeftToLoop() throws {
+        let r = rig()
+        let (backend, plays, writes) = try wrappingBackend(r.dir, repeatMode: "one")
+        let store = storeWithRoute(r, queue: queue(3))
+        let p = poller(r.dir, backend: backend, store: store)
+        p.tick(); p.tick()
+        XCTAssertEqual(store.read()?.currentIndex, 1, "repeat one was advanced past")
+        XCTAssertEqual(r.music.count("play"), 0)
+        XCTAssertEqual(plays(), [])
+        XCTAssertEqual(writes(), [])
+        p.cleanupArtFiles()
+    }
+
+    /// With repeat off a jump back to the start is a seek, not an end.
+    func testAJumpBackWithRepeatOffIsASeekNotAnEnd() throws {
+        let r = rig()
+        let (backend, _, _) = try wrappingBackend(r.dir, repeatMode: "off")
+        let store = storeWithRoute(r, queue: queue(3))
+        let p = poller(r.dir, backend: backend, store: store)
+        p.tick(); p.tick()
+        XCTAssertEqual(store.read()?.currentIndex, 1)
+        XCTAssertEqual(r.music.count("play"), 0)
+        p.cleanupArtFiles()
+    }
+
+    /// Off the route nothing about a wrap changes: no advance, no read of the mode.
+    func testAWrapOffTheRouteIsUntouched() throws {
+        let r = rig(on: false)
+        let (backend, plays, writes) = try wrappingBackend(r.dir, repeatMode: "all")
+        let store = storeWithRoute(r, queue: queue(3))
+        let p = poller(r.dir, backend: backend, store: store)
+        p.tick(); p.tick()
+        XCTAssertEqual(store.read()?.currentIndex, 1)
+        XCTAssertEqual(plays(), [])
+        XCTAssertEqual(writes(), [])
+        XCTAssertEqual(r.music.log, [])
+        p.cleanupArtFiles()
+    }
+
+    /// A song this process started between two ticks (even one with the same title)
+    /// is a new song, not the wrap of the one before it.
+    func testASongStartedBetweenTicksIsNotAWrap() throws {
+        let r = rig()
+        let (backend, _, _) = try wrappingBackend(r.dir, repeatMode: "all")
+        let store = storeWithRoute(r, queue: queue(3))
+        let p = poller(r.dir, backend: backend, store: store)
+        p.tick()                                    // near the end of song 1
+        XCTAssertEqual(playQueueEntry(backend: backend, appQueue: store, playlist: "Mixtape", position: 1), .played)
+        p.tick()                                    // the same title, from the start: our own start
+        XCTAssertEqual(store.read()?.currentIndex, 1, "our own fresh start was taken for a wrap")
+        XCTAssertEqual(r.music.count("play"), 1, "only the start we made")
+        p.cleanupArtFiles()
+    }
+
+    /// Not ours to advance (a newer owner holds the lease): nothing moves.
+    func testAWrapDoesNotAdvanceAfterTheLeaseMovedOn() throws {
+        let r = rig()
+        let (backend, _, _) = try wrappingBackend(r.dir, repeatMode: "all")
+        let store = storeWithRoute(r, queue: queue(3))
+        XCTAssertEqual(playQueueEntry(backend: backend, appQueue: store, playlist: "Mixtape", position: 1), .played)
+        let runner = RateFence(lock: OutputLock(path: r.dir + "/output.lock", pollInterval: 0.001))
+        _ = try runner.begin(.advance, owner: "runner")
+        let p = poller(r.dir, backend: backend, store: store)
+        p.tick(); p.tick()
+        XCTAssertEqual(r.music.count("play"), 1, "only the first play")
+        XCTAssertEqual(store.read()?.currentIndex, 1)
+        p.cleanupArtFiles()
+    }
+
+    func testTheWrapRuleIsNearTheEndToNearTheStartOfTheSameSong() {
+        let wrap = PlaybackPoller.isNaturalEndWrap
+        XCTAssertTrue(wrap(99, 100, 1, 100))
+        XCTAssertTrue(wrap(93, 100, 9, 100), "poll latency: a few seconds either side")
+        XCTAssertFalse(wrap(50, 100, 1, 100), "a seek from mid-song")
+        XCTAssertFalse(wrap(99, 100, 60, 100), "not back at the start")
+        XCTAssertFalse(wrap(99, 100, 98, 100), "ordinary playback")
+        XCTAssertFalse(wrap(99, 100, 1, 240), "another song of another length")
+        XCTAssertFalse(wrap(0, 0, 0, 0), "nothing known")
     }
 
     // MARK: closing the TUI (D2)

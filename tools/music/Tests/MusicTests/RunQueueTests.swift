@@ -89,7 +89,14 @@ final class RunQueueTests: XCTestCase {
         }
         func seekToStart() throws { log.append("seek0") }
         func readCurrentTrack() -> RateTrackRead? { current }
-        func readPlayerState() -> RatePlayerState? { state }
+        func readPlayerState() -> RatePlayerState? {
+            let shown = state
+            // A playing stream advances between reads (the stream-up proof).
+            if state.state == .playing {
+                state = RatePlayerState(state: .playing, persistentID: state.persistentID, position: state.position + 0.5)
+            }
+            return shown
+        }
     }
 
     /// Music's player as the runner's wait reads it. By default each song is
@@ -102,6 +109,9 @@ final class RunQueueTests: XCTestCase {
         var duration: TimeInterval = 200
         var script: [String: RunQueuePlayback?] = [:]
         var live = false   // read Music's own state as it is
+        /// Music's song repeat, as the wrap check reads it; nil says nothing.
+        var repeatMode: RepeatMode?
+        func songRepeat() -> RepeatMode? { repeatMode }
         private var plays = 0
         private var polls = 0
         init(_ music: FakeMusic) { self.music = music }
@@ -147,7 +157,7 @@ final class RunQueueTests: XCTestCase {
             let clock = self.clock, music = self.music
             let controlValue = makeControl(wire)
             player = MacRoutePlayer(
-                route: route, outputIsMusicApp: { true }, fence: fence, owner: owner,
+                streamWait: .instant, route: route, outputIsMusicApp: { true }, fence: fence, owner: owner,
                 makeMusic: { _ in music },
                 resolvePersistentID: { _, position in String(format: "%016llX", UInt64(position)) },
                 makeFollow: { token in
@@ -228,6 +238,39 @@ final class RunQueueTests: XCTestCase {
         XCTAssertEqual(Array(playsAtPause.prefix(5)), [1, 1, 1, 1, 1], "song 2 started before song 1 ended")
     }
 
+    /// The TUI's twin of the repeat-all loop (live check 2026-11-16): Music's song
+    /// repeat "all" loops the one-track context, so no stop comes. The same song
+    /// wrapping from near its end to its start, with repeat "all", ends the wait.
+    private func wrapRun(repeatMode: RepeatMode?) throws -> (exit: RunQueueExit, plays: [Int], played: [String]) {
+        let r = rig()
+        r.sim.repeatMode = repeatMode
+        let store = queueStore(ids)
+        r.sim.script["1.1"] = RunQueuePlayback(state: .playing, persistentID: ids[0], position: 10, duration: 200)
+        r.sim.script["1.2"] = RunQueuePlayback(state: .playing, persistentID: ids[0], position: 199, duration: 200)
+        r.sim.script["1.3"] = RunQueuePlayback(state: .playing, persistentID: ids[0], position: 1, duration: 200)   // the wrap
+        r.sim.script["1.4"] = RunQueuePlayback(state: .playing, persistentID: ids[0], position: 100, duration: 200)
+        r.sim.script["1.5"] = RunQueuePlayback(state: .playing, persistentID: ids[0], position: 199, duration: 200)
+        r.sim.script["1.6"] = RunQueuePlayback(state: .stopped, persistentID: ids[0], position: 0, duration: 200)
+        var playsAtPoll: [Int] = []
+        let exit = r.runner(store, onSleep: { playsAtPoll.append(r.music.count("play")) }).run()
+        return (exit, playsAtPoll, r.music.played)
+    }
+
+    func testARepeatAllWrapEndsTheWaitAndTheRunnerAdvances() throws {
+        let run = try wrapRun(repeatMode: .all)
+        XCTAssertEqual(run.exit, .finished)
+        XCTAssertEqual(run.played, ids)
+        XCTAssertEqual(Array(run.plays.prefix(4)), [1, 1, 1, 2], "song 2 started at the wrap, not at a stop that never comes")
+    }
+
+    func testARepeatOneWrapIsLeftToLoopAndSoIsAnUnreadableOrOffSetting() throws {
+        for mode in [RepeatMode.one, .off, nil] {
+            let run = try wrapRun(repeatMode: mode)
+            XCTAssertEqual(Array(run.plays.prefix(6)), [1, 1, 1, 1, 1, 1], "\(String(describing: mode)): advanced past a loop")
+            XCTAssertEqual(run.played, ids, "\(String(describing: mode)): the queue still ends at the real stop")
+        }
+    }
+
     func testTheRunnerRetriesAFailedPlayThenSkipsIt() throws {
         let r = rig()
         let store = queueStore(Array(ids.prefix(2)))
@@ -250,7 +293,7 @@ final class RunQueueTests: XCTestCase {
         acquired.wait()
         defer { release.signal() }
         let r = rig(dir)
-        let busy = MacRoutePlayer(route: r.route, outputIsMusicApp: { true }, fence: RateFence(lock: waiter),
+        let busy = MacRoutePlayer(streamWait: .instant, route: r.route, outputIsMusicApp: { true }, fence: RateFence(lock: waiter),
                                   owner: "runner", makeMusic: { _ in r.music },
                                   resolvePersistentID: { _, _ in nil },
                                   makeFollow: { _ in fatalError("rate follow built with the lock busy") }, post: { _ in })

@@ -120,7 +120,13 @@ final class RateAwareTransitionTests: XCTestCase {
         }
         func readPlayerState() -> RatePlayerState? {
             events.log.append("music:readState")
-            return stateUnreadable ? nil : state
+            if stateUnreadable { return nil }
+            let shown = state
+            // A playing stream advances between reads (the stream-up proof).
+            if state.state == .playing {
+                state = RatePlayerState(state: .playing, persistentID: state.persistentID, position: state.position + 0.5)
+            }
+            return shown
         }
     }
 
@@ -146,7 +152,8 @@ final class RateAwareTransitionTests: XCTestCase {
                                  now: { clock.t },
                                  sleep: { clock.sleeps.append($0); clock.t += $0 })
             },
-            now: { clock.t })
+            now: { clock.t },
+            streamWait: RateStreamWait(sleep: { clock.t += $0 }))
         return Process(fence: fence, owner: owner, wire: wire, music: music, transition: transition)
     }
 
@@ -337,7 +344,8 @@ final class RateAwareTransitionTests: XCTestCase {
         let out = played(p.transition.run(song()))
         XCTAssertEqual(out?.startLine, .ownRate)
         XCTAssertEqual(events.log, ["spandac:prepareRate0", "spandac:rateSettle0", "spandac:rateSettle0",
-                                    "spandac:rateSettle0", "music:play", "music:readTrack", "spandac:confirmRate1"])
+                                    "spandac:rateSettle0", "music:play", "music:readState", "music:readState", "music:readTrack",
+                                    "spandac:confirmRate1"])
         XCTAssertEqual(p.wire.requests[1].at, 2.5, "the first poll follows the 2.5 s reply wait")
     }
 
@@ -467,7 +475,7 @@ final class RateAwareTransitionTests: XCTestCase {
         let q = RateAwareTransition(fence: p.fence, owner: "tui", music: reader,
                                     makeFollow: { SourceRateFollow(token: $0, control: self.control(p.wire), offered: true,
                                                                    now: { 0 }, sleep: { _ in }) },
-                                    now: { 0 })
+                                    now: { 0 }, streamWait: .instant)
         reader.read = RateTrackRead(persistentID: "ANOTHER", databaseID: 3, sampleRateHz: 192000)
         let out = played(q.run(song("AAA")))
         XCTAssertNil(out?.delivered)
@@ -487,7 +495,7 @@ final class RateAwareTransitionTests: XCTestCase {
         let q = RateAwareTransition(fence: p.fence, owner: "tui", music: reader,
                                     makeFollow: { SourceRateFollow(token: $0, control: self.control(p.wire), offered: true,
                                                                    now: { 0 }, sleep: { _ in }) },
-                                    now: { 0 })
+                                    now: { 0 }, streamWait: .instant)
         let result = q.run(song())
         XCTAssertEqual(played(result)?.confirm, nil)
         XCTAssertEqual(result.playOutcome, true)
@@ -545,16 +553,18 @@ final class RateAwareTransitionTests: XCTestCase {
         let (p, events, result) = try correcting()
         let out = played(result)
         XCTAssertEqual(events.log, [
-            "spandac:prepareRate0", "music:play", "music:readTrack", "spandac:confirmRate1",
+            "spandac:prepareRate0", "music:play", "music:readState", "music:readState", "music:readTrack",
+            "spandac:confirmRate1",
             "music:readState", "music:pause", "music:readState",
             "spandac:prepareRate2",
             "music:readState", "music:seek0", "music:resume",
-            "music:readTrack", "spandac:confirmRate1",
+            // the corrected song's stream is waited for too: playing, position advancing
+            "music:readState", "music:readState", "music:readTrack", "spandac:confirmRate1",
         ])
         guard case .resumed(let restarted, _)? = out?.correction else { return XCTFail("\(String(describing: out?.correction))") }
         XCTAssertTrue(restarted)
         XCTAssertEqual(p.music.state.state, .playing)
-        XCTAssertEqual(p.music.state.position, 0)
+        XCTAssertEqual(p.music.state.position, 1.0, "restarted from 0; two reads of the new stream advanced it")
         XCTAssertEqual(out?.baseline, 20, "for a correction the baseline is the correction's answer")
         XCTAssertEqual(p.wire.requests.first(where: { $0.body["step"] as? Int == 2 })?.body["rate_hz"] as? Int, 96000)
     }
@@ -777,7 +787,7 @@ final class RateAwareTransitionTests: XCTestCase {
         let q = RateAwareTransition(fence: p.fence, owner: "tui", music: wrapped,
                                     makeFollow: { SourceRateFollow(token: $0, control: self.control(p.wire), offered: true,
                                                                    now: { 0 }, sleep: { _ in }) },
-                                    now: { 0 })
+                                    now: { 0 }, streamWait: .instant)
         let out = played(q.run(song("AAA")))
         guard case .stopped(let why, _)? = out?.correction else { return XCTFail("\(String(describing: out))") }
         XCTAssertEqual(why, .stateUnreadable)
@@ -952,7 +962,8 @@ final class RateAwareTransitionTests: XCTestCase {
         defer { release.signal() }
         let music = FakeMusic(Events())
         let transition = RateAwareTransition(fence: RateFence(lock: waiter), owner: "tui", music: music,
-                                             makeFollow: { _ in fatalError("rate follow built with the lock busy") })
+                                             makeFollow: { _ in fatalError("rate follow built with the lock busy") },
+                                             streamWait: .instant)
         let result = transition.run(song())
         guard case .notStarted = result else { return XCTFail("\(result)") }
         XCTAssertNil(result.playOutcome)
@@ -971,4 +982,185 @@ final class RateAwareTransitionTests: XCTestCase {
         _ = try p.fence.begin(.pause, owner: "tui")
         XCTAssertEqual(p.transition.run(song(), token: token), .invalidated)
     }
+
+    // MARK: the confirm is for THIS stream (live check 2026-11-16)
+
+    /// Music after a jump from a 44.1 kHz song to a hi-res one, as measured: it
+    /// reports the PREVIOUS stream's rate, and a position of 0 (refused), until
+    /// the new stream is up; then the new rate and an advancing position.
+    private final class StreamingMusic: RateMusicControlling {
+        let events: Events
+        let staleHz: Int
+        let newHz: Int
+        /// State reads after the start that show the stream not up yet.
+        var refusedReads: Int
+        private var reads = 0
+        private var playing = false
+        private var pausedAt: TimeInterval?
+        private var id: String?
+        init(_ events: Events, staleHz: Int = 44100, newHz: Int = 96000, refusedReads: Int) {
+            self.events = events; self.staleHz = staleHz; self.newHz = newHz; self.refusedReads = refusedReads
+        }
+        func count(_ name: String) -> Int { events.log.filter { $0 == "music:" + name }.count }
+        private var streamUp: Bool { reads > refusedReads }
+        func playTrack(persistentID: String) throws {
+            events.log.append("music:play"); playing = true; pausedAt = nil; id = persistentID; reads = 0
+        }
+        func pause() throws { events.log.append("music:pause"); playing = false; pausedAt = 12 }
+        func resume() throws { events.log.append("music:resume"); playing = true; pausedAt = nil }
+        func seekToStart() throws { events.log.append("music:seek0") }
+        func readCurrentTrack() -> RateTrackRead? {
+            events.log.append("music:readTrack")
+            guard let id else { return nil }
+            return RateTrackRead(persistentID: id, databaseID: 7, sampleRateHz: streamUp ? newHz : staleHz)
+        }
+        func readPlayerState() -> RatePlayerState? {
+            events.log.append("music:readState")
+            guard let id else { return RatePlayerState(state: .stopped, persistentID: nil, position: 0) }
+            if let pausedAt { return RatePlayerState(state: .paused, persistentID: id, position: pausedAt) }
+            reads += 1
+            return RatePlayerState(state: .playing, persistentID: id,
+                                   position: streamUp ? Double(reads - refusedReads) * 0.5 : 0)
+        }
+    }
+
+    private func streamingProcess(_ dir: String, refusedReads: Int, events: Events = Events(),
+                                  confirm: String = "own_rate") -> (Process, StreamingMusic, Events) {
+        let clock = Clock()
+        let streaming = StreamingMusic(events, refusedReads: refusedReads)
+        let fence = RateFence(lock: OutputLock(path: dir + "/output.lock", pollInterval: 0.001))
+        let wire = Wire(clock)
+        wire.events = events
+        let transition = RateAwareTransition(
+            fence: fence, owner: "tui", music: streaming,
+            makeFollow: { token in
+                SourceRateFollow(token: token, control: self.control(wire), offered: true,
+                                 now: { clock.t }, sleep: { clock.t += $0 })
+            },
+            now: { clock.t },
+            streamWait: RateStreamWait(sleep: { clock.t += $0 }))
+        wire.script = standardScript(wire, confirm: confirm, fence: { 1 })
+        // `Process` carries a `FakeMusic`; the streaming one is returned beside it.
+        return (Process(fence: fence, owner: "tui", wire: wire, music: FakeMusic(events), transition: transition),
+                streaming, events)
+    }
+
+    private func confirmedRates(_ p: Process) -> [Int?] {
+        p.wire.requests.filter { $0.body["op"] as? String == sourceConfirmRateOp }.map { $0.body["delivered_hz"] as? Int }
+    }
+
+    /// The bug: one read half a second after the start saw the previous stream's
+    /// 44100, SpanDAC said `own_rate` for it, and the line claimed 44.1 kHz for a
+    /// 96 kHz song. The read now waits for this stream (playing, position
+    /// advancing), so what is confirmed is the song's own rate.
+    func testTheConfirmWaitsForThisStreamAndNeverSendsThePreviousStreamsRate() {
+        let (p, music, _) = streamingProcess(tempDir(), refusedReads: 3)
+        let out = played(p.transition.run(song("AAA")))
+        XCTAssertEqual(out?.delivered?.sampleRateHz, 96000, "the previous stream's rate was taken for this song's")
+        XCTAssertEqual(confirmedRates(p), [96000], "a confirm carried a rate that is not this stream's")
+        XCTAssertEqual(music.count("play"), 1)
+        XCTAssertFalse(p.transition.needsRecheck(out!), "a proven first read needs no follow-up")
+    }
+
+    /// A stream that is not up within the bound is confirmed as NOTHING (no rate
+    /// is claimed that was not measured for this song), the song still plays, and
+    /// the follow-up is wanted.
+    func testAStreamNotUpInTimeConfirmsNothingStillPlaysAndWantsAFollowUp() {
+        let (p, music, _) = streamingProcess(tempDir(), refusedReads: 1000)
+        let result = p.transition.run(song("AAA"))
+        let out = played(result)
+        XCTAssertEqual(result.playOutcome, true, "never refuse a song")
+        XCTAssertNil(out?.delivered)
+        XCTAssertNil(out?.confirm)
+        XCTAssertEqual(confirmedRates(p), [], "a rate nobody measured for this song was sent")
+        XCTAssertEqual(music.count("pause"), 0)
+        XCTAssertTrue(p.transition.needsRecheck(out!))
+    }
+
+    /// The follow-up waits for the stream, reads ITS rate, confirms it, and with
+    /// the DAC not at it runs the correction, once, with the usual pause and
+    /// resume.
+    func testTheRecheckConfirmsTheRealRateAndCorrectsOnceWhenTheDACIsNotAtIt() {
+        let (p, music, _) = streamingProcess(tempDir(), refusedReads: 30, confirm: "correct")
+        let first = played(p.transition.run(song("AAA")))!
+        XCTAssertEqual(confirmedRates(p), [])
+        let again = p.transition.recheck(first)
+        XCTAssertEqual(again?.delivered?.sampleRateHz, 96000)
+        guard case .answered(let answer)? = again?.confirm else { return XCTFail("\(String(describing: again?.confirm))") }
+        XCTAssertEqual(answer.outcome, .correct)
+        guard case .resumed? = again?.correction else { return XCTFail("\(String(describing: again?.correction))") }
+        XCTAssertEqual(music.count("pause"), 1)
+        XCTAssertEqual(music.count("seek0"), 1)
+        XCTAssertEqual(music.count("resume"), 1)
+        XCTAssertEqual(p.wire.requests.filter { $0.body["step"] as? Int == 2 }.count, 1, "the rate was written once")
+        XCTAssertEqual(confirmedRates(p).first, 96000, "the confirm carried the previous stream's rate")
+        XCTAssertNil(p.transition.recheck(first), "a follow-up runs once")
+        XCTAssertEqual(music.count("pause"), 1)
+    }
+
+    /// With the DAC already at the song's rate the follow-up only records what it
+    /// measured: no pause, no seek.
+    func testTheRecheckOfASongAlreadyAtTheDACsRateOnlyUpdatesTheEvidence() {
+        let (p, music, _) = streamingProcess(tempDir(), refusedReads: 30, confirm: "own_rate")
+        let first = played(p.transition.run(song("AAA")))!
+        let again = p.transition.recheck(first)
+        XCTAssertEqual(again?.delivered?.sampleRateHz, 96000)
+        XCTAssertEqual(again?.correction, .notNeeded)
+        XCTAssertEqual(music.count("pause"), 0)
+        XCTAssertEqual(music.count("seek0"), 0)
+    }
+
+    /// A newer command (the fence moved) owns the player: the follow-up says
+    /// nothing, sends nothing and never pauses.
+    func testTheRecheckStopsForANewerCommand() {
+        let dir = tempDir()
+        let (p, music, _) = streamingProcess(dir, refusedReads: 30, confirm: "correct")
+        let first = played(p.transition.run(song("AAA")))!
+        let other = RateFence(lock: OutputLock(path: dir + "/output.lock", pollInterval: 0.001))
+        _ = try? other.begin(.next, owner: "runner")
+        XCTAssertNil(p.transition.recheck(first))
+        XCTAssertEqual(confirmedRates(p), [])
+        XCTAssertEqual(music.count("pause"), 0)
+    }
+
+    /// A closing process stops it too.
+    func testTheRecheckStopsWhenCancelled() {
+        let (p, music, _) = streamingProcess(tempDir(), refusedReads: 30, confirm: "correct")
+        let first = played(p.transition.run(song("AAA")))!
+        XCTAssertNil(p.transition.recheck(first, cancelled: { true }))
+        XCTAssertEqual(confirmedRates(p), [])
+        XCTAssertEqual(music.count("pause"), 0)
+    }
+
+    /// A stream that never comes up (the follow-up's own window) says nothing and
+    /// leaves the song playing as it is.
+    func testTheRecheckGivesUpQuietlyWhenTheStreamNeverComesUp() {
+        let (p, music, _) = streamingProcess(tempDir(), refusedReads: 100000, confirm: "correct")
+        let first = played(p.transition.run(song("AAA")))!
+        XCTAssertNil(p.transition.recheck(first))
+        XCTAssertEqual(confirmedRates(p), [])
+        XCTAssertEqual(music.count("pause"), 0)
+    }
+
+    /// The follow-up's correction has the start's guarantees: a newer command
+    /// that arrives while SpanDAC answers the confirm stops it before any pause.
+    func testTheRecheckCorrectionIsRefusedWhenANewerCommandArrivesDuringTheConfirm() {
+        let dir = tempDir()
+        let (p, music, _) = streamingProcess(dir, refusedReads: 30, confirm: "correct")
+        let other = RateFence(lock: OutputLock(path: dir + "/output.lock", pollInterval: 0.001))
+        let base = p.wire.script
+        p.wire.script = { body in
+            if body["op"] as? String == sourceConfirmRateOp { _ = try other.begin(.next, owner: "runner") }
+            return try base(body)
+        }
+        let first = played(p.transition.run(song("AAA")))!
+        let again = p.transition.recheck(first)
+        guard case .stopped(.newerCommand, _)? = again?.correction else { return XCTFail("\(String(describing: again?.correction))") }
+        XCTAssertEqual(music.count("pause"), 0, "a newer command's player was paused")
+    }
+}
+
+extension RateStreamWait {
+    /// No waiting: every read is immediate, the iteration cap still ends a loop.
+    static let instant = RateStreamWait(sleep: { _ in })
 }
