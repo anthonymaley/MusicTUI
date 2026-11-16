@@ -418,6 +418,11 @@ func runShell() {
                                       // the Output tab's selection, not an env var.
                                       routing: routing, opener: stationOpener,
                                       kittyEnabled: kittyEnabled)
+            // On the Mac DAC route a search or Discover song or album plays one
+            // song at a time through the rate-aware transition, by its library
+            // identity (P9); off the route the seams are exactly the shipped ones.
+            scene.cataloguePlayer = SpanDACCataloguePlayer(seams: .live(
+                backend: backend, showsProgress: false, route: .tui(backend: backend, appQueue: appQueue)))
             scenes[id] = scene
             return scene
         case .radio:

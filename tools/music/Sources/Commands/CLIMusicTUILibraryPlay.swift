@@ -168,6 +168,7 @@ struct PersistentIDCLILibraryPlay: CLIMusicTUILibraryPlaying {
         case .buildFailed(let removed):   failure = .buildFailed(containerRemoved: removed)
         case .playFailed(let removed):    failure = .playFailed(containerRemoved: removed)
         case .watcherFailed(let removed): failure = .watcherFailed(containerRemoved: removed)
+        case .routeNotStarted:            failure = .routeNotStarted
         }
         throw ActionError(message: albumOutcomeMessage(failure, title: request.label) ?? pickASpanDACOutput)
     }
