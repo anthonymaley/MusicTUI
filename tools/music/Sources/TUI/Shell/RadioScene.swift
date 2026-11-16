@@ -346,7 +346,7 @@ store: StationStore, catalog: RadioCatalog?,
                             .playStation(id: s.id, name: s.name, url: s.url)
                     },
                     unaffected: {})
-                message = "▶ \(s.name)"
+                message = "▶ " + String(stationPlayingLine(s.name, opener: opener).dropFirst("Playing ".count))
             } catch let error as SourceAppError {
                 message = "✗ " + error.message
             } catch let error as ActionError {

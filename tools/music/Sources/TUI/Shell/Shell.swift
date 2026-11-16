@@ -245,6 +245,8 @@ func runShell() {
     let macRoute = MacRoutePlayer.live(backend: backend, routing: routing, route: macRouteState,
                                        post: { status.post($0, ttl: 6) })
     appQueue.macRoute = macRoute
+    // Stations opened from Discover and Radio move the fence on the route (P7).
+    let stationOpener = MacRouteOpener(route: { macRoute })
     let actions = ActionRunner(status: status, onSuperseding: { playConfirmer.invalidate() })
     let volumeDelta = DeltaAccumulator()
 
@@ -413,7 +415,7 @@ func runShell() {
                                       api: makeArtworkAPI(), lifecycle: discoverLifecycle,
                                       // Always available; whether it is USED follows
                                       // the Output tab's selection, not an env var.
-                                      routing: routing,
+                                      routing: routing, opener: stationOpener,
                                       kittyEnabled: kittyEnabled)
             scenes[id] = scene
             return scene
@@ -426,7 +428,7 @@ func runShell() {
             // Favourites the catalogue can't resolve (BBC Radio 1) get
             // their art from the station's public page, once, saved.
             let scene = RadioScene(routing: routing, store: StationStore(), catalog: makeCatalog(),
-                                   kittyEnabled: kittyEnabled, stationPages: makeStationPageFetch())
+                                   opener: stationOpener, kittyEnabled: kittyEnabled, stationPages: makeStationPageFetch())
             scenes[id] = scene
             return scene
         default:

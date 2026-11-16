@@ -366,6 +366,23 @@ final class DiscoverCatalogueSearchTests: XCTestCase {
         assertNoLibraryOrPlay(f)
     }
 
+    /// P7 (D3): on the Mac DAC route the same search song is added to the
+    /// library through SpanDAC on this Mac and played, by the `.add` path.
+    func testOnTheMacRouteASearchSongIsAddedAndPlayed() {
+        let f = fixture(output: .musicApp)
+        f.routing.macRouteStore.set(true)
+        loadRails(f)
+        search(f)
+        _ = f.scene.handle(.down)
+        _ = f.scene.handle(.down)                       // Song One
+        _ = f.scene.handle(.enter)
+        drain(f.actions)
+
+        XCTAssertEqual(f.mac.ops("slice.libraryAdd").first?["ids"] as? [String], ["s1"])
+        XCTAssertEqual(f.status.current()?.text, "Playing Song One")
+        XCTAssertEqual(f.rig.sent("slice.queue").count, 0, "nothing is queued on a SpanDAC player")
+    }
+
     func testOnTheMusicTUIOutputAWholeSearchAlbumRefusesBeforeAnyAdd() {
         let f = fixture(output: .musicApp)
         loadRails(f)

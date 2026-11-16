@@ -349,6 +349,43 @@ final class MacRoutePlayer {
         }
     }
 
+    /// A station on the route (3.9; P7): one `RateAwareTransition` with no rate
+    /// work (`RateSound.other`): the fence moves (`.station`), SpanDAC is told,
+    /// the open waits for the DAC to be quiet, then `start` runs under the
+    /// revalidation. Nothing is converted or confirmed. Throws only when the
+    /// station did not start for a reason the person should read.
+    func playStation(start: @escaping () throws -> Void,
+                     isCurrent: @escaping () -> Bool = { true }) throws -> StationRouteOutcome {
+        condition.lock()
+        if closing { condition.unlock(); throw ActionError(message: stationNotStartedLine("MusicTUI is closing")) }
+        inFlight += 1
+        condition.unlock()
+        defer { condition.lock(); inFlight -= 1; condition.broadcast(); condition.unlock() }
+
+        let transition = RateAwareTransition(
+            fence: fence, owner: owner, music: makeMusic(""), makeFollow: makeFollow, now: now,
+            allowCorrection: { false })
+        let result = transition.run(RateTransitionPlan(command: .station, sound: .other(start: start),
+                                                       isCurrent: isCurrent))
+        onTransition?(result)
+        switch result {
+        case .played(let played):
+            var dacRate: Int?
+            if case .answered(let answer) = played.rateOutcome { dacRate = answer.dacRateHz }
+            // No delivered rate is known for a station in v1: never "converted".
+            return .played(line: stationRateLine(dacRateHz: dacRate, deliveredHz: nil))
+        case .playedUnfollowed:
+            post(macRouteRateNotFollowedLine)
+            return .played(line: nil)
+        case .playFailed:
+            throw ActionError(message: stationCouldNotStartLine)
+        case .invalidated:
+            return .superseded
+        case .notStarted(let reason):
+            throw ActionError(message: stationNotStartedLine(reason))
+        }
+    }
+
     /// A TUI transport command that is not a play (pause, quiet): it still moves
     /// the fence (M1), so a follower's correction in flight sees a newer command
     /// and never resumes over a pause the person just asked for. Short wait: it
