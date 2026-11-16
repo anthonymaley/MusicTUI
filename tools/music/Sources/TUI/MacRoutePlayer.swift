@@ -40,10 +40,20 @@ import Foundation
 /// writes it, every play and the poller read it.
 final class MacDACRouteState {
     private let lock = NSLock()
-    private var on = false
+    private var on: Bool
+    private var dacAbsent = false
 
-    var isOn: Bool { lock.lock(); defer { lock.unlock() }; return on }
+    /// `initial` is the persisted choice (P8), restored at launch.
+    init(initial: Bool = false) { on = initial }
+
+    /// True when plays should follow the rate: the route is chosen AND its DAC
+    /// is not known to be absent. The choice itself is `chosen`.
+    var isOn: Bool { lock.lock(); defer { lock.unlock() }; return on && !dacAbsent }
+    var chosen: Bool { lock.lock(); defer { lock.unlock() }; return on }
     func set(_ value: Bool) { lock.lock(); on = value; lock.unlock() }
+    /// The Output tab saw the chosen DAC absent (true) or back (false): the
+    /// choice is kept, the rate follow waits.
+    func setDACAbsent(_ value: Bool) { lock.lock(); dacAbsent = value; lock.unlock() }
 }
 
 /// What one queue-entry play came to, for its caller.

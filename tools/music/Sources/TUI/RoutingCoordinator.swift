@@ -92,6 +92,8 @@ final class RoutingCoordinator {
     }
 
     private let store: PlaybackModeStore
+    /// The Mac DAC route choice, beside this coordinator's mode file (P8).
+    var macRouteStore: MacRouteStore { MacRouteStore(beside: store) }
     /// Builds the client for a source-backed mode: the Mac's own SpanDAC for
     /// `.source`, the paired network link for `.networkSource`.
     private let makeSource: (PlaybackMode) -> SourceAppClient
