@@ -82,10 +82,15 @@ enum SourceRateStartLine: Equatable {
 
 final class SourceRateFollow {
 
-    /// M2: how long a prepare's reply is waited for. This is the TRANSPORT's
-    /// read timeout; it is wired where the control is built (`SourceAppControl`'s
-    /// transports are whole seconds today), not enforced here.
+    /// M2: how long a prepare's reply is waited for. Sent as the exchange's own
+    /// timeout (`SourceAppControl.rateRequest(_:timeout:)`, which the Mac's
+    /// control, `SourceAppControl.macRate`, honours at fractions of a second),
+    /// and shrunk to what is left of the cap.
     static let prepareReplyWait: TimeInterval = 2.5
+    /// How long one poll's reply is waited for. SpanDAC answers `rateSettle`,
+    /// `rateFence` and `confirmRate` without waiting behind a job (S1), so a
+    /// poll that has not answered in this long is a busy SpanDAC, asked again.
+    static let pollReplyWait: TimeInterval = 1.0
     /// M2: the poll interval.
     static let pollInterval: TimeInterval = 0.25
     /// M2: the cap, measured from the send. The wait never exceeds it and never refuses.
@@ -193,7 +198,7 @@ final class SourceRateFollow {
         let started = now()
         var last: SourceRateAnswer?
         if let first {
-            switch exchange(first) {
+            switch exchange(first, timeout: Self.replyTimeout(Self.prepareReplyWait, left: Self.cap)) {
             case .success(let answer):
                 if answer.outcome.isTerminal { return .answered(answer) }
                 last = answer
@@ -202,7 +207,8 @@ final class SourceRateFollow {
             }
         }
         while now() - started < Self.cap {
-            switch exchange(poll) {
+            let left = Self.cap - (now() - started)
+            switch exchange(poll, timeout: Self.replyTimeout(Self.pollReplyWait, left: left)) {
             case .success(let answer):
                 if answer.outcome.isTerminal { return .answered(answer) }
                 last = answer
@@ -230,9 +236,16 @@ final class SourceRateFollow {
         return .failed(error)
     }
 
-    private func exchange(_ body: [String: Any], updatesBaseline: Bool = true) -> Result<SourceRateAnswer, SourceAppError> {
+    /// A reply wait never runs past the cap: it is `wanted`, or what is left of
+    /// the cap if that is less (the socket layer floors it above zero).
+    static func replyTimeout(_ wanted: TimeInterval, left: TimeInterval) -> TimeInterval {
+        min(wanted, max(left, 0))
+    }
+
+    private func exchange(_ body: [String: Any], updatesBaseline: Bool = true,
+                          timeout: TimeInterval = SourceRateFollow.prepareReplyWait) -> Result<SourceRateAnswer, SourceAppError> {
         do {
-            let answer = try control.rateRequest(body)
+            let answer = try control.rateRequest(body, timeout: timeout)
             if updatesBaseline, let seq = answer.rateSeq { baseline = seq }
             return .success(answer)
         } catch let error as SourceAppError {

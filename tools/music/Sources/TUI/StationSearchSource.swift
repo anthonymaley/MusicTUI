@@ -195,7 +195,25 @@ struct SourceAppStationSearch: StationSearching {
     /// signature: every existing call site keeps `sendOverUnixSocket` and its
     /// 10s unchanged, and only a caller that asks gets something else.
     static func sender(timeoutSeconds: Int) -> (String, String) throws -> String {
-        { path, line in try send(path: path, line: line, timeoutSeconds: timeoutSeconds) }
+        { path, line in try send(path: path, line: line, timeout: TimeInterval(timeoutSeconds)) }
+    }
+
+    /// A sender with a FRACTIONAL read/write timeout, for the rate ops: M2 bounds
+    /// a sound start to 4.5 s in all, and the whole-second senders above cannot
+    /// say 2.5 s, nor shrink toward the cap (a 10 s default could overshoot it).
+    static func sender(timeout: TimeInterval) -> (String, String) throws -> String {
+        { path, line in try send(path: path, line: line, timeout: timeout) }
+    }
+
+    /// The smallest timeout a socket is given: `SO_RCVTIMEO` of zero means
+    /// "wait forever", the opposite of a bound that has run out.
+    static let minimumSocketTimeout: TimeInterval = 0.05
+
+    /// `seconds` as the socket option's `timeval`, never zero.
+    static func socketTimeval(_ seconds: TimeInterval) -> timeval {
+        let t = max(seconds, minimumSocketTimeout)
+        let whole = t.rounded(.down)
+        return timeval(tv_sec: Int(whole), tv_usec: Int32(((t - whole) * 1_000_000).rounded(.down)))
     }
 
     private let path: String
@@ -323,10 +341,10 @@ struct SourceAppStationSearch: StationSearching {
     /// design: the only caller already runs on a detached thread, matching the
     /// discipline the REST catalog reads use.
     static func sendOverUnixSocket(path: String, line: String) throws -> String {
-        try send(path: path, line: line, timeoutSeconds: timeoutSeconds)
+        try send(path: path, line: line, timeout: TimeInterval(timeoutSeconds))
     }
 
-    private static func send(path: String, line: String, timeoutSeconds: Int) throws -> String {
+    private static func send(path: String, line: String, timeout: TimeInterval) throws -> String {
         var addr = sockaddr_un()
         addr.sun_family = sa_family_t(AF_UNIX)
         let bytes = Array(path.utf8)
@@ -343,7 +361,7 @@ struct SourceAppStationSearch: StationSearching {
         guard fd >= 0 else { throw SourceAppError.notRunning }
         defer { close(fd) }
 
-        var tv = timeval(tv_sec: timeoutSeconds, tv_usec: 0)
+        var tv = socketTimeval(timeout)
         setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
         setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
 
@@ -1119,6 +1137,20 @@ struct SourceAppControl: SourceControlling {
     /// its first song, and Bridge retries that once after a cold start, which
     /// together outlast the transport commands' 10s.
     let libraryTransport: (String, String) throws -> String
+    /// The rate ops' transport at a stated timeout (`rateRequest(_:timeout:)`).
+    /// M2 bounds a sound start to 4.5 s in all, so a rate op cannot wait on the
+    /// command transport's 10 s. nil (a network SpanDAC, a test's fake
+    /// transport): every rate op uses `transport` and the timeout is the
+    /// transport's own.
+    var rateSender: ((TimeInterval) -> (String, String) throws -> String)? = nil
+
+    /// The Mac's own SpanDAC over its Unix socket for the rate ops, each with
+    /// the timeout the transition asks for. It never starts SpanDAC.
+    static func macRate(path: String = SourceAppStationSearch.socketPath) -> SourceAppControl {
+        var control = SourceAppControl(path: path, transport: SourceAppStationSearch.sender(timeout: SourceRateFollow.prepareReplyWait))
+        control.rateSender = { SourceAppStationSearch.sender(timeout: $0) }
+        return control
+    }
 
     init(path: String = SourceAppStationSearch.socketPath) {
         self.path = path

@@ -243,11 +243,21 @@ extension SourceAppControl {
 
     /// Sends one rate op on the command transport and decodes its answer. An
     /// older SpanDAC's `unknown_op` arrives as `SourceAppError.unsupported(op)`.
-    func rateRequest(_ body: [String: Any]) throws -> SourceRateAnswer {
+    ///
+    /// `timeout` is how long this one exchange may wait for the reply, where the
+    /// control has a rate sender (the Mac's Unix socket); otherwise the
+    /// transport's own timeout applies.
+    func rateRequest(_ body: [String: Any], timeout: TimeInterval? = nil) throws -> SourceRateAnswer {
         let op = body["op"] as? String ?? "slice"
         guard let fence = body["fence"] as? Int else {
             throw SourceAppError.refused("a rate request needs its fence")
         }
-        return try Self.rateAnswer(from: try send(body), op: op, fence: fence)
+        let reply: [String: Any]
+        if let timeout, let rateSender {
+            reply = try send(body, over: rateSender(timeout))
+        } else {
+            reply = try send(body)
+        }
+        return try Self.rateAnswer(from: reply, op: op, fence: fence)
     }
 }
