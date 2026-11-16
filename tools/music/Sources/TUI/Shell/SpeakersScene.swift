@@ -692,6 +692,8 @@ final class SpeakersScene: Scene {
          },
          routeMusicToComputer: @escaping (AppleScriptBackend) -> Void = routeMusicPlaysToComputer) {
         self.routeMusicToComputer = routeMusicToComputer
+        self.macDACRouteOn = routing.macRouteStore.isOn
+        self.macRateFollowWanted = self.macDACRouteOn
         self.backend = backend
         self.status = status
         self.actions = actions
@@ -1165,6 +1167,7 @@ final class SpeakersScene: Scene {
                 // successful Enter on Bridge actually takes.
                 switch mode {
                 case .networkSource(let id):
+                    self.leaveMacDACRoute()
                     self.spandac?.probe(id)
                     if !reminder("SpanDAC on \(targetName ?? "the network")") {
                         self.status.post("Output: SpanDAC · \(targetName ?? "on the network")")
@@ -1183,9 +1186,7 @@ final class SpeakersScene: Scene {
                         self.status.post("Output: \(musicTUIOutputName) \u{2192} \(self.macName)")
                     }
                 case .musicApp:
-                    self.macDACRouteOn = false
-                    self.macRateFollowWanted = false
-                    self.onMacRouteOff?()
+                    self.leaveMacDACRoute(always: true)
                     let read = Self.readMacStatusWithMacOutput(client)
                     self.publishReadiness(read.readiness, data: read.data, output: read.output)
                     let notice = macSoundStillOnTheDAC(read.macOutput)
@@ -1248,12 +1249,34 @@ final class SpeakersScene: Scene {
         makeMacOutputTheDAC(client)
         macDACRouteOn = true
         macRateFollowWanted = true
+        lastDACAbsentReported = nil
+        onMacDACAbsent?(false)
         onMacRateFollowWanted?()
     }
 
     /// True while the Mac row is the chosen route (MusicTUI output to the Mac,
     /// DAC as its sound output). Written on the action queue, read for display.
-    private(set) var macDACRouteOn = false
+    /// Restored from `mac-route.json` at construction and written back on every
+    /// change (P8), so a restart keeps the choice and the Mac row's highlight.
+    private(set) var macDACRouteOn: Bool {
+        didSet { if macDACRouteOn != oldValue { routing.macRouteStore.set(macDACRouteOn) } }
+    }
+    /// Called with true when the chosen route's DAC is absent (the choice is
+    /// kept, rate follow waits) and false when it is back.
+    var onMacDACAbsent: ((Bool) -> Void)?
+    private var lastDACAbsentReported: Bool?
+
+    /// Leaves the route: the choice is cleared and persisted, rate follow stops.
+    /// `always` tells the route's owner even when the flag was already off
+    /// (a switch to the MusicTUI output has always done so).
+    private func leaveMacDACRoute(always: Bool = false) {
+        guard macDACRouteOn || always else { return }
+        macDACRouteOn = false
+        macRateFollowWanted = false
+        lastDACAbsentReported = nil
+        onMacDACAbsent?(false)
+        onMacRouteOff?()
+    }
     /// Rate follow is wanted for this route. Stub: the later steps read it.
     private(set) var macRateFollowWanted = false
     /// Called when the Mac row turns rate follow on (later steps hook here).
@@ -1297,6 +1320,15 @@ final class SpeakersScene: Scene {
                 bridgeDataReadiness = freshReadiness.data
                 macOutput = freshReadiness.output
                 changed = true
+            }
+            if macDACRouteOn, let output = freshReadiness.output {
+                // The chosen DAC absent (neither connected nor switchable):
+                // keep the choice, hold the rate follow until it is back.
+                let absent = output.dac == .notConnected && !output.switchable
+                if lastDACAbsentReported != absent, onMacDACAbsent != nil {
+                    lastDACAbsentReported = absent
+                    onMacDACAbsent?(absent)
+                }
             }
             // A refusal belongs to a DAC that is still not the output; once it
             // is, or is gone, the old reason is stale.
@@ -2222,7 +2254,14 @@ final class SpeakersScene: Scene {
                     return .none
                 }
             case .musicApp:
-                guard routing.mode != .musicApp else { return .none }
+                // The plain MusicTUI row while on the Mac DAC route leaves it
+                // (P8): same output, route off.
+                if routing.mode == .musicApp {
+                    guard macDACRouteOn else { return .none }
+                    leaveMacDACRoute()
+                    status.post("Output: \(musicTUIOutputName)", ttl: 3)
+                    return .redraw
+                }
                 selectMode(.musicApp)
                 return .redraw
             case .speaker(let i):
@@ -2233,6 +2272,9 @@ final class SpeakersScene: Scene {
                     selectMode(.musicApp)
                     return .redraw
                 }
+                // A speaker or AirPlay output turns the Mac DAC route off (P8):
+                // no rate follow on a speaker.
+                leaveMacDACRoute()
                 rows[i].active.toggle()
                 lastMutation = fetchNow()
                 setSelected(rows[i])

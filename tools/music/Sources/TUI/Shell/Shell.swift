@@ -241,7 +241,7 @@ func runShell() {
     // The Mac DAC route (mac-route-plan.md, step P4): every queue-entry play on
     // the route is one rate-aware transition. The Output tab's Mac row turns the
     // route on and off through `macRouteState`; plays off the route are untouched.
-    let macRouteState = MacDACRouteState()
+    let macRouteState = MacDACRouteState(initial: routing.macRouteStore.isOn)
     let macRoute = MacRoutePlayer.live(backend: backend, routing: routing, route: macRouteState,
                                        post: { status.post($0, ttl: 6) })
     appQueue.macRoute = macRoute
@@ -368,6 +368,7 @@ func runShell() {
                                       spandac: spandac)
             scene.onMacRateFollowWanted = { macRouteState.set(true) }
             scene.onMacRouteOff = { macRouteState.set(false) }
+            scene.onMacDACAbsent = { macRouteState.setDACAbsent($0) }
             scenes[id] = scene
             return scene
         case .library:
