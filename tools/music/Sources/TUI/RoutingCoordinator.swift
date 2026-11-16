@@ -560,7 +560,8 @@ final class RoutingCoordinator {
     ///   has no output. Nothing falls back on either axis.
     /// - `searchOrigin`: the play was started from Discover's catalogue search
     ///   (a result, or a track of an album opened from one). On the MusicTUI
-    ///   output it refuses with `searchPlaysOnSpanDACOnly` here, at admission
+    ///   output it refuses with `searchPlaysOnSpanDACOnly` here (except on the Mac
+    ///   DAC route, where it takes the `.add` path, P7), at admission
     ///   and under the lock, before the path is chosen and before any body
     ///   (phase A, an add, the lifecycle, a player) runs (ruling 2026-11-03
     ///   17:40: search plays on the SpanDAC output only). Every other branch
@@ -643,7 +644,15 @@ final class RoutingCoordinator {
             case .musicApp:
                 // A play from the catalogue search never reaches the MusicTUI
                 // output: refused before its path, so before any body runs.
-                if searchOrigin, action.playsChosenMusic { throw ActionError(message: searchPlaysOnSpanDACOnly) }
+                // On the Mac DAC route (P7, D3) it does not refuse: it takes
+                // the catalogue `.add` path (added to the library through
+                // SpanDAC's data on this Mac, then played through MusicTUI's
+                // player). The route is the Mac row's saved choice AND the
+                // selection is SpanDAC data on the MusicTUI output; anything
+                // else still refuses.
+                if searchOrigin, action.playsChosenMusic, !isMacRouteSelection(now) {
+                    throw ActionError(message: searchPlaysOnSpanDACOnly)
+                }
                 // The DJ's artist mix likewise: SpanDAC output only, refused
                 // before its path and before any body runs.
                 if origin == .djArtistMix, action.playsChosenMusic { throw ActionError(message: djArtistMixSpanDACOnly) }
@@ -1312,6 +1321,13 @@ final class RoutingCoordinator {
         case .openData:
             break
         }
+    }
+
+    /// True when the Mac DAC route is the chosen route and the selection is
+    /// the one the route plays on: the MusicTUI output with SpanDAC data (P7).
+    private func isMacRouteSelection(_ selection: EffectiveSelection) -> Bool {
+        guard case .consistent(.spandacMac, .musicApp) = selection else { return false }
+        return macRouteStore.isOn
     }
 
     /// Which body the `.musicApp` branch runs. Everything is the shipped body

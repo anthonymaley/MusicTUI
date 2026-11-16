@@ -960,7 +960,7 @@ final class DiscoverScene: Scene {
         }
         do {
             try performStationPlay(item, url: item.url, expecting: expecting, origin: origin)
-            status.post("Playing \(item.name)")
+            status.post(stationPlayingLine(item.name, opener: self.opener))
         } catch let error as SourceAppError {
             status.post(error.message, error: true, untilStateChange: true)
         } catch let error as ActionError {
@@ -1004,7 +1004,7 @@ final class DiscoverScene: Scene {
             } catch is StationError {
                 throw ActionError(message: "Could not play \(item.name).")
             }
-            status.post("Playing \(item.name)")
+            status.post(stationPlayingLine(item.name, opener: self.opener))
         }
     }
 

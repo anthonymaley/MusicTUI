@@ -82,3 +82,75 @@ func playStation(_ station: Station, via opener: Opener) throws {
     }
     try opener.open(url)
 }
+
+// MARK: - Stations on the Mac DAC route (mac-route-plan.md 3.9; score step P7)
+
+/// The rate line of a station play on the Mac route (Anthony's ruling 2026-11-14
+/// 17:21 and the 22:52 correction): Mac v1 stations play at the DAC's current
+/// rate, and the line never claims "converted" unless the station's DELIVERED
+/// rate is known. Nothing in v1 reads a station's delivered rate (a
+/// song-by-song station follower is later work), so v1 always passes nil and
+/// the line is "Radio"; the other two shapes are here so that the day a
+/// delivered rate is known, the words are already decided and tested.
+func stationRateLine(dacRateHz: Int?, deliveredHz: Int?) -> String {
+    guard let dacRateHz, dacRateHz > 0, let deliveredHz, deliveredHz > 0 else { return "Radio" }
+    let khz = macRateKHzText(dacRateHz)
+    return deliveredHz == dacRateHz ? "\(khz) kHz: radio" : "converted to \(khz) kHz: radio"
+}
+
+/// 44100 -> "44.1", 48000 -> "48", 176400 -> "176.4".
+func macRateKHzText(_ hz: Int) -> String {
+    let tenths = (hz + 50) / 100
+    return tenths % 10 == 0 ? "\(tenths / 10)" : "\(tenths / 10).\(tenths % 10)"
+}
+
+/// What a station play on the route came to.
+enum StationRouteOutcome: Equatable {
+    /// Started. `line` is the rate line, nil when the song played with no rate
+    /// follow (the unfollowed sentence was already posted).
+    case played(line: String?)
+    /// A newer command owns the player; nothing was played.
+    case superseded
+}
+
+/// Said when a route station play did not start because a route switch holds
+/// the output or the TUI is closing.
+func stationNotStartedLine(_ reason: String) -> String { "Couldn't start that station: \(reason)." }
+let stationCouldNotStartLine = "Couldn't start that station."
+
+/// The `Opener` the TUI's Discover and Radio tabs are given: a station play
+/// opens exactly as `SystemOpener` does, except that ON the Mac DAC route it is
+/// one `RateAwareTransition` (the fence moves, SpanDAC is told, the open runs
+/// under the revalidation, the line is "Radio"). Off the route it is `base`
+/// unchanged. The CLI keeps `SystemOpener`.
+final class MacRouteOpener: Opener {
+    private let base: Opener
+    private let route: () -> MacRoutePlayer?
+    private let lock = NSLock()
+    private var pendingLine: String?
+
+    init(base: Opener = SystemOpener(), route: @escaping () -> MacRoutePlayer?) {
+        self.base = base
+        self.route = route
+    }
+
+    func open(_ url: String) throws {
+        guard let player = route(), player.isOnRoute else { return try base.open(url) }
+        let outcome = try player.playStation(start: { [base] in try base.open(url) })
+        if case .played(let line) = outcome { lock.lock(); pendingLine = line; lock.unlock() }
+    }
+
+    /// The rate line of the play that just ended, once. nil off the route.
+    func takeStationLine() -> String? {
+        lock.lock(); defer { lock.unlock() }
+        let line = pendingLine; pendingLine = nil
+        return line
+    }
+}
+
+/// The footer line of a station play: the station, then the rate line when the
+/// route had one.
+func stationPlayingLine(_ name: String, opener: Opener) -> String {
+    guard let line = (opener as? MacRouteOpener)?.takeStationLine() else { return "Playing \(name)" }
+    return "Playing \(name) \u{00B7} \(line)"
+}

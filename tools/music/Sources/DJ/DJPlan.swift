@@ -52,9 +52,10 @@ let djReaderTimeoutSeconds: TimeInterval = 20
 let djReaderTimedOutLine = "The DJ took too long to answer. Try again."
 func djFailedLine(_ text: String) -> String { "The DJ couldn't read that: \(text)" }
 
-/// Said (and the coordinator's own sentence) when an artist mix would play on the MusicTUI output.
+/// Said (and the coordinator's own sentence) when an artist mix would play on the MusicTUI output,
+/// the Mac DAC route included (D3: artist mixes stay iPhone and iPad only).
 let djArtistMixSpanDACOnly =
-    "The DJ plays artist mixes on the SpanDAC output only for now. Pick SpanDAC on the Output tab."
+    "The DJ plays artist mixes on an iPhone or iPad SpanDAC only. Pick one on the Output tab."
 
 /// An artist mix reads Apple's catalogue through SpanDAC.
 let djArtistMixNeedsSpanDACData = "The DJ's artist mixes need SpanDAC data on this Mac."
