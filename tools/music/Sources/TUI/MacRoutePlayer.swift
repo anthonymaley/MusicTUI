@@ -219,8 +219,37 @@ final class MacRoutePlayer {
     private let post: (String) -> Void
     private let now: () -> TimeInterval
 
-    /// Called after every transition, for the lines of step P6.
+    /// Called after every transition (after the evidence line is recorded).
     var onTransition: ((RateTransitionResult) -> Void)?
+
+    /// The line of step P6: what is playing and why, for Now and the Mac row.
+    let evidence = MacRouteEvidence()
+    /// Reads SpanDAC's status `rate` object (late switches, M5). nil: never read.
+    var readRateStatus: (() -> SourceRateFollowStatus?)?
+    private var statusReadInFlight = false
+    private var lastStatusRead: TimeInterval = -.infinity
+    /// How often the poller may ask while a song plays on the route.
+    static let statusReadInterval: TimeInterval = 3
+
+    /// The evidence line, or nil off the route (nothing new renders).
+    var evidenceLine: String? { isOnRoute ? evidence.line : nil }
+
+    /// Called from the poller while a song plays: at most one read in flight,
+    /// no oftener than `statusReadInterval`, off the caller's thread.
+    func refreshRateStatus() {
+        guard isOnRoute, let read = readRateStatus else { return }
+        condition.lock()
+        let t = now()
+        if statusReadInFlight || t - lastStatusRead < Self.statusReadInterval { condition.unlock(); return }
+        statusReadInFlight = true; lastStatusRead = t
+        condition.unlock()
+        DispatchQueue.global().async { [weak self] in
+            let status = read()
+            guard let self else { return }
+            self.evidence.noteStatus(status)
+            self.condition.lock(); self.statusReadInFlight = false; self.condition.unlock()
+        }
+    }
 
     private let condition = NSCondition()
     private var inFlight = 0
@@ -259,7 +288,7 @@ final class MacRoutePlayer {
                      post: @escaping (String) -> Void) -> MacRoutePlayer {
         let lock = routing.outputLock ?? OutputLock(path: PlaybackModeStore().lockPath)
         let licence = routing.licence
-        return MacRoutePlayer(
+        let player = MacRoutePlayer(
             route: route,
             outputIsMusicApp: { routing.effectiveOutput == .musicApp },
             fence: RateFence(lock: lock),
@@ -275,6 +304,10 @@ final class MacRoutePlayer {
                 SourceRateFollow(token: token, control: SourceAppControl.macRate(observing: licence), offered: true)
             },
             post: post)
+        player.readRateStatus = {
+            (try? SourceAppControl.macRate(observing: licence).status())?.rateFollow
+        }
+        return player
     }
 
     // MARK: the route
@@ -332,6 +365,7 @@ final class MacRoutePlayer {
             })
         let result = transition.run(RateTransitionPlan(command: command, sound: sound, isCurrent: isCurrent))
         record(result, playlist: playlist, position: position, persistentID: persistentID)
+        evidence.record(result)
         onTransition?(result)
 
         switch result {
@@ -367,6 +401,7 @@ final class MacRoutePlayer {
             allowCorrection: { false })
         let result = transition.run(RateTransitionPlan(command: .station, sound: .other(start: start),
                                                        isCurrent: isCurrent))
+        evidence.record(result)
         onTransition?(result)
         switch result {
         case .played(let played):

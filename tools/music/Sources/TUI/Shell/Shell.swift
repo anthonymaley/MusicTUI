@@ -371,6 +371,7 @@ func runShell() {
             scene.onMacRateFollowWanted = { macRouteState.set(true) }
             scene.onMacRouteOff = { macRouteState.set(false) }
             scene.onMacDACAbsent = { macRouteState.setDACAbsent($0) }
+            scene.macRouteEvidenceLine = { macRoute.evidenceLine }
             scenes[id] = scene
             return scene
         case .library:

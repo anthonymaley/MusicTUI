@@ -1281,6 +1281,10 @@ final class SpeakersScene: Scene {
     private(set) var macRateFollowWanted = false
     /// Called when the Mac row turns rate follow on (later steps hook here).
     var onMacRateFollowWanted: (() -> Void)?
+    /// The Mac route's evidence line (`MacRouteEvidence`), nil when there is none.
+    var macRouteEvidenceLine: () -> String? = { nil }
+    private var lastEvidenceShown: String?
+
     /// Called when the Mac row's route is left for the plain MusicTUI output.
     var onMacRouteOff: (() -> Void)?
 
@@ -1290,6 +1294,10 @@ final class SpeakersScene: Scene {
     @discardableResult
     func tick(snapshot: NowPlayingSnapshot) -> Bool {
         var changed = false
+        if macDACRouteOn {
+            let shown = macRouteEvidenceLine()
+            if shown != lastEvidenceShown { lastEvidenceShown = shown; changed = true }
+        }
         // SpanDACs on the network: keep discovery alive while the tab is
         // shown, and redraw the rows when anything behind them moved.
         if let spandac {
@@ -1864,6 +1872,11 @@ final class SpeakersScene: Scene {
                         // output, and the row says why. Enter asks again.
                         detail = SpanDACRowDetail(text: problem, tone: .warning)
                     }
+                }
+                // Mac DAC route (P6): the evidence line under the chosen Mac row.
+                if macDACRouteOn, routing.mode == .musicApp, !blocked, detail.secondLine == nil,
+                   let evidence = macRouteEvidenceLine() {
+                    detail.secondLine = evidence
                 }
                 spandacLine(isCursor: isCursor, selected: macDACRouteOn && routing.mode == .musicApp && !blocked, name: macName, detail: detail)
                 // Before the switch, SpanDACs on the network are drawn under

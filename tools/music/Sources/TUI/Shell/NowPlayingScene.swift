@@ -793,6 +793,12 @@ final class NowPlayingScene: Scene {
         out += ANSICode.moveTo(row: my, col: leftX) + truncText(np.artist, to: metaW)
         my += 1
         out += ANSICode.moveTo(row: my, col: leftX) + "\(ANSICode.dim)\(truncText(np.album, to: metaW))\(ANSICode.reset)"
+        // Mac DAC route (P6): what is actually playing and why, in the blank row
+        // under the album (nothing moves; off the route nothing is drawn).
+        if let evidence = appQueue.macRoute?.evidenceLine {
+            out += ANSICode.moveTo(row: my + 1, col: leftX)
+                + "\(ANSICode.dim)\(truncText(evidence, to: metaW))\(ANSICode.reset)"
+        }
         my += 2
         // No duration means no progress is KNOWN, which is not the same as a
         // zero-length track at position zero. A SpanDAC that sends no duration

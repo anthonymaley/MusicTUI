@@ -455,6 +455,8 @@ final class PlaybackPoller {
         switch pollNowPlaying(backend: backend) {
         case .active(let np):
             stoppedPolls = 0
+            // Mac DAC route: look for a late rate switch (M5), throttled and off this thread.
+            appQueue.macRoute?.refreshRateStatus()
             let priorPos = lastPosition          // last-seen position of the PREVIOUS track
             let priorDur = lastDuration
             lastPosition = np.position
