@@ -33,7 +33,7 @@ struct RadioPlay: ParsableCommand {
     @Argument(help: "Favorite name, search term, or station URL") var query: [String]
 
     func run() throws {
-        try runRadioPlay(query: query, env: .live())
+        try runRadioPlay(query: query, env: .live(), routePlayer: { liveCLIRoutePlayer().player })
     }
 }
 
@@ -45,6 +45,7 @@ struct RadioPlay: ParsableCommand {
 /// replaces the whole Music.app body for tests that only count it.
 func runRadioPlay(query: [String], env: CLIBridgeEnv, opener: Opener = SystemOpener(),
                   stations: StationStore = StationStore(),
+                  routePlayer: (() -> MacRoutePlayer?)? = nil,
                   musicApp: (([String]) throws -> Void)? = nil) throws {
     try cliDispatch(.radioStationPlay, json: false, env: env,
                     musicApp: {
@@ -53,7 +54,8 @@ func runRadioPlay(query: [String], env: CLIBridgeEnv, opener: Opener = SystemOpe
                     },
                     musicTUI: { path in
                         guard path == .stationURL else { throw ActionError(message: pickASpanDACOutput) }
-                        try musicTUIRadioPlayCommand(query: query, stations: stations, opener: opener, env: env)
+                        try musicTUIRadioPlayCommand(query: query, stations: stations, opener: opener, env: env,
+                                                     routePlayer: routePlayer)
                     },
                     bridge: { try bridgeRadioPlayCommand($0, query: query, stations: stations, env: env) })
 }

@@ -15,9 +15,9 @@ final class MacRouteEvidenceTests: XCTestCase {
     private let token = RateToken(fence: 7, owner: "tui", command: .advance)
 
     private func answer(_ outcome: SourceRateAnswer.Outcome, target: Int? = nil, dac: Int? = nil,
-                        prior: Bool = false, seq: Int? = 3) -> SourceRateAnswer {
+                        prior: Bool = false, seq: Int? = 3, restorable: Bool? = nil) -> SourceRateAnswer {
         SourceRateAnswer(fence: 7, outcome: outcome, targetHz: target, dacRateHz: dac,
-                         priorUnresolved: prior, rateSeq: seq)
+                         priorUnresolved: prior, rateSeq: seq, restorable: restorable)
     }
 
     private func played(_ outcome: SourceRateOutcome, delivered: Int? = nil, confirm: SourceRateOutcome? = nil,
@@ -105,10 +105,62 @@ final class MacRouteEvidenceTests: XCTestCase {
         let settled = SourceRateOutcome.answered(answer(.settled, target: 96000))
         XCTAssertEqual(line(played(settled, delivered: 96000, confirm: .answered(answer(.ownRate)))),
                        "96 kHz \u{00B7} own rate \u{00B7} codec unknown")
-        XCTAssertEqual(line(played(settled, delivered: 48000, confirm: .answered(answer(.converted)))),
-                       "converted to 48 kHz: DAC limit \u{00B7} codec unknown")
+        XCTAssertEqual(line(played(settled, delivered: 48000, confirm: .answered(answer(.converted, target: 48000, dac: 44100)))),
+                       "converted to 44.1 kHz: DAC limit \u{00B7} codec unknown")
         XCTAssertEqual(line(played(settled, delivered: nil, confirm: .answered(answer(.deliveredUnknown)))),
                        "96 kHz \u{00B7} DAC rate unknown \u{00B7} codec unknown")
+    }
+
+    /// Fix round 1, finding 5: "converted to X" names the rate the DAC is AT
+    /// (the answer's `dac_rate_hz`), never the song's own: a 192 kHz song on a
+    /// 96 kHz DAC is converted to 96 kHz. With no DAC rate in the answer the line
+    /// claims no rate at all.
+    func testAConvertedLineNamesTheDACsRateNotTheSongs() {
+        let settled = SourceRateOutcome.answered(answer(.settled, target: 192000))
+        XCTAssertEqual(line(played(settled, delivered: 192000, confirm: .answered(answer(.converted, target: 192000, dac: 96000)))),
+                       "converted to 96 kHz: DAC limit \u{00B7} codec unknown")
+        XCTAssertEqual(line(played(settled, delivered: 192000, confirm: .answered(answer(.converted, target: 192000)))),
+                       "converted: DAC limit \u{00B7} codec unknown",
+                       "no DAC rate in the answer: say nothing about a rate rather than the song's")
+    }
+
+    // MARK: controller addition: a DAC whose rate will not be put back
+
+    private func restorableStatus(_ restorable: Bool?, following: Bool? = nil) -> SourceRateFollowStatus {
+        SourceRateFollowStatus(fence: 7, dacRateHz: 96000, write: .idle, startedFence: 7, rateSeq: 3, moved: nil,
+                               following: following, followedUID: nil, restorable: restorable)
+    }
+
+    func testARateThatWillNotBeRestoredSaysSoRightAfterTheRate() {
+        let p = played(.answered(answer(.settled, target: 96000, dac: 96000)))
+        XCTAssertEqual(line(p, restorableStatus(false)),
+                       "96 kHz \u{00B7} own rate \u{00B7} rate won't be restored \u{00B7} codec unknown",
+                       "second, so a narrow screen drops the tail first and keeps it")
+        // From an answer (SpanDAC may say it on the prepare or the confirm).
+        let fromAnswer = played(.answered(answer(.settled, target: 96000, restorable: false)))
+        XCTAssertEqual(line(fromAnswer), "96 kHz \u{00B7} own rate \u{00B7} rate won't be restored \u{00B7} codec unknown")
+        let fromConfirm = played(.answered(answer(.settled, target: 96000)), delivered: 96000,
+                                 confirm: .answered(answer(.ownRate, restorable: false)))
+        XCTAssertEqual(line(fromConfirm), "96 kHz \u{00B7} own rate \u{00B7} rate won't be restored \u{00B7} codec unknown")
+    }
+
+    /// An older SpanDAC omits the field: unknown, nothing changes. True says nothing either.
+    func testAnUnknownOrTrueRestorableChangesNothing() {
+        let p = played(.answered(answer(.settled, target: 96000, dac: 96000)))
+        let plain = "96 kHz \u{00B7} own rate \u{00B7} codec unknown"
+        XCTAssertEqual(line(p, restorableStatus(nil)), plain)
+        XCTAssertEqual(line(p, restorableStatus(true)), plain)
+        XCTAssertEqual(line(p), plain)
+    }
+
+    func testTheStatusReadsFollowingFollowedUIDAndRestorableAndOlderOnesLeaveThemUnknown() throws {
+        let full = SourceRateFollowStatus(status: ["rate": ["write": "idle", "rate_seq": 2, "following": false,
+                                                            "followed_uid": "ssl-1", "restorable": false]])
+        XCTAssertEqual(full?.following, false)
+        XCTAssertEqual(full?.followedUID, "ssl-1")
+        XCTAssertEqual(full?.restorable, false)
+        let older = SourceRateFollowStatus(status: ["rate": ["write": "idle", "rate_seq": 2]])
+        XCTAssertNil(older?.following); XCTAssertNil(older?.followedUID); XCTAssertNil(older?.restorable)
     }
 
     func testNoLineEverClaimsLossless() {

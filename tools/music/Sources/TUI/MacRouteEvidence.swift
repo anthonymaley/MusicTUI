@@ -18,6 +18,7 @@ enum MacRouteEvidenceText {
     static let mayChange = "may change"
     static let switchUnconfirmed = "DAC rate switch unconfirmed"
     static let nextSongSetsIt = "the next song sets it"
+    static let notRestored = "rate won't be restored"
     static let pausedToSwitch = "paused to switch the DAC rate, press play"
 
     static func ownRate(_ hz: Int) -> String { "\(formatSampleRate(hz)) \u{00B7} own rate" }
@@ -87,17 +88,30 @@ func macRouteEvidenceText(for played: RateTransitionPlayed, status: SourceRateFo
     }
     // The identity-checked read is evidence: when SpanDAC says what Music
     // delivered, that outranks the prediction.
-    if case .answered(let confirmed)? = played.confirm {
+    // After a correction that resumed the song, the SECOND confirm is the read of
+    // the corrected song; the first one described the song before the switch.
+    if case .answered(let confirmed)? = played.confirmAfterCorrection ?? played.confirm {
         switch confirmed.outcome {
         case .ownRate: if let hz = played.delivered?.sampleRateHz { rate = MacRouteEvidenceText.ownRate(hz) }
-        case .converted: rate = MacRouteEvidenceText.converted(to: played.delivered?.sampleRateHz)
+        // `converted to` names the rate the DAC is AT (the answer's own field),
+        // never the song's delivered rate; with none in the answer, no rate.
+        case .converted: rate = MacRouteEvidenceText.converted(to: confirmed.dacRateHz)
         case .deliveredUnknown: rate = MacRouteEvidenceText.dacRateUnknown(songHz)
         default: break
         }
     }
+    // The corrected song's own read still says the DAC is not at its rate: the
+    // switch did not take, whatever the correction's answer predicted.
+    if case .answered(let after)? = played.confirmAfterCorrection, after.outcome == .correct {
+        rate = MacRouteEvidenceText.unconfirmed(song: after.targetHz ?? played.delivered?.sampleRateHz,
+                                                dac: after.dacRateHz)
+    }
     guard let rate else { return nil }
     parts.append(rate)
     if case .notOffered = startLine { return rate }
+    // This DAC's rate will not be put back: said right after the rate, so a narrow
+    // screen (which cuts the end) drops everything else before it.
+    if macRouteRateNotRestorable(played, status: status) { parts.append(MacRouteEvidenceText.notRestored) }
     // Most important first: a narrow screen cuts the end.
     if answer?.priorUnresolved == true || playedConfirmPriorUnresolved(played) {
         parts.append(MacRouteEvidenceText.mayChange)
@@ -114,6 +128,22 @@ func macRouteEvidenceText(for played: RateTransitionPlayed, status: SourceRateFo
     parts.append(MacRouteEvidenceText.codecUnknown)
     if let advice { parts.append(advice) }
     return parts.joined(separator: " \u{00B7} ")
+}
+
+/// SpanDAC said (in the status or in any answer of this transition) that it holds
+/// no restore record for the DAC. Missing is unknown, and unknown says nothing.
+private func macRouteRateNotRestorable(_ played: RateTransitionPlayed, status: SourceRateFollowStatus?) -> Bool {
+    if status?.restorable == false { return true }
+    var outcomes: [SourceRateOutcome?] = [played.rateOutcome, played.confirm, played.confirmAfterCorrection]
+    if case .resumed(_, let corrected) = played.correction { outcomes.append(corrected) }
+    for outcome in outcomes {
+        switch outcome {
+        case .answered(let a)?: if a.restorable == false { return true }
+        case .unsettled(let last)?: if last?.restorable == false { return true }
+        default: break
+        }
+    }
+    return false
 }
 
 private func playedConfirmPriorUnresolved(_ played: RateTransitionPlayed) -> Bool {

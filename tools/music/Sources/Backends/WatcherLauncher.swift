@@ -71,9 +71,15 @@ func spawnAlbumWatcher(name: String,
 /// or, past the watcher's own limit, through an ordered manifest file. The label
 /// is one `--label=` argument, so a label that starts with a dash is not read as
 /// an option.
+///
+/// `reservation` is the ordering the PARENT took for the child under the output
+/// lock (the fence and the lease, for the child's owner id): it goes before the
+/// queue, so the queue stays the last argument.
 func runQueueArguments(label: String, uuid: String, ids: [String],
-                       manifestDirectory: String? = nil) throws -> [String] {
+                       manifestDirectory: String? = nil,
+                       reservation: RunQueueReservation? = nil) throws -> [String] {
     var args = ["__run-queue", uuid, "--label=\(label)"]
+    if let reservation { args += ["--fence", String(reservation.fence), "--owner", reservation.owner] }
     if ids.count > albumWatcherInlineIDLimit {
         let path = try writeRunQueueManifest(uuid: uuid, ids: ids, directory: manifestDirectory)
         args += ["--manifest", path]
@@ -91,10 +97,12 @@ func spawnRunQueue(label: String,
                    uuid: String,
                    ids: [String],
                    manifestDirectory: String? = nil,
+                   reservation: RunQueueReservation? = nil,
                    launch: ProcessLauncher = detachedLaunch) -> Bool {
     let args: [String]
     do {
-        args = try runQueueArguments(label: label, uuid: uuid, ids: ids, manifestDirectory: manifestDirectory)
+        args = try runQueueArguments(label: label, uuid: uuid, ids: ids, manifestDirectory: manifestDirectory,
+                                     reservation: reservation)
     } catch {
         verbose("run-queue args failed for \(label): \(error.localizedDescription)")
         return false

@@ -37,11 +37,16 @@ enum MacRouteCLIStart {
 extension MacRouteSongPlay {
     /// The CLI's: the route is the choice persisted beside mode.json; a play
     /// starts the detached runner. `isOnRoute` and `launch` are the test seams.
+    /// `fence` is the fence and lease the play reserves for its runner before it
+    /// spawns (`reserveRunQueueOrdering`); the real one sits beside mode.json.
     static func cli(isOnRoute: @escaping () -> Bool = { MacRouteStore(beside: PlaybackModeStore()).isOn },
                     launch: @escaping ProcessLauncher = detachedLaunch,
-                    json: @escaping () -> Bool = { Music.isJSON }) -> MacRouteSongPlay {
+                    json: @escaping () -> Bool = { Music.isJSON },
+                    fence: @escaping () -> RateFence? = { RateFence(store: PlaybackModeStore()) }) -> MacRouteSongPlay {
         MacRouteSongPlay(isOn: isOnRoute, play: { label, ids in
-            guard spawnRunQueue(label: label, uuid: UUID().uuidString, ids: ids, launch: launch) else { return false }
+            let reservation = fence().flatMap(reserveRunQueueOrdering)
+            guard spawnRunQueue(label: label, uuid: UUID().uuidString, ids: ids, reservation: reservation,
+                                launch: launch) else { return false }
             MacRouteCLIStart.record(macRoutePlayingLine(label: label, count: ids.count, json: json()))
             return true
         })

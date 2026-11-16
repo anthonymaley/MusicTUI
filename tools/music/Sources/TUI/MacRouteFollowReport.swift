@@ -94,12 +94,30 @@ final class MacRouteFollowReporter {
     /// A transition's first message of a route: `slice.rateFollow on` under the
     /// transition's own fence, unless SpanDAC confirmed it already or is known
     /// not to serve it. Synchronous and bounded.
-    func ensureOn(fence: Int, timeout: TimeInterval = MacRouteFollowReporter.ensureTimeout) {
+    ///
+    /// Returns whether a rate may now be written: true when follow is on
+    /// (already confirmed, or confirmed by this call) or SpanDAC does not serve
+    /// it at all; false when the follow-on failed, timed out or was not applied.
+    /// A false is NOT recorded as confirmed, so the next call asks again.
+    @discardableResult
+    func ensureOn(fence: Int, timeout: TimeInterval = MacRouteFollowReporter.ensureTimeout) -> Bool {
         lock.lock()
-        let skip = !followOffered || confirmedOn == true
+        let offered = followOffered
+        let already = confirmedOn == true
         lock.unlock()
-        guard !skip else { return }
+        guard offered, !already else { return true }
         sendFollow(fence: fence, on: true, timeout: timeout)
+        lock.lock(); defer { lock.unlock() }
+        return !followOffered || confirmedOn == true
+    }
+
+    /// A status read said SpanDAC holds no restore record (it restarted, or the
+    /// record failed): the confirmed-on latch is cleared, so the next sound start
+    /// re-sends follow-on before its prepare. A state that was not "confirmed on"
+    /// is left as it is.
+    func followRecordLost() {
+        lock.lock(); defer { lock.unlock() }
+        if confirmedOn == true { confirmedOn = nil }
     }
 
     /// The route was chosen or restored (on) or left (off). Takes a fence (M1:
@@ -153,6 +171,25 @@ final class MacRouteFollowReporter {
         schedule { [self] in drain() }
     }
 
+    /// Waits (bounded) until every report handed over so far was tried: a process
+    /// that exits right after a report (a CLI station) must not take it with it.
+    func flush(timeout: TimeInterval = 1.5) {
+        let deadline = Date(timeIntervalSinceNow: timeout)
+        while Date() < deadline {
+            lock.lock(); let busy = draining || pending != nil; lock.unlock()
+            if !busy { return }
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+    }
+
+    /// Says nothing is playing from this process any more, now, under `fence`
+    /// (best effort, bounded by the report timeout). Drops any report still waiting.
+    func reportIdle(fence: Int) {
+        lock.lock(); pending = nil; lock.unlock()
+        flush(timeout: Self.reportTimeout)
+        sendNowPlaying(SourceNowPlayingReport(fence: fence, state: .none))
+    }
+
     private func drain() {
         while true {
             lock.lock()
@@ -182,6 +219,17 @@ extension SourceNowPlayingReport {
     /// MusicTUI's word for how the song's rate went, from the transition (M4's
     /// case, then what the confirm and the correction found).
     static func rateWord(_ played: RateTransitionPlayed) -> String {
+        // After a correction that resumed the song, its second confirm is the
+        // evidence: it is what the DAC is at now.
+        if case .answered(let after)? = played.confirmAfterCorrection {
+            switch after.outcome {
+            case .ownRate: return "corrected"
+            case .converted: return "converted"
+            case .deliveredUnknown: return "delivered_unknown"
+            case .correct: return "mismatch"
+            default: break
+            }
+        }
         if case .answered(let confirm)? = played.confirm {
             switch confirm.outcome {
             case .converted: return "converted"
@@ -214,7 +262,19 @@ extension SourceNowPlayingReport {
             default: return nil
             }
         }
-        let prepare = answer(played.rateOutcome), confirm = answer(played.confirm)
+        let prepare = answer(played.rateOutcome)
+        // After a correction that resumed the song, the second confirm (the
+        // corrected song's own read) is the evidence; the first one, and the
+        // prepare's, describe the DAC before the switch. With no second answer,
+        // the correction's own is the freshest DAC rate there is, and the
+        // earlier ones are left out rather than reported stale.
+        var confirm = answer(played.confirm)
+        var dacRate = (confirm?.dacRateHz ?? prepare?.dacRateHz)
+        if case .resumed(_, let corrected) = played.correction {
+            let after = answer(played.confirmAfterCorrection)
+            confirm = after ?? confirm
+            dacRate = after?.dacRateHz ?? answer(corrected)?.dacRateHz
+        }
         var report = SourceNowPlayingReport(fence: played.token.fence, state: .playing)
         report.persistentID = persistentID
         report.databaseID = played.delivered?.databaseID
@@ -226,7 +286,7 @@ extension SourceNowPlayingReport {
         report.rateOutcome = rateWord(played)
         report.targetHz = confirm?.targetHz ?? prepare?.targetHz
         report.deliveredHz = played.delivered?.sampleRateHz
-        report.dacRateHz = confirm?.dacRateHz ?? prepare?.dacRateHz
+        report.dacRateHz = dacRate
         report.priorUnresolved = (prepare?.priorUnresolved ?? false) || (confirm?.priorUnresolved ?? false)
         return report
     }

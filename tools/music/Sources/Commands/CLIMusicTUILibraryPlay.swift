@@ -178,7 +178,13 @@ struct PersistentIDCLILibraryPlay: CLIMusicTUILibraryPlaying {
     /// command comes between). A launch that fails plays nothing.
     private func playOnTheRoute(_ request: CLIMusicTUILibraryPlayRequest, ids: [String], skipNotice: String?,
                                 env: CLIBridgeEnv) throws {
-        guard spawnRunQueue(label: request.label, uuid: UUID().uuidString, ids: ids, launch: launch) else {
+        // The ordering is taken HERE, under the lock, and handed to the child: a
+        // newer command that starts while the child is being spawned takes a
+        // newer fence, and the child (revalidating its token before its first
+        // play) plays nothing instead of overtaking it.
+        let fence = RateFence(lock: env.routing.outputLock ?? OutputLock(path: env.modeStore.lockPath))
+        guard spawnRunQueue(label: request.label, uuid: UUID().uuidString, ids: ids,
+                            reservation: reserveRunQueueOrdering(fence), launch: launch) else {
             throw ActionError(message: macRouteRunnerNotStartedMessage)
         }
         if let skipNotice { if request.json { env.err(skipNotice) } else { env.out(skipNotice) } }

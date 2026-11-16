@@ -138,8 +138,16 @@ func bridgeRadioPlayCommand(_ session: CLIBridgeSession, query: [String], statio
 /// A station whose URL is missing or not a station URL is looked up by its id
 /// through SpanDAC (`slice.station`); if that finds none, it refuses with
 /// `pickASpanDACOutput`. Never by name. The open runs inside the output lock.
+///
+/// **On the Mac DAC route** (`routePlayer` names this process's route player and it
+/// is on the route) the station is one `RateAwareTransition` with no rate work,
+/// exactly the TUI's: the fence moves, the lease is taken (a queue runner stops at
+/// its next look), SpanDAC is told, the open waits for the DAC to be quiet and then
+/// runs under the output lock with the token revalidated. The command's own
+/// check, that the persisted output is still the one it routed on, is part of that
+/// revalidation. Anything else is the plain path below.
 func musicTUIRadioPlayCommand(query: [String], stations: StationStore, opener: Opener,
-                              env: CLIBridgeEnv) throws {
+                              env: CLIBridgeEnv, routePlayer: (() -> MacRoutePlayer?)? = nil) throws {
     let input = query.joined(separator: " ").trimmingCharacters(in: .whitespaces)
     guard !input.isEmpty else { throw ActionError(message: "Name or URL required.") }
 
@@ -192,6 +200,35 @@ func musicTUIRadioPlayCommand(query: [String], stations: StationStore, opener: O
     }
 
     let station = chosen
+    if let player = routePlayer?(), player.isOnRoute {
+        try playStationOnTheRoute(station, via: opener, player: player, env: env)
+        return
+    }
     try cliMusicTUIMutation(env: env) { try playStation(station, via: opener) }
     env.out("▶ \(station.name)")
+}
+
+/// The route's station play for the CLI (see `musicTUIRadioPlayCommand`). A play a
+/// newer command overtook, or one the output changed under, plays nothing and says so.
+private func playStationOnTheRoute(_ station: Station, via opener: Opener, player: MacRoutePlayer,
+                                   env: CLIBridgeEnv) throws {
+    let expected = env.routing.mode
+    var changedTo: PlaybackMode?
+    // The process leaves right after: the report of what it started must be out first.
+    defer { player.flushReports() }
+    let outcome = try player.playStation(
+        start: { try playStation(station, via: opener) },
+        subject: RouteSubject(title: station.name),
+        isCurrent: {
+            let now = env.modeStore.mode()
+            if now != expected { changedTo = now; return false }
+            return true
+        })
+    switch outcome {
+    case .played:
+        env.out("▶ \(station.name)")
+    case .superseded:
+        if let now = changedTo { throw ActionError(message: OutputLock.cliModeChangedMessage(now: now)) }
+        env.out("A newer command took over before \(station.name) started; nothing was played.")
+    }
 }
