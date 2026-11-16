@@ -689,7 +689,9 @@ final class SpeakersScene: Scene {
          makeRouteVerifier: @escaping () -> RouteVerifier = { RouteVerifier() },
          macSocketExists: @escaping () -> Bool = {
              FileManager.default.fileExists(atPath: SourceAppStationSearch.socketPath)
-         }) {
+         },
+         routeMusicToComputer: @escaping (AppleScriptBackend) -> Void = routeMusicPlaysToComputer) {
+        self.routeMusicToComputer = routeMusicToComputer
         self.backend = backend
         self.status = status
         self.actions = actions
@@ -710,6 +712,8 @@ final class SpeakersScene: Scene {
         self.macSocketExists = macSocketExists
         spandac?.onPairedAndReady = { [weak self] id, name in self?.pairedAndReady(id, name: name) }
     }
+
+    private let routeMusicToComputer: (AppleScriptBackend) -> Void
 
     /// The Mac's computer name, as row 1 shows it.
     static func computerName() -> String {
@@ -1055,6 +1059,7 @@ final class SpeakersScene: Scene {
     /// as confirmed and the status line says it may still be playing. A device
     /// that answers, and every other output, keeps the strict rule.
     private func selectMode(_ target: PlaybackMode, name targetName: String? = nil, onlyIfEpoch: Int? = nil,
+                            macDACRoute: Bool = false,
                             leaveUnreached: (outgoing: PlaybackMode, epoch: Int)? = nil) {
         // Device names by id, read here on the caller's thread (the rows belong
         // to it, not to the action queue); the refusal looks up the id of the
@@ -1152,6 +1157,7 @@ final class SpeakersScene: Scene {
                 // Enter on the SpanDAC row that is already the output: when its
                 // DAC is still not the Mac's output, ask again.
                 if target == .source { self.makeMacOutputTheDAC(client) }
+                if macDACRoute { self.applyMacDACRoute(client) }
             case .switched(let mode):
                 // Through the inbox, like every other background result. Writing
                 // `bridgeReadiness` here would reinstate the main-loop/background
@@ -1171,7 +1177,13 @@ final class SpeakersScene: Scene {
                     if !reminder("SpanDAC on \(self.macName)") {
                         self.status.post("Output: SpanDAC · \(self.macName)")
                     }
+                case .musicApp where macDACRoute:
+                    self.applyMacDACRoute(client)
+                    if !reminder("\(musicTUIOutputName) on \(self.macName)") {
+                        self.status.post("Output: \(musicTUIOutputName) \u{2192} \(self.macName)")
+                    }
                 case .musicApp:
+                    self.macDACRouteOn = false
                     let read = Self.readMacStatusWithMacOutput(client)
                     self.publishReadiness(read.readiness, data: read.data, output: read.output)
                     let notice = macSoundStillOnTheDAC(read.macOutput)
@@ -1223,6 +1235,27 @@ final class SpeakersScene: Scene {
         publishReadiness(fresh.readiness, data: fresh.dataReadiness, output: fresh.output)
         if let problem { status.post("SpanDAC is selected, but \(problem)") }
     }
+
+    /// The Mac row (Mac route, 2026-11-14): the MusicTUI output, played to the
+    /// Mac itself, with the Mac's sound output moved to the chosen DAC
+    /// (`slice.useDAC`) and rate follow wanted. Runs on the action queue after
+    /// the selection is committed. Rate follow's wiring is a later step; the
+    /// flag and its hook are all this step owns.
+    private func applyMacDACRoute(_ client: SourceAppClient) {
+        routeMusicToComputer(backend)
+        makeMacOutputTheDAC(client)
+        macDACRouteOn = true
+        macRateFollowWanted = true
+        onMacRateFollowWanted?()
+    }
+
+    /// True while the Mac row is the chosen route (MusicTUI output to the Mac,
+    /// DAC as its sound output). Written on the action queue, read for display.
+    private(set) var macDACRouteOn = false
+    /// Rate follow is wanted for this route. Stub: the later steps read it.
+    private(set) var macRateFollowWanted = false
+    /// Called when the Mac row turns rate follow on (later steps hook here).
+    var onMacRateFollowWanted: (() -> Void)?
 
     /// Shown on the Mac row when `slice.useDAC` is refused without a reason.
     static let notTheMacsSoundOutput = "not the Mac's sound output"
@@ -1796,7 +1829,7 @@ final class SpeakersScene: Scene {
                         detail = SpanDACRowDetail(text: problem, tone: .warning)
                     }
                 }
-                spandacLine(isCursor: isCursor, selected: routing.mode == .source && !blocked, name: macName, detail: detail)
+                spandacLine(isCursor: isCursor, selected: macDACRouteOn && routing.mode == .musicApp && !blocked, name: macName, detail: detail)
                 // Before the switch, SpanDACs on the network are drawn under
                 // this Mac but cannot be chosen (C-SEED-ROW).
                 if !switched {
@@ -2158,7 +2191,7 @@ final class SpeakersScene: Scene {
                 // Only a ready Mac row plays; any other state says why on the
                 // row itself, so Enter does nothing (no switch, no toast).
                 guard macRowState == .ready else { return .none }
-                selectMode(.source, name: macName)
+                selectMode(.musicApp, name: macName, macDACRoute: true)
                 return .redraw
             case .stopUsingSpanDAC:
                 // Asks first; nothing happens until y.
@@ -2505,4 +2538,12 @@ func confirmBridgeNotPlaying(_ control: SourceControlling) throws -> Bool {
     try? control.pause()
     let playback = try control.status().playback
     return playback == "paused" || playback == "stopped" || playback == "idle"
+}
+
+/// Points Music's AirPlay selection at the Mac itself ("Computer"). Best
+/// effort: a failure leaves the selection as it was, and the DAC step still
+/// runs. NOT yet run against a live Music in this step; the script is from
+/// the plan, to be proven in L.
+func routeMusicPlaysToComputer(_ backend: AppleScriptBackend) {
+    _ = try? backend.runMusicBlocking("set current AirPlay devices to {AirPlay device \"Computer\"}", timeout: 8)
 }

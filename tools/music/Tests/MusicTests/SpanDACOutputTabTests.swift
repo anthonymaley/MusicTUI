@@ -831,7 +831,7 @@ final class SpanDACOutputTabTests: XCTestCase {
         put(s, at: 0)
         XCTAssertEqual(s.handle(.enter), .redraw)
         XCTAssertTrue(waitFor(finished, count: 2))
-        XCTAssertEqual(modeOnDisk(), .source)
+        XCTAssertEqual(modeOnDisk(), .musicApp, "the Mac row is the MusicTUI output to the DAC")
     }
 
     func testEnterOnANotReadyRowDoesNothing() {

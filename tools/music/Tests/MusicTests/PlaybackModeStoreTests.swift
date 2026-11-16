@@ -80,7 +80,7 @@ final class PlaybackModeStoreTests: XCTestCase {
     func testTheExistingValuesAreWrittenByteIdentically() throws {
         let path = tempPath()
         PlaybackModeStore(path: path).set(.source)
-        XCTAssertEqual(try String(contentsOfFile: path, encoding: .utf8), #"{"mode":"musictui_source"}"#)
+        XCTAssertEqual(try String(contentsOfFile: path, encoding: .utf8), #"{"mode":"mac_source_retired"}"#)
         PlaybackModeStore(path: path).set(.musicApp)
         XCTAssertEqual(try String(contentsOfFile: path, encoding: .utf8), #"{"mode":"music_app"}"#)
     }
@@ -104,7 +104,7 @@ final class PlaybackModeStoreTests: XCTestCase {
     func testATargetBesideTheOldValuesChangesNothing() throws {
         let path = tempPath()
         try #"{"mode":"musictui_source","target":"\#(ipadID)"}"#.write(toFile: path, atomically: true, encoding: .utf8)
-        XCTAssertEqual(PlaybackModeStore(path: path).mode(), .source)
+        XCTAssertEqual(PlaybackModeStore(path: path).mode(), .musicApp)
     }
 
     func testTheNetworkModeIsSourceBackedAndNamesItsTarget() {
@@ -114,5 +114,53 @@ final class PlaybackModeStoreTests: XCTestCase {
         XCTAssertEqual(PlaybackMode.networkSource(ipadID).networkSourceID, ipadID)
         XCTAssertNil(PlaybackMode.source.networkSourceID)
         XCTAssertNotEqual(PlaybackMode.networkSource(ipadID), .networkSource(UUID().uuidString))
+    }
+
+    // MARK: Mac route (P1): the retired Mac source output
+
+    private let legacyNotice = PlaybackModeStore.legacyMacSourceNotice
+
+    func testAStoredMusicTUISourceReadsBackAsTheMusicTUIOutputWithOneNotice() throws {
+        let path = tempPath()
+        try #"{"mode":"musictui_source"}"#.write(toFile: path, atomically: true, encoding: .utf8)
+        XCTAssertEqual(PlaybackModeStore(path: path).mode(), .musicApp)
+        let store = PlaybackModeStore(path: path)
+        XCTAssertEqual(store.takeLegacyMacSourceNotice(), legacyNotice)
+        XCTAssertNil(store.takeLegacyMacSourceNotice(), "once")
+        XCTAssertNil(PlaybackModeStore(path: path).takeLegacyMacSourceNotice(), "once, across processes")
+        XCTAssertEqual(try String(contentsOfFile: path, encoding: .utf8), #"{"mode":"music_app"}"#)
+        XCTAssertEqual(PlaybackModeStore(path: path).mode(), .musicApp)
+    }
+
+    func testNoNoticeForAnyOtherStoredValue() throws {
+        let path = tempPath()
+        XCTAssertNil(PlaybackModeStore(path: path).takeLegacyMacSourceNotice(), "missing file")
+        try "{ not json".write(toFile: path, atomically: true, encoding: .utf8)
+        XCTAssertNil(PlaybackModeStore(path: path).takeLegacyMacSourceNotice(), "corrupt")
+        XCTAssertEqual(try String(contentsOfFile: path, encoding: .utf8), "{ not json", "nothing rewritten")
+        PlaybackModeStore(path: path).set(.musicApp)
+        XCTAssertNil(PlaybackModeStore(path: path).takeLegacyMacSourceNotice())
+        PlaybackModeStore(path: path).set(.networkSource(ipadID))
+        XCTAssertNil(PlaybackModeStore(path: path).takeLegacyMacSourceNotice())
+        XCTAssertEqual(PlaybackModeStore(path: path).mode(), .networkSource(ipadID), "iPad selection untouched")
+    }
+
+    /// No action routes to a Mac source: from a stored "musictui_source" the
+    /// coordinator's output is the MusicTUI one, every action's sound route
+    /// is MusicTUI or unaffected, and the Mac client is never built or called.
+    func testNoActionRoutesToAMacSourceFromAStoredMusicTUISource() throws {
+        let path = tempPath()
+        try #"{"mode":"musictui_source"}"#.write(toFile: path, atomically: true, encoding: .utf8)
+        var built = 0
+        let c = RoutingCoordinator(store: PlaybackModeStore(path: path), surface: .tui,
+                                   makeSource: { built += 1; return .failing(.notPaired) })
+        XCTAssertEqual(c.mode, .musicApp)
+        XCTAssertEqual(c.effectiveOutput, .musicApp)
+        var sourceRan = 0
+        for action in MusicTUIAction.allCases {
+            try? c.perform(action, musicApp: { }, source: { _ in sourceRan += 1 }, unaffected: {})
+        }
+        XCTAssertEqual(sourceRan, 0)
+        XCTAssertEqual(built, 0)
     }
 }

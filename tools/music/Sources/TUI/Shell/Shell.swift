@@ -525,6 +525,9 @@ func runShell() {
     // licence coming back (review finding 7); it never blocks this loop.
     let licenceReprobe = LicenceReprobe(routing: routing)
 
+    // A stored "musictui_source" now reads as the MusicTUI output: say so once.
+    if let notice = routing.takeLegacyMacSourceNotice() { status.post(notice, ttl: 12) }
+
     while true {
         licenceReprobe.tick()
         if let licence = routing.licence {

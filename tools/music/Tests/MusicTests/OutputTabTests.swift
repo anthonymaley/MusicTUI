@@ -14,7 +14,7 @@ final class OutputTabTests: XCTestCase {
         let rows = outputDisplayRows(speakerCount: 2, mode: .musicApp, sourceReady: .ready)
         XCTAssertEqual(rows.first, .modeHeader)
         XCTAssertEqual(rows[1], .mode(.musicApp))
-        XCTAssertEqual(rows[2], .mode(.source))
+        XCTAssertFalse(rows.contains(.mode(.source)), "SpanDAC on this Mac is no longer an output row")
         XCTAssertTrue(rows.contains(.catalogHeader))
         XCTAssertEqual(rows.last, .speaker(1))
     }
@@ -736,7 +736,7 @@ final class SpanDACSwitchOutputTabTests: XCTestCase {
         put(s, on: .spandacMac)
         _ = s.handle(.enter)
         XCTAssertTrue(wait { switched.count == 2 })
-        XCTAssertEqual(modeOnDisk(), .source)
+        XCTAssertEqual(modeOnDisk(), .musicApp, "the Mac row is the MusicTUI output to the DAC")
         XCTAssertEqual(starter.anyCalls, 0)
         XCTAssertEqual(data().0, .spandacMac)
     }

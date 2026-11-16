@@ -247,7 +247,8 @@ final class SpanDACSwitchableOutputTests: XCTestCase {
         let scene: SpeakersScene
     }
 
-    private func rig(mode: PlaybackMode, wire: Wire) throws -> Rig {
+    private func rig(mode: PlaybackMode, wire: Wire,
+                      routeMusicToComputer: @escaping (AppleScriptBackend) -> Void = { _ in }) throws -> Rig {
         let dir = NSTemporaryDirectory() + "switchable-\(UUID().uuidString)"
         try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
         // The outgoing side is always a fake: a start from MusicTUI's own
@@ -258,7 +259,8 @@ final class SpanDACSwitchableOutputTests: XCTestCase {
                                    network: { id in
                                        XCTAssertEqual(id, ipadID)
                                        return SourceAppClient(path: "/fake-ipad", transport: { _, line in wire.ipad(line) })
-                                   })
+                                   },
+                                   routeMusicToComputer: routeMusicToComputer)
         settleOutputTab(s, speakers: 0)
         return Rig(dir: dir, wire: wire, scene: s)
     }
@@ -317,9 +319,66 @@ final class SpanDACSwitchableOutputTests: XCTestCase {
         XCTAssertEqual(log.filter { $0 == "mac:slice.useDAC" }.count, 1, "\(log)")
         XCTAssertEqual(log.firstIndex(of: "ipad:slice.pause").map { $0 < use }, true, "paused first: \(log)")
         XCTAssertEqual(log.firstIndex(of: "ipad:slice.stop").map { $0 < use }, true, "cleared first: \(log)")
-        XCTAssertEqual(modeOnDisk(r), .source, "the selection is committed")
+        XCTAssertEqual(modeOnDisk(r), .musicApp, "the selection is committed")
         // Success: the row refreshes and reads connected.
         XCTAssertTrue(untilRow(r.scene) { $0.contains("ready  SSL 2+ \u{00B7} 192 kHz") }, row1(r.scene))
+    }
+
+    /// Mac route (P1): the Mac row selects the MusicTUI output, plays it to the
+    /// Mac ("Computer"), sends useDAC, and wants rate follow. It never
+    /// selects a Mac source and never plays through SpanDAC.
+    func testTheMacRowSelectsMusicTUIWithComputerUseDACAndRateFollow() throws {
+        let wire = Wire(macStatus: macStatus(switchableOutput), useDAC: "{}")
+        let calls = NSLock(); var toComputer = 0
+        let r = try rig(mode: .networkSource(ipad), wire: wire,
+                        routeMusicToComputer: { _ in calls.lock(); toComputer += 1; calls.unlock() })
+        defer { try? FileManager.default.removeItem(atPath: r.dir) }
+        var followed = 0
+        r.scene.onMacRateFollowWanted = { followed += 1 }
+        XCTAssertFalse(r.scene.macRateFollowWanted)
+        XCTAssertTrue(pressEnterOnMacRow(r.scene))
+        XCTAssertEqual(modeOnDisk(r), .musicApp)
+        XCTAssertEqual(r.scene.routingForTest.mode, .musicApp)
+        calls.lock(); XCTAssertEqual(toComputer, 1); calls.unlock()
+        XCTAssertEqual(wire.count("mac:slice.useDAC"), 1)
+        XCTAssertTrue(r.scene.macRateFollowWanted)
+        XCTAssertTrue(r.scene.macDACRouteOn)
+        XCTAssertEqual(followed, 1)
+        XCTAssertEqual(wire.log.filter { $0 == "mac:slice.play" || $0 == "mac:slice.playLibrary" }, [])
+    }
+
+    /// Enter on the Mac row again, while MusicTUI is already the output, still
+    /// applies the route (a DAC that came back).
+    func testTheMacRowWhileMusicTUIIsAlreadyTheOutputStillAppliesTheRoute() throws {
+        let wire = Wire(macStatus: macStatus(switchableOutput), useDAC: "{}")
+        let r = try rig(mode: .musicApp, wire: wire)
+        defer { try? FileManager.default.removeItem(atPath: r.dir) }
+        XCTAssertTrue(pressEnterOnMacRow(r.scene))
+        XCTAssertEqual(wire.count("mac:slice.useDAC"), 1)
+        XCTAssertTrue(r.scene.macRateFollowWanted)
+        XCTAssertEqual(modeOnDisk(r), .musicApp)
+    }
+
+    /// iPhone/iPad outputs are untouched: choosing one still stores
+    /// `.networkSource(id)`, sends nothing to the Mac, and never sets the
+    /// Mac route's flags.
+    func testAnIPadRowIsUnchangedAndSetsNoMacRoute() throws {
+        let wire = Wire(macStatus: macStatus(switchableOutput), useDAC: "{}")
+        let calls = NSLock(); var toComputer = 0
+        let r = try rig(mode: .musicApp, wire: wire,
+                        routeMusicToComputer: { _ in calls.lock(); toComputer += 1; calls.unlock() })
+        defer { try? FileManager.default.removeItem(atPath: r.dir) }
+        XCTAssertEqual(PlaybackMode.networkSource(ipad).networkSourceID, ipad)
+        XCTAssertTrue(PlaybackMode.networkSource(ipad).usesSource)
+        XCTAssertFalse(outputDisplayRows(speakerCount: 0, mode: .networkSource(ipad), sourceReady: .ready)
+            .contains(.mode(.source)))
+        let store = PlaybackModeStore(path: r.dir + "/mode.json")
+        XCTAssertTrue(store.set(.networkSource(ipad)))
+        XCTAssertEqual(store.mode(), .networkSource(ipad))
+        XCTAssertFalse(r.scene.macDACRouteOn)
+        XCTAssertFalse(r.scene.macRateFollowWanted)
+        calls.lock(); XCTAssertEqual(toComputer, 0); calls.unlock()
+        XCTAssertEqual(wire.count("mac:slice.useDAC"), 0)
     }
 
     func testARefusedSwitchKeepsSpanDACSelectedAndTheRowSaysWhy() throws {
@@ -330,7 +389,7 @@ final class SpanDACSwitchableOutputTests: XCTestCase {
         defer { try? FileManager.default.removeItem(atPath: r.dir) }
         XCTAssertTrue(pressEnterOnMacRow(r.scene))
         XCTAssertEqual(wire.count("mac:slice.useDAC"), 1)
-        XCTAssertEqual(modeOnDisk(r), .source, "SpanDAC stays selected")
+        XCTAssertEqual(modeOnDisk(r), .musicApp, "SpanDAC stays selected")
         XCTAssertTrue(untilRow(r.scene) { $0.contains(detail) }, row1(r.scene))
         XCTAssertFalse(row1(r.scene).contains("select to make it"), row1(r.scene))
     }
@@ -340,7 +399,7 @@ final class SpanDACSwitchableOutputTests: XCTestCase {
         let r = try rig(mode: .networkSource(ipad), wire: wire)
         defer { try? FileManager.default.removeItem(atPath: r.dir) }
         XCTAssertTrue(pressEnterOnMacRow(r.scene))
-        XCTAssertEqual(modeOnDisk(r), .source)
+        XCTAssertEqual(modeOnDisk(r), .musicApp)
         XCTAssertTrue(untilRow(r.scene) { $0.contains("not the Mac's sound output") }, row1(r.scene))
     }
 
@@ -353,7 +412,7 @@ final class SpanDACSwitchableOutputTests: XCTestCase {
         let r = try rig(mode: .networkSource(ipad), wire: wire)
         defer { try? FileManager.default.removeItem(atPath: r.dir) }
         XCTAssertTrue(pressEnterOnMacRow(r.scene))
-        XCTAssertEqual(modeOnDisk(r), .source)
+        XCTAssertEqual(modeOnDisk(r), .musicApp)
         XCTAssertTrue(untilRow(r.scene) { $0.contains("plug in your DAC  no DAC on this Mac") }, row1(r.scene))
     }
 
@@ -371,7 +430,7 @@ final class SpanDACSwitchableOutputTests: XCTestCase {
 
     /// A scene built over the test seam that starts from MusicTUI's own output
     /// calls the seam, not the real player, and the switch refuses.
-    func testASwitchAwayFromMusicTUIGoesThroughTheInjectedPauseConfirmation() throws {
+    func testTheMacRowFromMusicTUINeverPausesItBecauseItIsNotSwitchingAway() throws {
         let dir = NSTemporaryDirectory() + "pauseseam-\(UUID().uuidString)"
         try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(atPath: dir) }
@@ -383,22 +442,22 @@ final class SpanDACSwitchableOutputTests: XCTestCase {
         settleOutputTab(s, speakers: 0)
         XCTAssertTrue(pressEnterOnMacRow(s))
         calls.lock(); defer { calls.unlock() }
-        XCTAssertEqual(count, 1, "the injected confirmation was asked once")
-        XCTAssertEqual(PlaybackModeStore(path: dir + "/mode.json").mode(), .musicApp, "unconfirmed: still using MusicTUI")
-        XCTAssertEqual(wire.count("mac:slice.useDAC"), 0, "nothing is redirected before the pause is confirmed")
+        XCTAssertEqual(count, 0, "MusicTUI stays the output, so nothing is paused or switched away from")
+        XCTAssertEqual(PlaybackModeStore(path: dir + "/mode.json").mode(), .musicApp)
+        XCTAssertEqual(wire.count("mac:slice.useDAC"), 1, "the DAC step still runs")
     }
 
     /// Enter on the SpanDAC row that is already the output tries again.
     func testEnterOnTheAlreadySelectedRowSendsUseDACToo() throws {
         let wire = Wire(macStatus: macStatus(switchableOutput), useDAC: useDACRefusal("output_unconfirmed", detail: "no"))
-        let r = try rig(mode: .source, wire: wire)
+        let r = try rig(mode: .musicApp, wire: wire)
         defer { try? FileManager.default.removeItem(atPath: r.dir) }
         let before = wire.log.count
         XCTAssertTrue(pressEnterOnMacRow(r.scene))
         let log = Array(wire.log.dropFirst(before))
         XCTAssertEqual(log.filter { $0 == "mac:slice.useDAC" }.count, 1, "\(log)")
         XCTAssertEqual(log.filter { $0.hasPrefix("ipad:") }, [], "nothing is paused or cleared when nothing changes")
-        XCTAssertEqual(modeOnDisk(r), .source)
+        XCTAssertEqual(modeOnDisk(r), .musicApp)
     }
 
     /// An older SpanDAC does not list the capability: today's behaviour, the
@@ -409,7 +468,7 @@ final class SpanDACSwitchableOutputTests: XCTestCase {
         defer { try? FileManager.default.removeItem(atPath: r.dir) }
         XCTAssertTrue(pressEnterOnMacRow(r.scene))
         XCTAssertEqual(wire.count("mac:slice.useDAC"), 0)
-        XCTAssertEqual(modeOnDisk(r), .source, "still selectable, switched at the first play")
+        XCTAssertEqual(modeOnDisk(r), .musicApp, "still selectable, switched at the first play")
         XCTAssertTrue(row1(r.scene).contains("select to make it the Mac's output"), row1(r.scene))
         // Selected again: still nothing.
         XCTAssertTrue(pressEnterOnMacRow(r.scene))
@@ -423,7 +482,7 @@ final class SpanDACSwitchableOutputTests: XCTestCase {
         let a = try rig(mode: .networkSource(ipad), wire: connected)
         defer { try? FileManager.default.removeItem(atPath: a.dir) }
         XCTAssertTrue(pressEnterOnMacRow(a.scene))
-        XCTAssertEqual(modeOnDisk(a), .source)
+        XCTAssertEqual(modeOnDisk(a), .musicApp)
         XCTAssertEqual(connected.count("mac:slice.useDAC"), 0)
 
         let none = Wire(macStatus: macStatus(#"{"dac":"not_connected"}"#), useDAC: "{}")

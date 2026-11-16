@@ -169,7 +169,8 @@ func makeOutputTabScene(dir: String, mode: PlaybackMode, spandac: SpanDACOutputs
                         },
                         routePlaying: @escaping (AppleScriptBackend) -> Bool = playerIsPlaying,
                         makeRouteVerifier: @escaping () -> RouteVerifier = { RouteVerifier() },
-                        outputLock: OutputLock? = nil) -> SpeakersScene {
+                        outputLock: OutputLock? = nil,
+                        routeMusicToComputer: @escaping (AppleScriptBackend) -> Void = { _ in }) -> SpeakersScene {
     let store = PlaybackModeStore(path: dir + "/mode.json")
     store.set(mode)
     let dataStore = DataProviderStore(path: dir + "/data.json")
@@ -197,7 +198,8 @@ func makeOutputTabScene(dir: String, mode: PlaybackMode, spandac: SpanDACOutputs
                          fetchNow: fetchNow,
                          fetchEQ: fetchEQ,
                          routePlaying: routePlaying, makeRouteVerifier: makeRouteVerifier,
-                         macSocketExists: macSocketExists)
+                         macSocketExists: macSocketExists,
+                         routeMusicToComputer: routeMusicToComputer)
 }
 
 /// A Mac SpanDAC that answers, is authorized, and has no DAC plugged in:
