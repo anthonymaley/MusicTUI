@@ -157,7 +157,8 @@ final class SourceRateFollow {
     /// 250 ms until the answer is final or the cap passes.
     func prepare(dacUID: String?, persistentID: String?, catalogID: String?) -> SourceRateOutcome {
         wait(announcesRoute: true, first: SourceAppControl.prepareRateBody(fence: token.fence, dacUID: dacUID,
-                                                      persistentID: persistentID, catalogID: catalogID),
+                                                      persistentID: persistentID, catalogID: catalogID,
+                                                      follow: routeFollow != nil),
              poll: SourceAppControl.rateSettleBody(fence: token.fence, step: SourceRateStep.prepare))
     }
 
@@ -176,7 +177,7 @@ final class SourceRateFollow {
     func correct(toHz rateHz: Int, dacUID: String?, persistentID: String?) -> SourceRateOutcome {
         wait(announcesRoute: false, first: SourceAppControl.prepareRateBody(fence: token.fence, step: SourceRateStep.correct,
                                                       dacUID: dacUID, persistentID: persistentID, catalogID: nil,
-                                                      rateHz: rateHz),
+                                                      rateHz: rateHz, follow: routeFollow != nil),
              poll: SourceAppControl.rateSettleBody(fence: token.fence, step: SourceRateStep.correct))
     }
 

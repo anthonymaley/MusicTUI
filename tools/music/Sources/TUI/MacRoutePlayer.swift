@@ -270,6 +270,11 @@ final class MacRoutePlayer {
     /// span between route changes (`routeChanged`); the CLI runner has one. A
     /// status that cannot be read tells nothing and does not count: the next play
     /// tries again (the read is bounded by the control's 2.5 s reply wait).
+    ///
+    /// Fix round 3, finding B: this read can block (2.5 s), so it runs only AFTER
+    /// the play's ordering was reserved (`reserve`), never before. A newer command
+    /// that starts while it blocks takes a newer fence, and this play then fails
+    /// its revalidation instead of taking a still newer fence and replacing it.
     private var statusReadThisSession = false
 
     private func readStatusBeforeFirstPrepare() {
@@ -278,6 +283,32 @@ final class MacRoutePlayer {
         guard !done, let status = read() else { return }
         noteRateStatus(status)
         condition.lock(); statusReadThisSession = true; condition.unlock()
+    }
+
+    // MARK: reserving the ordering (fix round 3, finding B)
+
+    /// Serializes this process's reservations so the request serial and the fence
+    /// are taken in the same order. Held across `fence.begin` (which can wait for
+    /// the output lock), so nothing that runs UNDER the output lock may take it.
+    private let reserveLock = NSLock()
+    /// Guards `requestSerial` alone; short, and safe to read under the output lock.
+    private let serialLock = NSLock()
+    private var requestSerial = 0
+
+    /// M1, taken at the START of a command, before any read that can block: the
+    /// fence moves and the lease is taken now. nil token: the fence could not be
+    /// taken (a busy lock, or a broken state directory); `RateAwareTransition.run`
+    /// then takes it itself and decides, as it always did. `serial` numbers this
+    /// request among this process's reservations.
+    private func reserve(_ command: RateCommand) -> (token: RateToken?, serial: Int) {
+        reserveLock.lock(); defer { reserveLock.unlock() }
+        serialLock.lock(); requestSerial += 1; let serial = requestSerial; serialLock.unlock()
+        return (try? fence.begin(command, owner: owner), serial)
+    }
+
+    private func isLatestRequest(_ serial: Int) -> Bool {
+        serialLock.lock(); defer { serialLock.unlock() }
+        return requestSerial == serial
     }
 
     /// Waits (bounded) for the reports handed over so far; for a process that is
@@ -411,7 +442,11 @@ final class MacRoutePlayer {
         condition.unlock()
         defer { condition.lock(); inFlight -= 1; condition.broadcast(); condition.unlock() }
 
-        readStatusBeforeFirstPrepare()
+        // The ordering first (fix round 3, finding B): the status read below can
+        // block, and a newer command that starts meanwhile must win. With no
+        // usable fence there is no ordering to protect, so nothing is read first.
+        let reserved = token ?? reserve(command).token
+        if reserved != nil { readStatusBeforeFirstPrepare() }
         let music = makeMusic(queueTrackPlayScript(playlist: playlist, position: position))
         let persistentID = playlist == persistentIDQueueSource
             ? persistentIDOfQueueEntry(position) : resolvePersistentID(playlist, position)
@@ -426,7 +461,7 @@ final class MacRoutePlayer {
                 return !self.closing
             })
         let result = transition.run(RateTransitionPlan(command: command, sound: sound, isCurrent: isCurrent),
-                                    token: token)
+                                    token: reserved)
         record(result, playlist: playlist, position: position, persistentID: persistentID)
         evidence.record(result)
         reportStarted(result, persistentID: persistentID, subject: subject)
@@ -452,6 +487,11 @@ final class MacRoutePlayer {
     /// the open waits for the DAC to be quiet, then `start` runs under the
     /// revalidation. Nothing is converted or confirmed. Throws only when the
     /// station did not start for a reason the person should read.
+    ///
+    /// The ordering is reserved before anything that can block, and the station
+    /// is current only while no NEWER station request of this process has been
+    /// reserved (`isCurrent` is the caller's own check on top of that); any other
+    /// newer command, in this process or another, moves the fence.
     func playStation(start: @escaping () throws -> Void, subject: RouteSubject? = nil,
                      isCurrent: @escaping () -> Bool = { true }) throws -> StationRouteOutcome {
         condition.lock()
@@ -460,12 +500,15 @@ final class MacRoutePlayer {
         condition.unlock()
         defer { condition.lock(); inFlight -= 1; condition.broadcast(); condition.unlock() }
 
-        readStatusBeforeFirstPrepare()
+        let reservation = reserve(.station)
+        if reservation.token != nil { readStatusBeforeFirstPrepare() }
         let transition = RateAwareTransition(
             fence: fence, owner: owner, music: makeMusic(""), makeFollow: makeFollow, now: now,
             allowCorrection: { false })
-        let result = transition.run(RateTransitionPlan(command: .station, sound: .other(start: start),
-                                                       isCurrent: isCurrent))
+        let result = transition.run(
+            RateTransitionPlan(command: .station, sound: .other(start: start),
+                               isCurrent: { [weak self] in isCurrent() && (self?.isLatestRequest(reservation.serial) ?? true) }),
+            token: reservation.token)
         evidence.record(result)
         reportStarted(result, persistentID: nil, subject: subject)
         onTransition?(result)
@@ -524,12 +567,16 @@ final class MacRoutePlayer {
         }
         guard let held else { return }
         // Release only OUR pause: no command since, and Music still shows it
-        // paused on that same track.
-        guard (try? fence.fenceFileHolds(held.fence, timeout: 1)) == true else { return }
+        // paused on that same track. The fence check, the state read and the resume
+        // are ONE output-lock span (fix round 3, finding C): a newer command that
+        // pauses the same track between a separate check and read would otherwise
+        // be resumed over.
         let music = makeMusic("")
-        guard let state = music.readPlayerState(), state.state == .paused,
-              state.persistentID == held.persistentID else { return }
-        try? music.resume()
+        _ = fence.withFenceHeld(held.fence, timeout: 1) { () -> Void in
+            guard let state = music.readPlayerState(), state.state == .paused,
+                  state.persistentID == held.persistentID else { return }
+            try? music.resume()
+        }
     }
 
     // MARK: what is playing (S11)
@@ -654,6 +701,17 @@ extension RateFence {
             guard let holder = try readLeaseHoldingLock(), holder == owner else { return nil }
             return try readFenceHoldingLock()
         }
+    }
+
+    /// Runs `body` inside ONE output-lock span, and only while the fence file
+    /// still holds `fence`. nil when the fence moved, the lock stayed busy past
+    /// `timeout`, or the files cannot be read.
+    func withFenceHeld<T>(_ fence: Int, timeout: TimeInterval = 1, _ body: () -> T) -> T? {
+        let result: T?? = try? lock.withLock(timeout: timeout) { () -> T? in
+            guard try readFenceHoldingLock() == fence else { return nil }
+            return body()
+        }
+        return result ?? nil
     }
 
     /// Who holds the play lease, read under the output lock. Short wait: the
