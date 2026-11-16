@@ -245,6 +245,10 @@ func runShell() {
     let macRoute = MacRoutePlayer.live(backend: backend, routing: routing, route: macRouteState,
                                        post: { status.post($0, ttl: 6) })
     appQueue.macRoute = macRoute
+    // A route restored from the last session is on at SpanDAC before the first
+    // play too (S11), off the launch path: a SpanDAC that is not running yet is
+    // asked again by the first play's own transition.
+    if macRouteState.chosen { macRoute.routeChanged(on: true) }
     // Stations opened from Discover and Radio move the fence on the route (P7).
     let stationOpener = MacRouteOpener(route: { macRoute })
     let actions = ActionRunner(status: status, onSuperseding: { playConfirmer.invalidate() })
@@ -368,8 +372,14 @@ func runShell() {
                                       confirmMusicAppPaused: liveMusicAppPauseConfirmation,
                                       makeNetworkClient: { routing.client(for: .networkSource($0)) },
                                       spandac: spandac)
-            scene.onMacRateFollowWanted = { macRouteState.set(true) }
-            scene.onMacRouteOff = { macRouteState.set(false) }
+            scene.onMacRateFollowWanted = {
+                macRouteState.set(true)
+                macRoute.routeChanged(on: true)
+            }
+            scene.onMacRouteOff = {
+                macRouteState.set(false)
+                macRoute.routeChanged(on: false)
+            }
             scene.onMacDACAbsent = { macRouteState.setDACAbsent($0) }
             scene.macRouteEvidenceLine = { macRoute.evidenceLine }
             scenes[id] = scene

@@ -247,6 +247,7 @@ final class RunQueueRunner {
             guard player.isOnRoute else { return .routeLeft }
             let generation = queue.generation
             switch player.play(playlist: playlist, position: position, command: command,
+                               subject: RouteSubject(current: queue.read()),
                                isCurrent: { [queue] in queue.generation == generation }) {
             case .superseded:
                 return .superseded
@@ -340,6 +341,10 @@ func liveRunQueue(ids: [String], label: String) -> RunQueueRunner? {
     let route = MacDACRouteState(initial: routeStore.isOn)
     let queue = AppQueueStore()
     queue.set(appQueue)
+    // The runner tells SpanDAC the route is on before its first prepare (through
+    // the transition), exactly as the TUI does, so a CLI play records the DAC's
+    // rate to restore too (S11).
+    let reporter = MacRouteFollowReporter(control: SourceAppControl.macRate(observing: nil))
     let player = MacRoutePlayer(
         route: route,
         // The CLI play's own test: SpanDAC data on the MusicTUI output. A route
@@ -353,9 +358,11 @@ func liveRunQueue(ids: [String], label: String) -> RunQueueRunner? {
         makeMusic: { AppleScriptRateMusic(backend: backend, playScript: $0) },
         resolvePersistentID: { _, _ in nil },
         makeFollow: { token in
-            SourceRateFollow(token: token, control: SourceAppControl.macRate(observing: nil), offered: true)
+            SourceRateFollow(token: token, control: SourceAppControl.macRate(observing: nil), offered: true,
+                             routeFollow: reporter)
         },
-        post: { verbose($0) })
+        post: { verbose($0) },
+        reporter: reporter)
     return RunQueueRunner(queue: queue, player: player, route: route, routeStillChosen: { routeStore.isOn },
                           watcher: AppleScriptRunQueueWatcher(backend: backend))
 }

@@ -109,12 +109,18 @@ final class SourceRateFollow {
     /// "unconfirmed" throughout. M5 compares the status's `rate_seq` with it.
     private(set) var baseline: Int?
 
+    /// The process's route reporter (S11), nil in every test that predates it:
+    /// then a transition sends exactly the messages it always sent.
+    private let routeFollow: MacRouteFollowReporter?
+
     init(token: RateToken, control: SourceAppControl, offered: Bool,
+         routeFollow: MacRouteFollowReporter? = nil,
          now: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
          sleep: @escaping (TimeInterval) -> Void = { Thread.sleep(forTimeInterval: $0) }) {
         self.token = token
         self.control = control
         self.offered = offered
+        self.routeFollow = routeFollow
         self.now = now
         self.sleep = sleep
     }
@@ -145,7 +151,7 @@ final class SourceRateFollow {
     /// separate announce), then polls `slice.rateSettle {fence, step 0}` every
     /// 250 ms until the answer is final or the cap passes.
     func prepare(dacUID: String?, persistentID: String?, catalogID: String?) -> SourceRateOutcome {
-        wait(first: SourceAppControl.prepareRateBody(fence: token.fence, dacUID: dacUID,
+        wait(announcesRoute: true, first: SourceAppControl.prepareRateBody(fence: token.fence, dacUID: dacUID,
                                                       persistentID: persistentID, catalogID: catalogID),
              poll: SourceAppControl.rateSettleBody(fence: token.fence, step: SourceRateStep.prepare))
     }
@@ -155,7 +161,7 @@ final class SourceRateFollow {
     /// (or any other final word), or the cap. Its first poll carries the fence
     /// if the announce was lost.
     func awaitQuiet() -> SourceRateOutcome {
-        wait(first: nil, poll: SourceAppControl.rateSettleBody(fence: token.fence, step: nil))
+        wait(announcesRoute: true, first: nil, poll: SourceAppControl.rateSettleBody(fence: token.fence, step: nil))
     }
 
     // MARK: M5
@@ -163,7 +169,7 @@ final class SourceRateFollow {
     /// The correction: `slice.prepareRate {fence, step 2, rate_hz}`, waited on
     /// as a prepare is. Its answer becomes the baseline.
     func correct(toHz rateHz: Int, dacUID: String?, persistentID: String?) -> SourceRateOutcome {
-        wait(first: SourceAppControl.prepareRateBody(fence: token.fence, step: SourceRateStep.correct,
+        wait(announcesRoute: false, first: SourceAppControl.prepareRateBody(fence: token.fence, step: SourceRateStep.correct,
                                                       dacUID: dacUID, persistentID: persistentID, catalogID: nil,
                                                       rateHz: rateHz),
              poll: SourceAppControl.rateSettleBody(fence: token.fence, step: SourceRateStep.correct))
@@ -193,12 +199,20 @@ final class SourceRateFollow {
 
     // MARK: private
 
-    private func wait(first: [String: Any]?, poll: [String: Any]) -> SourceRateOutcome {
+    /// S11: before a sound start's first rate message, tell SpanDAC the route is
+    /// on (once, until it confirms), under this transition's own fence, so its
+    /// restore record is taken before SpanDAC changes the DAC's rate. Counted in
+    /// the cap like every other wait of this start. Nothing for a correction.
+    private func wait(announcesRoute: Bool, first: [String: Any]?, poll: [String: Any]) -> SourceRateOutcome {
         guard offered else { return .notOffered }
         let started = now()
+        if announcesRoute, let routeFollow {
+            routeFollow.ensureOn(fence: token.fence,
+                                 timeout: Self.replyTimeout(MacRouteFollowReporter.ensureTimeout, left: Self.cap))
+        }
         var last: SourceRateAnswer?
         if let first {
-            switch exchange(first, timeout: Self.replyTimeout(Self.prepareReplyWait, left: Self.cap)) {
+            switch exchange(first, timeout: Self.replyTimeout(Self.prepareReplyWait, left: Self.cap - (now() - started))) {
             case .success(let answer):
                 if answer.outcome.isTerminal { return .answered(answer) }
                 last = answer

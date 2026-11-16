@@ -218,6 +218,9 @@ final class MacRoutePlayer {
     private let makeFollow: (RateToken) -> SourceRateFollow
     private let post: (String) -> Void
     private let now: () -> TimeInterval
+    /// S11: what this process tells SpanDAC about the route and what is playing.
+    /// nil in every test that predates it: then nothing is sent.
+    let reporter: MacRouteFollowReporter?
 
     /// Called after every transition (after the evidence line is recorded).
     var onTransition: ((RateTransitionResult) -> Void)?
@@ -259,12 +262,19 @@ final class MacRoutePlayer {
     /// A pause this follower may still be holding after a correction that
     /// could not resume it (`RateCorrectionStop.leavesOurPause`).
     private var ourPause: (persistentID: String, fence: Int)?
+    /// The last song this process started on the route, as it reported it: the
+    /// poller's reports of that song carry its identity and its rate.
+    private var lastStartedReport: SourceNowPlayingReport?
+    /// What the poller last reported, to report a change and not a tick.
+    private var lastObserved: (state: SourceNowPlayingReport.State, track: String, position: TimeInterval, at: TimeInterval)?
 
     init(route: MacDACRouteState, outputIsMusicApp: @escaping () -> Bool, fence: RateFence,
          owner: String = RateFence.newOwnerID(), makeMusic: @escaping MusicFactory,
          resolvePersistentID: @escaping (_ playlist: String, _ position: Int) -> String?,
          makeFollow: @escaping (RateToken) -> SourceRateFollow, post: @escaping (String) -> Void,
+         reporter: MacRouteFollowReporter? = nil,
          now: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }) {
+        self.reporter = reporter
         self.route = route
         self.outputIsMusicApp = outputIsMusicApp
         self.fence = fence
@@ -288,6 +298,9 @@ final class MacRoutePlayer {
                      post: @escaping (String) -> Void) -> MacRoutePlayer {
         let lock = routing.outputLock ?? OutputLock(path: PlaybackModeStore().lockPath)
         let licence = routing.licence
+        // One reporter per process, over the same socket and licence observer as
+        // the transitions: its `ensureOn` precedes each route's first prepare.
+        let reporter = MacRouteFollowReporter(control: SourceAppControl.macRate(observing: licence))
         let player = MacRoutePlayer(
             route: route,
             outputIsMusicApp: { routing.effectiveOutput == .musicApp },
@@ -301,13 +314,25 @@ final class MacRoutePlayer {
                 return id.isEmpty ? nil : id
             },
             makeFollow: { token in
-                SourceRateFollow(token: token, control: SourceAppControl.macRate(observing: licence), offered: true)
+                SourceRateFollow(token: token, control: SourceAppControl.macRate(observing: licence), offered: true,
+                                 routeFollow: reporter)
             },
-            post: post)
+            post: post,
+            reporter: reporter)
         player.readRateStatus = {
             (try? SourceAppControl.macRate(observing: licence).status())?.rateFollow
         }
         return player
+    }
+
+    // MARK: telling SpanDAC (S11)
+
+    /// The Mac DAC route was chosen or restored (on) or left (off): SpanDAC
+    /// starts or ends recording the DAC's rate to restore. Asynchronous and
+    /// repeatable; closing the TUI sends nothing (D2: the song finishes, and
+    /// SpanDAC restores when the route is left or SpanDAC quits).
+    func routeChanged(on: Bool) {
+        reporter?.routeChanged(on: on, fence: fence, owner: owner)
     }
 
     // MARK: the route
@@ -343,6 +368,7 @@ final class MacRoutePlayer {
     /// queue generation and entry), checked under the output lock with the
     /// fence and the lease. The caller has already asked `isOnRoute`.
     func play(playlist: String, position: Int, command: RateCommand,
+              subject: RouteSubject? = nil,
               isCurrent: @escaping () -> Bool) -> QueuePlayOutcome {
         condition.lock()
         if closing { condition.unlock(); return .notStarted("MusicTUI is closing") }
@@ -366,6 +392,7 @@ final class MacRoutePlayer {
         let result = transition.run(RateTransitionPlan(command: command, sound: sound, isCurrent: isCurrent))
         record(result, playlist: playlist, position: position, persistentID: persistentID)
         evidence.record(result)
+        reportStarted(result, persistentID: persistentID, subject: subject)
         onTransition?(result)
 
         switch result {
@@ -454,6 +481,86 @@ final class MacRoutePlayer {
               state.persistentID == held.persistentID else { return }
         try? music.resume()
     }
+
+    // MARK: what is playing (S11)
+
+    private func reportStarted(_ result: RateTransitionResult, persistentID: String?, subject: RouteSubject?) {
+        guard let reporter else { return }
+        let report: SourceNowPlayingReport
+        switch result {
+        case .played(let played):
+            report = .started(played, persistentID: persistentID, subject: subject)
+        case .playedUnfollowed:
+            // The fence file is unusable: the last fence this process held is the
+            // best ordering there is; none means nothing can be reported.
+            guard let current = try? fence.current(timeout: 0.2) else { return }
+            report = .startedUnfollowed(fence: current, persistentID: persistentID, subject: subject)
+        case .playFailed, .invalidated, .notStarted:
+            return
+        }
+        condition.lock()
+        lastStartedReport = report
+        lastObserved = (.playing, subject?.title ?? "", 0, now())
+        condition.unlock()
+        reporter.report(report)
+    }
+
+    /// The poller's look at Music, on the route: a CHANGE of state or of song, or
+    /// a position that jumped (a seek), is reported; a tick that changed nothing
+    /// is not. The song's identity and rate come from the transition that started
+    /// it when the title matches; with none known they are left out.
+    func observePlayback(_ outcome: PollOutcome) {
+        guard let reporter, isOnRoute else { return }
+        let state: SourceNowPlayingReport.State
+        var title = "", artist = "", album = ""
+        var position: TimeInterval = 0, duration: TimeInterval = 0
+        switch outcome {
+        case .active(let np):
+            state = np.state.lowercased() == "paused" ? .paused : .playing
+            title = np.track; artist = np.artist; album = np.album
+            position = TimeInterval(np.position); duration = TimeInterval(np.duration)
+        case .stopped:
+            state = .stopped
+        case .unavailable:
+            return
+        }
+        let stamp = now()
+        condition.lock()
+        let last = lastObserved
+        // A song started with no name of its own (the CLI runner's queue) takes
+        // the title of the first look at Music after its start; after that the
+        // identity follows the title, so a song someone else started in Music
+        // never inherits it.
+        if lastStartedReport?.title == nil, last?.track == "", state != .stopped, !title.isEmpty {
+            lastStartedReport?.title = title
+        }
+        let started = lastStartedReport
+        let expected = last.map { $0.position + (state == .playing && $0.state == .playing ? stamp - $0.at : 0) }
+        let changed = last == nil || last!.state != state || last!.track != title
+            || (state == .playing && abs(position - (expected ?? position)) > Self.seekJump)
+        if changed { lastObserved = (state, title, position, stamp) }
+        condition.unlock()
+        guard changed, let current = try? fence.current(timeout: 0.2) else { return }
+        var report = SourceNowPlayingReport(fence: current, state: state)
+        if state != .stopped {
+            report.title = title; report.artist = artist; report.album = album
+            report.durationMS = duration > 0 ? Int(duration * 1000) : nil
+            report.positionMS = Int(position * 1000)
+        }
+        if let started, started.title == title, state != .stopped {
+            report.persistentID = started.persistentID
+            report.databaseID = started.databaseID
+            report.rateOutcome = started.rateOutcome
+            report.targetHz = started.targetHz
+            report.deliveredHz = started.deliveredHz
+            report.dacRateHz = started.dacRateHz
+            report.priorUnresolved = started.priorUnresolved
+        }
+        reporter.report(report)
+    }
+
+    /// Whole seconds are what Music's poll gives, so a drift of one is noise.
+    static let seekJump: TimeInterval = 3
 
     // MARK: private
 

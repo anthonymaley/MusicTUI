@@ -141,6 +141,7 @@ func playQueueEntry(backend: AppleScriptBackend, appQueue: AppQueueStore, playli
     if let route = appQueue.macRoute, route.isOnRoute {
         let generation = appQueue.generation
         return route.play(playlist: playlist, position: position, command: command,
+                          subject: RouteSubject(current: appQueue.read()),
                           isCurrent: { appQueue.generation == generation })
     }
     return playQueueTrack(backend: backend, playlist: playlist, position: position) ? .played : .failed

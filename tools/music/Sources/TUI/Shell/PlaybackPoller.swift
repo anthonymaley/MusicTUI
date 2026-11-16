@@ -452,7 +452,11 @@ final class PlaybackPoller {
             }
         }
         defer { syncQueuePersistence() }
-        switch pollNowPlaying(backend: backend) {
+        let polled = pollNowPlaying(backend: backend)
+        // On the Mac DAC route, a change of state or song is reported to SpanDAC's
+        // Mac screen (S11). Off the route this is one nil check.
+        appQueue.macRoute?.observePlayback(polled)
+        switch polled {
         case .active(let np):
             stoppedPolls = 0
             // Mac DAC route: look for a late rate switch (M5), throttled and off this thread.
