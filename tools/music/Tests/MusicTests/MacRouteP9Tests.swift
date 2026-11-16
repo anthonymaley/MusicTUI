@@ -371,4 +371,63 @@ final class MacRouteP9Tests: XCTestCase {
         XCTAssertEqual(MacRouteCLIStart.take(), macRoutePlayingLine(label: "Moon Safari", count: 1, json: false))
         XCTAssertNil(MacRouteCLIStart.take())
     }
+
+    // MARK: - fix round 2, finding 3: no token-less runner
+
+    /// A fence that cannot be used: a directory where the fence file should be, so
+    /// the reservation fails the way a broken state directory fails it.
+    private func breakTheFence(_ rig: Rig) throws {
+        try? FileManager.default.removeItem(atPath: rig.fence.fencePath)
+        try FileManager.default.createDirectory(atPath: rig.fence.fencePath, withIntermediateDirectories: true)
+    }
+
+    /// When the ordering cannot be reserved for the runner, no runner is spawned
+    /// without one (it would re-open the overtaking race). The song still plays,
+    /// through the off-route path: the shipped container and watcher.
+    func testACLIPlayWhoseOrderingCannotBeReservedSpawnsNoTokenlessRunnerAndStillPlays() throws {
+        let rig = Rig()
+        rig.idsReply = ids.joined(separator: "\u{1F}") + "\u{1F}"
+        try breakTheFence(rig)
+        var watcher: [String]?
+        let out = playBoundedAlbum(title: "Moon Safari", rows: rows(3), uuid: "U", run: rig.run,
+                                   launch: { _, args in watcher = args; return true }, route: rig.seam())
+        XCTAssertEqual(out, .playing, "the song was refused")
+        XCTAssertEqual(rig.launches.count, 0, "a runner was spawned with no ordering reserved for it")
+        XCTAssertTrue(rig.builtAContainer, "the off-route path plays it")
+        XCTAssertEqual(watcher?.first, "__watch-container")
+    }
+
+    /// The line is said (once) through the seam when the ordering cannot be reserved,
+    /// and the play reaches the off-route path (nil); with a usable fence nothing is said.
+    func testTheCLISeamSaysTheNotFollowedLineOnlyWhenItCouldNotReserve() throws {
+        var said: [String] = []
+        let rig = Rig()
+        rig.idsReply = ids.joined(separator: "\u{1F}") + "\u{1F}"
+        let seam = MacRouteSongPlay.cli(isOnRoute: { true }, launch: { [unowned rig] in rig.launch($0, $1) },
+                                        json: { false }, fence: { [unowned rig] in rig.fence }, say: { said.append($0) })
+        XCTAssertNotNil(playContainerOnRoute(label: "L", seed: .persistentID("00000000000000A1"), route: seam,
+                                             run: rig.run))
+        XCTAssertEqual(said, [], "a reserved ordering says nothing")
+        XCTAssertEqual(rig.launches.count, 1)
+
+        try breakTheFence(rig)
+        XCTAssertNil(playContainerOnRoute(label: "L", seed: .persistentID("00000000000000A1"), route: seam,
+                                          run: rig.run), "the caller continues as it always has")
+        XCTAssertEqual(said, [macRouteRateNotFollowedLine])
+        XCTAssertEqual(rig.launches.count, 1, "no second runner")
+        XCTAssertFalse(seam.play("L", ["00000000000000A1"]), "play never spawns a runner it has no ordering for")
+        XCTAssertEqual(rig.launches.count, 1)
+    }
+
+    /// A reserved ordering is the one handed to the runner it spawns.
+    func testTheSeamHandsTheReservationItTookToTheRunner() throws {
+        let rig = Rig()
+        let seam = rig.seam()
+        XCTAssertEqual(seam.reserve?(), true)
+        let held = try rig.fence.current()
+        XCTAssertTrue(seam.play("L", ["00000000000000A1"]))
+        let args = try XCTUnwrap(rig.launches.first)
+        XCTAssertEqual(args.firstIndex(of: "--fence").map { args[$0 + 1] }, String(held))
+        XCTAssertEqual(try rig.fence.current(), held, "play spawned on the reservation, taking no second fence")
+    }
 }

@@ -142,8 +142,19 @@ struct PersistentIDCLILibraryPlay: CLIMusicTUILibraryPlaying {
         // so there is nothing to sweep, confirm or clean up. Off the route
         // everything below is what has always run.
         if onRoute(env) {
-            try playOnTheRoute(request, ids: order.map(\.1), skipNotice: available.report.notice, env: env)
-            return
+            // The runner's ordering is taken HERE, under the lock, and handed to
+            // the child: a newer command that starts while the child is being
+            // spawned takes a newer fence, and the child (revalidating its token
+            // before its first play) plays nothing instead of overtaking it. If it
+            // cannot be taken, no token-less runner is spawned (it would re-open
+            // that race): the songs play through the shipped path below, unfollowed.
+            let fence = RateFence(lock: env.routing.outputLock ?? OutputLock(path: env.modeStore.lockPath))
+            if let reservation = reserveRunQueueOrdering(fence) {
+                try playOnTheRoute(request, ids: order.map(\.1), skipNotice: available.report.notice,
+                                   reservation: reservation, env: env)
+                return
+            }
+            if request.json { env.err(macRouteRateNotFollowedLine) } else { env.out(macRouteRateNotFollowedLine) }
         }
         // The exact order that will play, shuffled or not: the container is
         // confirmed against this sequence, never against the set of songs.
@@ -177,14 +188,9 @@ struct PersistentIDCLILibraryPlay: CLIMusicTUILibraryPlaying {
     /// so the runner's first fence waits for this command to finish and no other
     /// command comes between). A launch that fails plays nothing.
     private func playOnTheRoute(_ request: CLIMusicTUILibraryPlayRequest, ids: [String], skipNotice: String?,
-                                env: CLIBridgeEnv) throws {
-        // The ordering is taken HERE, under the lock, and handed to the child: a
-        // newer command that starts while the child is being spawned takes a
-        // newer fence, and the child (revalidating its token before its first
-        // play) plays nothing instead of overtaking it.
-        let fence = RateFence(lock: env.routing.outputLock ?? OutputLock(path: env.modeStore.lockPath))
+                                reservation: RunQueueReservation, env: CLIBridgeEnv) throws {
         guard spawnRunQueue(label: request.label, uuid: UUID().uuidString, ids: ids,
-                            reservation: reserveRunQueueOrdering(fence), launch: launch) else {
+                            reservation: reservation, launch: launch) else {
             throw ActionError(message: macRouteRunnerNotStartedMessage)
         }
         if let skipNotice { if request.json { env.err(skipNotice) } else { env.out(skipNotice) } }

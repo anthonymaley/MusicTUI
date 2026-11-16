@@ -64,7 +64,9 @@ struct RunQueueReservation: Equatable {
 /// Moves the fence and takes the lease for a new runner's owner id, whether or
 /// not this thread already holds the output lock. nil when that cannot be done
 /// (a busy lock, an unusable state directory): the play is NOT refused for it,
-/// the child takes its own ordering as it always did.
+/// but NO runner is spawned without a reservation (fix round 2, finding 3: such a
+/// child takes its own fence late and could overtake a newer command). The caller
+/// plays the song through the off-route path, unfollowed, and says so.
 func reserveRunQueueOrdering(_ fence: RateFence) -> RunQueueReservation? {
     let owner = RateFence.newOwnerID()
     guard let token = try? fence.beginAnywhere(.play, owner: owner) else { return nil }
@@ -397,6 +399,8 @@ final class RunQueueRunner {
                 seenPlaying = true
                 lastPosition = playback.position
                 lastDuration = playback.duration
+                // SpanDAC's status, as the poller reads it (throttled, off this thread).
+                player.refreshRateStatus()
                 // The Mac screen: the real song, and a pause or a resume as the
                 // TUI's poller reports them (a change, never a tick).
                 player.observePlayback(.active(NowPlayingState(
@@ -451,6 +455,10 @@ func liveCLIRoutePlayer(owner: String = RateFence.newOwnerID()) -> (player: MacR
         },
         post: { verbose($0) },
         reporter: reporter)
+    // The same status reader the TUI has (fix round 2, finding 4): read before the
+    // first prepare, so a SpanDAC that restarted gets follow-on before any rate
+    // write, and refreshed while a song plays.
+    player.readRateStatus = { (try? SourceAppControl.macRate(observing: nil).status())?.rateFollow }
     return (player, route, routeStore, backend)
 }
 

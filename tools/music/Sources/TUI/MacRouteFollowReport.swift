@@ -21,6 +21,14 @@ import Foundation
 // in the sound start's 4.5 s cap. A report is coalesced: a slow SpanDAC gets the
 // latest, not a backlog.
 //
+// **`recorded` (fix round 2, finding 7).** A follow-ON ack carries `follow.recorded`:
+// whether SpanDAC TOOK the record of the DAC's rate to restore (`applied` says only
+// that a DAC was reached). Only `recorded: true` confirms a follow-on and so permits a
+// rate write; `recorded: false` leaves the latch unset (the song plays unfollowed,
+// "DAC rate switch unconfirmed", and the next play asks again). A SpanDAC that does not
+// send the field is read by `applied` alone, exactly as before it existed: a follow-on
+// is confirmed only if `applied` is true. An off records nothing and needs no `recorded`.
+//
 // **Older peers.** An older SpanDAC answers each op `unknown_op`; that op is then
 // latched as not offered for the life of this process and nothing more is sent
 // (the song plays, the route works, SpanDAC records nothing and restores
@@ -147,7 +155,11 @@ final class MacRouteFollowReporter {
     private func sendFollow(fence: Int, on: Bool, timeout: TimeInterval) {
         do {
             let ack = try control.rateFollowRequest(fence: fence, on: on, timeout: timeout)
-            lock.lock(); confirmedOn = ack.wasApplied ? on : nil; lock.unlock()
+            // A follow-ON counts only when SpanDAC TOOK its record (`recorded`): an ack that
+            // applied it but recorded nothing leaves the latch unset, so no rate is
+            // written for the song and the next play asks again. An off records nothing.
+            let confirmed = on ? ack.confirmsFollowOn : ack.wasApplied
+            lock.lock(); confirmedOn = confirmed ? on : nil; lock.unlock()
         } catch SourceAppError.unsupported {
             lock.lock(); followOffered = false; confirmedOn = nil; lock.unlock()
             log("SpanDAC does not serve \(sourceRateFollowOp): nothing will be recorded or restored")

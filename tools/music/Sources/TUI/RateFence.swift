@@ -186,6 +186,9 @@ final class RateFence {
         return n
     }
 
+    /// The fence file's number, for a caller that holds the lock.
+    func readFenceHoldingLock() throws -> Int { try readFence() }
+
     /// The lease holder, for a caller that holds the lock (`leaseStatus`).
     func readLeaseHoldingLock() throws -> String? { try readLease() }
 
