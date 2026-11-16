@@ -22,6 +22,12 @@ let sourceRateFenceOp = "slice.rateFence"
 let sourcePrepareRateOp = "slice.prepareRate"
 let sourceRateSettleOp = "slice.rateSettle"
 let sourceConfirmRateOp = "slice.confirmRate"
+/// Appended after the four, under the SAME capability (mac-route S11): MusicTUI
+/// tells SpanDAC when the Mac DAC route (rate follow) turns on or off, and what
+/// it reports is playing. An older SpanDAC answers each `unknown_op`; this side
+/// then latches that op as not offered and never sends it again.
+let sourceRateFollowOp = "slice.rateFollow"
+let sourceNowPlayingOp = "slice.nowPlaying"
 
 /// The step of one transition. The fence alone decides staleness.
 enum SourceRateStep {
@@ -259,5 +265,108 @@ extension SourceAppControl {
             reply = try send(body)
         }
         return try Self.rateAnswer(from: reply, op: op, fence: fence)
+    }
+}
+
+// MARK: - mac-route S11: `slice.rateFollow` and `slice.nowPlaying`
+
+/// `slice.rateFollow`'s reply: the `rate` answer of the fence it published (a
+/// `superseded` one means a newer command replaced this message and SpanDAC
+/// applied nothing), and the `follow` object when it did.
+struct SourceRateFollowAck: Equatable {
+    let answer: SourceRateAnswer
+    /// False when `on` named no DAC and SpanDAC's Output tab has none.
+    let applied: Bool?
+    /// How the restore of the DAC left behind ended, on a turn-off.
+    let restore: String?
+
+    /// Whether SpanDAC applied this message: its fence was current and it had a DAC.
+    var wasApplied: Bool {
+        if case .superseded = answer.outcome { return false }
+        return applied == true
+    }
+}
+
+/// What MusicTUI reports is playing, for SpanDAC's Mac screen (D6). Every field
+/// but `fence` and `state` is omitted from the wire when unknown. `persistentID`
+/// is Music.app's own (sixteen hex digits); `rateOutcome` is a word of
+/// MusicTUI's own (see `SourceNowPlayingReport.rateWord`), free on the wire.
+struct SourceNowPlayingReport: Equatable {
+    enum State: String, Equatable {
+        case playing, paused, stopped
+        /// Nothing is playing on the route (left, or closed): clears the screen.
+        case none
+    }
+
+    var fence: Int
+    var state: State
+    var persistentID: String? = nil
+    var databaseID: Int? = nil
+    var title: String? = nil
+    var artist: String? = nil
+    var album: String? = nil
+    var durationMS: Int? = nil
+    var positionMS: Int? = nil
+    var rateOutcome: String? = nil
+    var targetHz: Int? = nil
+    var deliveredHz: Int? = nil
+    var dacRateHz: Int? = nil
+    var priorUnresolved = false
+
+    var body: [String: Any] {
+        var body: [String: Any] = ["op": sourceNowPlayingOp, "fence": fence, "state": state.rawValue]
+        if let persistentID { body["persistent_id"] = persistentID }
+        if let databaseID { body["database_id"] = databaseID }
+        if let title, !title.isEmpty { body["title"] = title }
+        if let artist, !artist.isEmpty { body["artist"] = artist }
+        if let album, !album.isEmpty { body["album"] = album }
+        if let durationMS { body["duration_ms"] = durationMS }
+        if let positionMS { body["position_ms"] = positionMS }
+        if let rateOutcome { body["rate_outcome"] = rateOutcome }
+        if let targetHz { body["target_hz"] = targetHz }
+        if let deliveredHz { body["delivered_hz"] = deliveredHz }
+        if let dacRateHz { body["dac_rate_hz"] = dacRateHz }
+        if priorUnresolved { body["prior_unresolved"] = true }
+        return body
+    }
+}
+
+extension SourceAppControl {
+
+    /// `dacUID` nil: SpanDAC uses the DAC its Output tab chose.
+    static func rateFollowBody(fence: Int, on: Bool, dacUID: String? = nil) -> [String: Any] {
+        var body: [String: Any] = ["op": sourceRateFollowOp, "fence": fence, "on": on]
+        if let dacUID { body["dac_uid"] = dacUID }
+        return body
+    }
+
+    /// A successful `slice.rateFollow` reply, fail closed: a readable `rate`
+    /// answer echoing `fence`; `follow` is optional (absent when superseded).
+    static func rateFollowAck(from reply: [String: Any], fence: Int) throws -> SourceRateFollowAck {
+        let answer = try rateAnswer(from: reply, op: sourceRateFollowOp, fence: fence)
+        let follow = reply["follow"] as? [String: Any]
+        return SourceRateFollowAck(answer: answer, applied: follow?["applied"] as? Bool,
+                                   restore: follow?["restore"] as? String)
+    }
+
+    /// One `slice.rateFollow` exchange at a stated timeout. An older SpanDAC's
+    /// `unknown_op` arrives as `SourceAppError.unsupported`.
+    func rateFollowRequest(fence: Int, on: Bool, dacUID: String? = nil,
+                           timeout: TimeInterval) throws -> SourceRateFollowAck {
+        let body = Self.rateFollowBody(fence: fence, on: on, dacUID: dacUID)
+        let reply: [String: Any]
+        if let rateSender { reply = try send(body, over: rateSender(timeout)) } else { reply = try send(body) }
+        return try Self.rateFollowAck(from: reply, fence: fence)
+    }
+
+    /// One `slice.nowPlaying` exchange; true when SpanDAC took the report (false:
+    /// it holds a newer fence). Fail closed on a reply with no `now_playing`.
+    func nowPlayingRequest(_ report: SourceNowPlayingReport, timeout: TimeInterval) throws -> Bool {
+        let reply: [String: Any]
+        if let rateSender { reply = try send(report.body, over: rateSender(timeout)) } else { reply = try send(report.body) }
+        guard let ack = reply["now_playing"] as? [String: Any], let accepted = ack["accepted"] as? Bool else {
+            throw SourceAppError.malformedReply("SpanDAC's \(sourceNowPlayingOp) reply has no readable answer")
+        }
+        return accepted
     }
 }
