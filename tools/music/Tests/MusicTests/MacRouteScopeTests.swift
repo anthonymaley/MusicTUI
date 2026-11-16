@@ -105,7 +105,7 @@ final class MacRouteScopeTests: XCTestCase {
         var control = SourceAppControl(path: "/nonexistent", transport: transport(nil))
         control.rateSender = { transport($0) }
         return MacRoutePlayer(
-            route: route, outputIsMusicApp: { true },
+            streamWait: .instant, route: route, outputIsMusicApp: { true },
             fence: RateFence(lock: OutputLock(path: dir + "/output.lock", pollInterval: 0.001)),
             owner: "tui", makeMusic: { _ in NoMusic() }, resolvePersistentID: { _, _ in nil },
             makeFollow: { SourceRateFollow(token: $0, control: control, offered: true,

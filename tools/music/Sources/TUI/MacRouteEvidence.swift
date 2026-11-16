@@ -170,6 +170,14 @@ final class MacRouteEvidence {
         }
     }
 
+    /// A later read of the same song (`RateAwareTransition.recheck`): replaces the
+    /// evidence only while it is still that song's; a newer start has its own.
+    func replace(_ updated: RateTransitionPlayed) {
+        lock.lock(); defer { lock.unlock() }
+        guard let current = played, current.token == updated.token else { return }
+        played = updated
+    }
+
     func noteStatus(_ status: SourceRateFollowStatus?) {
         lock.lock(); self.status = status; lock.unlock()
     }

@@ -155,6 +155,14 @@ protocol RunQueueWatching {
     func musicIsRunning() -> Bool
     /// nil when Music cannot be read.
     func readPlayback() -> RunQueuePlayback?
+    /// Music's song repeat, read only when a song looks to have wrapped; nil when
+    /// it cannot be read (and for a watcher that does not say: then a wrap is not
+    /// taken for an end).
+    func songRepeat() -> RepeatMode?
+}
+
+extension RunQueueWatching {
+    func songRepeat() -> RepeatMode? { nil }
 }
 
 /// The NEW AppleScript text of step P5: one read-only script. Variable names are
@@ -226,6 +234,8 @@ struct AppleScriptRunQueueWatcher: RunQueueWatching {
         (try? backend.runMusicBlocking(RunQueueScripts.readPlayback, timeout: AppleScriptRateMusic.shortTimeout))
             .flatMap(RunQueueScripts.parsePlayback)
     }
+    /// The existing read-only modes script (the Now tab's); the setting is never written.
+    func songRepeat() -> RepeatMode? { (try? fetchPlaybackModes(backend))?.songRepeat }
 }
 
 // MARK: - the runner
@@ -396,6 +406,17 @@ final class RunQueueRunner {
             if let other = playback.persistentID, other != persistentID { return .exit(.takenOver) }
             switch playback.state {
             case .playing, .paused:
+                // Music's song repeat "all" loops the one-track context at its end, so
+                // the stop this wait ends on never comes (live check 2026-11-16: the
+                // TUI's twin of this). The same song, its position jumping from near
+                // its end back to near its start, with song repeat "all", is the end;
+                // "one" is the person asking for the loop, "off" never wraps.
+                if playback.state == .playing, seenPlaying,
+                   PlaybackPoller.isNaturalEndWrap(priorPosition: Int(lastPosition), priorDuration: Int(lastDuration),
+                                                   position: Int(playback.position), duration: Int(playback.duration)),
+                   watcher.songRepeat() == .all {
+                    return .ended
+                }
                 seenPlaying = true
                 lastPosition = playback.position
                 lastDuration = playback.duration

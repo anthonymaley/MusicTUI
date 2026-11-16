@@ -40,7 +40,7 @@ final class MacRouteFix1Tests: XCTestCase {
         var control = SourceAppControl(path: "/nonexistent", transport: transport(nil))
         control.rateSender = { transport($0) }
         return MacRoutePlayer(
-            route: MacDACRouteState(initial: on), outputIsMusicApp: { true },
+            streamWait: .instant, route: MacDACRouteState(initial: on), outputIsMusicApp: { true },
             fence: RateFence(store: h.env.modeStore), owner: owner,
             makeMusic: { _ in NoMusic() }, resolvePersistentID: { _, _ in nil },
             makeFollow: { SourceRateFollow(token: $0, control: control, offered: true,

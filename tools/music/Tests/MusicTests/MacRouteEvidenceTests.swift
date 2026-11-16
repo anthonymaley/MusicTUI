@@ -225,7 +225,7 @@ final class MacRouteEvidenceTests: XCTestCase {
         try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
         addTeardownBlock { try? FileManager.default.removeItem(atPath: dir) }
         return MacRoutePlayer(
-            route: MacDACRouteState(initial: on), outputIsMusicApp: { true },
+            streamWait: .instant, route: MacDACRouteState(initial: on), outputIsMusicApp: { true },
             fence: RateFence(lock: OutputLock(path: dir + "/output.lock", pollInterval: 0.001)),
             makeMusic: { _ in fatalError("never asked to play") },
             resolvePersistentID: { _, _ in nil },
