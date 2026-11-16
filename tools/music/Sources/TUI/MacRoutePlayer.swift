@@ -263,6 +263,23 @@ final class MacRoutePlayer {
         if isOnRoute, status?.following == false { reporter?.followRecordLost() }
     }
 
+    /// Fix round 2, finding 4: SpanDAC's status is read ONCE before the first
+    /// prepare of a route session, so a SpanDAC that restarted since the route was
+    /// chosen (its restore record gone, the confirmed-on latch still set here) is
+    /// told follow-on BEFORE any rate write, not on a later poll. A session is the
+    /// span between route changes (`routeChanged`); the CLI runner has one. A
+    /// status that cannot be read tells nothing and does not count: the next play
+    /// tries again (the read is bounded by the control's 2.5 s reply wait).
+    private var statusReadThisSession = false
+
+    private func readStatusBeforeFirstPrepare() {
+        guard let read = readRateStatus else { return }
+        condition.lock(); let done = statusReadThisSession; condition.unlock()
+        guard !done, let status = read() else { return }
+        noteRateStatus(status)
+        condition.lock(); statusReadThisSession = true; condition.unlock()
+    }
+
     /// Waits (bounded) for the reports handed over so far; for a process that is
     /// about to exit (a CLI station).
     func flushReports() { reporter?.flush() }
@@ -345,6 +362,7 @@ final class MacRoutePlayer {
     /// repeatable; closing the TUI sends nothing (D2: the song finishes, and
     /// SpanDAC restores when the route is left or SpanDAC quits).
     func routeChanged(on: Bool) {
+        condition.lock(); statusReadThisSession = false; condition.unlock()
         reporter?.routeChanged(on: on, fence: fence, owner: owner)
     }
 
@@ -393,6 +411,7 @@ final class MacRoutePlayer {
         condition.unlock()
         defer { condition.lock(); inFlight -= 1; condition.broadcast(); condition.unlock() }
 
+        readStatusBeforeFirstPrepare()
         let music = makeMusic(queueTrackPlayScript(playlist: playlist, position: position))
         let persistentID = playlist == persistentIDQueueSource
             ? persistentIDOfQueueEntry(position) : resolvePersistentID(playlist, position)
@@ -441,6 +460,7 @@ final class MacRoutePlayer {
         condition.unlock()
         defer { condition.lock(); inFlight -= 1; condition.broadcast(); condition.unlock() }
 
+        readStatusBeforeFirstPrepare()
         let transition = RateAwareTransition(
             fence: fence, owner: owner, music: makeMusic(""), makeFollow: makeFollow, now: now,
             allowCorrection: { false })
@@ -495,8 +515,11 @@ final class MacRoutePlayer {
         // S10: leaving, the Mac screen goes idle, but only if this process is the
         // one it is showing: it reported something, and still holds the lease (a
         // newer command, from the TUI or another runner, owns the screen now).
-        if reportedHere, let reporter, fence.leaseStatus(owner: owner, timeout: 0.5) == .ours,
-           let current = try? fence.current(timeout: 0.5) {
+        // The ownership check and the fence for the report are ONE lock span
+        // (`fenceIfLeaseIs`): a newer play that took the lease between two
+        // separate reads would otherwise be reported under its own fence and have
+        // its screen cleared by this departing process.
+        if reportedHere, let reporter, let current = fence.fenceIfLeaseIs(owner: owner, timeout: 0.5) {
             reporter.reportIdle(fence: current)
         }
         guard let held else { return }
@@ -620,6 +643,17 @@ extension RateFence {
         /// The files cannot be read (a broken state directory): no one can be
         /// said to hold anything, and the song plays regardless.
         case unreadable
+    }
+
+    /// The fence file's number, but only while `owner` holds the lease: the
+    /// ownership check and the fence read are ONE output-lock span, so no newer
+    /// play can take the lease between them. nil when the lease is anyone else's
+    /// (or no one's), or the lock stayed busy, or the files cannot be read.
+    func fenceIfLeaseIs(owner: String, timeout: TimeInterval = 1) -> Int? {
+        try? lock.withLock(timeout: timeout) {
+            guard let holder = try readLeaseHoldingLock(), holder == owner else { return nil }
+            return try readFenceHoldingLock()
+        }
     }
 
     /// Who holds the play lease, read under the output lock. Short wait: the

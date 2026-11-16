@@ -594,6 +594,187 @@ final class MacRouteFollowReportTests: XCTestCase {
         XCTAssertEqual(wire.requests(for: sourceNowPlayingOp).compactMap { $0["position_ms"] as? Int }, [5])
     }
 
+    // MARK: fix round 2, finding 7 (client half): `recorded`
+
+    /// A SpanDAC whose follow ack carries `applied` and, when given, `recorded`.
+    private func followScript(applied: Bool, recorded: Bool?) -> ([String: Any]) throws -> String {
+        let full = fullScript()
+        return { body in
+            guard body["op"] as? String == sourceRateFollowOp else { return try full(body) }
+            let f = body["fence"] as? Int ?? 0
+            var follow: [String: Any] = ["on": body["on"] as? Bool ?? false, "applied": applied]
+            if let recorded { follow["recorded"] = recorded }
+            return self.json(["ok": true, "rate": ["fence": f, "outcome": "quiet"], "follow": follow])
+        }
+    }
+
+    /// An ack that applied the follow but did NOT take the record is no permission
+    /// to write: the song plays unfollowed ("DAC rate switch unconfirmed"), no
+    /// prepare and no correction go out, the latch stays unset, the next play asks again.
+    func testAFollowOnThatAppliedButRecordedNothingWritesNoRateAndIsRetried() throws {
+        let dir = OutputLockTestSupport.tempDir()
+        let wire = Wire()
+        let full = fullScript()
+        let notRecorded = followScript(applied: true, recorded: false)
+        wire.script = { body in
+            if body["op"] as? String == sourceConfirmRateOp {
+                return self.rateAnswer(body["fence"] as? Int ?? 0, "correct", step: 1, target: 96000)
+            }
+            return try notRecorded(body)
+        }
+        let r = reporter(wire)
+        let music = FakeMusic()
+        let p = player(dir: dir, wire: wire, reporter: r, music: music)
+
+        XCTAssertEqual(playID(p, "AAAAAAAAAAAAAAA1", .play), .played)
+        XCTAssertEqual(music.played, ["AAAAAAAAAAAAAAA1"], "the song was refused")
+        XCTAssertFalse(wire.ops.contains(sourcePrepareRateOp), "a rate was written with no record taken")
+        XCTAssertFalse(wire.requests.contains { $0["step"] as? Int == 2 }, "a correction wrote a rate with no record taken")
+        XCTAssertNil(r.confirmed, "an unrecorded follow-on set the latch")
+        XCTAssertEqual(p.evidenceLine, "DAC rate switch unconfirmed \u{00B7} codec unknown")
+
+        wire.script = full      // a SpanDAC that records
+        XCTAssertEqual(playID(p, "BBBBBBBBBBBBBBB2", .advance), .played)
+        XCTAssertEqual(wire.requests(for: sourceRateFollowOp).count, 2, "follow-on was not retried")
+        let followAt = try XCTUnwrap(wire.ops.lastIndex(of: sourceRateFollowOp))
+        let prepareAt = try XCTUnwrap(wire.ops.firstIndex(of: sourcePrepareRateOp))
+        XCTAssertLessThan(followAt, prepareAt)
+        XCTAssertEqual(r.confirmed, true)
+    }
+
+    func testRecordedTrueConfirmsAndAnOlderAckWithoutTheFieldReadsAsApplied() throws {
+        for (applied, recorded, expected) in [(true, true, true), (true, nil, true), (false, nil, false),
+                                              (false, false, false)] as [(Bool, Bool?, Bool)] {
+            let wire = Wire(); wire.script = followScript(applied: applied, recorded: recorded)
+            let r = reporter(wire)
+            r.ensureOn(fence: 3)
+            XCTAssertEqual(r.confirmed == true, expected, "applied \(applied), recorded \(String(describing: recorded))")
+        }
+    }
+
+    func testTheAckCarriesRecordedAndDecidesFollowOnByIt() throws {
+        func ack(_ follow: [String: Any]?, outcome: String = "quiet") throws -> SourceRateFollowAck {
+            var reply: [String: Any] = ["rate": ["fence": 5, "outcome": outcome]]
+            if let follow { reply["follow"] = follow }
+            return try SourceAppControl.rateFollowAck(from: reply, fence: 5)
+        }
+        XCTAssertEqual(try ack(["on": true, "applied": true, "recorded": true]).recorded, true)
+        XCTAssertTrue(try ack(["on": true, "applied": true, "recorded": true]).confirmsFollowOn)
+        XCTAssertFalse(try ack(["on": true, "applied": true, "recorded": false]).confirmsFollowOn)
+        XCTAssertTrue(try ack(["on": true, "applied": true, "recorded": false]).wasApplied,
+                      "applied is still applied; only the follow-on's confirmation needs the record")
+        XCTAssertTrue(try ack(["on": true, "applied": true]).confirmsFollowOn, "an older SpanDAC: as before")
+        XCTAssertFalse(try ack(["on": true, "applied": false]).confirmsFollowOn)
+        XCTAssertFalse(try ack(["on": true, "applied": false, "recorded": true]).confirmsFollowOn)
+        XCTAssertFalse(try ack(nil).confirmsFollowOn)
+        XCTAssertFalse(try ack(["on": true, "applied": true, "recorded": true], outcome: "superseded").confirmsFollowOn)
+    }
+
+    /// Turning follow OFF records nothing: an off that SpanDAC applied is confirmed
+    /// whatever `recorded` says.
+    func testAnOffIsConfirmedWhateverRecordedSays() throws {
+        let dir = OutputLockTestSupport.tempDir(), fence = fenceFor(dir)
+        let wire = Wire(); wire.script = followScript(applied: true, recorded: false)
+        let r = reporter(wire)
+        r.routeChanged(on: false, fence: fence, owner: "tui")
+        XCTAssertEqual(r.confirmed, false)
+    }
+
+    // MARK: fix round 2, finding 4 (client half): status before the first prepare
+
+    /// SpanDAC restarted after the route was chosen (its restore record is gone)
+    /// but this process still holds the confirmed-on latch. The status is read
+    /// BEFORE the first prepare of the route session, so follow-on is re-sent
+    /// before any rate write, not on a later poll.
+    func testTheStatusIsReadBeforeTheFirstPrepareSoARestartedSpanDACGetsFollowOnFirst() throws {
+        let dir = OutputLockTestSupport.tempDir(), fence = fenceFor(dir)
+        let wire = Wire(); wire.script = fullScript()
+        let r = reporter(wire)
+        let p = player(dir: dir, wire: wire, reporter: r, music: FakeMusic())
+        var readAt: [Int] = []
+        p.readRateStatus = { readAt.append(wire.requests.count); return self.status(following: false) }
+
+        r.routeChanged(on: true, fence: fence, owner: "tui")     // route chosen; SpanDAC then "restarts"
+        XCTAssertEqual(r.confirmed, true)
+        XCTAssertEqual(playID(p, "AAAAAAAAAAAAAAA1", .play), .played)
+
+        XCTAssertEqual(readAt, [1], "the status was not read once, before the first prepare")
+        XCTAssertEqual(wire.requests(for: sourceRateFollowOp).count, 2, "follow-on was not re-sent")
+        let secondFollow = try XCTUnwrap(wire.ops.lastIndex(of: sourceRateFollowOp))
+        let prepare = try XCTUnwrap(wire.ops.firstIndex(of: sourcePrepareRateOp))
+        XCTAssertLessThan(secondFollow, prepare, "follow-on must precede the first rate write")
+
+        XCTAssertEqual(playID(p, "BBBBBBBBBBBBBBB2", .advance), .played)
+        XCTAssertEqual(readAt.count, 1, "only the first prepare of a session reads status first")
+
+        p.routeChanged(on: false)     // a new route session
+        p.routeChanged(on: true)
+        XCTAssertEqual(playID(p, "CCCCCCCCCCCCCCC3", .advance), .played)
+        XCTAssertEqual(readAt.count, 2, "a new route session reads status again before its first prepare")
+    }
+
+    /// A status that could not be read tells nothing: the play goes on, and the
+    /// next one tries again.
+    func testAStatusThatCannotBeReadDoesNotBlockThePlayAndIsTriedAgain() throws {
+        let dir = OutputLockTestSupport.tempDir()
+        let wire = Wire(); wire.script = fullScript()
+        let p = player(dir: dir, wire: wire, reporter: reporter(wire), music: FakeMusic())
+        var reads = 0
+        p.readRateStatus = { reads += 1; return nil }
+        XCTAssertEqual(playID(p, "AAAAAAAAAAAAAAA1", .play), .played)
+        XCTAssertEqual(playID(p, "BBBBBBBBBBBBBBB2", .advance), .played)
+        XCTAssertEqual(reads, 2)
+    }
+
+    /// The CLI runner is given the same status reader (it had none), and keeps
+    /// looking while it waits, as the poller does.
+    func testTheCLIRunnerIsGivenTheStatusReader() throws {
+        let runner = try source("Sources/Commands/RunQueueCommand.swift")
+        XCTAssertTrue(runner.contains("player.readRateStatus ="), "the runner's player never reads SpanDAC's status")
+        XCTAssertTrue(runner.contains("player.refreshRateStatus()"), "the runner's wait never refreshes it")
+    }
+
+    // MARK: fix round 2: the departing process and a newer owner
+
+    /// A newer play takes the lease between the ownership check and the fence
+    /// read: the old code sent `none` under the NEWER fence and blanked the new
+    /// owner's screen. The check and the read are one lock span, so the report
+    /// is never sent under a fence this process does not hold.
+    func testShutdownNeverSendsNoneUnderANewerOwnersFence() throws {
+        let dir = OutputLockTestSupport.tempDir()
+        let wire = Wire(); wire.script = fullScript()
+        let newer = fenceFor(dir)
+        var armed = false
+        var acquisitions = 0
+        let clock = Clock()
+        let racing = RateFence(lock: OutputLock(path: dir + "/output.lock", pollInterval: 0.001, clock: {
+            // Runs once per uncontended acquisition, before the lock is taken.
+            if armed {
+                acquisitions += 1
+                if acquisitions == 2 { _ = try? newer.begin(.play, owner: "newer") }
+            }
+            return Date()
+        }))
+        let c = control(wire)
+        let reporter = MacRouteFollowReporter(control: c, schedule: { $0() })
+        let p = MacRoutePlayer(
+            route: MacDACRouteState(initial: true), outputIsMusicApp: { true }, fence: racing, owner: "older",
+            makeMusic: { _ in FakeMusic() },
+            resolvePersistentID: { _, position in String(format: "%016llX", UInt64(position)) },
+            makeFollow: { token in
+                SourceRateFollow(token: token, control: c, offered: true, routeFollow: reporter,
+                                 now: { clock.t }, sleep: { clock.t += $0 })
+            },
+            post: { _ in }, reporter: reporter, now: { clock.t })
+        XCTAssertEqual(playID(p, "AAAAAAAAAAAAAAA1", .play), .played)
+        let ours = try racing.current()
+        armed = true
+        p.shutdown(wait: 0)
+        let none = wire.requests(for: sourceNowPlayingOp).filter { $0["state"] as? String == "none" }
+        XCTAssertFalse(none.contains { ($0["fence"] as? Int ?? 0) > ours },
+                       "the departing process cleared a newer owner's screen: \(none)")
+    }
+
     // MARK: structure
 
     private func source(_ relative: String) throws -> String {

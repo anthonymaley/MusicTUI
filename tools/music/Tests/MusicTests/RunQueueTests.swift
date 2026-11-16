@@ -760,4 +760,28 @@ final class RunQueueTests: XCTestCase {
             XCTAssertFalse(h.io.out.contains { $0.hasPrefix("Playing \"") })
         }
     }
+
+    /// Fix round 2, finding 3: with the ordering impossible to reserve, no runner
+    /// is spawned without one. The songs play through the shipped path, and the
+    /// line says they are not followed.
+    func testOnTheRouteWhenTheOrderingCannotBeReservedTheSongsStillPlayThroughTheShippedPath() throws {
+        let h = CLIDataRouteHarness(output: .musicApp, data: .accepted, dataReplies: [:], recordSeams: false)
+        MacRouteStore(beside: h.env.modeStore).set(true)
+        let fence = RateFence(store: h.env.modeStore)
+        try FileManager.default.createDirectory(atPath: fence.fencePath, withIntermediateDirectories: true)
+        let container = CLIContainerRunner(ids: [h1, h2])
+        var launched: [[String]] = []
+        var shown: [Bool] = []
+        let play = PersistentIDCLILibraryPlay(library: library(), run: container.run,
+                                              launch: { launched.append($1); return true },
+                                              selfCheck: LibraryAliasSelfCheck(), afterPlay: { shown.append($0) })
+        let r = tripwired { try play.play(request(h), env: h.env) }
+        XCTAssertNil(r.error, "the song was refused")
+        XCTAssertFalse(launched.contains { $0.first == "__run-queue" }, "a token-less runner was spawned")
+        XCTAssertEqual(launched.first?.first, "__watch-container")
+        XCTAssertEqual(container.builds, [[11, 12]])
+        XCTAssertEqual(container.plays.count, 1)
+        XCTAssertEqual(shown, [false])
+        XCTAssertTrue(h.io.out.contains(macRouteRateNotFollowedLine), "the line says the rate is not followed")
+    }
 }

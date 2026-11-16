@@ -297,11 +297,24 @@ struct SourceRateFollowAck: Equatable {
     let applied: Bool?
     /// How the restore of the DAC left behind ended, on a turn-off.
     let restore: String?
+    /// Whether SpanDAC actually TOOK the record of the DAC's rate to restore
+    /// (fix round 2, finding 7). `applied` says only that the message reached a
+    /// DAC; a record that failed still answers `applied: true`. nil: an older
+    /// SpanDAC that does not send the field.
+    var recorded: Bool? = nil
 
     /// Whether SpanDAC applied this message: its fence was current and it had a DAC.
     var wasApplied: Bool {
         if case .superseded = answer.outcome { return false }
         return applied == true
+    }
+
+    /// Whether a follow-ON is confirmed AND a rate may be written for it. With
+    /// `recorded` present it decides (true only, on an applied message); without
+    /// it (an older SpanDAC) `applied` decides, exactly as before the field existed.
+    var confirmsFollowOn: Bool {
+        guard wasApplied else { return false }
+        return recorded ?? true
     }
 }
 
@@ -364,7 +377,8 @@ extension SourceAppControl {
         let answer = try rateAnswer(from: reply, op: sourceRateFollowOp, fence: fence)
         let follow = reply["follow"] as? [String: Any]
         return SourceRateFollowAck(answer: answer, applied: follow?["applied"] as? Bool,
-                                   restore: follow?["restore"] as? String)
+                                   restore: follow?["restore"] as? String,
+                                   recorded: follow?["recorded"] as? Bool)
     }
 
     /// One `slice.rateFollow` exchange at a stated timeout. An older SpanDAC's
