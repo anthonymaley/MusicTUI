@@ -223,9 +223,16 @@ extension SourceAppControl {
 
     /// A predicted prepare (`rateHz` nil) or a correction to Music's delivered
     /// rate (`step` `correct`, `rateHz` set). Absent identities are left out.
+    ///
+    /// `follow` is sent on the Mac route only (fix round 3, finding 4): SpanDAC
+    /// then records the DAC's baseline itself before any write, whatever the
+    /// per-session `slice.rateFollow` said, which closes the restart window on
+    /// its side. An older SpanDAC ignores the unknown field.
     static func prepareRateBody(fence: Int, step: Int = SourceRateStep.prepare, dacUID: String?,
-                                persistentID: String?, catalogID: String?, rateHz: Int? = nil) -> [String: Any] {
+                                persistentID: String?, catalogID: String?, rateHz: Int? = nil,
+                                follow: Bool = false) -> [String: Any] {
         var body: [String: Any] = ["op": sourcePrepareRateOp, "fence": fence, "step": step]
+        if follow { body["follow"] = true }
         if let dacUID { body["dac_uid"] = dacUID }
         if let persistentID { body["persistent_id"] = persistentID }
         if let catalogID { body["catalog_id"] = catalogID }
