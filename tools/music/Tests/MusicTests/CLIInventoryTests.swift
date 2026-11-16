@@ -135,6 +135,7 @@ final class CLIInventoryTests: XCTestCase {
         Row(invocation: "auth open", command: "AuthOpen", letter: .exception, enforcement: .route(.auth), owner: "—"),
         Row(invocation: "sync-plays", command: "SyncPlays", letter: .exception, enforcement: .noMatrixRow("both backends by design"), owner: "—"),
         Row(invocation: "__watch-container", command: "WatchContainer", letter: .exception, enforcement: .noMatrixRow("internal; finishes a Music.app album play's cleanup"), owner: "—"),
+        Row(invocation: "__run-queue", command: "RunQueue", letter: .exception, enforcement: .noMatrixRow("internal; plays a CLI queue one song at a time on the Mac DAC route"), owner: "P5"),
     ]
 
     /// Part 1's M set under [B], as its own literal: everything Part B must
@@ -316,8 +317,9 @@ final class CLIInventoryTests: XCTestCase {
         XCTAssertEqual(count(.served), 26)
         XCTAssertEqual(count(.refused), 21)
         XCTAssertEqual(count(.migration), 0)
-        XCTAssertEqual(count(.exception), 18)
-        XCTAssertEqual(inventory.count, 65)
+        // Mac route P5: `__run-queue`, an internal E row beside `__watch-container` (+1 row).
+        XCTAssertEqual(count(.exception), 19)
+        XCTAssertEqual(inventory.count, 66)
         XCTAssertEqual(migrationActions, [], "Part B retired every migration exception")
     }
 

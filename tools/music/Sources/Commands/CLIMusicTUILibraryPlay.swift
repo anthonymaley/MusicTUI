@@ -93,6 +93,12 @@ struct PersistentIDCLILibraryPlay: CLIMusicTUILibraryPlaying {
     let selfCheck: LibraryAliasSelfCheck
     /// What the command shows once playback started (the shipped now line).
     let afterPlay: (Bool) -> Void
+    /// Whether the Mac DAC route is the chosen route (mac-route-plan.md, D1):
+    /// the choice the TUI persisted beside mode.json. Read inside the output
+    /// lock, after the selection was confirmed to be SpanDAC data on the
+    /// MusicTUI output, so "chosen" is all that is left to ask. A seam so tests
+    /// use a temp store; production reads `mac-route.json`.
+    var onRoute: (CLIBridgeEnv) -> Bool = { MacRouteStore(beside: $0.modeStore).isOn }
 
     func prepare(_ request: CLIMusicTUILibraryPlayRequest, env: CLIBridgeEnv) throws
         -> CLIMusicTUILibraryPlayRequest {
@@ -129,6 +135,16 @@ struct PersistentIDCLILibraryPlay: CLIMusicTUILibraryPlaying {
 
         let order = request.shuffle ? Array(zip(indices, verified.map(\.persistentID))).shuffled()
                                     : Array(zip(indices, verified.map(\.persistentID)))
+        // On the Mac DAC route Music must not be handed a queue it plays straight
+        // through: nothing could change the DAC's rate between songs. A detached
+        // runner plays the verified songs one at a time through the rate-aware
+        // transition and holds the play lease; no temporary playlist is built,
+        // so there is nothing to sweep, confirm or clean up. Off the route
+        // everything below is what has always run.
+        if onRoute(env) {
+            try playOnTheRoute(request, ids: order.map(\.1), skipNotice: available.report.notice, env: env)
+            return
+        }
         // The exact order that will play, shuffled or not: the container is
         // confirmed against this sequence, never against the set of songs.
         let expected = order.map(\.1)
@@ -154,6 +170,18 @@ struct PersistentIDCLILibraryPlay: CLIMusicTUILibraryPlaying {
         case .watcherFailed(let removed): failure = .watcherFailed(containerRemoved: removed)
         }
         throw ActionError(message: albumOutcomeMessage(failure, title: request.label) ?? pickASpanDACOutput)
+    }
+
+    /// The route's play: start the detached runner (still inside the output lock,
+    /// so the runner's first fence waits for this command to finish and no other
+    /// command comes between). A launch that fails plays nothing.
+    private func playOnTheRoute(_ request: CLIMusicTUILibraryPlayRequest, ids: [String], skipNotice: String?,
+                                env: CLIBridgeEnv) throws {
+        guard spawnRunQueue(label: request.label, uuid: UUID().uuidString, ids: ids, launch: launch) else {
+            throw ActionError(message: macRouteRunnerNotStartedMessage)
+        }
+        if let skipNotice { if request.json { env.err(skipNotice) } else { env.out(skipNotice) } }
+        env.out(macRoutePlayingLine(label: request.label, count: ids.count, json: request.json))
     }
 
     /// The rows again, each with the alias SpanDAC gives the row whose id it
@@ -192,4 +220,19 @@ func liveCLIMusicTUILibraryPlay() -> CLIMusicTUILibraryPlaying {
         launch: detachedLaunch,
         selfCheck: .shared,
         afterPlay: { json in showNowPlaying(json: json, waitForPlay: true) })
+}
+
+/// Said when the runner for a Mac DAC route play could not be started.
+let macRouteRunnerNotStartedMessage =
+    "Couldn't start the queue that follows the DAC's sample rate. Nothing was played."
+
+/// What a route play prints once the runner is started. It cannot be the shipped
+/// now line: the runner's first song starts after this command releases the
+/// output lock, so Music has nothing to read yet.
+func macRoutePlayingLine(label: String, count: Int, json: Bool) -> String {
+    if json {
+        let doc: [String: Any] = ["state": "starting", "queue": label, "tracks": count, "route": "mac-dac"]
+        return OutputFormat(mode: .json).render(doc)
+    }
+    return "Playing \"\(label)\" (\(count) \(count == 1 ? "song" : "songs")), following each song's sample rate."
 }

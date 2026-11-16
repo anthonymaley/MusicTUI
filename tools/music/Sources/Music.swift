@@ -42,6 +42,7 @@ struct Music: ParsableCommand {
             Rotation.self,
             // Internal
             WatchContainer.self,
+            RunQueue.self,
         ],
         defaultSubcommand: Now.self
     )

@@ -64,3 +64,45 @@ func spawnAlbumWatcher(name: String,
     }
     return launched
 }
+
+// MARK: - the run-queue runner (mac-route-plan.md, step P5, D1)
+
+/// Argument list for `__run-queue`: the queue's persistent IDs IN ORDER, inline
+/// or, past the watcher's own limit, through an ordered manifest file. The label
+/// is one `--label=` argument, so a label that starts with a dash is not read as
+/// an option.
+func runQueueArguments(label: String, uuid: String, ids: [String],
+                       manifestDirectory: String? = nil) throws -> [String] {
+    var args = ["__run-queue", uuid, "--label=\(label)"]
+    if ids.count > albumWatcherInlineIDLimit {
+        let path = try writeRunQueueManifest(uuid: uuid, ids: ids, directory: manifestDirectory)
+        args += ["--manifest", path]
+    } else {
+        args += ["--ids", ids.joined(separator: ",")]
+    }
+    return args
+}
+
+/// Starts the detached runner that plays `ids` one song at a time on the Mac DAC
+/// route. The same detached shape as the album watcher (`detachedLaunch`); a
+/// failed spawn removes the manifest it wrote, because only a RUNNING runner
+/// would ever remove it.
+func spawnRunQueue(label: String,
+                   uuid: String,
+                   ids: [String],
+                   manifestDirectory: String? = nil,
+                   launch: ProcessLauncher = detachedLaunch) -> Bool {
+    let args: [String]
+    do {
+        args = try runQueueArguments(label: label, uuid: uuid, ids: ids, manifestDirectory: manifestDirectory)
+    } catch {
+        verbose("run-queue args failed for \(label): \(error.localizedDescription)")
+        return false
+    }
+    let me = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath().path
+    let launched = launch(me, args)
+    if !launched, let i = args.firstIndex(of: "--manifest"), i + 1 < args.count {
+        removeAlbumManifest(path: args[i + 1])
+    }
+    return launched
+}
