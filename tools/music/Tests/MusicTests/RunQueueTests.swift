@@ -74,6 +74,8 @@ final class RunQueueTests: XCTestCase {
         /// After a pause, this many state reads still say playing (Music's player
         /// state lags a pause by a moment).
         var pauseLagReads = 0
+        /// Plays after this many have started throw (Music refusing them); nil never.
+        var failPlaysAfter: Int?
         /// The sample rates successive reads of the current track return, the last one
         /// repeating; empty reads the track's own 96000.
         var rateReads: [Int] = []
@@ -82,6 +84,7 @@ final class RunQueueTests: XCTestCase {
         func playTrack(persistentID: String) throws {
             log.append("play")
             if let playError { throw playError }
+            if let limit = failPlaysAfter, played.count >= limit { throw ActionError(message: "refused") }
             played.append(persistentID)
             state = RatePlayerState(state: .playing, persistentID: persistentID, position: 0)
             current = RateTrackRead(persistentID: persistentID, databaseID: 1, sampleRateHz: 96000)
@@ -265,16 +268,18 @@ final class RunQueueTests: XCTestCase {
     /// a time on successive polls and records what the runner said back.
     private final class FakeControl: RunQueueControlling {
         var registered = 0, unregistered = 0
+        /// How many songs had been played when the runner registered.
+        var registeredAtPlays: [Int] = []
         var skips: [(afterPlays: Int, request: RunQueueSkipRequest)] = []
-        var acks: [(nonce: String, playsAtAck: Int)] = []
+        var acks: [(nonce: String, outcome: RunQueueSkipOutcome, playsAtAck: Int)] = []
         var playCount: () -> Int = { 0 }
-        func register() { registered += 1 }
+        func register() { registered += 1; registeredAtPlays.append(playCount()) }
         func unregister() { unregistered += 1 }
         func takeSkip() -> RunQueueSkipRequest? {
             guard let first = skips.first, playCount() >= first.afterPlays else { return nil }
             return skips.removeFirst().request
         }
-        func acknowledge(nonce: String) { acks.append((nonce, playCount())) }
+        func acknowledge(nonce: String, outcome: RunQueueSkipOutcome) { acks.append((nonce, outcome, playCount())) }
     }
 
     private func skipRig(_ control: FakeControl) -> Rig {
@@ -309,9 +314,43 @@ final class RunQueueTests: XCTestCase {
         XCTAssertNotEqual(exit, .stoppedEarly)
         XCTAssertEqual(r.wire.ops.filter { $0 == sourcePrepareRateOp }.count >= 2, true, "the new song's rate was not prepared")
         XCTAssertEqual(control.acks.map(\.nonce), ["N1"])
+        XCTAssertEqual(control.acks.first?.outcome, .played)
         XCTAssertEqual(control.acks.first?.playsAtAck, 2, "acknowledged before the song it led to was started")
         XCTAssertEqual(control.registered, 1)
         XCTAssertEqual(control.unregistered, 1)
+    }
+
+    /// Registered only while the lease is held: a runner with no reserved ordering takes
+    /// the lease at its FIRST play, so it is not asked before that.
+    func testTheRunnerRegistersOnlyOnceItHoldsTheLease() throws {
+        let control = FakeControl()
+        let r = skipRig(control)
+        _ = r.runner(queueStore(ids), control: control).run()
+        XCTAssertEqual(control.registeredAtPlays, [1], "registered before the lease was held, or more than once")
+    }
+
+    /// The ack carries what happened: Music refusing the song the skip led to is a
+    /// failure the client reports, not a success.
+    func testAFailedPlayAfterASkipIsAnsweredAsFailed() throws {
+        let control = FakeControl()
+        control.skips = [(1, RunQueueSkipRequest(step: 1, nonce: "N1"))]
+        let r = skipRig(control)
+        r.music.failPlaysAfter = 1       // song 1 plays; every play after it is refused
+        _ = r.runner(queueStore(ids), control: control).run()
+        XCTAssertEqual(control.acks.map(\.nonce), ["N1"])
+        XCTAssertEqual(control.acks.first?.outcome, .failed)
+    }
+
+    /// A newer command that owns the player when the skip is heard: answered superseded.
+    func testASkipHeardAfterANewerCommandIsAnsweredAsSuperseded() throws {
+        let control = FakeControl()
+        control.skips = [(1, RunQueueSkipRequest(step: 1, nonce: "N1"))]
+        let r = skipRig(control)
+        _ = r.runner(queueStore(ids), control: control, onSleep: {
+            if r.music.count("play") == 1 { _ = try? r.fence.begin(.next, owner: "someone-else") }
+        }).run()
+        XCTAssertEqual(control.acks.map(\.nonce), ["N1"])
+        XCTAssertEqual(control.acks.first?.outcome, .superseded)
     }
 
     /// Back steps the queue back one song with the `.previous` command.

@@ -280,6 +280,9 @@ final class RunQueueRunner {
     private let maxLifetime: TimeInterval
     /// Where a `music skip` / `music back` from another process reaches this runner.
     private let control: RunQueueControlling?
+    private var registered = false
+    /// The skip whose song is being started: answered once that play has an outcome.
+    private var pendingAck: String?
     /// The token the parent reserved for this runner's first play (fix round 1,
     /// finding 3); nil takes a fence at the first play, as before.
     private var pendingToken: RateToken?
@@ -313,8 +316,17 @@ final class RunQueueRunner {
 
     /// Plays the queue to its end or until something else owns the player.
     func run() -> RunQueueExit {
-        control?.register()
-        defer { control?.unregister() }
+        // Registered only while the lease is held (a reserved runner holds it from the
+        // start; otherwise it is taken at the first play, `registerIfOwner` below).
+        registerIfOwner()
+        defer {
+            // A skip still waiting for its answer when the runner leaves is answered.
+            if let nonce = pendingAck { control?.acknowledge(nonce: nonce, outcome: .notStarted); pendingAck = nil }
+            // A skip that arrived as the runner was leaving (a newer command took the
+            // lease): answered, not left for the client to wait out.
+            if let late = control?.takeSkip() { control?.acknowledge(nonce: late.nonce, outcome: .superseded) }
+            control?.unregister()
+        }
         let exit = drive()
         // The queue is over, or Music stopped short of its end: the Mac screen
         // says stopped (it is this runner's song that ended). A runner that was
@@ -328,6 +340,18 @@ final class RunQueueRunner {
         return exit
     }
 
+    private func registerIfOwner() {
+        guard let control, !registered, player.fence.leaseStatus(owner: player.owner) == .ours else { return }
+        control.register()
+        registered = true
+    }
+
+    private func acknowledgePending(_ outcome: RunQueueSkipOutcome) {
+        guard let nonce = pendingAck else { return }
+        control?.acknowledge(nonce: nonce, outcome: outcome)
+        pendingAck = nil
+    }
+
     private func drive() -> RunQueueExit {
         guard let first = queue.read() else { return .finished }
         var playlist = first.playlistName
@@ -335,8 +359,6 @@ final class RunQueueRunner {
         var command = RateCommand.play
         var gate = AdvanceRetryGate()
         var notStarted = 0
-        // The skip the song being started answers; acknowledged once that play returns.
-        var ackNonce: String?
 
         while true {
             route.set(routeStillChosen())
@@ -346,16 +368,17 @@ final class RunQueueRunner {
             let outcome = player.play(playlist: playlist, position: position, command: command,
                                       subject: RouteSubject(current: queue.read()), token: reserved,
                                       isCurrent: { [queue] in queue.generation == generation })
-            if let nonce = ackNonce { control?.acknowledge(nonce: nonce); ackNonce = nil }
+            registerIfOwner()
             // The reserved token is the FIRST play's: kept only while the output
             // lock kept that play from starting at all.
             if case .notStarted = outcome {} else { pendingToken = nil }
             switch outcome {
             case .superseded:
+                acknowledgePending(.superseded)
                 return .superseded
             case .notStarted:
                 notStarted += 1
-                if notStarted >= maxNotStarted { return .couldNotStart }
+                if notStarted >= maxNotStarted { acknowledgePending(.notStarted); return .couldNotStart }
                 sleep(pollInterval)
                 continue
             case .failed:
@@ -363,9 +386,11 @@ final class RunQueueRunner {
                 // Only Music's own play failure counts: retry the same song, then
                 // skip it, as the poller's gate does.
                 if gate.playFailed() == .retry { sleep(pollInterval); continue }
+                acknowledgePending(.failed)
             case .played:
                 notStarted = 0
                 gate.playSucceeded()
+                acknowledgePending(.played)
                 var skipped = false
                 waiting: while true {
                     switch waitForEnd(persistentID: persistentIDOfQueueEntry(position)) {
@@ -374,16 +399,19 @@ final class RunQueueRunner {
                     case .skip(let request):
                         // `music skip` / `music back` from another process: this runner
                         // steps ITS queue (Music has no next item to step to).
-                        guard mayAdvance() else { control?.acknowledge(nonce: request.nonce); return .superseded }
+                        guard mayAdvance() else {
+                            control?.acknowledge(nonce: request.nonce, outcome: .superseded)
+                            return .superseded
+                        }
                         if let next = queue.step(request.step) {
                             (playlist, position) = next
                         } else if request.step > 0 {
                             // Past the last song: nothing to play, but the client is answered.
-                            control?.acknowledge(nonce: request.nonce)
+                            control?.acknowledge(nonce: request.nonce, outcome: .end)
                             continue waiting
                         }   // back on the first song plays it again
                         command = request.step > 0 ? .next : .previous
-                        ackNonce = request.nonce
+                        pendingAck = request.nonce
                         skipped = true
                         break waiting
                     }
