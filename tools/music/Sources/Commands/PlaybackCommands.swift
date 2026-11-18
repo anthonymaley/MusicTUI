@@ -980,16 +980,16 @@ struct Skip: ParsableCommand {
     }
 }
 
+/// On the Mac DAC route the runner owns the queue and Music has no next item, so Music's
+/// own "next track" would restart the song (finding 7). The runner is asked as the
+/// dispatcher's `handOff`, BEFORE it takes the output lock: under it the lease cannot be
+/// read (the lock is this process's own) and the runner needs the lock itself to play the
+/// next song while this waits for its answer. `runBack` is the same.
 func runSkip(json: Bool, env: CLIBridgeEnv, musicApp: (Bool) throws -> Void = skipViaMusicApp,
              runner: ((Int, Bool) throws -> Bool)? = nil) throws {
-    // On the Mac DAC route the runner owns the queue and Music has no next item, so
-    // Music's own "next track" would restart the song (finding 7). The runner is asked
-    // BEFORE the dispatcher takes the output lock: under it the lease cannot be read
-    // (the lock is this process's own) and the runner needs the lock itself to play the
-    // next song while this waits for its answer.
-    let askRunner = runner ?? { try skipThroughRunner(step: $0, json: $1, modes: env.modeStore) }
-    if try askRunner(1, json) { return }
-    try cliDispatch(.next, json: json, env: env, musicApp: { try musicApp(json) },
+    try cliDispatch(.next, json: json, env: env,
+                    handOff: { try (runner ?? { try skipThroughRunner(step: $0, json: $1, modes: env.modeStore) })(1, json) },
+                    musicApp: { try musicApp(json) },
                     bridge: { try bridgeStepCommand($0, json: json, env: env) { try $0.next() } })
 }
 
@@ -1009,9 +1009,9 @@ struct Back: ParsableCommand {
 
 func runBack(json: Bool, env: CLIBridgeEnv, musicApp: (Bool) throws -> Void = backViaMusicApp,
              runner: ((Int, Bool) throws -> Bool)? = nil) throws {
-    let askRunner = runner ?? { try skipThroughRunner(step: $0, json: $1, modes: env.modeStore) }   // see `runSkip`
-    if try askRunner(-1, json) { return }
-    try cliDispatch(.previous, json: json, env: env, musicApp: { try musicApp(json) },
+    try cliDispatch(.previous, json: json, env: env,
+                    handOff: { try (runner ?? { try skipThroughRunner(step: $0, json: $1, modes: env.modeStore) })(-1, json) },
+                    musicApp: { try musicApp(json) },
                     bridge: { try bridgeStepCommand($0, json: json, env: env) { try $0.previous() } })
 }
 

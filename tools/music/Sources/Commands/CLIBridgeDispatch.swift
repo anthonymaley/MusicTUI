@@ -215,10 +215,18 @@ final class CLIBridgeSession {
 /// where the bodies keep deciding by the cached row as they ship.
 func cliDispatch(_ action: MusicTUIAction, json: Bool, env: CLIBridgeEnv,
                  origin: () throws -> PlayOrigin? = { nil },
+                 handOff: (() throws -> Bool)? = nil,
                  musicApp: () throws -> Void,
                  musicTUI: ((MusicTUIPlayPath) throws -> Void)? = nil,
                  bridge: (CLIBridgeSession) throws -> Void) throws {
     do {
+        // A hand-off to a process that owns the player (the Mac DAC route's runner:
+        // `music skip` / `music back`), decided BEFORE the output lock is taken: under
+        // it the owner's lease cannot be read and the owner needs the lock itself. True
+        // ends the command; its failure is printed by the hand-off and passed through.
+        if let handOff {
+            do { if try handOff() { return } } catch let exit as ExitCode { throw CLIPassThrough(error: exit) }
+        }
         let origin = try origin()
         try env.routing.perform(
             action, expecting: env.routing.stamp, origin: origin,
