@@ -40,9 +40,61 @@ func detachedLaunch(_ executable: String, _ arguments: [String]) -> Bool {
     }
 }
 
+/// The executable the detached children are spawned from: this same binary, as
+/// an absolute path with every symlink resolved.
+///
+/// Never `CommandLine.arguments[0]` against the current directory: run by bare
+/// name (`music` found on PATH) argv[0] is just "music", and "<cwd>/music" is not
+/// a file, so the spawn failed and a Mac DAC route play refused to start (live
+/// check 2026-11-17, finding 5). In order:
+///   1. the system's own answer (`_NSGetExecutablePath`), which is the running
+///      image whatever argv[0] says;
+///   2. the bundle's executable;
+///   3. argv[0] itself: a path with a slash resolves against `cwd`, a bare name
+///      is searched for on `searchPath` (PATH), the way the shell found it.
+/// The last resort, with nothing found, is argv[0] against `cwd` (the old
+/// behaviour), so a launch failure is still reported by the launcher.
+func runningExecutablePath(arguments: [String] = CommandLine.arguments,
+                           cwd: String = FileManager.default.currentDirectoryPath,
+                           systemPath: () -> String? = systemExecutablePath,
+                           bundlePath: () -> String? = { Bundle.main.executableURL?.path },
+                           searchPath: String? = ProcessInfo.processInfo.environment["PATH"]) -> String {
+    func canonical(_ path: String) -> String { URL(fileURLWithPath: path).resolvingSymlinksInPath().path }
+    func usable(_ path: String?) -> String? {
+        guard let path, path.hasPrefix("/"), FileManager.default.isExecutableFile(atPath: path) else { return nil }
+        return canonical(path)
+    }
+    if let found = usable(systemPath()) { return found }
+    if let found = usable(bundlePath()) { return found }
+    let argv0 = arguments.first ?? ""
+    if argv0.contains("/") {
+        let absolute = argv0.hasPrefix("/") ? argv0 : URL(fileURLWithPath: cwd).appendingPathComponent(argv0).path
+        if let found = usable(URL(fileURLWithPath: absolute).standardized.path) { return found }
+    } else if !argv0.isEmpty {
+        for directory in (searchPath ?? "").split(separator: ":", omittingEmptySubsequences: true) {
+            let candidate = directory.hasPrefix("/") ? String(directory) + "/" + argv0
+                : URL(fileURLWithPath: cwd).appendingPathComponent(String(directory)).appendingPathComponent(argv0).path
+            if let found = usable(candidate) { return found }
+        }
+    }
+    return canonical(URL(fileURLWithPath: argv0, relativeTo: URL(fileURLWithPath: cwd, isDirectory: true)).path)
+}
+
+/// `_NSGetExecutablePath`: the path of the running image as the loader knows it
+/// (it may hold symlinks or `..`; the caller canonicalises). nil if it fails.
+func systemExecutablePath() -> String? {
+    var size: UInt32 = 0
+    _ = _NSGetExecutablePath(nil, &size)
+    guard size > 0 else { return nil }
+    var buffer = [CChar](repeating: 0, count: Int(size))
+    guard _NSGetExecutablePath(&buffer, &size) == 0 else { return nil }
+    return String(cString: buffer)
+}
+
 func spawnAlbumWatcher(name: String,
                        uuid: String,
                        ids: Set<String>,
+                       executable: String = runningExecutablePath(),
                        launch: ProcessLauncher = detachedLaunch) -> Bool {
     let args: [String]
     do {
@@ -51,9 +103,7 @@ func spawnAlbumWatcher(name: String,
         verbose("watcher args failed for \(name): \(error.localizedDescription)")
         return false
     }
-    let me = URL(fileURLWithPath: CommandLine.arguments[0])
-        .resolvingSymlinksInPath().path
-    let launched = launch(me, args)
+    let launched = launch(executable, args)
     if !launched, let manifestIndex = args.firstIndex(of: "--manifest"), manifestIndex + 1 < args.count {
         // A manifest was written (large album) but the watcher process never
         // started, so nobody will ever own or remove this file — the manifest
@@ -98,6 +148,7 @@ func spawnRunQueue(label: String,
                    ids: [String],
                    manifestDirectory: String? = nil,
                    reservation: RunQueueReservation? = nil,
+                   executable: String = runningExecutablePath(),
                    launch: ProcessLauncher = detachedLaunch) -> Bool {
     let args: [String]
     do {
@@ -107,8 +158,7 @@ func spawnRunQueue(label: String,
         verbose("run-queue args failed for \(label): \(error.localizedDescription)")
         return false
     }
-    let me = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath().path
-    let launched = launch(me, args)
+    let launched = launch(executable, args)
     if !launched, let i = args.firstIndex(of: "--manifest"), i + 1 < args.count {
         removeAlbumManifest(path: args[i + 1])
     }
