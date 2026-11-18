@@ -74,6 +74,9 @@ final class RunQueueTests: XCTestCase {
         /// After a pause, this many state reads still say playing (Music's player
         /// state lags a pause by a moment).
         var pauseLagReads = 0
+        /// The sample rates successive reads of the current track return, the last one
+        /// repeating; empty reads the track's own 96000.
+        var rateReads: [Int] = []
         private var lagging = 0
         func count(_ s: String) -> Int { log.filter { $0 == s }.count }
         func playTrack(persistentID: String) throws {
@@ -93,7 +96,11 @@ final class RunQueueTests: XCTestCase {
             state = RatePlayerState(state: .playing, persistentID: state.persistentID, position: state.position)
         }
         func seekToStart() throws { log.append("seek0") }
-        func readCurrentTrack() -> RateTrackRead? { current }
+        func readCurrentTrack() -> RateTrackRead? {
+            guard let current, !rateReads.isEmpty else { return current }
+            let hz = rateReads.count > 1 ? rateReads.removeFirst() : rateReads[0]
+            return RateTrackRead(persistentID: current.persistentID, databaseID: current.databaseID, sampleRateHz: hz)
+        }
         func readPlayerState() -> RatePlayerState? {
             if state.state == .paused, lagging > 0 {
                 lagging -= 1
@@ -339,6 +346,102 @@ final class RunQueueTests: XCTestCase {
         _ = r2.runner(queueStore([ids[0]]), control: forward).run()
         XCTAssertEqual(r2.music.played, [ids[0]], "a skip past the last song played something")
         XCTAssertEqual(forward.acks.map(\.nonce), ["F"], "the client was left waiting")
+    }
+
+    // MARK: Music's decoder upgrades a streamed song mid-song (finding 6, live check 2026-11-18)
+
+    /// Music's decoder reports, by hand: `start` is what the player subscribes with.
+    private final class FakeFeed: DecoderRateFeed {
+        var onReport: ((DecoderReport) -> Void)?
+        var starts = 0, stops = 0
+        func start(onReport: @escaping (DecoderReport) -> Void) { starts += 1; self.onReport = onReport }
+        func stop() { stops += 1; onReport = nil }
+        func emit(_ hz: Int, at: Date = Date()) {
+            onReport?(DecoderReport(sampleRateHz: hz, at: at, format: "qlac", rendition: "Lossless"))
+        }
+    }
+
+    /// The live song: the DAC is at 48000, the AppleScript rate read says 48000 for the whole
+    /// song (the lossy start), and a report arrives mid-song with what the decoder opened.
+    private func decoderRun(expect: RunQueueExit = .finished,
+                            reports: @escaping (FakeFeed, Rig) -> Void) throws -> (Rig, FakeFeed, dacHz: () -> Int) {
+        let r = rig()
+        let feed = FakeFeed()
+        var dacHz = 48000
+        r.music.rateReads = [48000]
+        r.wire.script = { body in
+            let f = body["fence"] as? Int ?? 0
+            switch (body["op"] as? String, body["step"] as? Int) {
+            case (sourcePrepareRateOp, 2):
+                dacHz = body["rate_hz"] as? Int ?? dacHz
+                return self.answer(f, "settled", step: 2, target: dacHz)
+            case (sourcePrepareRateOp, _): return self.answer(f, "same_rate", step: 0, target: 48000)
+            case (sourceConfirmRateOp, _):
+                let delivered = body["delivered_hz"] as? Int
+                return self.answer(f, delivered == dacHz ? "own_rate" : "correct", step: 1, target: delivered)
+            default: return self.answer(f, "quiet")
+            }
+        }
+        r.player.decoderFeed = feed
+        r.player.runFollowUp = { $0() }
+        var emitted = false
+        let runner = r.runner(queueStore([ids[0]]), onSleep: {
+            guard !emitted, r.music.count("play") == 1 else { return }
+            emitted = true
+            reports(feed, r)
+        })
+        XCTAssertEqual(runner.run(), expect)
+        return (r, feed, { dacHz })
+    }
+
+    private func confirmedHz(_ r: Rig) -> [Int?] {
+        r.wire.requests.filter { $0["op"] as? String == sourceConfirmRateOp }.map { $0["delivered_hz"] as? Int }
+    }
+    private func rateWrites(_ r: Rig) -> Int {
+        r.wire.requests.filter { ($0["op"] as? String) == sourcePrepareRateOp && ($0["step"] as? Int) == 2 }.count
+    }
+
+    /// The bug: the start confirmed 48000, Music upgraded to 96000 seven seconds in, and
+    /// nothing noticed. The decoder's report now confirms 96000, SpanDAC says `correct`,
+    /// and the correction runs mid-song: pause, DAC, resume AT THE SAME POSITION (no seek
+    /// to the start), once.
+    func testAnUpgradeReportMidSongMovesTheDACAndResumesAtTheSamePosition() throws {
+        let (r, feed, dacHz) = try decoderRun(reports: { feed, _ in feed.emit(96000) })
+        XCTAssertEqual(feed.starts, 1, "the decoder feed was never started")
+        XCTAssertEqual(Array(confirmedHz(r).prefix(2)), [48000, 96000], "the rate Music opened was never confirmed")
+        XCTAssertEqual(dacHz(), 96000, "the DAC stayed under the song")
+        XCTAssertEqual(rateWrites(r), 1)
+        XCTAssertEqual(r.music.count("pause"), 1)
+        XCTAssertEqual(r.music.count("resume"), 1)
+        XCTAssertEqual(r.music.count("seek0"), 0, "a mid-song correction restarted the song")
+        XCTAssertEqual(r.music.count("play"), 1)
+        XCTAssertEqual(feed.stops, 1, "the decoder feed outlived the player")
+    }
+
+    /// Reports that say nothing new change nothing: the same rate, a report from before
+    /// the song started, and a second report of the same upgrade.
+    func testReportsThatSayNothingNewCorrectNothing() throws {
+        let (r, _, _) = try decoderRun(reports: { feed, _ in
+            feed.emit(48000)                                          // the start's own rate
+            feed.emit(96000, at: Date(timeIntervalSinceNow: -3600))   // the song before this one
+        })
+        XCTAssertEqual(confirmedHz(r), [48000])
+        XCTAssertEqual(r.music.count("pause"), 0)
+
+        let (r2, _, _) = try decoderRun(reports: { feed, _ in feed.emit(96000); feed.emit(96000) })
+        XCTAssertEqual(rateWrites(r2), 1, "one upgrade was corrected twice")
+        XCTAssertEqual(r2.music.count("pause"), 1)
+    }
+
+    /// A newer command (the fence moved) owns the player: the late report writes nothing.
+    func testAReportAfterANewerCommandWritesNothing() throws {
+        let (r, _, dacHz) = try decoderRun(expect: .superseded, reports: { feed, r in
+            _ = try? r.fence.begin(.next, owner: "someone-else")
+            feed.emit(96000)
+        })
+        XCTAssertEqual(rateWrites(r), 0)
+        XCTAssertEqual(r.music.count("pause"), 0)
+        XCTAssertEqual(dacHz(), 48000)
     }
 
     func testTheRunnerAdvancesOnlyWhenTheSongEndedNotWhenItIsPausedOrStillPlaying() throws {

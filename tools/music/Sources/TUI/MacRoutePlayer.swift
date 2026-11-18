@@ -227,6 +227,29 @@ final class MacRoutePlayer {
     /// nil in every test that predates it: then nothing is sent.
     let reporter: MacRouteFollowReporter?
 
+    /// What Music's decoder opened, while a route song plays (finding 6). nil: never
+    /// followed (every test that predates it; the AppleScript rate read stands).
+    var decoderFeed: DecoderRateFeed?
+
+    /// The song this process last started on the route, as a decoder report is
+    /// matched to it (finding 6).
+    private struct SongFollow {
+        let transition: RateAwareTransition
+        let played: RateTransitionPlayed
+        let playlist: String
+        let position: Int
+        let persistentID: String?
+        /// Wall time just before the play: a report stamped earlier is an older stream's.
+        let startedAt: Date
+        /// The rate last confirmed for this song; a report that says the same is nothing new.
+        var lastHz: Int?
+        /// A correction for this song is running (a re-check or a decoder's): the next report waits.
+        var busy = false
+        var pendingHz: Int?
+    }
+    private var song: SongFollow?
+    private var decoderFeedStarted = false
+
     /// Called after every transition (after the evidence line is recorded).
     var onTransition: ((RateTransitionResult) -> Void)?
 
@@ -398,6 +421,7 @@ final class MacRoutePlayer {
         player.readRateStatus = {
             (try? SourceAppControl.macRate(observing: licence).status())?.rateFollow
         }
+        player.decoderFeed = LogStreamDecoderFeed()
         return player
     }
 
@@ -456,6 +480,8 @@ final class MacRoutePlayer {
         inFlight += 1
         condition.unlock()
         defer { condition.lock(); inFlight -= 1; condition.broadcast(); condition.unlock() }
+        let startedAt = Date()
+        startDecoderFeedIfNeeded()
 
         // The ordering first (fix round 3, finding B): the status read below can
         // block, and a newer command that starts meanwhile must win. With no
@@ -482,9 +508,15 @@ final class MacRoutePlayer {
         evidence.record(result)
         reportStarted(result, persistentID: persistentID, subject: subject)
         onTransition?(result)
-        if case .played(let played) = result, transition.needsRecheck(played) {
-            scheduleRecheck(transition, played: played, playlist: playlist, position: position,
-                            persistentID: persistentID)
+        if case .played(let played) = result {
+            condition.lock()
+            song = SongFollow(transition: transition, played: played, playlist: playlist, position: position,
+                              persistentID: persistentID, startedAt: startedAt, lastHz: played.delivered?.sampleRateHz)
+            condition.unlock()
+            if transition.needsRecheck(played) {
+                scheduleRecheck(transition, played: played, playlist: playlist, position: position,
+                                persistentID: persistentID)
+            }
         }
 
         switch result {
@@ -574,12 +606,84 @@ final class MacRoutePlayer {
         if closing { condition.unlock(); return }
         inFlight += 1
         condition.unlock()
+        setSongBusy(fence: played.token.fence, true)
         runFollowUp { [self] in
-            defer { condition.lock(); inFlight -= 1; condition.broadcast(); condition.unlock() }
+            defer {
+                condition.lock(); inFlight -= 1; condition.broadcast(); condition.unlock()
+                finishSongWork(fence: played.token.fence)
+            }
             guard let updated = transition.recheck(played, cancelled: { [self] in self.isClosing }) else { return }
             applyRecheck(updated, playlist: playlist, position: position, persistentID: persistentID)
         }
     }
+
+    // MARK: Music's decoder, mid-song (finding 6)
+
+    private func startDecoderFeedIfNeeded() {
+        condition.lock()
+        let feed = decoderFeed
+        let first = feed != nil && !decoderFeedStarted && !closing
+        if first { decoderFeedStarted = true }
+        condition.unlock()
+        guard first, let feed else { return }
+        feed.start { [weak self] report in self?.noteDecoderReport(report) }
+    }
+
+    private func setSongBusy(fence: Int, _ busy: Bool) {
+        condition.lock()
+        if song?.played.token.fence == fence { song?.busy = busy }
+        condition.unlock()
+    }
+
+    /// A correction (the re-check's or a decoder's) for the song of `fence` ended: a
+    /// report that arrived meanwhile is handled now.
+    private func finishSongWork(fence: Int) {
+        condition.lock()
+        var next: Int?
+        if song?.played.token.fence == fence {
+            song?.busy = false
+            next = song?.pendingHz
+            song?.pendingHz = nil
+        }
+        condition.unlock()
+        if let next { noteDecoderRate(next, at: Date.distantFuture) }
+    }
+
+    /// One report from Music's decoder (any thread). Acts only on a report that is
+    /// NEW for the song being played: stamped after the song started, and a rate other
+    /// than the one last confirmed for it. Once per upgrade: the rate is taken as
+    /// handled at once, whatever the correction's outcome, so the same report twice
+    /// never corrects twice.
+    func noteDecoderReport(_ report: DecoderReport) {
+        noteDecoderRate(report.sampleRateHz, at: report.at)
+    }
+
+    private func noteDecoderRate(_ hz: Int, at: Date) {
+        // Off the route (the output moved, the route was turned off) the DAC is not ours
+        // to follow. Asked before the lock is taken: the output check has its own.
+        guard route.isOn, outputIsMusicApp() else { return }
+        condition.lock()
+        guard !closing, var current = song, at >= current.startedAt.addingTimeInterval(-1),
+              hz != current.lastHz else { condition.unlock(); return }
+        if current.busy { current.pendingHz = hz; song = current; condition.unlock(); return }
+        current.busy = true
+        current.lastHz = hz
+        song = current
+        inFlight += 1
+        condition.unlock()
+        let fence = current.played.token.fence
+        runFollowUp { [self] in
+            defer {
+                condition.lock(); inFlight -= 1; condition.broadcast(); condition.unlock()
+                finishSongWork(fence: fence)
+            }
+            guard let updated = current.transition.adoptDecoderRate(current.played, hz: hz,
+                                                                    cancelled: { [self] in self.isClosing }) else { return }
+            applyRecheck(updated, playlist: current.playlist, position: current.position,
+                         persistentID: current.persistentID)
+        }
+    }
+
 
     /// The line and the report take the re-check's evidence, only while the song
     /// it was made for is still the last one this process started.
@@ -591,6 +695,11 @@ final class MacRoutePlayer {
         guard current else { return }
         record(.played(updated), playlist: playlist, position: position, persistentID: persistentID, newStart: false)
         evidence.replace(updated)
+        condition.lock()
+        if song?.played.token.fence == updated.token.fence, let hz = updated.delivered?.sampleRateHz {
+            song?.lastHz = hz
+        }
+        condition.unlock()
         // The poller's next look reports the song with the new rate: its reports
         // of this song copy the rate fields from `lastStartedReport`, and a
         // cleared `lastObserved` makes that next look a change.
@@ -618,6 +727,10 @@ final class MacRoutePlayer {
     func shutdown(wait: TimeInterval = 10) {
         condition.lock()
         closing = true
+        let feed = decoderFeed
+        condition.unlock()
+        feed?.stop()
+        condition.lock()
         let deadline = Date(timeIntervalSinceNow: wait)
         while inFlight > 0, condition.wait(until: deadline) {}
         let held = ourPause

@@ -263,6 +263,9 @@ final class RateAwareTransition {
     /// object is one run (`MacRoutePlayer` makes one per play); set before `run`
     /// returns, read by the one follow-up it schedules.
     private var followUp: (plan: RateTransitionPlan, follow: SourceRateFollow, persistentID: String)?
+    /// The same context, kept for the whole song (`followUp` is spent by the re-check):
+    /// what a decoder report mid-song (`adoptDecoderRate`) needs.
+    private var songContext: (plan: RateTransitionPlan, follow: SourceRateFollow, persistentID: String)?
 
     /// `makeFollow` builds the client for a token (its control, its clock): the
     /// production one is `SourceRateFollow(token:control:status:)` on
@@ -329,6 +332,7 @@ final class RateAwareTransition {
                                                 baseline: follow.baseline))
         }
         followUp = (plan, follow, persistentID)
+        songContext = (plan, follow, persistentID)
         let delivered = streamRead(persistentID, window: streamWait.window, interval: streamWait.interval)
         let finish = confirmAndCorrect(plan, token: token, follow: follow, persistentID: persistentID,
                                        delivered: delivered)
@@ -375,6 +379,29 @@ final class RateAwareTransition {
         let finish = confirmAndCorrect(ctx.plan, token: token, follow: ctx.follow, persistentID: ctx.persistentID,
                                        delivered: delivered)
         followUp = nil      // once
+        return RateTransitionPlayed(token: token, startLine: played.startLine, rateOutcome: played.rateOutcome,
+                                    delivered: delivered, confirm: finish.confirm, correction: finish.correction,
+                                    baseline: ctx.follow.baseline, confirmAfterCorrection: finish.confirmAfter)
+    }
+
+    /// Music's decoder reported a sample rate for THIS song mid-song (finding 6: a
+    /// streamed song that starts on the lossy variant and upgrades to lossless a few
+    /// seconds in, which AppleScript's `sample rate` never shows). Confirms the rate
+    /// the decoder opened and, if SpanDAC says the DAC is not at it, runs the same
+    /// correction a start runs (pause, SpanDAC writes, resume) except that the song
+    /// resumes AT THE SAME POSITION. Returns the played record with the new evidence;
+    /// nil when there is nothing to say: `cancelled`, a newer command, or no song of
+    /// this transition. The caller decides when a report is new (once per upgrade).
+    func adoptDecoderRate(_ played: RateTransitionPlayed, hz: Int,
+                          cancelled: () -> Bool = { false }) -> RateTransitionPlayed? {
+        guard let ctx = songContext else { return nil }
+        let token = played.token
+        guard !cancelled(), ctx.plan.isCurrent(),
+              (try? fence.fenceFileHolds(token.fence, timeout: 0.5)) ?? true else { return nil }
+        let delivered = RateTrackRead(persistentID: ctx.persistentID, databaseID: played.delivered?.databaseID,
+                                      sampleRateHz: hz)
+        let finish = confirmAndCorrect(ctx.plan, token: token, follow: ctx.follow, persistentID: ctx.persistentID,
+                                       delivered: delivered, midSong: true)
         return RateTransitionPlayed(token: token, startLine: played.startLine, rateOutcome: played.rateOutcome,
                                     delivered: delivered, confirm: finish.confirm, correction: finish.correction,
                                     baseline: ctx.follow.baseline, confirmAfterCorrection: finish.confirmAfter)
@@ -438,7 +465,8 @@ final class RateAwareTransition {
     /// says the DAC is not at the song's rate, correct (once). `delivered` nil
     /// (no proven read) confirms and corrects nothing.
     private func confirmAndCorrect(_ plan: RateTransitionPlan, token: RateToken, follow: SourceRateFollow,
-                                   persistentID: String, delivered: RateTrackRead?)
+                                   persistentID: String, delivered: RateTrackRead?,
+                                   midSong: Bool = false)
         -> (confirm: SourceRateOutcome?, correction: RateCorrection, confirmAfter: SourceRateOutcome?) {
         var confirm: SourceRateOutcome?
         if let delivered {
@@ -450,7 +478,7 @@ final class RateAwareTransition {
            allowCorrection(), follow.mayWriteRate,
            let rateHz = answer.targetHz ?? delivered?.sampleRateHz {
             correction = correct(plan, token: token, follow: follow, persistentID: persistentID, toHz: rateHz,
-                                 confirmAfter: &confirmAfter)
+                                 midSong: midSong, confirmAfter: &confirmAfter)
         }
         return (confirm, correction, confirmAfter)
     }
@@ -459,7 +487,7 @@ final class RateAwareTransition {
     /// position 0, play; resume only our own pause (the guarantee in the header).
     /// `confirmAfter` receives the second confirm's outcome when the song resumed.
     private func correct(_ plan: RateTransitionPlan, token: RateToken, follow: SourceRateFollow,
-                         persistentID: String, toHz rateHz: Int,
+                         persistentID: String, toHz rateHz: Int, midSong: Bool = false,
                          confirmAfter: inout SourceRateOutcome?) -> RateCorrection {
         // The 3 s window is how long Music may be held paused, so it starts BEFORE
         // the pause call (the lock wait, the read before it and the pause itself may
@@ -566,7 +594,11 @@ final class RateAwareTransition {
                 if abs(state.position - paused.position) > Self.positionTolerance { stop = .musicSeeked; return false }
                 return true
             }, play: {
-                do { try self.music.seekToStart() } catch { restarted = false }
+                // At a start the song begins again at the new rate; mid-song (a decoder
+                // upgrade) it resumes where it is.
+                if midSong { restarted = false } else {
+                    do { try self.music.seekToStart() } catch { restarted = false }
+                }
                 do { try self.music.resume() } catch { resumeError = error }
             })
         } catch {
@@ -582,7 +614,11 @@ final class RateAwareTransition {
         // SpanDAC records the delivered rate (section 3.3 step 5, last bullet).
         // Its answer is the evidence of the corrected song: kept, not discarded
         // (fix round 1, finding 6).
-        if let again = streamRead(persistentID, window: streamWait.window, interval: streamWait.interval) {
+        if midSong {
+            // The AppleScript rate does not follow a decoder upgrade, so it is not the
+            // evidence here: the decoder's own rate is what was corrected to.
+            confirmAfter = follow.confirm(persistentID: persistentID, deliveredHz: rateHz)
+        } else if let again = streamRead(persistentID, window: streamWait.window, interval: streamWait.interval) {
             confirmAfter = follow.confirm(persistentID: again.persistentID, deliveredHz: again.sampleRateHz)
         }
         return .resumed(restartedFromStart: restarted, rateOutcome: rateOutcome)

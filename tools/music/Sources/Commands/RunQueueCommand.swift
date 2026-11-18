@@ -509,6 +509,9 @@ func liveCLIRoutePlayer(owner: String = RateFence.newOwnerID()) -> (player: MacR
     // first prepare, so a SpanDAC that restarted gets follow-on before any rate
     // write, and refreshed while a song plays.
     player.readRateStatus = { (try? SourceAppControl.macRate(observing: nil).status())?.rateFollow }
+    // Music's own report of the rate it opened, for a streamed song that upgrades mid-song
+    // (finding 6). Started at the first play, ended by `shutdown`.
+    player.decoderFeed = LogStreamDecoderFeed()
     return (player, route, routeStore, backend)
 }
 
