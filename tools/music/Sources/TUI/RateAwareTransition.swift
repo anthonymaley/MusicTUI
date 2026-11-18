@@ -14,10 +14,8 @@ import Foundation
 //   3. revalidate the whole token, play (M3)     RateFence.playIfCurrent
 //   4. wait (bounded) for THIS stream, then confirm   SourceRateFollow.confirm
 //   5. correct at the start if SpanDAC says so    pause, correct, 0, resume (M5)
-//   6. a stream that was not up in time is re-checked later, once (`recheck`),
-//      and a rate read from a stream judged up is read again once it has settled
+//   6. a stream that was not up in time is re-checked later, once (`recheck`)
 //
-
 // **The confirm read is for this stream (live check 2026-11-16).** Music keeps
 // reporting the PREVIOUS stream's sample rate until the new stream is up (and
 // refused `player position` for about 15 s after a jump to a hi-res song), so a
@@ -26,16 +24,6 @@ import Foundation
 // playing this persistent ID with the position advancing; only then is the rate
 // read and sent. If the stream is not up in time nothing is confirmed (no rate is
 // claimed that was not measured for this song) and `recheck` tries again later.
-//
-// **A stream judged up is not yet the stream (live check 2026-11-17).** Music's
-// position advances, and its player says playing this ID, a moment BEFORE the
-// decoder has opened the new stream (a CLI jump to a 96 kHz song after a 44.1 kHz
-// one: the proof passed, `sample rate` read 44100, SpanDAC said `own_rate`, and
-// Music opened ALAC 96000 half a second later, so the DAC stayed at 44.1 and the
-// song played converted down). So the read is never final: `recheck` also
-// reads the rate again, `RateStreamWait.verifyInterval` apart, a few times, and a
-// rate that differs from the one confirmed is confirmed (and corrected) like any
-// other. The TUI and the CLI runner both reach this through `MacRoutePlayer.play`.
 //
 // **What it never does.** It never refuses a song for a rate reason: every
 // outcome of the rate ops except the token going stale ends in a play (M4), and
@@ -114,20 +102,9 @@ struct RateStreamWait {
     /// The later re-check's bound: it runs off the caller's thread.
     var recheckWindow: TimeInterval = 30
     var recheckInterval: TimeInterval = 1
-    /// How many times, `verifyInterval` apart, a rate that was read from a stream
-    /// judged up is read AGAIN (the settle re-read of `RateAwareTransition.recheck`).
-    /// A position that advances is not proof the decoder has opened the new stream:
-    /// live, 2026-11-17, a jump to a 96 kHz song after a 44.1 kHz one passed the
-    /// stream proof while `sample rate` was still the previous 44100, and Music
-    /// opened ALAC 96000 half a second after that read was confirmed. 0 (the
-    /// default of a bare value, so every test that predates this) re-reads nothing;
-    /// `live` re-reads three times, two seconds apart. CHOSEN, NOT MEASURED: the one
-    /// measured gap was about half a second.
-    var verifyReads = 0
-    var verifyInterval: TimeInterval = 2
     var sleep: (TimeInterval) -> Void = { Thread.sleep(forTimeInterval: $0) }
 
-    static let live = RateStreamWait(verifyReads: 3)
+    static let live = RateStreamWait()
 }
 
 // MARK: - plan and result
@@ -348,36 +325,24 @@ final class RateAwareTransition {
 
     /// Whether `recheck` has anything to do for `played`: a track start whose
     /// first read could not be proven to be this stream (nothing was confirmed,
-    /// so nothing was corrected either), or one whose proven read is to be read
-    /// again once the stream has settled (`streamWait.verifyReads`).
+    /// so nothing was corrected either).
     func needsRecheck(_ played: RateTransitionPlayed) -> Bool {
-        guard followUp != nil else { return false }
-        if played.delivered == nil { return played.confirm == nil && played.correction == .notNeeded }
-        return streamWait.verifyReads > 0
+        followUp != nil && played.delivered == nil && played.confirm == nil && played.correction == .notNeeded
     }
 
-    /// The follow-up of a start, off the caller's thread. Two parts, each bounded:
+    /// The follow-up for a start whose stream was not up when the confirm gave
+    /// up (the live check's jump to a hi-res song, 2026-11-16): waits, off the
+    /// caller's thread and bounded by `recheckWindow`, until Music is playing
+    /// this ID with the position advancing, reads the rate of THIS stream,
+    /// confirms it, and, if SpanDAC says the DAC is not at it, runs the same
+    /// correction a start runs (every guarantee of `correct`: the pause is
+    /// revalidated under the output lock, resumed only if still ours), once.
     ///
-    /// 1. A start whose stream was not up when the confirm gave up (the live
-    ///    check's jump to a hi-res song, 2026-11-16): waits, bounded by
-    ///    `recheckWindow`, until Music is playing this ID with the position
-    ///    advancing, reads the rate of THIS stream, confirms it, and, if SpanDAC
-    ///    says the DAC is not at it, runs the same correction a start runs.
-    /// 2. The settle re-read (finding 3, 2026-11-17): the rate confirmed so far
-    ///    came from a stream that was only JUDGED up, so up to `verifyReads` more
-    ///    reads, `verifyInterval` apart, look again; one that differs from the
-    ///    rate confirmed is confirmed and corrected the same way. A read that is
-    ///    the same says nothing and sends nothing.
-    ///
-    /// Every correction has all the guarantees of `correct`: the pause is
-    /// revalidated under the output lock and resumed only if still ours.
-    ///
-    /// Returns the played record with the newest evidence, or nil when there is
+    /// Returns the played record with the new evidence, or nil when there is
     /// nothing new to say: `cancelled` (the caller is closing), a newer command
-    /// (the fence moved, or the plan's own token no longer holds), no stream within
-    /// the window, or every re-read the same. It never plays, pauses or seeks
-    /// except through the one correction a changed rate asks for, and a failure of
-    /// any kind leaves the song playing.
+    /// (the fence moved, or the plan's own token no longer holds), or no stream
+    /// within the window. It never plays, pauses or seeks except through the one
+    /// correction, and a failure of any kind leaves the song playing.
     func recheck(_ played: RateTransitionPlayed, cancelled: () -> Bool = { false }) -> RateTransitionPlayed? {
         guard needsRecheck(played), let ctx = followUp else { return nil }
         let token = played.token
@@ -388,36 +353,15 @@ final class RateAwareTransition {
             return (try? fence.fenceFileHolds(token.fence, timeout: 0.5)) ?? true
         }
         guard stillOurs() else { return nil }
-        var latest = played
-        var changed = false
-        var confirmedHz = played.delivered?.sampleRateHz
-        func take(_ delivered: RateTrackRead) {
-            let finish = confirmAndCorrect(ctx.plan, token: token, follow: ctx.follow, persistentID: ctx.persistentID,
-                                           delivered: delivered)
-            latest = RateTransitionPlayed(token: token, startLine: played.startLine, rateOutcome: played.rateOutcome,
-                                          delivered: delivered, confirm: finish.confirm, correction: finish.correction,
-                                          baseline: ctx.follow.baseline, confirmAfterCorrection: finish.confirmAfter)
-            confirmedHz = delivered.sampleRateHz
-            changed = true
-        }
-        if played.delivered == nil {
-            let delivered = streamRead(ctx.persistentID, window: streamWait.recheckWindow,
-                                       interval: streamWait.recheckInterval, keepGoing: stillOurs)
-            guard let delivered, stillOurs() else { return nil }
-            take(delivered)
-        }
-        var rereads = streamWait.verifyReads
-        while rereads > 0 {
-            rereads -= 1
-            streamWait.sleep(streamWait.verifyInterval)
-            guard stillOurs(),
-                  let again = streamRead(ctx.persistentID, window: streamWait.window,
-                                         interval: streamWait.interval, keepGoing: stillOurs),
-                  stillOurs() else { break }
-            if let hz = again.sampleRateHz, hz != confirmedHz { take(again) }
-        }
+        let delivered = streamRead(ctx.persistentID, window: streamWait.recheckWindow,
+                                   interval: streamWait.recheckInterval, keepGoing: stillOurs)
+        guard let delivered, stillOurs() else { return nil }
+        let finish = confirmAndCorrect(ctx.plan, token: token, follow: ctx.follow, persistentID: ctx.persistentID,
+                                       delivered: delivered)
         followUp = nil      // once
-        return changed ? latest : nil
+        return RateTransitionPlayed(token: token, startLine: played.startLine, rateOutcome: played.rateOutcome,
+                                    delivered: delivered, confirm: finish.confirm, correction: finish.correction,
+                                    baseline: ctx.follow.baseline, confirmAfterCorrection: finish.confirmAfter)
     }
 
     // MARK: private
