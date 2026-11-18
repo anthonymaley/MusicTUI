@@ -271,12 +271,14 @@ final class RunQueueTests: XCTestCase {
     /// a time on successive polls and records what the runner said back.
     private final class FakeControl: RunQueueControlling {
         var registered = 0, unregistered = 0
-        /// How many songs had been played when the runner registered.
+        /// How many songs had been played when the runner said it was ready (held the lease).
         var registeredAtPlays: [Int] = []
+        var starts = 0
         var skips: [(afterPlays: Int, request: RunQueueSkipRequest)] = []
         var acks: [(nonce: String, outcome: RunQueueSkipOutcome, playsAtAck: Int)] = []
         var playCount: () -> Int = { 0 }
-        func register() { registered += 1; registeredAtPlays.append(playCount()) }
+        func register() { starts += 1 }
+        func markReady() { registered += 1; registeredAtPlays.append(playCount()) }
         func unregister() { unregistered += 1 }
         func takeSkip() -> RunQueueSkipRequest? {
             guard let first = skips.first, playCount() >= first.afterPlays else { return nil }
@@ -323,13 +325,15 @@ final class RunQueueTests: XCTestCase {
         XCTAssertEqual(control.unregistered, 1)
     }
 
-    /// Registered only while the lease is held: a runner with no reserved ordering takes
-    /// the lease at its FIRST play, so it is not asked before that.
-    func testTheRunnerRegistersOnlyOnceItHoldsTheLease() throws {
+    /// Known from the start (a client waits for a runner that is starting instead of
+    /// restarting the song through Music), ready to be asked only once the lease is held:
+    /// a runner with no reserved ordering takes the lease at its FIRST play.
+    func testTheRunnerAnnouncesItselfAtOnceAndIsReadyOnlyOnceItHoldsTheLease() throws {
         let control = FakeControl()
         let r = skipRig(control)
         _ = r.runner(queueStore(ids), control: control).run()
-        XCTAssertEqual(control.registeredAtPlays, [1], "registered before the lease was held, or more than once")
+        XCTAssertEqual(control.starts, 1, "the starting runner was never announced")
+        XCTAssertEqual(control.registeredAtPlays, [1], "ready before the lease was held, or more than once")
     }
 
     /// The ack carries what happened: Music refusing the song the skip led to is a

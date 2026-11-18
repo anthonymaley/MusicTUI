@@ -10,10 +10,13 @@ import Foundation
 // runner's own queue never hears of it. The runner is another process, so the
 // skip reaches it through three small files beside the fence and the lock:
 //
-//   run-queue.runner        `pid`, newline, `owner`: written by a runner while it
-//                           holds the play lease, removed (its own record only) when
-//                           it ends. A client trusts it only while the pid is alive
-//                           AND the lease is still that owner's.
+//   run-queue.runner        `pid`, `owner`, `phase` (one per line): written by a runner
+//                           the moment it starts (`starting`) and again once it holds
+//                           the play lease (`ready`), removed (its own record only)
+//                           when it ends. A client asks a runner only while the pid is
+//                           alive, the phase is `ready` and the lease is that owner's;
+//                           a `starting` runner is waited for, never replaced by
+//                           Music's own next track (which restarts the song).
 //   run-queue.skip.<owner>  `step` space `nonce`: written by the client (atomically),
 //                           addressed to that runner by its name: no other runner
 //                           ever reads it. Two clients at once overwrite one another
@@ -49,8 +52,10 @@ enum RunQueueSkipOutcome: String {
 
 /// The runner's end of the channel.
 protocol RunQueueControlling {
-    /// The runner holds the play lease: clients may ask it.
+    /// The runner is up (it may not hold the lease yet): a client waits for it.
     func register()
+    /// The runner holds the play lease: clients may ask it.
+    func markReady()
     /// The runner is ending. Removes only this runner's own record.
     func unregister()
     /// The pending skip addressed to this runner, taken: it is not returned twice.
@@ -90,13 +95,15 @@ struct FileRunQueueControl: RunQueueControlling {
     let owner: String
     var pid: Int32 = getpid()
 
-    private var record: String { "\(pid)\n\(owner)\n" }
+    private func record(_ phase: String) -> String { "\(pid)\n\(owner)\n\(phase)\n" }
 
-    func register() { _ = files.write(record, to: files.runnerPath) }
+    func register() { _ = files.write(record("starting"), to: files.runnerPath) }
+    func markReady() { _ = files.write(record("ready"), to: files.runnerPath) }
 
     func unregister() {
-        // Only this runner's own record, exactly: a newer runner's must survive.
-        if files.read(files.runnerPath) == record { unlink(files.runnerPath) }
+        // Only this runner's own record (its pid AND owner, either phase): a newer
+        // runner's must survive.
+        if let text = files.read(files.runnerPath), text.hasPrefix("\(pid)\n\(owner)\n") { unlink(files.runnerPath) }
         unlink(files.skipPath(owner: owner))
     }
 
@@ -135,13 +142,17 @@ struct RunQueueSkipClient {
         case notStarted
         /// The runner heard it and a newer command had taken over.
         case superseded
+        /// A runner exists for the route but is not ready to be asked: its start has
+        /// not finished. Music's own next track is NOT a substitute (it restarts the song).
+        case stillStarting
     }
 
     let files: RunQueueControlFiles
     /// Whether a process is alive. The default is `kill(pid, 0)`.
     var isAlive: (Int32) -> Bool = { kill($0, 0) == 0 || errno == EPERM }
-    /// Whether `owner` still holds the play lease.
-    var leaseIsOwners: (String) -> Bool
+    /// Who holds the play lease relative to `owner`. Read WITHOUT the output lock held
+    /// by this process: under it the answer would be `.busy` (the lock is ours).
+    var leaseStatus: (String) -> RateFence.LeaseStatus
     var newNonce: () -> String = { UUID().uuidString }
     var sleep: (TimeInterval) -> Void = { Thread.sleep(forTimeInterval: $0) }
     var now: () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
@@ -149,25 +160,49 @@ struct RunQueueSkipClient {
     var pickUpWithin: TimeInterval = 4
     /// A start can take a prepare, a confirm and a correction.
     var ackWithin: TimeInterval = 20
+    /// How long a runner that has not finished starting is waited for.
+    var startWithin: TimeInterval = 8
     var pollEvery: TimeInterval = 0.1
 
-    static func live() -> RunQueueSkipClient {
-        let modes = PlaybackModeStore()
+    static func live(modes: PlaybackModeStore = PlaybackModeStore()) -> RunQueueSkipClient {
         let fence = RateFence(store: modes)
-        return RunQueueSkipClient(files: .beside(modes), leaseIsOwners: { fence.leaseStatus(owner: $0) == .ours })
+        return RunQueueSkipClient(files: .beside(modes), leaseStatus: { fence.leaseStatus(owner: $0) })
     }
 
-    /// The live runner's owner, or nil: no record, a dead pid, or a lease that is
-    /// someone else's (the TUI, another runner) all mean "no runner owns the queue".
-    func runnerOwner() -> String? {
-        guard let text = files.read(files.runnerPath) else { return nil }
+    enum RunnerState: Equatable {
+        /// No record, or its process is gone: nothing owns the queue.
+        case none
+        /// A live runner that has not said it holds the lease.
+        case starting
+        case ready(owner: String)
+    }
+
+    func runnerState() -> RunnerState {
+        guard let text = files.read(files.runnerPath) else { return .none }
         let lines = text.split(separator: "\n").map(String.init)
-        guard lines.count >= 2, let pid = Int32(lines[0]), isAlive(pid), leaseIsOwners(lines[1]) else { return nil }
-        return lines[1]
+        guard lines.count >= 2, let pid = Int32(lines[0]), isAlive(pid) else { return .none }
+        return lines.count >= 3 && lines[2] == "ready" ? .ready(owner: lines[1]) : .starting
     }
 
     func send(step: Int) -> Outcome {
-        guard let owner = runnerOwner() else { return .noRunner }
+        let began = now()
+        var owner: String
+        waiting: while true {
+            switch runnerState() {
+            case .none:
+                return .noRunner
+            case .starting:
+                break
+            case .ready(let candidate):
+                switch leaseStatus(candidate) {
+                case .ours: owner = candidate; break waiting
+                case .busy: break           // the lock is held by someone for a moment
+                case .another, .none, .unreadable: return .noRunner     // the lease moved on
+                }
+            }
+            if now() - began > startWithin { return .stillStarting }
+            sleep(pollEvery)
+        }
         let nonce = newNonce()
         let skipPath = files.skipPath(owner: owner)
         guard files.write("\(step) \(nonce)", to: skipPath) else { return .notSent }
@@ -204,11 +239,18 @@ struct RunQueueSkipClient {
 /// steps it. True when this handled the command (a line was shown or an error was
 /// reported); false when the caller should do what it always did (route off, no
 /// runner).
+///
+/// Everything it reads (the route flag, the runner's record, the lease) lives beside
+/// `modes`, the coordinator's own store, so a test's temp store is a temp world and only
+/// production's reaches `~/.config/music`.
 func skipThroughRunner(step: Int, json: Bool,
-                       routeIsOn: () -> Bool = { MacRouteStore(beside: PlaybackModeStore()).isOn },
-                       client: RunQueueSkipClient = .live(),
+                       modes: PlaybackModeStore = PlaybackModeStore(),
+                       routeIsOn: (() -> Bool)? = nil,
+                       client: RunQueueSkipClient? = nil,
                        show: (Bool) -> Void = { showNowPlaying(json: $0, waitForPlay: true) },
                        fail: (String) -> Void = { errorOut($0) }) throws -> Bool {
+    let routeIsOn = routeIsOn ?? { MacRouteStore(beside: modes).isOn }
+    let client = client ?? RunQueueSkipClient.live(modes: modes)
     guard routeIsOn() else { return false }
     switch client.send(step: step) {
     case .noRunner:
@@ -222,6 +264,9 @@ func skipThroughRunner(step: Int, json: Bool,
     case .superseded:
         fail(macRouteSkipSupersededMessage)
         throw ExitCode.failure
+    case .stillStarting:
+        fail(macRouteSkipStartingMessage)
+        throw ExitCode.failure
     case .notPickedUp, .notAcknowledged, .notSent:
         fail(macRouteSkipNotDoneMessage)
         throw ExitCode.failure
@@ -230,4 +275,5 @@ func skipThroughRunner(step: Int, json: Bool,
 
 let macRouteSkipNotDoneMessage = "Couldn't skip: the queue that follows the DAC's sample rate didn't answer."
 let macRouteSkipNotStartedMessage = "Couldn't skip: the next song didn't start."
+let macRouteSkipStartingMessage = "Couldn't skip: the queue is still starting."
 let macRouteSkipSupersededMessage = "Couldn't skip: another command took over playback."

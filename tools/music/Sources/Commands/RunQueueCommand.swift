@@ -280,7 +280,7 @@ final class RunQueueRunner {
     private let maxLifetime: TimeInterval
     /// Where a `music skip` / `music back` from another process reaches this runner.
     private let control: RunQueueControlling?
-    private var registered = false
+    private var ready = false
     /// The skip whose song is being started: answered once that play has an outcome.
     private var pendingAck: String?
     /// The token the parent reserved for this runner's first play (fix round 1,
@@ -316,9 +316,12 @@ final class RunQueueRunner {
 
     /// Plays the queue to its end or until something else owns the player.
     func run() -> RunQueueExit {
-        // Registered only while the lease is held (a reserved runner holds it from the
-        // start; otherwise it is taken at the first play, `registerIfOwner` below).
-        registerIfOwner()
+        // Known to clients from the start (so none mistakes a runner that is still starting
+        // for no runner and restarts the song through Music), ready to be asked only once
+        // the lease is held (a reserved runner holds it from the start; otherwise it is
+        // taken at the first play, `markReadyIfOwner` below).
+        control?.register()
+        markReadyIfOwner()
         defer {
             // A skip still waiting for its answer when the runner leaves is answered.
             if let nonce = pendingAck { control?.acknowledge(nonce: nonce, outcome: .notStarted); pendingAck = nil }
@@ -340,10 +343,10 @@ final class RunQueueRunner {
         return exit
     }
 
-    private func registerIfOwner() {
-        guard let control, !registered, player.fence.leaseStatus(owner: player.owner) == .ours else { return }
-        control.register()
-        registered = true
+    private func markReadyIfOwner() {
+        guard let control, !ready, player.fence.leaseStatus(owner: player.owner) == .ours else { return }
+        control.markReady()
+        ready = true
     }
 
     private func acknowledgePending(_ outcome: RunQueueSkipOutcome) {
@@ -368,7 +371,7 @@ final class RunQueueRunner {
             let outcome = player.play(playlist: playlist, position: position, command: command,
                                       subject: RouteSubject(current: queue.read()), token: reserved,
                                       isCurrent: { [queue] in queue.generation == generation })
-            registerIfOwner()
+            markReadyIfOwner()
             // The reserved token is the FIRST play's: kept only while the output
             // lock kept that play from starting at all.
             if case .notStarted = outcome {} else { pendingToken = nil }

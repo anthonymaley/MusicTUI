@@ -25,16 +25,19 @@ final class RunQueueSkipTests: XCTestCase {
 
     // MARK: the files
 
-    func testTheRunnersRecordIsWrittenAndOnlyItsOwnIsRemoved() {
+    func testTheRunnersRecordHasItsPhaseAndOnlyItsOwnIsRemoved() {
         let mine = control(owner: "a", pid: 1), newer = control(owner: "b", pid: 2)
         mine.register()
-        XCTAssertEqual(files.read(files.runnerPath), "1\na\n")
+        XCTAssertEqual(files.read(files.runnerPath), "1\na\nstarting\n")
+        mine.markReady()
+        XCTAssertEqual(files.read(files.runnerPath), "1\na\nready\n")
         newer.register()                       // a newer runner replaced the record
         mine.unregister()
-        XCTAssertEqual(files.read(files.runnerPath), "2\nb\n", "an ending runner removed a newer runner's record")
+        XCTAssertEqual(files.read(files.runnerPath), "2\nb\nstarting\n", "an ending runner removed a newer runner's record")
         // The same pid under another owner is not this runner either.
         FileRunQueueControl(files: files, owner: "other", pid: 2).unregister()
-        XCTAssertEqual(files.read(files.runnerPath), "2\nb\n", "a record of another owner was removed by pid alone")
+        XCTAssertEqual(files.read(files.runnerPath), "2\nb\nstarting\n", "a record of another owner was removed by pid alone")
+        newer.markReady()
         newer.unregister()
         XCTAssertNil(files.read(files.runnerPath))
     }
@@ -73,9 +76,10 @@ final class RunQueueSkipTests: XCTestCase {
     // MARK: the client
 
     private func client(owner: String = "runner-1", alive: Bool = true, leaseHolds: Bool = true,
+                        lease: RateFence.LeaseStatus? = nil,
                         clock: Clock = Clock(), nonce: String = "NONCE",
                         onSleep: @escaping () -> Void = {}) -> RunQueueSkipClient {
-        var c = RunQueueSkipClient(files: files, leaseIsOwners: { _ in leaseHolds })
+        var c = RunQueueSkipClient(files: files, leaseStatus: { _ in lease ?? (leaseHolds ? .ours : .another) })
         c.isAlive = { _ in alive }
         c.newNonce = { nonce }
         c.now = { clock.t }
@@ -86,7 +90,8 @@ final class RunQueueSkipTests: XCTestCase {
 
     func testNoRecordADeadRunnerOrAnotherLeaseHolderMeansNoRunner() {
         XCTAssertEqual(client().send(step: 1), .noRunner)
-        control().register()
+        let up = control()
+        up.register(); up.markReady()
         XCTAssertEqual(client(alive: false).send(step: 1), .noRunner, "a dead runner was asked")
         XCTAssertEqual(client(leaseHolds: false).send(step: 1), .noRunner, "a runner that lost the lease was asked")
         XCTAssertFalse(FileManager.default.fileExists(atPath: files.skipPath(owner: "runner-1")), "a skip was written for nobody")
@@ -94,7 +99,7 @@ final class RunQueueSkipTests: XCTestCase {
 
     func testALiveRunnersSkipIsSentPickedUpAndAcknowledged() {
         let runner = control()
-        runner.register()
+        runner.register(); runner.markReady()
         var taken: RunQueueSkipRequest?
         let c = client(onSleep: {
             if taken == nil { taken = runner.takeSkip() }
@@ -105,7 +110,8 @@ final class RunQueueSkipTests: XCTestCase {
     }
 
     func testARunnerThatNeverPicksItUpIsWithdrawnAndNothingFiresLater() {
-        control().register()
+        let up = control()
+        up.register(); up.markReady()
         XCTAssertEqual(client().send(step: 1), .notPickedUp)
         XCTAssertFalse(FileManager.default.fileExists(atPath: files.skipPath(owner: "runner-1")), "a withdrawn skip is still there")
     }
@@ -115,7 +121,7 @@ final class RunQueueSkipTests: XCTestCase {
     /// a client that times out withdraws only its OWN request.
     func testTwoClientsAtOnceEachReportTheTruthFromTheAcksNonce() {
         let runner = control()
-        runner.register()
+        runner.register(); runner.markReady()
         // Client A writes; before it looks again, client B's request replaces it.
         var replaced = false
         let a = client(nonce: "A", onSleep: {
@@ -130,7 +136,8 @@ final class RunQueueSkipTests: XCTestCase {
     }
 
     func testATimedOutClientNeverWithdrawsAnotherClientsRequest() {
-        control().register()
+        let up = control()
+        up.register(); up.markReady()
         var swapped = false
         let a = client(nonce: "A", onSleep: {
             if !swapped { swapped = true; _ = self.files.write("1 B", to: self.files.skipPath(owner: "runner-1")) }
@@ -145,7 +152,7 @@ final class RunQueueSkipTests: XCTestCase {
                                     (.end, .done), (.failed, .notStarted), (.notStarted, .notStarted),
                                     (.superseded, .superseded)] {
             let runner = control()
-            runner.register()
+            runner.register(); runner.markReady()
             var taken: RunQueueSkipRequest?
             let c = client(nonce: "N-\(outcome.rawValue)", onSleep: {
                 if taken == nil { taken = runner.takeSkip() } else if let taken { runner.acknowledge(nonce: taken.nonce, outcome: outcome) }
@@ -156,7 +163,7 @@ final class RunQueueSkipTests: XCTestCase {
 
     func testARunnerThatTookItButNeverAnswersIsReported() {
         let runner = control()
-        runner.register()
+        runner.register(); runner.markReady()
         let c = client(onSleep: { _ = runner.takeSkip() })
         XCTAssertEqual(c.send(step: 1), .notAcknowledged)
     }
@@ -165,7 +172,7 @@ final class RunQueueSkipTests: XCTestCase {
 
     func testSkipThroughTheRunnerShowsWhatPlaysOnlyOnceItStarted() throws {
         let runner = control()
-        runner.register()
+        runner.register(); runner.markReady()
         var shown = 0
         var taken: RunQueueSkipRequest?
         let c = client(onSleep: {
@@ -186,7 +193,8 @@ final class RunQueueSkipTests: XCTestCase {
     }
 
     func testARunnerThatDoesNotAnswerFailsTheCommandInsteadOfRestartingTheSong() {
-        control().register()
+        let up = control()
+        up.register(); up.markReady()
         var said: String?
         XCTAssertThrowsError(try skipThroughRunner(step: 1, json: false, routeIsOn: { true }, client: client(),
                                                    show: { _ in XCTFail("shown") }, fail: { said = $0 })) {
@@ -195,27 +203,42 @@ final class RunQueueSkipTests: XCTestCase {
         XCTAssertEqual(said, macRouteSkipNotDoneMessage)
     }
 
-    /// `skip` and `back` ask the runner FIRST, and never send Music's own next or
-    /// previous track when the runner took it (that restarts the song).
-    func testSkipAndBackGoThroughTheRunnerBeforeMusicsOwnTrackStep() throws {
-        for (name, step) in [("skip", 1), ("back", -1)] {
-            var asked: [Int] = [], musicStepped = 0, shown = 0
-            let runner: (Int, Bool) throws -> Bool = { s, _ in asked.append(s); return true }
-            if step > 0 {
-                try skipViaMusicApp(json: false, runner: runner, nextTrack: { musicStepped += 1 }, show: { _ in shown += 1 })
-            } else {
-                try backViaMusicApp(json: false, runner: runner, previousTrack: { musicStepped += 1 }, show: { _ in shown += 1 })
+    // MARK: a runner that is starting, or whose lease is not readable now
+
+    /// A live runner that has not finished starting is waited for; if it becomes ready the
+    /// skip goes through, if not the client says so, and Music's own next track (which
+    /// restarts the song) is never the answer.
+    func testAStartingRunnerIsWaitedForAndNeverReplacedByMusicsOwnNextTrack() {
+        let runner = control()
+        runner.register()
+        var taken: RunQueueSkipRequest?
+        var sleeps = 0
+        let c = client(onSleep: {
+            sleeps += 1
+            if sleeps == 3 { runner.markReady() }             // the start finishes while the client waits
+            else if sleeps > 3 {
+                if taken == nil { taken = runner.takeSkip() } else if let taken { runner.acknowledge(nonce: taken.nonce, outcome: .played) }
             }
-            XCTAssertEqual(asked, [step], name)
-            XCTAssertEqual(musicStepped, 0, "\(name): Music's own track step restarted the song")
-            XCTAssertEqual(shown, 0, "\(name): the runner's own line was doubled")
+        })
+        XCTAssertEqual(c.send(step: 1), .done, "a runner that was only starting was given up on")
+
+        let stuck = control(owner: "stuck", pid: 7)
+        stuck.register()
+        XCTAssertEqual(client().send(step: 1), .stillStarting)
+        var said: String?
+        XCTAssertThrowsError(try skipThroughRunner(step: 1, json: false, routeIsOn: { true }, client: client(),
+                                                   show: { _ in XCTFail("shown") }, fail: { said = $0 })) {
+            XCTAssertEqual($0 as? ExitCode, .failure)
         }
-        // No runner: exactly the shipped body.
-        var musicStepped = 0, shown = 0
-        try skipViaMusicApp(json: false, runner: { _, _ in false }, nextTrack: { musicStepped += 1 }, show: { _ in shown += 1 })
-        try backViaMusicApp(json: false, runner: { _, _ in false }, previousTrack: { musicStepped += 1 }, show: { _ in shown += 1 })
-        XCTAssertEqual(musicStepped, 2)
-        XCTAssertEqual(shown, 2)
+        XCTAssertEqual(said, macRouteSkipStartingMessage)
+    }
+
+    func testABusyLeaseIsWaitedForNotReadAsNoRunnerAndAMovedLeaseIsNoRunner() {
+        let up = control()
+        up.register(); up.markReady()
+        XCTAssertEqual(client(lease: .busy).send(step: 1), .stillStarting, "a busy lock was read as no runner")
+        XCTAssertEqual(client(lease: .another).send(step: 1), .noRunner)
+        XCTAssertEqual(client(lease: RateFence.LeaseStatus.none).send(step: 1), .noRunner)
     }
 
     // MARK: the TUI

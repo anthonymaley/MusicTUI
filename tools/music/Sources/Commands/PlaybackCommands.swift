@@ -980,20 +980,23 @@ struct Skip: ParsableCommand {
     }
 }
 
-func runSkip(json: Bool, env: CLIBridgeEnv, musicApp: (Bool) throws -> Void = { try skipViaMusicApp(json: $0) }) throws {
+func runSkip(json: Bool, env: CLIBridgeEnv, musicApp: (Bool) throws -> Void = skipViaMusicApp,
+             runner: ((Int, Bool) throws -> Bool)? = nil) throws {
+    // On the Mac DAC route the runner owns the queue and Music has no next item, so
+    // Music's own "next track" would restart the song (finding 7). The runner is asked
+    // BEFORE the dispatcher takes the output lock: under it the lease cannot be read
+    // (the lock is this process's own) and the runner needs the lock itself to play the
+    // next song while this waits for its answer.
+    let askRunner = runner ?? { try skipThroughRunner(step: $0, json: $1, modes: env.modeStore) }
+    if try askRunner(1, json) { return }
     try cliDispatch(.next, json: json, env: env, musicApp: { try musicApp(json) },
                     bridge: { try bridgeStepCommand($0, json: json, env: env) { try $0.next() } })
 }
 
-func skipViaMusicApp(json: Bool,
-                     runner: (Int, Bool) throws -> Bool = { try skipThroughRunner(step: $0, json: $1) },
-                     nextTrack: () throws -> Void = { _ = try AppleScriptBackend().runMusicBlocking("next track") },
-                     show: (Bool) -> Void = { showNowPlaying(json: $0, waitForPlay: true) }) throws {
-    // On the Mac DAC route the runner owns the queue and Music has no next item, so
-    // Music's own "next track" would restart the song (finding 7).
-    if try runner(1, json) { return }
-    try nextTrack()
-    show(json)
+func skipViaMusicApp(json: Bool) throws {
+    let backend = AppleScriptBackend()
+    _ = try backend.runMusicBlocking("next track")
+    showNowPlaying(json: json, waitForPlay: true)
 }
 
 struct Back: ParsableCommand {
@@ -1004,18 +1007,18 @@ struct Back: ParsableCommand {
     }
 }
 
-func runBack(json: Bool, env: CLIBridgeEnv, musicApp: (Bool) throws -> Void = { try backViaMusicApp(json: $0) }) throws {
+func runBack(json: Bool, env: CLIBridgeEnv, musicApp: (Bool) throws -> Void = backViaMusicApp,
+             runner: ((Int, Bool) throws -> Bool)? = nil) throws {
+    let askRunner = runner ?? { try skipThroughRunner(step: $0, json: $1, modes: env.modeStore) }   // see `runSkip`
+    if try askRunner(-1, json) { return }
     try cliDispatch(.previous, json: json, env: env, musicApp: { try musicApp(json) },
                     bridge: { try bridgeStepCommand($0, json: json, env: env) { try $0.previous() } })
 }
 
-func backViaMusicApp(json: Bool,
-                     runner: (Int, Bool) throws -> Bool = { try skipThroughRunner(step: $0, json: $1) },
-                     previousTrack: () throws -> Void = { _ = try AppleScriptBackend().runMusicBlocking("previous track") },
-                     show: (Bool) -> Void = { showNowPlaying(json: $0, waitForPlay: true) }) throws {
-    if try runner(-1, json) { return }
-    try previousTrack()
-    show(json)
+func backViaMusicApp(json: Bool) throws {
+    let backend = AppleScriptBackend()
+    _ = try backend.runMusicBlocking("previous track")
+    showNowPlaying(json: json, waitForPlay: true)
 }
 
 struct Stop: ParsableCommand {
