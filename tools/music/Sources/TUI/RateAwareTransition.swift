@@ -527,21 +527,25 @@ final class RateAwareTransition {
         }
         guard paused.state == .paused, paused.persistentID == persistentID else {
             // Every read said playing this track: the pause may simply land after the
-            // last read. One more look, fenced like the resume: if Music is paused on
-            // our track NOW (we paused it, and it was not paused before) and the token
-            // still holds, put it back, so a late pause is never left silently.
-            // Nothing was written to the DAC, so there is nothing to restart.
-            if paused.state == .playing, paused.persistentID == persistentID {
-                _ = try? fence.playIfCurrent(token, alsoCurrent: {
-                    guard plan.isCurrent(), let now = self.music.readPlayerState() else { return false }
-                    return now.state == .paused && now.persistentID == persistentID
-                }, play: { try? self.music.resume() })
+            // last read. One more look. If Music is paused on our track NOW it is NOT
+            // resumed: nothing proves the pause is ours (the person may have paused),
+            // so this is the outcome of every pause that cannot be proven, which says
+            // "paused to switch the DAC rate; press play" and lets the player release
+            // it at shutdown only while the fence still holds. A newer command owns
+            // the player and has nothing to be told.
+            if paused.state == .playing, paused.persistentID == persistentID,
+               let last = music.readPlayerState(), last.state == .paused, last.persistentID == persistentID {
+                if let stop = tokenStop() { return stop }
+                return .stopped(.stateUnreadable, rateOutcome: nil)
             }
             // Not ours to resume: the song ended, or someone moved Music first.
             return .notAttempted("Music was not paused on the track")
         }
         if let stop = tokenStop() { return stop }
 
+        // Known limit (ruling 2026-11-18): the fence can still move between the
+        // `tokenStop()` above and this send. SpanDAC refuses older fences, so the worst
+        // case is one extra DAC switch.
         let rateOutcome = follow.correct(toHz: rateHz, dacUID: plan.dacUID, persistentID: persistentID)
 
         // Resume only inside the lock, only if every condition still holds.

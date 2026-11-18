@@ -927,25 +927,44 @@ final class RateAwareTransitionTests: XCTestCase {
 
     // MARK: finding 3: a pause that lands after the retries ran out
 
-    /// Every read-back said playing, the pause lands just after: Music is now paused
-    /// on our track with our token still current, so the fenced last look resumes it
-    /// (no rate was written, so no restart) instead of leaving it paused silently.
-    func testAPauseThatLandsAfterTheRetriesRanOutIsResumedWhileTheTokenHolds() {
+    /// Every read-back said playing, the pause shows on one more read: whose pause it
+    /// is cannot be proven (it may be the person's), so it is NOT resumed. The result
+    /// is the one the unprovable-pause paths already use, so the line says "paused to
+    /// switch the DAC rate; press play" and the player may release it at shutdown.
+    func testAPauseThatLandsAfterTheRetriesRanOutIsNeverResumedAndSaysPressPlay() {
         let r = laggingCorrection(lag: 3, pauseReads: 3)
-        guard case .notAttempted? = r.out?.correction else { return XCTFail("\(String(describing: r.out?.correction))") }
+        guard case .stopped(let why, _)? = r.out?.correction else { return XCTFail("\(String(describing: r.out?.correction))") }
+        XCTAssertEqual(why, .stateUnreadable)
+        XCTAssertTrue(why.leavesOurPause, "the line must say press play")
         XCTAssertEqual(r.requestsForStep2, 0, "no rate is written without a shown pause")
         XCTAssertEqual(r.music.count("seek0"), 0)
-        XCTAssertEqual(r.music.count("resume"), 1, "Music was left paused")
-        XCTAssertEqual(r.music.state.state, .playing)
+        XCTAssertEqual(r.music.count("resume"), 0, "a pause that may be the person's was resumed")
     }
 
-    /// With a newer command the late pause is not ours to resume.
+    /// The pause did not take; the PERSON pauses after the last playing read. It is
+    /// never resumed by the correction.
+    func testAPersonsPauseAfterAPlayingReadIsNeverResumed() {
+        var inner: FakeMusic?
+        let r = laggingCorrection(lag: 0, pauseReads: 2, configure: { m, _ in
+            inner = m.inner
+            m.inner.pauseDoesNotStick = true
+            m.onReadAfterPause = { n, _ in
+                if n == 2 { inner?.state = RatePlayerState(state: .paused, persistentID: "AAA", position: 7) }  // the person
+            }
+        })
+        XCTAssertEqual(r.music.count("resume"), 0, "the person's pause was resumed")
+        XCTAssertEqual(r.requestsForStep2, 0)
+        XCTAssertEqual(r.music.count("seek0"), 0)
+    }
+
+    /// With a newer command the late pause is its business, not a "press play".
     func testALatePauseIsLeftToANewerCommand() {
         var dir = ""
         let r = laggingCorrection(lag: 3, pauseReads: 3, configure: { m, d in
             dir = d
             m.onReadAfterPause = { n, _ in if n == 3 { _ = try? self.otherFence(dir).begin(.next, owner: "runner") } }
         })
+        guard case .stopped(.newerCommand, _)? = r.out?.correction else { return XCTFail("\(String(describing: r.out?.correction))") }
         XCTAssertEqual(r.music.count("resume"), 0, "a newer command's player was resumed")
         XCTAssertEqual(r.requestsForStep2, 0)
     }
