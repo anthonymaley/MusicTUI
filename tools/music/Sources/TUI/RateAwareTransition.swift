@@ -107,13 +107,20 @@ struct RateStreamWait {
     /// (live, 2026-11-17: its own log has the pause at 47.659 and the rate change at
     /// 47.899, and a read-back in between still said playing), so one read dropped
     /// the correction with Music left paused. 1 (a bare value, so every test that
-    /// predates this) is the single read; `live` waits up to five reads, a second
-    /// or so. CHOSEN, NOT MEASURED: the one measured lag was about a quarter second.
+    /// predates this) is the single read; `live` waits up to four reads, 0.1 s
+    /// apart. Budget against the 3 s window, with each osascript read or pause about a
+    /// quarter second (measured from the 2026-11-17 log): the read before the pause and
+    /// the pause take about 0.5 s, the read-back at most 4 x 0.25 + 3 x 0.1 = 1.3 s
+    /// (the measured lag needed 2 reads, 0.6 s), and the resume's own read 0.25 s. That
+    /// leaves about 0.95 s for SpanDAC's write in the worst case and about 1.6 s in the
+    /// measured one; a write slower than that ends in `tooSlow`, our pause left with the
+    /// "press play" line. The seek and the resume after the last check take about 0.5 s
+    /// more and are not bounded by it. CHOSEN, NOT MEASURED: SpanDAC's write time.
     var pauseReads = 1
     var pauseInterval: TimeInterval = 0.25
     var sleep: (TimeInterval) -> Void = { Thread.sleep(forTimeInterval: $0) }
 
-    static let live = RateStreamWait(pauseReads: 5)
+    static let live = RateStreamWait(pauseReads: 4, pauseInterval: 0.1)
 }
 
 // MARK: - plan and result
@@ -493,9 +500,23 @@ final class RateAwareTransition {
         // state lags a pause by a moment, so a state that still says playing this
         // track (or cannot be read yet) is read again, a bounded few times, before
         // it is taken for "the pause did not take".
+        // Another command can take the fence while this waits, so the token is
+        // checked again after every wait and once more right before the write.
+        func tokenStop() -> RateCorrection? {
+            do {
+                let held = try fence.playIfCurrent(token, alsoCurrent: { plan.isCurrent() }, play: {})
+                if case .invalidated = held { return .stopped(.newerCommand, rateOutcome: nil) }
+                return nil
+            } catch {
+                return .stopped(.lockUnavailable(Self.describe(error)), rateOutcome: nil)
+            }
+        }
         var shown: RatePlayerState?
         for attempt in 0..<max(1, streamWait.pauseReads) {
-            if attempt > 0 { streamWait.sleep(streamWait.pauseInterval) }
+            if attempt > 0 {
+                streamWait.sleep(streamWait.pauseInterval)
+                if let stop = tokenStop() { return stop }
+            }
             shown = music.readPlayerState()
             if let state = shown, state.state == .paused, state.persistentID == persistentID { break }
             if let state = shown, !(state.state == .playing && state.persistentID == persistentID) { break }
@@ -507,6 +528,7 @@ final class RateAwareTransition {
             // Not ours to resume: the song ended, or someone moved Music first.
             return .notAttempted("Music was not paused on the track")
         }
+        if let stop = tokenStop() { return stop }
 
         let rateOutcome = follow.correct(toHz: rateHz, dacUID: plan.dacUID, persistentID: persistentID)
 
