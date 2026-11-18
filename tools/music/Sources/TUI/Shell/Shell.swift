@@ -1,4 +1,5 @@
 // tools/music/Sources/TUI/Shell/Shell.swift
+import ArgumentParser
 import Foundation
 
 /// The REST backend the art surfaces use for real cover artwork, or nil when
@@ -38,7 +39,8 @@ func shellFooterGlobals(mode: PlaybackMode) -> String {
 /// A step Music accepts but does not start keeps the step and says so
 /// (`playRequestedQueueTrack`, under the stepped-to track's name); only a
 /// script error rolls back.
-func musicTUISkip(_ step: Int, backend: AppleScriptBackend, appQueue: AppQueueStore) throws {
+func musicTUISkip(_ step: Int, backend: AppleScriptBackend, appQueue: AppQueueStore,
+                  runner: ((Int) throws -> Bool)? = nil) throws {
     if let (pl, pos) = appQueue.step(step) {
         let title = appQueue.read().map { $0.tracks[$0.currentIndex - 1].name } ?? ""
         guard playRequestedQueueTrack(backend: backend, appQueue: appQueue, playlist: pl, position: pos,
@@ -48,6 +50,19 @@ func musicTUISkip(_ step: Int, backend: AppleScriptBackend, appQueue: AppQueueSt
         }
         return
     }
+    // No queue of its own: on the Mac DAC route the CLI's detached runner may own it,
+    // and Music has no next item to step to (its "next track" restarts the song).
+    let askRunner = runner ?? { step in
+        guard appQueue.macRoute?.isOnRoute == true else { return false }
+        // Nothing is written to the terminal here (the TUI owns it); a runner that did
+        // not answer is the action's error line.
+        do {
+            return try skipThroughRunner(step: step, json: false, routeIsOn: { true }, show: { _ in }, fail: { _ in })
+        } catch is ExitCode {
+            throw ActionError(message: macRouteSkipNotDoneMessage)
+        }
+    }
+    if try askRunner(step) { return }
     let verb = step > 0 ? "next track" : "previous track"
     _ = try backend.runMusicBlocking(verb)
 }

@@ -278,6 +278,8 @@ final class RunQueueRunner {
     private let maxUnreadablePolls: Int
     private let maxNotStarted: Int
     private let maxLifetime: TimeInterval
+    /// Where a `music skip` / `music back` from another process reaches this runner.
+    private let control: RunQueueControlling?
     /// The token the parent reserved for this runner's first play (fix round 1,
     /// finding 3); nil takes a fence at the first play, as before.
     private var pendingToken: RateToken?
@@ -291,7 +293,9 @@ final class RunQueueRunner {
          sleep: @escaping (TimeInterval) -> Void = { Thread.sleep(forTimeInterval: $0) },
          now: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
          pollInterval: TimeInterval = 1, startGracePolls: Int = 8, maxUnreadablePolls: Int = 20,
-         maxNotStarted: Int = 5, maxLifetime: TimeInterval = albumWatcherMaxLifetime) {
+         maxNotStarted: Int = 5, maxLifetime: TimeInterval = albumWatcherMaxLifetime,
+         control: RunQueueControlling? = nil) {
+        self.control = control
         self.queue = queue
         self.player = player
         self.route = route
@@ -309,6 +313,8 @@ final class RunQueueRunner {
 
     /// Plays the queue to its end or until something else owns the player.
     func run() -> RunQueueExit {
+        control?.register()
+        defer { control?.unregister() }
         let exit = drive()
         // The queue is over, or Music stopped short of its end: the Mac screen
         // says stopped (it is this runner's song that ended). A runner that was
@@ -329,6 +335,8 @@ final class RunQueueRunner {
         var command = RateCommand.play
         var gate = AdvanceRetryGate()
         var notStarted = 0
+        // The skip the song being started answers; acknowledged once that play returns.
+        var ackNonce: String?
 
         while true {
             route.set(routeStillChosen())
@@ -338,6 +346,7 @@ final class RunQueueRunner {
             let outcome = player.play(playlist: playlist, position: position, command: command,
                                       subject: RouteSubject(current: queue.read()), token: reserved,
                                       isCurrent: { [queue] in queue.generation == generation })
+            if let nonce = ackNonce { control?.acknowledge(nonce: nonce); ackNonce = nil }
             // The reserved token is the FIRST play's: kept only while the output
             // lock kept that play from starting at all.
             if case .notStarted = outcome {} else { pendingToken = nil }
@@ -357,10 +366,29 @@ final class RunQueueRunner {
             case .played:
                 notStarted = 0
                 gate.playSucceeded()
-                switch waitForEnd(persistentID: persistentIDOfQueueEntry(position)) {
-                case .ended: break
-                case .exit(let reason): return reason
+                var skipped = false
+                waiting: while true {
+                    switch waitForEnd(persistentID: persistentIDOfQueueEntry(position)) {
+                    case .ended: break waiting
+                    case .exit(let reason): return reason
+                    case .skip(let request):
+                        // `music skip` / `music back` from another process: this runner
+                        // steps ITS queue (Music has no next item to step to).
+                        guard mayAdvance() else { control?.acknowledge(nonce: request.nonce); return .superseded }
+                        if let next = queue.step(request.step) {
+                            (playlist, position) = next
+                        } else if request.step > 0 {
+                            // Past the last song: nothing to play, but the client is answered.
+                            control?.acknowledge(nonce: request.nonce)
+                            continue waiting
+                        }   // back on the first song plays it again
+                        command = request.step > 0 ? .next : .previous
+                        ackNonce = request.nonce
+                        skipped = true
+                        break waiting
+                    }
                 }
+                if skipped { continue }
                 // The song ended: advance only while the lease is still ours.
                 guard mayAdvance() else { return .superseded }
             }
@@ -382,7 +410,7 @@ final class RunQueueRunner {
         return false
     }
 
-    private enum Wait { case ended, exit(RunQueueExit) }
+    private enum Wait { case ended, exit(RunQueueExit), skip(RunQueueSkipRequest) }
 
     private func waitForEnd(persistentID: String) -> Wait {
         var lastPosition: TimeInterval = 0
@@ -396,6 +424,7 @@ final class RunQueueRunner {
             if now() >= deadline { return .exit(.timedOut) }
             // Section 3.1: a newer owner holds the lease. Look before anything else.
             if player.fence.leaseStatus(owner: player.owner) == .another { return .exit(.superseded) }
+            if let request = control?.takeSkip() { return .skip(request) }
             guard watcher.musicIsRunning() else { return .exit(.musicUnavailable) }
             guard let playback = watcher.readPlayback() else {
                 unreadable += 1
@@ -492,9 +521,12 @@ func liveRunQueue(ids: [String], label: String, reservation: RunQueueReservation
     let queue = AppQueueStore()
     queue.set(appQueue)
     let routeStore = live.routeStore
+    // The runner's own lease owner, so a `music skip` from another process can tell
+    // this runner owns the queue (`RunQueueSkipClient.runnerOwner`).
+    let control = FileRunQueueControl(files: .beside(PlaybackModeStore()), owner: live.player.owner)
     return RunQueueRunner(queue: queue, player: live.player, route: live.route, routeStillChosen: { routeStore.isOn },
                           watcher: AppleScriptRunQueueWatcher(backend: live.backend),
-                          firstToken: reservation?.token)
+                          firstToken: reservation?.token, control: control)
 }
 
 /// Internal plumbing: the detached runner for a CLI play on the Mac DAC route.

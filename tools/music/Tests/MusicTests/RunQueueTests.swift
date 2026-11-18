@@ -182,6 +182,7 @@ final class RunQueueTests: XCTestCase {
 
         func runner(_ queue: AppQueueStore, maxLifetime: TimeInterval = 10_000,
                     firstToken: RateToken? = nil,
+                    control: RunQueueControlling? = nil,
                     onSleep: @escaping () -> Void = {}) -> RunQueueRunner {
             let clock = self.clock
             return RunQueueRunner(queue: queue, player: player, route: route,
@@ -189,7 +190,7 @@ final class RunQueueTests: XCTestCase {
                                   firstToken: firstToken,
                                   sleep: { clock.t += $0; onSleep() }, now: { clock.t },
                                   pollInterval: 1, startGracePolls: 3, maxUnreadablePolls: 3, maxNotStarted: 3,
-                                  maxLifetime: maxLifetime)
+                                  maxLifetime: maxLifetime, control: control)
         }
     }
 
@@ -249,6 +250,95 @@ final class RunQueueTests: XCTestCase {
         XCTAssertEqual(r.music.count("pause"), 1)
         XCTAssertEqual(r.music.count("resume"), 1, "the runner left Music paused")
         XCTAssertEqual(r.music.state.state, .playing)
+    }
+
+    // MARK: skip and back from another process (finding 7, live check 2026-11-18)
+
+    /// The runner's end of the channel, in memory: hands out the scripted skips one at
+    /// a time on successive polls and records what the runner said back.
+    private final class FakeControl: RunQueueControlling {
+        var registered = 0, unregistered = 0
+        var skips: [(afterPlays: Int, request: RunQueueSkipRequest)] = []
+        var acks: [(nonce: String, playsAtAck: Int)] = []
+        var playCount: () -> Int = { 0 }
+        func register() { registered += 1 }
+        func unregister() { unregistered += 1 }
+        func takeSkip() -> RunQueueSkipRequest? {
+            guard let first = skips.first, playCount() >= first.afterPlays else { return nil }
+            return skips.removeFirst().request
+        }
+        func acknowledge(nonce: String) { acks.append((nonce, playCount())) }
+    }
+
+    private func skipRig(_ control: FakeControl) -> Rig {
+        let r = rig()
+        control.playCount = { r.music.count("play") }
+        // Song 1 plays on for as long as the polls are scripted; with no skip heard
+        // the runner would leave on the stop that follows (`.stoppedEarly`).
+        for poll in 1...2 {
+            r.sim.script["1.\(poll)"] = RunQueuePlayback(state: .playing, persistentID: ids[0], position: 10, duration: 200)
+        }
+        return r
+    }
+
+    private func commands(_ r: Rig) -> [RateCommand] {
+        r.transitions.compactMap { result -> RateCommand? in
+            if case .played(let p) = result { return p.token.command }
+            return nil
+        }
+    }
+
+    /// The live bug: `music skip` on the route restarted the song, because Music has
+    /// no next item and the runner never heard of it. A skip the runner is handed
+    /// steps ITS queue and plays the next song through the transition (`.next`: the
+    /// fence moves, SpanDAC prepares and confirms), at once, not at the song's end.
+    func testASkipHeardWhileASongPlaysPlaysTheNextSongThroughTheTransition() throws {
+        let control = FakeControl()
+        control.skips = [(1, RunQueueSkipRequest(step: 1, nonce: "N1"))]
+        let r = skipRig(control)
+        let exit = r.runner(queueStore(ids), control: control).run()
+        XCTAssertEqual(Array(r.music.played.prefix(2)), [ids[0], ids[1]], "the skip did not reach the runner's queue")
+        XCTAssertEqual(Array(commands(r).prefix(2)), [.play, .next])
+        XCTAssertNotEqual(exit, .stoppedEarly)
+        XCTAssertEqual(r.wire.ops.filter { $0 == sourcePrepareRateOp }.count >= 2, true, "the new song's rate was not prepared")
+        XCTAssertEqual(control.acks.map(\.nonce), ["N1"])
+        XCTAssertEqual(control.acks.first?.playsAtAck, 2, "acknowledged before the song it led to was started")
+        XCTAssertEqual(control.registered, 1)
+        XCTAssertEqual(control.unregistered, 1)
+    }
+
+    /// Back steps the queue back one song with the `.previous` command.
+    func testABackHeardOnTheSecondSongPlaysTheFirstThroughTheTransition() throws {
+        let control = FakeControl()
+        control.skips = [(1, RunQueueSkipRequest(step: 1, nonce: "N1")), (2, RunQueueSkipRequest(step: -1, nonce: "N2"))]
+        let r = skipRig(control)
+        for poll in 1...2 {
+            r.sim.script["2.\(poll)"] = RunQueuePlayback(state: .playing, persistentID: ids[1], position: 10, duration: 200)
+        }
+        _ = r.runner(queueStore(ids), control: control).run()
+        XCTAssertEqual(Array(r.music.played.prefix(3)), [ids[0], ids[1], ids[0]])
+        XCTAssertEqual(Array(commands(r).prefix(3)), [.play, .next, .previous])
+        XCTAssertEqual(control.acks.map(\.nonce), ["N1", "N2"])
+    }
+
+    /// Back on the first song plays it again; a skip past the last song plays
+    /// nothing but is still answered, so the client is not left waiting.
+    func testBackOnTheFirstSongReplaysItAndASkipPastTheEndIsAnsweredAndIgnored() throws {
+        let back = FakeControl()
+        back.skips = [(1, RunQueueSkipRequest(step: -1, nonce: "B"))]
+        let r = skipRig(back)
+        _ = r.runner(queueStore(ids), control: back).run()
+        XCTAssertEqual(Array(r.music.played.prefix(2)), [ids[0], ids[0]])
+        XCTAssertEqual(commands(r).dropFirst().first, .previous)
+        XCTAssertEqual(back.acks.map(\.nonce), ["B"])
+
+        let forward = FakeControl()
+        forward.skips = [(1, RunQueueSkipRequest(step: 1, nonce: "F"))]
+        let r2 = skipRig(forward)
+        r2.sim.script["1.3"] = RunQueuePlayback(state: .playing, persistentID: ids[0], position: 199, duration: 200)
+        _ = r2.runner(queueStore([ids[0]]), control: forward).run()
+        XCTAssertEqual(r2.music.played, [ids[0]], "a skip past the last song played something")
+        XCTAssertEqual(forward.acks.map(\.nonce), ["F"], "the client was left waiting")
     }
 
     func testTheRunnerAdvancesOnlyWhenTheSongEndedNotWhenItIsPausedOrStillPlaying() throws {
