@@ -899,6 +899,32 @@ final class RateAwareTransitionTests: XCTestCase {
         XCTAssertEqual(r.music.count("resume"), 0)
     }
 
+    // MARK: finding 2: the window bounds the whole hold
+
+    /// The hold starts at the pause call's side of the lock, not after it: time
+    /// before the pause landed counts, and the check runs AFTER the blocking read
+    /// that precedes the seek.
+    func testTheWindowCountsFromBeforeThePauseCall() {
+        let clock = Clock()
+        let r = laggingCorrection(lag: 1, pauseReads: 5, clock: clock, configure: { m, _ in
+            m.onPause = { clock.t += 2.5 }                      // the lock, the pre-pause read, the pause itself
+            m.onReadAfterPause = { n, _ in if n == 1 { clock.t += 0.6 } }
+        })
+        guard case .stopped(.tooSlow, _)? = r.out?.correction else { return XCTFail("\(String(describing: r.out?.correction))") }
+        XCTAssertEqual(r.music.count("seek0"), 0)
+        XCTAssertEqual(r.music.count("resume"), 0, "resumed outside the 3 s window")
+    }
+
+    func testTheWindowIsCheckedAfterTheBlockingReadBeforeTheSeek() {
+        let clock = Clock()
+        let r = laggingCorrection(lag: 0, pauseReads: 5, clock: clock, configure: { m, _ in
+            m.onReadAfterPause = { n, _ in if n == 2 { clock.t += 4 } }   // the resume revalidation's own read
+        })
+        guard case .stopped(.tooSlow, _)? = r.out?.correction else { return XCTFail("\(String(describing: r.out?.correction))") }
+        XCTAssertEqual(r.music.count("seek0"), 0, "seek after the window ended")
+        XCTAssertEqual(r.music.count("resume"), 0)
+    }
+
     func testAnUnreadablePlayerAfterOurPauseIsNotResumedBlind() throws {
         let events = Events()
         let p = process(tempDir(), owner: "tui", events: events)

@@ -461,6 +461,10 @@ final class RateAwareTransition {
     private func correct(_ plan: RateTransitionPlan, token: RateToken, follow: SourceRateFollow,
                          persistentID: String, toHz rateHz: Int,
                          confirmAfter: inout SourceRateOutcome?) -> RateCorrection {
+        // The 3 s window is how long Music may be held paused, so it starts BEFORE
+        // the pause call (the lock wait, the read before it and the pause itself may
+        // already have stopped the song), never after.
+        let pausedAt = now()
         // The pause is the first act of a correction and the one that can hurt a
         // newer command, so it gets the same revalidation as a play (fix round 1,
         // finding 1): inside the output lock, the token AND the track Music is on
@@ -493,9 +497,6 @@ final class RateAwareTransition {
             }
         }
         if let pauseError { return .notAttempted("could not pause: \(Self.describe(pauseError))") }
-        // The window is how long OUR pause is held, so it counts from the pause, not
-        // from the revalidation read before it (the read-back below can now wait).
-        let pausedAt = now()
         // Our pause is held only if Music shows it, on this track. Music's player
         // state lags a pause by a moment, so a state that still says playing this
         // track (or cannot be read yet) is read again, a bounded few times, before
@@ -542,6 +543,9 @@ final class RateAwareTransition {
                 guard plan.isCurrent() else { stop = .newerCommand; return false }
                 if self.now() - pausedAt > Self.correctionWindow { stop = .tooSlow; return false }
                 guard let state = self.music.readPlayerState() else { stop = .stateUnreadable; return false }
+                // After the read, which can block: the seek and resume that follow are
+                // the next things that can, and they are not bounded here.
+                if self.now() - pausedAt > Self.correctionWindow { stop = .tooSlow; return false }
                 if state.state == .playing { stop = .musicPlayed; return false }
                 if state.state != .paused || state.persistentID != persistentID { stop = .musicSkipped; return false }
                 if abs(state.position - paused.position) > Self.positionTolerance { stop = .musicSeeked; return false }
