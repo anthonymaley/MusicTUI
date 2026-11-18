@@ -74,6 +74,8 @@ final class RunQueueTests: XCTestCase {
         /// After a pause, this many state reads still say playing (Music's player
         /// state lags a pause by a moment).
         var pauseLagReads = 0
+        /// Runs as a play reaches Music (a report arriving mid-start).
+        var onPlay: (() -> Void)?
         /// Plays after this many have started throw (Music refusing them); nil never.
         var failPlaysAfter: Int?
         /// The sample rates successive reads of the current track return, the last one
@@ -83,6 +85,7 @@ final class RunQueueTests: XCTestCase {
         func count(_ s: String) -> Int { log.filter { $0 == s }.count }
         func playTrack(persistentID: String) throws {
             log.append("play")
+            onPlay?()
             if let playError { throw playError }
             if let limit = failPlaysAfter, played.count >= limit { throw ActionError(message: "refused") }
             played.append(persistentID)
@@ -442,7 +445,7 @@ final class RunQueueTests: XCTestCase {
 
     /// The live song: the DAC is at 48000, the AppleScript rate read says 48000 for the whole
     /// song (the lossy start), and a report arrives mid-song with what the decoder opened.
-    private func decoderRun(expect: RunQueueExit = .finished,
+    private func decoderRun(expect: RunQueueExit = .finished, songs: [String]? = nil, emitAfterPlays: Int = 1,
                             reports: @escaping (FakeFeed, Rig) -> Void) throws -> (Rig, FakeFeed, dacHz: () -> Int) {
         let r = rig()
         let feed = FakeFeed()
@@ -464,8 +467,8 @@ final class RunQueueTests: XCTestCase {
         r.player.decoderFeed = feed
         r.player.runFollowUp = { $0() }
         var emitted = false
-        let runner = r.runner(queueStore([ids[0]]), onSleep: {
-            guard !emitted, r.music.count("play") == 1 else { return }
+        let runner = r.runner(queueStore(songs ?? [ids[0]]), onSleep: {
+            guard !emitted, r.music.count("play") == emitAfterPlays else { return }
             emitted = true
             reports(feed, r)
         })
@@ -510,6 +513,97 @@ final class RunQueueTests: XCTestCase {
         let (r2, _, _) = try decoderRun(reports: { feed, _ in feed.emit(96000); feed.emit(96000) })
         XCTAssertEqual(rateWrites(r2), 1, "one upgrade was corrected twice")
         XCTAssertEqual(r2.music.count("pause"), 1)
+    }
+
+    // MARK: a report belongs to the song that was playing when it was logged (Codex review)
+
+    /// The outgoing song's upgrade, logged just before the next song started, reaches
+    /// the player after the incoming song is installed. It is stamped before the
+    /// incoming song's start, so it is not that song's: nothing is corrected.
+    func testAnOutgoingSongsLateReportIsNeverAppliedToTheIncomingSong() throws {
+        let (r, _, dacHz) = try decoderRun(songs: [ids[0], ids[1]], emitAfterPlays: 2, reports: { feed, _ in
+            feed.emit(96000, at: Date(timeIntervalSinceNow: -0.5))
+        })
+        XCTAssertEqual(confirmedHz(r).compactMap { $0 }.filter { $0 == 96000 }.count, 0,
+                       "the outgoing song's rate was confirmed for the incoming song")
+        XCTAssertEqual(r.music.count("pause"), 0)
+        XCTAssertEqual(rateWrites(r), 0)
+        XCTAssertEqual(dacHz(), 48000)
+    }
+
+    /// A report that arrives while the next song is still starting (its play is in
+    /// flight) has no song to belong to: the old one is cleared at the start of a play.
+    func testAReportDuringTheNextSongsStartBelongsToNoSong() throws {
+        let r = rig()
+        let feed = FakeFeed()
+        r.music.rateReads = [48000]
+        r.wire.script = { body in
+            let f = body["fence"] as? Int ?? 0
+            switch (body["op"] as? String, body["step"] as? Int) {
+            case (sourcePrepareRateOp, _): return self.answer(f, "same_rate", step: 0, target: 48000)
+            case (sourceConfirmRateOp, _): return self.answer(f, "own_rate", step: 1, target: 48000)
+            default: return self.answer(f, "quiet")
+            }
+        }
+        r.player.decoderFeed = feed
+        var closures: [() -> Void] = []
+        r.player.runFollowUp = { closures.append($0) }
+        let a = try XCTUnwrap(persistentIDQueueEntry(persistentID: ids[0], name: "A", artist: "", album: nil))
+        let b = try XCTUnwrap(persistentIDQueueEntry(persistentID: ids[1], name: "B", artist: "", album: nil))
+        _ = r.player.play(playlist: persistentIDQueueSource, position: a.index, command: .play, isCurrent: { true })
+        r.music.onPlay = { feed.emit(96000) }                     // while B is being started
+        _ = r.player.play(playlist: persistentIDQueueSource, position: b.index, command: .next, isCurrent: { true })
+        XCTAssertEqual(closures.count, 0, "a report during a start was taken for a song")
+    }
+
+    /// Two reports for one song while a correction runs: the second waits and then runs
+    /// for the SAME song; if another song has started meanwhile it is dropped.
+    private func pendingRun(playNext: Bool) throws -> (confirmed: [Int?], closures: Int) {
+        let r = rig()
+        let feed = FakeFeed()
+        var dacHz = 48000
+        r.music.rateReads = [48000]
+        r.wire.script = { body in
+            let f = body["fence"] as? Int ?? 0
+            switch (body["op"] as? String, body["step"] as? Int) {
+            case (sourcePrepareRateOp, 2):
+                dacHz = body["rate_hz"] as? Int ?? dacHz
+                return self.answer(f, "settled", step: 2, target: dacHz)
+            case (sourcePrepareRateOp, _): return self.answer(f, "same_rate", step: 0, target: 48000)
+            case (sourceConfirmRateOp, _):
+                let delivered = body["delivered_hz"] as? Int
+                return self.answer(f, delivered == dacHz ? "own_rate" : "correct", step: 1, target: delivered)
+            default: return self.answer(f, "quiet")
+            }
+        }
+        r.player.decoderFeed = feed
+        var closures: [() -> Void] = []
+        r.player.runFollowUp = { closures.append($0) }
+        let a = try XCTUnwrap(persistentIDQueueEntry(persistentID: ids[0], name: "A", artist: "", album: nil))
+        let b = try XCTUnwrap(persistentIDQueueEntry(persistentID: ids[1], name: "B", artist: "", album: nil))
+        _ = r.player.play(playlist: persistentIDQueueSource, position: a.index, command: .play, isCurrent: { true })
+        feed.emit(96000)             // starts a correction (queued, not yet run)
+        feed.emit(192000)            // arrives while it is busy: pending
+        if playNext {
+            _ = r.player.play(playlist: persistentIDQueueSource, position: b.index, command: .next, isCurrent: { true })
+        }
+        while !closures.isEmpty && closures.count < 5 {          // run what is queued, in order
+            let next = closures.removeFirst()
+            next()
+            if closures.isEmpty { break }
+        }
+        return (r.wire.requests.filter { $0["op"] as? String == sourceConfirmRateOp }.map { $0["delivered_hz"] as? Int },
+                closures.count)
+    }
+
+    func testAPendingReportRunsForTheSameSongOnceTheCorrectionEnds() throws {
+        let run = try pendingRun(playNext: false)
+        XCTAssertTrue(run.confirmed.contains(192000), "the report that waited was lost: \(run.confirmed)")
+    }
+
+    func testAPendingReportIsDroppedWhenAnotherSongStartedMeanwhile() throws {
+        let run = try pendingRun(playNext: true)
+        XCTAssertFalse(run.confirmed.contains(192000), "a pending report of the old song was applied to the new one: \(run.confirmed)")
     }
 
     /// A newer command (the fence moved) owns the player: the late report writes nothing.

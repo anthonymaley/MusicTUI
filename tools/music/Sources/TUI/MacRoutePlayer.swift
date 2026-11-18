@@ -479,7 +479,9 @@ final class MacRoutePlayer {
         inFlight += 1
         condition.unlock()
         defer { condition.lock(); inFlight -= 1; condition.broadcast(); condition.unlock() }
-        let startedAt = Date()
+        // The song before this one is over as far as a decoder report is concerned: a
+        // report that arrives while this one is being started has no song to belong to.
+        condition.lock(); song = nil; condition.unlock()
         startDecoderFeedIfNeeded()
 
         // The ordering first (fix round 3, finding B): the status read below can
@@ -508,6 +510,11 @@ final class MacRoutePlayer {
         reportStarted(result, persistentID: persistentID, subject: subject)
         onTransition?(result)
         if case .played(let played) = result {
+            // Stamped NOW, when the transition has proven Music is playing this song, never
+            // before: a report logged earlier is an older stream's (the outgoing song's).
+            // A real early report of this song is lost by this; the AppleScript read the
+            // start confirmed already covers the start rate.
+            let startedAt = Date()
             condition.lock()
             song = SongFollow(transition: transition, played: played, playlist: playlist, position: position,
                               persistentID: persistentID, startedAt: startedAt, lastHz: played.delivered?.sampleRateHz)
@@ -646,24 +653,28 @@ final class MacRoutePlayer {
         condition.unlock()
     }
 
-    /// A correction (the re-check's or a decoder's) for the song of `fence` ended: a
-    /// report that arrived meanwhile is handled now.
+    /// A correction (the re-check's or a decoder's) for the song of `fence` ended. A
+    /// report that arrived meanwhile is for THAT song: it is claimed in the same lock
+    /// span that finds the song still current, so another song cannot be installed
+    /// between the two; if the song changed it is dropped.
     private func finishSongWork(fence: Int) {
         condition.lock()
-        var next: Int?
+        var claimed: (song: SongFollow, hz: Int)?
         if song?.played.token.fence == fence {
             song?.busy = false
-            next = song?.pendingHz
-            song?.pendingHz = nil
+            if let pending = song?.pendingHz {
+                song?.pendingHz = nil
+                if let current = claimDecoderCorrection(hz: pending) { claimed = (current, pending) }
+            }
         }
         condition.unlock()
-        if let next { noteDecoderRate(next, at: Date.distantFuture) }
+        if let claimed { runDecoderCorrection(claimed.song, hz: claimed.hz) }
     }
 
     /// One report from Music's decoder (any thread). Acts only on a report that is
-    /// NEW for the song being played: stamped after the song started, and a rate other
-    /// than the one last confirmed for it. Once per upgrade: the rate is taken as
-    /// handled at once, whatever the correction's outcome, so the same report twice
+    /// NEW for the song being played: stamped after the song started (no earlier), and a
+    /// rate other than the one last confirmed for it. Once per upgrade: the rate is taken
+    /// as handled at once, whatever the correction's outcome, so the same report twice
     /// never corrects twice.
     func noteDecoderReport(_ report: DecoderReport) {
         noteDecoderRate(report.sampleRateHz, at: report.at)
@@ -674,14 +685,27 @@ final class MacRoutePlayer {
         // to follow. Asked before the lock is taken: the output check has its own.
         guard route.isOn, outputIsMusicApp() else { return }
         condition.lock()
-        guard !closing, var current = song, at >= current.startedAt.addingTimeInterval(-1),
-              hz != current.lastHz else { condition.unlock(); return }
-        if current.busy { current.pendingHz = hz; song = current; condition.unlock(); return }
+        guard !closing, let current = song, at >= current.startedAt, hz != current.lastHz else {
+            condition.unlock(); return
+        }
+        if current.busy { song?.pendingHz = hz; condition.unlock(); return }
+        let claimed = claimDecoderCorrection(hz: hz)
+        condition.unlock()
+        if let claimed { runDecoderCorrection(claimed, hz: hz) }
+    }
+
+    /// With `condition` held: marks the current song busy with a correction to `hz`, or
+    /// nil when there is none to do (no song, closing, nothing new).
+    private func claimDecoderCorrection(hz: Int) -> SongFollow? {
+        guard !closing, var current = song, hz != current.lastHz, !current.busy else { return nil }
         current.busy = true
         current.lastHz = hz
         song = current
         inFlight += 1
-        condition.unlock()
+        return current
+    }
+
+    private func runDecoderCorrection(_ current: SongFollow, hz: Int) {
         let fence = current.played.token.fence
         runFollowUp { [self] in
             defer {
@@ -694,7 +718,6 @@ final class MacRoutePlayer {
                          persistentID: current.persistentID)
         }
     }
-
 
     /// The line and the report take the re-check's evidence, only while the song
     /// it was made for is still the last one this process started.
