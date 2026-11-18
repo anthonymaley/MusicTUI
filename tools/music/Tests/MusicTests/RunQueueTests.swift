@@ -71,6 +71,10 @@ final class RunQueueTests: XCTestCase {
         var state = RatePlayerState(state: .stopped, persistentID: nil, position: 0)
         var current: RateTrackRead?
         var playError: Error?
+        /// After a pause, this many state reads still say playing (Music's player
+        /// state lags a pause by a moment).
+        var pauseLagReads = 0
+        private var lagging = 0
         func count(_ s: String) -> Int { log.filter { $0 == s }.count }
         func playTrack(persistentID: String) throws {
             log.append("play")
@@ -82,6 +86,7 @@ final class RunQueueTests: XCTestCase {
         func pause() throws {
             log.append("pause")
             state = RatePlayerState(state: .paused, persistentID: state.persistentID, position: 12)
+            lagging = pauseLagReads
         }
         func resume() throws {
             log.append("resume")
@@ -90,6 +95,10 @@ final class RunQueueTests: XCTestCase {
         func seekToStart() throws { log.append("seek0") }
         func readCurrentTrack() -> RateTrackRead? { current }
         func readPlayerState() -> RatePlayerState? {
+            if state.state == .paused, lagging > 0 {
+                lagging -= 1
+                return RatePlayerState(state: .playing, persistentID: state.persistentID, position: 12)
+            }
             let shown = state
             // A playing stream advances between reads (the stream-up proof).
             if state.state == .playing {
@@ -150,14 +159,15 @@ final class RunQueueTests: XCTestCase {
         var player: MacRoutePlayer!
         lazy var sim = Sim(music)
 
-        init(dir: String, owner: String, withReporter: Bool = false, makeControl: (Wire) -> SourceAppControl) {
+        init(dir: String, owner: String, withReporter: Bool = false, streamWait: RateStreamWait = .instant,
+             makeControl: (Wire) -> SourceAppControl) {
             self.dir = dir
             wire = Wire(clock)
             fence = RateFence(lock: OutputLock(path: dir + "/output.lock", pollInterval: 0.001))
             let clock = self.clock, music = self.music
             let controlValue = makeControl(wire)
             player = MacRoutePlayer(
-                streamWait: .instant, route: route, outputIsMusicApp: { true }, fence: fence, owner: owner,
+                streamWait: streamWait, route: route, outputIsMusicApp: { true }, fence: fence, owner: owner,
                 makeMusic: { _ in music },
                 resolvePersistentID: { _, position in String(format: "%016llX", UInt64(position)) },
                 makeFollow: { token in
@@ -183,8 +193,10 @@ final class RunQueueTests: XCTestCase {
         }
     }
 
-    private func rig(_ dir: String? = nil, owner: String = "runner", withReporter: Bool = false) -> Rig {
+    private func rig(_ dir: String? = nil, owner: String = "runner", withReporter: Bool = false,
+                     streamWait: RateStreamWait = .instant) -> Rig {
         let holder = Rig(dir: dir ?? OutputLockTestSupport.tempDir(), owner: owner, withReporter: withReporter,
+                         streamWait: streamWait,
                          makeControl: { [unowned self] wire in self.control(wire) })
         holder.wire.script = settlingScript()
         return holder
@@ -219,6 +231,24 @@ final class RunQueueTests: XCTestCase {
         // It does not start the next song until the previous one ended: the
         // plays are separated by the polls that watched each one finish.
         XCTAssertGreaterThanOrEqual(r.clock.t, 9, "three songs of three polls, at a second each")
+    }
+
+    /// Finding 3 on the CLI's own path, as the live log shows it (2026-11-17 21:29):
+    /// a one-song runner queue, SpanDAC answers the first confirm `correct`, the
+    /// runner pauses Music, and Music's player state still says playing for the
+    /// first read-back. The runner's player must wait for its own pause to show and
+    /// then ask SpanDAC to write the rate (step 2) and resume, not drop the
+    /// correction and leave Music paused.
+    func testACLISongWhoseConfirmSaysCorrectIsCorrectedEvenWhenMusicShowsThePauseLate() throws {
+        let r = rig(streamWait: RateStreamWait(pauseReads: 5, sleep: { _ in }))
+        r.wire.script = settlingScript(confirm: "correct")
+        r.music.pauseLagReads = 2
+        XCTAssertEqual(r.runner(queueStore([ids[0]])).run(), .finished)
+        XCTAssertEqual(r.wire.requests.filter { ($0["op"] as? String) == sourcePrepareRateOp && ($0["step"] as? Int) == 2 }.count, 1,
+                       "SpanDAC was never asked to write the rate")
+        XCTAssertEqual(r.music.count("pause"), 1)
+        XCTAssertEqual(r.music.count("resume"), 1, "the runner left Music paused")
+        XCTAssertEqual(r.music.state.state, .playing)
     }
 
     func testTheRunnerAdvancesOnlyWhenTheSongEndedNotWhenItIsPausedOrStillPlaying() throws {

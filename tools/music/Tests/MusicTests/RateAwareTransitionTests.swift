@@ -779,6 +779,59 @@ final class RateAwareTransitionTests: XCTestCase {
         }
     }
 
+    /// Music's player state lags a pause by a moment (live check 2026-11-17: Music's
+    /// own log has the pause at 47.659 and the player's rate change at 47.899, and
+    /// the read-back osascript ran in between). The first read after OUR pause then
+    /// still says playing.
+    private final class LaggingPauseMusic: RateMusicControlling {
+        let inner: FakeMusic
+        var lag: Int
+        var paused = false
+        init(_ inner: FakeMusic, lag: Int) { self.inner = inner; self.lag = lag }
+        func playTrack(persistentID: String) throws { try inner.playTrack(persistentID: persistentID) }
+        func pause() throws { try inner.pause(); paused = true }
+        func resume() throws { try inner.resume(); paused = false }
+        func seekToStart() throws { try inner.seekToStart() }
+        func readCurrentTrack() -> RateTrackRead? { inner.readCurrentTrack() }
+        func readPlayerState() -> RatePlayerState? {
+            guard paused, lag > 0, let shown = inner.readPlayerState() else { return inner.readPlayerState() }
+            lag -= 1
+            return RatePlayerState(state: .playing, persistentID: shown.persistentID, position: shown.position)
+        }
+    }
+
+    private func laggingCorrection(lag: Int, pauseReads: Int) -> (Process, FakeMusic, RateTransitionPlayed?) {
+        let events = Events()
+        let p = process(tempDir(), owner: "tui", events: events)
+        p.wire.script = standardScript(p.wire, confirm: "correct", fence: { 1 })
+        let wrapped = LaggingPauseMusic(p.music, lag: lag)
+        let q = RateAwareTransition(fence: p.fence, owner: "tui", music: wrapped,
+                                    makeFollow: { SourceRateFollow(token: $0, control: self.control(p.wire), offered: true,
+                                                                   now: { 0 }, sleep: { _ in }) },
+                                    now: { 0 }, streamWait: RateStreamWait(pauseReads: pauseReads, sleep: { _ in }))
+        return (p, p.music, played(q.run(song("AAA"))))
+    }
+
+    /// The live failure (finding 3): the confirm said `correct`, the pause landed,
+    /// the single read-back still said playing, so the correction was dropped as
+    /// "not paused on the track" with Music left paused and the DAC never written.
+    /// The read-back now waits for Music to show the pause it was just given.
+    func testACorrectionWaitsForMusicToShowTheOwnPauseBeforeGivingUp() {
+        let (p, music, out) = laggingCorrection(lag: 2, pauseReads: 5)
+        guard case .resumed? = out?.correction else { return XCTFail("\(String(describing: out?.correction))") }
+        XCTAssertEqual(p.wire.requests.filter { $0.body["step"] as? Int == 2 }.count, 1, "the DAC rate was never written")
+        XCTAssertEqual(music.count("pause"), 1)
+        XCTAssertEqual(music.count("resume"), 1, "Music was left paused")
+    }
+
+    /// With a pause that never shows within the bound nothing is corrected, as before.
+    func testAPauseThatNeverShowsWithinTheBoundIsNotCorrected() {
+        let (p, music, out) = laggingCorrection(lag: 99, pauseReads: 3)
+        guard case .notAttempted? = out?.correction else { return XCTFail("\(String(describing: out?.correction))") }
+        XCTAssertFalse(p.wire.requests.contains { $0.body["step"] as? Int == 2 })
+        XCTAssertEqual(music.count("resume"), 0)
+    }
+
     func testAnUnreadablePlayerAfterOurPauseIsNotResumedBlind() throws {
         let events = Events()
         let p = process(tempDir(), owner: "tui", events: events)

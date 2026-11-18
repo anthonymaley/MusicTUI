@@ -102,9 +102,18 @@ struct RateStreamWait {
     /// The later re-check's bound: it runs off the caller's thread.
     var recheckWindow: TimeInterval = 30
     var recheckInterval: TimeInterval = 1
+    /// How many times, `pauseInterval` apart, the player is read to see the pause
+    /// the follower just gave it. Music's player state lags a pause by a moment
+    /// (live, 2026-11-17: its own log has the pause at 47.659 and the rate change at
+    /// 47.899, and a read-back in between still said playing), so one read dropped
+    /// the correction with Music left paused. 1 (a bare value, so every test that
+    /// predates this) is the single read; `live` waits up to five reads, a second
+    /// or so. CHOSEN, NOT MEASURED: the one measured lag was about a quarter second.
+    var pauseReads = 1
+    var pauseInterval: TimeInterval = 0.25
     var sleep: (TimeInterval) -> Void = { Thread.sleep(forTimeInterval: $0) }
 
-    static let live = RateStreamWait()
+    static let live = RateStreamWait(pauseReads: 5)
 }
 
 // MARK: - plan and result
@@ -445,7 +454,6 @@ final class RateAwareTransition {
     private func correct(_ plan: RateTransitionPlan, token: RateToken, follow: SourceRateFollow,
                          persistentID: String, toHz rateHz: Int,
                          confirmAfter: inout SourceRateOutcome?) -> RateCorrection {
-        let pausedAt = now()
         // The pause is the first act of a correction and the one that can hurt a
         // newer command, so it gets the same revalidation as a play (fix round 1,
         // finding 1): inside the output lock, the token AND the track Music is on
@@ -478,8 +486,21 @@ final class RateAwareTransition {
             }
         }
         if let pauseError { return .notAttempted("could not pause: \(Self.describe(pauseError))") }
-        // Our pause is held only if Music shows it, on this track.
-        guard let paused = music.readPlayerState() else {
+        // The window is how long OUR pause is held, so it counts from the pause, not
+        // from the revalidation read before it (the read-back below can now wait).
+        let pausedAt = now()
+        // Our pause is held only if Music shows it, on this track. Music's player
+        // state lags a pause by a moment, so a state that still says playing this
+        // track (or cannot be read yet) is read again, a bounded few times, before
+        // it is taken for "the pause did not take".
+        var shown: RatePlayerState?
+        for attempt in 0..<max(1, streamWait.pauseReads) {
+            if attempt > 0 { streamWait.sleep(streamWait.pauseInterval) }
+            shown = music.readPlayerState()
+            if let state = shown, state.state == .paused, state.persistentID == persistentID { break }
+            if let state = shown, !(state.state == .playing && state.persistentID == persistentID) { break }
+        }
+        guard let paused = shown else {
             return .stopped(.stateUnreadable, rateOutcome: nil)
         }
         guard paused.state == .paused, paused.persistentID == persistentID else {
