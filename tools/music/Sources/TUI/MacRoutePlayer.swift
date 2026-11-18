@@ -564,7 +564,10 @@ final class MacRoutePlayer {
 
     /// The start's confirm gave up waiting for this song's stream (Music kept
     /// reporting the previous stream, or refused its position), so nothing was
-    /// confirmed. Tries again off the caller's thread, bounded, counted as work in
+    /// confirmed, or it read a rate from a stream only judged up and that rate is
+    /// to be read again once the stream has settled (finding 3, 2026-11-17: the
+    /// CLI runner and the TUI both come through `play`). Tries again off the
+    /// caller's thread, bounded, counted as work in
     /// flight so a closing TUI waits for it (and tells it to stop). Never touches
     /// the song unless the follow-up finds the DAC is not at its rate, and then
     /// only through `correct`'s guarantees.

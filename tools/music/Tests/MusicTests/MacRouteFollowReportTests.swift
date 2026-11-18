@@ -920,6 +920,108 @@ final class MacRouteFollowReportTests: XCTestCase {
         XCTAssertEqual(report["rate_outcome"] as? String, "corrected")
     }
 
+    /// Music on the CLI jump of the 2026-11-17 live check: playing and advancing at
+    /// once (the stream proof passes), the previous song's rate for `staleFor`
+    /// seconds more, then the rate of the stream the decoder opened.
+    private final class LateJumpMusic: RateMusicControlling {
+        var log: [String] = []
+        let now: () -> TimeInterval
+        let staleFor: TimeInterval
+        private var id: String?
+        private var startedAt: TimeInterval = 0
+        private var pausedAt: TimeInterval?
+        init(now: @escaping () -> TimeInterval, staleFor: TimeInterval = 1) { self.now = now; self.staleFor = staleFor }
+        func count(_ s: String) -> Int { log.filter { $0 == s }.count }
+        func playTrack(persistentID: String) throws { log.append("play"); id = persistentID; startedAt = now(); pausedAt = nil }
+        func pause() throws { log.append("pause"); pausedAt = now() - startedAt }
+        func resume() throws {
+            log.append("resume")
+            if let pausedAt { startedAt = now() - pausedAt }
+            pausedAt = nil
+        }
+        func seekToStart() throws { log.append("seek0"); startedAt = now() }
+        func readCurrentTrack() -> RateTrackRead? {
+            id.map { RateTrackRead(persistentID: $0, databaseID: 7, sampleRateHz: now() - startedAt >= staleFor ? 96000 : 44100) }
+        }
+        func readPlayerState() -> RatePlayerState? {
+            guard let id else { return RatePlayerState(state: .stopped, persistentID: nil, position: 0) }
+            if let pausedAt { return RatePlayerState(state: .paused, persistentID: id, position: pausedAt) }
+            return RatePlayerState(state: .playing, persistentID: id, position: now() - startedAt)
+        }
+    }
+
+    /// Finding 3, end to end through the player both the TUI and the CLI runner
+    /// use: the stream proof passes at once (position advancing), the first read is
+    /// the previous song's 44100 and SpanDAC says `own_rate` for it; Music opens the
+    /// 96000 stream a moment later. The settle re-read (the follow-up the player
+    /// schedules for every start) confirms the real rate, the correction runs once,
+    /// and the line and the report carry 96 kHz.
+    func testAJumpWhoseStreamLooksUpBeforeItsRateIsReadIsCorrectedByTheSettleReRead() throws {
+        let dir = OutputLockTestSupport.tempDir()
+        let clock = Clock()
+        let wire = Wire(clock)
+        var dacHz = 44100
+        wire.script = { body in
+            let f = body["fence"] as? Int ?? 0
+            switch (body["op"] as? String, body["step"] as? Int) {
+            case (sourceRateFollowOp, _):
+                return self.json(["ok": true, "rate": ["fence": f, "outcome": "quiet"],
+                                  "follow": ["on": body["on"] as? Bool ?? false, "applied": true, "recorded": true]])
+            case (sourceNowPlayingOp, _):
+                return self.json(["ok": true, "now_playing": ["accepted": true, "fence": f]])
+            case (sourcePrepareRateOp, 2):
+                dacHz = body["rate_hz"] as? Int ?? dacHz
+                return self.rateAnswer(f, "settled", step: 2, target: dacHz)
+            case (sourcePrepareRateOp, _):
+                return self.rateAnswer(f, "same_rate", step: 0, target: 44100)
+            case (sourceConfirmRateOp, _):
+                let delivered = body["delivered_hz"] as? Int
+                var rate: [String: Any] = ["fence": f, "rate_seq": 1, "step": 1, "dac_rate_hz": dacHz,
+                                           "outcome": delivered == dacHz ? "own_rate" : "correct"]
+                if let delivered { rate["target_hz"] = delivered }
+                return self.json(["ok": true, "rate": rate])
+            default: return self.rateAnswer(f, "quiet")
+            }
+        }
+        let r = reporter(wire)
+        let music = LateJumpMusic(now: { clock.t })
+        let c = control(wire)
+        let p = MacRoutePlayer(
+            streamWait: RateStreamWait(verifyReads: 3, sleep: { clock.t += $0 }),
+            route: MacDACRouteState(initial: true), outputIsMusicApp: { true },
+            fence: fenceFor(dir), owner: "tui", makeMusic: { _ in music },
+            resolvePersistentID: { _, position in String(format: "%016llX", UInt64(position)) },
+            makeFollow: { token in
+                SourceRateFollow(token: token, control: c, offered: true, routeFollow: r,
+                                 now: { clock.t }, sleep: { clock.t += $0 })
+            },
+            post: { _ in }, reporter: r, now: { clock.t })
+        var pending: (() -> Void)?
+        p.runFollowUp = { pending = $0 }
+
+        XCTAssertEqual(playID(p, "AAAAAAAAAAAAAAA1", .jump, subject: RouteSubject(title: "Time Moves Slow")), .played)
+        XCTAssertEqual(wire.requests(for: sourceConfirmRateOp).map { $0["delivered_hz"] as? Int }, [44100],
+                       "the first read is the previous stream's, as measured")
+        XCTAssertNotNil(pending, "a start whose rate was read from a stream only judged up has no follow-up")
+
+        pending?()
+        XCTAssertEqual(wire.requests(for: sourceConfirmRateOp).map { $0["delivered_hz"] as? Int }.dropFirst().first, 96000,
+                       "the rate Music opened was never confirmed")
+        XCTAssertEqual(dacHz, 96000, "the DAC stayed under the song")
+        XCTAssertEqual(music.count("pause"), 1)
+        XCTAssertEqual(music.count("resume"), 1)
+        XCTAssertEqual(wire.requests(for: sourcePrepareRateOp).filter { $0["step"] as? Int == 2 }.count, 1)
+        let after = try XCTUnwrap(p.evidenceLine)
+        XCTAssertFalse(after.contains("44.1"), after)
+        XCTAssertTrue(after.contains("96") && after.contains("own rate"), after)
+
+        p.observePlayback(.active(NowPlayingState(track: "Time Moves Slow", artist: "", album: "", duration: 200,
+                                                  position: 15, state: "playing")))
+        let report = try XCTUnwrap(wire.requests(for: sourceNowPlayingOp).last)
+        XCTAssertEqual(report["delivered_hz"] as? Int, 96000)
+        XCTAssertEqual(report["rate_outcome"] as? String, "corrected")
+    }
+
     /// The follow-up's answer belongs to the song it was made for: a newer start
     /// keeps its own line.
     func testAFollowUpForAnOlderStartNeverOverwritesANewerSongsLine() throws {
