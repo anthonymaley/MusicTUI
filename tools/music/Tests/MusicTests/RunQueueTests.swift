@@ -400,6 +400,46 @@ final class RunQueueTests: XCTestCase {
         }
     }
 
+    /// A feed whose start takes a moment, as a real child process does; it records
+    /// whether it is running when the dust settles.
+    private final class SlowFeed: DecoderRateFeed {
+        private let lock = NSLock()
+        private var _running = false
+        var duringStart: () -> Void = {}
+        var running: Bool { lock.lock(); defer { lock.unlock() }; return _running }
+        func start(onReport: @escaping (DecoderReport) -> Void) {
+            duringStart()
+            Thread.sleep(forTimeInterval: 0.05)
+            lock.lock(); _running = true; lock.unlock()
+        }
+        func stop() { lock.lock(); _running = false; lock.unlock() }
+    }
+
+    /// The player shuts down while the feed is still starting (the first play is in the
+    /// middle of starting the child): the stop must not slip in before the start and
+    /// leave a child running for ever. Start and stop are one critical section.
+    func testAShutdownDuringTheFeedsStartStillEndsTheFeed() throws {
+        let r = rig()
+        let feed = SlowFeed()
+        r.player.decoderFeed = feed
+        var shutdown: Thread?
+        let done = DispatchSemaphore(value: 0)
+        feed.duringStart = {
+            let t = Thread { r.player.shutdown(wait: 2); done.signal() }
+            shutdown = t
+            t.start()
+        }
+        let entry = try XCTUnwrap(persistentIDQueueEntry(persistentID: ids[0], name: "L", artist: "", album: nil))
+        _ = r.player.play(playlist: persistentIDQueueSource, position: entry.index, command: .play, isCurrent: { true })
+        XCTAssertEqual(done.wait(timeout: .now() + 5), .success, "the shutdown never finished")
+        XCTAssertNotNil(shutdown)
+        XCTAssertFalse(feed.running, "a decoder feed was left running after the player shut down")
+        // And a feed that was stopped is never started again.
+        r.player.decoderFeed = feed
+        _ = r.player.play(playlist: persistentIDQueueSource, position: entry.index, command: .play, isCurrent: { true })
+        XCTAssertFalse(feed.running, "a closed player started a feed")
+    }
+
     /// The live song: the DAC is at 48000, the AppleScript rate read says 48000 for the whole
     /// song (the lossy start), and a report arrives mid-song with what the decoder opened.
     private func decoderRun(expect: RunQueueExit = .finished,

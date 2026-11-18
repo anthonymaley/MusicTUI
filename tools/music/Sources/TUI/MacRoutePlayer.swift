@@ -248,7 +248,6 @@ final class MacRoutePlayer {
         var pendingHz: Int?
     }
     private var song: SongFollow?
-    private var decoderFeedStarted = false
 
     /// Called after every transition (after the evidence line is recorded).
     var onTransition: ((RateTransitionResult) -> Void)?
@@ -619,14 +618,26 @@ final class MacRoutePlayer {
 
     // MARK: Music's decoder, mid-song (finding 6)
 
+    /// Start and stop of the feed are ONE critical section (`feedLock`): a stop that
+    /// arrives while the child is starting waits for the start and then ends it, and a
+    /// start after a stop never happens, so no child is left running by the race.
+    private let feedLock = NSLock()
+    private var feedStarted = false
+    private var feedStopped = false
+
     private func startDecoderFeedIfNeeded() {
-        condition.lock()
-        let feed = decoderFeed
-        let first = feed != nil && !decoderFeedStarted && !closing
-        if first { decoderFeedStarted = true }
-        condition.unlock()
-        guard first, let feed else { return }
+        guard let feed = decoderFeed else { return }
+        feedLock.lock(); defer { feedLock.unlock() }
+        guard !feedStarted, !feedStopped else { return }
+        feedStarted = true
         feed.start { [weak self] report in self?.noteDecoderReport(report) }
+    }
+
+    private func stopDecoderFeed() {
+        guard let feed = decoderFeed else { return }
+        feedLock.lock(); defer { feedLock.unlock() }
+        feedStopped = true
+        feed.stop()
     }
 
     private func setSongBusy(fence: Int, _ busy: Bool) {
@@ -727,9 +738,8 @@ final class MacRoutePlayer {
     func shutdown(wait: TimeInterval = 10) {
         condition.lock()
         closing = true
-        let feed = decoderFeed
         condition.unlock()
-        feed?.stop()
+        stopDecoderFeed()
         condition.lock()
         let deadline = Date(timeIntervalSinceNow: wait)
         while inFlight > 0, condition.wait(until: deadline) {}

@@ -89,15 +89,20 @@ enum DecoderReportParser {
 
 /// The real feed: one `/usr/bin/log stream` child (never bare `log`, which is the zsh
 /// builtin), its stdout read line by line on a background thread. Never started in a
-/// test. The child ends with `stop()`; if this process is killed instead, the child
-/// ends at its next write to the closed pipe.
+/// test. The child ends with `stop()` (the player's `shutdown`, on the TUI's normal
+/// exit and when the runner ends) or when the feed is released. A parent that is
+/// SIGKILLed cannot run any of that: its child then lives until its next write to the
+/// closed pipe, which can be long when no Music line matches. Known and accepted.
 final class LogStreamDecoderFeed: DecoderRateFeed {
     private let lock = NSLock()
     private var process: Process?
+    private var stopped = false
+
+    deinit { stop() }
 
     func start(onReport: @escaping (DecoderReport) -> Void) {
         lock.lock(); defer { lock.unlock() }
-        guard process == nil else { return }
+        guard process == nil, !stopped else { return }
         let child = Process()
         child.executableURL = URL(fileURLWithPath: "/usr/bin/log")
         child.arguments = ["stream", "--predicate", DecoderReportParser.predicate, "--style", "ndjson"]
@@ -130,6 +135,7 @@ final class LogStreamDecoderFeed: DecoderRateFeed {
 
     func stop() {
         lock.lock(); defer { lock.unlock() }
+        stopped = true
         guard let child = process else { return }
         process = nil
         if child.isRunning { child.terminate() }
