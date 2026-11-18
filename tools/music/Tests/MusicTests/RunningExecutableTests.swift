@@ -107,4 +107,16 @@ final class RunningExecutableTests: XCTestCase {
         XCTAssertTrue(ok)
         XCTAssertEqual(launchedWith, "/keg/bin/music")
     }
+
+    /// With no `executable:` given (every real call), each spawn launches what the
+    /// real resolver says, not argv[0].
+    func testEachSpawnsDefaultExecutableIsTheRealResolversResult() {
+        var runner: String?, watcher: String?
+        XCTAssertTrue(spawnRunQueue(label: "L", uuid: UUID().uuidString, ids: ["0123456789ABCDEF"]) { exe, _ in
+            runner = exe; return true })
+        XCTAssertTrue(spawnAlbumWatcher(name: "__album__ U — A", uuid: "U", ids: ["ID1"]) { exe, _ in
+            watcher = exe; return true })
+        XCTAssertEqual(runner, runningExecutablePath())
+        XCTAssertEqual(watcher, runningExecutablePath())
+    }
 }

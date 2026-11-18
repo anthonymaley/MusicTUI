@@ -526,6 +526,17 @@ final class RateAwareTransition {
             return .stopped(.stateUnreadable, rateOutcome: nil)
         }
         guard paused.state == .paused, paused.persistentID == persistentID else {
+            // Every read said playing this track: the pause may simply land after the
+            // last read. One more look, fenced like the resume: if Music is paused on
+            // our track NOW (we paused it, and it was not paused before) and the token
+            // still holds, put it back, so a late pause is never left silently.
+            // Nothing was written to the DAC, so there is nothing to restart.
+            if paused.state == .playing, paused.persistentID == persistentID {
+                _ = try? fence.playIfCurrent(token, alsoCurrent: {
+                    guard plan.isCurrent(), let now = self.music.readPlayerState() else { return false }
+                    return now.state == .paused && now.persistentID == persistentID
+                }, play: { try? self.music.resume() })
+            }
             // Not ours to resume: the song ended, or someone moved Music first.
             return .notAttempted("Music was not paused on the track")
         }

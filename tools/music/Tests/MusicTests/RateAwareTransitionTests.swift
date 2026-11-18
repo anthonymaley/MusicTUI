@@ -925,6 +925,31 @@ final class RateAwareTransitionTests: XCTestCase {
         XCTAssertEqual(r.music.count("resume"), 0)
     }
 
+    // MARK: finding 3: a pause that lands after the retries ran out
+
+    /// Every read-back said playing, the pause lands just after: Music is now paused
+    /// on our track with our token still current, so the fenced last look resumes it
+    /// (no rate was written, so no restart) instead of leaving it paused silently.
+    func testAPauseThatLandsAfterTheRetriesRanOutIsResumedWhileTheTokenHolds() {
+        let r = laggingCorrection(lag: 3, pauseReads: 3)
+        guard case .notAttempted? = r.out?.correction else { return XCTFail("\(String(describing: r.out?.correction))") }
+        XCTAssertEqual(r.requestsForStep2, 0, "no rate is written without a shown pause")
+        XCTAssertEqual(r.music.count("seek0"), 0)
+        XCTAssertEqual(r.music.count("resume"), 1, "Music was left paused")
+        XCTAssertEqual(r.music.state.state, .playing)
+    }
+
+    /// With a newer command the late pause is not ours to resume.
+    func testALatePauseIsLeftToANewerCommand() {
+        var dir = ""
+        let r = laggingCorrection(lag: 3, pauseReads: 3, configure: { m, d in
+            dir = d
+            m.onReadAfterPause = { n, _ in if n == 3 { _ = try? self.otherFence(dir).begin(.next, owner: "runner") } }
+        })
+        XCTAssertEqual(r.music.count("resume"), 0, "a newer command's player was resumed")
+        XCTAssertEqual(r.requestsForStep2, 0)
+    }
+
     func testAnUnreadablePlayerAfterOurPauseIsNotResumedBlind() throws {
         let events = Events()
         let p = process(tempDir(), owner: "tui", events: events)
