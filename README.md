@@ -258,6 +258,8 @@ only when the song has exactly one copy in your library; radio station plays
 are never counted. The `/music` skill reference has the full command-by-command
 breakdown.
 
+**The Mac route (3.28.0).** Choose **SpanDAC on this Mac** on the TUI's **Output** tab, with a DAC plugged in, and MusicTUI plays through Apple's Music app while SpanDAC sets the DAC's sample rate to each song's own rate as it starts. Leaving the route puts the DAC's rate back. Now and the Output tab say what is playing ("96 kHz · own rate", or "converted to 192 kHz: DAC limit" when the DAC cannot take the song's rate). `music play`, `music skip` and `music back` work on the route. It needs a SpanDAC that supports rate follow. Known limits: a skip in a queue's first seconds may say "Couldn't skip: the queue that follows the DAC's sample rate didn't answer." (press it again), and a pause that lands as a song's rate is being switched may show "paused to switch the DAC rate, press play" (press play once).
+
 ## CLI Commands
 
 ```
