@@ -200,7 +200,9 @@ final class CLIDataRouteTests: XCTestCase {
             return .spandacRead
         case .newReleases, .newReleasesLikeCurrentTrack, .suggest, .suggestFromCurrentTrack, .similarToCurrentTrack:
             return .refused(notAvailableWithSpanDACData)
-        case .cliPlayQuery, .playlistTemp:
+        case .cliPlayQuery:
+            return .refused(playWordsNeedAKind)
+        case .playlistTemp:
             return .refused(pickASpanDACOutput)
         case .cliPlayIndex, .cliPlayPlaylist, .cliPlayAlbum, .cliPlaySong, .cliPlayArtist, .cliPlayCatalogSong,
              .radioStationPlay:

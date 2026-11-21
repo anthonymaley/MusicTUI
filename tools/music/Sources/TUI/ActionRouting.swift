@@ -912,8 +912,11 @@ private func routeOnMusicTUIWithSpanDACData(_ action: MusicTUIAction,
          .radioStationPlay:
         return RoutedAction(data: .spandacMac, sound: .musicApp)
 
-    // Free words and temporary playlists name no SpanDAC row.
-    case .cliPlayQuery, .playlistTemp:
+    // Free words and temporary playlists name no SpanDAC row. Free words
+    // still refuse (Q1), but say which form plays (2026-11-21).
+    case .cliPlayQuery:
+        return RoutedAction(data: .none, sound: .refused(playWordsNeedAKind))
+    case .playlistTemp:
         return RoutedAction(data: .none, sound: .refused(pickASpanDACOutput))
 
     // MusicTUI's own state and navigation.

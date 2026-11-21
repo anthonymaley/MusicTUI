@@ -378,7 +378,8 @@ final class DataOutputRoutingTests: XCTestCase {
                 for origin in [PlayOrigin.spandacLibrary, .spandacCatalogue, .spandacDiscoverContainer] {
                     let log = BranchLog()
                     XCTAssertThrowsError(try run(c, action, log, origin: origin)) {
-                        XCTAssertEqual(self.message($0), pickASpanDACOutput, "\(action): free words never play")
+                        XCTAssertEqual(self.message($0), action == .cliPlayQuery ? playWordsNeedAKind : pickASpanDACOutput,
+                                       "\(action): free words never play")
                     }
                     XCTAssertEqual(log.log, [])
                 }

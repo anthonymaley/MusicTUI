@@ -1145,6 +1145,63 @@ final class RunQueueTests: XCTestCase {
         XCTAssertEqual(launched.last, [h1, h2].joined(separator: ","), "the queue stays the last argument")
     }
 
+    /// Music's own shuffle setting on, no `shuffle` word: on the route the runner
+    /// plays one song at a time, so Music never shuffles; the CLI must. Off the
+    /// route Music shuffles inside the temporary playlist, as it always has.
+    func testOnTheRouteMusicsShuffleSettingShufflesAPlayWithoutTheWord() throws {
+        let h = CLIDataRouteHarness(output: .musicApp, data: .accepted, dataReplies: [:], recordSeams: false)
+        MacRouteStore(beside: h.env.modeStore).set(true)
+        var launched: [[String]] = []
+        var asked = 0
+        var play = PersistentIDCLILibraryPlay(library: library(), run: { _ in XCTFail("AppleScript on the route"); return "" },
+                                              launch: { launched.append($1); return true },
+                                              selfCheck: LibraryAliasSelfCheck(), afterPlay: { _ in })
+        play.musicShuffleOn = { asked += 1; return true }
+        play.shuffleIDs = { Array($0.reversed()) }
+        let r = tripwired { try play.play(request(h), env: h.env) }
+        XCTAssertNil(r.error)
+        XCTAssertEqual(r.calls, [])
+        XCTAssertEqual(asked, 1, "Music's setting is read once, on the route")
+        XCTAssertEqual(launched.first?.last, [h2, h1].joined(separator: ","), "the runner gets the shuffled order")
+    }
+
+    func testOnTheRouteMusicsShuffleSettingOffKeepsTheContainersOrder() throws {
+        let h = CLIDataRouteHarness(output: .musicApp, data: .accepted, dataReplies: [:], recordSeams: false)
+        MacRouteStore(beside: h.env.modeStore).set(true)
+        var launched: [[String]] = []
+        var play = PersistentIDCLILibraryPlay(library: library(), run: { _ in XCTFail("AppleScript on the route"); return "" },
+                                              launch: { launched.append($1); return true },
+                                              selfCheck: LibraryAliasSelfCheck(), afterPlay: { _ in })
+        play.musicShuffleOn = { false }
+        play.shuffleIDs = { _ in XCTFail("shuffled with Music's shuffle off"); return [] }
+        let r = tripwired { try play.play(request(h), env: h.env) }
+        XCTAssertNil(r.error)
+        XCTAssertEqual(launched.first?.last, [h1, h2].joined(separator: ","))
+    }
+
+    /// The typed word already shuffles; Music's setting is not read, and off the
+    /// route it is never read at all (Music applies it inside the container).
+    func testMusicsShuffleSettingIsReadOnlyOnTheRouteAndOnlyWithoutTheWord() throws {
+        do {
+            let h = CLIDataRouteHarness(output: .musicApp, data: .accepted, dataReplies: [:], recordSeams: false)
+            MacRouteStore(beside: h.env.modeStore).set(true)
+            var play = PersistentIDCLILibraryPlay(library: library(), run: { _ in "" },
+                                                  launch: { _, _ in true },
+                                                  selfCheck: LibraryAliasSelfCheck(), afterPlay: { _ in })
+            play.musicShuffleOn = { XCTFail("read with the shuffle word typed"); return false }
+            XCTAssertNil(tripwired { try play.play(request(h, shuffle: true), env: h.env) }.error)
+        }
+        do {
+            let h = CLIDataRouteHarness(output: .musicApp, data: .accepted, dataReplies: [:], recordSeams: false)
+            let container = CLIContainerRunner(ids: [h1, h2])
+            var play = PersistentIDCLILibraryPlay(library: library(), run: container.run,
+                                                  launch: { _, _ in true },
+                                                  selfCheck: LibraryAliasSelfCheck(), afterPlay: { _ in })
+            play.musicShuffleOn = { XCTFail("read off the route"); return true }
+            XCTAssertNil(tripwired { try play.play(request(h), env: h.env) }.error)
+        }
+    }
+
     func testOnTheRouteAShuffledPlayHandsTheRunnerTheShuffledOrderAndJSONStaysOneDocument() throws {
         let h = CLIDataRouteHarness(output: .musicApp, data: .accepted, dataReplies: [:], recordSeams: false)
         MacRouteStore(beside: h.env.modeStore).set(true)

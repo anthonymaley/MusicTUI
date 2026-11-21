@@ -143,6 +143,11 @@ func effectiveSelection(data: DataProviderStore, modes: PlaybackModeStore) -> Ef
 /// Person-facing sentence used wherever a SpanDAC row is available to choose.
 let pickASpanDACOutput = "Pick a SpanDAC output to play this."
 
+/// Said when `music play <words>` names no kind of thing (Q1: free words never
+/// play with SpanDAC data on the MusicTUI output). Points at the form that does.
+let playWordsNeedAKind =
+    "Say what to play: music play --playlist \"<name>\" (or --album, --song, --artist); add shuffle to shuffle it."
+
 /// The person-facing name for the non-SpanDAC output, everywhere a person
 /// reads it. Never "Music.app" (that name stays internal: types, cases, and
 /// code comments may keep it).
