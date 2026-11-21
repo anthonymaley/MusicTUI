@@ -45,9 +45,38 @@ func parsePlaybackModes(_ raw: String) -> PlaybackModes? {
     return PlaybackModes(shuffleEnabled: f[0] == "true", shuffleMode: mode, songRepeat: rep)
 }
 
+/// Reads "<shuffle enabled>,<shuffle mode>,<song repeat>" from Music.
+let playbackModesReadScript =
+    "return (shuffle enabled as string) & \",\" & (shuffle mode as string) & \",\" & (song repeat as string)"
+
+/// The shuffle the Mac route imitates from Music's setting: `songs` or
+/// `albums` when shuffle is on in that mode. Grouping shuffle (route rows carry
+/// no grouping), shuffle off, and a failed or unreadable read are nil: no shuffle.
+func macRouteShuffleMode(_ raw: String?) -> ShuffleMode? {
+    guard let raw, let modes = parsePlaybackModes(raw), modes.shuffleEnabled else { return nil }
+    switch modes.shuffleMode {
+    case .songs, .albums: return modes.shuffleMode
+    case .groupings:      return nil
+    }
+}
+
+/// Album shuffle as the route plays it: the albums in random order (`shuffle`
+/// orders the groups), each album's songs kept in the order given. Songs with
+/// no album are each their own group.
+func albumShuffledIDs(_ tracks: [(id: String, album: String?)],
+                      shuffle: ([[String]]) -> [[String]] = { $0.shuffled() }) -> [String] {
+    var groups: [[String]] = []
+    var index: [String: Int] = [:]
+    for t in tracks {
+        if let album = t.album, !album.isEmpty, let i = index[album] { groups[i].append(t.id); continue }
+        if let album = t.album, !album.isEmpty { index[album] = groups.count }
+        groups.append([t.id])
+    }
+    return shuffle(groups).flatMap { $0 }
+}
+
 func fetchPlaybackModes(_ backend: AppleScriptBackend) throws -> PlaybackModes {
-    let raw = try backend.runMusicBlocking(
-            "return (shuffle enabled as string) & \",\" & (shuffle mode as string) & \",\" & (song repeat as string)")
+    let raw = try backend.runMusicBlocking(playbackModesReadScript)
     guard let modes = parsePlaybackModes(raw) else {
         throw AppleScriptBackend.ScriptError.executionFailed("unparseable playback modes: \(raw.prefix(60))")
     }

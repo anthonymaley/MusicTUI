@@ -99,14 +99,18 @@ struct PersistentIDCLILibraryPlay: CLIMusicTUILibraryPlaying {
     /// MusicTUI output, so "chosen" is all that is left to ask. A seam so tests
     /// use a temp store; production reads `mac-route.json`.
     var onRoute: (CLIBridgeEnv) -> Bool = { MacRouteStore(beside: $0.modeStore).isOn }
-    /// Music's own shuffle setting (`shuffle enabled`). Read only on the route
-    /// and only when the `shuffle` word was not typed: the route's runner plays
-    /// one song at a time, so Music never applies the setting itself there,
-    /// while off the route Music shuffles inside the temporary playlist. Tests
-    /// stub it; production reads Music once. Defaults off, never to a real read.
-    var musicShuffleOn: () -> Bool = { false }
-    /// How the route shuffles for Music's setting. A seam so tests are exact.
+    /// Music's own shuffle, as the route imitates it (`macRouteShuffleMode`). Read
+    /// only on the route, only when the `shuffle` word was not typed, and before
+    /// the runner's ordering is reserved: the route's runner plays one song at a
+    /// time, so Music never applies the setting itself there, while off the
+    /// route Music shuffles inside the temporary playlist. Song and album shuffle
+    /// are imitated; grouping shuffle is not. Tests stub it; production reads
+    /// Music once with a short timeout. Defaults to nil, never to a real read.
+    var musicShuffle: () -> ShuffleMode? = { nil }
+    /// How the route shuffles songs, and orders albums, for Music's setting.
+    /// Seams so tests are exact.
     var shuffleIDs: ([String]) -> [String] = { $0.shuffled() }
+    var shuffleAlbums: ([[String]]) -> [[String]] = { $0.shuffled() }
 
     func prepare(_ request: CLIMusicTUILibraryPlayRequest, env: CLIBridgeEnv) throws
         -> CLIMusicTUILibraryPlayRequest {
@@ -156,10 +160,16 @@ struct PersistentIDCLILibraryPlay: CLIMusicTUILibraryPlaying {
             // before its first play) plays nothing instead of overtaking it. If it
             // cannot be taken, no token-less runner is spawned (it would re-open
             // that race): the songs play through the shipped path below, unfollowed.
+            let musicMode = request.shuffle ? nil : musicShuffle()
             let fence = RateFence(lock: env.routing.outputLock ?? OutputLock(path: env.modeStore.lockPath))
             if let reservation = reserveRunQueueOrdering(fence) {
                 var ids = order.map(\.1)
-                if !request.shuffle && musicShuffleOn() { ids = shuffleIDs(ids) }
+                switch musicMode {
+                case .songs?:  ids = shuffleIDs(ids)
+                case .albums?: ids = albumShuffledIDs(verified.map { ($0.persistentID, $0.album) },
+                                                      shuffle: shuffleAlbums)
+                default:       break
+                }
                 try playOnTheRoute(request, ids: ids, skipNotice: available.report.notice,
                                    reservation: reservation, env: env)
                 return
@@ -243,7 +253,7 @@ func liveCLIMusicTUILibraryPlay() -> CLIMusicTUILibraryPlaying {
         launch: detachedLaunch,
         selfCheck: .shared,
         afterPlay: { json in showNowPlaying(json: json, waitForPlay: true) },
-        musicShuffleOn: { (try? fetchPlaybackModes(backend))?.shuffleEnabled ?? false })
+        musicShuffle: { macRouteShuffleMode(try? backend.runMusicBlocking(playbackModesReadScript, timeout: 5)) })
 }
 
 /// Said when the runner for a Mac DAC route play could not be started.
