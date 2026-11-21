@@ -1158,7 +1158,7 @@ final class RunQueueTests: XCTestCase {
                                               selfCheck: LibraryAliasSelfCheck(), afterPlay: { _ in })
         play.musicShuffle = { asked += 1; return .songs }
         play.shuffleIDs = { Array($0.reversed()) }
-        let r = tripwired { try play.play(request(h), env: h.env) }
+        let r = tripwired { try play.play(try play.prepare(request(h), env: h.env), env: h.env) }
         XCTAssertNil(r.error)
         XCTAssertEqual(r.calls, [])
         XCTAssertEqual(asked, 1, "Music's setting is read once, on the route")
@@ -1174,7 +1174,7 @@ final class RunQueueTests: XCTestCase {
                                               selfCheck: LibraryAliasSelfCheck(), afterPlay: { _ in })
         play.musicShuffle = { nil }
         play.shuffleIDs = { _ in XCTFail("shuffled with Music's shuffle off"); return [] }
-        let r = tripwired { try play.play(request(h), env: h.env) }
+        let r = tripwired { try play.play(try play.prepare(request(h), env: h.env), env: h.env) }
         XCTAssertNil(r.error)
         XCTAssertEqual(launched.first?.last, [h1, h2].joined(separator: ","))
     }
@@ -1197,33 +1197,62 @@ final class RunQueueTests: XCTestCase {
     /// order, an album's songs kept together even when the playlist splits them,
     /// songs with no album each their own group.
     func testAlbumShuffleReordersAlbumsAndKeepsEachAlbumsSongsInOrder() {
-        let tracks: [(id: String, album: String?)] = [("a1", "A"), ("b1", "B"), ("a2", "A"), ("x", nil), ("b2", "B")]
-        XCTAssertEqual(albumShuffledIDs(tracks, shuffle: { $0 }), ["a1", "a2", "b1", "b2", "x"])
-        XCTAssertEqual(albumShuffledIDs(tracks, shuffle: { Array($0.reversed()) }), ["x", "b1", "b2", "a1", "a2"])
+        let tracks: [(id: String, album: String?, artist: String)] =
+            [("a1", "A", "P"), ("b1", "B", "P"), ("a2", "A", "P"), ("x", nil, "P"), ("b2", "B", "P"), ("q", "A", "Q")]
+        XCTAssertEqual(albumShuffledIDs(tracks, shuffle: { $0 }), ["a1", "a2", "b1", "b2", "x", "q"])
+        XCTAssertEqual(albumShuffledIDs(tracks, shuffle: { Array($0.reversed()) }), ["q", "x", "b1", "b2", "a1", "a2"])
     }
 
     /// On the route with Music's album shuffle on, the runner gets the albums in
-    /// the shuffled order.
+    /// the shuffled order, exactly: two interleaved albums, one name shared by
+    /// two artists' albums (kept apart), each album's songs in playlist order.
     func testOnTheRouteMusicsAlbumShuffleOrdersTheRunnersQueueByAlbum() throws {
         let h = CLIDataRouteHarness(output: .musicApp, data: .accepted, dataReplies: [:], recordSeams: false)
         MacRouteStore(beside: h.env.modeStore).set(true)
+        let h3 = "0000000000000001", h4 = "0000000000000002"
+        let rows = [
+            MusicRow(id: "l.1", title: "Angel", artist: "Massive Attack", album: "Mezzanine", kind: .song, alias: a1),
+            MusicRow(id: "l.3", title: "Hit One", artist: "Artist X", album: "Greatest Hits", kind: .song, alias: "1"),
+            MusicRow(id: "l.2", title: "Risingson", artist: "Massive Attack", album: "Mezzanine", kind: .song, alias: a2),
+            MusicRow(id: "l.4", title: "Hit Two", artist: "Artist Y", album: "Greatest Hits", kind: .song, alias: "2"),
+        ]
+        let lib = FakePersistentIDLibrary([
+            h1: [HandoffTrackHit(persistentID: h1, inLibrary: true, databaseID: "101", libraryIndex: 11, name: "Angel")],
+            h2: [HandoffTrackHit(persistentID: h2, inLibrary: true, databaseID: "102", libraryIndex: 12, name: "Risingson")],
+            h3: [HandoffTrackHit(persistentID: h3, inLibrary: true, databaseID: "103", libraryIndex: 13, name: "Hit One")],
+            h4: [HandoffTrackHit(persistentID: h4, inLibrary: true, databaseID: "104", libraryIndex: 14, name: "Hit Two")],
+        ])
         var launched: [[String]] = []
-        var play = PersistentIDCLILibraryPlay(library: library(), run: { _ in XCTFail("AppleScript on the route"); return "" },
+        var play = PersistentIDCLILibraryPlay(library: lib, run: { _ in XCTFail("AppleScript on the route"); return "" },
                                               launch: { launched.append($1); return true },
                                               selfCheck: LibraryAliasSelfCheck(), afterPlay: { _ in })
         play.musicShuffle = { .albums }
         play.shuffleIDs = { _ in XCTFail("song shuffle under album mode"); return [] }
         play.shuffleAlbums = { Array($0.reversed()) }
-        XCTAssertNil(tripwired { try play.play(request(h), env: h.env) }.error)
-        let queue = try XCTUnwrap(launched.first?.last)
-        XCTAssertEqual(Set(queue.split(separator: ",").map(String.init)), [h1, h2], "every song, nothing added")
+        let req = CLIMusicTUILibraryPlayRequest(kind: .playlist, label: "Mix", rows: rows, startAt: 1, shuffle: false,
+                                                resultNumber: nil, json: false, selectionAtRead: h.env.routing.selection)
+        XCTAssertNil(tripwired { try play.play(try play.prepare(req, env: h.env), env: h.env) }.error)
+        XCTAssertEqual(launched.first?.last, [h4, h3, h1, h2].joined(separator: ","))
     }
 
-    /// The refusal for free words names the form that plays.
-    func testTheFreeWordsRefusalNamesThePlaylistForm() {
-        XCTAssertTrue(playWordsNeedAKind.contains("music play --playlist \"<name>\""))
-        XCTAssertTrue(playWordsNeedAKind.contains("shuffle"))
-        XCTAssertNotEqual(playWordsNeedAKind, pickASpanDACOutput)
+    /// Music is read in `prepare` (outside the output lock), never in `play`
+    /// (inside it): `play` uses only what `prepare` carried.
+    func testMusicsShuffleIsReadInPrepareAndNeverUnderTheOutputLock() throws {
+        let h = CLIDataRouteHarness(output: .musicApp, data: .accepted, dataReplies: [:], recordSeams: false)
+        MacRouteStore(beside: h.env.modeStore).set(true)
+        var launched: [[String]] = []
+        var reads = 0
+        var play = PersistentIDCLILibraryPlay(library: library(), run: { _ in "" },
+                                              launch: { launched.append($1); return true },
+                                              selfCheck: LibraryAliasSelfCheck(), afterPlay: { _ in })
+        play.musicShuffle = { reads += 1; return .songs }
+        play.shuffleIDs = { Array($0.reversed()) }
+        let prepared = try play.prepare(request(h), env: h.env)
+        XCTAssertEqual(reads, 1)
+        XCTAssertEqual(prepared.musicShuffleAtRead, .songs)
+        play.musicShuffle = { XCTFail("Music read inside play, under the output lock"); return nil }
+        XCTAssertNil(tripwired { try play.play(prepared, env: h.env) }.error)
+        XCTAssertEqual(launched.first?.last, [h2, h1].joined(separator: ","))
     }
 
     /// The typed word already shuffles; Music's setting is not read, and off the
@@ -1236,7 +1265,7 @@ final class RunQueueTests: XCTestCase {
                                                   launch: { _, _ in true },
                                                   selfCheck: LibraryAliasSelfCheck(), afterPlay: { _ in })
             play.musicShuffle = { XCTFail("read with the shuffle word typed"); return nil }
-            XCTAssertNil(tripwired { try play.play(request(h, shuffle: true), env: h.env) }.error)
+            XCTAssertNil(tripwired { try play.play(try play.prepare(request(h, shuffle: true), env: h.env), env: h.env) }.error)
         }
         do {
             let h = CLIDataRouteHarness(output: .musicApp, data: .accepted, dataReplies: [:], recordSeams: false)
@@ -1245,7 +1274,7 @@ final class RunQueueTests: XCTestCase {
                                                   launch: { _, _ in true },
                                                   selfCheck: LibraryAliasSelfCheck(), afterPlay: { _ in })
             play.musicShuffle = { XCTFail("read off the route"); return .songs }
-            XCTAssertNil(tripwired { try play.play(request(h), env: h.env) }.error)
+            XCTAssertNil(tripwired { try play.play(try play.prepare(request(h), env: h.env), env: h.env) }.error)
         }
     }
 

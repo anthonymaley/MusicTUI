@@ -61,16 +61,19 @@ func macRouteShuffleMode(_ raw: String?) -> ShuffleMode? {
 }
 
 /// Album shuffle as the route plays it: the albums in random order (`shuffle`
-/// orders the groups), each album's songs kept in the order given. Songs with
-/// no album are each their own group.
-func albumShuffledIDs(_ tracks: [(id: String, album: String?)],
+/// orders the groups), each album's songs kept in the order given. An album is
+/// its name AND the song's artist: route rows carry no album identity or album
+/// artist, so two albums sharing a name ("Greatest Hits") stay apart, and the
+/// conservative cost is that a compilation splits into one group per artist.
+/// Songs with no album are each their own group.
+func albumShuffledIDs(_ tracks: [(id: String, album: String?, artist: String)],
                       shuffle: ([[String]]) -> [[String]] = { $0.shuffled() }) -> [String] {
     var groups: [[String]] = []
     var index: [String: Int] = [:]
     for t in tracks {
-        if let album = t.album, !album.isEmpty, let i = index[album] { groups[i].append(t.id); continue }
-        if let album = t.album, !album.isEmpty { index[album] = groups.count }
-        groups.append([t.id])
+        guard let album = t.album, !album.isEmpty else { groups.append([t.id]); continue }
+        let key = album + "\u{1F}" + t.artist
+        if let i = index[key] { groups[i].append(t.id) } else { index[key] = groups.count; groups.append([t.id]) }
     }
     return shuffle(groups).flatMap { $0 }
 }

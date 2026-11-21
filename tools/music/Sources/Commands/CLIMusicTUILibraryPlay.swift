@@ -38,6 +38,10 @@ struct CLIMusicTUILibraryPlayRequest: Equatable {
     /// output lock both files are read again and must still say exactly this
     /// before anything is changed.
     var selectionAtRead: EffectiveSelection = .consistent(data: .spandacMac, output: .musicApp)
+    /// Music's own shuffle as the Mac route imitates it, read in `prepare`,
+    /// BEFORE the output lock (a slow Music never holds the lock up). `play`
+    /// uses it only if the route is still the chosen route under the lock.
+    var musicShuffleAtRead: ShuffleMode? = nil
 }
 
 /// Plays SpanDAC library rows on the MusicTUI output.
@@ -100,8 +104,8 @@ struct PersistentIDCLILibraryPlay: CLIMusicTUILibraryPlaying {
     /// use a temp store; production reads `mac-route.json`.
     var onRoute: (CLIBridgeEnv) -> Bool = { MacRouteStore(beside: $0.modeStore).isOn }
     /// Music's own shuffle, as the route imitates it (`macRouteShuffleMode`). Read
-    /// only on the route, only when the `shuffle` word was not typed, and before
-    /// the runner's ordering is reserved: the route's runner plays one song at a
+    /// in `prepare`, outside the output lock, only when the route is chosen and
+    /// the `shuffle` word was not typed: the route's runner plays one song at a
     /// time, so Music never applies the setting itself there, while off the
     /// route Music shuffles inside the temporary playlist. Song and album shuffle
     /// are imitated; grouping shuffle is not. Tests stub it; production reads
@@ -114,13 +118,17 @@ struct PersistentIDCLILibraryPlay: CLIMusicTUILibraryPlaying {
 
     func prepare(_ request: CLIMusicTUILibraryPlayRequest, env: CLIBridgeEnv) throws
         -> CLIMusicTUILibraryPlayRequest {
-        guard request.resultNumber != nil else { return request }
-        return CLIMusicTUILibraryPlayRequest(kind: request.kind, label: request.label,
-                                             rows: try rowsWithTheirIdentity(request.rows, env: env),
-                                             startAt: request.startAt, shuffle: request.shuffle,
-                                             resultNumber: request.resultNumber, json: request.json,
-                                             startRequired: request.startRequired,
-                                             selectionAtRead: request.selectionAtRead)
+        var prepared = request
+        if request.resultNumber != nil {
+            prepared = CLIMusicTUILibraryPlayRequest(kind: request.kind, label: request.label,
+                                                     rows: try rowsWithTheirIdentity(request.rows, env: env),
+                                                     startAt: request.startAt, shuffle: request.shuffle,
+                                                     resultNumber: request.resultNumber, json: request.json,
+                                                     startRequired: request.startRequired,
+                                                     selectionAtRead: request.selectionAtRead)
+        }
+        if !request.shuffle && onRoute(env) { prepared.musicShuffleAtRead = musicShuffle() }
+        return prepared
     }
 
     func play(_ request: CLIMusicTUILibraryPlayRequest, env: CLIBridgeEnv) throws {
@@ -160,13 +168,13 @@ struct PersistentIDCLILibraryPlay: CLIMusicTUILibraryPlaying {
             // before its first play) plays nothing instead of overtaking it. If it
             // cannot be taken, no token-less runner is spawned (it would re-open
             // that race): the songs play through the shipped path below, unfollowed.
-            let musicMode = request.shuffle ? nil : musicShuffle()
+            let musicMode = request.shuffle ? nil : request.musicShuffleAtRead
             let fence = RateFence(lock: env.routing.outputLock ?? OutputLock(path: env.modeStore.lockPath))
             if let reservation = reserveRunQueueOrdering(fence) {
                 var ids = order.map(\.1)
                 switch musicMode {
                 case .songs?:  ids = shuffleIDs(ids)
-                case .albums?: ids = albumShuffledIDs(verified.map { ($0.persistentID, $0.album) },
+                case .albums?: ids = albumShuffledIDs(verified.map { ($0.persistentID, $0.album, $0.artist) },
                                                       shuffle: shuffleAlbums)
                 default:       break
                 }
