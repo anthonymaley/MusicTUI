@@ -1235,6 +1235,27 @@ final class RunQueueTests: XCTestCase {
         XCTAssertEqual(launched.first?.last, [h4, h3, h1, h2].joined(separator: ","))
     }
 
+    /// The route turned on (or off) between `prepare` and `play`: nothing plays,
+    /// and the person is told the output changed (Codex r3).
+    func testARouteThatChangesBetweenPrepareAndPlayPlaysNothing() throws {
+        for startsOn in [false, true] {
+            let h = CLIDataRouteHarness(output: .musicApp, data: .accepted, dataReplies: [:], recordSeams: false)
+            MacRouteStore(beside: h.env.modeStore).set(startsOn)
+            let container = CLIContainerRunner(ids: [h1, h2])
+            var launched = 0
+            var play = PersistentIDCLILibraryPlay(library: library(), run: container.run,
+                                                  launch: { _, _ in launched += 1; return true },
+                                                  selfCheck: LibraryAliasSelfCheck(), afterPlay: { _ in XCTFail("now line") })
+            play.musicShuffle = { .songs }
+            let prepared = try play.prepare(request(h), env: h.env)
+            MacRouteStore(beside: h.env.modeStore).set(!startsOn)
+            let r = tripwired { try play.play(prepared, env: h.env) }
+            XCTAssertEqual((r.error as? ActionError)?.message, sourceChangedNothingPlayed, "route was \(startsOn)")
+            XCTAssertEqual(launched, 0)
+            XCTAssertEqual(container.scripts, [], "nothing built or played")
+        }
+    }
+
     /// Music is read in `prepare` (outside the output lock), never in `play`
     /// (inside it): `play` uses only what `prepare` carried.
     func testMusicsShuffleIsReadInPrepareAndNeverUnderTheOutputLock() throws {

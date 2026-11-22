@@ -42,6 +42,10 @@ struct CLIMusicTUILibraryPlayRequest: Equatable {
     /// BEFORE the output lock (a slow Music never holds the lock up). `play`
     /// uses it only if the route is still the chosen route under the lock.
     var musicShuffleAtRead: ShuffleMode? = nil
+    /// Whether the Mac route was chosen when `prepare` ran. `play` refuses if
+    /// that changed under the lock (Codex r3: a route turned on in between would
+    /// otherwise start without Music's shuffle). nil: not prepared, not checked.
+    var routeAtRead: Bool? = nil
 }
 
 /// Plays SpanDAC library rows on the MusicTUI output.
@@ -127,7 +131,9 @@ struct PersistentIDCLILibraryPlay: CLIMusicTUILibraryPlaying {
                                                      startRequired: request.startRequired,
                                                      selectionAtRead: request.selectionAtRead)
         }
-        if !request.shuffle && onRoute(env) { prepared.musicShuffleAtRead = musicShuffle() }
+        let route = onRoute(env)
+        prepared.routeAtRead = route
+        if !request.shuffle && route { prepared.musicShuffleAtRead = musicShuffle() }
         return prepared
     }
 
@@ -150,6 +156,9 @@ struct PersistentIDCLILibraryPlay: CLIMusicTUILibraryPlaying {
         // be SpanDAC data on the MusicTUI output.
         let now = effectiveSelection(data: DataProviderStore(beside: env.modeStore), modes: env.modeStore)
         guard now == request.selectionAtRead, case .consistent(.spandacMac, .musicApp) = now else {
+            throw ActionError(message: sourceChangedNothingPlayed)
+        }
+        if let routeAtRead = request.routeAtRead, routeAtRead != onRoute(env) {
             throw ActionError(message: sourceChangedNothingPlayed)
         }
 
