@@ -56,10 +56,13 @@ func musicTUISkip(_ step: Int, backend: AppleScriptBackend, appQueue: AppQueueSt
         guard appQueue.macRoute?.isOnRoute == true else { return false }
         // Nothing is written to the terminal here (the TUI owns it); a runner that did
         // not answer is the action's error line.
+        var refused: String?
         do {
-            return try skipThroughRunner(step: step, json: false, routeIsOn: { true }, show: { _ in }, fail: { _ in })
+            return try skipThroughRunner(step: step, json: false, routeIsOn: { true }, show: { _ in }, fail: { _ in },
+                                         refused: { refused = $0 })
         } catch is ExitCode {
-            throw ActionError(message: macRouteSkipNotDoneMessage)
+            // SpanDAC's own sentence when it would not make the DAC the Mac's output.
+            throw ActionError(message: refused ?? macRouteSkipNotDoneMessage)
         }
     }
     if try askRunner(step) { return }
@@ -266,7 +269,8 @@ func runShell() {
     if macRouteState.chosen { macRoute.routeChanged(on: true) }
     // Stations opened from Discover and Radio move the fence on the route (P7).
     let stationOpener = MacRouteOpener(route: { macRoute })
-    let actions = ActionRunner(status: status, onSuperseding: { playConfirmer.invalidate() })
+    let actions = ActionRunner(status: status, onSuperseding: { playConfirmer.invalidate() },
+                               routeRefusal: macRoute.routeRefusal)
     let volumeDelta = DeltaAccumulator()
 
     let poller = PlaybackPoller(store: store, backend: backend, appQueue: appQueue, queueStore: queueStore,

@@ -174,14 +174,19 @@ final class ActionRunner {
     private let queue = DispatchQueue(label: "music.shell.actions")
     private let status: StatusStore
     private let onSuperseding: (() -> Void)?
+    /// The Mac route's note of SpanDAC refusing to make the DAC the Mac's output
+    /// (`route_output_refused`). An action whose play was refused says SpanDAC's
+    /// sentence, not its own generic "Couldn't play ...".
+    private let routeRefusal: RouteRefusalNote?
 
     /// `onSuperseding` runs ON the action queue, just before the body of any
     /// action in `supersedingLabels`: the shell's play confirmer is told that
     /// a pause, skip, play or switch came after every request queued before
     /// it, in press order.
-    init(status: StatusStore, onSuperseding: (() -> Void)? = nil) {
+    init(status: StatusStore, onSuperseding: (() -> Void)? = nil, routeRefusal: RouteRefusalNote? = nil) {
         self.status = status
         self.onSuperseding = onSuperseding
+        self.routeRefusal = routeRefusal
     }
 
     /// Blocks until every action queued so far has run. Tests only.
@@ -207,10 +212,13 @@ final class ActionRunner {
         let supersede = Self.supersedingLabels.contains(label) ? onSuperseding : nil
         queue.async {
             supersede?()
+            // Only an action that starts something speaks SpanDAC's refusal.
+            let refusal = lasting ? self.routeRefusal : nil
+            refusal?.clear()
             do { try body() } catch let e as ActionError {
-                self.status.post(e.message, error: true, untilStateChange: lasting)
+                self.status.post(refusal?.take() ?? e.message, error: true, untilStateChange: lasting)
             } catch {
-                self.status.post("\(label) failed.", error: true, untilStateChange: lasting)
+                self.status.post(refusal?.take() ?? "\(label) failed.", error: true, untilStateChange: lasting)
             }
         }
     }

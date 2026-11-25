@@ -62,6 +62,9 @@ enum QueuePlayOutcome: Equatable {
     case failed
     case superseded
     case notStarted(String)
+    /// SpanDAC could not make the DAC the Mac's output, so NOTHING was played and
+    /// the queue must not move on. Carries SpanDAC's own sentence, shown verbatim.
+    case routeRefused(String)
 
     /// The old `Bool`: false only when the play did not happen and the caller
     /// should say so and roll back. A superseded play is accepted: the newer
@@ -69,9 +72,23 @@ enum QueuePlayOutcome: Equatable {
     var accepted: Bool {
         switch self {
         case .played, .superseded: return true
-        case .failed, .notStarted: return false
+        case .failed, .notStarted, .routeRefused: return false
         }
     }
+}
+
+/// SpanDAC's refusal of the route's output (`route_output_refused`), kept for the
+/// one place that words a failed action. Every action that plays says only
+/// "Couldn't play ..." when its play returns false; on a refusal the person is
+/// owed SpanDAC's own sentence instead, so the player notes it here and
+/// `ActionRunner` shows it in place of the generic words.
+final class RouteRefusalNote {
+    private let lock = NSLock()
+    private var detail: String?
+    func set(_ text: String) { lock.lock(); detail = text; lock.unlock() }
+    func clear() { lock.lock(); detail = nil; lock.unlock() }
+    /// The refusal noted since the last `clear`, once.
+    func take() -> String? { lock.lock(); defer { lock.unlock() }; let d = detail; detail = nil; return d }
 }
 
 /// The line when the song plays with no rate follow because the fence or lock
@@ -219,6 +236,8 @@ final class MacRoutePlayer {
     private let post: (String) -> Void
     private let now: () -> TimeInterval
     private let streamWait: RateStreamWait
+    /// The last play's refusal by SpanDAC (`route_output_refused`), for the action that asked for it.
+    let routeRefusal = RouteRefusalNote()
     /// Runs the later re-check of a start whose stream was not up in time
     /// (`RateAwareTransition.recheck`), off the caller's thread. A test passes
     /// `{ $0() }` to run it in place.
@@ -482,6 +501,7 @@ final class MacRoutePlayer {
         // The song before this one is over as far as a decoder report is concerned: a
         // report that arrives while this one is being started has no song to belong to.
         condition.lock(); song = nil; condition.unlock()
+        routeRefusal.clear()
         startDecoderFeedIfNeeded()
 
         // The ordering first (fix round 3, finding B): the status read below can
@@ -537,6 +557,12 @@ final class MacRoutePlayer {
             return .superseded
         case .notStarted(let reason):
             return .notStarted(reason)
+        case .routeRefused(let detail):
+            // Nothing was played and nothing started: SpanDAC's own sentence is
+            // the play's failure, on the footer and for the action that asked.
+            routeRefusal.set(detail)
+            post(detail)
+            return .routeRefused(detail)
         }
     }
 
@@ -585,6 +611,8 @@ final class MacRoutePlayer {
             return .superseded
         case .notStarted(let reason):
             throw ActionError(message: stationNotStartedLine(reason))
+        case .routeRefused(let detail):
+            throw ActionError(message: detail)
         }
     }
 
@@ -807,7 +835,7 @@ final class MacRoutePlayer {
             // best ordering there is; none means nothing can be reported.
             guard let current = try? fence.current(timeout: 0.2) else { return }
             report = .startedUnfollowed(fence: current, persistentID: persistentID, subject: subject)
-        case .playFailed, .invalidated, .notStarted:
+        case .playFailed, .invalidated, .notStarted, .routeRefused:
             return
         }
         condition.lock()
@@ -892,7 +920,7 @@ final class MacRoutePlayer {
         case .playedUnfollowed:
             lastStarted = (playlist, position)
             ourPause = nil
-        case .playFailed, .invalidated, .notStarted:
+        case .playFailed, .invalidated, .notStarted, .routeRefused:
             break
         }
     }

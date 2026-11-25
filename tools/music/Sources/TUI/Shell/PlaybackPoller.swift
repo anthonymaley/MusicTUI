@@ -477,8 +477,8 @@ final class PlaybackPoller {
         // rate failure is a played song; a play a newer command
         // superseded touches nothing (that command moved the queue, and
         // rolling it back would corrupt it); one that never started
-        // (the output lock busy, a route switch) is rolled back and
-        // retried next tick, with no gate.
+        // (the output lock busy, a route switch, or SpanDAC refusing to make the
+        // DAC the Mac's output) is rolled back and retried next tick, with no gate.
         switch playQueueEntry(backend: backend, appQueue: appQueue, playlist: pl, position: pos,
                               command: .advance) {
         case .played:
@@ -488,6 +488,12 @@ final class PlaybackPoller {
         case .superseded:
             break
         case .notStarted:
+            _ = appQueue.step(-1)
+        case .routeRefused:
+            // SpanDAC would not make the DAC the Mac's output, so the song was not
+            // played (the player already said why, in SpanDAC's words). Not a play
+            // failure, so the gate is not touched and the song is not skipped past:
+            // the step is rolled back and the same song asked again next tick.
             _ = appQueue.step(-1)
         }
         stoppedPolls = 0

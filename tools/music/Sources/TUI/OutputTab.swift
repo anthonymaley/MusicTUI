@@ -88,6 +88,8 @@ enum SourceReadiness: Equatable {
         case .playerDisconnected(let sentence): return .unavailable(sentence)
         case .link(let failure): return .unavailable(failure.sentence)
         case .unlicensed(let detail): return .unavailable(spanDACNotLicensedLine(detail))
+        // Only the Mac route's prepare can see this; SpanDAC's own sentence.
+        case .routeOutputRefused(let sentence): return .unavailable(sentence)
         }
     }
 }

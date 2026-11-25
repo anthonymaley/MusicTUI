@@ -257,6 +257,9 @@ enum RunQueueExit: Equatable {
     case musicUnavailable
     /// The output lock stayed busy (a route switch in progress) too many times.
     case couldNotStart
+    /// SpanDAC could not make the DAC the Mac's output, so the song was not
+    /// played and the queue was not moved on. Carries SpanDAC's own sentence.
+    case routeRefused(String)
     /// One song was waited for longer than the watcher's own lifetime.
     case timedOut
 }
@@ -384,6 +387,13 @@ final class RunQueueRunner {
                 if notStarted >= maxNotStarted { acknowledgePending(.notStarted); return .couldNotStart }
                 sleep(pollInterval)
                 continue
+            case .routeRefused(let detail):
+                // The song did not play, so it is not "failed" (the gate would
+                // retry it and then skip past it) and not "not started" (a retry
+                // would ask the same question again): the queue stays where it is
+                // and the runner leaves, saying SpanDAC's words to a waiting skip.
+                if let nonce = pendingAck { control?.acknowledgeRefused(nonce: nonce, detail: detail); pendingAck = nil }
+                return .routeRefused(detail)
             case .failed:
                 notStarted = 0
                 // Only Music's own play failure counts: retry the same song, then

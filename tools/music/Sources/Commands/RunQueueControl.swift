@@ -48,6 +48,9 @@ enum RunQueueSkipOutcome: String {
     case superseded
     /// A skip past the last song: nothing to play.
     case end
+    /// SpanDAC could not make the DAC the Mac's output: the song was not played.
+    /// The ack carries SpanDAC's sentence after the outcome.
+    case refused
 }
 
 /// The runner's end of the channel.
@@ -62,6 +65,13 @@ protocol RunQueueControlling {
     func takeSkip() -> RunQueueSkipRequest?
     /// What became of the skip `nonce`.
     func acknowledge(nonce: String, outcome: RunQueueSkipOutcome)
+    /// The skip `nonce` led to a song SpanDAC would not let play (`route_output_refused`),
+    /// with SpanDAC's own sentence. A control that cannot carry it answers `notStarted`.
+    func acknowledgeRefused(nonce: String, detail: String)
+}
+
+extension RunQueueControlling {
+    func acknowledgeRefused(nonce: String, detail: String) { acknowledge(nonce: nonce, outcome: .notStarted) }
 }
 
 /// The channel's files, in the directory of `mode.json`.
@@ -121,6 +131,12 @@ struct FileRunQueueControl: RunQueueControlling {
     func acknowledge(nonce: String, outcome: RunQueueSkipOutcome) {
         _ = files.write("\(nonce) \(outcome.rawValue)", to: files.ackPath(owner: owner))
     }
+
+    /// `nonce refused <detail>`, the detail on one line.
+    func acknowledgeRefused(nonce: String, detail: String) {
+        let line = detail.split(whereSeparator: \.isNewline).joined(separator: " ")
+        _ = files.write("\(nonce) \(RunQueueSkipOutcome.refused.rawValue) \(line)", to: files.ackPath(owner: owner))
+    }
 }
 
 /// The client's end: `music skip`, `music back`, and the TUI's next and previous
@@ -140,6 +156,9 @@ struct RunQueueSkipClient {
         case notSent
         /// The runner heard it and the song did not start.
         case notStarted
+        /// The runner heard it and SpanDAC would not make the DAC the Mac's output:
+        /// the song was not played. Carries SpanDAC's own sentence.
+        case refused(String)
         /// The runner heard it and a newer command had taken over.
         case superseded
         /// A runner exists for the route but is not ready to be asked: its start has
@@ -219,12 +238,17 @@ struct RunQueueSkipClient {
         }
         while now() - sentAt <= ackWithin {
             if let ack = files.read(files.ackPath(owner: owner)) {
-                let parts = ack.split(whereSeparator: \.isWhitespace).map(String.init)
+                let parts = ack.split(maxSplits: 2, omittingEmptySubsequences: true, whereSeparator: \.isWhitespace)
+                    .map(String.init)
+                if parts.count == 3, parts[0] == nonce, parts[1] == RunQueueSkipOutcome.refused.rawValue {
+                    return .refused(parts[2].trimmingCharacters(in: .whitespacesAndNewlines))
+                }
                 if parts.count == 2, parts[0] == nonce {
                     switch RunQueueSkipOutcome(rawValue: parts[1]) {
                     case .played?, .end?: return .done
                     case .superseded?: return .superseded
                     case .failed?, .notStarted?: return .notStarted
+                    case .refused?: return .notStarted      // a refusal with no sentence
                     case nil: return .notAcknowledged
                     }
                 }
@@ -248,7 +272,8 @@ func skipThroughRunner(step: Int, json: Bool,
                        routeIsOn: (() -> Bool)? = nil,
                        client: RunQueueSkipClient? = nil,
                        show: (Bool) -> Void = { showNowPlaying(json: $0, waitForPlay: true) },
-                       fail: (String) -> Void = { errorOut($0) }) throws -> Bool {
+                       fail: (String) -> Void = { errorOut($0) },
+                       refused: ((String) -> Void)? = nil) throws -> Bool {
     let routeIsOn = routeIsOn ?? { MacRouteStore(beside: modes).isOn }
     let client = client ?? RunQueueSkipClient.live(modes: modes)
     guard routeIsOn() else { return false }
@@ -263,6 +288,10 @@ func skipThroughRunner(step: Int, json: Bool,
         throw ExitCode.failure
     case .superseded:
         fail(macRouteSkipSupersededMessage)
+        throw ExitCode.failure
+    case .refused(let detail):
+        // SpanDAC's own sentence, verbatim: the song was not played.
+        if let refused { refused(detail) } else { fail(detail) }
         throw ExitCode.failure
     case .stillStarting:
         fail(macRouteSkipStartingMessage)

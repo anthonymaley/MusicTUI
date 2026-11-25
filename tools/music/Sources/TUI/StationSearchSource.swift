@@ -17,6 +17,10 @@ extension RadioCatalog: StationSearching {
 
 /// What went wrong talking to the source app, in words a person reading the
 /// Radio message line can act on.
+/// The kind SpanDAC answers `slice.prepareRate` with when it could not make the
+/// chosen DAC the Mac's default output (SpanDAC 0d84807). No `rate` object comes with it.
+let routeOutputRefusedKind = "route_output_refused"
+
 enum SourceAppError: Error, Equatable {
     case notRunning
     case notAuthorized
@@ -93,12 +97,31 @@ enum SourceAppError: Error, Equatable {
     /// SpanDAC is installed and not licensed: it answers every op but its status
     /// with this kind. Carries SpanDAC's own sentence, shown verbatim.
     case unlicensed(String)
+    /// The Mac route's `slice.prepareRate` could not make the chosen DAC the
+    /// Mac's default output, and SpanDAC played nothing. Decoded on the KIND
+    /// `route_output_refused`; carries SpanDAC's own `detail` ("Couldn't make
+    /// SSL 2+ the Mac's output; nothing was played."), shown verbatim. The
+    /// route does not play the song, because playing it would sound on whatever
+    /// device the Mac is on now.
+    case routeOutputRefused(String)
 
     /// What a person reads when SpanDAC says `player_disconnected` and sends no
     /// sentence of its own (or an empty one). Platform-neutral: an iPhone or
     /// iPad SpanDAC can lose its player too.
     static let playerDisconnectedSentence =
         "SpanDAC lost its connection to Apple Music's player. Relaunch SpanDAC to play again."
+
+    /// What a person reads when SpanDAC refuses the route's output and sends no
+    /// sentence of its own.
+    static let routeOutputRefusedSentence = "Couldn't make the DAC the Mac's output; nothing was played."
+
+    /// `route_output_refused`, with SpanDAC's own words when it sent any.
+    static func routeOutputRefused(detail: String?) -> SourceAppError {
+        guard let detail, !detail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return .routeOutputRefused(routeOutputRefusedSentence)
+        }
+        return .routeOutputRefused(detail)
+    }
 
     /// `player_disconnected`, with SpanDAC's own words when it sent any.
     static func playerDisconnected(detail: String?) -> SourceAppError {
@@ -135,6 +158,7 @@ enum SourceAppError: Error, Equatable {
         case .playerDisconnected(let sentence): return sentence
         case .link(let failure): return failure.sentence
         case .unlicensed(let d): return d
+        case .routeOutputRefused(let d): return d
         }
     }
 
@@ -2106,6 +2130,11 @@ struct SourceAppControl: SourceControlling {
                 // Carries the op name, not the prose, so the caller can say
                 // which capability is missing rather than "SpanDAC refused".
                 throw SourceAppError.unsupported(op)
+            case routeOutputRefusedKind:
+                // Decoded on the KIND; the detail is SpanDAC's own sentence,
+                // shown verbatim. `routeOutputRefused(detail:)` stands a plain
+                // sentence in only when SpanDAC sent none.
+                throw SourceAppError.routeOutputRefused(detail: error?["detail"] as? String)
             case "player_disconnected":
                 // Decoded on the kind, and NOT retried: `mutate` re-sends only
                 // a `warming`, so this reaches the person as the one sentence.

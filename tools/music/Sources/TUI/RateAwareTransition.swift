@@ -224,6 +224,11 @@ enum RateTransitionResult: Equatable {
     case playedUnfollowed(reason: String)
     /// Music's own `play` failed. The one result that is a play failure.
     case playFailed(String)
+    /// SpanDAC could not make the chosen DAC the Mac's output (`route_output_refused`)
+    /// and answered before the song started: NOTHING was played, nothing was
+    /// started that needs stopping, and the queue is not advanced. Carries
+    /// SpanDAC's own sentence, to be shown verbatim.
+    case routeRefused(String)
     case played(RateTransitionPlayed)
 
     /// The only value a caller may hand `AdvanceRetryGate`: true is
@@ -234,7 +239,7 @@ enum RateTransitionResult: Equatable {
         switch self {
         case .played, .playedUnfollowed: return true
         case .playFailed: return false
-        case .invalidated, .notStarted: return nil
+        case .invalidated, .notStarted, .routeRefused: return nil
         }
     }
 }
@@ -306,6 +311,24 @@ final class RateAwareTransition {
         case .other:
             _ = follow.announce()
             rateOutcome = follow.awaitQuiet()
+        }
+
+        // 2b. SpanDAC refused to make the DAC the Mac's output. Playing now would
+        // sound on whatever device the Mac is on, so the song is NOT played, and
+        // no play was started (the prepare comes before it): nothing to stop. A
+        // refusal for a request a newer command has already replaced is that
+        // command's to speak of, so the token is revalidated first (nothing runs
+        // under the lock). Every other failed prepare plays, as ever.
+        if case .failed(.routeOutputRefused(let detail)) = rateOutcome {
+            do {
+                if case .invalidated = try fence.playIfCurrent(token, alsoCurrent: plan.isCurrent, play: {}) {
+                    return .invalidated
+                }
+            } catch {
+                // The lock or the files cannot be read: the refusal still stands, and
+                // nothing was played either way.
+            }
+            return .routeRefused(detail)
         }
 
         // 3. M3: revalidate the whole token and play, under the lock.
