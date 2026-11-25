@@ -309,8 +309,15 @@ final class RateAwareTransition {
         case .track(let persistentID, let catalogID):
             rateOutcome = follow.prepare(dacUID: plan.dacUID, persistentID: persistentID, catalogID: catalogID)
         case .other:
-            _ = follow.announce()
-            rateOutcome = follow.awaitQuiet()
+            // A station has no prepare, so its fence message is where SpanDAC is
+            // asked to make the DAC the Mac's output; a refusal of that message is
+            // the outcome (2b below), and nothing is waited for or opened.
+            let announced = follow.announce(ensureOutput: true, dacUID: plan.dacUID)
+            if case .failed(.routeOutputRefused) = announced {
+                rateOutcome = announced
+            } else {
+                rateOutcome = follow.awaitQuiet()
+            }
         }
 
         // 2b. SpanDAC refused to make the DAC the Mac's output. Playing now would
@@ -325,8 +332,11 @@ final class RateAwareTransition {
                     return .invalidated
                 }
             } catch {
-                // The lock or the files cannot be read: the refusal still stands, and
-                // nothing was played either way.
+                // The lock or the files cannot be read, so the fence file cannot be
+                // looked at. The part of the token that needs no lock still can: a
+                // refusal for a request this process has already replaced is not
+                // spoken. Nothing was played either way.
+                if !plan.isCurrent() { return .invalidated }
             }
             return .routeRefused(detail)
         }

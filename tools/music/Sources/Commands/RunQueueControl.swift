@@ -53,6 +53,24 @@ enum RunQueueSkipOutcome: String {
     case refused
 }
 
+/// What the runner's FIRST song came to, told to the command that spawned it
+/// (the one place a runner's start can be reported to a person: `music play`
+/// returns before the runner has played anything).
+enum RunQueueFirstStart: Equatable {
+    /// The first song played.
+    case played
+    /// SpanDAC would not make the DAC the Mac's output, so nothing played. Carries
+    /// SpanDAC's own sentence.
+    case refused(String)
+    /// The runner ended without playing it, for any other reason (a newer command
+    /// took over, the lock stayed busy, the route was left): not a refusal.
+    case ended
+}
+
+/// The nonce of the first-start line in the ack file. A skip's nonce is a UUID,
+/// so the two never meet.
+let runQueueFirstStartNonce = "first"
+
 /// The runner's end of the channel.
 protocol RunQueueControlling {
     /// The runner is up (it may not hold the lease yet): a client waits for it.
@@ -68,10 +86,14 @@ protocol RunQueueControlling {
     /// The skip `nonce` led to a song SpanDAC would not let play (`route_output_refused`),
     /// with SpanDAC's own sentence. A control that cannot carry it answers `notStarted`.
     func acknowledgeRefused(nonce: String, detail: String)
+    /// What the first song came to, once: the spawning command waits for it
+    /// (`RunQueueFirstStartWait`). A control that cannot carry it says nothing.
+    func reportFirstStart(_ result: RunQueueFirstStart)
 }
 
 extension RunQueueControlling {
     func acknowledgeRefused(nonce: String, detail: String) { acknowledge(nonce: nonce, outcome: .notStarted) }
+    func reportFirstStart(_ result: RunQueueFirstStart) {}
 }
 
 /// The channel's files, in the directory of `mode.json`.
@@ -136,6 +158,64 @@ struct FileRunQueueControl: RunQueueControlling {
     func acknowledgeRefused(nonce: String, detail: String) {
         let line = detail.split(whereSeparator: \.isNewline).joined(separator: " ")
         _ = files.write("\(nonce) \(RunQueueSkipOutcome.refused.rawValue) \(line)", to: files.ackPath(owner: owner))
+    }
+}
+
+extension FileRunQueueControl {
+    /// `first played`, `first ended` or `first refused <detail>` in the runner's ack
+    /// file, one line, for the parent that spawned it.
+    func reportFirstStart(_ result: RunQueueFirstStart) {
+        let words: String
+        switch result {
+        case .played: words = "played"
+        case .ended: words = "ended"
+        case .refused(let detail):
+            words = "refused " + detail.split(whereSeparator: \.isNewline).joined(separator: " ")
+        }
+        _ = files.write("\(runQueueFirstStartNonce) \(words)", to: files.ackPath(owner: owner))
+    }
+}
+
+/// The spawning command's wait for its runner's first song (`music play` on the
+/// Mac route). The runner starts after the command releases the output lock, so
+/// the wait must run AFTER the release, never inside it.
+///
+/// **The bound is 3.0 s**, polled every 50 ms, and only ever spent in full when
+/// the runner says nothing: a refusal is read as soon as it is written, and so is
+/// a played first song. The refusal comes from one SpanDAC exchange (its guard
+/// answers inside 2.5 s, `RouteOutput`), so 3.0 s sees it; a success is usually
+/// reported within a second. Past the bound the command says what it always said
+/// ("Playing ...") and the runner carries on.
+struct RunQueueFirstStartWait {
+    static let bound: TimeInterval = 3.0
+    static let poll: TimeInterval = 0.05
+
+    let files: RunQueueControlFiles
+    var now: () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
+    var sleep: (TimeInterval) -> Void = { Thread.sleep(forTimeInterval: $0) }
+
+    /// What the runner named `owner` said its first song came to, or nil when it
+    /// said nothing within the bound.
+    func wait(owner: String) -> RunQueueFirstStart? {
+        let started = now()
+        while true {
+            if let line = files.read(files.ackPath(owner: owner)), let result = Self.parse(line) { return result }
+            if now() - started >= Self.bound { return nil }
+            sleep(Self.poll)
+        }
+    }
+
+    static func parse(_ line: String) -> RunQueueFirstStart? {
+        let parts = line.split(maxSplits: 2, omittingEmptySubsequences: true, whereSeparator: \.isWhitespace).map(String.init)
+        guard parts.count >= 2, parts[0] == runQueueFirstStartNonce else { return nil }
+        switch parts[1] {
+        case "played": return .played
+        case "ended": return .ended
+        case "refused":
+            let detail = parts.count == 3 ? parts[2].trimmingCharacters(in: .whitespacesAndNewlines) : ""
+            return .refused(detail.isEmpty ? SourceAppError.routeOutputRefusedSentence : detail)
+        default: return nil
+        }
     }
 }
 

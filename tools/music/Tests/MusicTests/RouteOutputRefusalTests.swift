@@ -180,6 +180,103 @@ final class RouteOutputRefusalTests: XCTestCase {
         XCTAssertEqual(r.music.log, [])
     }
 
+    /// The state directory becomes a plain file: the lock and the fence files can
+    /// no longer be opened (ENOTDIR), so every read under the lock throws.
+    private func breakTheLock(_ dir: String) {
+        try? FileManager.default.removeItem(atPath: dir)
+        FileManager.default.createFile(atPath: dir, contents: Data())
+    }
+
+    /// Round 2 (B3, client): when the lock or the files cannot be read, the
+    /// refusal is still revalidated as far as it can be (the plan's own token,
+    /// which needs no lock). A refusal for a request this process has already
+    /// replaced is not spoken, whatever the lock says.
+    func testARefusalForAReplacedRequestIsNotSpokenWhenTheLockCannotBeRead() {
+        let dir = OutputLockTestSupport.tempDir()
+        var current = true
+        let r = rig(dir) { _ in
+            // The newer command arrives, and the state directory goes away, while
+            // SpanDAC works on the old request.
+            current = false
+            self.breakTheLock(dir)
+            return self.refusalReply(detail: self.detail)
+        }
+        XCTAssertEqual(r.transition.run(plan(isCurrent: { current })), .invalidated)
+        XCTAssertEqual(r.music.log, [])
+    }
+
+    /// With nothing newer, an unreadable lock leaves the refusal standing: nothing
+    /// was played either way.
+    func testARefusalStandsWhenTheLockCannotBeReadAndNothingIsNewer() {
+        let dir = OutputLockTestSupport.tempDir()
+        let r = rig(dir) { _ in
+            self.breakTheLock(dir)
+            return self.refusalReply(detail: self.detail)
+        }
+        XCTAssertEqual(r.transition.run(plan()), .routeRefused(detail))
+        XCTAssertEqual(r.music.log, [])
+    }
+
+    // MARK: round 2: stations (B1)
+
+    private func quiet(_ fence: Int) -> String {
+        let rate: [String: Any] = ["fence": fence, "outcome": "quiet", "rate_seq": 1]
+        return String(decoding: try! JSONSerialization.data(withJSONObject: ["ok": true, "rate": rate]), as: UTF8.self)
+    }
+
+    /// A station start has no prepare, so its fence message asks for the output
+    /// (`ensure_output`, with the DAC when the plan names one), and a refusal of
+    /// THAT message ends the start before anything opens: no poll, no open.
+    func testAStationAsksForTheOutputAndIsRefusedBeforeItOpens() {
+        let r = rig { body in
+            if body["op"] as? String == sourceRateFenceOp, body["ensure_output"] as? Bool == true {
+                return self.refusalReply(detail: self.detail)
+            }
+            return self.quiet(body["fence"] as? Int ?? 0)
+        }
+        var opened = 0
+        let plan = RateTransitionPlan(command: .station, sound: .other(start: { opened += 1 }), dacUID: "ssl",
+                                      isCurrent: { true })
+        XCTAssertEqual(r.transition.run(plan), .routeRefused(detail))
+        XCTAssertEqual(opened, 0, "the station opened on the wrong output")
+        XCTAssertEqual(r.wire.ops, [sourceRateFenceOp], "a refusal was polled for")
+        XCTAssertEqual(r.wire.requests.first?["dac_uid"] as? String, "ssl")
+    }
+
+    /// A station whose output is made opens, and waits for quiet as before.
+    func testAStationWhoseOutputIsMadeOpensAsBefore() {
+        let r = rig { body in self.quiet(body["fence"] as? Int ?? 0) }
+        var opened = 0
+        let plan = RateTransitionPlan(command: .station, sound: .other(start: { opened += 1 }), dacUID: nil,
+                                      isCurrent: { true })
+        guard case .played = r.transition.run(plan) else { return XCTFail("the station did not start") }
+        XCTAssertEqual(opened, 1)
+        XCTAssertEqual(r.wire.requests.first?["ensure_output"] as? Bool, true)
+    }
+
+    /// The plain announce every other command sends is unchanged on the wire.
+    func testAPlainAnnounceStaysTwoKeys() {
+        XCTAssertEqual(Set(SourceAppControl.rateFenceBody(fence: 41).keys), ["op", "fence"])
+        XCTAssertEqual(Set(SourceAppControl.rateFenceBody(fence: 41, ensureOutput: true, dacUID: "ssl").keys),
+                       ["op", "fence", "ensure_output", "dac_uid"])
+    }
+
+    // MARK: round 2: SpanDAC's guard answers inside the client's wait
+
+    /// SpanDAC's output guard gives up by 1.5 s (`RouteOutput.deadlineSeconds`), a
+    /// poll and half a second of slack later at the latest: 2.02 s. The client
+    /// waits `prepareReplyWait` (2.5 s) for a prepare or a station's fence reply,
+    /// after at most `ensureTimeout` of announcing the route, inside a 4.5 s cap.
+    /// A refusal that arrived later would be a timeout, polled past, and the song
+    /// would play on the wrong output. SpanDAC pins the same 2.5 s
+    /// (`RouteOutput.clientPrepareWaitSeconds`); both must move together.
+    func testTheClientsPrepareWaitOutlastsSpanDACsOutputGuard() {
+        let guardWorstCase = 1.5 + 0.02 + 0.5
+        XCTAssertEqual(SourceRateFollow.prepareReplyWait, 2.5, "SpanDAC's guard budget is built on this")
+        let leftAfterAnnouncing = SourceRateFollow.cap - MacRouteFollowReporter.ensureTimeout
+        XCTAssertGreaterThan(min(SourceRateFollow.prepareReplyWait, leftAfterAnnouncing), guardWorstCase)
+    }
+
     // MARK: the player
 
     private func player(dir: String = OutputLockTestSupport.tempDir(), owner: String = "tui",
@@ -269,6 +366,8 @@ final class RouteOutputRefusalTests: XCTestCase {
         func takeSkip() -> RunQueueSkipRequest? { skips.isEmpty ? nil : skips.removeFirst() }
         func acknowledge(nonce: String, outcome: RunQueueSkipOutcome) { acks.append("\(nonce) \(outcome.rawValue)") }
         func acknowledgeRefused(nonce: String, detail: String) { acks.append("\(nonce) refused \(detail)") }
+        var firstStarts: [RunQueueFirstStart] = []
+        func reportFirstStart(_ result: RunQueueFirstStart) { firstStarts.append(result) }
     }
 
     /// The runner asked for the first song, SpanDAC refuses: nothing plays, the
@@ -307,6 +406,207 @@ final class RouteOutputRefusalTests: XCTestCase {
         XCTAssertEqual(music.played, ["AAAAAAAAAAAAAAA1"], "the refused song, or one after it, played")
         XCTAssertEqual(control.acks, ["SKIP1 refused \(detail)"])
         XCTAssertEqual(prepares, 2, "a refused skip was asked for again")
+    }
+
+    /// Round 2 (I1): a refused skip rolls its step back, so the queue stays on
+    /// the song that is playing, not one that never played.
+    func testARefusedSkipLeavesTheQueueWhereItWas() {
+        let wire = Wire(), music = FakeMusic()
+        var prepares = 0
+        wire.script = { body in
+            if body["op"] as? String == sourcePrepareRateOp {
+                prepares += 1
+                if prepares >= 2 { return self.refusalReply(detail: self.detail) }
+            }
+            return self.settled(body["fence"] as? Int ?? 0)
+        }
+        let control = RecordingControl()
+        control.skips = [RunQueueSkipRequest(step: 1, nonce: "SKIP1")]
+        let queue = AppQueueStore()
+        queue.set(runQueueAppQueue(ids: ["AAAAAAAAAAAAAAA1", "BBBBBBBBBBBBBBB2", "CCCCCCCCCCCCCCC3"], label: "Mixtape"))
+        let (r, _) = runner(wire: wire, music: music, control: control, queue: queue)
+        XCTAssertEqual(r.run(), .routeRefused(detail))
+        XCTAssertEqual(queue.read()?.currentIndex, 1, "a refused skip moved the queue on")
+    }
+
+    /// The same for a skip BACK (step -1) from the third song.
+    func testARefusedSkipBackLeavesTheQueueWhereItWas() {
+        let wire = Wire(), music = FakeMusic()
+        var prepares = 0
+        wire.script = { body in
+            if body["op"] as? String == sourcePrepareRateOp {
+                prepares += 1
+                if prepares >= 2 { return self.refusalReply(detail: self.detail) }
+            }
+            return self.settled(body["fence"] as? Int ?? 0)
+        }
+        let control = RecordingControl()
+        control.skips = [RunQueueSkipRequest(step: -1, nonce: "BACK1")]
+        let queue = AppQueueStore()
+        var q = runQueueAppQueue(ids: ["AAAAAAAAAAAAAAA1", "BBBBBBBBBBBBBBB2", "CCCCCCCCCCCCCCC3"], label: "Mixtape")!
+        q.currentIndex = 3
+        queue.set(q)
+        let (r, _) = runner(wire: wire, music: music, control: control, queue: queue)
+        XCTAssertEqual(r.run(), .routeRefused(detail))
+        XCTAssertEqual(queue.read()?.currentIndex, 3, "a refused skip back moved the queue")
+    }
+
+    /// Music shows the first song at its very end, then stopped: a natural end.
+    private final class EndingWatcher: RunQueueWatching {
+        let music: FakeMusic
+        var reads = 0
+        init(_ music: FakeMusic) { self.music = music }
+        func musicIsRunning() -> Bool { true }
+        func readPlayback() -> RunQueuePlayback? {
+            reads += 1
+            let id = music.state.persistentID
+            if reads == 1 { return RunQueuePlayback(state: .playing, persistentID: id, position: 199, duration: 200) }
+            return RunQueuePlayback(state: .stopped, persistentID: id, position: 0, duration: 200)
+        }
+        func songRepeat() -> RepeatMode? { nil }
+    }
+
+    /// Round 2 (I1): a song that ends and whose NEXT song is refused leaves the
+    /// queue on the song that ended, not on the one that never played.
+    func testARefusedNaturalAdvanceLeavesTheQueueWhereItWas() {
+        let wire = Wire(), music = FakeMusic()
+        var prepares = 0
+        wire.script = { body in
+            if body["op"] as? String == sourcePrepareRateOp {
+                prepares += 1
+                if prepares >= 2 { return self.refusalReply(detail: self.detail) }
+            }
+            return self.settled(body["fence"] as? Int ?? 0)
+        }
+        let queue = AppQueueStore()
+        queue.set(runQueueAppQueue(ids: ["AAAAAAAAAAAAAAA1", "BBBBBBBBBBBBBBB2"], label: "Mixtape"))
+        let clock = Clock()
+        let p = player(wire: wire, music: music, posts: { _ in })
+        let r = RunQueueRunner(queue: queue, player: p, route: MacDACRouteState(initial: true),
+                               routeStillChosen: { true }, watcher: EndingWatcher(music),
+                               sleep: { clock.t += $0 }, now: { clock.t },
+                               pollInterval: 1, startGracePolls: 3, maxUnreadablePolls: 3, maxNotStarted: 3)
+        XCTAssertEqual(r.run(), .routeRefused(detail))
+        XCTAssertEqual(music.played, ["AAAAAAAAAAAAAAA1"])
+        XCTAssertEqual(queue.read()?.currentIndex, 1, "a refused natural advance moved the queue on")
+    }
+
+    /// A queue replaced while the refused song was being asked for is not
+    /// touched by any rollback: the new queue keeps its own index.
+    func testARollbackNeverTouchesAQueueReplacedMeanwhile() {
+        let wire = Wire(), music = FakeMusic()
+        let queue = AppQueueStore()
+        queue.set(runQueueAppQueue(ids: ["AAAAAAAAAAAAAAA1", "BBBBBBBBBBBBBBB2", "CCCCCCCCCCCCCCC3"], label: "Mixtape"))
+        var replacement = runQueueAppQueue(ids: ["DDDDDDDDDDDDDDD4", "EEEEEEEEEEEEEEE5"], label: "Other")!
+        replacement.currentIndex = 2
+        var prepares = 0
+        wire.script = { body in
+            if body["op"] as? String == sourcePrepareRateOp {
+                prepares += 1
+                if prepares >= 2 { queue.set(replacement); return self.refusalReply(detail: self.detail) }
+            }
+            return self.settled(body["fence"] as? Int ?? 0)
+        }
+        let control = RecordingControl()
+        control.skips = [RunQueueSkipRequest(step: 1, nonce: "SKIP1")]
+        let (r, _) = runner(wire: wire, music: music, control: control, queue: queue)
+        _ = r.run()
+        XCTAssertEqual(queue.read()?.playlistName, replacement.playlistName)
+        XCTAssertEqual(queue.read()?.currentIndex, 2, "the rollback stepped a queue that was not this song's")
+    }
+
+    // MARK: round 2: the first start is told to the command that spawned the runner (I3)
+
+    /// The first song refused: the spawning command is told, with SpanDAC's sentence.
+    func testTheRunnerTellsTheSpawningCommandThatTheFirstSongWasRefused() {
+        let wire = Wire(), music = FakeMusic()
+        wire.script = { _ in self.refusalReply(detail: self.detail) }
+        let control = RecordingControl()
+        let queue = AppQueueStore()
+        queue.set(runQueueAppQueue(ids: ["AAAAAAAAAAAAAAA1", "BBBBBBBBBBBBBBB2"], label: "Mixtape"))
+        let (r, _) = runner(wire: wire, music: music, control: control, queue: queue)
+        XCTAssertEqual(r.run(), .routeRefused(detail))
+        XCTAssertEqual(control.firstStarts, [.refused(detail)])
+    }
+
+    /// Said once, about the FIRST song only: a later refused skip does not rewrite it.
+    func testOnlyTheFirstSongIsReported() {
+        let wire = Wire(), music = FakeMusic()
+        var prepares = 0
+        wire.script = { body in
+            if body["op"] as? String == sourcePrepareRateOp {
+                prepares += 1
+                if prepares >= 2 { return self.refusalReply(detail: self.detail) }
+            }
+            return self.settled(body["fence"] as? Int ?? 0)
+        }
+        let control = RecordingControl()
+        control.skips = [RunQueueSkipRequest(step: 1, nonce: "SKIP1")]
+        let queue = AppQueueStore()
+        queue.set(runQueueAppQueue(ids: ["AAAAAAAAAAAAAAA1", "BBBBBBBBBBBBBBB2"], label: "Mixtape"))
+        let (r, _) = runner(wire: wire, music: music, control: control, queue: queue)
+        XCTAssertEqual(r.run(), .routeRefused(detail))
+        XCTAssertEqual(control.firstStarts, [.played])
+    }
+
+    /// A runner that ends before it plays anything (a newer command took over)
+    /// still answers, so the command is not left waiting out its bound.
+    func testARunnerThatEndsWithoutPlayingStillAnswers() {
+        let dir = OutputLockTestSupport.tempDir()
+        let other = RateFence(lock: OutputLock(path: dir + "/output.lock", pollInterval: 0.001))
+        let wire = Wire(), music = FakeMusic()
+        wire.script = { body in
+            if body["op"] as? String == sourcePrepareRateOp { _ = try other.begin(.next, owner: "newer") }
+            return self.settled(body["fence"] as? Int ?? 0)
+        }
+        let control = RecordingControl()
+        let queue = AppQueueStore()
+        queue.set(runQueueAppQueue(ids: ["AAAAAAAAAAAAAAA1"], label: "Mixtape"))
+        let clock = Clock()
+        let p = player(dir: dir, wire: wire, music: music, posts: { _ in })
+        let r = RunQueueRunner(queue: queue, player: p, route: MacDACRouteState(initial: true),
+                               routeStillChosen: { true }, watcher: PlayingWatcher(music),
+                               sleep: { clock.t += $0 }, now: { clock.t }, control: control)
+        XCTAssertEqual(r.run(), .superseded)
+        XCTAssertEqual(control.firstStarts, [.ended])
+    }
+
+    /// The channel: the runner writes one line, the command reads it, and every
+    /// word round-trips (a sentence with spaces whole).
+    func testTheFirstStartRoundTripsThroughTheAckFile() throws {
+        let files = RunQueueControlFiles(directory: try tempDirectory())
+        let control = FileRunQueueControl(files: files, owner: "runner-1", pid: 4242)
+        for result in [RunQueueFirstStart.played, .ended, .refused(detail)] {
+            control.reportFirstStart(result)
+            XCTAssertEqual(RunQueueFirstStartWait(files: files).wait(owner: "runner-1"), result)
+        }
+        // A skip's ack is not a first start.
+        control.acknowledge(nonce: "N", outcome: .played)
+        var tick = 0.0
+        let wait = RunQueueFirstStartWait(files: files, now: { tick }, sleep: { tick += $0 })
+        XCTAssertNil(wait.wait(owner: "runner-1"))
+    }
+
+    /// The wait is bounded: a runner that says nothing costs 3 s and no more (one
+    /// poll's grace), and one that answers costs only until it does.
+    func testTheFirstStartWaitIsBoundedAndSmall() throws {
+        let files = RunQueueControlFiles(directory: try tempDirectory())
+        var tick = 0.0
+        let silent = RunQueueFirstStartWait(files: files, now: { tick }, sleep: { tick += $0 })
+        XCTAssertNil(silent.wait(owner: "nobody"))
+        XCTAssertGreaterThanOrEqual(tick, RunQueueFirstStartWait.bound)
+        XCTAssertLessThanOrEqual(tick, RunQueueFirstStartWait.bound + RunQueueFirstStartWait.poll)
+        XCTAssertEqual(RunQueueFirstStartWait.bound, 3.0)
+
+        // It answers a second in.
+        tick = 0
+        let control = FileRunQueueControl(files: files, owner: "runner-2", pid: 4242)
+        let answering = RunQueueFirstStartWait(files: files, now: { tick }, sleep: {
+            tick += $0
+            if tick >= 1.0 { control.reportFirstStart(.refused(self.detail)) }
+        })
+        XCTAssertEqual(answering.wait(owner: "runner-2"), .refused(detail))
+        XCTAssertLessThan(tick, 1.2, "the wait went on after the answer")
     }
 
     // MARK: the skip channel

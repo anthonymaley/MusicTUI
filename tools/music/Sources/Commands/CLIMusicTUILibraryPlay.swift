@@ -48,6 +48,28 @@ struct CLIMusicTUILibraryPlayRequest: Equatable {
     var routeAtRead: Bool? = nil
 }
 
+/// A route play whose runner has been spawned and whose first song has not yet
+/// been waited for.
+struct RoutePlayStart {
+    let owner: String
+    let line: String
+    let notice: String?
+    let json: Bool
+
+    /// The skip notice (stderr under `--json`), then what was started.
+    func say(env: CLIBridgeEnv) {
+        if let notice { if json { env.err(notice) } else { env.out(notice) } }
+        env.out(line)
+    }
+}
+
+final class RoutePlayStartHold {
+    private let lock = NSLock()
+    private var held: RoutePlayStart?
+    func put(_ start: RoutePlayStart) { lock.lock(); held = start; lock.unlock() }
+    func take() -> RoutePlayStart? { lock.lock(); defer { lock.unlock() }; let s = held; held = nil; return s }
+}
+
 /// Plays SpanDAC library rows on the MusicTUI output.
 ///
 /// `prepare` runs BEFORE the output lock: any read of SpanDAC's library the
@@ -59,9 +81,14 @@ protocol CLIMusicTUILibraryPlaying {
     func prepare(_ request: CLIMusicTUILibraryPlayRequest, env: CLIBridgeEnv) throws
         -> CLIMusicTUILibraryPlayRequest
     func play(_ request: CLIMusicTUILibraryPlayRequest, env: CLIBridgeEnv) throws
+    /// Runs AFTER `play`'s output lock is released: for a play that started a
+    /// runner, the wait for its first song and the line that says what happened
+    /// (the runner's first song needs that lock, so no wait can happen inside it).
+    func finishRoutePlay(env: CLIBridgeEnv) throws
 }
 
 extension CLIMusicTUILibraryPlaying {
+    func finishRoutePlay(env: CLIBridgeEnv) throws {}
     /// Nothing to read: the request goes to `play` as it is.
     func prepare(_ request: CLIMusicTUILibraryPlayRequest, env: CLIBridgeEnv) throws
         -> CLIMusicTUILibraryPlayRequest {
@@ -119,6 +146,14 @@ struct PersistentIDCLILibraryPlay: CLIMusicTUILibraryPlaying {
     /// Seams so tests are exact.
     var shuffleIDs: ([String]) -> [String] = { $0.shuffled() }
     var shuffleAlbums: ([[String]]) -> [[String]] = { $0.shuffled() }
+    /// What the runner's first song came to, for a play that started one: nil
+    /// (the default, and every test that predates it) prints "Playing" as soon as
+    /// the runner is spawned, as it always did; the live composition waits
+    /// (bounded, `RunQueueFirstStartWait`) after the output lock is released, so
+    /// a refusal is said instead of "Playing" and exits non-zero.
+    var firstStart: ((_ owner: String, _ env: CLIBridgeEnv) -> RunQueueFirstStart?)? = nil
+    /// The runner this play started, waiting for `finishRoutePlay`.
+    let pendingStart = RoutePlayStartHold()
 
     func prepare(_ request: CLIMusicTUILibraryPlayRequest, env: CLIBridgeEnv) throws
         -> CLIMusicTUILibraryPlayRequest {
@@ -230,8 +265,23 @@ struct PersistentIDCLILibraryPlay: CLIMusicTUILibraryPlaying {
                             reservation: reservation, launch: launch) else {
             throw ActionError(message: macRouteRunnerNotStartedMessage)
         }
-        if let skipNotice { if request.json { env.err(skipNotice) } else { env.out(skipNotice) } }
-        env.out(macRoutePlayingLine(label: request.label, count: ids.count, json: request.json))
+        let started = RoutePlayStart(owner: reservation.owner, line: macRoutePlayingLine(label: request.label,
+                                                                                          count: ids.count, json: request.json),
+                                     notice: skipNotice, json: request.json)
+        // With a first-start wait the lines come after the lock is released
+        // (`finishRoutePlay`); without one, now, as before.
+        if firstStart != nil { pendingStart.put(started); return }
+        started.say(env: env)
+    }
+
+    func finishRoutePlay(env: CLIBridgeEnv) throws {
+        guard let started = pendingStart.take() else { return }
+        if let firstStart, case .refused(let detail)? = firstStart(started.owner, env) {
+            // The song did not play: SpanDAC's own sentence is the failure, and
+            // "Playing ..." is never said.
+            throw ActionError(message: detail)
+        }
+        started.say(env: env)
     }
 
     /// The rows again, each with the alias SpanDAC gives the row whose id it
@@ -270,7 +320,10 @@ func liveCLIMusicTUILibraryPlay() -> CLIMusicTUILibraryPlaying {
         launch: detachedLaunch,
         selfCheck: .shared,
         afterPlay: { json in showNowPlaying(json: json, waitForPlay: true) },
-        musicShuffle: { macRouteShuffleMode(try? backend.runMusicBlocking(playbackModesReadScript, timeout: 5)) })
+        musicShuffle: { macRouteShuffleMode(try? backend.runMusicBlocking(playbackModesReadScript, timeout: 5)) },
+        firstStart: { owner, env in
+            RunQueueFirstStartWait(files: .beside(env.modeStore)).wait(owner: owner)
+        })
 }
 
 /// Said when the runner for a Mac DAC route play could not be started.

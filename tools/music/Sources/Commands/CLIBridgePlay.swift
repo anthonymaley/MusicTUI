@@ -263,6 +263,8 @@ func musicTUIPlayCommand(_ path: MusicTUIPlayPath, args: [String], playlist: Str
                                                         startRequired: startRequired, selectionAtRead: stamp)
             let prepared = try env.libraryPlay.prepare(request, env: env)
             try cliMusicTUIMutation(env: env) { try env.libraryPlay.play(prepared, env: env) }
+            // The output lock is released: now the runner can be waited for.
+            try env.libraryPlay.finishRoutePlay(env: env)
         }
 
     case (.handoff, .index(let index)), (.add, .index(let index)):
@@ -280,6 +282,8 @@ func musicTUIPlayCommand(_ path: MusicTUIPlayPath, args: [String], playlist: Str
             // whole warm-up budget); `play` re-checks the stamp under it.
             let prepared = try env.libraryPlay.prepare(request, env: env)
             try cliMusicTUIMutation(env: env) { try env.libraryPlay.play(prepared, env: env) }
+            // The output lock is released: now the runner can be waited for.
+            try env.libraryPlay.finishRoutePlay(env: env)
         case (.add, .queue(.catalogueQueue(let ids))) where ids.count == 1:
             let request = CLIMusicTUICataloguePlayRequest(catalogueID: ids[0], title: row.title, artist: row.artist,
                                                           album: row.album.isEmpty ? nil : row.album,

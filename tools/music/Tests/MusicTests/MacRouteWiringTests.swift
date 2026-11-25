@@ -593,6 +593,69 @@ final class MacRouteWiringTests: XCTestCase {
         }
     }
 
+    // MARK: a refused auto-advance is not retried every tick (round 2, I2)
+
+    private func refusing(_ r: Rig) {
+        r.wire.script = { body in
+            if body["op"] as? String == sourcePrepareRateOp {
+                let error: [String: Any] = ["kind": "route_output_refused",
+                                            "detail": "Couldn't make SSL 2+ the Mac's output; nothing was played."]
+                return String(decoding: try! JSONSerialization.data(withJSONObject: ["ok": false, "error": error]),
+                              as: UTF8.self)
+            }
+            return self.answer(body["fence"] as? Int ?? 0, "quiet")
+        }
+    }
+
+    /// The song ended and SpanDAC will not make the DAC the output. The first
+    /// tick asks and is refused; the queue stays on the song that ended, and the
+    /// ticks after it ask SpanDAC NOTHING (no unbounded IPC, no output write per
+    /// tick) until the person acts.
+    func testARefusedAutoAdvanceIsNotRetriedOnEveryTick() throws {
+        let r = rig()
+        refusing(r)
+        let (backend, _) = try pollingBackend(r.dir)
+        let store = storeWithRoute(r, queue: queue(3))
+        let p = poller(r.dir, backend: backend, store: store)
+        p.tick()                                    // the song, one second from its end
+        for _ in 0..<8 { p.tick() }                 // stopped: its natural end
+        XCTAssertEqual(r.wire.ops.filter { $0 == sourcePrepareRateOp }.count, 1,
+                       "a refusal was asked again: \(r.wire.ops)")
+        XCTAssertEqual(store.read()?.currentIndex, 1, "the queue moved past a song that never played")
+        XCTAssertNotNil(store.read(), "the queue was ended by a refusal")
+        XCTAssertEqual(r.music.count("play"), 0)
+        p.cleanupArtFiles()
+    }
+
+    /// A person's play or skip (any change of the queue) re-arms the advance: the
+    /// next natural end asks again.
+    func testAUserActionReArmsARefusedAdvance() throws {
+        let r = rig()
+        refusing(r)
+        let (backend, _) = try pollingBackend(r.dir)
+        let store = storeWithRoute(r, queue: queue(3))
+        let p = poller(r.dir, backend: backend, store: store)
+        p.tick()
+        for _ in 0..<4 { p.tick() }
+        XCTAssertEqual(r.wire.ops.filter { $0 == sourcePrepareRateOp }.count, 1)
+        _ = store.jump(to: 1)                       // the person picked a song
+        for _ in 0..<4 { p.tick() }
+        XCTAssertEqual(r.wire.ops.filter { $0 == sourcePrepareRateOp }.count, 2, "the person's action did not re-arm it")
+        XCTAssertEqual(store.read()?.currentIndex, 1)
+        p.cleanupArtFiles()
+    }
+
+    /// The hold ends on a change of queue, of route or of the selected output, and
+    /// on nothing else.
+    func testTheRefusalHoldEndsOnAQueueRouteOrOutputChange() {
+        let hold = AdvanceRefusalHold(generation: 5, onRoute: true, selection: nil)
+        XCTAssertTrue(hold.holds(generation: 5, onRoute: true, selection: nil))
+        XCTAssertFalse(hold.holds(generation: 6, onRoute: true, selection: nil), "a queue change")
+        XCTAssertFalse(hold.holds(generation: 5, onRoute: false, selection: nil), "the route left")
+        let other = EffectiveSelection.outputBlocked(stored: .musicApp)
+        XCTAssertFalse(hold.holds(generation: 5, onRoute: true, selection: other), "the output changed")
+    }
+
     // MARK: a repeat-all wrap is the natural end (live check 2026-11-16)
 
     /// A fake `osascript` for a song that wraps: the first player read is the song

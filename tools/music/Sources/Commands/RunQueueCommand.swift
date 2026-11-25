@@ -284,6 +284,8 @@ final class RunQueueRunner {
     /// Where a `music skip` / `music back` from another process reaches this runner.
     private let control: RunQueueControlling?
     private var ready = false
+    /// Whether the spawning command has been told what the first song came to.
+    private var firstReported = false
     /// The skip whose song is being started: answered once that play has an outcome.
     private var pendingAck: String?
     /// The token the parent reserved for this runner's first play (fix round 1,
@@ -326,6 +328,8 @@ final class RunQueueRunner {
         control?.register()
         markReadyIfOwner()
         defer {
+            // However it ended, the command that spawned it is not left waiting.
+            reportFirst(.ended)
             // A skip still waiting for its answer when the runner leaves is answered.
             if let nonce = pendingAck { control?.acknowledge(nonce: nonce, outcome: .notStarted); pendingAck = nil }
             // A skip that arrived as the runner was leaving (a newer command took the
@@ -344,6 +348,14 @@ final class RunQueueRunner {
         // However it ended: release a pause a correction left, if it is still ours.
         player.shutdown()
         return exit
+    }
+
+    /// Tells the spawning command what the first song came to: once, the first
+    /// word wins.
+    private func reportFirst(_ result: RunQueueFirstStart) {
+        guard !firstReported else { return }
+        firstReported = true
+        control?.reportFirstStart(result)
     }
 
     private func markReadyIfOwner() {
@@ -365,6 +377,11 @@ final class RunQueueRunner {
         var command = RateCommand.play
         var gate = AdvanceRetryGate()
         var notStarted = 0
+        // The step the queue took to reach the song about to be asked for (a skip's,
+        // or a natural advance's 1): 0 for the first song and for a skip that did
+        // not move. Undone when SpanDAC refuses the song, so the queue stays on the
+        // song that is (or was) playing and not on one that never played.
+        var stepTaken = 0
 
         while true {
             route.set(routeStillChosen())
@@ -381,10 +398,11 @@ final class RunQueueRunner {
             switch outcome {
             case .superseded:
                 acknowledgePending(.superseded)
+                reportFirst(.ended)
                 return .superseded
             case .notStarted:
                 notStarted += 1
-                if notStarted >= maxNotStarted { acknowledgePending(.notStarted); return .couldNotStart }
+                if notStarted >= maxNotStarted { acknowledgePending(.notStarted); reportFirst(.ended); return .couldNotStart }
                 sleep(pollInterval)
                 continue
             case .routeRefused(let detail):
@@ -393,6 +411,10 @@ final class RunQueueRunner {
                 // would ask the same question again): the queue stays where it is
                 // and the runner leaves, saying SpanDAC's words to a waiting skip.
                 if let nonce = pendingAck { control?.acknowledgeRefused(nonce: nonce, detail: detail); pendingAck = nil }
+                reportFirst(.refused(detail))
+                // Only while the queue is still the one this play was for: a queue
+                // replaced meanwhile has its own position, which no rollback touches.
+                if stepTaken != 0, queue.generation == generation { _ = queue.step(-stepTaken) }
                 return .routeRefused(detail)
             case .failed:
                 notStarted = 0
@@ -404,6 +426,7 @@ final class RunQueueRunner {
                 notStarted = 0
                 gate.playSucceeded()
                 acknowledgePending(.played)
+                reportFirst(.played)
                 var skipped = false
                 waiting: while true {
                     switch waitForEnd(persistentID: persistentIDOfQueueEntry(position)) {
@@ -416,8 +439,10 @@ final class RunQueueRunner {
                             control?.acknowledge(nonce: request.nonce, outcome: .superseded)
                             return .superseded
                         }
+                        stepTaken = 0
                         if let next = queue.step(request.step) {
                             (playlist, position) = next
+                            stepTaken = request.step
                         } else if request.step > 0 {
                             // Past the last song: nothing to play, but the client is answered.
                             control?.acknowledge(nonce: request.nonce, outcome: .end)
@@ -435,6 +460,7 @@ final class RunQueueRunner {
             }
             guard let next = queue.step(1) else { return .finished }
             (playlist, position) = next
+            stepTaken = 1
             command = .advance
         }
     }

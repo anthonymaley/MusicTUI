@@ -217,8 +217,18 @@ extension SourceAppControl {
 
     // MARK: Request bodies
 
-    static func rateFenceBody(fence: Int) -> [String: Any] {
-        ["op": sourceRateFenceOp, "fence": fence]
+    ///
+    /// `ensureOutput` is sent by a station start on the Mac route only (it has no
+    /// prepare): SpanDAC then makes `dacUID` (else the Output tab's DAC) the Mac's
+    /// output before the station opens, or refuses with `route_output_refused`. An
+    /// older SpanDAC ignores the field, as it does any it does not know.
+    static func rateFenceBody(fence: Int, ensureOutput: Bool = false, dacUID: String? = nil) -> [String: Any] {
+        var body: [String: Any] = ["op": sourceRateFenceOp, "fence": fence]
+        if ensureOutput {
+            body["ensure_output"] = true
+            if let dacUID { body["dac_uid"] = dacUID }
+        }
+        return body
     }
 
     /// A predicted prepare (`rateHz` nil) or a correction to Music's delivered

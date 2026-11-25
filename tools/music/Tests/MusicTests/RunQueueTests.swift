@@ -1120,6 +1120,81 @@ final class RunQueueTests: XCTestCase {
         XCTAssertEqual(lib.reads, [[h1, h2]], "still every song verified by persistent ID first")
     }
 
+    // MARK: round 2 (I3): `music play` waits, bounded, for the runner's first song
+
+    /// The runner is a fake that answers the way the real one does: a line in its
+    /// ack file, found by the owner the parent reserved for it.
+    private func answeringLaunch(_ h: CLIDataRouteHarness, with result: RunQueueFirstStart?,
+                                 launched: @escaping () -> Void = {}) -> ProcessLauncher {
+        { _, args in
+            launched()
+            if let result, let i = args.firstIndex(of: "--owner") {
+                FileRunQueueControl(files: .beside(h.env.modeStore), owner: args[i + 1]).reportFirstStart(result)
+            }
+            return true
+        }
+    }
+
+    private func waitingPlay(_ h: CLIDataRouteHarness, result: RunQueueFirstStart?, clock: @escaping () -> Double = { 0 },
+                             sleep: @escaping (TimeInterval) -> Void = { _ in }) -> PersistentIDCLILibraryPlay {
+        var play = PersistentIDCLILibraryPlay(library: library(), run: { _ in XCTFail("AppleScript on the route"); return "" },
+                                              launch: answeringLaunch(h, with: result),
+                                              selfCheck: LibraryAliasSelfCheck(), afterPlay: { _ in XCTFail("now line") })
+        play.firstStart = { owner, env in
+            RunQueueFirstStartWait(files: .beside(env.modeStore), now: clock, sleep: sleep).wait(owner: owner)
+        }
+        return play
+    }
+
+    /// The first song is refused: "Playing" is NOT said; SpanDAC's sentence is the
+    /// failure (the command exits non-zero through the error).
+    func testARefusedFirstSongIsNotSaidToBePlaying() throws {
+        let h = CLIDataRouteHarness(output: .musicApp, data: .accepted, dataReplies: [:], recordSeams: false)
+        MacRouteStore(beside: h.env.modeStore).set(true)
+        let detail = "Couldn't make SSL 2+ the Mac's output; nothing was played."
+        let play = waitingPlay(h, result: .refused(detail))
+        var thrown: Error?
+        _ = tripwired {
+            do {
+                try play.play(request(h), env: h.env)
+                XCTAssertEqual(h.io.out, [], "\"Playing\" was said before the runner's first song was known")
+                try play.finishRoutePlay(env: h.env)
+            } catch { thrown = error }
+        }
+        XCTAssertEqual((thrown as? ActionError)?.message, detail)
+        XCTAssertEqual(h.io.out, [], "a refused first song was announced as playing")
+    }
+
+    /// A played first song says what it always said, after the wait.
+    func testAPlayedFirstSongIsSaidToBePlayingAfterTheWait() throws {
+        let h = CLIDataRouteHarness(output: .musicApp, data: .accepted, dataReplies: [:], recordSeams: false)
+        MacRouteStore(beside: h.env.modeStore).set(true)
+        let play = waitingPlay(h, result: .played)
+        let r = tripwired {
+            try play.play(request(h), env: h.env)
+            XCTAssertEqual(h.io.out, [], "said before the lock was released")
+            try play.finishRoutePlay(env: h.env)
+        }
+        XCTAssertNil(r.error)
+        XCTAssertEqual(h.io.out, ["Playing \"Mezzanine\" (2 songs), following each song's sample rate."])
+    }
+
+    /// A runner that says nothing within the bound: the command says "Playing" as it
+    /// always did, after at most that bound.
+    func testASilentRunnerCostsTheBoundAndThenThePlayingLine() throws {
+        let h = CLIDataRouteHarness(output: .musicApp, data: .accepted, dataReplies: [:], recordSeams: false)
+        MacRouteStore(beside: h.env.modeStore).set(true)
+        var tick = 0.0
+        let play = waitingPlay(h, result: nil, clock: { tick }, sleep: { tick += $0 })
+        let r = tripwired {
+            try play.play(request(h), env: h.env)
+            try play.finishRoutePlay(env: h.env)
+        }
+        XCTAssertNil(r.error)
+        XCTAssertLessThanOrEqual(tick, 3.05, "the wait outran its bound")
+        XCTAssertEqual(h.io.out, ["Playing \"Mezzanine\" (2 songs), following each song's sample rate."])
+    }
+
     /// Fix round 1, finding 3: the parent moves the fence and takes the lease for
     /// the runner's owner id BEFORE the child is spawned, and hands the token on.
     func testOnTheRouteTheParentReservesTheFenceAndTheLeaseForTheRunnerBeforeItSpawns() throws {

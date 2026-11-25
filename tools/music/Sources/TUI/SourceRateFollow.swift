@@ -142,9 +142,13 @@ final class SourceRateFollow {
     /// `slice.rateFence {fence}`, sent after the increment by every command
     /// whose next message is not a prepare. One exchange, no waiting for rate
     /// work: `in_flight` is an answer.
-    func announce() -> SourceRateOutcome {
+    ///
+    /// A station start on the route passes `ensureOutput`: SpanDAC makes the DAC
+    /// the Mac's output before the station opens, or answers `route_output_refused`
+    /// (a `.failed`), which the transition does not play past.
+    func announce(ensureOutput: Bool = false, dacUID: String? = nil) -> SourceRateOutcome {
         guard offered else { return .notOffered }
-        switch exchange(SourceAppControl.rateFenceBody(fence: token.fence)) {
+        switch exchange(SourceAppControl.rateFenceBody(fence: token.fence, ensureOutput: ensureOutput, dacUID: dacUID)) {
         case .success(let answer): return .answered(answer)
         case .failure(let error): return outcome(for: error)
         }

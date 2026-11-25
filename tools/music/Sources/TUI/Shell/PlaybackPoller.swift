@@ -76,6 +76,11 @@ final class PlaybackPoller {
     /// started since is a new song, never the wrap of the one before it.
     private var lastStartCount = 0
     private var advanceGate = AdvanceRetryGate()
+    /// Set when SpanDAC refused an auto-advance (`route_output_refused`): until the
+    /// person acts or the output changes, no further advance is attempted, so a DAC
+    /// that stays unavailable is not asked again, and made to write the output,
+    /// on every tick. Thread-confined to the poller thread.
+    private var refusalHold: AdvanceRefusalHold?
     private var history: [(track: String, artist: String)] = []
     private var surrounding: [TrackListEntry] = []
     private var contextName = ""
@@ -451,6 +456,15 @@ final class PlaybackPoller {
     /// caller returns; the next tick observes the new track, or retries), or, at
     /// the queue's end, surfaces the continuation menu and clears the queue (false).
     private func advanceAppQueue() -> Bool {
+        // A refused advance is held, not retried: nothing is asked of SpanDAC, and
+        // nothing is stepped, until the queue, the route or the output changes.
+        if let hold = refusalHold {
+            if hold.holds(generation: appQueue.generation, onRoute: appQueue.macRoute?.isOnRoute ?? false,
+                          selection: routing?.selection) {
+                return true
+            }
+            refusalHold = nil
+        }
         guard let (pl, pos) = appQueue.step(1) else {
             // Reached the end of the app-owned queue — surface the continuation menu.
             if !qEnded {
@@ -477,8 +491,9 @@ final class PlaybackPoller {
         // rate failure is a played song; a play a newer command
         // superseded touches nothing (that command moved the queue, and
         // rolling it back would corrupt it); one that never started
-        // (the output lock busy, a route switch, or SpanDAC refusing to make the
-        // DAC the Mac's output) is rolled back and retried next tick, with no gate.
+        // (the output lock busy, a route switch) is rolled back and retried next
+        // tick, with no gate; one SpanDAC refused (it would not make the DAC the
+        // Mac's output) is rolled back and HELD, not retried.
         switch playQueueEntry(backend: backend, appQueue: appQueue, playlist: pl, position: pos,
                               command: .advance) {
         case .played:
@@ -493,8 +508,13 @@ final class PlaybackPoller {
             // SpanDAC would not make the DAC the Mac's output, so the song was not
             // played (the player already said why, in SpanDAC's words). Not a play
             // failure, so the gate is not touched and the song is not skipped past:
-            // the step is rolled back and the same song asked again next tick.
+            // the step is rolled back, the queue keeps its position, and the advance
+            // is held (`refusalHold`) until the person plays or skips, or the route
+            // or the output changes. The retry is theirs to ask for, not a loop.
             _ = appQueue.step(-1)
+            refusalHold = AdvanceRefusalHold(generation: appQueue.generation,
+                                             onRoute: appQueue.macRoute?.isOnRoute ?? false,
+                                             selection: routing?.selection)
         }
         stoppedPolls = 0
         return true
@@ -725,5 +745,19 @@ final class PlaybackPoller {
             // on a single hiccup (the published snapshot is simply not overwritten).
             return
         }
+    }
+}
+
+/// What a refused auto-advance waits for (`PlaybackPoller.refusalHold`): the
+/// queue as it stood once the advance was rolled back, the route, and the output
+/// selection. Any difference is a person's action or a device/output change, and
+/// re-arms the advance; nothing else does, so an unavailable DAC costs one ask.
+struct AdvanceRefusalHold: Equatable {
+    let generation: Int
+    let onRoute: Bool
+    let selection: EffectiveSelection?
+
+    func holds(generation: Int, onRoute: Bool, selection: EffectiveSelection?) -> Bool {
+        self == AdvanceRefusalHold(generation: generation, onRoute: onRoute, selection: selection)
     }
 }
