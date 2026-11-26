@@ -234,17 +234,21 @@ func decideQueueRestore(saved: PersistedQueue?, playerStopped: Bool,
 /// `PlaybackPoller.syncQueuePersistence`) — no concurrent access, no lock
 /// needed. Never re-issues `play`: the audio is already sounding at its real
 /// position, adopting the queue only re-attaches the driver.
-func restoreQueueOnLaunch(queueStore: QueueStore, appQueue: AppQueueStore, backend: AppleScriptBackend) {
+func restoreQueueOnLaunch(queueStore: QueueStore, appQueue: AppQueueStore, backend: AppleScriptBackend,
+                          poll: (() -> PollOutcome)? = nil, anchorID: (() -> String?)? = nil) {
+    // A CLI runner that is playing owns the queue (it plays the person's order one song at a
+    // time): a saved queue in another order is not it, and `>` would follow the wrong one.
+    if appQueue.macRoute?.cliRunnerLive == true { return }
     guard let saved = queueStore.load() else { return }
-    switch pollNowPlaying(backend: backend) {
+    switch (poll ?? { pollNowPlaying(backend: backend) })() {
     case .stopped:
         if decideQueueRestore(saved: saved, playerStopped: true, playingPersistentID: nil,
                                playingName: "", playingArtist: "") == .discard {
             queueStore.clear()
         }
     case .active(let np):
-        let anchorID = currentTrackPersistentID(backend: backend)
-        switch decideQueueRestore(saved: saved, playerStopped: false, playingPersistentID: anchorID,
+        let anchor = (anchorID ?? { currentTrackPersistentID(backend: backend) })()
+        switch decideQueueRestore(saved: saved, playerStopped: false, playingPersistentID: anchor,
                                    playingName: np.track, playingArtist: np.artist) {
         case .adopt(let q): appQueue.set(q)
         case .discard: queueStore.clear()

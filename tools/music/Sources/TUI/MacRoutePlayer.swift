@@ -451,7 +451,45 @@ final class MacRoutePlayer {
     /// SpanDAC restores when the route is left or SpanDAC quits).
     func routeChanged(on: Bool) {
         condition.lock(); statusReadThisSession = false; condition.unlock()
+        // A route restored over a CLI runner that is playing does not move the fence: a fence
+        // command takes the play lease, and a runner that lost it ends `superseded` and stops
+        // answering `>` (live check 2026-11-25). The runner told SpanDAC the route is on
+        // itself, and this process's first play asks again.
+        if on, readCLIRunner() { return }
         reporter?.routeChanged(on: on, fence: fence, owner: owner)
+    }
+
+    // MARK: a CLI runner on the queue
+
+    private let runnerLock = NSLock()
+    private var runnerSeen: (at: TimeInterval, live: Bool)?
+    /// How long the answer of `cliRunnerLive` is kept: the scene asks once a frame.
+    static let runnerCacheInterval: TimeInterval = 1
+
+    /// A detached `music play` runner OTHER than this process is up on the route: it owns
+    /// the queue, which this process does not hold (the `>` and `<` keys ask it). Read from
+    /// its record beside the fence, which names a pid that must be alive.
+    private func readCLIRunner() -> Bool {
+        let files = RunQueueControlFiles(directory: (fence.leasePath as NSString).deletingLastPathComponent)
+        let state = RunQueueSkipClient(files: files, leaseStatus: { _ in .none }).runnerState()
+        switch state {
+        case .none: return false
+        case .starting: return true
+        case .ready(let runnerOwner): return runnerOwner != owner
+        }
+    }
+
+    /// `readCLIRunner`, kept a second for a caller that asks every frame.
+    var cliRunnerLive: Bool {
+        let t = now()
+        runnerLock.lock()
+        if let seen = runnerSeen, t - seen.at < Self.runnerCacheInterval, t >= seen.at {
+            runnerLock.unlock(); return seen.live
+        }
+        runnerLock.unlock()
+        let live = readCLIRunner()
+        runnerLock.lock(); runnerSeen = (t, live); runnerLock.unlock()
+        return live
     }
 
     // MARK: the route

@@ -858,6 +858,18 @@ final class NowPlayingScene: Scene {
                 out += ANSICode.moveTo(row: listY + 2, col: listX) + "\(ANSICode.dim)Following Music's Genius queue.\(ANSICode.reset)"
                 out += ANSICode.moveTo(row: listY + 3, col: listX) + "\(ANSICode.dim)The track order isn't readable here.\(ANSICode.reset)"
             }
+        } else if snapshot.bridge == nil, appQueue.read() == nil, let route = appQueue.macRoute,
+                  route.isOnRoute, route.cliRunnerLive {
+            // A `music play` runner owns the queue, and `<` and `>` move it. Music's own
+            // context (the library, around this song) is not that queue, so it is not shown
+            // as Up Next.
+            if listY + 1 <= listBottom {
+                out += ANSICode.moveTo(row: listY, col: listX) + "\(ANSICode.bold)\(ANSICode.cyan)Up Next\(ANSICode.reset)"
+                out += ANSICode.moveTo(row: listY + 2, col: listX)
+                    + "\(ANSICode.dim)\(truncText("Following the CLI's play queue.", to: listW))\(ANSICode.reset)"
+                out += ANSICode.moveTo(row: listY + 3, col: listX)
+                    + "\(ANSICode.dim)\(truncText("< and > move it; its order isn't shown here.", to: listW))\(ANSICode.reset)"
+            }
         } else if listY + 1 <= listBottom {
             // Adapt context entries to the timeline-row shape the shared renderer expects.
             let timeline = rows.map { e in
